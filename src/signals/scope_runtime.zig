@@ -273,6 +273,7 @@ test "prepared scope claims publish dense reused rows into child topology" {
 pub const SubtreeTraversalWork = struct {
     scope_visits: usize = 0,
     child_links_followed: usize = 0,
+    validation_roots_checked: usize = 0,
     validation_parent_links_followed: usize = 0,
 };
 
@@ -350,19 +351,22 @@ pub fn prepareSubtreeRetirement(comptime Row: type, allocator: std.mem.Allocator
 /// Prepares disjoint scope subtrees as one stable post-order retirement journal.
 pub fn prepareSubtreesRetirement(comptime Row: type, allocator: std.mem.Allocator, scopes: []const scope_tree.Scope(Row), root_scope_ids: []const semantic_ids.ScopeId) (std.mem.Allocator.Error || error{OverlappingSubtrees})!PreparedSubtreeRetirement {
     var work: SubtreeTraversalWork = .{};
-    for (root_scope_ids, 0..) |root_scope_id, root_index| {
+    const is_root = try allocator.alloc(bool, scopes.len);
+    defer allocator.free(is_root);
+    @memset(is_root, false);
+    for (root_scope_ids) |root_scope_id| {
+        work.validation_roots_checked += 1;
         if (root_scope_id.index() >= scopes.len or scopes[root_scope_id.index()].scope_id != root_scope_id or !scopes[root_scope_id.index()].lifecycle.isActive()) return error.OverlappingSubtrees;
+        if (is_root[root_scope_id.index()]) return error.OverlappingSubtrees;
+        is_root[root_scope_id.index()] = true;
+    }
+    for (root_scope_ids) |root_scope_id| {
         var ancestor = scopes[root_scope_id.index()].parent_scope_id;
         while (ancestor) |ancestor_scope_id| {
             work.validation_parent_links_followed += 1;
-            for (root_scope_ids, 0..) |other_root_scope_id, other_root_index| {
-                if (root_index != other_root_index and ancestor_scope_id == other_root_scope_id) return error.OverlappingSubtrees;
-            }
             if (ancestor_scope_id.index() >= scopes.len or scopes[ancestor_scope_id.index()].scope_id != ancestor_scope_id) return error.OverlappingSubtrees;
+            if (is_root[ancestor_scope_id.index()]) return error.OverlappingSubtrees;
             ancestor = scopes[ancestor_scope_id.index()].parent_scope_id;
-        }
-        for (root_scope_ids[0..root_index]) |previous_root_scope_id| {
-            if (previous_root_scope_id == root_scope_id) return error.OverlappingSubtrees;
         }
     }
 
@@ -561,6 +565,7 @@ test "prepared disjoint scope retirement unions roots and rejects overlap" {
     }
 
     try std.testing.expectError(error.OverlappingSubtrees, prepareSubtreesRetirement(TestRow, std.testing.allocator, scopes.items, &.{ semantic_ids.ScopeId.fromRaw(1), semantic_ids.ScopeId.fromRaw(2) }));
+    try std.testing.expectError(error.OverlappingSubtrees, prepareSubtreesRetirement(TestRow, std.testing.allocator, scopes.items, &.{ semantic_ids.ScopeId.fromRaw(4), semantic_ids.ScopeId.fromRaw(4) }));
     for (scopes.items) |scope| try std.testing.expect(scope.lifecycle.isActive());
 }
 
@@ -614,6 +619,48 @@ test "scope subtree work ignores ten thousand unrelated scopes and retries after
     try std.testing.expect(!scopes.items[target_grandchild.index()].lifecycle.isActive());
     try std.testing.expect(scopes.items[semantic_ids.ScopeId.fromRaw(4).index()].lifecycle.isActive());
     try std.testing.expectEqual(@as(?semantic_ids.ScopeId, semantic_ids.ScopeId.fromRaw(4)), scopes.items[semantic_ids.root_scope.index()].first_child_scope_id);
+}
+
+test "ten thousand flat retirement roots validate with linear indexed work and retry after every allocation failure" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var scopes: std.ArrayListUnmanaged(scope_tree.Scope(TestRow)) = .empty;
+    defer scopes.deinit(std.testing.allocator);
+    _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
+
+    var roots: std.ArrayListUnmanaged(semantic_ids.ScopeId) = .empty;
+    defer roots.deinit(std.testing.allocator);
+    try roots.ensureTotalCapacity(std.testing.allocator, 10_000);
+    for (0..10_000) |index| {
+        const row = try scope_tree.appendFreshEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, .{
+            .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(@intCast(index + 1)),
+            .key_hash = index,
+            .row_handle = row_handles.RowHandleId.fromRaw(@intCast(0x0000_0001_0000_0001 + index)),
+        });
+        roots.appendAssumeCapacity(row.scope_id);
+    }
+
+    var baseline_fault = FaultAllocator.init(std.testing.allocator);
+    var baseline = try prepareSubtreesRetirement(TestRow, baseline_fault.allocator(), scopes.items, roots.items);
+    const attempts = baseline_fault.attempts;
+    try std.testing.expectEqual(@as(usize, 2), attempts);
+    try std.testing.expectEqual(@as(usize, 10_000), baseline.scope_ids.len);
+    try std.testing.expectEqual(@as(usize, 10_000), baseline.work.validation_roots_checked);
+    try std.testing.expectEqual(@as(usize, 10_000), baseline.work.validation_parent_links_followed);
+    try std.testing.expectEqual(@as(usize, 20_000), baseline.work.scope_visits);
+    try std.testing.expectEqual(@as(usize, 0), baseline.work.child_links_followed);
+    baseline.deinit(baseline_fault.allocator());
+
+    for (1..attempts + 1) |fail_at| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(fail_at);
+        try std.testing.expectError(error.OutOfMemory, prepareSubtreesRetirement(TestRow, fault.allocator(), scopes.items, roots.items));
+        for (scopes.items) |scope| try std.testing.expect(scope.lifecycle.isActive());
+    }
+
+    var retry_fault = FaultAllocator.init(std.testing.allocator);
+    var retry = try prepareSubtreesRetirement(TestRow, retry_fault.allocator(), scopes.items, roots.items);
+    defer retry.deinit(retry_fault.allocator());
+    try std.testing.expectEqualSlices(semantic_ids.ScopeId, roots.items, retry.scope_ids);
 }
 
 test "measured immediate subtree disposal follows only descendant links" {

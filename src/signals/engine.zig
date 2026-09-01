@@ -7969,8 +7969,29 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         const PreparedStructuralTargets = struct {
+            const Work = struct {
+                subtree_scope_visits: usize = 0,
+                subtree_child_links_followed: usize = 0,
+            };
+
             descriptor_target_scopes: []bool = &.{},
             scope_retirement: ?scope_runtime.PreparedSubtreeRetirement = null,
+            work: Work = .{},
+
+            fn markSubtree(engine: *Self, targets: []bool, root: ids.ScopeId, value: bool, work: *Work) CollectionError!void {
+                if (root.index() >= engine.scopes.items.len) return error.InvalidScope;
+                const scope = engine.scopes.items[root.index()];
+                if (scope.scope_id != root) return error.InvalidScope;
+                if (!scope.lifecycle.isActive()) return;
+                work.subtree_scope_visits += 1;
+                targets[root.index()] = value;
+                var child = scope.first_child_scope_id;
+                while (child) |child_id| {
+                    work.subtree_child_links_followed += 1;
+                    try markSubtree(engine, targets, child_id, value, work);
+                    child = engine.scopes.items[child_id.index()].next_sibling_scope_id;
+                }
+            }
 
             /// Whether `scope_id` is a committed row some live site under a
             /// descriptor root keeps, untouched or re-collected in place.
@@ -8012,12 +8033,7 @@ pub fn Engine(comptime Ctx: type) type {
                     if (root_scope_id >= engine.scopes.items.len) return error.InvalidScope;
                     if (!engine.scopes.items[@intCast(root_scope_id)].lifecycle.isActive()) return error.InvalidScope;
                     is_descriptor_root[@intCast(root_scope_id)] = true;
-                    for (engine.scopes.items) |scope| {
-                        if (!scope.lifecycle.isActive()) continue;
-                        if (engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), root_scope_id) catch |err| return scopeError(err)) {
-                            prepared.descriptor_target_scopes[scope.scope_id.index()] = true;
-                        }
-                    }
+                    try markSubtree(engine, prepared.descriptor_target_scopes, ids.ScopeId.fromRaw(root_scope_id), true, &prepared.work);
                 }
                 for (retired_root_scope_ids) |root_scope_id| {
                     if (root_scope_id >= engine.scopes.items.len) return error.InvalidScope;
@@ -8038,12 +8054,7 @@ pub fn Engine(comptime Ctx: type) type {
                             is_descriptor_root[row_scope_id.index()] = true;
                             continue;
                         }
-                        for (engine.scopes.items) |scope| {
-                            if (!scope.lifecycle.isActive()) continue;
-                            if (engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), row_scope_id.raw()) catch |err| return scopeError(err)) {
-                                prepared.descriptor_target_scopes[scope.scope_id.index()] = false;
-                            }
-                        }
+                        try markSubtree(engine, prepared.descriptor_target_scopes, row_scope_id, false, &prepared.work);
                     }
                 }
 
@@ -18477,6 +18488,35 @@ test "structural targets refuse nested retirement roots as OverlappingRemoval" {
     try std.testing.expectError(error.OverlappingRemoval, Engine(VerifyCtx).PreparedStructuralTargets.prepare(&engine, std.testing.allocator, &.{root.scope_id.raw()}, &.{ child.scope_id.raw(), grandchild.scope_id.raw() }, null));
     try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
     try std.testing.expect(engine.scopes.items[grandchild.scope_id.index()].lifecycle.isActive());
+}
+
+test "structural targets mark ten thousand flat row roots with exact linear subtree work" {
+    var engine = Engine(VerifyCtx).init();
+    defer engine.scopes.deinit(std.testing.allocator);
+    const root = try engine.internRootScope(std.testing.allocator);
+    var roots: std.ArrayListUnmanaged(u64) = .empty;
+    defer roots.deinit(std.testing.allocator);
+    try roots.ensureTotalCapacity(std.testing.allocator, 10_000);
+    for (0..10_000) |index| {
+        const row = try scope_runtime.appendFreshEachRow(
+            std.testing.allocator,
+            &engine.scopes,
+            root.scope_id,
+            ids.SiteOrdinal.fromRaw(@intCast(index + 1)),
+            index,
+            row_handles.RowHandleId.fromRaw(@intCast(0x0000_0001_0000_0001 + index)),
+        );
+        roots.appendAssumeCapacity(row.scope_id.raw());
+    }
+
+    var targets = try Engine(VerifyCtx).PreparedStructuralTargets.prepare(&engine, std.testing.allocator, roots.items, roots.items, null);
+    defer targets.deinit(std.testing.allocator);
+    try std.testing.expect(!targets.descriptor_target_scopes[root.scope_id.index()]);
+    for (roots.items) |scope_id| try std.testing.expect(targets.descriptor_target_scopes[@intCast(scope_id)]);
+    try std.testing.expectEqual(@as(usize, 10_000), targets.work.subtree_scope_visits);
+    try std.testing.expectEqual(@as(usize, 0), targets.work.subtree_child_links_followed);
+    try std.testing.expectEqual(@as(usize, 10_000), targets.scope_retirement.?.work.validation_roots_checked);
+    try std.testing.expectEqual(@as(usize, 10_000), targets.scope_retirement.?.work.validation_parent_links_followed);
 }
 
 test "structural targets ignore already retired scope slots" {
