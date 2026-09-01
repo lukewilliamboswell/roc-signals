@@ -106,6 +106,13 @@ pub fn OrderIndex(comptime Span: type) type {
             return self.nodeRoots(self.root);
         }
 
+        /// Returns the final direct root in committed site order without
+        /// walking trailing rows that render no roots.
+        pub fn lastRoot(self: *const Self) ?u64 {
+            const root_id = self.root orelse return null;
+            return (self.nodes.get(root_id) orelse unreachable).subtree_last_root;
+        }
+
         /// Reports whether a generation-checked row participates in this
         /// committed render order.
         pub fn contains(self: *const Self, row_id: RowId) bool {
@@ -363,6 +370,13 @@ pub fn OrderIndex(comptime Span: type) type {
             /// Returns candidate direct-root count from the overlay aggregate.
             pub fn rootCount(self: *const Prepared) usize {
                 return self.nodeRoots(self.root);
+            }
+
+            /// Returns the final direct root in candidate order without
+            /// walking trailing rows that render no roots.
+            pub fn lastRoot(self: *const Prepared) ?u64 {
+                const root_id = self.root orelse return null;
+                return (self.get(root_id) orelse unreachable).subtree_last_root;
             }
 
             /// Returns exact distinct topology records touched so far and the
@@ -776,6 +790,7 @@ test "prepared render order exposes candidate anchors without mutating committed
     });
 
     try expectOrder(&order, &.{ row(0), row(1), row(2), row(3) });
+    try std.testing.expectEqual(@as(?u64, 20), order.lastRoot());
     try std.testing.expectEqual(TestOrder.RootAnchor{ .row_id = row(1), .root_id = 10 }, (try order.firstRootAtOrAfter(row(0))).?);
     try std.testing.expectEqual(TestOrder.RootAnchor{ .row_id = row(3), .root_id = 20 }, (try order.firstRootAtOrAfter(row(2))).?);
 
@@ -785,6 +800,7 @@ test "prepared render order exposes candidate anchors without mutating committed
     try std.testing.expect(moved.effective);
     try std.testing.expectEqual(@as(usize, 2), moved.roots_moved);
     try expectOrder(&prepared, &.{ row(0), row(3), row(1), row(2) });
+    try std.testing.expectEqual(@as(?u64, 11), prepared.lastRoot());
     try std.testing.expectEqual(TestOrder.RootAnchor{ .row_id = row(3), .root_id = 20 }, (try prepared.firstRootAtOrAfter(row(0))).?);
 
     // Candidate preparation is isolated until the allocation-free commit.
@@ -793,6 +809,7 @@ test "prepared render order exposes candidate anchors without mutating committed
     prepared.commitAssumePreflighted();
     try expectOrder(&order, &.{ row(0), row(3), row(1), row(2) });
     try std.testing.expectEqual(@as(usize, 3), order.rootCount());
+    try std.testing.expectEqual(@as(?u64, 11), order.lastRoot());
 }
 
 test "insert remove move and span updates preserve exact aggregates" {

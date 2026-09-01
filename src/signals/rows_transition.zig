@@ -380,6 +380,15 @@ pub const PreparedTransition = struct {
         return self.render_order.stats();
     }
 
+    /// Returns the last direct root in the committed site before this
+    /// transition. Sparse publication uses its next sibling as the stable
+    /// end-of-site anchor while moving surviving row spans.
+    pub fn committedLastRenderRoot(self: *const PreparedTransition) Error!?u64 {
+        if (self.phase == .preparing) @panic("Rows committed render boundary read before preparation completed");
+        const site = self.store.getSiteConst(self.site_id) catch return error.InvalidSite;
+        return site.render_order.lastRoot();
+    }
+
     /// Resolves the first direct render root owned by `slot` or a later
     /// candidate row. The aggregate index skips arbitrarily long runs of rows
     /// that render no direct root.
@@ -1137,9 +1146,11 @@ test "row render spans preserve empty and multi-root anchors through commit" {
     try next.setCandidateRenderSpanAssumeCapacity(9, multi);
     try std.testing.expectEqual(multi, next.candidateBySlot(9).?.metadata.render_span);
     try std.testing.expectEqual(@as(u64, 101), (try next.firstRenderRootAtOrAfterSlot(9)).?.root_id);
+    try std.testing.expect((try next.committedLastRenderRoot()) == null);
     next.commit();
     try std.testing.expectEqual(multi, (try store.getRowConst(site, row_id)).metadata.render_span);
     try std.testing.expectEqual(multi, try (try store.getSiteConst(site)).render_order.span(row_id));
+    try std.testing.expectEqual(@as(?u64, 107), (try store.getSiteConst(site)).render_order.lastRoot());
 }
 
 test "changed candidate traversal and commit stay bounded by a one-row delta" {
