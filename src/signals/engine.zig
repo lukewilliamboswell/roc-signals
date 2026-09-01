@@ -4393,6 +4393,27 @@ pub fn Engine(comptime Ctx: type) type {
 
         const StagedCollectionCtx = struct {
             const Collection = @This();
+            const PreparedCustomAttrKey = struct {
+                elem_id: u64,
+                name: []const u8,
+            };
+            const PreparedCustomAttrContext = struct {
+                /// Hashes an element identity and its exact custom-attribute bytes.
+                pub fn hash(_: @This(), key: PreparedCustomAttrKey) u64 {
+                    return std.hash.Wyhash.hash(key.elem_id, key.name);
+                }
+
+                /// Compares both the element identity and exact attribute bytes.
+                pub fn eql(_: @This(), left: PreparedCustomAttrKey, right: PreparedCustomAttrKey) bool {
+                    return left.elem_id == right.elem_id and std.mem.eql(u8, left.name, right.name);
+                }
+            };
+            const PreparedCustomAttrIndex = std.HashMapUnmanaged(
+                PreparedCustomAttrKey,
+                void,
+                PreparedCustomAttrContext,
+                std.hash_map.default_max_load_percentage,
+            );
             const PreparedRenderNode = union(enum) {
                 static: usize,
                 signal: usize,
@@ -4428,6 +4449,11 @@ pub fn Engine(comptime Ctx: type) type {
             prepared_render_order: std.ArrayListUnmanaged(PreparedRenderNode) = .empty,
             prepared_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
             prepared_signal_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedSignalDescriptor) = .empty,
+            /// Exact names already staged by this transaction. Keys borrow
+            /// descriptor-owned name storage and therefore must be destroyed
+            /// before prepared descriptors are aborted or moved.
+            prepared_custom_attrs: PreparedCustomAttrIndex = .empty,
+            custom_attr_lookup_work: if (builtin.is_test) usize else void = if (builtin.is_test) 0 else {},
             prepared_events: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedEventDescriptor) = .empty,
             prepared_lifecycle: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedLifecycleDescriptor) = .empty,
             prepared_state_sites: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedScopeSite) = .empty,
@@ -4625,6 +4651,7 @@ pub fn Engine(comptime Ctx: type) type {
                     collection.prepared_render_order.ensureUnusedCapacity(allocator, self.nodes) catch return error.OutOfMemory;
                     collection.prepared_attrs.ensureUnusedCapacity(allocator, static_attrs) catch return error.OutOfMemory;
                     collection.prepared_signal_attrs.ensureUnusedCapacity(allocator, signal_descriptors) catch return error.OutOfMemory;
+                    collection.prepared_custom_attrs.ensureUnusedCapacity(allocator, std.math.cast(u32, added.roots.custom_attrs) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                     collection.prepared_events.ensureUnusedCapacity(allocator, self.events) catch return error.OutOfMemory;
                     collection.prepared_lifecycle.ensureUnusedCapacity(allocator, self.lifecycle) catch return error.OutOfMemory;
                     collection.prepared_state_sites.ensureUnusedCapacity(allocator, self.scope_sites) catch return error.OutOfMemory;
@@ -4759,6 +4786,10 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
+                // Index keys borrow names owned by prepared descriptors (or by
+                // the materialized stream), so discard every borrow first.
+                self.prepared_custom_attrs.deinit(allocator);
+                self.prepared_custom_attrs = .empty;
                 if (!self.phase.isCommitted()) {
                     var index = self.prepared_nodes.items.len;
                     if (!self.phase.isMaterialized()) {
@@ -5913,6 +5944,7 @@ pub fn Engine(comptime Ctx: type) type {
                                 .signal = signal,
                                 .read = read,
                             } });
+                            self.rememberPreparedCustomAttr(elem_id, name_copy);
                             self.signal_records.transferDescriptorRoot(signal.record);
                             const journaled = self.signal_bindings.pop() orelse @panic("staged signal binding journal underflow");
                             if (journaled.record != signal.record or journaled.source_node_ids.ptr != signal.source_node_ids.ptr or journaled.source_node_ids.len != signal.source_node_ids.len) {
@@ -5942,6 +5974,7 @@ pub fn Engine(comptime Ctx: type) type {
                                 .present = present,
                                 .read = read,
                             } });
+                            self.rememberPreparedCustomAttr(elem_id, name_copy);
                             self.signal_records.transferDescriptorRoot(signal.record);
                             const journaled = self.signal_bindings.pop() orelse @panic("staged signal binding journal underflow");
                             if (journaled.record != signal.record or journaled.source_node_ids.ptr != signal.source_node_ids.ptr or journaled.source_node_ids.len != signal.source_node_ids.len) @panic("staged signal binding journal transfer mismatch");
@@ -5983,6 +6016,7 @@ pub fn Engine(comptime Ctx: type) type {
                                 .signal = signal,
                                 .read = read,
                             } });
+                            self.rememberPreparedCustomAttr(elem_id, name_copy);
                             self.signal_records.transferDescriptorRoot(signal.record);
                             const journaled = self.signal_bindings.pop() orelse @panic("staged signal binding journal underflow");
                             if (journaled.record != signal.record or journaled.source_node_ids.ptr != signal.source_node_ids.ptr or journaled.source_node_ids.len != signal.source_node_ids.len) @panic("staged signal binding journal transfer mismatch");
@@ -6072,6 +6106,11 @@ pub fn Engine(comptime Ctx: type) type {
                     },
                 };
                 self.prepared_attrs.appendAssumeCapacity(prepared);
+                switch (prepared) {
+                    .custom_text => |value| self.rememberPreparedCustomAttr(value.elem_id, value.name),
+                    .custom_boolean => |value| self.rememberPreparedCustomAttr(value.elem_id, value.name),
+                    .text, .boolean => {},
+                }
             }
 
             fn appendCleanup(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, name: []const u8) CollectionError!void {
@@ -6099,14 +6138,15 @@ pub fn Engine(comptime Ctx: type) type {
                 if (journaled.record != signal.record) @panic("staged lifecycle signal binding journal transfer mismatch");
             }
 
-            fn customAttrExists(self: *const @This(), elem_id: ids.ElemId, name: []const u8) bool {
+            fn customAttrExists(self: *@This(), elem_id: ids.ElemId, name: []const u8) bool {
+                if (builtin.is_test) self.custom_attr_lookup_work += 1;
                 if (self.stream.customTextAttrDescriptorExists(elem_id, name)) return true;
-                for (self.prepared_attrs.items) |prepared| switch (prepared) {
-                    .custom_text => |value| if (value.elem_id == elem_id and std.mem.eql(u8, value.name, name)) return true,
-                    .custom_boolean => |value| if (value.elem_id == elem_id and std.mem.eql(u8, value.name, name)) return true,
-                    .text, .boolean => {},
-                };
-                return false;
+                return self.prepared_custom_attrs.contains(.{ .elem_id = elem_id.raw(), .name = name });
+            }
+
+            fn rememberPreparedCustomAttr(self: *@This(), elem_id: ids.ElemId, name: []const u8) void {
+                const result = self.prepared_custom_attrs.getOrPutAssumeCapacity(.{ .elem_id = elem_id.raw(), .name = name });
+                if (result.found_existing) @panic("custom attribute was staged without duplicate validation");
             }
 
             fn namedEventExists(self: *const @This(), elem_id: ids.ElemId, name: []const u8) bool {
@@ -17107,6 +17147,73 @@ test "staged DOM identity reuse does not consume the fresh suffix" {
     try std.testing.expectEqual(@as(u64, 4), (try collection.reserveDomIdentity(ids.ScopeId.fromRaw(3), ids.SiteOrdinal.fromRaw(0))).raw());
 }
 
+test "staged custom attribute duplicate index uses exact composite keys under collisions" {
+    const Collection = Engine(VerifyCtx).StagedCollectionCtx;
+    const CollisionContext = struct {
+        /// Forces every test key through the collision-resolution path.
+        pub fn hash(_: @This(), _: Collection.PreparedCustomAttrKey) u64 {
+            return 0;
+        }
+
+        /// Retains production exact-key equality while hashes collide.
+        pub fn eql(_: @This(), left: Collection.PreparedCustomAttrKey, right: Collection.PreparedCustomAttrKey) bool {
+            return Collection.PreparedCustomAttrContext.eql(.{}, left, right);
+        }
+    };
+    var index: std.HashMapUnmanaged(Collection.PreparedCustomAttrKey, void, CollisionContext, std.hash_map.default_max_load_percentage) = .empty;
+    defer index.deinit(std.testing.allocator);
+    try index.put(std.testing.allocator, .{ .elem_id = 7, .name = "data-a" }, {});
+    try index.put(std.testing.allocator, .{ .elem_id = 7, .name = "data-b" }, {});
+    try index.put(std.testing.allocator, .{ .elem_id = 8, .name = "data-a" }, {});
+    try std.testing.expectEqual(@as(u32, 3), index.count());
+    try std.testing.expect(index.contains(.{ .elem_id = 7, .name = "data-a" }));
+    try std.testing.expect(index.contains(.{ .elem_id = 7, .name = "data-b" }));
+    try std.testing.expect(index.contains(.{ .elem_id = 8, .name = "data-a" }));
+    try std.testing.expect(!index.contains(.{ .elem_id = 7, .name = "data-c" }));
+}
+
+test "staged custom attributes perform one indexed lookup per descriptor and reject cross-kind duplicates" {
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer deinitVerifyStaticEngine(&engine, &ctx);
+    var stream: HostNodeDescriptorStream = .{};
+    defer stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+
+    const attr_count = 256;
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{
+        .attrs = attr_count + 1,
+        .static_custom_text_attrs = attr_count,
+        .signal_custom_bool_attrs = 1,
+        .custom_attrs = attr_count + 1,
+        .signal_records = 1,
+    }, 0);
+    defer collection.deinit();
+
+    var names: [attr_count][16]u8 = undefined;
+    for (&names, 0..) |*name_buffer, index| {
+        const name = try std.fmt.bufPrint(name_buffer, "data-{d}", .{index});
+        try collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), .{ .payload = .{ .static_text = .{
+            .field = .{ .id = abi_view.node_text_field_custom },
+            .name = abi.RocStr.fromSlice(name, undefined),
+            .value = abi.RocStr.fromSlice("value", undefined),
+        } }, .tag = .StaticText }, &.{});
+    }
+    try std.testing.expectEqual(@as(usize, attr_count), collection.custom_attr_lookup_work);
+    try std.testing.expectEqual(@as(u32, attr_count), collection.prepared_custom_attrs.count());
+
+    var unused_signal = std.mem.zeroes(abi.NodeSignalExpr);
+    try std.testing.expectError(error.InvalidDescriptor, collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), .{ .payload = .{ .signal_bool = .{
+        .field = .{ .id = abi_view.node_bool_field_custom },
+        .name = abi.RocStr.fromSlice("data-42", undefined),
+        .read = std.mem.zeroes(HostBoolRead),
+        .signal = &unused_signal,
+    } }, .tag = .SignalBool }, &.{}));
+    try std.testing.expectEqual(@as(usize, attr_count + 1), collection.custom_attr_lookup_work);
+    try std.testing.expectEqual(@as(u32, attr_count), collection.prepared_custom_attrs.count());
+}
+
 test "staged scope identity reuse does not consume the fresh suffix" {
     var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
     var engine = Engine(VerifyCtx).init();
@@ -17974,7 +18081,12 @@ test "transactional component and state root sweeps failures and publishes initi
         .delivery = .{ .native = false },
         .policy = std.mem.zeroes(abi.NodeEventBindingPolicy),
     } }, .tag = .On };
-    var child = verifyStaticRoot(&.{named_attr}, &.{});
+    const custom_attr = abi.NodeAttr{ .payload = .{ .static_text = .{
+        .field = .{ .id = abi_view.node_text_field_custom },
+        .name = abi.RocStr.fromSlice("data-state", undefined),
+        .value = abi.RocStr.fromSlice("ready", undefined),
+    } }, .tag = .StaticText };
+    var child = verifyStaticRoot(&.{ named_attr, custom_attr }, &.{});
     var state_root = abi.Elem{ .payload = .{ .state = .{
         .binder = callable,
         .cap = capability,
