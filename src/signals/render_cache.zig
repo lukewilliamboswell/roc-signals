@@ -1275,7 +1275,12 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// Adds final custom attributes for an active or provisional node.
         pub fn addCustomAttrs(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, attrs: []const CustomTextAttr) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
-            if (self.activeNode(cache, elem_id)) |node| {
+            const active = self.activeNode(cache, elem_id);
+            // A provisional node starts with no custom attributes. An empty
+            // descriptor therefore needs neither owned state nor a journal;
+            // active nodes still pass through so an old set can be cleared.
+            if (active == null and attrs.len == 0) return;
+            if (active) |node| {
                 if (node.custom_text_attrs.items.len == attrs.len) {
                     var equal = true;
                     for (node.custom_text_attrs.items, attrs) |old, next| {
@@ -1325,7 +1330,12 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// Adds final named events for an active or provisional node.
         pub fn addNamedEvents(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, events: []const NamedEvent) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
-            if (self.activeNode(cache, elem_id)) |node| {
+            const active = self.activeNode(cache, elem_id);
+            // A provisional node starts with no named events. Avoid recording
+            // an empty replacement, while retaining the active-node path that
+            // clears bindings owned by the committed cache.
+            if (active == null and events.len == 0) return;
+            if (active) |node| {
                 if (node.named_events.items.len == events.len) {
                     var equal = true;
                     for (node.named_events.items, events) |old, next| {
@@ -2886,6 +2896,59 @@ test "prepared render splice leaves unchanged retained values allocation free" {
     try std.testing.expectEqual(@as(usize, 0), plan.named_events.items.len);
     try std.testing.expectEqual(@as(u64, 0), plan.counts().total);
     fault.configure(null);
+}
+
+test "provisional empty dynamic metadata skips journals while active metadata clears" {
+    const allocator = std.testing.allocator;
+    var cache: Cache(TestCtx) = .{};
+    var host = TestHost{};
+    defer cache.deinit(&host);
+
+    var root = ScalarNode.initActive("root");
+    try root.custom_text_attrs.append(allocator, .{
+        .name = try allocator.dupe(u8, "data-old"),
+        .value = try allocator.dupe(u8, "value"),
+    });
+    try root.named_events.append(allocator, .{
+        .name = try allocator.dupe(u8, "focus"),
+        .binding = .{
+            .event_id = ids.EventId.fromRaw(1),
+            .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
+        },
+    });
+    try cache.nodes.append(allocator, root);
+
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 2,
+        .new_tags = 1,
+        .creations = 1,
+        .custom_attrs = 1,
+        .custom_attr_wire_edits = 1,
+        .named_events = 1,
+        .named_event_wire_edits = 1,
+        .wire_commands = 3,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.ElemId.fromRaw(1), "div");
+
+    try plan.addCustomAttrs(&cache, ids.ElemId.fromRaw(1), &.{});
+    try plan.addNamedEvents(&cache, ids.ElemId.fromRaw(1), &.{});
+    try std.testing.expectEqual(@as(usize, 0), plan.custom_attrs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), plan.named_events.items.len);
+
+    try plan.addCustomAttrs(&cache, ids.root_elem, &.{});
+    try plan.addNamedEvents(&cache, ids.root_elem, &.{});
+    try std.testing.expectEqual(@as(usize, 1), plan.custom_attrs.items.len);
+    try std.testing.expectEqual(@as(usize, 1), plan.custom_attr_wire_edits.items.len);
+    try std.testing.expectEqual(@as(usize, 1), plan.named_events.items.len);
+    try std.testing.expectEqual(@as(usize, 1), plan.named_event_wire_edits.items.len);
+    try std.testing.expectEqual(@as(u64, 3), plan.counts().total);
+
+    plan.apply(&cache);
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[0].custom_text_attrs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[0].named_events.items.len);
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[1].custom_text_attrs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[1].named_events.items.len);
 }
 
 test "prepared render wire commands own borrowed preparation inputs" {
