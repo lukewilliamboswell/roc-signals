@@ -194,7 +194,12 @@ pub fn prepareRouteAppends(comptime Route: type, allocator: std.mem.Allocator, r
 /// Builds sink route replacements against the dense record layout that will
 /// exist after a prepared release. Slots without a surviving old record start
 /// empty instead of inheriting routes from the old occupant of that dense ID.
-pub fn prepareRouteAppendsAfterRelease(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), final_record_ids: []const ?u64, final_count: usize, appends: []const RouteAppend(Route)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
+pub fn prepareRouteAppendsAfterRelease(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), original_record_ids: []const usize, final_count: usize, appends: []const RouteAppend(Route)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
+    return prepareRouteAppendsAfterReleaseWithWork(Route, allocator, routes, original_record_ids, final_count, appends, null);
+}
+
+fn prepareRouteAppendsAfterReleaseWithWork(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), original_record_ids: []const usize, final_count: usize, appends: []const RouteAppend(Route), lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
+    if (original_record_ids.len > final_count) return error.InvalidAppend;
     const sorted = try allocator.dupe(RouteAppend(Route), appends);
     defer allocator.free(sorted);
     std.mem.sort(RouteAppend(Route), sorted, {}, struct {
@@ -216,15 +221,11 @@ pub fn prepareRouteAppendsAfterRelease(comptime Route: type, allocator: std.mem.
         var end = start + 1;
         while (end < sorted.len and sorted[end].route_index == sorted[start].route_index) end += 1;
         const route_index: usize = @intCast(sorted[start].route_index);
-        var survivor_old_index: ?usize = null;
-        for (final_record_ids, 0..) |final_id, old_index| if (final_id == route_index) {
-            if (survivor_old_index != null) return error.InvalidAppend;
-            survivor_old_index = old_index;
-        };
-        const existing = if (survivor_old_index) |old_index|
-            if (old_index < routes.items.len) routes.items[old_index].items else &.{}
-        else
-            &.{};
+        if (lookup_work) |counter| counter.* += 1;
+        const existing = if (route_index < original_record_ids.len) blk: {
+            const old_index = original_record_ids[route_index];
+            break :blk if (old_index < routes.items.len) routes.items[old_index].items else &.{};
+        } else &.{};
         const merged_len = std.math.add(usize, existing.len, end - start) catch return error.InvalidAppend;
         const merged = try allocator.alloc(Route, merged_len);
         @memcpy(merged[0..existing.len], existing);
@@ -1193,6 +1194,9 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
         records: []*Record,
         steps: []PreparedReleaseStep,
         final_record_ids: []?u64,
+        /// Direct inverse for every surviving dense id: final id to the
+        /// committed record index that occupied it before this release.
+        original_record_ids: []usize,
         /// Use-count decrements owed to survivors whose count drops but never
         /// reaches zero once the same transaction's retains are netted in.
         survivor_use_decrements: []ExistingUseIncrement,
@@ -1210,6 +1214,7 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
             allocator.free(self.records);
             allocator.free(self.steps);
             allocator.free(self.final_record_ids);
+            allocator.free(self.original_record_ids);
             allocator.free(self.survivor_use_decrements);
             switch (self.phase) {
                 .prepared => for (self.adjacency) |replacement| allocator.free(replacement.dependents),
@@ -1818,6 +1823,9 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
     errdefer allocator.free(final_record_ids);
     @memset(final_record_ids, null);
     for (slots[0..live_len], 0..) |original_id, final_id| final_record_ids[@intCast(original_id)] = @intCast(final_id);
+    const original_record_ids = try allocator.alloc(usize, live_len);
+    errdefer allocator.free(original_record_ids);
+    for (original_record_ids, slots[0..live_len]) |*original, slot| original.* = @intCast(slot);
     var adjacency_count: usize = 0;
     for (nodes, 0..) |node, original_id| {
         var next_len: usize = 0;
@@ -1879,6 +1887,7 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
         .records = try records.toOwnedSlice(allocator),
         .steps = steps,
         .final_record_ids = final_record_ids,
+        .original_record_ids = original_record_ids,
         .survivor_use_decrements = survivor_use_decrements,
         .adjacency = adjacency,
         .retired_adjacency = retired_adjacency,
@@ -2356,6 +2365,73 @@ test "prepared route appends sweep failures and publish without allocation" {
     try std.testing.expectEqual(@as(usize, 3), routes.items.len);
     try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 4 }, .{ .kind = .text_attr, .index = 7 } }, routes.items[0].items);
     try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .custom_text_attr, .index = 9 }}, routes.items[2].items);
+}
+
+test "post-release route appends use direct sparse survivor inversion with linear work" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var routes: RouteTable(TextSink) = .empty;
+    defer {
+        clearRouteTable(TextSink, std.testing.allocator, &routes);
+        routes.deinit(std.testing.allocator);
+    }
+    for (0..4) |index| {
+        try routes.append(std.testing.allocator, .empty);
+        try routes.items[index].append(std.testing.allocator, .{ .kind = .text_node, .index = index });
+    }
+    // Old records 3 and 0 survive as final records 0 and 1. Final records 2
+    // and 3 are fresh, so they intentionally have no inverse entry.
+    const original_record_ids = [_]usize{ 3, 0 };
+    const appends = [_]RouteAppend(TextSink){
+        .{ .route_index = 0, .value = .{ .kind = .text_attr, .index = 10 } },
+        .{ .route_index = 1, .value = .{ .kind = .text_attr, .index = 11 } },
+        .{ .route_index = 3, .value = .{ .kind = .text_attr, .index = 13 } },
+    };
+
+    var work: usize = 0;
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var baseline = try prepareRouteAppendsAfterReleaseWithWork(TextSink, counter.allocator(), &routes, &original_record_ids, 4, &appends, &work);
+    defer baseline.deinit(counter.allocator());
+    try std.testing.expectEqual(@as(usize, appends.len), work);
+    const attempts = counter.attempts;
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareRouteAppendsAfterRelease(TextSink, fault.allocator(), &routes, &original_record_ids, 4, &appends));
+        for (routes.items, 0..) |route, index| try std.testing.expectEqualDeep(TextSink{ .kind = .text_node, .index = index }, route.items[0]);
+    }
+    try std.testing.expectError(error.InvalidAppend, prepareRouteAppendsAfterRelease(TextSink, std.testing.allocator, &routes, &.{ 0, 1, 2 }, 2, &appends));
+
+    try baseline.reserveOuter(counter.allocator(), &routes, 4);
+    counter.configure(1);
+    baseline.apply(&routes, 4);
+    try std.testing.expectEqual(@as(usize, 0), counter.attempts);
+    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 3 }, .{ .kind = .text_attr, .index = 10 } }, routes.items[0].items);
+    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 0 }, .{ .kind = .text_attr, .index = 11 } }, routes.items[1].items);
+    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_attr, .index = 13 }}, routes.items[3].items);
+}
+
+test "post-release route inversion lookup work scales with appended groups" {
+    const measure = struct {
+        fn run(count: usize) !usize {
+            const inverse = try std.testing.allocator.alloc(usize, count);
+            defer std.testing.allocator.free(inverse);
+            const appends = try std.testing.allocator.alloc(RouteAppend(TextSink), count);
+            defer std.testing.allocator.free(appends);
+            for (inverse, appends, 0..) |*original, *append, index| {
+                original.* = count - index - 1;
+                append.* = .{ .route_index = @intCast(index), .value = .{ .kind = .text_node, .index = index } };
+            }
+            var routes: RouteTable(TextSink) = .empty;
+            defer routes.deinit(std.testing.allocator);
+            var work: usize = 0;
+            var prepared = try prepareRouteAppendsAfterReleaseWithWork(TextSink, std.testing.allocator, &routes, inverse, count, appends, &work);
+            defer prepared.deinit(std.testing.allocator);
+            return work;
+        }
+    }.run;
+    try std.testing.expectEqual(@as(usize, 64), try measure(64));
+    try std.testing.expectEqual(@as(usize, 512), try measure(512));
 }
 
 test "prepared graph append enumerates missing topology without mutating survivors" {
