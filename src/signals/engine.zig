@@ -14758,6 +14758,8 @@ pub fn Engine(comptime Ctx: type) type {
             each_rows: ?*PreparedActiveEachRows = null,
             each_replacement: ?*PreparedEachRowReplacementCollection = null,
             each_layout: ?PreparedEachRowRenderLayout = null,
+            sparse_each_parent_elem_id: ?ids.ElemId = null,
+            sparse_each_render_roots_moved: usize = 0,
             pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty,
             fallback_batch: render.TransactionalBatch = .{},
             batch_target: *render.TransactionalBatch,
@@ -14932,6 +14934,135 @@ pub fn Engine(comptime Ctx: type) type {
                 const wave_structural = try self.engine.collectPreparedDirtyStructuralSignals(self.host_ctx, self.roc_host, allocator, &self.caches, wave_changed, &.{}, self.generation);
                 try self.engine.prepareOnChangeCommands(self.host_ctx, self.roc_host, &self.caches, wave_changed, &.{}, self.generation, &self.pending_on_change_commands);
                 return wave_structural;
+            }
+
+            /// Adopts the render-order portion of a matching Rows delta when
+            /// every row scope and descriptor survives. Stable row spans make
+            /// each move local; item-only updates produce an empty journal.
+            /// Deltas that create or retire scopes deliberately return false
+            /// so their descriptor ownership still uses the snapshot-capable
+            /// structural path until its sparse splice is prepared separately.
+            fn tryAdoptSparseSurvivingRows(self: *@This(), site: HostNodeScopeSiteDesc, rows: *PreparedActiveEachRows) CollectionError!bool {
+                if (!rows.direct_delta) return false;
+                const transition = if (rows.inputs.rows_transition) |*value| value else return error.InvalidDescriptor;
+                if (transition.createdRows().len != 0 or transition.removedRows().len != 0) return false;
+                for (transition.orderEdits()) |edit| switch (edit) {
+                    .move => {},
+                    .insert, .remove, .clear => return false,
+                };
+
+                const stats = transition.renderOrderStats();
+                var move_count: usize = 0;
+                for (transition.orderEdits()) |edit| switch (edit) {
+                    .move => move_count += 1,
+                    else => unreachable,
+                };
+                const touched_capacity = std.math.add(usize, stats.roots_moved, std.math.mul(usize, move_count, 4) catch return error.ResourceLimit) catch return error.ResourceLimit;
+                var journal = render_cache_mod.PreparedSparseChildren.init(
+                    Ctx,
+                    Ctx.allocator(self.host_ctx),
+                    &self.engine.render_cache,
+                    site.parent_elem_id,
+                    touched_capacity,
+                    stats.roots_moved,
+                ) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                    error.MissingParent => return error.InvalidRenderTopology,
+                };
+                var journal_owned = true;
+                defer if (journal_owned) journal.deinit();
+
+                const committed_last = transition.committedLastRenderRoot() catch return error.InvalidDescriptor;
+                const terminal_before: ?ids.ElemId = if (committed_last) |last_root|
+                    self.engine.render_cache.nextSibling(ids.ElemId.fromRaw(last_root))
+                else
+                    null;
+                for (transition.orderEdits()) |edit| switch (edit) {
+                    .move => |move| {
+                        const candidate = transition.candidateBySlot(move.first_slot) orelse return error.InvalidDescriptor;
+                        const span = candidate.metadata.render_span;
+                        if (span.root_count == 0) continue;
+                        const before: ?ids.ElemId = if (move.before_slot == 0)
+                            terminal_before
+                        else blk: {
+                            const anchor = transition.firstRenderRootAtOrAfterSlot(move.before_slot) catch return error.InvalidDescriptor;
+                            break :blk if (anchor) |value| ids.ElemId.fromRaw(value.root_id) else terminal_before;
+                        };
+                        journal.moveRangeBefore(
+                            Ctx,
+                            &self.engine.render_cache,
+                            ids.ElemId.fromRaw(span.first_root.?),
+                            ids.ElemId.fromRaw(span.last_root.?),
+                            @intCast(span.root_count),
+                            before,
+                        ) catch |err| switch (err) {
+                            error.ResourceLimit => return error.ResourceLimit,
+                            error.InvalidAnchor, error.InvalidRange, error.MissingNode => return error.InvalidRenderTopology,
+                        };
+                    },
+                    else => unreachable,
+                };
+                const splice = &(self.render_splice orelse return error.ResourceLimit);
+                splice.adoptSparseChildren(&journal) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ConflictingParent, error.MissingNode => return error.InvalidRenderTopology,
+                };
+                journal_owned = false;
+                self.sparse_each_parent_elem_id = site.parent_elem_id;
+                self.sparse_each_render_roots_moved = stats.roots_moved;
+                return true;
+            }
+
+            /// Preflights the ordinary scalar/sparse render plan after all
+            /// graph waves have joined it. Nothing is published on failure.
+            fn prepareDirectRenderPublication(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
+                self.batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(self.host_ctx) else &self.fallback_batch;
+                errdefer self.fallback_batch.deinit(allocator);
+                self.render_splice.?.preflight(self.batch_target, allocator) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                };
+                self.publication_phase.markPreflighted();
+                errdefer self.batch_target.abort();
+                if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
+                    self.host_publication = Ctx.prepareRenderPublication(self.host_ctx, &self.render_splice.?) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.ResourceLimit => return error.ResourceLimit,
+                        error.InvalidRenderTopology => return error.InvalidRenderTopology,
+                    };
+                }
+            }
+
+            /// Mirrors a prepared sparse child move into the descriptor
+            /// stream's durable sibling links. The Rows transition has already
+            /// validated range identity and the operation allocates nothing.
+            fn applySparseEachDescriptorOrder(self: *@This(), rows: *const PreparedActiveEachRows) void {
+                const transition = if (rows.inputs.rows_transition) |*value| value else @panic("sparse Rows publication lost its transition");
+                const terminal_before: ?ids.ElemId = if (transition.committedLastRenderRoot() catch @panic("sparse Rows publication lost its committed site")) |last_root|
+                    self.engine.active_stream.nextRenderSibling(ids.ElemId.fromRaw(last_root))
+                else
+                    null;
+                for (transition.orderEdits()) |edit| switch (edit) {
+                    .move => |move| {
+                        const candidate = transition.candidateBySlot(move.first_slot) orelse @panic("sparse Rows publication lost a moved row");
+                        const span = candidate.metadata.render_span;
+                        if (span.root_count == 0) continue;
+                        const before: ?ids.ElemId = if (move.before_slot == 0)
+                            terminal_before
+                        else if (transition.firstRenderRootAtOrAfterSlot(move.before_slot) catch @panic("sparse Rows publication lost its anchor")) |anchor|
+                            ids.ElemId.fromRaw(anchor.root_id)
+                        else
+                            terminal_before;
+                        _ = self.engine.active_stream.moveRenderSiblingRangeBefore(
+                            self.sparse_each_parent_elem_id orelse @panic("sparse Rows publication lost its render parent"),
+                            ids.ElemId.fromRaw(span.first_root.?),
+                            ids.ElemId.fromRaw(span.last_root.?),
+                            before,
+                        );
+                    },
+                    else => unreachable,
+                };
             }
 
             fn prepareState(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, node_id: u64, incoming: HostValue, cap: HostValueCapability) CollectionError!?*@This() {
@@ -15145,6 +15276,14 @@ pub fn Engine(comptime Ctx: type) type {
                             break :blk rows;
                         } else try PreparedActiveEachRows.prepareWithOverlay(engine, ctx, roc_host, site, each_desc, allocator, &plan.caches);
                         errdefer plan.each_rows.?.deinit();
+                        if (try plan.tryAdoptSparseSurvivingRows(site, plan.each_rows.?)) {
+                            try plan.prepareDirectRenderPublication(allocator);
+                            if (state_update) |update| {
+                                plan.caches.clearProvisionalValues();
+                                plan.state_update = update.*;
+                            }
+                            return plan;
+                        }
                         plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, plan.each_rows.?, .{}, &.{}, &plan.caches, external_state);
                         errdefer plan.each_replacement.?.deinit();
                         plan.each_layout = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &plan.each_rows.?.rows, plan.each_replacement.?.replacement_rows, &plan.each_replacement.?.replacement.collection);
@@ -15169,21 +15308,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                     return plan;
                 }
-                plan.batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(ctx) else &plan.fallback_batch;
-                errdefer plan.fallback_batch.deinit(allocator);
-                plan.render_splice.?.preflight(plan.batch_target, allocator) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.ResourceLimit => return error.ResourceLimit,
-                };
-                plan.publication_phase.markPreflighted();
-                errdefer plan.batch_target.abort();
-                if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
-                    plan.host_publication = Ctx.prepareRenderPublication(ctx, &plan.render_splice.?) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        error.ResourceLimit => return error.ResourceLimit,
-                        error.InvalidRenderTopology => return error.InvalidRenderTopology,
-                    };
-                }
+                try plan.prepareDirectRenderPublication(allocator);
                 if (state_update) |update| {
                     plan.caches.clearProvisionalValues();
                     plan.state_update = update.*;
@@ -15246,6 +15371,25 @@ pub fn Engine(comptime Ctx: type) type {
                     total.addAll(self.runPostCommitCommands());
                     if (comptime enable_runtime_metrics) self.engine.render_metrics.addCommandCounts(total);
                     return total;
+                }
+                if (self.each_rows) |rows| {
+                    self.render_splice.?.stageAssumeCapacity(self.batch_target, allocator) catch @panic("prepared sparse Rows batch violated preflight");
+                    commitSourceCaches(self);
+                    self.render_splice.?.apply(&self.engine.render_cache);
+                    self.applySparseEachDescriptorOrder(rows);
+                    var diff = rows.commit();
+                    diff.deinit(allocator);
+                    self.engine.pending_roc_metrics.bump(.rows_render_roots_moved, @intCast(self.sparse_each_render_roots_moved));
+                    self.batch_target.commit();
+                    self.publication_phase.markBatchPublished();
+                    if (comptime @hasDecl(Ctx, "publishRenderPublication")) {
+                        Ctx.publishRenderPublication(self.host_ctx, &self.host_publication.?);
+                        self.publication_phase.markHostPublished();
+                    }
+                    var counts = self.render_splice.?.counts();
+                    counts.addAll(self.runPostCommitCommands());
+                    if (comptime enable_runtime_metrics) self.engine.render_metrics.addCommandCounts(counts);
+                    return counts;
                 }
                 self.render_splice.?.stageAssumeCapacity(self.batch_target, allocator) catch @panic("prepared source batch violated preflight");
                 commitSourceCaches(self);

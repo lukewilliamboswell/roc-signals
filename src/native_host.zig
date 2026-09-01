@@ -99,12 +99,39 @@ const NativeRenderPublication = struct {
         }
     }
 
+    fn prepareSparseChildEdit(parent: *sim_dom.Element, edit: render_cache.PreparedChildrenReplacement.WireEdit) error{InvalidRenderTopology}!void {
+        switch (edit) {
+            .append => |child| {
+                for (parent.children.items) |existing| if (existing == child.raw()) return error.InvalidRenderTopology;
+                parent.children.appendAssumeCapacity(child.raw());
+            },
+            .move_before => |move| {
+                var child_index: ?usize = null;
+                for (parent.children.items, 0..) |existing, index| if (existing == move.child.raw()) {
+                    child_index = index;
+                    break;
+                };
+                const child = parent.children.orderedRemove(child_index orelse return error.InvalidRenderTopology);
+                if (move.before) |before| {
+                    var before_index: ?usize = null;
+                    for (parent.children.items, 0..) |existing, index| if (existing == before.raw()) {
+                        before_index = index;
+                        break;
+                    };
+                    parent.children.insertAssumeCapacity(before_index orelse return error.InvalidRenderTopology, child);
+                } else {
+                    parent.children.appendAssumeCapacity(child);
+                }
+            },
+        }
+    }
+
     fn prepare(host: *HostEnv, splice: anytype) PrepareError!NativeRenderPublication {
         const allocator = host.hostAllocator();
         var touched: std.AutoHashMapUnmanaged(u64, void) = .empty;
         defer touched.deinit(allocator);
         var count: usize = 0;
-        inline for (.{ splice.removals.items.len, splice.creations.items.len, splice.children.items.len, splice.parent_intents.items.len, splice.text_fields.items.len, splice.bool_fields.items.len, splice.fixed_events.items.len, splice.custom_attrs.items.len, splice.named_events.items.len }) |additional| {
+        inline for (.{ splice.removals.items.len, splice.creations.items.len, splice.children.items.len, splice.sparse_children.items.len, splice.parent_intents.items.len, splice.text_fields.items.len, splice.bool_fields.items.len, splice.fixed_events.items.len, splice.custom_attrs.items.len, splice.named_events.items.len }) |additional| {
             count = std.math.add(usize, count, additional) catch return error.ResourceLimit;
         }
         try touched.ensureUnusedCapacity(allocator, std.math.cast(u32, count) orelse return error.ResourceLimit);
@@ -118,6 +145,10 @@ const NativeRenderPublication = struct {
             max_elem_id = @max(max_elem_id, entry.elem_id.raw());
         }
         for (splice.children.items) |entry| {
+            touched.putAssumeCapacity(entry.parent_elem_id.raw(), {});
+            max_elem_id = @max(max_elem_id, entry.parent_elem_id.raw());
+        }
+        for (splice.sparse_children.items) |entry| {
             touched.putAssumeCapacity(entry.parent_elem_id.raw(), {});
             max_elem_id = @max(max_elem_id, entry.parent_elem_id.raw());
         }
@@ -153,6 +184,16 @@ const NativeRenderPublication = struct {
             parent.children = .empty;
             try parent.children.ensureTotalCapacity(allocator, entry.next.len);
             for (entry.next) |child_id| parent.children.appendAssumeCapacity(child_id.raw());
+        }
+        for (splice.sparse_children.items) |entry| {
+            const parent = dom.node(entry.parent_elem_id.raw()) orelse return error.InvalidRenderTopology;
+            var appended: usize = 0;
+            for (entry.wireEdits()) |edit| switch (edit) {
+                .append => appended = std.math.add(usize, appended, 1) catch return error.ResourceLimit,
+                .move_before => {},
+            };
+            try parent.children.ensureUnusedCapacity(allocator, appended);
+            for (entry.wireEdits()) |edit| try prepareSparseChildEdit(parent, edit);
         }
         for (splice.parent_intents.items) |intent| (dom.node(intent.child_id.raw()) orelse return error.InvalidRenderTopology).parent_id = if (intent.next) |parent_id| parent_id.raw() else null;
         for (splice.text_fields.items) |entry| {
@@ -4125,6 +4166,36 @@ test "native prepared render publication keeps DOM unchanged until armed apply" 
     try std.testing.expectEqualStrings("same", dom_value_node.value.?);
     try std.testing.expectEqual(@as(?[]const u8, null), dom_value_node.pending_value);
     host.configureAllocationFailure(null);
+}
+
+test "native prepared render publication applies sparse child moves atomically" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+    const allocator = host.hostAllocator();
+    host.engine.resetRenderTree(&host);
+    for (1..4) |raw| host.engine.appendRenderNode(&host, ids.ElemId.fromRaw(@intCast(raw)), ids.root_elem, "div");
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, host.dom_elements.items[0].children.items);
+
+    var sparse = try render_cache.PreparedSparseChildren.init(NativeCtx, allocator, &host.engine.render_cache, ids.root_elem, 5, 1);
+    var sparse_owned = true;
+    defer if (sparse_owned) sparse.deinit();
+    try sparse.moveRangeBefore(NativeCtx, &host.engine.render_cache, ids.ElemId.fromRaw(3), ids.ElemId.fromRaw(3), 1, ids.ElemId.fromRaw(1));
+    var splice = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{});
+    defer splice.deinit();
+    try splice.adoptSparseChildren(&sparse);
+    sparse_owned = false;
+
+    var publication = try NativeRenderPublication.prepare(&host, &splice);
+    defer publication.deinit();
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, host.dom_elements.items[0].children.items);
+    splice.apply(&host.engine.render_cache);
+    publication.apply(&host);
+    try std.testing.expectEqualSlices(u64, &.{ 3, 1, 2 }, host.dom_elements.items[0].children.items);
 }
 
 test "native engine identity preparation sweeps all recoverable allocation failures" {

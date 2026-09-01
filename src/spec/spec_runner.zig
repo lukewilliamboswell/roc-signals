@@ -1092,7 +1092,9 @@ pub fn Runner(comptime Ctx: type) type {
             if (std.mem.eql(u8, name, "rows_reused")) return u64MetricAsI64(metrics.rows_reused);
             if (std.mem.eql(u8, name, "selector_members_dirtied")) return u64MetricAsI64(metrics.selector_members_dirtied);
             if (std.mem.eql(u8, name, "rows_created")) return u64MetricAsI64(metrics.rows_created);
+            if (std.mem.eql(u8, name, "rows_order_links_touched")) return u64MetricAsI64(metrics.rows_order_links_touched);
             if (std.mem.eql(u8, name, "rows_removed")) return u64MetricAsI64(metrics.rows_removed);
+            if (std.mem.eql(u8, name, "rows_render_roots_moved")) return u64MetricAsI64(metrics.rows_render_roots_moved);
             if (std.mem.eql(u8, name, "closure_retains")) return u64MetricAsI64(metrics.closure_retains);
             if (std.mem.eql(u8, name, "closure_releases")) return u64MetricAsI64(metrics.closure_releases);
             if (std.mem.eql(u8, name, "render_indexes_refreshed")) return u64MetricAsI64(metrics.render_indexes_refreshed);
