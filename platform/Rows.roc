@@ -39,6 +39,70 @@ rows_order_empty = || {
 	{ root: 1, nodes, parents, slot_leaf, next_node: 2, free_nodes: [] }
 }
 
+rows_reverse_u64 : List(U64) -> List(U64)
+rows_reverse_u64 = |values| values.fold([], |reversed, value| reversed.prepend(value))
+
+## Build a fresh 32-way order tree bottom-up. Snapshot construction already
+## knows the complete stable-slot sequence, so inserting each slot through the
+## persistent edit path would repeatedly rewrite the same root-to-leaf paths.
+rows_order_from_slots : List(U64) -> RowsOrder
+rows_order_from_slots = |slots| {
+	if slots.is_empty() {
+		rows_order_empty()
+	} else {
+		nodes : Dict(U64, RowsOrderNode)
+		nodes = Dict.empty()
+		parents : Dict(U64, RowsOrderParent)
+		parents = Dict.empty()
+		slot_leaf : Dict(U64, U64)
+		slot_leaf = Dict.empty()
+		var $nodes = nodes
+		var $parents = parents
+		var $slot_leaf = slot_leaf
+		var $next_node = 1
+		var $offset = 0
+		var $level = []
+		while $offset < slots.len() {
+			leaf_slots = slots.drop_first($offset).take_first(32)
+			leaf_id = $next_node
+			$next_node = $next_node + 1
+			$nodes = $nodes.insert(leaf_id, OrderLeaf({ slots: leaf_slots, len: leaf_slots.len() }))
+			for slot in leaf_slots {
+				$slot_leaf = $slot_leaf.insert(slot, leaf_id)
+			}
+			$level = $level.prepend(leaf_id)
+			$offset = $offset + leaf_slots.len()
+		}
+		$level = rows_reverse_u64($level)
+
+		while $level.len() > 1 {
+			var $next_level = []
+			var $child_offset = 0
+			while $child_offset < $level.len() {
+				children = $level.drop_first($child_offset).take_first(32)
+				branch_id = $next_node
+				$next_node = $next_node + 1
+				var $len = 0
+				var $child_index = 0
+				for child_id in children {
+					child = $nodes.get(child_id) ?? crash "Rows bulk order child was missing"
+					$len = $len + rows_order_node_len(child)
+					$parents = $parents.insert(child_id, OrderParent({ node: branch_id, child: $child_index }))
+					$child_index = $child_index + 1
+				}
+				$nodes = $nodes.insert(branch_id, OrderBranch({ children, len: $len }))
+				$next_level = $next_level.prepend(branch_id)
+				$child_offset = $child_offset + children.len()
+			}
+			$level = rows_reverse_u64($next_level)
+		}
+
+		root = $level.get(0) ?? crash "Rows bulk order lost its root"
+		$parents = $parents.insert(root, OrderRoot)
+		{ root, nodes: $nodes, parents: $parents, slot_leaf: $slot_leaf, next_node: $next_node, free_nodes: [] }
+	}
+}
+
 rows_order_allocate_node : RowsOrder -> { node : U64, order : RowsOrder }
 rows_order_allocate_node = |order|
 	match order.free_nodes.first() {
@@ -593,7 +657,7 @@ RowsStorage(item) : {
 }
 
 RowsBuild(item) : {
-	order : RowsOrder,
+	order_slots : List(U64),
 	slots : RowsSlotStore(item),
 	key_index : Dict(Str, U64),
 	key_bytes : U64,
@@ -653,7 +717,7 @@ rows_build_fresh = |items, key_of, index, len, build|
 					index + 1,
 					len,
 					{
-						order: rows_order_insert(build.order, index, allocated.slot),
+						order_slots: build.order_slots.prepend(allocated.slot),
 						slots: allocated.slots,
 						key_index: build.key_index.insert(key, allocated.slot),
 						key_bytes: build.key_bytes + key.to_utf8().len(),
@@ -691,7 +755,7 @@ rows_build_replacement = |items, key_of, old, index, len, build|
 					index + 1,
 					len,
 					{
-						order: rows_order_insert(build.order, index, entry_and_slots.slot),
+						order_slots: build.order_slots.prepend(entry_and_slots.slot),
 						slots: entry_and_slots.slots,
 						key_index: build.key_index.insert(key, entry_and_slots.slot),
 						key_bytes: build.key_bytes + key.to_utf8().len(),
@@ -1271,7 +1335,7 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 			key_of_box,
 			0,
 			items.len(),
-			{ order: rows_order_empty(), slots: rows_slots_empty(), key_index: indexes.key_index, key_bytes: 0 },
+			{ order_slots: [], slots: rows_slots_empty(), key_index: indexes.key_index, key_bytes: 0 },
 		)?
 		Ok(
 			Rows({
@@ -1279,7 +1343,7 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 				parent: NoParent,
 				transition: Snapshot,
 				key_of: key_of_box,
-				order: built.order,
+				order: rows_order_from_slots(rows_reverse_u64(built.order_slots)),
 				slots: built.slots,
 				key_index: built.key_index,
 				snapshot_key_bytes: built.key_bytes,
@@ -1301,7 +1365,7 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 			old,
 			0,
 			items.len(),
-			{ order: rows_order_empty(), slots: old.slots, key_index: indexes.key_index, key_bytes: 0 },
+			{ order_slots: [], slots: old.slots, key_index: indexes.key_index, key_bytes: 0 },
 		)?
 		final_slots = rows_release_replaced_slots(old, built)
 		Ok(
@@ -1310,7 +1374,7 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 				parent: Parent(old.token),
 				transition: Snapshot,
 				key_of: old.key_of,
-				order: built.order,
+				order: rows_order_from_slots(rows_reverse_u64(built.order_slots)),
 				slots: final_slots,
 				key_index: built.key_index,
 				snapshot_key_bytes: built.key_bytes,
@@ -1588,6 +1652,20 @@ expect {
 	}
 
 	all_indexed and rows_order_len($order) == 1024 and rows_order_get($order, 0)? == 1025 and rows_order_rank($order, 2048)? == 1023
+}
+
+## Fresh bulk construction creates exactly the packed 32-way shape: 32 leaves
+## and one root for 1k rows, with no edit-path nodes or free-list churn.
+expect {
+	var $slots_rev = []
+	var $slot = 1
+	while $slot <= 1000 {
+		$slots_rev = $slots_rev.prepend($slot)
+		$slot = $slot + 1
+	}
+	order = rows_order_from_slots(rows_reverse_u64($slots_rev))
+
+	rows_order_len(order) == 1000 and order.nodes.len() == 33 and order.parents.len() == 33 and order.slot_leaf.len() == 1000 and order.next_node == 34 and order.free_nodes.is_empty() and rows_order_get(order, 999)? == 1000 and rows_order_rank(order, 513)? == 512
 }
 
 ## Chunked slots advance their generation before reuse, so an old packed id
