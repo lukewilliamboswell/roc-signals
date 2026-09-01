@@ -2904,6 +2904,25 @@ pub const Stream = struct {
         ownership.node_ids.clearRetainingCapacity();
     }
 
+    /// Releases empty per-scope descriptor indexes after the owning scope is
+    /// retired. Scope identities may later be reused for a differently shaped
+    /// subtree, so keeping every inactive slot's historic peak capacity would
+    /// make retained memory grow across otherwise identical mount/dispose
+    /// cycles. Descriptor and lifecycle removal must precede this call.
+    pub fn releaseRetiredScopeIndexes(self: *Stream, allocator: std.mem.Allocator, scope_id: ScopeId) void {
+        if (scope_id.index() < self.scope_descriptor_ownership.items.len) {
+            const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+            if (ownership.elem_ids.items.len != 0 or ownership.node_ids.items.len != 0) @panic("retired scope still owned active descriptors");
+            ownership.deinit(allocator);
+        }
+        if (scope_id.index() < self.lifecycle_indices_by_scope_id.items.len) {
+            const lifecycle = &self.lifecycle_indices_by_scope_id.items[scope_id.index()];
+            if (lifecycle.items.len != 0) @panic("retired scope still owned active lifecycle descriptors");
+            lifecycle.deinit(allocator);
+            lifecycle.* = .empty;
+        }
+    }
+
     fn forgetScopeElem(self: *Stream, scope_id: ScopeId, elem_id: ElemId) void {
         if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return;
         const owned_ids = &self.scope_descriptor_ownership.items[scope_id.index()].elem_ids;
@@ -4525,6 +4544,33 @@ fn deinitStaticPreparedTestStream(stream: *Stream, allocator: std.mem.Allocator)
     stream.render_metadata_by_elem_id.deinit(allocator);
     for (stream.scope_descriptor_ownership.items) |*ownership| ownership.deinit(allocator);
     stream.scope_descriptor_ownership.deinit(allocator);
+}
+
+test "retired scope indexes release historic capacity before identity reuse" {
+    var stream: Stream = .{};
+    defer {
+        for (stream.scope_descriptor_ownership.items) |*ownership| ownership.deinit(std.testing.allocator);
+        stream.scope_descriptor_ownership.deinit(std.testing.allocator);
+        for (stream.lifecycle_indices_by_scope_id.items) |*indexes| indexes.deinit(std.testing.allocator);
+        stream.lifecycle_indices_by_scope_id.deinit(std.testing.allocator);
+    }
+
+    const scope_id = ScopeId.fromRaw(4);
+    try stream.reserveScopeDescriptorOwnership(std.testing.allocator, scope_id, 3, 2);
+    try stream.reserveLifecycleScope(std.testing.allocator, scope_id, 2);
+    try std.testing.expect(stream.scope_descriptor_ownership.items[scope_id.index()].elem_ids.capacity >= 3);
+    try std.testing.expect(stream.scope_descriptor_ownership.items[scope_id.index()].node_ids.capacity >= 2);
+    try std.testing.expect(stream.lifecycle_indices_by_scope_id.items[scope_id.index()].capacity >= 2);
+
+    stream.releaseRetiredScopeIndexes(std.testing.allocator, scope_id);
+    try std.testing.expectEqual(@as(usize, 0), stream.scope_descriptor_ownership.items[scope_id.index()].elem_ids.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.scope_descriptor_ownership.items[scope_id.index()].node_ids.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.lifecycle_indices_by_scope_id.items[scope_id.index()].capacity);
+
+    // A later occupant of the same dense scope identity can reserve a new
+    // shape without inheriting the retired subtree's storage.
+    try stream.reserveScopeDescriptorOwnership(std.testing.allocator, scope_id, 1, 0);
+    try std.testing.expect(stream.scope_descriptor_ownership.items[scope_id.index()].elem_ids.capacity >= 1);
 }
 
 test "prepared static append sweeps allocation failures without logical mutation and retries" {

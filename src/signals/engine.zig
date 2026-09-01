@@ -2894,17 +2894,36 @@ pub fn Engine(comptime Ctx: type) type {
         /// through `recordScopeDisposed`: the metric describes what the
         /// reconciler did, not which publication path did it. Allocation free;
         /// `retired_steps` must already hold capacity for every scope.
-        fn commitPreparedScopeRetirement(self: *Self, retirement: *const scope_runtime.PreparedSubtreeRetirement, retired_steps: *std.ArrayListUnmanaged(HostScopeStep)) void {
+        fn commitPreparedScopeRetirement(self: *Self, allocator: std.mem.Allocator, retirement: *const scope_runtime.PreparedSubtreeRetirement, retired_steps: *std.ArrayListUnmanaged(HostScopeStep)) void {
             for (retirement.scope_ids) |scope_id| {
                 const scope = &self.scopes.items[scope_id.index()];
                 retired_steps.appendAssumeCapacity(scope.step);
                 scope.step = .root;
             }
             retirement.applyMetadata(HostEachRowScopeStep, self.scopes.items, ids.Generation.fromRaw(self.identity_reuse_barrier));
+            for (retirement.scope_ids) |scope_id| self.active_stream.releaseRetiredScopeIndexes(allocator, scope_id);
             self.has_inactive_scopes = retirement.scope_ids.len != 0 or self.has_inactive_scopes;
             var metrics = self.pending_roc_metrics;
             metrics.bump(.scopes_disposed, @intCast(retirement.scope_ids.len));
             self.pending_roc_metrics = metrics;
+        }
+
+        /// Releases ownership carried by a scope step after prepared metadata
+        /// retirement has made that step unreachable from the committed scope
+        /// table. Sparse row retirement has already removed the row from its
+        /// site. A Rows candidate overlay may already have removed the binding
+        /// at publication, while generic subtree retirement leaves it here for
+        /// final cleanup. The generation-checked public handle remains owned
+        /// by the retired scope in both cases and must be released exactly once.
+        fn releasePreparedRetiredScopeStep(self: *Self, step: *HostScopeStep) void {
+            switch (step.*) {
+                .each_row => |row| {
+                    _ = self.committed_row_bindings.entries.remove(row.row_handle);
+                    _ = self.row_handle_registry.remove(row.row_handle) catch @panic("prepared retired row scope had a stale row handle");
+                },
+                .root, .component, .when_branch => {},
+            }
+            deinitHostScopeStep(step);
         }
 
         /// Records each key compare in the metrics or lifecycle state owned by this operation.
@@ -7269,8 +7288,8 @@ pub fn Engine(comptime Ctx: type) type {
                 self.effects = exact_effects;
             }
 
-            fn applyAfterRowCommit(self: *@This(), engine: *Self) void {
-                engine.commitPreparedScopeRetirement(&self.targets.?.scope_retirement.?, &self.retired_steps);
+            fn applyAfterRowCommit(self: *@This(), engine: *Self, allocator: std.mem.Allocator) void {
+                engine.commitPreparedScopeRetirement(allocator, &self.targets.?.scope_retirement.?, &self.retired_steps);
             }
 
             fn applyEffectsAfterPublication(self: *@This(), engine: *Self, ctx: Ctx.Handle) void {
@@ -7280,7 +7299,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn deinit(self: *@This(), engine: *Self, allocator: std.mem.Allocator, ctx: ?Ctx.Handle, roc_host: ?*abi.RocHost) void {
                 if (ctx) |host_ctx| if (roc_host) |host| {
                     for (self.retired_states.items) |*state| state.retire(host_ctx, host, &engine.pending_roc_metrics);
-                    for (self.retired_steps.items) |*step| deinitHostScopeStep(step);
+                    for (self.retired_steps.items) |*step| engine.releasePreparedRetiredScopeStep(step);
                 };
                 self.retired_states.deinit(allocator);
                 self.retired_steps.deinit(allocator);
@@ -9441,7 +9460,7 @@ pub fn Engine(comptime Ctx: type) type {
                     row_retirement.pruneSites(Ctx.allocator(self.host_ctx), &self.engine.each_row_sites, &self.engine.each_row_site_indexes, &self.engine.each_row_memberships_by_scope_id, &row_keys);
                 }
                 self.replacement.collection.commit();
-                self.engine.commitPreparedScopeRetirement(&self.targets.?.scope_retirement.?, &self.retired_scope_steps);
+                self.engine.commitPreparedScopeRetirement(Ctx.allocator(self.host_ctx), &self.targets.?.scope_retirement.?, &self.retired_scope_steps);
                 self.engine.validateActiveScopeSiteInsertIndexes();
 
                 self.publishRenderLast();
@@ -9481,7 +9500,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.retired_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
                 if (self.targets) |*targets| targets.deinit(allocator);
-                for (self.retired_scope_steps.items) |*step| deinitHostScopeStep(step);
+                for (self.retired_scope_steps.items) |*step| self.engine.releasePreparedRetiredScopeStep(step);
                 self.retired_scope_steps.deinit(allocator);
                 allocator.free(self.replacement_scope_ids);
                 allocator.destroy(self);
@@ -10567,7 +10586,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn commitScopeRetirementLast(self: *@This()) void {
-                self.engine.commitPreparedScopeRetirement(&self.scope_retirement.?, &self.retired_scope_steps);
+                self.engine.commitPreparedScopeRetirement(Ctx.allocator(self.host_ctx), &self.scope_retirement.?, &self.retired_scope_steps);
             }
 
             fn commitAssumeCapacity(self: *@This()) void {
@@ -10636,7 +10655,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.row_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.effects_retirement) |*effects| effects.deinit(allocator, self.roc_host);
-                for (self.retired_scope_steps.items) |*step| deinitHostScopeStep(step);
+                for (self.retired_scope_steps.items) |*step| self.engine.releasePreparedRetiredScopeStep(step);
                 self.retired_scope_steps.deinit(allocator);
                 allocator.free(self.state_cell_indexes);
                 allocator.free(self.retired_node_identity_ids);
@@ -16823,6 +16842,8 @@ fn verifyTextCallable(roc_host: *abi.RocHost, result: ?[*]u8, _: ?[*]const u8, _
 
 fn deinitVerifyStaticEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost) void {
     engine.clearEachRowSites(ctx.allocator);
+    engine.committed_row_bindings.deinit(ctx.allocator);
+    engine.row_handle_registry.deinit(ctx.allocator);
     engine.scopes.deinit(std.testing.allocator);
     engine.dom_identities.deinit(std.testing.allocator);
     engine.active_dom_identity_ids.deinit(std.testing.allocator);
@@ -17022,7 +17043,9 @@ test "prepared each-row subtree retirement is atomic and allocation free" {
             defer deinitVerifyStateEngine(&engine, &ctx, host);
             _ = try engine.internRootScope(ctx.allocator);
             _ = cap;
-            const row_scope_id = engine.createEachRowScope(&ctx, ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7), 99, row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001));
+            const row_handle = try engine.row_handle_registry.insert(ctx.allocator, {});
+            try engine.committed_row_bindings.entries.put(ctx.allocator, row_handle, .{ .generation_id = each_generation.GenerationId.fromRaw(1), .item_slot = 1 });
+            const row_scope_id = engine.createEachRowScope(&ctx, ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7), 99, row_handle);
             const site_index = engine.activeEachRowSiteIndex(ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7)).?;
             const old_scope_len = engine.scopes.items.len;
             const old_rows = engine.each_row_sites.items[site_index].scope_ids.items.len;
@@ -17038,18 +17061,20 @@ test "prepared each-row subtree retirement is atomic and allocation free" {
                 var retry = try Engine(VerifyCtx).PreparedEachRowSubtreeRetirement.prepare(&engine, ctx.allocator, &.{row_scope_id.raw()});
                 fault.configure(1);
                 retry.applyBeforeRowCommit(&engine, ctx.allocator);
-                retry.applyAfterRowCommit(&engine);
+                retry.applyAfterRowCommit(&engine, ctx.allocator);
                 retry.applyEffectsAfterPublication(&engine, &ctx);
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
                 try std.testing.expectEqual(@as(u64, 1), engine.pending_roc_metrics.scopes_disposed);
                 fault.configure(null);
                 retry.deinit(&engine, ctx.allocator, &ctx, host);
+                try std.testing.expect(!engine.row_handle_registry.contains(row_handle));
+                try std.testing.expectEqual(@as(?each_generation.RowBinding, null), engine.committed_row_bindings.get(row_handle));
                 return attempts;
             };
             const attempts = fault.attempts;
             fault.configure(1);
             prepared.applyBeforeRowCommit(&engine, ctx.allocator);
-            prepared.applyAfterRowCommit(&engine);
+            prepared.applyAfterRowCommit(&engine, ctx.allocator);
             prepared.applyEffectsAfterPublication(&engine, &ctx);
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
             try std.testing.expect(!engine.scopes.items[@intCast(row_scope_id.raw())].lifecycle.isActive());
@@ -17059,6 +17084,8 @@ test "prepared each-row subtree retirement is atomic and allocation free" {
             try std.testing.expectEqual(@as(?usize, null), engine.activeEachRowSiteIndex(ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7)));
             fault.configure(null);
             prepared.deinit(&engine, ctx.allocator, &ctx, host);
+            try std.testing.expect(!engine.row_handle_registry.contains(row_handle));
+            try std.testing.expectEqual(@as(?each_generation.RowBinding, null), engine.committed_row_bindings.get(row_handle));
             return attempts;
         }
     };
@@ -17083,8 +17110,12 @@ test "each descriptor targets preserve changed row scope ownership" {
     var engine = Engine(VerifyCtx).init();
     defer deinitVerifyStateEngine(&engine, &ctx, &roc_host);
     _ = try engine.internRootScope(ctx.allocator);
-    const changed_scope_id = engine.createEachRowScope(&ctx, ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7), 10, row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001));
-    const removed_scope_id = engine.createEachRowScope(&ctx, ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7), 20, row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0002));
+    const changed_handle = try engine.row_handle_registry.insert(ctx.allocator, {});
+    const removed_handle = try engine.row_handle_registry.insert(ctx.allocator, {});
+    try engine.committed_row_bindings.entries.put(ctx.allocator, changed_handle, .{ .generation_id = each_generation.GenerationId.fromRaw(1), .item_slot = 1 });
+    try engine.committed_row_bindings.entries.put(ctx.allocator, removed_handle, .{ .generation_id = each_generation.GenerationId.fromRaw(1), .item_slot = 2 });
+    const changed_scope_id = engine.createEachRowScope(&ctx, ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7), 10, changed_handle);
+    const removed_scope_id = engine.createEachRowScope(&ctx, ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7), 20, removed_handle);
     const site_index = engine.activeEachRowSiteIndex(ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7)).?;
 
     var prepared = try Engine(VerifyCtx).PreparedEachRowSubtreeRetirement.prepareWithTargets(
@@ -17097,12 +17128,19 @@ test "each descriptor targets preserve changed row scope ownership" {
     try std.testing.expect(prepared.targets.?.descriptor_target_scopes[@intCast(removed_scope_id.raw())]);
     try std.testing.expectEqualSlices(ids.ScopeId, &.{removed_scope_id}, prepared.targets.?.scope_retirement.?.scope_ids);
     prepared.applyBeforeRowCommit(&engine, ctx.allocator);
-    prepared.applyAfterRowCommit(&engine);
+    prepared.applyAfterRowCommit(&engine, ctx.allocator);
     try std.testing.expect(engine.scopes.items[@intCast(changed_scope_id.raw())].lifecycle.isActive());
     try std.testing.expect(!engine.scopes.items[@intCast(removed_scope_id.raw())].lifecycle.isActive());
     try std.testing.expectEqualSlices(ids.ScopeId, &.{changed_scope_id}, engine.each_row_sites.items[site_index].scope_ids.items);
-    try std.testing.expectEqual(row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001), scope_runtime.eachRowConst(engine.scopes.items, changed_scope_id).row_handle);
+    try std.testing.expectEqual(changed_handle, scope_runtime.eachRowConst(engine.scopes.items, changed_scope_id).row_handle);
+    // Rows transition publication removes this non-owning binding before the
+    // enclosing scope plan releases the handle owned by the retired scope.
+    try std.testing.expect(engine.committed_row_bindings.entries.remove(removed_handle));
     prepared.deinit(&engine, ctx.allocator, &ctx, &roc_host);
+    try std.testing.expect(engine.row_handle_registry.contains(changed_handle));
+    try std.testing.expect(!engine.row_handle_registry.contains(removed_handle));
+    try std.testing.expect(engine.committed_row_bindings.get(changed_handle) != null);
+    try std.testing.expectEqual(@as(?each_generation.RowBinding, null), engine.committed_row_bindings.get(removed_handle));
 }
 
 test "prepared each inputs use generation-scoped dense indexes" {
@@ -18447,7 +18485,9 @@ test "branch replacement preparation leaves the active branch unpublished" {
             engine.appendRenderNode(&ctx, ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(0), "div");
             engine.appendRenderNode(&ctx, ids.ElemId.fromRaw(2), ids.ElemId.fromRaw(1), "text");
             engine.appendRenderNode(&ctx, ids.ElemId.fromRaw(3), ids.ElemId.fromRaw(1), "text");
-            const retired_row_scope_id = engine.createEachRowScope(&ctx, ids.ScopeId.fromRaw(1), ids.SiteOrdinal.fromRaw(77), 55, row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001));
+            const retired_row_handle = try engine.row_handle_registry.insert(ctx.allocator, {});
+            try engine.committed_row_bindings.entries.put(ctx.allocator, retired_row_handle, .{ .generation_id = each_generation.GenerationId.fromRaw(1), .item_slot = 1 });
+            const retired_row_scope_id = engine.createEachRowScope(&ctx, ids.ScopeId.fromRaw(1), ids.SiteOrdinal.fromRaw(77), 55, retired_row_handle);
             const scope_len = engine.scopes.items.len;
             const identity_len = engine.dom_identities.items.len;
             const text_len = engine.active_stream.text_nodes.items.len;
@@ -18592,6 +18632,8 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(ids.ElemId.fromRaw(6)).?.signal_text_node.get());
                 fault.configure(null);
                 plan.deinit();
+                try std.testing.expect(!engine.row_handle_registry.contains(retired_row_handle));
+                try std.testing.expectEqual(@as(?each_generation.RowBinding, null), engine.committed_row_bindings.get(retired_row_handle));
                 try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
                 // Six render descriptor caches plus the initial on-change
                 // cache retain their three-callable capabilities after
