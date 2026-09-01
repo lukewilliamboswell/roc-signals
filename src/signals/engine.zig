@@ -2335,7 +2335,18 @@ pub fn Engine(comptime Ctx: type) type {
                     branch_ranges[index] = .{ .change_index = change_index, .scope_id = collected.scope_id, .start = collected.start, .len = collected.len, .site_start = collected.site_start, .site_len = collected.site_len };
                 }
                 var row_write: usize = 0;
-                for (rows.replacements[0..rows.prepared_len], sites, eaches, each_change_indexes) |replacement, site, each, change_index| {
+                for (rows.replacements[0..rows.prepared_len], rows.rows[0..rows.prepared_len], sites, eaches, each_change_indexes) |replacement, prepared_rows, site, each, change_index| {
+                    const previous_bindings = engine.active_each_candidate_bindings;
+                    const previous_generation = engine.active_each_candidate_generation;
+                    const previous_rows_site_id = engine.active_each_candidate_rows_site_id;
+                    engine.active_each_candidate_bindings = &prepared_rows.inputs.candidate_bindings;
+                    engine.active_each_candidate_generation = prepared_rows.inputs.generation;
+                    engine.active_each_candidate_rows_site_id = prepared_rows.inputs.rows_site_id;
+                    defer {
+                        engine.active_each_candidate_bindings = previous_bindings;
+                        engine.active_each_candidate_generation = previous_generation;
+                        engine.active_each_candidate_rows_site_id = previous_rows_site_id;
+                    }
                     try replacement.collectRowsInto(site, each.*, replacement_owner, dirty_source_node_ids);
                     for (replacement.replacement_rows) |range| {
                         row_ranges[row_write] = .{ .change_index = change_index, .scope_id = range.scope_id.raw(), .start = range.start, .len = range.len, .site_start = range.site_start, .site_len = range.site_len };
