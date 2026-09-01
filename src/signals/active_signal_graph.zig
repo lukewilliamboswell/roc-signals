@@ -27,6 +27,7 @@ pub fn SmallRouteList(comptime Route: type) type {
 
         const Self = @This();
 
+        /// Borrows all routes in insertion order without transferring their storage.
         pub fn slice(self: *const Self) []const Route {
             return switch (self.*) {
                 .empty => &.{},
@@ -35,6 +36,7 @@ pub fn SmallRouteList(comptime Route: type) type {
             };
         }
 
+        /// Mutably borrows all routes in insertion order for in-place remapping.
         pub fn mutableSlice(self: *Self) []Route {
             return switch (self.*) {
                 .empty => &.{},
@@ -43,10 +45,12 @@ pub fn SmallRouteList(comptime Route: type) type {
             };
         }
 
+        /// Returns the number of routes represented by the inline or spilled form.
         pub fn len(self: *const Self) usize {
             return self.slice().len;
         }
 
+        /// Reserves room for additional routes, preserving the current representation on failure.
         pub fn ensureUnusedCapacity(self: *Self, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
             const required = std.math.add(usize, self.len(), additional) catch return error.OutOfMemory;
             if (required <= 1) return;
@@ -66,11 +70,13 @@ pub fn SmallRouteList(comptime Route: type) type {
             }
         }
 
+        /// Appends one owned route, allocating only when the list must spill past its inline slot.
         pub fn append(self: *Self, allocator: std.mem.Allocator, value: Route) std.mem.Allocator.Error!void {
             try self.ensureUnusedCapacity(allocator, 1);
             self.appendAssumeCapacity(value);
         }
 
+        /// Appends after capacity has been prepared; a missing spill reservation is a caller defect.
         pub fn appendAssumeCapacity(self: *Self, value: Route) void {
             switch (self.*) {
                 .empty => self.* = .{ .one = value },
@@ -79,6 +85,7 @@ pub fn SmallRouteList(comptime Route: type) type {
             }
         }
 
+        /// Removes and returns a route without preserving order, retaining any spilled allocation.
         pub fn swapRemove(self: *Self, index: usize) Route {
             return switch (self.*) {
                 .empty => @panic("removed from empty route list"),
@@ -91,6 +98,7 @@ pub fn SmallRouteList(comptime Route: type) type {
             };
         }
 
+        /// Releases spilled storage and restores the list to its empty inline state.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             switch (self.*) {
                 .many => |*list| list.deinit(allocator),
