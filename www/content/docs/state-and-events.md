@@ -168,6 +168,11 @@ declared just as explicitly.
 Signal(List(a))` for a homogeneous list. In practice the record builder covers
 nearly everything.
 
+When homogeneous inputs naturally produce a different collection or aggregate,
+`Signal.combine_map(signals, project)` applies `project` in that same combine
+node. For example, a keyed `Rows` value can be derived without adding a second
+`map` node solely to convert the combined list.
+
 For keyed selection, use `Signal.select : Signal(Str), Str -> Signal(Bool)`:
 
 ```roc

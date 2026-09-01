@@ -683,6 +683,8 @@ Signal.map2 : Signal(a), Signal(b), (a, b -> c) -> Signal(c)
     where [c.is_eq : c, c -> Bool]
 Signal.combine : List(Signal(a)) -> Signal(List(a))
     where [a.is_eq : a, a -> Bool]
+Signal.combine_map : List(Signal(a)), (List(a) -> b) -> Signal(b)
+    where [b.is_eq : b, b -> Bool]
 Signal.select : Signal(Str), Str -> Signal(Bool)   # O(1) members dirtied per key change
 # Named multi-signal composition should use Roc record-builder syntax:
 # { first: first_signal, last: last_signal, active: active_signal }.Signal

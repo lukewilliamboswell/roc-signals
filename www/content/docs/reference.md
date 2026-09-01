@@ -45,6 +45,7 @@ receiver-style (`signal.map(f)`), which is the idiomatic form.
 | `map` | `Signal(a), (a -> b) -> Signal(b)` | derived node; the edge |
 | `map2` | `Signal(a), Signal(b), (a, b -> c) -> Signal(c)` | two inputs |
 | `combine` | `List(Signal(a)) -> Signal(List(a))` | homogeneous list |
+| `combine_map` | `List(Signal(a)), (List(a) -> b) -> Signal(b)` | homogeneous inputs projected by one derived node |
 | `const` | `a -> Signal(a)` | never changes |
 | `interval` | `U64 -> Signal(U64)` | ticks from 0 while mounted |
 | `noop` | `Cmd` | a command that does nothing |

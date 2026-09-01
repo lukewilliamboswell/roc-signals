@@ -326,7 +326,16 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		where [
 			a.is_eq : a, a -> Bool,
 		]
-	combine = |signals| {
+	combine = |signals| Signal.combine_map(signals, |values| values)
+
+	## Combine same-typed signals and project their values in the same graph node.
+	## This is useful when the natural derived value is not itself a `List`, such
+	## as a keyed `Rows` generation, and avoids an otherwise redundant `map` node.
+	combine_map : List(Signal(a)), (List(a) -> b) -> Signal(b)
+		where [
+			b.is_eq : b, b -> Bool,
+		]
+	combine_map = |signals, project| {
 		# Each input signal owns its own capability, so every element has to be
 		# read back through the capability that stored it. Reading them all
 		# through the first signal's capability fails at runtime as soon as the
@@ -338,7 +347,7 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		transform = |items| {
 			values : List(a)
 			values = List.map2(items, input_caps, |host_value, cap| Box.unbox(Capability.get(host_value, cap)))
-			Capability.store(Box.box(values), output_cap)
+			Capability.store(Box.box(project(values)), output_cap)
 		}
 		transform_box = Box.box(transform)
 		{
