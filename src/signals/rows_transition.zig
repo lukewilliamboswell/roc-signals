@@ -66,6 +66,16 @@ pub const StableEdit = union(enum) {
     clear,
 };
 
+/// Render-order portion of one validated stable-slot edit. The prepared
+/// transition owns this journal so downstream structure never retains raw
+/// callback scratch from `Rows.copy_delta`.
+pub const OrderEdit = union(enum) {
+    insert: struct { slot: u64, before_slot: u64 },
+    remove: struct { first_slot: u64, count: u64 },
+    move: struct { first_slot: u64, count: u64, before_slot: u64 },
+    clear: struct { count: usize },
+};
+
 /// Provisional row identity available to a row builder before publication.
 pub const CreatedRow = struct {
     row_id: RowId,
@@ -134,6 +144,7 @@ const Shadow = struct {
     live: bool,
     was_live: bool,
     item_changed: bool,
+    order_touched: bool,
 };
 
 const Fresh = struct {
@@ -220,6 +231,8 @@ pub const PreparedTransition = struct {
     key_states: std.StringHashMapUnmanaged(KeyState) = .empty,
     slot_states: std.AutoHashMapUnmanaged(u64, KeyState) = .empty,
     fresh: std.ArrayListUnmanaged(Fresh) = .empty,
+    order_edits: std.ArrayListUnmanaged(OrderEdit) = .empty,
+    order_link_touches: usize = 0,
     removed_rows: []RowId = &.{},
     created_rows: []CreatedRow = &.{},
     removals_committed: bool = false,
@@ -329,6 +342,22 @@ pub const PreparedTransition = struct {
         return .{ .transition = self };
     }
 
+    /// Returns the validated render-order journal for this transition. Entries
+    /// contain stable slots only; keys and callback sinks retain their narrower
+    /// reconciliation ownership.
+    pub fn orderEdits(self: *const PreparedTransition) []const OrderEdit {
+        if (self.phase == .preparing) @panic("Rows order journal read before preparation completed");
+        return self.order_edits.items;
+    }
+
+    /// Counts distinct candidate row records whose predecessor or successor
+    /// was touched while applying the validated order batch. Item-only updates
+    /// and normalized no-op moves contribute zero.
+    pub fn orderLinksTouched(self: *const PreparedTransition) usize {
+        if (self.phase == .preparing) @panic("Rows order-link count read before preparation completed");
+        return self.order_link_touches;
+    }
+
     /// Publishes the candidate generation without allocation. Any scope/value
     /// preparation associated with `createdRows` and `removedRows` must already
     /// have succeeded before entering this irreversible boundary.
@@ -394,6 +423,7 @@ pub const PreparedTransition = struct {
         self.key_states.deinit(self.allocator);
         self.slot_states.deinit(self.allocator);
         self.fresh.deinit(self.allocator);
+        self.order_edits.deinit(self.allocator);
         if (self.removed_rows.len != 0) self.allocator.free(self.removed_rows);
         if (self.created_rows.len != 0) self.allocator.free(self.created_rows);
         self.* = undefined;
@@ -442,6 +472,12 @@ pub const PreparedTransition = struct {
             };
             created_index += 1;
         }
+        var order_link_touches: usize = 0;
+        var shadows = self.shadows.valueIterator();
+        while (shadows.next()) |shadow| if (shadow.order_touched) {
+            order_link_touches = std.math.add(usize, order_link_touches, 1) catch return error.ResourceLimit;
+        };
+        self.order_link_touches = order_link_touches;
         self.phase = .prepared;
     }
 
@@ -449,6 +485,7 @@ pub const PreparedTransition = struct {
         if (insert.metadata.item_slot == 0) return error.DuplicateSlot;
         if (try self.lookupSlot(insert.metadata.item_slot)) |state| if (state.live) return error.DuplicateSlot;
         const before = if (insert.before) |key| try self.requireLiveKey(key) else null;
+        const before_slot = if (before) |before_ref| (try self.getShadow(before_ref)).metadata.item_slot else 0;
         if (try self.lookupKey(insert.key)) |state| {
             if (state.live) return error.DuplicateKey;
             const shadow = try self.getShadow(state.node);
@@ -458,9 +495,14 @@ pub const PreparedTransition = struct {
             }
             shadow.metadata = insert.metadata;
             shadow.item_changed = true;
+            const stable_key = shadow.key;
             try self.attachBefore(state.node, before);
-            try self.putKeyState(shadow.key, .{ .node = state.node, .live = true });
+            try self.putKeyState(stable_key, .{ .node = state.node, .live = true });
             try self.putSlotState(insert.metadata.item_slot, .{ .node = state.node, .live = true });
+            try self.order_edits.append(self.allocator, .{ .insert = .{
+                .slot = insert.metadata.item_slot,
+                .before_slot = before_slot,
+            } });
             return;
         }
 
@@ -478,26 +520,41 @@ pub const PreparedTransition = struct {
             .live = false,
             .was_live = false,
             .item_changed = true,
+            .order_touched = false,
         });
         try self.attachBefore(ref, before);
         try self.putKeyState(owned_key, .{ .node = ref, .live = true });
         try self.putSlotState(insert.metadata.item_slot, .{ .node = ref, .live = true });
+        try self.order_edits.append(self.allocator, .{ .insert = .{
+            .slot = insert.metadata.item_slot,
+            .before_slot = before_slot,
+        } });
     }
 
     fn applyRemove(self: *PreparedTransition, key: []const u8) Error!void {
         const ref = try self.requireLiveKey(key);
-        const stable_key = (try self.getShadow(ref)).key;
+        const current = (try self.getShadow(ref)).*;
+        const stable_key = current.key;
         try self.detach(ref);
         try self.putKeyState(stable_key, .{ .node = ref, .live = false });
-        try self.putSlotState((try self.getShadow(ref)).metadata.item_slot, .{ .node = ref, .live = false });
+        try self.putSlotState(current.metadata.item_slot, .{ .node = ref, .live = false });
+        try self.order_edits.append(self.allocator, .{ .remove = .{ .first_slot = current.metadata.item_slot, .count = 1 } });
     }
 
     fn applyMove(self: *PreparedTransition, move: Move) Error!void {
         const ref = try self.requireLiveKey(move.key);
         const before = if (move.before) |key| try self.requireLiveKey(key) else null;
         if (before != null and before.? == ref) return;
+        const current = (try self.getShadow(ref)).*;
+        if (current.next == before) return;
+        const before_slot = if (before) |before_ref| (try self.getShadow(before_ref)).metadata.item_slot else 0;
         try self.detach(ref);
         try self.attachBefore(ref, before);
+        try self.order_edits.append(self.allocator, .{ .move = .{
+            .first_slot = current.metadata.item_slot,
+            .count = 1,
+            .before_slot = before_slot,
+        } });
     }
 
     fn applySet(self: *PreparedTransition, set: Set) Error!void {
@@ -509,6 +566,7 @@ pub const PreparedTransition = struct {
     }
 
     fn applyClear(self: *PreparedTransition) Error!void {
+        const count = self.len;
         while (self.head) |ref| {
             const key = (try self.getShadow(ref)).key;
             const slot = (try self.getShadow(ref)).metadata.item_slot;
@@ -516,6 +574,7 @@ pub const PreparedTransition = struct {
             try self.putKeyState(key, .{ .node = ref, .live = false });
             try self.putSlotState(slot, .{ .node = ref, .live = false });
         }
+        if (count != 0) try self.order_edits.append(self.allocator, .{ .clear = .{ .count = count } });
     }
 
     fn applyStableInsert(self: *PreparedTransition, slot: u64, before_slot: u64, key: []const u8, metadata: RowMetadata) Error!void {
@@ -530,10 +589,11 @@ pub const PreparedTransition = struct {
         try self.fresh.append(self.allocator, .{ .key = owned_key, .metadata = metadata });
         errdefer _ = self.fresh.pop();
         const ref = freshRef(index);
-        try self.insertShadow(ref, .{ .key = owned_key, .metadata = metadata, .previous = null, .next = null, .live = false, .was_live = false, .item_changed = true });
+        try self.insertShadow(ref, .{ .key = owned_key, .metadata = metadata, .previous = null, .next = null, .live = false, .was_live = false, .item_changed = true, .order_touched = false });
         try self.attachBefore(ref, before);
         try self.putKeyState(owned_key, .{ .node = ref, .live = true });
         try self.putSlotState(slot, .{ .node = ref, .live = true });
+        try self.order_edits.append(self.allocator, .{ .insert = .{ .slot = slot, .before_slot = before_slot } });
     }
 
     fn applyStableRemove(self: *PreparedTransition, first_slot: u64, count: u64) Error!void {
@@ -548,6 +608,7 @@ pub const PreparedTransition = struct {
             try self.putSlotState(shadow.metadata.item_slot, .{ .node = current, .live = false });
             if (remaining != 1) current = next orelse return error.MissingSlot;
         }
+        try self.order_edits.append(self.allocator, .{ .remove = .{ .first_slot = first_slot, .count = count } });
     }
 
     fn applyStableMove(self: *PreparedTransition, first_slot: u64, count: u64, before_slot: u64) Error!void {
@@ -561,8 +622,11 @@ pub const PreparedTransition = struct {
         }
         const before = if (before_slot == 0) null else try self.requireLiveSlot(before_slot);
         for (refs) |ref| if (before != null and ref == before.?) return;
+        const after = (try self.getShadow(refs[refs.len - 1])).next;
+        if (after == before) return;
         for (refs) |ref| try self.detach(ref);
         for (refs) |ref| try self.attachBefore(ref, before);
+        try self.order_edits.append(self.allocator, .{ .move = .{ .first_slot = first_slot, .count = count, .before_slot = before_slot } });
     }
 
     fn applyStableUpdate(self: *PreparedTransition, slot: u64, key: []const u8, metadata: RowMetadata) Error!void {
@@ -631,13 +695,21 @@ pub const PreparedTransition = struct {
             .live = true,
             .was_live = true,
             .item_changed = false,
+            .order_touched = false,
         });
         return self.shadows.getPtr(ref).?;
+    }
+
+    fn markOrderTouched(self: *PreparedTransition, ref: NodeRef) Error!void {
+        (try self.getShadow(ref)).order_touched = true;
     }
 
     fn detach(self: *PreparedTransition, ref: NodeRef) Error!void {
         const current = (try self.getShadow(ref)).*;
         if (!current.live) @panic("Rows candidate detached an absent row");
+        try self.markOrderTouched(ref);
+        if (current.previous) |previous| try self.markOrderTouched(previous);
+        if (current.next) |next| try self.markOrderTouched(next);
         if (current.previous) |previous| {
             (try self.getShadow(previous)).next = current.next;
         } else {
@@ -657,10 +729,15 @@ pub const PreparedTransition = struct {
 
     fn attachBefore(self: *PreparedTransition, ref: NodeRef, before: ?NodeRef) Error!void {
         if ((try self.getShadow(ref)).live) @panic("Rows candidate attached an already-live row");
+        try self.markOrderTouched(ref);
         if (before) |next| {
             const next_shadow = (try self.getShadow(next)).*;
             if (!next_shadow.live) return error.MissingKey;
-            if (next_shadow.previous) |previous| (try self.getShadow(previous)).next = ref else self.head = ref;
+            try self.markOrderTouched(next);
+            if (next_shadow.previous) |previous| {
+                try self.markOrderTouched(previous);
+                (try self.getShadow(previous)).next = ref;
+            } else self.head = ref;
             const row = try self.getShadow(ref);
             row.previous = next_shadow.previous;
             row.next = next;
@@ -668,7 +745,10 @@ pub const PreparedTransition = struct {
             (try self.getShadow(next)).previous = ref;
         } else {
             const previous = self.tail;
-            if (previous) |row| (try self.getShadow(row)).next = ref else self.head = ref;
+            if (previous) |row| {
+                try self.markOrderTouched(row);
+                (try self.getShadow(row)).next = ref;
+            } else self.head = ref;
             const inserted = try self.getShadow(ref);
             inserted.previous = previous;
             inserted.next = null;
@@ -843,6 +923,39 @@ test "canonical stable-slot delta resolves ranges without positional scans" {
         .metadata = .{ .item_slot = 22, .scope_id = 2 },
     } }}));
     try expectOrder(&store, site, &.{ "b", "c", "a" });
+}
+
+test "stable transition journals only effective order edits and exact touched links" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+    const site = try store.createSite(try OwnerToken.fromRaw(73));
+    var seed = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(73), try OwnerToken.fromRaw(74), &.{
+        .{ .insert = .{ .slot = 1, .before_slot = 0, .key = "a", .metadata = .{ .item_slot = 1, .scope_id = 1 } } },
+        .{ .insert = .{ .slot = 2, .before_slot = 0, .key = "b", .metadata = .{ .item_slot = 2, .scope_id = 2 } } },
+        .{ .insert = .{ .slot = 3, .before_slot = 0, .key = "c", .metadata = .{ .item_slot = 3, .scope_id = 3 } } },
+        .{ .insert = .{ .slot = 4, .before_slot = 0, .key = "d", .metadata = .{ .item_slot = 4, .scope_id = 4 } } },
+    });
+    defer seed.deinit();
+    seed.commit();
+
+    var moved = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(74), try OwnerToken.fromRaw(75), &.{
+        .{ .move = .{ .first_slot = 2, .count = 1, .before_slot = 4 } },
+        .{ .update = .{ .slot = 2, .key = "b", .metadata = .{ .item_slot = 2, .scope_id = 2 } } },
+    });
+    defer moved.deinit();
+    try std.testing.expectEqual(@as(usize, 1), moved.orderEdits().len);
+    try std.testing.expectEqual(OrderEdit{ .move = .{ .first_slot = 2, .count = 1, .before_slot = 4 } }, moved.orderEdits()[0]);
+    try std.testing.expectEqual(@as(usize, 4), moved.orderLinksTouched());
+    moved.commit();
+    try expectOrder(&store, site, &.{ "a", "c", "b", "d" });
+
+    var no_op = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(75), try OwnerToken.fromRaw(76), &.{
+        .{ .move = .{ .first_slot = 2, .count = 1, .before_slot = 4 } },
+        .{ .update = .{ .slot = 2, .key = "b", .metadata = .{ .item_slot = 2, .scope_id = 2 } } },
+    });
+    defer no_op.deinit();
+    try std.testing.expectEqual(@as(usize, 0), no_op.orderEdits().len);
+    try std.testing.expectEqual(@as(usize, 0), no_op.orderLinksTouched());
 }
 
 test "changed candidate traversal and commit stay bounded by a one-row delta" {

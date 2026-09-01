@@ -1707,7 +1707,10 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.phase.isCommitted()) @panic("prepared active each rows committed twice");
                 if (self.owned_scope_claims != null) self.scope_claims.commit(&self.engine.scopes);
                 const result = if (self.direct_delta) self.commitDirectRows() else self.rows.commit(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, self.inputs.keys, self.inputs.items, &self.hooks);
-                if (self.inputs.rows_transition) |*transition| transition.commit() else @panic("prepared active each lacked Rows transition");
+                if (self.inputs.rows_transition) |*transition| {
+                    if (self.direct_delta) self.engine.pending_roc_metrics.bump(.rows_order_links_touched, @intCast(transition.orderLinksTouched()));
+                    transition.commit();
+                } else @panic("prepared active each lacked Rows transition");
                 const site_index = self.rows.site_index;
                 const rows_site_id = self.inputs.rows_site_id orelse @panic("prepared active each lacked stable Rows site");
                 while (self.engine.each_generation_ids_by_site_index.items.len <= site_index) self.engine.each_generation_ids_by_site_index.appendAssumeCapacity(null);
@@ -6658,7 +6661,10 @@ pub fn Engine(comptime Ctx: type) type {
                 self.rows.site_index = engine_ptr.each_row_site_indexes.get(.{ .parent_scope_id = self.parent_scope_id, .site_ordinal = self.site_ordinal }) orelse @panic("nested row sync lost its committed site before publication");
                 var hooks = StagedEachRowSyncHooks.init(collection, collection.signal_roc_host orelse @panic("staged nested row sync lacked Roc host"), &self.inputs);
                 var diff = if (self.direct_delta) self.commitDirectRows(engine_ptr) else self.rows.commit(&engine_ptr.each_row_sites, &engine_ptr.each_row_memberships_by_scope_id, self.inputs.keys, self.inputs.items, &hooks);
-                if (self.inputs.rows_transition) |*transition| transition.commit() else @panic("nested row sync lacked Rows transition");
+                if (self.inputs.rows_transition) |*transition| {
+                    if (self.direct_delta) engine_ptr.pending_roc_metrics.bump(.rows_order_links_touched, @intCast(transition.orderLinksTouched()));
+                    transition.commit();
+                } else @panic("nested row sync lacked Rows transition");
                 const site_index = self.rows.site_index;
                 const rows_site_id = self.inputs.rows_site_id orelse @panic("nested row sync lacked stable Rows site");
                 while (engine_ptr.each_generation_ids_by_site_index.items.len <= site_index) engine_ptr.each_generation_ids_by_site_index.appendAssumeCapacity(null);
