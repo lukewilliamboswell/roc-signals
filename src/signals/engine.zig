@@ -5357,12 +5357,17 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 self.row_render_span_intents.ensureUnusedCapacity(allocator, row_render_ranges.len) catch return error.OutOfMemory;
 
-                self.prepared_state_sites.appendAssumeCapacity(site);
-                self.prepared_eaches.appendAssumeCapacity(prepared_each);
-                self.prepared_each_sites.appendAssumeCapacity(prepared_site);
+                // Transfer the only still-fallible owner first. If growing
+                // this journal refuses, the local errdefers remain the sole
+                // owners of the site descriptors and row table. Once it
+                // succeeds, every remaining append is capacity-preflighted
+                // and the collection owns the complete initial each.
                 const input_index = self.prepared_initial_each_inputs.items.len;
                 self.prepared_initial_each_inputs.append(allocator, evaluated.inputs) catch return error.OutOfMemory;
                 evaluated.owns_inputs = false;
+                self.prepared_state_sites.appendAssumeCapacity(site);
+                self.prepared_eaches.appendAssumeCapacity(prepared_each);
+                self.prepared_each_sites.appendAssumeCapacity(prepared_site);
                 for (row_render_ranges) |range| self.row_render_span_intents.appendAssumeCapacity(.{ .owner = .{ .initial = input_index }, .range = range });
                 ordinal.* = ids.SiteOrdinal.fromRaw(ordinal.*.raw() + 1);
             }
@@ -6911,8 +6916,14 @@ pub fn Engine(comptime Ctx: type) type {
                     if (entry.found_existing) hash_links[index] = entry.value_ptr.*;
                     entry.value_ptr.* = index;
 
-                    const row_handle = engine.row_handle_registry.insert(allocator, {}) catch return error.ResourceLimit;
-                    inputs.created_handles.append(allocator, row_handle) catch return error.OutOfMemory;
+                    const row_handle = engine.row_handle_registry.insert(allocator, {}) catch |err| return switch (err) {
+                        error.OutOfMemory => error.OutOfMemory,
+                        error.ResourceLimit => error.ResourceLimit,
+                    };
+                    inputs.created_handles.append(allocator, row_handle) catch {
+                        _ = engine.row_handle_registry.remove(row_handle) catch unreachable;
+                        return error.OutOfMemory;
+                    };
                     inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(item) orelse return error.InvalidDescriptor }) catch return error.InvalidDescriptor;
                     inputs.row_handles_by_index[item] = row_handle;
                     const key_bytes = inputs.key(key) orelse return error.InvalidDescriptor;
@@ -15506,14 +15517,13 @@ pub fn Engine(comptime Ctx: type) type {
                         }
                         break :blk discovered;
                     };
+                    defer allocator.free(row_structural);
                     if (row_structural.len == 0) {
-                        allocator.free(row_structural);
                         continue;
                     }
                     const merged = allocator.alloc(HostDirtyStructuralSignal, structural_changes.len + row_structural.len) catch return error.OutOfMemory;
                     @memcpy(merged[0..structural_changes.len], structural_changes);
                     @memcpy(merged[structural_changes.len..], row_structural);
-                    allocator.free(row_structural);
                     allocator.free(structural_changes);
                     structural_changes = merged;
                     plan.structural_changes = merged;
