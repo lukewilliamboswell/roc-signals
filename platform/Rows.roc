@@ -12,11 +12,104 @@ RowsOrderNode := [OrderBranch({ children : List(U64), len : U64 }), OrderLeaf({ 
 
 RowsOrderParent : [OrderParent({ node : U64, child : U64 }), OrderRoot]
 
+RowsOrderCell(value) : [OrderCellEmpty, OrderCellValue(value)]
+
+RowsOrderTable(value) : Dict(U64, List(RowsOrderCell(value)))
+
+RowsOrderEntry(value) : { key : U64, value : value }
+
+rows_order_table_chunk_size : U64
+rows_order_table_chunk_size = 32
+
+rows_order_table_location : U64 -> { chunk : U64, offset : U64 }
+rows_order_table_location = |key| {
+	if key == 0 {
+		crash "Rows order table key must be nonzero"
+	}
+	zero_index = key - 1
+	{ chunk: zero_index.div_trunc_by(rows_order_table_chunk_size), offset: zero_index.rem_by(rows_order_table_chunk_size) }
+}
+
+rows_order_table_get : RowsOrderTable(value), U64 -> Try(value, [Missing])
+rows_order_table_get = |table, key| {
+	location = rows_order_table_location(key)
+	chunk = table.get(location.chunk) ? |_| Missing
+	cell = chunk.get(location.offset) ? |_| Missing
+	match cell {
+		OrderCellEmpty => Err(Missing)
+		OrderCellValue(value) => Ok(value)
+	}
+}
+
+## Store one value in a bounded 32-cell chunk. Edit paths copy at most one
+## chunk, while snapshot construction grows only the much smaller chunk map.
+rows_order_table_set : RowsOrderTable(value), U64, value -> RowsOrderTable(value)
+rows_order_table_set = |table, key, value| {
+	location = rows_order_table_location(key)
+	var $chunk = table.get(location.chunk) ?? []
+	while $chunk.len() <= location.offset {
+		$chunk = $chunk.append(OrderCellEmpty)
+	}
+	updated = $chunk.set(location.offset, OrderCellValue(value)) ?? crash "Rows order table offset was invalid"
+	table.insert(location.chunk, updated)
+}
+
+rows_order_table_remove : RowsOrderTable(value), U64 -> RowsOrderTable(value)
+rows_order_table_remove = |table, key| {
+	location = rows_order_table_location(key)
+	match table.get(location.chunk) {
+		Err(_) => table
+		Ok(chunk) =>
+			match chunk.set(location.offset, OrderCellEmpty) {
+				Err(_) => table
+				Ok(updated) => table.insert(location.chunk, updated)
+			}
+		}
+}
+
+## Build a table from arbitrary nonzero keys by sorting once, then publishing
+## each completed 32-cell chunk with one persistent dictionary insertion.
+rows_order_table_from_entries : List(RowsOrderEntry(value)) -> RowsOrderTable(value)
+rows_order_table_from_entries = |entries| {
+	sorted = entries.sort_with(
+		|left, right| if left.key < right.key {
+			Before
+		} else if left.key > right.key {
+			After
+		} else {
+			Same
+		},
+	)
+	chunk_capacity = (entries.len() + rows_order_table_chunk_size - 1).div_trunc_by(rows_order_table_chunk_size)
+	var $table = Dict.with_capacity(chunk_capacity)
+	var $chunk_key = 0
+	var $chunk = []
+	var $has_chunk = False
+	for entry in sorted {
+		location = rows_order_table_location(entry.key)
+		if $has_chunk and location.chunk != $chunk_key {
+			$table = $table.insert($chunk_key, $chunk)
+			$chunk = []
+		}
+		$has_chunk = True
+		$chunk_key = location.chunk
+		while $chunk.len() < location.offset {
+			$chunk = $chunk.append(OrderCellEmpty)
+		}
+		$chunk = $chunk.append(OrderCellValue(entry.value))
+	}
+	if $has_chunk {
+		$table.insert($chunk_key, $chunk)
+	} else {
+		$table
+	}
+}
+
 RowsOrder : {
 	root : U64,
-	nodes : Dict(U64, RowsOrderNode),
-	parents : Dict(U64, RowsOrderParent),
-	slot_leaf : Dict(U64, U64),
+	nodes : RowsOrderTable(RowsOrderNode),
+	parents : RowsOrderTable(RowsOrderParent),
+	slot_leaf : RowsOrderTable(U64),
 	next_node : U64,
 	free_nodes : List(U64),
 }
@@ -30,11 +123,9 @@ rows_order_node_len = |node|
 
 rows_order_empty : () -> RowsOrder
 rows_order_empty = || {
-	nodes : Dict(U64, RowsOrderNode)
-	nodes = Dict.empty().insert(1, OrderLeaf({ slots: [], len: 0 }))
-	parents : Dict(U64, RowsOrderParent)
-	parents = Dict.empty().insert(1, OrderRoot)
-	slot_leaf : Dict(U64, U64)
+	nodes = rows_order_table_set(Dict.empty(), 1, OrderLeaf({ slots: [], len: 0 }))
+	parents = rows_order_table_set(Dict.empty(), 1, OrderRoot)
+	slot_leaf : RowsOrderTable(U64)
 	slot_leaf = Dict.empty()
 	{ root: 1, nodes, parents, slot_leaf, next_node: 2, free_nodes: [] }
 }
@@ -50,15 +141,10 @@ rows_order_from_slots = |slots| {
 	if slots.is_empty() {
 		rows_order_empty()
 	} else {
-		nodes : Dict(U64, RowsOrderNode)
-		nodes = Dict.empty()
-		parents : Dict(U64, RowsOrderParent)
-		parents = Dict.empty()
-		slot_leaf : Dict(U64, U64)
-		slot_leaf = Dict.empty()
-		var $nodes = nodes
-		var $parents = parents
-		var $slot_leaf = slot_leaf
+		var $node_values = List.with_capacity(slots.len())
+		var $node_entries = []
+		var $parent_entries = []
+		var $slot_leaf_entries = List.with_capacity(slots.len())
 		var $next_node = 1
 		var $offset = 0
 		var $level = []
@@ -66,9 +152,11 @@ rows_order_from_slots = |slots| {
 			leaf_slots = slots.drop_first($offset).take_first(32)
 			leaf_id = $next_node
 			$next_node = $next_node + 1
-			$nodes = $nodes.insert(leaf_id, OrderLeaf({ slots: leaf_slots, len: leaf_slots.len() }))
+			leaf = OrderLeaf({ slots: leaf_slots, len: leaf_slots.len() })
+			$node_values = $node_values.append(leaf)
+			$node_entries = $node_entries.prepend({ key: leaf_id, value: leaf })
 			for slot in leaf_slots {
-				$slot_leaf = $slot_leaf.insert(slot, leaf_id)
+				$slot_leaf_entries = $slot_leaf_entries.append({ key: rows_slot_index(slot), value: leaf_id })
 			}
 			$level = $level.prepend(leaf_id)
 			$offset = $offset + leaf_slots.len()
@@ -85,12 +173,14 @@ rows_order_from_slots = |slots| {
 				var $len = 0
 				var $child_index = 0
 				for child_id in children {
-					child = $nodes.get(child_id) ?? crash "Rows bulk order child was missing"
+					child = $node_values.get(child_id - 1) ?? crash "Rows bulk order child was missing"
 					$len = $len + rows_order_node_len(child)
-					$parents = $parents.insert(child_id, OrderParent({ node: branch_id, child: $child_index }))
+					$parent_entries = $parent_entries.prepend({ key: child_id, value: OrderParent({ node: branch_id, child: $child_index }) })
 					$child_index = $child_index + 1
 				}
-				$nodes = $nodes.insert(branch_id, OrderBranch({ children, len: $len }))
+				branch = OrderBranch({ children, len: $len })
+				$node_values = $node_values.append(branch)
+				$node_entries = $node_entries.prepend({ key: branch_id, value: branch })
 				$next_level = $next_level.prepend(branch_id)
 				$child_offset = $child_offset + children.len()
 			}
@@ -98,8 +188,15 @@ rows_order_from_slots = |slots| {
 		}
 
 		root = $level.get(0) ?? crash "Rows bulk order lost its root"
-		$parents = $parents.insert(root, OrderRoot)
-		{ root, nodes: $nodes, parents: $parents, slot_leaf: $slot_leaf, next_node: $next_node, free_nodes: [] }
+		$parent_entries = $parent_entries.prepend({ key: root, value: OrderRoot })
+		{
+			root,
+			nodes: rows_order_table_from_entries($node_entries),
+			parents: rows_order_table_from_entries($parent_entries),
+			slot_leaf: rows_order_table_from_entries($slot_leaf_entries),
+			next_node: $next_node,
+			free_nodes: [],
+		}
 	}
 }
 
@@ -117,7 +214,7 @@ rows_order_allocate_node = |order|
 
 rows_order_len : RowsOrder -> U64
 rows_order_len = |order| {
-	root = order.nodes.get(order.root) ?? crash "Rows order root was missing"
+	root = rows_order_table_get(order.nodes, order.root) ?? crash "Rows order root was missing"
 	rows_order_node_len(root)
 }
 
@@ -125,7 +222,7 @@ RowsOrderLocation : { leaf : U64, offset : U64 }
 
 rows_order_locate_node : RowsOrder, U64, U64, Bool -> RowsOrderLocation
 rows_order_locate_node = |order, node_id, index, allow_end| {
-	node = order.nodes.get(node_id) ?? crash "Rows order node was missing"
+	node = rows_order_table_get(order.nodes, node_id) ?? crash "Rows order node was missing"
 	match node {
 		OrderLeaf({ slots, .. }) => {
 			if index < slots.len() or (allow_end and index == slots.len()) {
@@ -144,7 +241,7 @@ rows_order_locate_node = |order, node_id, index, allow_end| {
 			var $found = False
 			while $found == False and $child_index < children.len() {
 				child_id = children.get($child_index) ?? crash "Rows order child index was invalid"
-				child = order.nodes.get(child_id) ?? crash "Rows order child was missing"
+				child = rows_order_table_get(order.nodes, child_id) ?? crash "Rows order child was missing"
 				child_len = rows_order_node_len(child)
 				if $remaining < child_len or (allow_end and $remaining == child_len and $child_index + 1 == children.len()) {
 					$chosen = $child_index
@@ -169,7 +266,7 @@ rows_order_get = |order, index|
 		Err(Missing)
 	} else {
 		location = rows_order_locate(order, index, False)
-		leaf = order.nodes.get(location.leaf) ?? crash "Rows order leaf was missing"
+		leaf = rows_order_table_get(order.nodes, location.leaf) ?? crash "Rows order leaf was missing"
 		match leaf {
 			OrderLeaf({ slots, .. }) =>
 				match slots.get(location.offset) {
@@ -186,7 +283,7 @@ rows_order_children_len : RowsOrder, List(U64) -> U64
 rows_order_children_len = |order, children| {
 	var $len = 0
 	for child_id in children {
-		child = order.nodes.get(child_id) ?? crash "Rows order child was missing while measuring"
+		child = rows_order_table_get(order.nodes, child_id) ?? crash "Rows order child was missing while measuring"
 		$len = $len + rows_order_node_len(child)
 	}
 	$len
@@ -198,7 +295,7 @@ rows_order_set_child_parents = |order, parent_id, children| {
 	var $index = 0
 	while $index < children.len() {
 		child_id = children.get($index) ?? crash "Rows order child index was invalid while parenting"
-		$parents = $parents.insert(child_id, OrderParent({ node: parent_id, child: $index }))
+		$parents = rows_order_table_set($parents, child_id, OrderParent({ node: parent_id, child: $index }))
 		$index = $index + 1
 	}
 	{ ..order, parents: $parents }
@@ -206,32 +303,30 @@ rows_order_set_child_parents = |order, parent_id, children| {
 
 rows_order_insert_node : RowsOrder, U64, U64, U64 -> RowsOrderRewrite
 rows_order_insert_node = |order, node_id, index, slot| {
-	node = order.nodes.get(node_id) ?? crash "Rows order insertion node was missing"
+	node = rows_order_table_get(order.nodes, node_id) ?? crash "Rows order insertion node was missing"
 	match node {
 		OrderLeaf({ slots, len }) => {
 			inserted = slots.take_first(index).concat([slot]).concat(slots.drop_first(index))
 			if inserted.len() <= 32 {
-				nodes = order.nodes.insert(node_id, OrderLeaf({ slots: inserted, len: len + 1 }))
-				updated_leaf_order = { ..order, nodes, slot_leaf: order.slot_leaf.insert(slot, node_id) }
+				nodes = rows_order_table_set(order.nodes, node_id, OrderLeaf({ slots: inserted, len: len + 1 }))
+				updated_leaf_order = { ..order, nodes, slot_leaf: rows_order_table_set(order.slot_leaf, rows_slot_index(slot), node_id) }
 				{ order: updated_leaf_order, replacements: [node_id] }
 			} else {
 				left_slots = inserted.take_first(16)
 				right_slots = inserted.drop_first(16)
 				allocation = rows_order_allocate_node(order)
 				right_id = allocation.node
-				nodes =
-					allocation.order.nodes
-						.insert(node_id, OrderLeaf({ slots: left_slots, len: left_slots.len() }))
-						.insert(right_id, OrderLeaf({ slots: right_slots, len: right_slots.len() }))
+				left_nodes = rows_order_table_set(allocation.order.nodes, node_id, OrderLeaf({ slots: left_slots, len: left_slots.len() }))
+				nodes = rows_order_table_set(left_nodes, right_id, OrderLeaf({ slots: right_slots, len: right_slots.len() }))
 				var $slot_leaf = allocation.order.slot_leaf
 				for left_slot in left_slots {
-					$slot_leaf = $slot_leaf.insert(left_slot, node_id)
+					$slot_leaf = rows_order_table_set($slot_leaf, rows_slot_index(left_slot), node_id)
 				}
 				for right_slot in right_slots {
-					$slot_leaf = $slot_leaf.insert(right_slot, right_id)
+					$slot_leaf = rows_order_table_set($slot_leaf, rows_slot_index(right_slot), right_id)
 				}
-				parent = allocation.order.parents.get(node_id) ?? crash "Rows order leaf parent was missing"
-				parents = allocation.order.parents.insert(right_id, parent)
+				parent = rows_order_table_get(allocation.order.parents, node_id) ?? crash "Rows order leaf parent was missing"
+				parents = rows_order_table_set(allocation.order.parents, right_id, parent)
 				{
 					order: { ..allocation.order, nodes, parents, slot_leaf: $slot_leaf },
 					replacements: [node_id, right_id],
@@ -245,7 +340,7 @@ rows_order_insert_node = |order, node_id, index, slot| {
 			var $found = False
 			while $found == False and $child_index < children.len() {
 				child_id = children.get($child_index) ?? crash "Rows order branch child was missing"
-				child = order.nodes.get(child_id) ?? crash "Rows order branch child node was missing"
+				child = rows_order_table_get(order.nodes, child_id) ?? crash "Rows order branch child node was missing"
 				child_len = rows_order_node_len(child)
 				if $remaining < child_len or ($remaining == child_len and $child_index + 1 == children.len()) {
 					$chosen = $child_index
@@ -262,7 +357,7 @@ rows_order_insert_node = |order, node_id, index, slot| {
 			if replaced_children.len() <= 32 {
 				updated_order = {
 					..child_rewrite.order,
-					nodes: child_rewrite.order.nodes.insert(node_id, OrderBranch({ children: replaced_children, len: len + 1 })),
+					nodes: rows_order_table_set(child_rewrite.order.nodes, node_id, OrderBranch({ children: replaced_children, len: len + 1 })),
 				}
 				parented = rows_order_set_child_parents(updated_order, node_id, replaced_children)
 				{ order: parented, replacements: [node_id] }
@@ -273,12 +368,10 @@ rows_order_insert_node = |order, node_id, index, slot| {
 				right_id = allocation.node
 				left_len = rows_order_children_len(child_rewrite.order, left_children)
 				right_len = rows_order_children_len(child_rewrite.order, right_children)
-				nodes =
-					allocation.order.nodes
-						.insert(node_id, OrderBranch({ children: left_children, len: left_len }))
-						.insert(right_id, OrderBranch({ children: right_children, len: right_len }))
-				parent = allocation.order.parents.get(node_id) ?? crash "Rows order branch parent was missing"
-				parents = allocation.order.parents.insert(right_id, parent)
+				left_nodes = rows_order_table_set(allocation.order.nodes, node_id, OrderBranch({ children: left_children, len: left_len }))
+				nodes = rows_order_table_set(left_nodes, right_id, OrderBranch({ children: right_children, len: right_len }))
+				parent = rows_order_table_get(allocation.order.parents, node_id) ?? crash "Rows order branch parent was missing"
+				parents = rows_order_table_set(allocation.order.parents, right_id, parent)
 				split_order = { ..allocation.order, nodes, parents }
 				left_parented = rows_order_set_child_parents(split_order, node_id, left_children)
 				right_parented = rows_order_set_child_parents(left_parented, right_id, right_children)
@@ -300,8 +393,8 @@ rows_order_insert = |order, index, slot| {
 		allocation = rows_order_allocate_node(rewrite.order)
 		root_id = allocation.node
 		root_len = rows_order_children_len(rewrite.order, rewrite.replacements)
-		nodes = allocation.order.nodes.insert(root_id, OrderBranch({ children: rewrite.replacements, len: root_len }))
-		parents = allocation.order.parents.insert(root_id, OrderRoot)
+		nodes = rows_order_table_set(allocation.order.nodes, root_id, OrderBranch({ children: rewrite.replacements, len: root_len }))
+		parents = rows_order_table_set(allocation.order.parents, root_id, OrderRoot)
 		rooted = { ..allocation.order, root: root_id, nodes, parents }
 		rows_order_set_child_parents(rooted, root_id, rewrite.replacements)
 	}
@@ -311,19 +404,19 @@ RowsOrderRemoval : { order : RowsOrder, removed : U64, replacements : List(U64) 
 
 rows_order_remove_node : RowsOrder, U64, U64 -> RowsOrderRemoval
 rows_order_remove_node = |order, node_id, index| {
-	node = order.nodes.get(node_id) ?? crash "Rows order removal node was missing"
+	node = rows_order_table_get(order.nodes, node_id) ?? crash "Rows order removal node was missing"
 	match node {
 		OrderLeaf({ slots, len }) => {
 			removed = slots.get(index) ?? crash "Rows order removal index exceeded its leaf"
 			remaining = slots.take_first(index).concat(slots.drop_first(index + 1))
 			nodes =
 				if remaining.is_empty() {
-					order.nodes.remove(node_id)
+					rows_order_table_remove(order.nodes, node_id)
 				} else {
-					order.nodes.insert(node_id, OrderLeaf({ slots: remaining, len: len - 1 }))
+					rows_order_table_set(order.nodes, node_id, OrderLeaf({ slots: remaining, len: len - 1 }))
 				}
 			parents = if remaining.is_empty() {
-				order.parents.remove(node_id)
+				rows_order_table_remove(order.parents, node_id)
 			} else {
 				order.parents
 			}
@@ -332,7 +425,7 @@ rows_order_remove_node = |order, node_id, index| {
 			} else {
 				order.free_nodes
 			}
-			next_order = { ..order, nodes, parents, free_nodes, slot_leaf: order.slot_leaf.remove(removed) }
+			next_order = { ..order, nodes, parents, free_nodes, slot_leaf: rows_order_table_remove(order.slot_leaf, rows_slot_index(removed)) }
 			{
 				order: next_order,
 				removed,
@@ -350,7 +443,7 @@ rows_order_remove_node = |order, node_id, index| {
 			var $found = False
 			while $found == False and $child_index < children.len() {
 				child_id = children.get($child_index) ?? crash "Rows order removal child was missing"
-				child = order.nodes.get(child_id) ?? crash "Rows order removal child node was missing"
+				child = rows_order_table_get(order.nodes, child_id) ?? crash "Rows order removal child node was missing"
 				child_len = rows_order_node_len(child)
 				if $remaining < child_len {
 					$chosen = $child_index
@@ -366,12 +459,12 @@ rows_order_remove_node = |order, node_id, index| {
 				children.take_first($chosen).concat(child_removal.replacements).concat(children.drop_first($chosen + 1))
 			nodes =
 				if replaced_children.is_empty() {
-					child_removal.order.nodes.remove(node_id)
+					rows_order_table_remove(child_removal.order.nodes, node_id)
 				} else {
-					child_removal.order.nodes.insert(node_id, OrderBranch({ children: replaced_children, len: len - 1 }))
+					rows_order_table_set(child_removal.order.nodes, node_id, OrderBranch({ children: replaced_children, len: len - 1 }))
 				}
 			parents = if replaced_children.is_empty() {
-				child_removal.order.parents.remove(node_id)
+				rows_order_table_remove(child_removal.order.parents, node_id)
 			} else {
 				child_removal.order.parents
 			}
@@ -403,7 +496,7 @@ rows_order_remove = |order, index| {
 		{ order: fresh, removed: removal.removed }
 	} else {
 		root_id = removal.replacements.get(0) ?? crash "Rows order removal lost its root"
-		root_node = removal.order.nodes.get(root_id) ?? crash "Rows order removal root was missing"
+		root_node = rows_order_table_get(removal.order.nodes, root_id) ?? crash "Rows order removal root was missing"
 		collapsed_root =
 			match root_node {
 				OrderBranch({ children, .. }) =>
@@ -418,17 +511,17 @@ rows_order_remove = |order, index| {
 			if collapsed_root == root_id {
 				removal.order
 			} else {
-				{ ..removal.order, nodes: removal.order.nodes.remove(root_id), parents: removal.order.parents.remove(root_id), free_nodes: removal.order.free_nodes.prepend(root_id) }
+				{ ..removal.order, nodes: rows_order_table_remove(removal.order.nodes, root_id), parents: rows_order_table_remove(removal.order.parents, root_id), free_nodes: removal.order.free_nodes.prepend(root_id) }
 			}
-		parents = collapsed_order.parents.insert(collapsed_root, OrderRoot)
+		parents = rows_order_table_set(collapsed_order.parents, collapsed_root, OrderRoot)
 		{ order: { ..collapsed_order, root: collapsed_root, parents }, removed: removal.removed }
 	}
 }
 
 rows_order_rank : RowsOrder, U64 -> Try(U64, [Missing])
 rows_order_rank = |order, slot| {
-	leaf_id = order.slot_leaf.get(slot) ? |_| Missing
-	leaf = order.nodes.get(leaf_id) ?? crash "Rows slot leaf was missing"
+	leaf_id = rows_order_table_get(order.slot_leaf, rows_slot_index(slot)) ? |_| Missing
+	leaf = rows_order_table_get(order.nodes, leaf_id) ?? crash "Rows slot leaf was missing"
 	leaf_offset =
 		match leaf {
 			OrderBranch(_) => crash "Rows slot leaf named a branch"
@@ -455,20 +548,20 @@ rows_order_rank = |order, slot| {
 	var $node_id = leaf_id
 	var $done = False
 	while $done == False {
-		parent = order.parents.get($node_id) ?? crash "Rows order parent was missing"
+		parent = rows_order_table_get(order.parents, $node_id) ?? crash "Rows order parent was missing"
 		match parent {
 			OrderRoot => {
 				$done = True
 			}
 			OrderParent({ node: parent_id, child: child_index }) => {
-				parent_node = order.nodes.get(parent_id) ?? crash "Rows order parent node was missing"
+				parent_node = rows_order_table_get(order.nodes, parent_id) ?? crash "Rows order parent node was missing"
 				match parent_node {
 					OrderLeaf(_) => crash "Rows order parent was a leaf"
 					OrderBranch({ children, .. }) => {
 						var $sibling = 0
 						while $sibling < child_index {
 							sibling_id = children.get($sibling) ?? crash "Rows order sibling index was invalid"
-							sibling_node = order.nodes.get(sibling_id) ?? crash "Rows order sibling was missing"
+							sibling_node = rows_order_table_get(order.nodes, sibling_id) ?? crash "Rows order sibling was missing"
 							$rank = $rank + rows_order_node_len(sibling_node)
 							$sibling = $sibling + 1
 						}
@@ -483,7 +576,7 @@ rows_order_rank = |order, slot| {
 
 rows_order_fold_node : RowsOrder, U64, state, (state, U64 -> state) -> state
 rows_order_fold_node = |order, node_id, initial, push| {
-	node = order.nodes.get(node_id) ?? crash "Rows order fold node was missing"
+	node = rows_order_table_get(order.nodes, node_id) ?? crash "Rows order fold node was missing"
 	match node {
 		OrderLeaf({ slots, .. }) => slots.fold(initial, push)
 		OrderBranch({ children, .. }) =>
@@ -1632,6 +1725,16 @@ rows_test_item = |key, value| RowsTestItem({ key, value })
 rows_test_key : RowsTestItem -> Str
 rows_test_key = |item| item.key()
 
+## Chunked order tables keep boundary keys dense, support arbitrary bulk input
+## order, and preserve bounded edit-time replacement and removal.
+expect {
+	table = rows_order_table_from_entries([{ key: 65, value: 650 }, { key: 32, value: 320 }, { key: 33, value: 330 }, { key: 1, value: 10 }])
+	edited = rows_order_table_set(table, 33, 331)
+	removed = rows_order_table_remove(edited, 32)
+
+	rows_order_table_get(removed, 1)? == 10 and rows_order_table_get(removed, 33)? == 331 and rows_order_table_get(removed, 65)? == 650 and removed.len() == 3 and removed.get(0)?.len() == 32 and removed.get(1)?.len() == 1
+}
+
 ## The persistent order tree splits at the 32-way fanout and retains exact
 ## indexed/rank lookup while path-copying inserts and removals.
 expect {
@@ -1665,7 +1768,7 @@ expect {
 	}
 	order = rows_order_from_slots(rows_reverse_u64($slots_rev))
 
-	rows_order_len(order) == 1000 and order.nodes.len() == 33 and order.parents.len() == 33 and order.slot_leaf.len() == 1000 and order.next_node == 34 and order.free_nodes.is_empty() and rows_order_get(order, 999)? == 1000 and rows_order_rank(order, 513)? == 512
+	rows_order_len(order) == 1000 and order.nodes.len() == 2 and order.parents.len() == 2 and order.slot_leaf.len() == 32 and order.next_node == 34 and order.free_nodes.is_empty() and rows_order_get(order, 999)? == 1000 and rows_order_rank(order, 513)? == 512
 }
 
 ## Chunked slots advance their generation before reuse, so an old packed id
@@ -1940,7 +2043,7 @@ expect {
 		}
 
 	Rows(initial_storage) = initial
-	bulk_shape = initial_storage.order.nodes.len() == 324 and initial_storage.order.parents.len() == 324 and initial_storage.order.slot_leaf.len() == 10000 and initial_storage.order.next_node == 325 and initial_storage.order.free_nodes.is_empty()
+	bulk_shape = initial_storage.order.nodes.len() == 11 and initial_storage.order.parents.len() == 11 and initial_storage.order.slot_leaf.len() == 313 and initial_storage.order.next_node == 325 and initial_storage.order.free_nodes.is_empty()
 
 	cleared.len() == 0 and description.kind == Delta and description.op_count == 1 and transition_count == 1 and old_slot_retired and cleared_storage.slots.next_index == 10001 and rebuilt_storage.slots.next_index == 10001 and rebuilt.len() == 10000 and bulk_shape
 }
