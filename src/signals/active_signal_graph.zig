@@ -1494,6 +1494,11 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
 
 /// Resolves survivor records and topologically enumerates only missing records.
 pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), final_record_ids: []const ?u64, roots: []const *Record) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedGraphAppend(Record) {
+    return prepareGraphAppendWithWork(Record, allocator, nodes, final_record_ids, roots, null);
+}
+
+fn prepareGraphAppendWithWork(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), final_record_ids: []const ?u64, roots: []const *Record, lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedGraphAppend(Record) {
+    if (lookup_work) |work| work.* = 0;
     if (final_record_ids.len != nodes.len) return error.InvalidAppend;
     var survivor_count: usize = 0;
     for (final_record_ids) |final_id| {
@@ -1511,9 +1516,11 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
     errdefer ranks.deinit(allocator);
     var uses: std.ArrayListUnmanaged(usize) = .empty;
     errdefer uses.deinit(allocator);
+    var new_record_indexes: std.AutoHashMapUnmanaged(*Record, usize) = .empty;
+    defer new_record_indexes.deinit(allocator);
 
     const Builder = struct {
-        fn retain(record: *Record, prepare_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), mapping: []const ?u64, survivor_len: usize, existing: []usize, new_records: *std.ArrayListUnmanaged(*Record), new_ranks: *std.ArrayListUnmanaged(u64), new_uses: *std.ArrayListUnmanaged(usize)) (std.mem.Allocator.Error || error{InvalidAppend})!struct { id: u64, rank: u64 } {
+        fn retain(record: *Record, prepare_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), mapping: []const ?u64, survivor_len: usize, existing: []usize, new_records: *std.ArrayListUnmanaged(*Record), new_ranks: *std.ArrayListUnmanaged(u64), new_uses: *std.ArrayListUnmanaged(usize), indexes: *std.AutoHashMapUnmanaged(*Record, usize), work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!struct { id: u64, rank: u64 } {
             if (record.active_graph_id) |original_id| {
                 const index: usize = @intCast(original_id);
                 if (index >= graph_nodes.len or graph_nodes[index].record != record) return error.InvalidAppend;
@@ -1521,22 +1528,23 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
                 existing[index] = std.math.add(usize, existing[index], 1) catch return error.InvalidAppend;
                 return .{ .id = final_id, .rank = graph_nodes[index].rank };
             }
-            for (new_records.items, 0..) |known, index| if (known == record) {
+            if (work) |count| count.* += 1;
+            if (indexes.get(record)) |index| {
                 new_uses.items[index] = std.math.add(usize, new_uses.items[index], 1) catch return error.InvalidAppend;
                 return .{ .id = @intCast(survivor_len + index), .rank = new_ranks.items[index] };
-            };
+            }
             var new_rank: u64 = 0;
             switch (record.payload) {
-                .map => |payload| new_rank = std.math.add(u64, (try retain(payload.input, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses)).rank, 1) catch return error.InvalidAppend,
-                .select => |payload| new_rank = std.math.add(u64, (try retain(payload.input, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses)).rank, 1) catch return error.InvalidAppend,
+                .map => |payload| new_rank = std.math.add(u64, (try retain(payload.input, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses, indexes, work)).rank, 1) catch return error.InvalidAppend,
+                .select => |payload| new_rank = std.math.add(u64, (try retain(payload.input, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses, indexes, work)).rank, 1) catch return error.InvalidAppend,
                 .map2 => |payload| {
-                    const left = try retain(payload.left, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses);
-                    const right = if (payload.right == payload.left) left else try retain(payload.right, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses);
+                    const left = try retain(payload.left, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses, indexes, work);
+                    const right = if (payload.right == payload.left) left else try retain(payload.right, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses, indexes, work);
                     new_rank = std.math.add(u64, @max(left.rank, right.rank), 1) catch return error.InvalidAppend;
                 },
                 .combine => |payload| for (payload.children, 0..) |child, child_index| {
                     if (recordSliceContains(Record, payload.children[0..child_index], child)) continue;
-                    const child_rank = std.math.add(u64, (try retain(child, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses)).rank, 1) catch return error.InvalidAppend;
+                    const child_rank = std.math.add(u64, (try retain(child, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses, indexes, work)).rank, 1) catch return error.InvalidAppend;
                     new_rank = @max(new_rank, child_rank);
                 },
                 .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
@@ -1545,10 +1553,11 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
             try new_records.append(prepare_allocator, record);
             try new_ranks.append(prepare_allocator, new_rank);
             try new_uses.append(prepare_allocator, 1);
+            try indexes.put(prepare_allocator, record, new_records.items.len - 1);
             return .{ .id = id, .rank = new_rank };
         }
     };
-    for (roots) |root| _ = try Builder.retain(root, allocator, nodes, final_record_ids, survivor_count, existing_counts, &records, &ranks, &uses);
+    for (roots) |root| _ = try Builder.retain(root, allocator, nodes, final_record_ids, survivor_count, existing_counts, &records, &ranks, &uses, &new_record_indexes, lookup_work);
 
     var increments: std.ArrayListUnmanaged(ExistingUseIncrement) = .empty;
     errdefer increments.deinit(allocator);
@@ -1575,29 +1584,35 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
     const adjacency_touched = try allocator.alloc(bool, survivor_count);
     defer allocator.free(adjacency_touched);
     @memset(adjacency_touched, false);
+    const final_to_original = try allocator.alloc(usize, survivor_count);
+    defer allocator.free(final_to_original);
+    @memset(final_to_original, std.math.maxInt(usize));
+    for (final_record_ids, 0..) |final_id, original_index| if (final_id) |id| {
+        const final_index: usize = @intCast(id);
+        if (final_index >= final_to_original.len or final_to_original[final_index] != std.math.maxInt(usize)) return error.InvalidAppend;
+        final_to_original[final_index] = original_index;
+    };
     errdefer for (adjacency_lists) |*list| list.deinit(allocator);
     const EdgeBuilder = struct {
-        fn resolvedRecordId(target: *Record, original_nodes: []const Node(Record), mapping: []const ?u64, appended: []const *Record, appended_ids: []const u64) error{InvalidAppend}!u64 {
+        fn resolvedRecordId(target: *Record, original_nodes: []const Node(Record), mapping: []const ?u64, survivor_len: usize, appended: *const std.AutoHashMapUnmanaged(*Record, usize), work: ?*usize) error{InvalidAppend}!u64 {
             if (target.active_graph_id) |original_id| {
                 const index: usize = @intCast(original_id);
                 if (index >= original_nodes.len or original_nodes[index].record != target) return error.InvalidAppend;
                 return mapping[index] orelse return error.InvalidAppend;
             }
-            for (appended, appended_ids) |known, id| if (known == target) return id;
-            return error.InvalidAppend;
+            if (work) |count| count.* += 1;
+            const index = appended.get(target) orelse return error.InvalidAppend;
+            return @intCast(std.math.add(usize, survivor_len, index) catch return error.InvalidAppend);
         }
 
-        fn append(input: *Record, dependent_id: u64, prepare_allocator: std.mem.Allocator, original_nodes: []const Node(Record), mapping: []const ?u64, survivor_len: usize, appended: []const *Record, appended_ids: []const u64, lists: []std.ArrayListUnmanaged(u64), touched: []bool) (std.mem.Allocator.Error || error{InvalidAppend})!void {
-            const input_id = try resolvedRecordId(input, original_nodes, mapping, appended, appended_ids);
+        fn append(input: *Record, dependent_id: u64, prepare_allocator: std.mem.Allocator, original_nodes: []const Node(Record), mapping: []const ?u64, survivor_len: usize, appended: *const std.AutoHashMapUnmanaged(*Record, usize), inverse: []const usize, lists: []std.ArrayListUnmanaged(u64), touched: []bool, work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!void {
+            const input_id = try resolvedRecordId(input, original_nodes, mapping, survivor_len, appended, work);
             const input_index: usize = @intCast(input_id);
             if (input_index >= lists.len) return error.InvalidAppend;
             if (input_index < survivor_len and !touched[input_index]) {
-                var original_index: ?usize = null;
-                for (mapping, 0..) |final_id, index| if (final_id == input_id) {
-                    original_index = index;
-                    break;
-                };
-                const source = original_nodes[original_index orelse return error.InvalidAppend].dependents;
+                const original_index = inverse[input_index];
+                if (original_index == std.math.maxInt(usize) or original_index >= original_nodes.len) return error.InvalidAppend;
+                const source = original_nodes[original_index].dependents;
                 const capacity = std.math.add(usize, source.len, 1) catch return error.InvalidAppend;
                 try lists[input_index].ensureTotalCapacity(prepare_allocator, capacity);
                 for (source) |original_dependent| {
@@ -1611,14 +1626,14 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
         }
     };
     for (owned_records, record_ids) |record, dependent_id| switch (record.payload) {
-        .map => |payload| try EdgeBuilder.append(payload.input, dependent_id, allocator, nodes, final_record_ids, survivor_count, owned_records, record_ids, adjacency_lists, adjacency_touched),
-        .select => |payload| try EdgeBuilder.append(payload.input, dependent_id, allocator, nodes, final_record_ids, survivor_count, owned_records, record_ids, adjacency_lists, adjacency_touched),
+        .map => |payload| try EdgeBuilder.append(payload.input, dependent_id, allocator, nodes, final_record_ids, survivor_count, &new_record_indexes, final_to_original, adjacency_lists, adjacency_touched, lookup_work),
+        .select => |payload| try EdgeBuilder.append(payload.input, dependent_id, allocator, nodes, final_record_ids, survivor_count, &new_record_indexes, final_to_original, adjacency_lists, adjacency_touched, lookup_work),
         .map2 => |payload| {
-            try EdgeBuilder.append(payload.left, dependent_id, allocator, nodes, final_record_ids, survivor_count, owned_records, record_ids, adjacency_lists, adjacency_touched);
-            if (payload.right != payload.left) try EdgeBuilder.append(payload.right, dependent_id, allocator, nodes, final_record_ids, survivor_count, owned_records, record_ids, adjacency_lists, adjacency_touched);
+            try EdgeBuilder.append(payload.left, dependent_id, allocator, nodes, final_record_ids, survivor_count, &new_record_indexes, final_to_original, adjacency_lists, adjacency_touched, lookup_work);
+            if (payload.right != payload.left) try EdgeBuilder.append(payload.right, dependent_id, allocator, nodes, final_record_ids, survivor_count, &new_record_indexes, final_to_original, adjacency_lists, adjacency_touched, lookup_work);
         },
         .combine => |payload| for (payload.children, 0..) |child, child_index| {
-            if (!recordSliceContains(Record, payload.children[0..child_index], child)) try EdgeBuilder.append(child, dependent_id, allocator, nodes, final_record_ids, survivor_count, owned_records, record_ids, adjacency_lists, adjacency_touched);
+            if (!recordSliceContains(Record, payload.children[0..child_index], child)) try EdgeBuilder.append(child, dependent_id, allocator, nodes, final_record_ids, survivor_count, &new_record_indexes, final_to_original, adjacency_lists, adjacency_touched, lookup_work);
         },
         .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
     };
@@ -2428,6 +2443,36 @@ test "prepared graph append enumerates missing topology without mutating survivo
     try std.testing.expectEqual(@as(usize, 2), mapped.ref_count);
     try std.testing.expectEqual(@as(usize, 2), fresh.ref_count);
     try std.testing.expectEqual(@as(usize, 2), root.ref_count);
+}
+
+test "prepared graph append indexes new records with linear lookup work" {
+    const measure = struct {
+        fn run(count: usize) !usize {
+            var shared = LifecycleTestRecord{ .id = 1, .payload = .const_value };
+            const maps = try std.testing.allocator.alloc(LifecycleTestRecord, count);
+            defer std.testing.allocator.free(maps);
+            const roots = try std.testing.allocator.alloc(*LifecycleTestRecord, count);
+            defer std.testing.allocator.free(roots);
+            for (maps, roots, 0..) |*map, *root, index| {
+                map.* = .{ .id = @intCast(index + 2), .payload = .{ .map = .{ .input = &shared } } };
+                root.* = map;
+            }
+
+            var lookup_work: usize = 0;
+            var prepared = try prepareGraphAppendWithWork(LifecycleTestRecord, std.testing.allocator, &.{}, &.{}, roots, &lookup_work);
+            defer prepared.deinit(std.testing.allocator);
+            try std.testing.expectEqual(count + 1, prepared.records.len);
+            try std.testing.expectEqual(count, prepared.use_counts[0]);
+            try std.testing.expectEqual(@as(u64, 0), prepared.ranks[0]);
+            for (prepared.ranks[1..]) |prepared_rank| try std.testing.expectEqual(@as(u64, 1), prepared_rank);
+            return lookup_work;
+        }
+    }.run;
+
+    const small: usize = 64;
+    const large: usize = 512;
+    try std.testing.expectEqual(3 * small, try measure(small));
+    try std.testing.expectEqual(3 * large, try measure(large));
 }
 
 test "prepared release closure nets replacement retains so a handed-over record survives" {
