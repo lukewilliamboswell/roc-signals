@@ -914,8 +914,8 @@ pub fn Engine(comptime Ctx: type) type {
             pub fn existingKeyEquals(self: *@This(), scope_id: ids.ScopeId, key: usize) bool {
                 self.engine.recordEachKeyReuseCompare();
                 const handle = scope_runtime.eachRowHandle(self.engine.scopes.items, scope_id);
-                const binding = self.engine.committed_row_bindings.get(handle) orelse @panic("each row had no committed generation binding");
-                _ = self.engine.each_generations.get(binding.generation_id) orelse @panic("each row generation was not retained");
+                const binding = self.engine.resolveEachRowBinding(handle) orelse @panic("each row had no committed generation binding");
+                _ = self.engine.eachGenerationForBinding(binding) orelse @panic("each row generation was not retained");
                 const location = self.engine.rows_store.?.findScope(scope_id.raw()) orelse @panic("committed each scope was absent from Rows store");
                 const committed = self.engine.rows_store.?.getRowConst(location.site_id, location.row_id) catch @panic("committed each row became stale");
                 return std.mem.eql(u8, committed.key, self.inputs.key(key) orelse @panic("candidate each key index exceeded generation"));
@@ -1047,8 +1047,8 @@ pub fn Engine(comptime Ctx: type) type {
                 for (scope_ids, created, 0..) |scope_id, was_created, next_index| {
                     if (was_created) continue;
                     const row_handle = scope_runtime.eachRowHandle(self.base.engine.scopes.items, scope_id);
-                    const binding = self.base.engine.committed_row_bindings.get(row_handle) orelse return error.ResourceLimit;
-                    const generation = self.base.engine.each_generations.get(binding.generation_id) orelse return error.ResourceLimit;
+                    const binding = self.base.engine.resolveEachRowBinding(row_handle) orelse return error.ResourceLimit;
+                    const generation = self.base.engine.eachGenerationForBinding(binding) orelse return error.ResourceLimit;
                     if (old_generation) |existing| {
                         if (existing != generation) return error.ResourceLimit;
                     } else old_generation = generation;
@@ -4309,8 +4309,8 @@ pub fn Engine(comptime Ctx: type) type {
 
         fn buildEachRowElem(self: *Self, roc_host: *abi.RocHost, ops: HostEachOps, row_scope_id: ids.ScopeId) abi.Elem {
             const handle = scope_runtime.eachRowHandle(self.scopes.items, row_scope_id);
-            const binding = self.committed_row_bindings.get(handle) orelse @panic("each row had no committed generation binding");
-            _ = self.each_generations.get(binding.generation_id) orelse @panic("each row generation was not retained");
+            const binding = self.resolveEachRowBinding(handle) orelse @panic("each row had no committed generation binding");
+            _ = self.eachGenerationForBinding(binding) orelse @panic("each row generation was not retained");
             const location = self.rows_store.?.findScope(row_scope_id.raw()) orelse @panic("each row scope was absent from Rows store");
             const key = (self.rows_store.?.getRowConst(location.site_id, location.row_id) catch @panic("each row became stale")).key;
             return retained_values.callEachRowBuilder(roc_host, ops.row, abi.RocStr.fromSlice(key, roc_host), handle.raw());
@@ -6669,7 +6669,15 @@ pub fn Engine(comptime Ctx: type) type {
                 const scope_index: usize = @intCast(raw_scope_id);
                 if (scope_index >= engine.scopes.items.len) return error.ResourceLimit;
                 switch (engine.scopes.items[scope_index].step) {
-                    .each_row => |row| removals.appendAssumeCapacity(.{ .scope_id = ids.ScopeId.fromRaw(raw_scope_id), .key_hash = row.key_hash }),
+                    .each_row => |row| {
+                        const membership = engine.each_row_memberships_by_scope_id.items[scope_index] orelse return error.InvalidDescriptor;
+                        if (membership.site_index >= engine.each_row_sites.items.len) return error.InvalidDescriptor;
+                        removals.appendAssumeCapacity(.{
+                            .scope_id = ids.ScopeId.fromRaw(raw_scope_id),
+                            .key_hash = row.key_hash,
+                            .site_key = engine.each_row_sites.items[membership.site_index].key,
+                        });
+                    },
                     .root, .component, .when_branch => {},
                 }
             }
@@ -8077,6 +8085,7 @@ pub fn Engine(comptime Ctx: type) type {
             state_retirement: ?PreparedStateRetirementIndexes = null,
             retired_state_cells: std.ArrayListUnmanaged(HostState) = .empty,
             row_retirement: ?each_runtime.PreparedRowRemovals = null,
+            retired_stable_generations: std.ArrayListUnmanaged(*each_generation.Generation) = .empty,
             effects_retirement: ?PreparedEffectRetirements = null,
             retired_stream: HostNodeDescriptorStream = .{},
             publication: ?structural_splice.PreparedPublicationDeltas = null,
@@ -8407,6 +8416,8 @@ pub fn Engine(comptime Ctx: type) type {
                     self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, nested.items);
                 }
                 errdefer if (self.row_retirement) |*retirement| retirement.deinit(allocator);
+                self.retired_stable_generations.ensureTotalCapacity(allocator, self.row_retirement.?.rows.len) catch return error.OutOfMemory;
+                errdefer self.retired_stable_generations.deinit(allocator);
                 const retired_scopes = allocator.alloc(bool, self.engine.scopes.items.len) catch return error.OutOfMemory;
                 defer allocator.free(retired_scopes);
                 @memset(retired_scopes, false);
@@ -8651,6 +8662,26 @@ pub fn Engine(comptime Ctx: type) type {
                 // retiring structure; applying retirement afterward would mark the
                 // newly published identity inactive.
                 self.identity_retirements.?.apply(self.engine);
+                // Collection transitions retire their own stable rows first.
+                // The central scope journal then removes any remaining stable
+                // row whose owning subtree disappears without a collection
+                // transition, before a replacement may reuse that scope.
+                self.replacement.collection.commitRowsTransitionRemovalsEarly();
+                if (self.row_retirement) |*row_retirement| {
+                    if (self.engine.rows_store) |*store| for (row_retirement.rows) |row| {
+                        const retired = store.retireScope(row.scope_id.raw()) orelse continue;
+                        Ctx.allocator(self.host_ctx).free(retired.key);
+                        if (!retired.site_empty) continue;
+                        const mapped_site = self.engine.rows_site_ids.get(row.site_key) orelse @panic("retired empty Rows site lacked its construction identity");
+                        if (mapped_site != retired.site_id) @panic("retired empty Rows site identity named another site");
+                        if (!self.engine.rows_site_ids.remove(row.site_key)) unreachable;
+                        if (self.engine.each_generation_ids_by_rows_site.fetchRemove(retired.site_id)) |generation_entry| {
+                            const generation = self.engine.each_generations.fetchRemove(generation_entry.value) orelse @panic("retired Rows site generation was absent");
+                            self.retired_stable_generations.appendAssumeCapacity(generation.value);
+                        }
+                        store.destroyEmptySite(retired.site_id) catch @panic("retired Rows site was not empty");
+                    };
+                }
                 // Retire journaled rows before the collection publishes its
                 // sites: a re-collected nested site takes over the slot its
                 // predecessor held, which must be empty by then.
@@ -8658,7 +8689,6 @@ pub fn Engine(comptime Ctx: type) type {
                     var row_keys = EachRowScopeKeyLookup{ .engine = self.engine, .reconciled_sites = self.replacement.collection.nested_row_syncs.items };
                     row_retirement.applyRows(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, &row_keys);
                 }
-                self.replacement.collection.commitRowsTransitionRemovalsEarly();
                 // Row reverse indexes must be retired before the source can
                 // publish a newly claimed reuse of the same scope. Scope
                 // claims themselves still have to commit before replacement
@@ -8690,6 +8720,11 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.retired_state_cells.items) |*state| state.retire(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 self.retired_state_cells.deinit(allocator);
                 if (self.row_retirement) |*retirement| retirement.deinit(allocator);
+                for (self.retired_stable_generations.items) |generation| {
+                    generation.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                    allocator.destroy(generation);
+                }
+                self.retired_stable_generations.deinit(allocator);
                 if (self.effects_retirement) |*effects| effects.deinit(allocator, self.roc_host);
                 for (self.retired_active_events.items) |event| self.engine.deinitActiveEventDesc(self.roc_host, event);
                 self.retired_active_events.deinit(allocator);
@@ -11212,6 +11247,11 @@ pub fn Engine(comptime Ctx: type) type {
             if (!self.row_handle_registry.contains(row_handle)) return null;
             if (self.active_each_prepared_bindings) |prepared| if (prepared.get(row_handle)) |binding| return binding;
             if (self.active_each_candidate_bindings) |candidate| return candidate.resolve(&self.committed_row_bindings, row_handle);
+            if (self.rows_store) |*store| if (store.findRowHandle(row_handle.raw())) |location| {
+                const generation_id = self.each_generation_ids_by_rows_site.get(location.site_id) orelse return null;
+                const row = store.getRowConst(location.site_id, location.row_id) catch return null;
+                return .{ .generation_id = generation_id, .item_slot = row.metadata.item_slot };
+            };
             return self.committed_row_bindings.get(row_handle);
         }
 

@@ -278,6 +278,13 @@ pub const RowLocation = struct {
     row_id: RowId,
 };
 
+/// Result of retiring a row through its owning scope reverse index.
+pub const RetiredScopeRow = struct {
+    site_id: SiteId,
+    key: []u8,
+    site_empty: bool,
+};
+
 /// One committed Rows site with exact-key lookup and intrusive row order.
 pub const Site = struct {
     owner_token: OwnerToken,
@@ -300,7 +307,9 @@ pub const Store = struct {
     sites: SlotPool(SiteId, Site) = .{},
     rows: SlotPool(RowId, Row) = .{},
     by_scope_id: std.AutoHashMapUnmanaged(u64, RowLocation) = .empty,
+    by_row_handle: std.AutoHashMapUnmanaged(u64, RowLocation) = .empty,
     reserved_scope_entries: usize = 0,
+    reserved_handle_entries: usize = 0,
 
     /// Creates empty storage with full nonzero 32-bit slot ranges.
     pub fn init(allocator: std.mem.Allocator) Store {
@@ -336,6 +345,7 @@ pub const Store = struct {
         self.rows.deinit(self.allocator);
         self.sites.deinit(self.allocator);
         self.by_scope_id.deinit(self.allocator);
+        self.by_row_handle.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -402,6 +412,29 @@ pub const Store = struct {
         return self.by_scope_id.get(scope_id);
     }
 
+    /// Retires a committed row by scope while repairing the site's intrusive
+    /// order. This is the central structural-retirement path for rows whose
+    /// owning subtree disappears without a collection transition.
+    pub fn retireScope(self: *Store, scope_id: u64) ?RetiredScopeRow {
+        const location = self.findScope(scope_id) orelse return null;
+        const row = self.getRowConst(location.site_id, location.row_id) catch @panic("Rows scope index referenced a stale row");
+        const previous = row.previous;
+        const next = row.next;
+        const site = self.getSite(location.site_id) catch @panic("Rows scope index referenced a stale site");
+        if (previous) |id| (self.getRow(location.site_id, id) catch @panic("Rows previous link was stale")).next = next else site.head = next;
+        if (next) |id| (self.getRow(location.site_id, id) catch @panic("Rows next link was stale")).previous = previous else site.tail = previous;
+        if (site.len == 0) @panic("Rows site length underflow during scope retirement");
+        site.len -= 1;
+        const key = self.removePreparedRow(location.site_id, location.row_id);
+        return .{ .site_id = location.site_id, .key = key, .site_empty = site.len == 0 };
+    }
+
+    /// Resolves a row directly from its stable public row handle.
+    pub fn findRowHandle(self: *const Store, row_handle: u64) ?RowLocation {
+        if (row_handle == 0) return null;
+        return self.by_row_handle.get(row_handle);
+    }
+
     /// Reserves row identities and dense slot growth for a prepared commit.
     /// `removed` must be retired in the same order before claims are inserted.
     pub fn prepareRowClaims(self: *Store, site_id: SiteId, removed: []const RowId, claims: []RowId) Error!void {
@@ -413,6 +446,9 @@ pub const Store = struct {
         const existing_and_reserved = std.math.add(usize, self.by_scope_id.count(), self.reserved_scope_entries) catch return error.ResourceLimit;
         const scope_bound = std.math.add(usize, existing_and_reserved, claims.len) catch return error.ResourceLimit;
         try self.by_scope_id.ensureTotalCapacity(self.allocator, std.math.cast(u32, scope_bound) orelse return error.ResourceLimit);
+        const handles_and_reserved = std.math.add(usize, self.by_row_handle.count(), self.reserved_handle_entries) catch return error.ResourceLimit;
+        const handle_bound = std.math.add(usize, handles_and_reserved, claims.len) catch return error.ResourceLimit;
+        try self.by_row_handle.ensureTotalCapacity(self.allocator, std.math.cast(u32, handle_bound) orelse return error.ResourceLimit);
         // Slot claiming mutates only the provisional reservation tables, so it
         // must be the final fallible preflight step. Any earlier allocation
         // failure then leaves no claim that an only-partly-built transition
@@ -423,6 +459,7 @@ pub const Store = struct {
             error.InvalidIdentity => error.InvalidRow,
         };
         self.reserved_scope_entries = std.math.add(usize, self.reserved_scope_entries, claims.len) catch return error.ResourceLimit;
+        self.reserved_handle_entries = std.math.add(usize, self.reserved_handle_entries, claims.len) catch return error.ResourceLimit;
     }
 
     /// Releases unused append reservations when preparation aborts before commit.
@@ -430,6 +467,8 @@ pub const Store = struct {
         self.rows.releaseAppendClaims(claims);
         if (claims.len > self.reserved_scope_entries) @panic("Rows released more scope-index claims than remained reserved");
         self.reserved_scope_entries -= claims.len;
+        if (claims.len > self.reserved_handle_entries) @panic("Rows released more handle-index claims than remained reserved");
+        self.reserved_handle_entries -= claims.len;
     }
 
     /// Retires one prevalidated row during allocation-free publication and
@@ -441,6 +480,10 @@ pub const Store = struct {
         if (!site_value.by_item_slot.remove(row_value.metadata.item_slot)) @panic("prepared Rows removal slot was absent from its site index");
         const scope_entry = self.by_scope_id.fetchRemove(row_value.metadata.scope_id) orelse @panic("prepared Rows removal scope was absent from its reverse index");
         if (scope_entry.value.site_id != site_id or scope_entry.value.row_id != row_id) @panic("prepared Rows removal scope resolved to another row");
+        if (row_value.metadata.row_handle != 0) {
+            const handle_entry = self.by_row_handle.fetchRemove(row_value.metadata.row_handle) orelse @panic("prepared Rows removal handle was absent from its reverse index");
+            if (handle_entry.value.site_id != site_id or handle_entry.value.row_id != row_id) @panic("prepared Rows removal handle resolved to another row");
+        }
         const removed = self.rows.remove(row_id) catch @panic("prepared Rows row could not be retired");
         return removed.key;
     }
@@ -452,13 +495,17 @@ pub const Store = struct {
         const site_value = self.getSite(site_id) catch @panic("prepared Rows site became stale before commit");
         if (row_value.metadata.item_slot == 0 or site_value.by_item_slot.contains(row_value.metadata.item_slot)) @panic("prepared Rows insertion duplicated a stable item slot");
         if (row_value.metadata.scope_id == 0 or self.by_scope_id.contains(row_value.metadata.scope_id)) @panic("prepared Rows insertion duplicated a row scope");
+        if (row_value.metadata.row_handle != 0 and self.by_row_handle.contains(row_value.metadata.row_handle)) @panic("prepared Rows insertion duplicated a row handle");
         self.rows.insertClaimed(claim, row_value);
         const committed = self.getRow(site_id, claim) catch @panic("claimed Rows row did not become live");
         site_value.by_key.putAssumeCapacity(committed.key, claim);
         site_value.by_item_slot.putAssumeCapacity(committed.metadata.item_slot, claim);
         self.by_scope_id.putAssumeCapacity(committed.metadata.scope_id, .{ .site_id = site_id, .row_id = claim });
+        if (committed.metadata.row_handle != 0) self.by_row_handle.putAssumeCapacity(committed.metadata.row_handle, .{ .site_id = site_id, .row_id = claim });
         if (self.reserved_scope_entries == 0) @panic("Rows insertion had no scope-index reservation");
         self.reserved_scope_entries -= 1;
+        if (self.reserved_handle_entries == 0) @panic("Rows insertion had no handle-index reservation");
+        self.reserved_handle_entries -= 1;
     }
 };
 
@@ -473,8 +520,8 @@ test "Rows site storage keeps exact keys and rejects stale identities" {
 
     const first_key = try std.testing.allocator.dupe(u8, "Cafe\xcc\x81");
     const second_key = try std.testing.allocator.dupe(u8, "Caf\xc3\xa9");
-    store.insertPreparedRow(site, claims[0], .{ .site_id = site, .key = first_key, .metadata = .{ .item_slot = 1, .scope_id = 10 } });
-    store.insertPreparedRow(site, claims[1], .{ .site_id = site, .key = second_key, .metadata = .{ .item_slot = 2, .scope_id = 20 } });
+    store.insertPreparedRow(site, claims[0], .{ .site_id = site, .key = first_key, .metadata = .{ .item_slot = 1, .scope_id = 10, .row_handle = 100 } });
+    store.insertPreparedRow(site, claims[1], .{ .site_id = site, .key = second_key, .metadata = .{ .item_slot = 2, .scope_id = 20, .row_handle = 200 } });
     const site_value = try store.getSite(site);
     site_value.head = claims[0];
     site_value.tail = claims[1];
@@ -485,6 +532,7 @@ test "Rows site storage keeps exact keys and rejects stale identities" {
     try std.testing.expectEqual(claims[0], (try store.findKey(site, "Cafe\xcc\x81")).?);
     try std.testing.expectEqual(claims[1], (try store.findKey(site, "Caf\xc3\xa9")).?);
     try std.testing.expect((try store.findKey(site, "cafe")) == null);
+    try std.testing.expectEqual(claims[0], store.findRowHandle(100).?.row_id);
 
     const stale = claims[0];
     const owned_key = store.removePreparedRow(site, stale);
@@ -493,6 +541,7 @@ test "Rows site storage keeps exact keys and rejects stale identities" {
     site_value.len = 1;
     (try store.getRow(site, claims[1])).previous = null;
     try std.testing.expectError(error.InvalidRow, store.getRow(site, stale));
+    try std.testing.expect(store.findRowHandle(100) == null);
 }
 
 test "Rows row claims reuse retired slots without wrapping generations" {
