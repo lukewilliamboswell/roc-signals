@@ -10214,22 +10214,9 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 iterator = touched.keyIterator();
                 while (iterator.next()) |parent_id| {
-                    var children: std.ArrayListUnmanaged(ids.ElemId) = .empty;
-                    defer children.deinit(allocator);
-                    const parent_index = std.math.cast(usize, parent_id.*) orelse return error.ResourceLimit;
-                    var inserted = false;
-                    if (parent_index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[parent_index].isActive()) {
-                        for (self.engine.render_cache.nodes.items[parent_index].children.items) |child_id| {
-                            if (retired.contains(child_id.raw())) {
-                                if (!inserted) {
-                                    try self.appendReplacementChildren(allocator, &children, parent_id.*);
-                                    inserted = true;
-                                }
-                            } else children.append(allocator, child_id) catch return error.OutOfMemory;
-                        }
-                    }
-                    if (!inserted) try self.appendReplacementChildren(allocator, &children, parent_id.*);
-                    splice.addChildren(&self.engine.render_cache, ids.ElemId.fromRaw(parent_id.*), children.items) catch |err| return renderSpliceError(err);
+                    const children = try self.prepareReplacementChildren(allocator, &retired, parent_id.*);
+                    errdefer allocator.free(children);
+                    splice.addOwnedChildren(&self.engine.render_cache, ids.ElemId.fromRaw(parent_id.*), children) catch |err| return renderSpliceError(err);
                 }
                 for (self.replacement_stream.text_nodes.items) |desc| splice.addTextField(&self.engine.render_cache, desc.elem_id, .text, desc.value) catch |err| return renderSpliceError(err);
                 for (self.replacement_stream.static_text_attrs.items) |desc| splice.addTextField(&self.engine.render_cache, desc.elem_id, desc.field, desc.value) catch |err| return renderSpliceError(err);
@@ -10387,12 +10374,56 @@ pub fn Engine(comptime Ctx: type) type {
                 };
             }
 
-            fn appendReplacementChildren(self: *@This(), allocator: std.mem.Allocator, children: *std.ArrayListUnmanaged(ids.ElemId), parent_id: u64) CollectionError!void {
+            fn replacementChildCount(self: *const @This(), parent_id: u64) CollectionError!usize {
+                var count: usize = 0;
                 var child = self.replacement_stream.firstRenderChild(ids.ElemId.fromRaw(parent_id));
                 while (child) |child_id| {
-                    children.append(allocator, child_id) catch return error.OutOfMemory;
+                    count = std.math.add(usize, count, 1) catch return error.ResourceLimit;
                     child = self.replacement_stream.nextRenderSibling(child_id);
                 }
+                return count;
+            }
+
+            fn writeReplacementChildren(self: *const @This(), destination: []ids.ElemId, write_index: *usize, parent_id: u64) void {
+                var child = self.replacement_stream.firstRenderChild(ids.ElemId.fromRaw(parent_id));
+                while (child) |child_id| {
+                    destination[write_index.*] = child_id;
+                    write_index.* += 1;
+                    child = self.replacement_stream.nextRenderSibling(child_id);
+                }
+            }
+
+            /// Builds the single final child-order allocation that the render
+            /// transaction transfers into the committed cache. Surviving old
+            /// children retain their order, and replacement children occupy
+            /// the first retired child's position or append when none retired.
+            fn prepareReplacementChildren(self: *@This(), allocator: std.mem.Allocator, retired: *const std.AutoHashMapUnmanaged(u64, void), parent_id: u64) CollectionError![]ids.ElemId {
+                const replacement_count = try self.replacementChildCount(parent_id);
+                const parent_index = std.math.cast(usize, parent_id) orelse return error.ResourceLimit;
+                const old_children = if (parent_index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[parent_index].isActive()) self.engine.render_cache.nodes.items[parent_index].children.items else &.{};
+                var surviving_count: usize = 0;
+                for (old_children) |child_id| if (!retired.contains(child_id.raw())) {
+                    surviving_count = std.math.add(usize, surviving_count, 1) catch return error.ResourceLimit;
+                };
+                const final_count = std.math.add(usize, surviving_count, replacement_count) catch return error.ResourceLimit;
+                const children = allocator.alloc(ids.ElemId, final_count) catch return error.OutOfMemory;
+                errdefer allocator.free(children);
+                var write_index: usize = 0;
+                var inserted = false;
+                for (old_children) |child_id| {
+                    if (retired.contains(child_id.raw())) {
+                        if (!inserted) {
+                            self.writeReplacementChildren(children, &write_index, parent_id);
+                            inserted = true;
+                        }
+                    } else {
+                        children[write_index] = child_id;
+                        write_index += 1;
+                    }
+                }
+                if (!inserted) self.writeReplacementChildren(children, &write_index, parent_id);
+                if (write_index != children.len) @panic("prepared replacement child count changed while materializing");
+                return children;
             }
 
             fn prepareGraphRoutes(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {

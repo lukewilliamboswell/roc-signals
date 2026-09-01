@@ -1119,6 +1119,17 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
 
         /// Adds one complete parent-child replacement and final parent intents.
         pub fn addChildren(self: *Self, cache: *Cache(Ctx), parent_elem_id: ids.ElemId, next: []const ids.ElemId) (std.mem.Allocator.Error || error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit })!void {
+            const copied = try self.allocator.dupe(ids.ElemId, next);
+            errdefer self.allocator.free(copied);
+            try self.addOwnedChildren(cache, parent_elem_id, copied);
+        }
+
+        /// Adopts one independently owned final child order after validating
+        /// topology and preparing its wire edits. Ownership transfers only on
+        /// success; on failure the caller still owns `next`. The slice is then
+        /// held by this transaction until abort or transferred into the render
+        /// cache by the allocation-free commit.
+        pub fn addOwnedChildren(self: *Self, cache: *Cache(Ctx), parent_elem_id: ids.ElemId, next: []ids.ElemId) (std.mem.Allocator.Error || error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, parent_elem_id)) return error.MissingNode;
             const parent_index = parent_elem_id.index();
             const old_children: []const ids.ElemId = if (parent_index < cache.nodes.items.len and cache.nodes.items[parent_index].isActive())
@@ -1133,8 +1144,6 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 for (old_children) |child_id| try self.setParentIntent(cache, child_id.raw(), null);
             }
             for (next) |child_id| try self.setParentIntent(cache, child_id.raw(), parent_elem_id.raw());
-            const copied = try self.allocator.dupe(ids.ElemId, next);
-            errdefer self.allocator.free(copied);
             const wire_edit_offset = self.child_wire_edits.items.len;
             var wire_edit_len: usize = 0;
             if (old_children.len == 0) {
@@ -1142,7 +1151,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                     self.child_wire_edits.appendAssumeCapacity(.{ .append = child_id });
                     wire_edit_len += 1;
                 }
-                self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = copied, .wire_edit_offset = wire_edit_offset, .wire_edit_len = wire_edit_len });
+                self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = next, .wire_edit_offset = wire_edit_offset, .wire_edit_len = wire_edit_len });
                 return;
             }
             var old_indexes = std.AutoHashMapUnmanaged(u64, usize).empty;
@@ -1196,7 +1205,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 } });
                 wire_edit_len += 1;
             }
-            self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = copied, .wire_edit_offset = wire_edit_offset, .wire_edit_len = wire_edit_len });
+            self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = next, .wire_edit_offset = wire_edit_offset, .wire_edit_len = wire_edit_len });
         }
 
         /// Transfers one fully prepared sparse child journal into this splice.
@@ -2445,6 +2454,71 @@ test "prepared child replacement aborts cleanly and commits allocation free" {
     try std.testing.expectEqualSlices(ids.ElemId, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(2) }, committed.retired.items);
     fault.configure(null);
     committed.deinit(allocator);
+}
+
+test "prepared render splice adopts a final child slice without allocating" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        for (cache.nodes.items) |*node| node.deinit(allocator);
+        cache.nodes.deinit(allocator);
+        var tags = cache.interned_tags.valueIterator();
+        while (tags.next()) |tag| allocator.free(tag.*);
+        cache.interned_tags.deinit(allocator);
+    }
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 2,
+        .new_tags = 1,
+        .creations = 1,
+        .children = 1,
+        .child_links = 1,
+        .wire_commands = 2,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.ElemId.fromRaw(1), "div");
+    const owned = try allocator.dupe(ids.ElemId, &.{ids.ElemId.fromRaw(1)});
+    fault.configure(1);
+    try plan.addOwnedChildren(&cache, ids.root_elem, owned);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ids.ElemId.fromRaw(1)}, plan.children.items[0].next);
+
+    plan.apply(&cache);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ids.ElemId.fromRaw(1)}, cache.nodes.items[0].children.items);
+    try std.testing.expectEqual(@as(?ids.ElemId, ids.root_elem), cache.nodes.items[1].parent_id);
+    fault.configure(null);
+}
+
+test "prepared render splice leaves rejected owned children with the caller" {
+    const allocator = std.testing.allocator;
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        for (cache.nodes.items) |*node| node.deinit(allocator);
+        cache.nodes.deinit(allocator);
+        var tags = cache.interned_tags.valueIterator();
+        while (tags.next()) |tag| allocator.free(tag.*);
+        cache.interned_tags.deinit(allocator);
+    }
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 2,
+        .new_tags = 1,
+        .creations = 1,
+        .children = 1,
+        .child_links = 2,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.ElemId.fromRaw(1), "div");
+    const owned = try allocator.dupe(ids.ElemId, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(1) });
+    defer allocator.free(owned);
+    try std.testing.expectError(error.DuplicateChild, plan.addOwnedChildren(&cache, ids.root_elem, owned));
+    try std.testing.expectEqual(@as(usize, 0), plan.children.items.len);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(1) }, owned);
 }
 
 test "prepared render node removal defers ownership and applies allocation free" {
