@@ -718,6 +718,22 @@ rows_release_replaced_slots = |old, build| {
 	$slots
 }
 
+## Retire every live slot without repeatedly path-copying the order tree or
+## deleting exact-key index entries. The old generation retains its immutable
+## storage; this produces the independently owned slot generation used by the
+## new empty collection.
+rows_release_all_slots : RowsStorage(item) -> RowsSlotStore(item)
+rows_release_all_slots = |old| {
+	var $slots = old.slots
+	var $index = 0
+	while $index < rows_order_len(old.order) {
+		slot = rows_order_get(old.order, $index) ?? crash "Rows clear order contained an invalid slot"
+		$slots = rows_slots_release($slots, slot) ?? crash "Rows clear retired a stale slot"
+		$index = $index + 1
+	}
+	$slots
+}
+
 rows_reverse : List(a) -> List(a)
 rows_reverse = |items| {
 	var $reversed = []
@@ -1312,39 +1328,67 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 		where [item.is_eq : item, item -> Bool]
 	apply = |rows, edits| {
 		Rows(old) = rows
-		removed : Dict(Str, RowsEntry(item))
-		removed = Dict.empty()
-		state = {
-			order: old.order,
-			slots: old.slots,
-			key_index: old.key_index,
-			key_bytes: old.snapshot_key_bytes,
-			removed,
-			touched: Dict.empty(),
-			touched_rev: [],
-		}
-		applied = rows_apply_many(state, old.key_of, edits, 0, edits.len())?
-		if rows_touched_equal(old, applied) {
-			Ok(rows)
-		} else {
-			normalized = rows_canonical_transitions(old, applied)
-			metadata = rows_delta_metadata(normalized)
-			final_slots = rows_release_absent_touched(applied)
+		direct_clear =
+			if edits.len() == 1 {
+				match edits.get(0) {
+					Ok(Clear) => True
+					_ => False
+				}
+			} else {
+				False
+			}
+		if direct_clear and rows_order_len(old.order) > 0 {
+			empty_indexes = rows_empty_indexes()
 			Ok(
 				Rows({
 					token: rows_generation_callable(),
 					parent: Parent(old.token),
-					transition: Delta(normalized),
+					transition: Delta([ClearRows]),
 					key_of: old.key_of,
-					order: applied.order,
-					slots: final_slots,
-					key_index: applied.key_index,
-					snapshot_key_bytes: applied.key_bytes,
-					op_count: metadata.op_count,
-					delta_key_count: metadata.delta_key_count,
-					delta_key_bytes: metadata.delta_key_bytes,
+					order: rows_order_empty(),
+					slots: rows_release_all_slots(old),
+					key_index: empty_indexes.key_index,
+					snapshot_key_bytes: 0,
+					op_count: 1,
+					delta_key_count: 0,
+					delta_key_bytes: 0,
 				}),
 			)
+		} else {
+			removed : Dict(Str, RowsEntry(item))
+			removed = Dict.empty()
+			state = {
+				order: old.order,
+				slots: old.slots,
+				key_index: old.key_index,
+				key_bytes: old.snapshot_key_bytes,
+				removed,
+				touched: Dict.empty(),
+				touched_rev: [],
+			}
+			applied = rows_apply_many(state, old.key_of, edits, 0, edits.len())?
+			if rows_touched_equal(old, applied) {
+				Ok(rows)
+			} else {
+				normalized = rows_canonical_transitions(old, applied)
+				metadata = rows_delta_metadata(normalized)
+				final_slots = rows_release_absent_touched(applied)
+				Ok(
+					Rows({
+						token: rows_generation_callable(),
+						parent: Parent(old.token),
+						transition: Delta(normalized),
+						key_of: old.key_of,
+						order: applied.order,
+						slots: final_slots,
+						key_index: applied.key_index,
+						snapshot_key_bytes: applied.key_bytes,
+						op_count: metadata.op_count,
+						delta_key_count: metadata.delta_key_count,
+						delta_key_bytes: metadata.delta_key_bytes,
+					}),
+				)
+			}
 		}
 	}
 
@@ -1781,6 +1825,46 @@ expect {
 	Rows(storage) = $rows
 
 	storage.slots.next_index == 3 and storage.slots.chunks.len() == 1 and storage.order.nodes.len() <= 3 and storage.order.parents.len() <= 3
+}
+
+## A 10k direct clear publishes one structural operation, retires every old
+## slot generation, and leaves the reusable slot store at a fixed high-water
+## mark instead of repeatedly rewriting the persistent order and key index.
+expect {
+	var $items = []
+	var $index = 0
+	while $index < 10000 {
+		key = $index.to_str()
+		$items = $items.prepend(rows_test_item(key, $index))
+		$index = $index + 1
+	}
+	initial = Rows.from_list($items, rows_test_key)?
+	old_slot = Rows.platform_slot_at(initial, 0)?
+	cleared = Rows.apply(initial, [Clear])?
+	description = Rows.platform_description(cleared)
+	transition_count = Rows.platform_copy_delta(
+		cleared,
+		0,
+		|count, transition|
+			count
+				+ match transition {
+					ClearRows => 1
+					_ => 1000
+				},
+	)
+	Rows(cleared_storage) = cleared
+	rebuilt = Rows.replace_all(cleared, $items)?
+	Rows(rebuilt_storage) = rebuilt
+	old_slot_retired =
+		match Rows.platform_item_for_slot(cleared, old_slot) {
+			Err(_) => True
+			Ok(_) => False
+		}
+
+	Rows(initial_storage) = initial
+	bulk_shape = initial_storage.order.nodes.len() == 324 and initial_storage.order.parents.len() == 324 and initial_storage.order.slot_leaf.len() == 10000 and initial_storage.order.next_node == 325 and initial_storage.order.free_nodes.is_empty()
+
+	cleared.len() == 0 and description.kind == Delta and description.op_count == 1 and transition_count == 1 and old_slot_retired and cleared_storage.slots.next_index == 10001 and rebuilt_storage.slots.next_index == 10001 and rebuilt.len() == 10000 and bulk_shape
 }
 
 ## Invalid edits return structured errors at the narrow public boundary.
