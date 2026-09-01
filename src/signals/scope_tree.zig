@@ -79,6 +79,17 @@ pub fn Scope(comptime Row: type) type {
     return struct {
         scope_id: ScopeId,
         parent_scope_id: ?ScopeId,
+        /// First active child in construction order. Child topology is kept
+        /// explicitly so subtree lifecycle work never searches the dense
+        /// scope table for descendants.
+        first_child_scope_id: ?ScopeId = null,
+        /// Last active child in construction order, used for allocation-free
+        /// append when a new child scope is published.
+        last_child_scope_id: ?ScopeId = null,
+        /// Previous active child owned by the same parent.
+        previous_sibling_scope_id: ?ScopeId = null,
+        /// Next active child owned by the same parent.
+        next_sibling_scope_id: ?ScopeId = null,
         step: Step(Row),
         lifecycle: Lifecycle = .active,
     };
@@ -119,9 +130,13 @@ pub fn internRoot(comptime Row: type, allocator: std.mem.Allocator, scopes: *std
 pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: ScopeId, site_ordinal: SiteOrdinal, reuse_barrier: Generation) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
 
-    for (scopes.items) |scope| {
-        if (!scope.lifecycle.isActive()) continue;
-        if (scope.parent_scope_id != parent_scope_id) continue;
+    var child_scope_id = scopes.items[parent_scope_id.index()].first_child_scope_id;
+    while (child_scope_id) |id| {
+        const scope = scopes.items[id.index()];
+        if (!scope.lifecycle.isActive()) {
+            child_scope_id = scope.next_sibling_scope_id;
+            continue;
+        }
         switch (scope.step) {
             .component => |step| {
                 if (step.site_ordinal == site_ordinal) {
@@ -130,23 +145,28 @@ pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes:
             },
             .root, .when_branch, .each_row => {},
         }
+        child_scope_id = scope.next_sibling_scope_id;
     }
 
     for (scopes.items) |*scope| {
         if (scope.lifecycle.isActive()) continue;
         if (scope.lifecycle.blocksReuse(reuse_barrier)) continue;
-        scope.parent_scope_id = parent_scope_id;
-        scope.step = .{ .component = .{ .site_ordinal = site_ordinal } };
-        scope.lifecycle = .active;
-        return .{ .scope_id = scope.scope_id, .created = true };
+        const scope_id = scope.scope_id;
+        publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
+            .scope_id = scope_id,
+            .parent_scope_id = parent_scope_id,
+            .step = .{ .component = .{ .site_ordinal = site_ordinal } },
+        });
+        return .{ .scope_id = scope_id, .created = true };
     }
 
     const scope_id = ScopeId.fromIndex(scopes.items.len);
-    scopes.append(allocator, .{
+    scopes.ensureUnusedCapacity(allocator, 1) catch return Error.OutOfMemory;
+    publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
         .scope_id = scope_id,
         .parent_scope_id = parent_scope_id,
         .step = .{ .component = .{ .site_ordinal = site_ordinal } },
-    }) catch return Error.OutOfMemory;
+    });
     return .{ .scope_id = scope_id, .created = true };
 }
 
@@ -154,9 +174,13 @@ pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes:
 pub fn internWhenBranch(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: ScopeId, site_ordinal: SiteOrdinal, branch: Branch, reuse_barrier: Generation) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
 
-    for (scopes.items) |scope| {
-        if (!scope.lifecycle.isActive()) continue;
-        if (scope.parent_scope_id != parent_scope_id) continue;
+    var child_scope_id = scopes.items[parent_scope_id.index()].first_child_scope_id;
+    while (child_scope_id) |id| {
+        const scope = scopes.items[id.index()];
+        if (!scope.lifecycle.isActive()) {
+            child_scope_id = scope.next_sibling_scope_id;
+            continue;
+        }
         switch (scope.step) {
             .when_branch => |step| {
                 if (step.site_ordinal == site_ordinal and step.branch == branch) {
@@ -165,23 +189,28 @@ pub fn internWhenBranch(comptime Row: type, allocator: std.mem.Allocator, scopes
             },
             .root, .component, .each_row => {},
         }
+        child_scope_id = scope.next_sibling_scope_id;
     }
 
     for (scopes.items) |*scope| {
         if (scope.lifecycle.isActive()) continue;
         if (scope.lifecycle.blocksReuse(reuse_barrier)) continue;
-        scope.parent_scope_id = parent_scope_id;
-        scope.step = .{ .when_branch = .{ .site_ordinal = site_ordinal, .branch = branch } };
-        scope.lifecycle = .active;
-        return .{ .scope_id = scope.scope_id, .created = true };
+        const scope_id = scope.scope_id;
+        publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
+            .scope_id = scope_id,
+            .parent_scope_id = parent_scope_id,
+            .step = .{ .when_branch = .{ .site_ordinal = site_ordinal, .branch = branch } },
+        });
+        return .{ .scope_id = scope_id, .created = true };
     }
 
     const scope_id = ScopeId.fromIndex(scopes.items.len);
-    scopes.append(allocator, .{
+    scopes.ensureUnusedCapacity(allocator, 1) catch return Error.OutOfMemory;
+    publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
         .scope_id = scope_id,
         .parent_scope_id = parent_scope_id,
         .step = .{ .when_branch = .{ .site_ordinal = site_ordinal, .branch = branch } },
-    }) catch return Error.OutOfMemory;
+    });
     return .{ .scope_id = scope_id, .created = true };
 }
 
@@ -192,10 +221,13 @@ pub fn appendEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *
     for (scopes.items) |*scope| {
         if (scope.lifecycle.isActive()) continue;
         if (scope.lifecycle.blocksReuse(reuse_barrier)) continue;
-        scope.parent_scope_id = parent_scope_id;
-        scope.step = .{ .each_row = row };
-        scope.lifecycle = .active;
-        return .{ .scope_id = scope.scope_id, .created = true };
+        const scope_id = scope.scope_id;
+        publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
+            .scope_id = scope_id,
+            .parent_scope_id = parent_scope_id,
+            .step = .{ .each_row = row },
+        });
+        return .{ .scope_id = scope_id, .created = true };
     }
 
     return appendFreshEachRow(Row, allocator, scopes, parent_scope_id, row);
@@ -205,11 +237,12 @@ pub fn appendEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *
 pub fn appendFreshEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: ScopeId, row: Row) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
     const scope_id = ScopeId.fromIndex(scopes.items.len);
-    scopes.append(allocator, .{
+    scopes.ensureUnusedCapacity(allocator, 1) catch return Error.OutOfMemory;
+    publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
         .scope_id = scope_id,
         .parent_scope_id = parent_scope_id,
         .step = .{ .each_row = row },
-    }) catch return Error.OutOfMemory;
+    });
     return .{ .scope_id = scope_id, .created = true };
 }
 
@@ -217,15 +250,20 @@ pub fn appendFreshEachRow(comptime Row: type, allocator: std.mem.Allocator, scop
 pub fn activeWhenBranch(comptime Row: type, scopes: []const Scope(Row), parent_scope_id: ScopeId, site_ordinal: SiteOrdinal, branch: Branch) Error!?ScopeId {
     try validate(Row, scopes, parent_scope_id);
 
-    for (scopes) |scope| {
-        if (!scope.lifecycle.isActive()) continue;
-        if (scope.parent_scope_id != parent_scope_id) continue;
+    var child_scope_id = scopes[parent_scope_id.index()].first_child_scope_id;
+    while (child_scope_id) |id| {
+        const scope = scopes[id.index()];
+        if (!scope.lifecycle.isActive()) {
+            child_scope_id = scope.next_sibling_scope_id;
+            continue;
+        }
         switch (scope.step) {
             .when_branch => |step| {
                 if (step.site_ordinal == site_ordinal and step.branch == branch) return scope.scope_id;
             },
             .root, .component, .each_row => {},
         }
+        child_scope_id = scope.next_sibling_scope_id;
     }
     return null;
 }
@@ -235,9 +273,14 @@ pub fn activeEachRows(comptime Row: type, allocator: std.mem.Allocator, scopes: 
     var scope_ids: std.ArrayListUnmanaged(ScopeId) = .empty;
     errdefer scope_ids.deinit(allocator);
 
-    for (scopes) |scope| {
-        if (!scope.lifecycle.isActive()) continue;
-        if (scope.parent_scope_id != parent_scope_id) continue;
+    try validate(Row, scopes, parent_scope_id);
+    var child_scope_id = scopes[parent_scope_id.index()].first_child_scope_id;
+    while (child_scope_id) |id| {
+        const scope = scopes[id.index()];
+        if (!scope.lifecycle.isActive()) {
+            child_scope_id = scope.next_sibling_scope_id;
+            continue;
+        }
         switch (scope.step) {
             .each_row => |row| {
                 if (row.site_ordinal == site_ordinal) {
@@ -246,9 +289,78 @@ pub fn activeEachRows(comptime Row: type, allocator: std.mem.Allocator, scopes: 
             },
             .root, .component, .when_branch => {},
         }
+        child_scope_id = scope.next_sibling_scope_id;
     }
 
     return scope_ids.toOwnedSlice(allocator) catch return Error.OutOfMemory;
+}
+
+/// Publishes a prepared active scope and attaches it to its parent's intrusive
+/// child list without allocating. `original_scope_len` separates initialized
+/// reusable slots from the fresh suffix whose capacity the caller reserved.
+pub fn publishScopeAssumeCapacity(comptime Row: type, scopes: *std.ArrayListUnmanaged(Scope(Row)), original_scope_len: usize, prepared: Scope(Row)) void {
+    const index = prepared.scope_id.index();
+    if (index < original_scope_len) {
+        const previous = &scopes.items[index];
+        if (previous.lifecycle.isActive()) @panic("prepared scope reused an active slot");
+        if (previous.first_child_scope_id != null or previous.last_child_scope_id != null) @panic("retired scope retained child topology");
+        detachFromParent(Row, scopes.items, prepared.scope_id);
+        scopes.items[index] = prepared;
+    } else {
+        if (index != scopes.items.len) @panic("prepared scope suffix was not contiguous");
+        scopes.appendAssumeCapacity(prepared);
+    }
+    attachToParent(Row, scopes.items, prepared.scope_id);
+}
+
+/// Retires one childless scope and unlinks it from its active parent. Subtree
+/// retirement calls this in post-order, making the operation allocation-free.
+pub fn retireScopeAssumeValid(comptime Row: type, scopes: []Scope(Row), scope_id: ScopeId, retirement_generation: Generation) void {
+    const scope = &scopes[scope_id.index()];
+    if (scope.scope_id != scope_id or !scope.lifecycle.isActive()) @panic("scope retirement no longer matched live state");
+    if (scope.first_child_scope_id != null or scope.last_child_scope_id != null) @panic("scope retired before its active children");
+    detachFromParent(Row, scopes, scope_id);
+    scope.lifecycle = .{ .retired = retirement_generation };
+}
+
+fn attachToParent(comptime Row: type, scopes: []Scope(Row), scope_id: ScopeId) void {
+    const scope = &scopes[scope_id.index()];
+    const parent_scope_id = scope.parent_scope_id orelse return;
+    const parent = &scopes[parent_scope_id.index()];
+    if (!parent.lifecycle.isActive()) @panic("active scope attached beneath an inactive parent");
+    if (scope.previous_sibling_scope_id != null or scope.next_sibling_scope_id != null) @panic("scope attached twice");
+
+    scope.previous_sibling_scope_id = parent.last_child_scope_id;
+    if (parent.last_child_scope_id) |last_scope_id| {
+        scopes[last_scope_id.index()].next_sibling_scope_id = scope_id;
+    } else {
+        parent.first_child_scope_id = scope_id;
+    }
+    parent.last_child_scope_id = scope_id;
+}
+
+fn detachFromParent(comptime Row: type, scopes: []Scope(Row), scope_id: ScopeId) void {
+    const scope = &scopes[scope_id.index()];
+    const parent_scope_id = scope.parent_scope_id orelse {
+        scope.previous_sibling_scope_id = null;
+        scope.next_sibling_scope_id = null;
+        return;
+    };
+    const parent = &scopes[parent_scope_id.index()];
+    const previous = scope.previous_sibling_scope_id;
+    const next = scope.next_sibling_scope_id;
+    if (previous) |previous_scope_id| {
+        scopes[previous_scope_id.index()].next_sibling_scope_id = next;
+    } else if (parent.first_child_scope_id == scope_id) {
+        parent.first_child_scope_id = next;
+    }
+    if (next) |next_scope_id| {
+        scopes[next_scope_id.index()].previous_sibling_scope_id = previous;
+    } else if (parent.last_child_scope_id == scope_id) {
+        parent.last_child_scope_id = previous;
+    }
+    scope.previous_sibling_scope_id = null;
+    scope.next_sibling_scope_id = null;
 }
 
 /// Tests explicit scope ancestry without consulting rendered DOM structure.

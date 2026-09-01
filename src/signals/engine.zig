@@ -6211,28 +6211,31 @@ pub fn Engine(comptime Ctx: type) type {
                 while (reserved_scope_iterator.next()) |scope_id| {
                     final_scope_len = @max(final_scope_len, std.math.add(usize, scope_id.index(), 1) catch @panic("prepared scope id overflow"));
                 }
-                self.engine.scopes.items.len = final_scope_len;
-                for (self.scopes.intents.items) |intent| {
-                    const scope: HostScope = switch (intent.key.kind) {
-                        .root => .{ .scope_id = intent.id, .parent_scope_id = null, .step = .root, .lifecycle = .active },
-                        .component => .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .component = .{ .site_ordinal = intent.key.ordinal } }, .lifecycle = .active },
-                        .when_branch => |branch| .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .when_branch = .{ .site_ordinal = intent.key.ordinal, .branch = branch } }, .lifecycle = .active },
+                // Scope and each-row reservations share one dense id space but
+                // are journaled separately. Merge their already-monotonic ids
+                // so fresh slots remain a contiguous suffix while publication
+                // also attaches every scope to the durable child topology.
+                var scope_intent_index: usize = 0;
+                var each_row_scope_index: usize = 0;
+                while (scope_intent_index < self.scopes.intents.items.len or each_row_scope_index < self.prepared_each_row_scopes.items.len) {
+                    const uses_scope_intent = each_row_scope_index == self.prepared_each_row_scopes.items.len or (scope_intent_index < self.scopes.intents.items.len and self.scopes.intents.items[scope_intent_index].id.raw() < self.prepared_each_row_scopes.items[each_row_scope_index].scope_id.raw());
+                    const scope: HostScope = if (uses_scope_intent) scope: {
+                        const intent = self.scopes.intents.items[scope_intent_index];
+                        scope_intent_index += 1;
+                        break :scope switch (intent.key.kind) {
+                            .root => .{ .scope_id = intent.id, .parent_scope_id = null, .step = .root, .lifecycle = .active },
+                            .component => .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .component = .{ .site_ordinal = intent.key.ordinal } }, .lifecycle = .active },
+                            .when_branch => |branch| .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .when_branch = .{ .site_ordinal = intent.key.ordinal, .branch = branch } }, .lifecycle = .active },
+                        };
+                    } else scope: {
+                        const prepared_scope = self.prepared_each_row_scopes.items[each_row_scope_index];
+                        each_row_scope_index += 1;
+                        break :scope prepared_scope;
                     };
-                    const scope_index = intent.id.index();
-                    if (scope_index < original_scope_len) {
-                        if (self.engine.scopes.items[scope_index].lifecycle.isActive()) @panic("staged scope reused an active slot");
-                        self.engine.scopes.items[scope_index] = scope;
-                    } else {
-                        self.engine.scopes.items[scope_index] = scope;
-                    }
+                    scope_tree.publishScopeAssumeCapacity(HostEachRowScopeStep, &self.engine.scopes, original_scope_len, scope);
                     self.engine.recordScopeCreated();
                 }
-                for (self.prepared_each_row_scopes.items) |scope| {
-                    const scope_index = scope.scope_id.index();
-                    if (scope_index < original_scope_len and self.engine.scopes.items[scope_index].lifecycle.isActive()) @panic("staged each-row scope reused an active slot");
-                    self.engine.scopes.items[scope_index] = scope;
-                    self.engine.recordScopeCreated();
-                }
+                if (self.engine.scopes.items.len != final_scope_len) @panic("prepared scope suffix did not publish contiguously");
                 // Rows an each mounted inside this collection are created rows
                 // just like the rows a keyed reconciliation creates; a spec
                 // counting a new outer row expects its nested rows with it.
