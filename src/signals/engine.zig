@@ -749,6 +749,7 @@ pub fn Engine(comptime Ctx: type) type {
         each_generation_ids_by_site_index: std.ArrayListUnmanaged(?each_generation.GenerationId) = .empty,
         active_each_candidate_bindings: ?*const each_generation.CandidateBindings = null,
         active_each_candidate_generation: ?*each_generation.Generation = null,
+        active_each_candidate_rows_site_id: ?rows_site_store.SiteId = null,
         active_each_prepared_bindings: ?*const std.AutoHashMapUnmanaged(row_handles.RowHandleId, each_generation.RowBinding) = null,
         active_each_prepared_generations: ?*const std.AutoHashMapUnmanaged(each_generation.GenerationId, *each_generation.Generation) = null,
         node_identities: std.ArrayListUnmanaged(HostNodeIdentity) = .empty,
@@ -1421,6 +1422,11 @@ pub fn Engine(comptime Ctx: type) type {
                         const key = delta.keys.key(value.key_index) orelse return error.InvalidDescriptor;
                         const row_id = (rows_store.findItemSlot(rows_site_id, value.slot) catch return error.InvalidDescriptor) orelse return error.InvalidDescriptor;
                         const row = rows_store.getRowConst(rows_site_id, row_id) catch return error.InvalidDescriptor;
+                        if (row.metadata.row_handle == 0) return error.InvalidDescriptor;
+                        inputs.candidate_bindings.putAssumeCapacity(row_handles.RowHandleId.fromRaw(row.metadata.row_handle), .{
+                            .generation_id = inputs.generation.id,
+                            .item_slot = value.slot,
+                        }) catch return error.InvalidDescriptor;
                         break :blk .{ .update = .{
                             .slot = value.slot,
                             .key = key,
@@ -1448,6 +1454,10 @@ pub fn Engine(comptime Ctx: type) type {
                             error.OutOfMemory => error.OutOfMemory,
                             error.ResourceLimit => error.ResourceLimit,
                         };
+                        inputs.candidate_bindings.putAssumeCapacity(row_handle, .{
+                            .generation_id = inputs.generation.id,
+                            .item_slot = value.slot,
+                        }) catch return error.InvalidDescriptor;
                         break :blk .{ .insert = .{
                             .slot = value.slot,
                             .before_slot = value.before_slot,
@@ -1501,17 +1511,12 @@ pub fn Engine(comptime Ctx: type) type {
                 while (candidate.next()) |row| : (index += 1) {
                     if (index >= next_scope_ids.len or row.metadata.row_handle == 0 or row.metadata.item_slot == 0) return error.InvalidDescriptor;
                     const scope_id = ids.ScopeId.fromRaw(row.metadata.scope_id);
-                    const row_handle = row_handles.RowHandleId.fromRaw(row.metadata.row_handle);
                     next_scope_ids[index] = scope_id;
                     key_hashes[index] = std.hash.Wyhash.hash(0, row.key);
                     item_changed[index] = row.item_changed;
                     scope_created[index] = row.created;
                     if (row.created) created_count += 1;
                     if (scope_id.raw() > highest_scope_id.raw()) highest_scope_id = scope_id;
-                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{
-                        .generation_id = inputs.generation.id,
-                        .item_slot = row.metadata.item_slot,
-                    }) catch return error.InvalidDescriptor;
                 }
                 if (index != next_scope_ids.len) return error.InvalidDescriptor;
 
@@ -1856,11 +1861,14 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.replacements[0..self.prepared_len], sites, eaches, 0..) |replacement, site, each, index| {
                     const previous_bindings = self.engine.active_each_candidate_bindings;
                     const previous_generation = self.engine.active_each_candidate_generation;
+                    const previous_rows_site_id = self.engine.active_each_candidate_rows_site_id;
                     self.engine.active_each_candidate_bindings = &self.rows[index].inputs.candidate_bindings;
                     self.engine.active_each_candidate_generation = self.rows[index].inputs.generation;
+                    self.engine.active_each_candidate_rows_site_id = self.rows[index].inputs.rows_site_id;
                     defer {
                         self.engine.active_each_candidate_bindings = previous_bindings;
                         self.engine.active_each_candidate_generation = previous_generation;
+                        self.engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                     }
                     try replacement.collectRowsInto(site, each.*, &self.rows[index].rows, owner, dirty_source_node_ids);
                 }
@@ -3227,7 +3235,7 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         fn deinitEachGenerationOwnership(self: *Self, allocator: std.mem.Allocator, ctx: Ctx.Handle, roc_host: *abi.RocHost) void {
-            if (self.active_each_candidate_bindings != null or self.active_each_candidate_generation != null or self.active_each_prepared_bindings != null or self.active_each_prepared_generations != null) @panic("each generation ownership cleared during active reconciliation");
+            if (self.active_each_candidate_bindings != null or self.active_each_candidate_generation != null or self.active_each_candidate_rows_site_id != null or self.active_each_prepared_bindings != null or self.active_each_prepared_generations != null) @panic("each generation ownership cleared during active reconciliation");
 
             self.committed_row_bindings.deinit(allocator);
             self.row_handle_registry.deinit(allocator);
@@ -5160,11 +5168,14 @@ pub fn Engine(comptime Ctx: type) type {
 
                 const previous_bindings = self.engine.active_each_candidate_bindings;
                 const previous_generation = self.engine.active_each_candidate_generation;
+                const previous_rows_site_id = self.engine.active_each_candidate_rows_site_id;
                 self.engine.active_each_candidate_bindings = &evaluated.inputs.candidate_bindings;
                 self.engine.active_each_candidate_generation = evaluated.inputs.generation;
+                self.engine.active_each_candidate_rows_site_id = evaluated.inputs.rows_site_id;
                 defer {
                     self.engine.active_each_candidate_bindings = previous_bindings;
                     self.engine.active_each_candidate_generation = previous_generation;
+                    self.engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
                 for (evaluated.rows, 0..) |row, row_index| {
                     const row_scope_id = try self.reserveEachRowScopeGeneration(scope_id, site_ordinal, row.key_hash, row.row_handle);
@@ -5322,11 +5333,14 @@ pub fn Engine(comptime Ctx: type) type {
                 var total: StaticRootCounts = .{};
                 const previous_bindings = engine_ptr.active_each_candidate_bindings;
                 const previous_generation = engine_ptr.active_each_candidate_generation;
+                const previous_rows_site_id = engine_ptr.active_each_candidate_rows_site_id;
                 engine_ptr.active_each_candidate_bindings = &inputs.candidate_bindings;
                 engine_ptr.active_each_candidate_generation = inputs.generation;
+                engine_ptr.active_each_candidate_rows_site_id = inputs.rows_site_id;
                 defer {
                     engine_ptr.active_each_candidate_bindings = previous_bindings;
                     engine_ptr.active_each_candidate_generation = previous_generation;
+                    engine_ptr.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
                 for (rows.next_scope_ids, rows.scope_created, rows.row_items_changed, 0..) |row_scope_id, created, changed, index| {
                     recollected[index] = !created and (changed or engine_ptr.scopeSubtreeHasDirtyStructuralSource(&engine_ptr.active_stream, row_scope_id.raw(), dirty_source_node_ids));
@@ -6864,11 +6878,14 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, rows: *const each_runtime.PreparedRowSync, inputs: *PreparedEachInputs, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, cache_overlay: ?*const signal_records.PreparedCacheUpdates, state_update: ?PreparedExternalState) CollectionError!*@This() {
                 const previous_bindings = engine.active_each_candidate_bindings;
                 const previous_generation = engine.active_each_candidate_generation;
+                const previous_rows_site_id = engine.active_each_candidate_rows_site_id;
                 engine.active_each_candidate_bindings = &inputs.candidate_bindings;
                 engine.active_each_candidate_generation = inputs.generation;
+                engine.active_each_candidate_rows_site_id = inputs.rows_site_id;
                 defer {
                     engine.active_each_candidate_bindings = previous_bindings;
                     engine.active_each_candidate_generation = previous_generation;
+                    engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
                 const plan = try prepareEvaluated(engine, ctx, roc_host, each, rows, inputs);
                 errdefer plan.deinit();
@@ -8334,11 +8351,14 @@ pub fn Engine(comptime Ctx: type) type {
                 const allocator = Ctx.allocator(ctx);
                 const previous_bindings = engine.active_each_candidate_bindings;
                 const previous_generation = engine.active_each_candidate_generation;
+                const previous_rows_site_id = engine.active_each_candidate_rows_site_id;
                 engine.active_each_candidate_bindings = &inputs.candidate_bindings;
                 engine.active_each_candidate_generation = inputs.generation;
+                engine.active_each_candidate_rows_site_id = inputs.rows_site_id;
                 defer {
                     engine.active_each_candidate_bindings = previous_bindings;
                     engine.active_each_candidate_generation = previous_generation;
+                    engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
                 // The site's parent and the parents of every live nested
                 // site take their final child order from the topology.
@@ -11246,9 +11266,12 @@ pub fn Engine(comptime Ctx: type) type {
         fn resolveEachRowBinding(self: *Self, row_handle: row_handles.RowHandleId) ?each_generation.RowBinding {
             if (!self.row_handle_registry.contains(row_handle)) return null;
             if (self.active_each_prepared_bindings) |prepared| if (prepared.get(row_handle)) |binding| return binding;
-            if (self.active_each_candidate_bindings) |candidate| return candidate.resolve(&self.committed_row_bindings, row_handle);
+            if (self.active_each_candidate_bindings) |candidate| if (candidate.candidate.get(row_handle)) |binding| return binding;
             if (self.rows_store) |*store| if (store.findRowHandle(row_handle.raw())) |location| {
-                const generation_id = self.each_generation_ids_by_rows_site.get(location.site_id) orelse return null;
+                const generation_id = if (self.active_each_candidate_rows_site_id == location.site_id)
+                    (if (self.active_each_candidate_generation) |candidate| candidate.id else return null)
+                else
+                    (self.each_generation_ids_by_rows_site.get(location.site_id) orelse return null);
                 const row = store.getRowConst(location.site_id, location.row_id) catch return null;
                 return .{ .generation_id = generation_id, .item_slot = row.metadata.item_slot };
             };
