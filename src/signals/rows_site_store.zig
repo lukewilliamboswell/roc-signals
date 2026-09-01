@@ -101,9 +101,18 @@ fn SlotPool(comptime Id: type, comptime Payload: type) type {
                 slot.state = .retired;
             } else {
                 slot.generation += 1;
-                slot.state = .{ .free = self.free_head };
-                self.free_head = @intCast(index);
-                self.free_count += 1;
+                // A transition may have preclaimed the identity produced by
+                // this exact removal. Keep that slot detached from the global
+                // free list so overlapping prepared transitions cannot see or
+                // reorder the claim before its owner publishes it.
+                if (self.reserved_free.get(@intCast(index))) |reserved_generation| {
+                    if (reserved_generation != slot.generation) @panic("Rows recycled reservation generation mismatch");
+                    slot.state = .{ .free = null };
+                } else {
+                    slot.state = .{ .free = self.free_head };
+                    self.free_head = @intCast(index);
+                    self.free_count += 1;
+                }
             }
             return payload;
         }
@@ -127,7 +136,9 @@ fn SlotPool(comptime Id: type, comptime Payload: type) type {
             const final_slot_count = std.math.add(usize, self.slots.items.len, pending_and_new) catch return error.ResourceLimit;
             if (final_slot_count > self.slot_limit or final_slot_count > max_slot_count) return error.ResourceLimit;
             try self.slots.ensureTotalCapacity(allocator, final_slot_count);
-            try self.reserved_free.ensureUnusedCapacity(allocator, std.math.cast(u32, reserved_free_count) orelse return error.ResourceLimit);
+            const removed_claim_count = @min(reusable_removed, claims.len);
+            const reservation_count = std.math.add(usize, reserved_free_count, removed_claim_count) catch return error.ResourceLimit;
+            try self.reserved_free.ensureUnusedCapacity(allocator, std.math.cast(u32, reservation_count) orelse return error.ResourceLimit);
 
             var claim_index: usize = 0;
             var removed_index = removed.len;
@@ -138,6 +149,7 @@ fn SlotPool(comptime Id: type, comptime Payload: type) type {
                 const generation = self.slots.items[slot_index].generation;
                 if (generation == std.math.maxInt(u32)) continue;
                 claims[claim_index] = Id.init(slot_index, generation + 1);
+                self.reserved_free.putAssumeCapacity(@intCast(slot_index), generation + 1);
                 claim_index += 1;
             }
 
@@ -171,7 +183,7 @@ fn SlotPool(comptime Id: type, comptime Payload: type) type {
                 if (generation != expected.generation()) @panic("Rows reserved free identity changed generation");
                 if (!self.reserved_free.remove(expected_index_u32)) unreachable;
                 const slot = &self.slots.items[expected_index];
-                if (slot.generation != generation or slot.state != .free) @panic("Rows reserved free identity became active");
+                if (slot.generation != generation or slot.state != .free) @panic("Rows reserved identity was not retired before insertion");
                 slot.state = .{ .active = payload };
                 return;
             }
@@ -208,10 +220,18 @@ fn SlotPool(comptime Id: type, comptime Payload: type) type {
                     if (generation != claim.generation()) @panic("Rows released a mismatched free claim");
                     _ = self.reserved_free.remove(index_u32);
                     const slot = &self.slots.items[index];
-                    if (slot.state != .free) @panic("Rows released free claim became active");
-                    slot.state = .{ .free = self.free_head };
-                    self.free_head = @intCast(index);
-                    self.free_count += 1;
+                    // A claim sourced from this transition's removals still
+                    // names an active row when preparation aborts. A claim
+                    // sourced from the pre-existing free list was detached
+                    // during reservation and must be linked back.
+                    if (slot.generation == generation) {
+                        if (slot.state != .free) @panic("Rows released free claim became active");
+                        slot.state = .{ .free = self.free_head };
+                        self.free_head = @intCast(index);
+                        self.free_count += 1;
+                    } else if (slot.generation + 1 != generation or slot.state != .active) {
+                        @panic("Rows released recycled claim changed identity");
+                    }
                 } else if (claim.generation() == 1 and index >= self.slots.items.len) append_count += 1;
             }
             if (append_count > self.reserved_append) @panic("Rows released more append claims than remained reserved");
@@ -505,6 +525,32 @@ test "Rows row claims reuse retired slots without wrapping generations" {
     try std.testing.expectEqual(first_claim[0].slotIndex(), replacement[0].slotIndex());
     try std.testing.expectEqual(first_claim[0].generation() + 1, replacement[0].generation());
     try std.testing.expectError(error.InvalidRow, store.getRow(site, first_claim[0]));
+}
+
+test "overlapping transitions keep recycled row claims independent of commit order" {
+    var store = Store.initWithLimits(std.testing.allocator, 2, 2);
+    defer store.deinit();
+    const first_site = try store.createSite(try OwnerToken.fromRaw(1));
+
+    var initial: [2]RowId = undefined;
+    try store.prepareRowClaims(first_site, &.{}, &initial);
+    store.insertPreparedRow(first_site, initial[0], .{ .site_id = first_site, .key = try std.testing.allocator.dupe(u8, "a"), .metadata = .{ .item_slot = 1, .scope_id = 1 } });
+    store.insertPreparedRow(first_site, initial[1], .{ .site_id = first_site, .key = try std.testing.allocator.dupe(u8, "b"), .metadata = .{ .item_slot = 2, .scope_id = 2 } });
+
+    var first_replacement: [1]RowId = undefined;
+    try store.prepareRowClaims(first_site, &.{initial[0]}, &first_replacement);
+    var second_replacement: [1]RowId = undefined;
+    try store.prepareRowClaims(first_site, &.{initial[1]}, &second_replacement);
+
+    std.testing.allocator.free(store.removePreparedRow(first_site, initial[0]));
+    std.testing.allocator.free(store.removePreparedRow(first_site, initial[1]));
+    store.insertPreparedRow(first_site, second_replacement[0], .{ .site_id = first_site, .key = try std.testing.allocator.dupe(u8, "next-b"), .metadata = .{ .item_slot = 4, .scope_id = 4 } });
+    store.insertPreparedRow(first_site, first_replacement[0], .{ .site_id = first_site, .key = try std.testing.allocator.dupe(u8, "next-a"), .metadata = .{ .item_slot = 3, .scope_id = 3 } });
+
+    try std.testing.expectEqual(initial[0].slotIndex(), first_replacement[0].slotIndex());
+    try std.testing.expectEqual(initial[1].slotIndex(), second_replacement[0].slotIndex());
+    std.testing.allocator.free(store.removePreparedRow(first_site, first_replacement[0]));
+    std.testing.allocator.free(store.removePreparedRow(first_site, second_replacement[0]));
 }
 
 test "overlapping aborted row claims return free identities without slot growth" {

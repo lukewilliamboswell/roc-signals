@@ -78,6 +78,8 @@ pub const CandidateRow = struct {
     row_id: ?RowId,
     key: []const u8,
     metadata: RowMetadata,
+    created: bool,
+    item_changed: bool,
 };
 
 // Engine publication mapping (kept here beside the ownership boundary):
@@ -131,6 +133,7 @@ const Shadow = struct {
     next: ?NodeRef,
     live: bool,
     was_live: bool,
+    item_changed: bool,
 };
 
 const Fresh = struct {
@@ -153,12 +156,53 @@ pub const CandidateIterator = struct {
             if (!shadow.live) @panic("candidate order referenced a removed row");
             self.next_ref = shadow.next;
             const row_id = if (isFresh(ref)) self.transition.fresh.items[freshIndex(ref)].claim else existingId(ref);
-            return .{ .row_id = row_id, .key = shadow.key, .metadata = shadow.metadata };
+            return .{
+                .row_id = row_id,
+                .key = shadow.key,
+                .metadata = shadow.metadata,
+                .created = isFresh(ref),
+                .item_changed = shadow.item_changed,
+            };
         }
         if (isFresh(ref)) @panic("candidate order omitted a provisional shadow");
         const row = self.transition.store.getRowConst(self.transition.site_id, existingId(ref)) catch @panic("candidate order referenced a stale committed row");
         self.next_ref = if (row.next) |next_row| existingRef(next_row) else null;
-        return .{ .row_id = existingId(ref), .key = row.key, .metadata = row.metadata };
+        return .{
+            .row_id = existingId(ref),
+            .key = row.key,
+            .metadata = row.metadata,
+            .created = false,
+            .item_changed = false,
+        };
+    }
+};
+
+/// Allocation-free traversal over changed surviving rows in the overlay.
+///
+/// The iterator examines only transition shadows, whose count is bounded by
+/// the normalized edit operands and the intrusive-order neighbors they touch.
+/// Created rows are excluded because they have no committed row source to
+/// dirty; removed rows are excluded because their scopes retire at commit.
+pub const ChangedCandidateIterator = struct {
+    transition: *const PreparedTransition,
+    touched_index: usize = 0,
+
+    /// Advances to the next changed row that survives the transition.
+    pub fn next(self: *ChangedCandidateIterator) ?CandidateRow {
+        while (self.touched_index < self.transition.touched.items.len) {
+            const ref = self.transition.touched.items[self.touched_index];
+            self.touched_index += 1;
+            const shadow = self.transition.shadows.get(ref) orelse @panic("Rows touched list omitted its shadow");
+            if (!shadow.live or !shadow.was_live or !shadow.item_changed) continue;
+            return .{
+                .row_id = existingId(ref),
+                .key = shadow.key,
+                .metadata = shadow.metadata,
+                .created = false,
+                .item_changed = true,
+            };
+        }
+        return null;
     }
 };
 
@@ -178,6 +222,7 @@ pub const PreparedTransition = struct {
     fresh: std.ArrayListUnmanaged(Fresh) = .empty,
     removed_rows: []RowId = &.{},
     created_rows: []CreatedRow = &.{},
+    removals_committed: bool = false,
     phase: Phase = .preparing,
 
     /// Validates and preflights a normalized sparse edit batch. A parent-token
@@ -264,16 +309,32 @@ pub const PreparedTransition = struct {
         return .{ .transition = self, .next_ref = self.head };
     }
 
+    /// Returns the exact final row count without building a positional array.
+    pub fn candidateLen(self: *const PreparedTransition) usize {
+        if (self.phase == .preparing) @panic("Rows candidate length read before preparation completed");
+        return self.len;
+    }
+
+    /// Bounds changed-row iteration by transition-local work rather than the
+    /// total candidate length. Callers may use this to reserve proportional
+    /// scratch before walking `iterateChangedCandidates`.
+    pub fn changedCandidateUpperBound(self: *const PreparedTransition) usize {
+        if (self.phase == .preparing) @panic("Rows changed-row bound read before preparation completed");
+        return self.touched.items.len;
+    }
+
+    /// Starts allocation-free traversal of changed surviving candidate rows.
+    pub fn iterateChangedCandidates(self: *const PreparedTransition) ChangedCandidateIterator {
+        if (self.phase == .preparing) @panic("Rows changed candidates iterated before preparation completed");
+        return .{ .transition = self };
+    }
+
     /// Publishes the candidate generation without allocation. Any scope/value
     /// preparation associated with `createdRows` and `removedRows` must already
     /// have succeeded before entering this irreversible boundary.
     pub fn commit(self: *PreparedTransition) void {
         if (self.phase != .prepared) @panic("Rows transition committed outside its prepared phase");
-
-        for (self.removed_rows) |row_id| {
-            const key = self.store.removePreparedRow(self.site_id, row_id);
-            self.store.allocator.free(key);
-        }
+        self.commitRemovalsEarly();
 
         for (self.fresh.items, 0..) |*fresh, index| {
             const ref = freshRef(index);
@@ -306,6 +367,19 @@ pub const PreparedTransition = struct {
         site.len = self.len;
         site.owner_token = self.next_owner;
         self.phase = .committed;
+    }
+
+    /// Retires rows before another transition publishes reused scope ids while
+    /// leaving fresh-row claims untouched and therefore in their globally
+    /// preflighted commit order. This is an irreversible commit-phase step.
+    pub fn commitRemovalsEarly(self: *PreparedTransition) void {
+        if (self.phase != .prepared) @panic("Rows removals committed outside the prepared phase");
+        if (self.removals_committed) return;
+        for (self.removed_rows) |row_id| {
+            const key = self.store.removePreparedRow(self.site_id, row_id);
+            self.store.allocator.free(key);
+        }
+        self.removals_committed = true;
     }
 
     /// Releases candidate keys and scratch state. Before commit this is an
@@ -383,6 +457,7 @@ pub const PreparedTransition = struct {
                 try self.putSlotState(shadow.metadata.item_slot, .{ .node = state.node, .live = false });
             }
             shadow.metadata = insert.metadata;
+            shadow.item_changed = true;
             try self.attachBefore(state.node, before);
             try self.putKeyState(shadow.key, .{ .node = state.node, .live = true });
             try self.putSlotState(insert.metadata.item_slot, .{ .node = state.node, .live = true });
@@ -402,6 +477,7 @@ pub const PreparedTransition = struct {
             .next = null,
             .live = false,
             .was_live = false,
+            .item_changed = true,
         });
         try self.attachBefore(ref, before);
         try self.putKeyState(owned_key, .{ .node = ref, .live = true });
@@ -429,6 +505,7 @@ pub const PreparedTransition = struct {
         const shadow = try self.getShadow(ref);
         if (shadow.metadata.item_slot != set.metadata.item_slot) return error.DuplicateSlot;
         shadow.metadata = set.metadata;
+        shadow.item_changed = true;
     }
 
     fn applyClear(self: *PreparedTransition) Error!void {
@@ -453,7 +530,7 @@ pub const PreparedTransition = struct {
         try self.fresh.append(self.allocator, .{ .key = owned_key, .metadata = metadata });
         errdefer _ = self.fresh.pop();
         const ref = freshRef(index);
-        try self.insertShadow(ref, .{ .key = owned_key, .metadata = metadata, .previous = null, .next = null, .live = false, .was_live = false });
+        try self.insertShadow(ref, .{ .key = owned_key, .metadata = metadata, .previous = null, .next = null, .live = false, .was_live = false, .item_changed = true });
         try self.attachBefore(ref, before);
         try self.putKeyState(owned_key, .{ .node = ref, .live = true });
         try self.putSlotState(slot, .{ .node = ref, .live = true });
@@ -495,6 +572,7 @@ pub const PreparedTransition = struct {
         if (!std.mem.eql(u8, shadow.key, key)) return error.KeyMismatch;
         if (shadow.metadata.scope_id != metadata.scope_id or shadow.metadata.row_handle != metadata.row_handle) return error.InvalidOwnerToken;
         shadow.metadata = metadata;
+        shadow.item_changed = true;
     }
 
     fn lookupSlot(self: *PreparedTransition, slot: u64) Error!?KeyState {
@@ -552,6 +630,7 @@ pub const PreparedTransition = struct {
             .next = if (row.next) |next| existingRef(next) else null,
             .live = true,
             .was_live = true,
+            .item_changed = false,
         });
         return self.shadows.getPtr(ref).?;
     }
@@ -740,9 +819,18 @@ test "canonical stable-slot delta resolves ranges without positional scans" {
     });
     defer next.deinit();
     var candidate = next.iterateCandidate();
-    try std.testing.expectEqualStrings("b", candidate.next().?.key);
-    try std.testing.expectEqualStrings("c", candidate.next().?.key);
-    try std.testing.expectEqualStrings("a", candidate.next().?.key);
+    const changed_b = candidate.next().?;
+    try std.testing.expectEqualStrings("b", changed_b.key);
+    try std.testing.expect(!changed_b.created);
+    try std.testing.expect(changed_b.item_changed);
+    const moved_c = candidate.next().?;
+    try std.testing.expectEqualStrings("c", moved_c.key);
+    try std.testing.expect(!moved_c.created);
+    try std.testing.expect(!moved_c.item_changed);
+    const moved_a = candidate.next().?;
+    try std.testing.expectEqualStrings("a", moved_a.key);
+    try std.testing.expect(!moved_a.created);
+    try std.testing.expect(!moved_a.item_changed);
     try std.testing.expect(candidate.next() == null);
     next.commit();
     try expectOrder(&store, site, &.{ "b", "c", "a" });
@@ -755,6 +843,62 @@ test "canonical stable-slot delta resolves ranges without positional scans" {
         .metadata = .{ .item_slot = 22, .scope_id = 2 },
     } }}));
     try expectOrder(&store, site, &.{ "b", "c", "a" });
+}
+
+test "changed candidate traversal and commit stay bounded by a one-row delta" {
+    const fault_allocator = @import("fault_allocator.zig");
+    const row_count = 512;
+    const changed_index = 317;
+
+    var fault = fault_allocator.FaultAllocator.init(std.testing.allocator);
+    var store = Store.init(fault.allocator());
+    defer {
+        fault.configure(null);
+        store.deinit();
+    }
+    const first_owner = try OwnerToken.fromRaw(80);
+    const site = try store.createSite(first_owner);
+
+    var key_buffers: [row_count][16]u8 = undefined;
+    var seed_edits: [row_count]StableEdit = undefined;
+    for (&key_buffers, &seed_edits, 0..) |*key_buffer, *edit, index| {
+        const key = try std.fmt.bufPrint(key_buffer, "row-{d}", .{index});
+        const slot: u64 = @intCast(index + 1);
+        edit.* = .{ .insert = .{
+            .slot = slot,
+            .before_slot = 0,
+            .key = key,
+            .metadata = .{ .item_slot = slot, .scope_id = slot, .row_handle = slot },
+        } };
+    }
+    var seed = try PreparedTransition.prepareStable(fault.allocator(), &store, site, first_owner, try OwnerToken.fromRaw(81), &seed_edits);
+    defer seed.deinit();
+    seed.commit();
+
+    const changed_slot: u64 = changed_index + 1;
+    const changed_key = try std.fmt.bufPrint(&key_buffers[changed_index], "row-{d}", .{changed_index});
+    var update = try PreparedTransition.prepareStable(fault.allocator(), &store, site, try OwnerToken.fromRaw(81), try OwnerToken.fromRaw(82), &.{.{ .update = .{
+        .slot = changed_slot,
+        .key = changed_key,
+        .metadata = .{ .item_slot = changed_slot, .scope_id = changed_slot, .row_handle = changed_slot, .render_root = 99 },
+    } }});
+    defer update.deinit();
+
+    try std.testing.expectEqual(@as(usize, row_count), update.candidateLen());
+    try std.testing.expectEqual(@as(usize, 1), update.changedCandidateUpperBound());
+    var changed = update.iterateChangedCandidates();
+    const row = changed.next().?;
+    try std.testing.expectEqual(changed_slot, row.metadata.item_slot);
+    try std.testing.expect(!row.created);
+    try std.testing.expect(row.item_changed);
+    try std.testing.expect(changed.next() == null);
+    try std.testing.expectEqual(@as(usize, 1), changed.touched_index);
+
+    fault.configure(1);
+    update.commit();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    const committed = (try store.findItemSlot(site, changed_slot)).?;
+    try std.testing.expectEqual(@as(?u64, 99), (try store.getRowConst(site, committed)).metadata.render_root);
 }
 
 test "Rows preparation fault sweep preserves the committed generation" {
