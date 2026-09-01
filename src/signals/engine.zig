@@ -1307,7 +1307,7 @@ pub fn Engine(comptime Ctx: type) type {
                 scope_id: ids.ScopeId,
                 row_handle: row_handles.RowHandleId,
                 item_slot: u64,
-                render_root: ?u64,
+                render_span: rows_site_store.RowRenderSpan,
                 key: []const u8,
                 created: bool,
                 item_changed: bool,
@@ -1356,7 +1356,7 @@ pub fn Engine(comptime Ctx: type) type {
                         .scope_id = ids.ScopeId.fromRaw(row.metadata.scope_id),
                         .row_handle = row_handles.RowHandleId.fromRaw(row.metadata.row_handle),
                         .item_slot = row.metadata.item_slot,
-                        .render_root = row.metadata.render_root,
+                        .render_span = row.metadata.render_span,
                         .key = row.key,
                         .created = true,
                         .item_changed = false,
@@ -1420,7 +1420,7 @@ pub fn Engine(comptime Ctx: type) type {
                     .scope_id = ids.ScopeId.fromRaw(candidate.metadata.scope_id),
                     .row_handle = row_handles.RowHandleId.fromRaw(candidate.metadata.row_handle),
                     .item_slot = candidate.metadata.item_slot,
-                    .render_root = candidate.metadata.render_root,
+                    .render_span = candidate.metadata.render_span,
                     .key = candidate.key,
                     .created = candidate.created,
                     .item_changed = candidate.item_changed,
@@ -1920,6 +1920,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const binding_bound = std.math.add(usize, self.engine.committed_row_bindings.entries.count(), binding_edits) catch return error.ResourceLimit;
                 self.engine.committed_row_bindings.entries.ensureTotalCapacity(self.allocator, std.math.cast(u32, binding_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 owner.materialize();
+                for (self.replacements[0..self.prepared_len], sites) |replacement, site| try replacement.finalizeRenderSpans(site);
                 for (self.replacements[0..self.prepared_len]) |replacement| replacement.releaseEvaluatedRows();
                 self.replacement_owner = owner;
             }
@@ -2347,6 +2348,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const binding_bound = std.math.add(usize, engine.committed_row_bindings.entries.count(), binding_edits) catch return error.ResourceLimit;
                 engine.committed_row_bindings.entries.ensureTotalCapacity(allocator, std.math.cast(u32, binding_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 replacement_owner.materialize();
+                for (rows.replacements[0..rows.prepared_len], sites) |replacement, site| try replacement.finalizeRenderSpans(site);
                 for (rows.replacements[0..rows.prepared_len]) |replacement| replacement.releaseEvaluatedRows();
 
                 const layouts = allocator.alloc(PreparedEachRowRenderLayout, rows.prepared_len) catch return error.OutOfMemory;
@@ -4370,6 +4372,16 @@ pub fn Engine(comptime Ctx: type) type {
                 static: usize,
                 signal: usize,
             };
+            const RowRenderSpanRange = struct {
+                item_slot: u64,
+                parent_elem_id: ids.ElemId,
+                start: usize,
+                len: usize,
+            };
+            const RowRenderSpanIntent = struct {
+                owner: union(enum) { initial: usize, nested: usize },
+                range: RowRenderSpanRange,
+            };
             engine: *Self,
             host_ctx: Ctx.Handle,
             stream: *HostNodeDescriptorStream,
@@ -4409,6 +4421,9 @@ pub fn Engine(comptime Ctx: type) type {
             /// mounted afresh. Preparation-owned; publication commits each
             /// reconciliation into the site it prepared against.
             nested_row_syncs: std.ArrayListUnmanaged(PreparedNestedRowSync) = .empty,
+            /// Created or re-collected row ranges whose stable render anchors
+            /// are installed after the prepared descriptor order materializes.
+            row_render_span_intents: std.ArrayListUnmanaged(RowRenderSpanIntent) = .empty,
             /// Conservative sum of nested row-binding edits, used to reserve
             /// the one committed table for every staged reconciliation before publication.
             candidate_binding_edit_count: usize = 0,
@@ -4777,6 +4792,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.retired_initial_generations.deinit(allocator);
                 for (self.nested_row_syncs.items) |*sync| sync.deinit();
                 self.nested_row_syncs.deinit(allocator);
+                self.row_render_span_intents.deinit(allocator);
                 self.prepared_row_bindings.deinit(allocator);
                 self.prepared_generations.deinit(allocator);
                 self.signal_bindings.deinit(allocator);
@@ -5217,6 +5233,8 @@ pub fn Engine(comptime Ctx: type) type {
                     self.engine.active_each_candidate_generation = previous_generation;
                     self.engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
+                const row_render_ranges = allocator.alloc(RowRenderSpanRange, evaluated.rows.len) catch return error.OutOfMemory;
+                defer allocator.free(row_render_ranges);
                 for (evaluated.rows, 0..) |row, row_index| {
                     const row_scope_id = try self.reserveEachRowScopeGeneration(scope_id, site_ordinal, row.key_hash, row.row_handle);
                     prepared_site.scope_ids.appendAssumeCapacity(row_scope_id);
@@ -5227,7 +5245,14 @@ pub fn Engine(comptime Ctx: type) type {
 
                     var row_ordinal = ids.SiteOrdinal.fromRaw(0);
                     var row_dom_ordinal = ids.SiteOrdinal.fromRaw(0);
+                    const render_start = self.prepared_render_order.items.len;
                     try self.engine.collectActiveEachRowElemDescriptorsWith(*Collection, self, self.host_ctx, roc_host, self.stream, prepared_each.desc, row.elem, row_scope_id, parent_elem_id, &row_ordinal, &row_dom_ordinal, binder_stack, true, dirty_source_node_ids);
+                    row_render_ranges[row_index] = .{
+                        .item_slot = evaluated.inputs.slot(row_index) orelse return error.InvalidDescriptor,
+                        .parent_elem_id = parent_elem_id,
+                        .start = render_start,
+                        .len = self.prepared_render_order.items.len - render_start,
+                    };
                 }
 
                 const rows_key = each_runtime.SiteKey{ .parent_scope_id = scope_id, .site_ordinal = site_ordinal };
@@ -5273,11 +5298,20 @@ pub fn Engine(comptime Ctx: type) type {
                         else => error.InvalidDescriptor,
                     };
 
+                evaluated.inputs.rows_transition.?.prepareRenderSpanUpdates(row_render_ranges.len) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    error.ResourceLimit => error.ResourceLimit,
+                    else => error.InvalidDescriptor,
+                };
+                self.row_render_span_intents.ensureUnusedCapacity(allocator, row_render_ranges.len) catch return error.OutOfMemory;
+
                 self.prepared_state_sites.appendAssumeCapacity(site);
                 self.prepared_eaches.appendAssumeCapacity(prepared_each);
                 self.prepared_each_sites.appendAssumeCapacity(prepared_site);
+                const input_index = self.prepared_initial_each_inputs.items.len;
                 self.prepared_initial_each_inputs.append(allocator, evaluated.inputs) catch return error.OutOfMemory;
                 evaluated.owns_inputs = false;
+                for (row_render_ranges) |range| self.row_render_span_intents.appendAssumeCapacity(.{ .owner = .{ .initial = input_index }, .range = range });
                 ordinal.* = ids.SiteOrdinal.fromRaw(ordinal.*.raw() + 1);
             }
 
@@ -5551,6 +5585,10 @@ pub fn Engine(comptime Ctx: type) type {
                 const row_count = rows.next_scope_ids.len;
                 const recollected = allocator.alloc(bool, row_count) catch return error.OutOfMemory;
                 errdefer allocator.free(recollected);
+                var row_render_ranges: std.ArrayListUnmanaged(RowRenderSpanRange) = .empty;
+                defer row_render_ranges.deinit(allocator);
+                var collected_item_slots: std.AutoHashMapUnmanaged(u64, u64) = .empty;
+                defer collected_item_slots.deinit(allocator);
                 const row_elems = allocator.alloc(?abi.Elem, row_count) catch return error.OutOfMemory;
                 defer allocator.free(row_elems);
                 @memset(row_elems, null);
@@ -5605,12 +5643,14 @@ pub fn Engine(comptime Ctx: type) type {
                         (try direct_candidate.?.next()) orelse return error.InvalidDescriptor
                     else
                         null;
+                    const item_slot = if (candidate_row) |candidate| candidate.item_slot else inputs.slot(index) orelse return error.InvalidDescriptor;
                     if (candidate_row) |candidate| {
                         if (candidate.scope_id != row_scope_id or candidate.created != created or candidate.item_changed != changed) return error.InvalidDescriptor;
                     }
                     const structurally_dirty = !created and engine_ptr.scopeSubtreeHasDirtyStructuralSource(&engine_ptr.active_stream, row_scope_id.raw(), dirty_source_node_ids);
                     recollected[index] = !created and (changed or structurally_dirty);
                     if (!created and !recollected[index]) continue;
+                    collected_item_slots.put(allocator, row_scope_id.raw(), item_slot) catch return error.OutOfMemory;
                     if (direct_delta) {
                         if (sparse_row_elems.fetchRemove(row_scope_id.raw())) |built| {
                             row_elems[index] = built.value;
@@ -5656,6 +5696,12 @@ pub fn Engine(comptime Ctx: type) type {
                         var row_ordinal = ids.SiteOrdinal.fromRaw(0);
                         var row_dom_ordinal = ids.SiteOrdinal.fromRaw(0);
                         try engine_ptr.collectActiveEachRowElemDescriptorsWith(*Collection, self, self.host_ctx, roc_host, self.stream, each.*, elem, row_scope_id, parent_elem_id, &row_ordinal, &row_dom_ordinal, binder_stack, created, dirty_source_node_ids);
+                        row_render_ranges.append(allocator, .{
+                            .item_slot = collected_item_slots.get(row_scope_id.raw()) orelse return error.InvalidDescriptor,
+                            .parent_elem_id = parent_elem_id,
+                            .start = render_start,
+                            .len = self.prepared_render_order.items.len - render_start,
+                        }) catch return error.OutOfMemory;
                         pieces[index] = .{ .replacement = .{
                             .render_start = render_start,
                             .render_len = self.prepared_render_order.items.len - render_start,
@@ -5678,6 +5724,13 @@ pub fn Engine(comptime Ctx: type) type {
                 // The caller appends the site's own descriptor next, so it
                 // closes the span of scope sites this reconciliation created.
                 const local_site_index = self.prepared_state_sites.items.len;
+                inputs.rows_transition.?.prepareRenderSpanUpdates(row_render_ranges.items.len) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    error.ResourceLimit => error.ResourceLimit,
+                    else => error.InvalidDescriptor,
+                };
+                self.row_render_span_intents.ensureUnusedCapacity(allocator, row_render_ranges.items.len) catch return error.OutOfMemory;
+                const nested_sync_index = self.nested_row_syncs.items.len;
                 self.nested_row_syncs.appendAssumeCapacity(.{
                     .allocator = allocator,
                     .node_id = each.node_id,
@@ -5698,6 +5751,7 @@ pub fn Engine(comptime Ctx: type) type {
                     .recollected = recollected,
                     .pieces = pieces,
                 });
+                for (row_render_ranges.items) |range| self.row_render_span_intents.appendAssumeCapacity(.{ .owner = .{ .nested = nested_sync_index }, .range = range });
             }
 
             fn appendElement(self: *@This(), scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, dom_ordinal: *ids.SiteOrdinal, tag: []const u8) CollectionError!ids.ElemId {
@@ -6096,6 +6150,16 @@ pub fn Engine(comptime Ctx: type) type {
                     .static => |index| self.stream.appendPreparedStaticNode(self.prepared_nodes.items[index]),
                     .signal => |index| self.stream.appendPreparedSignalDescriptor(self.prepared_signal_attrs.items[index]),
                 };
+                for (self.row_render_span_intents.items) |intent| {
+                    const transition = switch (intent.owner) {
+                        .initial => |index| if (self.prepared_initial_each_inputs.items[index].rows_transition) |*value| value else @panic("initial row render span lost its Rows transition"),
+                        .nested => |index| if (self.nested_row_syncs.items[index].inputs.rows_transition) |*value| value else @panic("nested row render span lost its Rows transition"),
+                    };
+                    const range = intent.range;
+                    const span = rowRenderSpanForRange(self.stream, range.parent_elem_id, range.start, range.len) catch @panic("prepared row render span was invalid");
+                    transition.setCandidateRenderSpanAssumeCapacity(range.item_slot, span) catch @panic("prepared row render span lost its candidate slot");
+                }
+                self.row_render_span_intents.clearRetainingCapacity();
                 self.prepared_nodes.clearRetainingCapacity();
                 self.prepared_render_order.clearRetainingCapacity();
                 for (self.prepared_attrs.items) |prepared| self.stream.appendPreparedStaticAttr(prepared);
@@ -7172,11 +7236,13 @@ pub fn Engine(comptime Ctx: type) type {
         const PreparedEachRowReplacementCollection = struct {
             const RowElem = struct {
                 scope_id: ids.ScopeId,
+                item_slot: u64,
                 created: bool,
                 elem: abi.Elem,
             };
             const ReplacementRow = struct {
                 scope_id: ids.ScopeId,
+                item_slot: u64,
                 created: bool,
                 start: usize,
                 len: usize,
@@ -7190,6 +7256,7 @@ pub fn Engine(comptime Ctx: type) type {
             engine: *Self,
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
+            prepared_rows: *PreparedActiveEachRows,
             replacement: *PreparedReplacementOwner = undefined,
             owns_replacement: bool = true,
             row_elems: []RowElem = &.{},
@@ -7218,6 +7285,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (state_update) |update| try plan.replacement.collection.stageExternalState(roc_host, update);
                 try plan.collectInto(site, each, plan.replacement, dirty_source_node_ids);
                 plan.replacement.materialize();
+                try plan.finalizeRenderSpans(site);
                 plan.releaseEvaluatedRows();
                 return plan;
             }
@@ -7229,13 +7297,19 @@ pub fn Engine(comptime Ctx: type) type {
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
-                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .owns_replacement = false };
+                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .prepared_rows = prepared_rows, .owns_replacement = false };
 
                 var changed_count: usize = 0;
                 if (prepared_rows.direct_delta) {
                     changed_count = prepared_rows.candidateRows().createdLen();
                 } else for (rows.scope_created) |created| if (created) {
                     changed_count = std.math.add(usize, changed_count, 1) catch return error.ResourceLimit;
+                };
+                const transition = if (inputs.rows_transition) |*value| value else return error.InvalidDescriptor;
+                transition.prepareRenderSpanUpdates(changed_count) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    error.ResourceLimit => error.ResourceLimit,
+                    else => error.InvalidDescriptor,
                 };
                 plan.row_elems = allocator.alloc(RowElem, changed_count) catch return error.OutOfMemory;
                 errdefer allocator.free(plan.row_elems);
@@ -7247,7 +7321,7 @@ pub fn Engine(comptime Ctx: type) type {
                     var created = prepared_rows.candidateRows().iterateCreated();
                     while (try created.next()) |row| {
                         const elem = retained_values.callEachRowBuilder(roc_host, each.ops.row, abi.RocStr.fromSlice(row.key, roc_host), row.row_handle.raw());
-                        plan.row_elems[evaluated] = .{ .scope_id = row.scope_id, .created = true, .elem = elem };
+                        plan.row_elems[evaluated] = .{ .scope_id = row.scope_id, .item_slot = row.item_slot, .created = true, .elem = elem };
                         evaluated += 1;
                         try AggregateBranchCollection.addCounts(&plan.counts, try countStaticRootNodes(elem));
                     }
@@ -7258,7 +7332,7 @@ pub fn Engine(comptime Ctx: type) type {
                         const key = inputs.key(row_index) orelse return error.InvalidDescriptor;
                         const row_handle = inputs.row_handles_by_index[row_index] orelse return error.InvalidDescriptor;
                         const elem = retained_values.callEachRowBuilder(roc_host, each.ops.row, abi.RocStr.fromSlice(key, roc_host), row_handle.raw());
-                        plan.row_elems[evaluated] = .{ .scope_id = rows.next_scope_ids[row_index], .created = true, .elem = elem };
+                        plan.row_elems[evaluated] = .{ .scope_id = rows.next_scope_ids[row_index], .item_slot = inputs.slot(row_index) orelse return error.InvalidDescriptor, .created = true, .elem = elem };
                         evaluated += 1;
                         try AggregateBranchCollection.addCounts(&plan.counts, try countStaticRootNodes(elem));
                     }
@@ -7286,11 +7360,24 @@ pub fn Engine(comptime Ctx: type) type {
                     const segment = try replacement.collectEachRow(site, each, entry.elem, entry.scope_id, entry.created, dirty_source_node_ids);
                     plan.replacement_rows[replacement_index] = .{
                         .scope_id = entry.scope_id,
+                        .item_slot = entry.item_slot,
                         .created = entry.created,
                         .start = segment.start,
                         .len = segment.len,
                         .site_start = segment.site_start,
                         .site_len = segment.site_len,
+                    };
+                }
+            }
+
+            fn finalizeRenderSpans(plan: *@This(), site: HostNodeScopeSiteDesc) CollectionError!void {
+                const transition = if (plan.prepared_rows.inputs.rows_transition) |*value| value else return error.InvalidDescriptor;
+                for (plan.replacement_rows) |row| {
+                    const span = try rowRenderSpanForRange(&plan.replacement.stream, site.parent_elem_id, row.start, row.len);
+                    transition.setCandidateRenderSpanAssumeCapacity(row.item_slot, span) catch |err| return switch (err) {
+                        error.OutOfMemory => error.OutOfMemory,
+                        error.ResourceLimit => error.ResourceLimit,
+                        else => error.InvalidDescriptor,
                     };
                 }
             }
@@ -7317,6 +7404,28 @@ pub fn Engine(comptime Ctx: type) type {
                 allocator.destroy(self);
             }
         };
+
+        fn rowRenderSpanForRange(stream: *const HostNodeDescriptorStream, parent_elem_id: ids.ElemId, start: usize, len: usize) CollectionError!rows_site_store.RowRenderSpan {
+            if (start > stream.render_nodes.items.len or len > stream.render_nodes.items.len - start) return error.InvalidRenderTopology;
+            if (len == 0) return .{};
+            const nodes = stream.render_nodes.items[start..][0..len];
+            var first_root: ?u64 = null;
+            var last_root: ?u64 = null;
+            var root_count: usize = 0;
+            for (nodes) |node| if (renderNodeParentElemId(stream, node) == parent_elem_id.raw()) {
+                if (first_root == null) first_root = node.elem_id.raw();
+                last_root = node.elem_id.raw();
+                root_count = std.math.add(usize, root_count, 1) catch return error.ResourceLimit;
+            };
+            if (root_count == 0) return error.InvalidRenderTopology;
+            return .{
+                .first_node = nodes[0].elem_id.raw(),
+                .last_node = nodes[nodes.len - 1].elem_id.raw(),
+                .first_root = first_root,
+                .last_root = last_root,
+                .root_count = std.math.cast(u32, root_count) orelse return error.ResourceLimit,
+            };
+        }
 
         /// Appends the render span of every committed row of `each_site`, in
         /// render order, one segment per row. Returns one past the last node

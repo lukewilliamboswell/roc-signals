@@ -232,6 +232,7 @@ pub const PreparedTransition = struct {
     slot_states: std.AutoHashMapUnmanaged(u64, KeyState) = .empty,
     fresh: std.ArrayListUnmanaged(Fresh) = .empty,
     order_edits: std.ArrayListUnmanaged(OrderEdit) = .empty,
+    render_spans: std.AutoHashMapUnmanaged(u64, rows_store.RowRenderSpan) = .empty,
     order_link_touches: usize = 0,
     removed_rows: []RowId = &.{},
     created_rows: []CreatedRow = &.{},
@@ -358,6 +359,35 @@ pub const PreparedTransition = struct {
         return self.order_link_touches;
     }
 
+    /// Resolves one live candidate row by its adapter-private stable item slot
+    /// without traversing candidate order.
+    pub fn candidateBySlot(self: *const PreparedTransition, slot: u64) ?CandidateRow {
+        if (self.phase == .preparing) @panic("Rows candidate slot read before preparation completed");
+        const state: KeyState = self.slot_states.get(slot) orelse blk: {
+            const row_id = self.store.findItemSlot(self.site_id, slot) catch return null;
+            break :blk KeyState{ .node = existingRef(row_id orelse return null), .live = true };
+        };
+        if (!state.live) return null;
+        var candidate = self.candidateForRef(state.node);
+        if (self.render_spans.get(slot)) |span| candidate.metadata.render_span = span;
+        return candidate;
+    }
+
+    /// Reserves provisional render-span entries before materializing collected
+    /// descriptors. Publication can then install every anchor without
+    /// allocating, including for a structurally re-collected untouched row.
+    pub fn prepareRenderSpanUpdates(self: *PreparedTransition, additional: usize) Error!void {
+        if (self.phase != .prepared) return error.InvalidOwnerToken;
+        self.render_spans.ensureUnusedCapacity(self.allocator, std.math.cast(u32, additional) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+    }
+
+    /// Installs validated render anchors into preflighted transition storage.
+    /// The candidate and committed store remain unchanged until commit.
+    pub fn setCandidateRenderSpanAssumeCapacity(self: *PreparedTransition, slot: u64, span: rows_store.RowRenderSpan) Error!void {
+        if (self.phase != .prepared or !span.valid() or self.candidateBySlot(slot) == null) return error.InvalidOwnerToken;
+        self.render_spans.putAssumeCapacity(slot, span);
+    }
+
     /// Publishes the candidate generation without allocation. Any scope/value
     /// preparation associated with `createdRows` and `removedRows` must already
     /// have succeeded before entering this irreversible boundary.
@@ -388,6 +418,13 @@ pub const PreparedTransition = struct {
             row.previous = self.resolveOptional(shadow.previous);
             row.next = self.resolveOptional(shadow.next);
             row.metadata = shadow.metadata;
+        }
+
+        var render_spans = self.render_spans.iterator();
+        while (render_spans.next()) |entry| {
+            const row_id = (self.store.findItemSlot(self.site_id, entry.key_ptr.*) catch @panic("prepared render span lost its Rows site")) orelse @panic("prepared render span lost its candidate row");
+            const row = self.store.getRow(self.site_id, row_id) catch @panic("prepared render span referenced a stale candidate row");
+            row.metadata.render_span = entry.value_ptr.*;
         }
 
         const site = self.store.getSite(self.site_id) catch @panic("prepared Rows site became stale before commit");
@@ -424,6 +461,7 @@ pub const PreparedTransition = struct {
         self.slot_states.deinit(self.allocator);
         self.fresh.deinit(self.allocator);
         self.order_edits.deinit(self.allocator);
+        self.render_spans.deinit(self.allocator);
         if (self.removed_rows.len != 0) self.allocator.free(self.removed_rows);
         if (self.created_rows.len != 0) self.allocator.free(self.created_rows);
         self.* = undefined;
@@ -766,6 +804,28 @@ pub const PreparedTransition = struct {
     fn resolveOptional(self: *const PreparedTransition, ref: ?NodeRef) ?RowId {
         return if (ref) |value| self.resolve(value) else null;
     }
+
+    fn candidateForRef(self: *const PreparedTransition, ref: NodeRef) CandidateRow {
+        if (self.shadows.get(ref)) |shadow| {
+            if (!shadow.live) @panic("removed Rows reference resolved as a candidate");
+            return .{
+                .row_id = if (isFresh(ref)) self.fresh.items[freshIndex(ref)].claim else existingId(ref),
+                .key = shadow.key,
+                .metadata = shadow.metadata,
+                .created = isFresh(ref),
+                .item_changed = shadow.item_changed,
+            };
+        }
+        if (isFresh(ref)) @panic("provisional Rows reference had no candidate shadow");
+        const row = self.store.getRowConst(self.site_id, existingId(ref)) catch @panic("candidate slot referenced a stale committed row");
+        return .{
+            .row_id = existingId(ref),
+            .key = row.key,
+            .metadata = row.metadata,
+            .created = false,
+            .item_changed = false,
+        };
+    }
 };
 
 fn expectOrder(store: *const Store, site_id: SiteId, expected: []const []const u8) !void {
@@ -806,7 +866,7 @@ test "Rows sparse transition inserts moves updates and removes touched rows" {
         .{ .move = .{ .key = "c", .before = "a" } },
         .{ .remove_key = "a" },
         .{ .insert = .{ .key = "d", .before = "b", .metadata = .{ .item_slot = 4, .scope_id = 44 } } },
-        .{ .set = .{ .key = "b", .metadata = .{ .item_slot = 2, .scope_id = 22, .render_root = 99 } } },
+        .{ .set = .{ .key = "b", .metadata = .{ .item_slot = 2, .scope_id = 22, .render_span = .{ .first_node = 99, .last_node = 99, .first_root = 99, .last_root = 99, .root_count = 1 } } } },
     };
     var next = try PreparedTransition.prepare(std.testing.allocator, &store, site, try OwnerToken.fromRaw(2), try OwnerToken.fromRaw(3), &edits);
     defer next.deinit();
@@ -817,7 +877,7 @@ test "Rows sparse transition inserts moves updates and removes touched rows" {
     try expectOrder(&store, site, &.{ "c", "d", "b" });
     const b = (try store.findKey(site, "b")).?;
     try std.testing.expectEqual(@as(u64, 2), (try store.getRowConst(site, b)).metadata.item_slot);
-    try std.testing.expectEqual(@as(?u64, 99), (try store.getRowConst(site, b)).metadata.render_root);
+    try std.testing.expectEqual(@as(?u64, 99), (try store.getRowConst(site, b)).metadata.render_span.first_root);
 }
 
 test "Rows remove and reinsert in one unpublished batch preserves identity" {
@@ -958,6 +1018,40 @@ test "stable transition journals only effective order edits and exact touched li
     try std.testing.expectEqual(@as(usize, 0), no_op.orderLinksTouched());
 }
 
+test "row render spans preserve empty and multi-root anchors through commit" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+    const site = try store.createSite(try OwnerToken.fromRaw(76));
+    var seed = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(76), try OwnerToken.fromRaw(77), &.{.{ .insert = .{
+        .slot = 9,
+        .before_slot = 0,
+        .key = "row",
+        .metadata = .{ .item_slot = 9, .scope_id = 9 },
+    } }});
+    defer seed.deinit();
+    try seed.prepareRenderSpanUpdates(1);
+    try seed.setCandidateRenderSpanAssumeCapacity(9, .{});
+    try std.testing.expectEqual(rows_store.RowRenderSpan{}, seed.candidateBySlot(9).?.metadata.render_span);
+    seed.commit();
+    const row_id = (try store.findItemSlot(site, 9)).?;
+    try std.testing.expectEqual(rows_store.RowRenderSpan{}, (try store.getRowConst(site, row_id)).metadata.render_span);
+
+    var next = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(77), try OwnerToken.fromRaw(78), &.{});
+    defer next.deinit();
+    const multi = rows_store.RowRenderSpan{
+        .first_node = 101,
+        .last_node = 109,
+        .first_root = 101,
+        .last_root = 107,
+        .root_count = 3,
+    };
+    try next.prepareRenderSpanUpdates(1);
+    try next.setCandidateRenderSpanAssumeCapacity(9, multi);
+    try std.testing.expectEqual(multi, next.candidateBySlot(9).?.metadata.render_span);
+    next.commit();
+    try std.testing.expectEqual(multi, (try store.getRowConst(site, row_id)).metadata.render_span);
+}
+
 test "changed candidate traversal and commit stay bounded by a one-row delta" {
     const fault_allocator = @import("fault_allocator.zig");
     const row_count = 512;
@@ -993,7 +1087,7 @@ test "changed candidate traversal and commit stay bounded by a one-row delta" {
     var update = try PreparedTransition.prepareStable(fault.allocator(), &store, site, try OwnerToken.fromRaw(81), try OwnerToken.fromRaw(82), &.{.{ .update = .{
         .slot = changed_slot,
         .key = changed_key,
-        .metadata = .{ .item_slot = changed_slot, .scope_id = changed_slot, .row_handle = changed_slot, .render_root = 99 },
+        .metadata = .{ .item_slot = changed_slot, .scope_id = changed_slot, .row_handle = changed_slot, .render_span = .{ .first_node = 99, .last_node = 99, .first_root = 99, .last_root = 99, .root_count = 1 } },
     } }});
     defer update.deinit();
 
@@ -1011,7 +1105,7 @@ test "changed candidate traversal and commit stay bounded by a one-row delta" {
     update.commit();
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     const committed = (try store.findItemSlot(site, changed_slot)).?;
-    try std.testing.expectEqual(@as(?u64, 99), (try store.getRowConst(site, committed)).metadata.render_root);
+    try std.testing.expectEqual(@as(?u64, 99), (try store.getRowConst(site, committed)).metadata.render_span.first_root);
 }
 
 test "Rows preparation fault sweep preserves the committed generation" {

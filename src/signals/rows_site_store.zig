@@ -240,13 +240,49 @@ fn SlotPool(comptime Id: type, comptime Payload: type) type {
     };
 }
 
+/// Stable anchors for the render descriptors and direct DOM roots owned by one
+/// row. Empty rows use the all-null/zero value. Multi-root rows retain only the
+/// sibling range endpoints; the descriptor stream owns the sibling links.
+pub const RowRenderSpan = struct {
+    first_node: ?u64 = null,
+    last_node: ?u64 = null,
+    first_root: ?u64 = null,
+    last_root: ?u64 = null,
+    root_count: u32 = 0,
+
+    /// Validates the nullability and count relationship without inspecting
+    /// descriptor-stream state.
+    pub fn valid(self: RowRenderSpan) bool {
+        const has_nodes = self.first_node != null or self.last_node != null;
+        if (has_nodes != (self.first_node != null and self.last_node != null)) return false;
+        const has_roots = self.first_root != null or self.last_root != null;
+        if (has_roots != (self.first_root != null and self.last_root != null)) return false;
+        if ((self.root_count != 0) != has_roots) return false;
+        return !has_roots or has_nodes;
+    }
+};
+
 /// Engine-owned metadata attached to one stable row source and scope.
 pub const RowMetadata = struct {
     item_slot: u64,
     scope_id: u64,
     row_handle: u64 = 0,
-    render_root: ?u64 = null,
+    render_span: RowRenderSpan = .{},
 };
+
+test "row render span validates empty and multi-root anchors" {
+    try std.testing.expect((RowRenderSpan{}).valid());
+    try std.testing.expect((RowRenderSpan{
+        .first_node = 1,
+        .last_node = 8,
+        .first_root = 1,
+        .last_root = 6,
+        .root_count = 3,
+    }).valid());
+    try std.testing.expect(!(RowRenderSpan{ .first_node = 1 }).valid());
+    try std.testing.expect(!(RowRenderSpan{ .first_root = 1, .last_root = 1, .root_count = 1 }).valid());
+    try std.testing.expect(!(RowRenderSpan{ .first_node = 1, .last_node = 1, .first_root = 1, .last_root = 1 }).valid());
+}
 
 /// Allocation-free intrusive-order iterator over one committed Rows site.
 pub const Iterator = struct {
