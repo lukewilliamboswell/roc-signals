@@ -70,6 +70,13 @@ pub fn OrderIndex(comptime Span: type) type {
             roots_moved: usize,
         };
 
+        /// Exact direct-root endpoints owned by one contiguous row range.
+        pub const RootRange = struct {
+            first: ?u64 = null,
+            last: ?u64 = null,
+            count: usize = 0,
+        };
+
         pub const Error = std.mem.Allocator.Error || error{
             AnchorInsideRange,
             DuplicateRow,
@@ -442,6 +449,25 @@ pub fn OrderIndex(comptime Span: type) type {
             /// Returns the candidate durable span for a stable row.
             pub fn span(self: *const Prepared, row_id: RowId) error{InvalidRow}!Span {
                 return (self.get(row_id) orelse return error.InvalidRow).span;
+            }
+
+            /// Resolves direct-root endpoints for a touched row range without
+            /// walking rows outside that range. This is preparation metadata
+            /// for sparse render publication, not a second order authority.
+            pub fn rootsInRange(self: *const Prepared, first: RowId, count: usize) error{ InvalidRow, InvalidRange, ResourceLimit }!RootRange {
+                if (count == 0) return error.InvalidRange;
+                const first_rank = try self.rank(first);
+                if (count > self.len() - first_rank) return error.InvalidRange;
+                var result = RootRange{};
+                for (0..count) |offset| {
+                    const row_id = try self.rowAt(first_rank + offset);
+                    const row_span = (self.get(row_id) orelse return error.InvalidRow).span;
+                    if (row_span.root_count == 0) continue;
+                    if (result.first == null) result.first = row_span.first_root;
+                    result.last = row_span.last_root;
+                    result.count = std.math.add(usize, result.count, row_span.root_count) catch return error.ResourceLimit;
+                }
+                return result;
             }
 
             /// Inserts a new stable row before `before`, or at the end for

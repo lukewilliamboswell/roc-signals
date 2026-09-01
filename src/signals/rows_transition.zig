@@ -80,10 +80,10 @@ pub const StableEdit = union(enum) {
 /// transition owns this journal so downstream structure never retains raw
 /// callback scratch from `Rows.copy_delta`.
 pub const OrderEdit = union(enum) {
-    insert: struct { slot: u64, before_slot: u64 },
-    remove: struct { first_slot: u64, count: u64 },
-    move: struct { first_slot: u64, count: u64, before_slot: u64 },
-    clear: struct { count: usize },
+    insert: struct { slot: u64, before_slot: u64, before_root: ?u64 = null },
+    remove: struct { first_slot: u64, count: u64, first_root: ?u64 = null, last_root: ?u64 = null, root_count: usize = 0 },
+    move: struct { first_slot: u64, count: u64, before_slot: u64, first_root: ?u64 = null, last_root: ?u64 = null, root_count: usize = 0, before_root: ?u64 = null },
+    clear: struct { count: usize, first_root: ?u64 = null, last_root: ?u64 = null, root_count: usize = 0 },
 };
 
 /// Provisional row identity available to a row builder before publication.
@@ -565,26 +565,40 @@ pub const PreparedTransition = struct {
     }
 
     fn prepareRenderOrder(self: *PreparedTransition) Error!void {
-        for (self.order_edits.items) |edit| switch (edit) {
-            .insert => |value| {
+        for (self.order_edits.items) |*edit| switch (edit.*) {
+            .insert => |*value| {
                 const row_id = try self.resolveOrderSlot(value.slot);
                 const before = if (value.before_slot == 0) null else try self.resolveOrderSlot(value.before_slot);
+                value.before_root = if (before) |anchor| if (self.render_order.firstRootAtOrAfter(anchor) catch |err| return renderOrderError(err)) |root| root.root_id else null else null;
                 const span = try self.renderSpanForSlot(value.slot);
                 self.render_order.insertBefore(row_id, before, span) catch |err| return renderOrderError(err);
             },
-            .remove => |value| {
+            .remove => |*value| {
                 const row_id = try self.resolveOrderSlot(value.first_slot);
+                const roots = self.render_order.rootsInRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit) catch |err| return renderOrderError(err);
+                value.first_root = roots.first;
+                value.last_root = roots.last;
+                value.root_count = roots.count;
                 _ = self.render_order.removeRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit) catch |err| return renderOrderError(err);
             },
-            .move => |value| {
+            .move => |*value| {
                 const row_id = try self.resolveOrderSlot(value.first_slot);
                 const before = if (value.before_slot == 0) null else try self.resolveOrderSlot(value.before_slot);
+                const roots = self.render_order.rootsInRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit) catch |err| return renderOrderError(err);
+                value.first_root = roots.first;
+                value.last_root = roots.last;
+                value.root_count = roots.count;
+                value.before_root = if (before) |anchor| if (self.render_order.firstRootAtOrAfter(anchor) catch |err| return renderOrderError(err)) |root| root.root_id else null else null;
                 _ = self.render_order.moveRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit, before) catch |err| return renderOrderError(err);
             },
-            .clear => |value| {
+            .clear => |*value| {
                 if (value.count != self.render_order.len()) return error.InvalidOwnerToken;
                 if (value.count != 0) {
                     const first = self.render_order.rowAt(0) catch return error.InvalidOwnerToken;
+                    const roots = self.render_order.rootsInRange(first, value.count) catch |err| return renderOrderError(err);
+                    value.first_root = roots.first;
+                    value.last_root = roots.last;
+                    value.root_count = roots.count;
                     _ = self.render_order.removeRange(first, value.count) catch |err| return renderOrderError(err);
                 }
             },
