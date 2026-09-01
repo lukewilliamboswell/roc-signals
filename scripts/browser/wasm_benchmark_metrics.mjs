@@ -1,4 +1,4 @@
-export const BENCHMARK_METRICS_SCHEMA_VERSION = 2;
+export const BENCHMARK_METRICS_SCHEMA_VERSION = 3;
 
 const ALLOCATION_FIELDS = [
   "alloc_calls",
@@ -25,7 +25,8 @@ export const RUNTIME_METRIC_FIELDS = [
   "host_retained_alloc_delta", "host_retained_bytes_delta", "move_before",
   "dirty_source_roots", "patches_emitted", "propagation_prunes",
   "recompute_batches", "remove_node", "render_indexes_refreshed",
-  "retained_alloc_delta", "reset_dom", "rows_created", "rows_removed",
+  "retained_alloc_delta", "reset_dom", "rows_created",
+  "rows_order_links_touched", "rows_removed", "rows_render_roots_moved",
   "rows_reused", "selector_members_dirtied", "scopes_created",
   "scopes_disposed", "set_checked", "set_disabled", "set_metadata",
   "set_text", "set_value", "signal_record_table_rebuilt",
