@@ -235,14 +235,14 @@ pub fn PreparedRouteAppends(comptime Route: type) type {
 
         const Replacement = struct {
             route_index: u64,
-            items: []Route,
+            next: SmallRouteList(Route) = .empty,
             retired: SmallRouteList(Route) = .empty,
         };
 
         /// Releases provisional and retired route storage.
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             for (self.replacements) |*replacement| {
-                allocator.free(replacement.items);
+                replacement.next.deinit(allocator);
                 replacement.retired.deinit(allocator);
             }
             allocator.free(self.replacements);
@@ -262,8 +262,8 @@ pub fn PreparedRouteAppends(comptime Route: type) type {
                 const index: usize = @intCast(replacement.route_index);
                 if (index >= routes.items.len) @panic("prepared route append exceeded its destination table");
                 replacement.retired = routes.items[index];
-                routes.items[index] = .{ .many = .{ .items = replacement.items, .capacity = replacement.items.len } };
-                replacement.items = &.{};
+                routes.items[index] = replacement.next;
+                replacement.next = .empty;
             }
         }
     };
@@ -271,37 +271,7 @@ pub fn PreparedRouteAppends(comptime Route: type) type {
 
 /// Builds grouped route-table replacements without mutating active routes.
 pub fn prepareRouteAppends(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), final_count: usize, appends: []const RouteAppend(Route)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
-    const sorted = try allocator.dupe(RouteAppend(Route), appends);
-    defer allocator.free(sorted);
-    std.mem.sort(RouteAppend(Route), sorted, {}, struct {
-        fn lessThan(_: void, left: RouteAppend(Route), right: RouteAppend(Route)) bool {
-            return left.route_index < right.route_index;
-        }
-    }.lessThan);
-    var group_count: usize = 0;
-    for (sorted, 0..) |entry, index| {
-        if (entry.route_index >= final_count) return error.InvalidAppend;
-        if (index == 0 or entry.route_index != sorted[index - 1].route_index) group_count += 1;
-    }
-    const replacements = try allocator.alloc(PreparedRouteAppends(Route).Replacement, group_count);
-    errdefer allocator.free(replacements);
-    var written: usize = 0;
-    errdefer for (replacements[0..written]) |replacement| allocator.free(replacement.items);
-    var start: usize = 0;
-    while (start < sorted.len) {
-        var end = start + 1;
-        while (end < sorted.len and sorted[end].route_index == sorted[start].route_index) end += 1;
-        const route_index: usize = @intCast(sorted[start].route_index);
-        const existing = if (route_index < routes.items.len) routes.items[route_index].slice() else &.{};
-        const merged_len = std.math.add(usize, existing.len, end - start) catch return error.InvalidAppend;
-        const merged = try allocator.alloc(Route, merged_len);
-        @memcpy(merged[0..existing.len], existing);
-        for (sorted[start..end], existing.len..) |entry, index| merged[index] = entry.value;
-        replacements[written] = .{ .route_index = @intCast(route_index), .items = merged };
-        written += 1;
-        start = end;
-    }
-    return .{ .replacements = replacements };
+    return prepareDenseRouteAppends(Route, allocator, routes, null, final_count, appends, null);
 }
 
 /// Builds sink route replacements against the dense record layout that will
@@ -313,66 +283,63 @@ pub fn prepareRouteAppendsAfterRelease(comptime Route: type, allocator: std.mem.
 
 fn prepareRouteAppendsAfterReleaseWithWork(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), original_record_ids: []const usize, final_count: usize, appends: []const RouteAppend(Route), lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
     if (original_record_ids.len > final_count) return error.InvalidAppend;
-    const sorted = try allocator.dupe(RouteAppend(Route), appends);
-    defer allocator.free(sorted);
-    std.mem.sort(RouteAppend(Route), sorted, {}, struct {
-        fn lessThan(_: void, left: RouteAppend(Route), right: RouteAppend(Route)) bool {
-            return left.route_index < right.route_index;
-        }
-    }.lessThan);
+    return prepareDenseRouteAppends(Route, allocator, routes, original_record_ids, final_count, appends, lookup_work);
+}
+
+fn prepareDenseRouteAppends(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), original_record_ids: ?[]const usize, final_count: usize, appends: []const RouteAppend(Route), lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
+    const Counts = struct { append_count: usize = 0, replacement_index: usize = std.math.maxInt(usize) };
+    const counts = try allocator.alloc(Counts, final_count);
+    defer allocator.free(counts);
+    @memset(counts, .{});
     var group_count: usize = 0;
-    for (sorted, 0..) |entry, index| {
+    for (appends) |entry| {
         if (entry.route_index >= final_count) return error.InvalidAppend;
-        if (index == 0 or entry.route_index != sorted[index - 1].route_index) group_count += 1;
+        const slot = &counts[@intCast(entry.route_index)];
+        if (slot.append_count == 0) group_count += 1;
+        slot.append_count = std.math.add(usize, slot.append_count, 1) catch return error.InvalidAppend;
     }
     const replacements = try allocator.alloc(PreparedRouteAppends(Route).Replacement, group_count);
     errdefer allocator.free(replacements);
     var written: usize = 0;
-    errdefer for (replacements[0..written]) |replacement| allocator.free(replacement.items);
-    var start: usize = 0;
-    while (start < sorted.len) {
-        var end = start + 1;
-        while (end < sorted.len and sorted[end].route_index == sorted[start].route_index) end += 1;
-        const route_index: usize = @intCast(sorted[start].route_index);
+    errdefer for (replacements[0..written]) |*replacement| replacement.next.deinit(allocator);
+    for (counts, 0..) |*slot, route_index| {
+        if (slot.append_count == 0) continue;
         if (lookup_work) |counter| counter.* += 1;
-        const existing = if (route_index < original_record_ids.len) blk: {
-            const old_index = original_record_ids[route_index];
+        const existing = if (original_record_ids) |original| blk: {
+            if (route_index >= original.len) break :blk &.{};
+            const old_index = original[route_index];
             break :blk if (old_index < routes.items.len) routes.items[old_index].slice() else &.{};
-        } else &.{};
-        const merged_len = std.math.add(usize, existing.len, end - start) catch return error.InvalidAppend;
-        const merged = try allocator.alloc(Route, merged_len);
-        @memcpy(merged[0..existing.len], existing);
-        for (sorted[start..end], existing.len..) |entry, index| merged[index] = entry.value;
-        replacements[written] = .{ .route_index = @intCast(route_index), .items = merged };
+        } else if (route_index < routes.items.len) routes.items[route_index].slice() else &.{};
+        const merged_len = std.math.add(usize, existing.len, slot.append_count) catch return error.InvalidAppend;
+        replacements[written] = .{ .route_index = @intCast(route_index) };
+        slot.replacement_index = written;
         written += 1;
-        start = end;
+        try replacements[written - 1].next.ensureUnusedCapacity(allocator, merged_len);
+        for (existing) |value| replacements[written - 1].next.appendAssumeCapacity(value);
     }
+    for (appends) |entry| replacements[counts[@intCast(entry.route_index)].replacement_index].next.appendAssumeCapacity(entry.value);
     return .{ .replacements = replacements };
 }
 
 /// Merges new source routes against the post-retirement dense record mapping.
 pub fn prepareSourceRouteAppendsAfterRelease(allocator: std.mem.Allocator, routes: *const RouteTable(u64), final_record_ids: []const ?u64, final_source_count: usize, appends: []const RouteAppend(u64)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(u64) {
-    const sorted = try allocator.dupe(RouteAppend(u64), appends);
-    defer allocator.free(sorted);
-    std.mem.sort(RouteAppend(u64), sorted, {}, struct {
-        fn lessThan(_: void, left: RouteAppend(u64), right: RouteAppend(u64)) bool {
-            return left.route_index < right.route_index;
-        }
-    }.lessThan);
+    const Counts = struct { append_count: usize = 0, replacement_index: usize = std.math.maxInt(usize) };
+    const counts = try allocator.alloc(Counts, final_source_count);
+    defer allocator.free(counts);
+    @memset(counts, .{});
     var group_count: usize = 0;
-    for (sorted, 0..) |entry, index| {
+    for (appends) |entry| {
         if (entry.route_index >= final_source_count) return error.InvalidAppend;
-        if (index == 0 or entry.route_index != sorted[index - 1].route_index) group_count += 1;
+        const slot = &counts[@intCast(entry.route_index)];
+        if (slot.append_count == 0) group_count += 1;
+        slot.append_count = std.math.add(usize, slot.append_count, 1) catch return error.InvalidAppend;
     }
     const replacements = try allocator.alloc(PreparedRouteAppends(u64).Replacement, group_count);
     errdefer allocator.free(replacements);
     var written: usize = 0;
-    errdefer for (replacements[0..written]) |replacement| allocator.free(replacement.items);
-    var start: usize = 0;
-    while (start < sorted.len) {
-        var end = start + 1;
-        while (end < sorted.len and sorted[end].route_index == sorted[start].route_index) end += 1;
-        const route_index: usize = @intCast(sorted[start].route_index);
+    errdefer for (replacements[0..written]) |*replacement| replacement.next.deinit(allocator);
+    for (counts, 0..) |*slot, route_index| {
+        if (slot.append_count == 0) continue;
         const existing = if (route_index < routes.items.len) routes.items[route_index].slice() else &.{};
         var survivor_count: usize = 0;
         for (existing) |old_id| {
@@ -380,21 +347,16 @@ pub fn prepareSourceRouteAppendsAfterRelease(allocator: std.mem.Allocator, route
             if (old_index >= final_record_ids.len) return error.InvalidAppend;
             if (final_record_ids[old_index] != null) survivor_count += 1;
         }
-        const merged_len = std.math.add(usize, survivor_count, end - start) catch return error.InvalidAppend;
-        const merged = try allocator.alloc(u64, merged_len);
-        var write: usize = 0;
-        for (existing) |old_id| if (final_record_ids[@intCast(old_id)]) |new_id| {
-            merged[write] = new_id;
-            write += 1;
-        };
-        for (sorted[start..end]) |entry| {
-            merged[write] = entry.value;
-            write += 1;
-        }
-        replacements[written] = .{ .route_index = @intCast(route_index), .items = merged };
+        const merged_len = std.math.add(usize, survivor_count, slot.append_count) catch return error.InvalidAppend;
+        replacements[written] = .{ .route_index = @intCast(route_index) };
+        slot.replacement_index = written;
         written += 1;
-        start = end;
+        try replacements[written - 1].next.ensureUnusedCapacity(allocator, merged_len);
+        for (existing) |old_id| if (final_record_ids[@intCast(old_id)]) |new_id| {
+            replacements[written - 1].next.appendAssumeCapacity(new_id);
+        };
     }
+    for (appends) |entry| replacements[counts[@intCast(entry.route_index)].replacement_index].next.appendAssumeCapacity(entry.value);
     return .{ .replacements = replacements };
 }
 
@@ -2546,6 +2508,79 @@ test "post-release route inversion lookup work scales with appended groups" {
     }.run;
     try std.testing.expectEqual(@as(usize, 64), try measure(64));
     try std.testing.expectEqual(@as(usize, 512), try measure(512));
+}
+
+test "dense route preparation preserves interleaved order and allocates no singleton payloads" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const measure = struct {
+        fn run(count: usize) !usize {
+            const appends = try std.testing.allocator.alloc(RouteAppend(TextSink), count);
+            defer std.testing.allocator.free(appends);
+            for (appends, 0..) |*append, index| append.* = .{ .route_index = @intCast(index), .value = .{ .kind = .text_node, .index = index } };
+            var routes: RouteTable(TextSink) = .empty;
+            var counter = FaultAllocator.init(std.testing.allocator);
+            var prepared = try prepareRouteAppends(TextSink, counter.allocator(), &routes, count, appends);
+            defer prepared.deinit(counter.allocator());
+            return counter.attempts;
+        }
+    }.run;
+    try std.testing.expectEqual(try measure(64), try measure(512));
+
+    var routes: RouteTable(TextSink) = .empty;
+    defer {
+        clearRouteTable(TextSink, std.testing.allocator, &routes);
+        routes.deinit(std.testing.allocator);
+    }
+    try routes.append(std.testing.allocator, .empty);
+    try routes.items[0].append(std.testing.allocator, .{ .kind = .text_node, .index = 1 });
+    const appends = [_]RouteAppend(TextSink){
+        .{ .route_index = 2, .value = .{ .kind = .text_attr, .index = 20 } },
+        .{ .route_index = 0, .value = .{ .kind = .text_attr, .index = 2 } },
+        .{ .route_index = 2, .value = .{ .kind = .text_attr, .index = 21 } },
+        .{ .route_index = 0, .value = .{ .kind = .text_attr, .index = 3 } },
+    };
+    var prepared = try prepareRouteAppends(TextSink, std.testing.allocator, &routes, 3, &appends);
+    defer prepared.deinit(std.testing.allocator);
+    try prepared.reserveOuter(std.testing.allocator, &routes, 3);
+    prepared.apply(&routes, 3);
+    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 1 }, .{ .kind = .text_attr, .index = 2 }, .{ .kind = .text_attr, .index = 3 } }, routes.items[0].slice());
+    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_attr, .index = 20 }, .{ .kind = .text_attr, .index = 21 } }, routes.items[2].slice());
+}
+
+test "dense source route preparation remaps survivors before ordered appends" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var routes: RouteTable(u64) = .empty;
+    defer {
+        clearRouteTable(u64, std.testing.allocator, &routes);
+        routes.deinit(std.testing.allocator);
+    }
+    try routes.append(std.testing.allocator, .empty);
+    try routes.items[0].append(std.testing.allocator, 3);
+    try routes.items[0].append(std.testing.allocator, 1);
+    try routes.items[0].append(std.testing.allocator, 2);
+    const final_record_ids = [_]?u64{ 4, null, 7, 9 };
+    const appends = [_]RouteAppend(u64){
+        .{ .route_index = 2, .value = 12 },
+        .{ .route_index = 0, .value = 10 },
+        .{ .route_index = 2, .value = 13 },
+        .{ .route_index = 0, .value = 11 },
+    };
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var prepared = try prepareSourceRouteAppendsAfterRelease(counter.allocator(), &routes, &final_record_ids, 3, &appends);
+    defer prepared.deinit(counter.allocator());
+    const attempts = counter.attempts;
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareSourceRouteAppendsAfterRelease(fault.allocator(), &routes, &final_record_ids, 3, &appends));
+        try std.testing.expectEqualSlices(u64, &.{ 3, 1, 2 }, routes.items[0].slice());
+    }
+    try prepared.reserveOuter(counter.allocator(), &routes, 3);
+    counter.configure(1);
+    prepared.apply(&routes, 3);
+    try std.testing.expectEqual(@as(usize, 0), counter.attempts);
+    try std.testing.expectEqualSlices(u64, &.{ 9, 7, 10, 11 }, routes.items[0].slice());
+    try std.testing.expectEqualSlices(u64, &.{ 12, 13 }, routes.items[2].slice());
 }
 
 test "prepared graph append enumerates missing topology without mutating survivors" {
