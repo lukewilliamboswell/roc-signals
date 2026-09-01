@@ -9,7 +9,14 @@ platform ""
 	provides { "roc_ui_init": ui_init }
 	hosted {
 		"roc_each_bool_sink_push": EachSink.push_bool!,
-		"roc_each_key_sink_push": EachSink.push_key!,
+		"roc_rows_delta_clear_sink_push": EachSink.push_delta_clear!,
+		"roc_rows_delta_description_sink_push": EachSink.push_delta_description!,
+		"roc_rows_delta_insert_sink_push": EachSink.push_delta_insert!,
+		"roc_rows_delta_move_range_sink_push": EachSink.push_delta_move_range!,
+		"roc_rows_delta_remove_range_sink_push": EachSink.push_delta_remove_range!,
+		"roc_rows_delta_update_sink_push": EachSink.push_delta_update!,
+		"roc_rows_snapshot_description_sink_push": EachSink.push_snapshot_description!,
+		"roc_rows_snapshot_sink_push": EachSink.push_snapshot!,
 		"roc_host_value_clone": HostValue.clone!,
 		"roc_host_value_get_with_capability": HostValue.get_with_capability!,
 		"roc_host_value_get_with_split": HostValue.get_with_split!,

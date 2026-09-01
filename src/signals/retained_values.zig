@@ -264,41 +264,52 @@ pub fn callHostValueHostValueToElemWithCapabilities(comptime Ctx: type, ctx: Ctx
     return erased_calls.callErasedHostValueHostValueToElem(roc_host, callable, left, right);
 }
 
-/// Reads a collection length while authorizing access to its erased items value.
-pub fn callEachCollectionLen(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, items_cap: HostValueCapability, callable: abi.RocErasedCallable, items: HostValue) u64 {
-    const caps = [_]HostValueCapability{items_cap};
+/// Describes one immutable Rows generation into an active metadata sink.
+/// `rows` remains retained by the caller; this call transfers an independently
+/// owned clone to Roc, which consumes it exactly once.
+pub fn callRowsDescribe(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, rows_cap: HostValueCapability, callable: abi.RocErasedCallable, rows: HostValue, sink_token: u64) u64 {
+    const caps = [_]HostValueCapability{rows_cap};
     pushCapabilities(Ctx, ctx, &caps);
     defer popCapabilities(Ctx, ctx);
-    return erased_calls.callErasedHostValueToU64(roc_host, callable, Ctx.cloneHostValue(ctx, items));
+    return erased_calls.callErasedHostValueU64ToU64(roc_host, callable, Ctx.cloneHostValue(ctx, rows), sink_token);
 }
 
-/// Copies collection keys into the active sink while authorizing access to the
-/// erased items value. The returned token is the sink's next protocol token.
-pub fn callEachCollectionCopyKeys(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, items_cap: HostValueCapability, callable: abi.RocErasedCallable, items: HostValue, sink_token: u64) u64 {
-    const caps = [_]HostValueCapability{items_cap};
+/// Copies a complete Rows snapshot into preallocated host storage.
+pub fn callRowsCopySnapshot(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, rows_cap: HostValueCapability, callable: abi.RocErasedCallable, rows: HostValue, sink_token: u64) u64 {
+    const caps = [_]HostValueCapability{rows_cap};
     pushCapabilities(Ctx, ctx, &caps);
     defer popCapabilities(Ctx, ctx);
-    return erased_calls.callErasedHostValueU64ToU64(roc_host, callable, Ctx.cloneHostValue(ctx, items), sink_token);
+    return erased_calls.callErasedHostValueU64ToU64(roc_host, callable, Ctx.cloneHostValue(ctx, rows), sink_token);
 }
 
-/// Compares indexed old/new collection items inside both capability frames.
-/// Both collections must have the same erased item-container type because one
-/// app-compiled adapter interprets both values.
-pub fn callEachCollectionComparePairs(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, old_items_cap: HostValueCapability, new_items_cap: HostValueCapability, callable: abi.RocErasedCallable, old_items: HostValue, new_items: HostValue, pairs: U64List, sink_token: u64) u64 {
-    assertHostValueCapabilitiesMatch(old_items_cap, new_items_cap, "each collection comparison received incompatible item-container capabilities");
-    const caps = [_]HostValueCapability{ old_items_cap, new_items_cap };
+/// Copies the canonical delta authenticated by a Rows generation's immediate
+/// parent into preallocated host storage.
+pub fn callRowsCopyDelta(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, rows_cap: HostValueCapability, callable: abi.RocErasedCallable, rows: HostValue, sink_token: u64) u64 {
+    const caps = [_]HostValueCapability{rows_cap};
     pushCapabilities(Ctx, ctx, &caps);
     defer popCapabilities(Ctx, ctx);
-    return erased_calls.callErasedHostValueHostValueU64ListU64ToU64(roc_host, callable, Ctx.cloneHostValue(ctx, old_items), Ctx.cloneHostValue(ctx, new_items), pairs, sink_token);
+    return erased_calls.callErasedHostValueU64ToU64(roc_host, callable, Ctx.cloneHostValue(ctx, rows), sink_token);
 }
 
-/// Clones one item while authorizing the input collection capability and the
-/// capability that owns the independently returned item HostValue.
-pub fn callEachCollectionCloneItemAt(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, items_cap: HostValueCapability, item_cap: HostValueCapability, callable: abi.RocErasedCallable, items: HostValue, index: u64) HostValue {
-    const caps = [_]HostValueCapability{ items_cap, item_cap };
+/// Compares stable `(old_slot, new_slot)` pairs inside both Rows capability
+/// frames. The primitive pair list transfers one independently owned reference
+/// to Roc together with independently owned clones of both generation owners.
+pub fn callRowsCompareSlots(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, old_rows_cap: HostValueCapability, new_rows_cap: HostValueCapability, callable: abi.RocErasedCallable, old_rows: HostValue, new_rows: HostValue, pairs: U64List, sink_token: u64) u64 {
+    assertHostValueCapabilitiesMatch(old_rows_cap, new_rows_cap, "Rows comparison received incompatible generation capabilities");
+    const caps = [_]HostValueCapability{ old_rows_cap, new_rows_cap };
     pushCapabilities(Ctx, ctx, &caps);
     defer popCapabilities(Ctx, ctx);
-    return erased_calls.callErasedHostValueU64ToHostValue(roc_host, callable, Ctx.cloneHostValue(ctx, items), index);
+    return erased_calls.callErasedHostValueHostValueU64ListU64ToU64(roc_host, callable, Ctx.cloneHostValue(ctx, old_rows), Ctx.cloneHostValue(ctx, new_rows), pairs, sink_token);
+}
+
+/// Clones the item at one stable slot. The returned HostValue is independently
+/// registry-owned under `item_cap`; callers must validate its actual registered
+/// capability before adopting it.
+pub fn callRowsCloneItem(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, rows_cap: HostValueCapability, item_cap: HostValueCapability, callable: abi.RocErasedCallable, rows: HostValue, slot: u64) HostValue {
+    const caps = [_]HostValueCapability{ rows_cap, item_cap };
+    pushCapabilities(Ctx, ctx, &caps);
+    defer popCapabilities(Ctx, ctx);
+    return erased_calls.callErasedHostValueU64ToHostValue(roc_host, callable, Ctx.cloneHostValue(ctx, rows), slot);
 }
 
 /// Builds one row without an erased HostValue capability frame. `key` transfers
@@ -357,27 +368,29 @@ pub fn releaseHostEventReducer(reducer: HostEventReducer, roc_host: *abi.RocHost
 
 /// Retains every callable and capability owned by each ops.
 pub fn retainHostEachOps(ops: HostEachOps, metrics: anytype) HostEachOps {
-    _ = retainHostValueCapability(ops.items_capability, metrics);
+    _ = retainHostValueCapability(ops.rows_capability, metrics);
     _ = retainHostValueCapability(ops.item_capability, metrics);
-    abi.increfErasedCallable(ops.len, 1);
-    abi.increfErasedCallable(ops.copy_keys, 1);
-    abi.increfErasedCallable(ops.compare_pairs, 1);
-    abi.increfErasedCallable(ops.clone_item_at, 1);
+    abi.increfErasedCallable(ops.describe, 1);
+    abi.increfErasedCallable(ops.copy_snapshot, 1);
+    abi.increfErasedCallable(ops.copy_delta, 1);
+    abi.increfErasedCallable(ops.compare_slots, 1);
+    abi.increfErasedCallable(ops.clone_item, 1);
     abi.increfErasedCallable(ops.row, 1);
-    metrics.bump(.closure_retains, 5);
+    metrics.bump(.closure_retains, 6);
     return ops;
 }
 
 /// Releases every callable and capability owned by each ops.
 pub fn releaseHostEachOps(ops: HostEachOps, roc_host: *abi.RocHost, metrics: anytype) void {
-    releaseHostValueCapability(ops.items_capability, roc_host, metrics);
+    releaseHostValueCapability(ops.rows_capability, roc_host, metrics);
     releaseHostValueCapability(ops.item_capability, roc_host, metrics);
-    abi.decrefErasedCallable(ops.len, roc_host);
-    abi.decrefErasedCallable(ops.copy_keys, roc_host);
-    abi.decrefErasedCallable(ops.compare_pairs, roc_host);
-    abi.decrefErasedCallable(ops.clone_item_at, roc_host);
+    abi.decrefErasedCallable(ops.describe, roc_host);
+    abi.decrefErasedCallable(ops.copy_snapshot, roc_host);
+    abi.decrefErasedCallable(ops.copy_delta, roc_host);
+    abi.decrefErasedCallable(ops.compare_slots, roc_host);
+    abi.decrefErasedCallable(ops.clone_item, roc_host);
     abi.decrefErasedCallable(ops.row, roc_host);
-    metrics.bump(.closure_releases, 5);
+    metrics.bump(.closure_releases, 6);
 }
 
 /// Retains the case capability and builder owned by a lazy branch site.

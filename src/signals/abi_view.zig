@@ -589,7 +589,7 @@ pub const WhenElem = struct {
 };
 
 pub const EachElem = struct {
-    items: *const abi.NodeSignalExpr,
+    rows: *const abi.NodeSignalExpr,
     ops: HostEachOps,
 };
 
@@ -683,7 +683,7 @@ pub const Elem = union(enum) {
             .Each => blk: {
                 const payload = elem.payload_each();
                 break :blk .{ .each = .{
-                    .items = payload.items,
+                    .rows = payload.rows,
                     .ops = payload.ops,
                 } };
             },
@@ -1376,22 +1376,22 @@ test "Elem.fromAbi decodes component when and each payloads" {
         else => return error.TestUnexpectedResult,
     }
 
-    const items_token = testCallableToken(0x13000);
-    var items = abi.NodeSignalExpr{
-        .payload = .{ .ref = items_token },
+    const rows_token = testCallableToken(0x13000);
+    var rows = abi.NodeSignalExpr{
+        .payload = .{ .ref = rows_token },
         .tag = .Ref,
     };
     const ops = std.mem.zeroes(HostEachOps);
     const each = abi.Elem{
         .payload = .{ .each = .{
-            .items = &items,
+            .rows = &rows,
             .ops = ops,
         } },
         .tag = .Each,
     };
     switch (Elem.fromAbi(each)) {
         .each => |payload| {
-            try std.testing.expectEqual(&items, payload.items);
+            try std.testing.expectEqual(&rows, payload.rows);
             try std.testing.expectEqual(ops, payload.ops);
         },
         else => return error.TestUnexpectedResult,

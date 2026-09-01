@@ -426,9 +426,9 @@ Ui := [].{
 			},
 		)
 
-	## Keyed rows with exact UTF-8 identity. `Rows` owns key projection and caches
-	## each generation's validated keys; this adapter writes those keys and selected
-	## item comparisons into reserved host sinks without exposing item layout.
+	## Keyed rows with exact UTF-8 identity. App-compiled adapters consume an
+	## independently owned generation clone and write authenticated metadata,
+	## snapshots, deltas, and selected comparisons into preallocated host sinks.
 	each : Signal(Rows(item)), (Row(item) -> Elem) -> Elem
 		where [
 			item.is_eq : item, item -> Bool,
@@ -442,22 +442,46 @@ Ui := [].{
 			typed_rows = Box.unbox(Capability.take(rows_hv, rows_cap))
 			typed_rows
 		}
-		len_hv : HostValue -> U64
-		len_hv = |owner| read_rows(owner).len()
-		copy_keys_hv : HostValue, U64 -> U64
-		copy_keys_hv = |owner, initial_token| {
-			typed_rows = read_rows(owner)
-			var $index = 0
-			var $token = initial_token
-			while $index < typed_rows.len() {
-				key = Rows.platform_key_at(typed_rows, $index) ?? crash "Rows key index exceeded its generation"
-				$token = EachSink.push_key!($token, $index, key)
-				$index = $index + 1
+		describe_hv : HostValue, U64 -> U64
+		describe_hv = |owner, initial_token| {
+			description = Rows.platform_description(read_rows(owner))
+			match description.kind {
+				Snapshot => EachSink.push_snapshot_description!(initial_token, description.generation, description.item_count, description.snapshot_key_bytes)
+				Delta => {
+					parent =
+						match description.parent {
+							NoParent => crash "Rows delta generation did not retain its parent identity"
+							Parent(parent_token) => parent_token
+						}
+					EachSink.push_delta_description!(initial_token, description.generation, parent, description.item_count, description.snapshot_key_bytes, description.op_count, description.delta_key_count, description.delta_key_bytes)
+				}
 			}
-			$token
 		}
-		compare_pairs_hv : HostValue, HostValue, List(U64), U64 -> U64
-		compare_pairs_hv = |old_owner, new_owner, pairs, initial_token| {
+		copy_snapshot_hv : HostValue, U64 -> U64
+		copy_snapshot_hv = |owner, initial_token|
+			Rows.platform_copy_snapshot(
+				read_rows(owner),
+				initial_token,
+				|token, index, slot, key| EachSink.push_snapshot!(token, index, slot, key),
+			)
+		copy_delta_hv : HostValue, U64 -> U64
+		copy_delta_hv = |owner, initial_token| {
+			typed_rows = read_rows(owner)
+			Rows.platform_copy_delta(
+				typed_rows,
+				initial_token,
+				|token, transition|
+					match transition {
+						ClearRows => EachSink.push_delta_clear!(token, 0)
+						InsertRow({ op_index, before_slot, slot, key }) => EachSink.push_delta_insert!(token, op_index, before_slot, slot, key)
+						MoveRows({ op_index, first_slot, count, before_slot }) => EachSink.push_delta_move_range!(token, op_index, first_slot, count, before_slot)
+						RemoveRows({ op_index, first_slot, count }) => EachSink.push_delta_remove_range!(token, op_index, first_slot, count)
+						UpdateRow({ op_index, slot, key }) => EachSink.push_delta_update!(token, op_index, slot, key)
+					},
+			)
+		}
+		compare_slots_hv : HostValue, HostValue, List(U64), U64 -> U64
+		compare_slots_hv = |old_owner, new_owner, pairs, initial_token| {
 			old_rows = read_rows(old_owner)
 			new_rows = read_rows(new_owner)
 			if pairs.len() % 2 != 0 {
@@ -467,19 +491,19 @@ Ui := [].{
 			var $result_index = 0
 			var $token = initial_token
 			while $pair_index < pairs.len() {
-				old_index = pairs.get($pair_index) ?? crash "missing old Rows index"
-				new_index = pairs.get($pair_index + 1) ?? crash "missing new Rows index"
-				old_item = Rows.platform_item_at(old_rows, old_index) ?? crash "old Rows index exceeded its generation"
-				new_item = Rows.platform_item_at(new_rows, new_index) ?? crash "new Rows index exceeded its generation"
+				old_slot = pairs.get($pair_index) ?? crash "missing old Rows slot"
+				new_slot = pairs.get($pair_index + 1) ?? crash "missing new Rows slot"
+				old_item = Rows.platform_item_for_slot(old_rows, old_slot) ?? crash "old Rows slot was not live"
+				new_item = Rows.platform_item_for_slot(new_rows, new_slot) ?? crash "new Rows slot was not live"
 				$token = EachSink.push_bool!($token, $result_index, old_item.is_eq(new_item))
 				$pair_index = $pair_index + 2
 				$result_index = $result_index + 1
 			}
 			$token
 		}
-		clone_item_at_hv : HostValue, U64 -> HostValue
-		clone_item_at_hv = |owner, index| {
-			item = Rows.platform_item_at(read_rows(owner), index) ?? crash "Rows item index exceeded its generation"
+		clone_item_hv : HostValue, U64 -> HostValue
+		clone_item_hv = |owner, slot| {
+			item = Rows.platform_item_for_slot(read_rows(owner), slot) ?? crash "Rows item slot was not live"
 			Capability.store(Box.box(item), item_cap)
 		}
 		row_hv : Str, U64 -> Elem
@@ -494,14 +518,15 @@ Ui := [].{
 			row({ key_value: key, source })
 		}
 		Elem.Each({
-			items: Signal.to_expr(rows),
+			rows: Signal.to_expr(rows),
 			ops: {
-				items_capability: Capability.handle(rows_cap),
+				rows_capability: Capability.handle(rows_cap),
 				item_capability: Capability.handle(item_cap),
-				len: Box.box(len_hv),
-				copy_keys: Box.box(copy_keys_hv),
-				compare_pairs: Box.box(compare_pairs_hv),
-				clone_item_at: Box.box(clone_item_at_hv),
+				describe: Box.box(describe_hv),
+				copy_snapshot: Box.box(copy_snapshot_hv),
+				copy_delta: Box.box(copy_delta_hv),
+				compare_slots: Box.box(compare_slots_hv),
+				clone_item: Box.box(clone_item_hv),
 				row: Box.box(row_hv),
 			},
 		})

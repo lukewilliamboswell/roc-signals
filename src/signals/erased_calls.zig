@@ -44,7 +44,9 @@ pub const ErasedHostValueU64Args = extern struct {
     arg1: u64,
 };
 
-pub const ErasedHostValueHostValueU64ListU64Args = extern struct {
+/// Exact app-compiled `Rows.compare_slots` argument layout. Both raw HostValues
+/// and the primitive pair list transfer owned references into the Roc call.
+pub const ErasedRowsCompareSlotsArgs = extern struct {
     arg0: RawHostValue,
     arg1: RawHostValue,
     arg2: U64List,
@@ -281,7 +283,7 @@ pub fn callErasedHostValueU64ToU64(roc_host: *abi.RocHost, callable: abi.RocEras
 pub fn callErasedHostValueHostValueU64ListU64ToU64(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue, arg1: HostValue, arg2: U64List, arg3: u64) u64 {
     const payload = erasedCallablePayload(callable);
     arg2.incref(1);
-    var call_args = ErasedHostValueHostValueU64ListU64Args{
+    var call_args = ErasedRowsCompareSlotsArgs{
         .arg0 = arg0.toRaw(),
         .arg1 = arg1.toRaw(),
         .arg2 = arg2,
@@ -372,7 +374,7 @@ test "collection adapter erased calls preserve generated argument layouts and re
         }
 
         fn comparePairs(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
-            const call_args: *const ErasedHostValueHostValueU64ListU64Args = @ptrCast(@alignCast(args.?));
+            const call_args: *const ErasedRowsCompareSlotsArgs = @ptrCast(@alignCast(args.?));
             const result: *u64 = @ptrCast(@alignCast(ret.?));
             result.* = call_args.arg0 + call_args.arg1 + call_args.arg2.length + call_args.arg3;
             call_args.arg2.decref(roc_host);
@@ -423,13 +425,13 @@ test "collection adapter argument records match the generated native ABI" {
     try std.testing.expectEqual(@as(usize, 8), @sizeOf(ErasedHostValueUnaryArgs));
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(ErasedHostValueU64Args));
     if (@sizeOf(usize) == 8) {
-        try std.testing.expectEqual(@as(usize, 48), @sizeOf(ErasedHostValueHostValueU64ListU64Args));
-        try std.testing.expectEqual(@as(usize, 40), @offsetOf(ErasedHostValueHostValueU64ListU64Args, "arg3"));
+        try std.testing.expectEqual(@as(usize, 48), @sizeOf(ErasedRowsCompareSlotsArgs));
+        try std.testing.expectEqual(@as(usize, 40), @offsetOf(ErasedRowsCompareSlotsArgs, "arg3"));
         try std.testing.expectEqual(@as(usize, 32), @sizeOf(ErasedRocStrU64Args));
         try std.testing.expectEqual(@as(usize, 24), @offsetOf(ErasedRocStrU64Args, "arg1"));
     } else {
-        try std.testing.expectEqual(@as(usize, 40), @sizeOf(ErasedHostValueHostValueU64ListU64Args));
-        try std.testing.expectEqual(@as(usize, 32), @offsetOf(ErasedHostValueHostValueU64ListU64Args, "arg3"));
+        try std.testing.expectEqual(@as(usize, 40), @sizeOf(ErasedRowsCompareSlotsArgs));
+        try std.testing.expectEqual(@as(usize, 32), @offsetOf(ErasedRowsCompareSlotsArgs, "arg3"));
         try std.testing.expectEqual(@as(usize, 24), @sizeOf(ErasedRocStrU64Args));
         try std.testing.expectEqual(@as(usize, 16), @offsetOf(ErasedRocStrU64Args, "arg1"));
     }
