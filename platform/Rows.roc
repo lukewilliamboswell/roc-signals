@@ -8,39 +8,605 @@ RowsGenerationCallable : Box(({} -> Box({})))
 
 RowsEntry(item) : { slot : U64, key : Str, item : item }
 
-RowsTransition(item) : [
+RowsOrderNode := [OrderBranch({ children : List(U64), len : U64 }), OrderLeaf({ slots : List(U64), len : U64 })]
+
+RowsOrderParent : [OrderParent({ node : U64, child : U64 }), OrderRoot]
+
+RowsOrder : {
+	root : U64,
+	nodes : Dict(U64, RowsOrderNode),
+	parents : Dict(U64, RowsOrderParent),
+	slot_leaf : Dict(U64, U64),
+	next_node : U64,
+	free_nodes : List(U64),
+}
+
+rows_order_node_len : RowsOrderNode -> U64
+rows_order_node_len = |node|
+	match node {
+		OrderLeaf({ len, .. }) => len
+		OrderBranch({ len, .. }) => len
+	}
+
+rows_order_empty : () -> RowsOrder
+rows_order_empty = || {
+	nodes : Dict(U64, RowsOrderNode)
+	nodes = Dict.empty().insert(1, OrderLeaf({ slots: [], len: 0 }))
+	parents : Dict(U64, RowsOrderParent)
+	parents = Dict.empty().insert(1, OrderRoot)
+	slot_leaf : Dict(U64, U64)
+	slot_leaf = Dict.empty()
+	{ root: 1, nodes, parents, slot_leaf, next_node: 2, free_nodes: [] }
+}
+
+rows_order_allocate_node : RowsOrder -> { node : U64, order : RowsOrder }
+rows_order_allocate_node = |order|
+	match order.free_nodes.first() {
+		Ok(node) => { node, order: { ..order, free_nodes: order.free_nodes.drop_first(1) } }
+		Err(_) => {
+			if order.next_node == 18446744073709551615 {
+				crash "Rows order node id space exhausted"
+			}
+			{ node: order.next_node, order: { ..order, next_node: order.next_node + 1 } }
+		}
+	}
+
+rows_order_len : RowsOrder -> U64
+rows_order_len = |order| {
+	root = order.nodes.get(order.root) ?? crash "Rows order root was missing"
+	rows_order_node_len(root)
+}
+
+RowsOrderLocation : { leaf : U64, offset : U64 }
+
+rows_order_locate_node : RowsOrder, U64, U64, Bool -> RowsOrderLocation
+rows_order_locate_node = |order, node_id, index, allow_end| {
+	node = order.nodes.get(node_id) ?? crash "Rows order node was missing"
+	match node {
+		OrderLeaf({ slots, .. }) => {
+			if index < slots.len() or (allow_end and index == slots.len()) {
+				{ leaf: node_id, offset: index }
+			} else {
+				crash "Rows order index exceeded its leaf"
+			}
+		}
+		OrderBranch({ children, len }) => {
+			if index > len or (!allow_end and index == len) {
+				crash "Rows order index exceeded its branch"
+			}
+			var $remaining = index
+			var $child_index = 0
+			var $chosen = children.len() - 1
+			var $found = False
+			while $found == False and $child_index < children.len() {
+				child_id = children.get($child_index) ?? crash "Rows order child index was invalid"
+				child = order.nodes.get(child_id) ?? crash "Rows order child was missing"
+				child_len = rows_order_node_len(child)
+				if $remaining < child_len or (allow_end and $remaining == child_len and $child_index + 1 == children.len()) {
+					$chosen = $child_index
+					$found = True
+				} else {
+					$remaining = $remaining - child_len
+					$child_index = $child_index + 1
+				}
+			}
+			chosen_id = children.get($chosen) ?? crash "Rows order branch had no child"
+			rows_order_locate_node(order, chosen_id, $remaining, allow_end)
+		}
+	}
+}
+
+rows_order_locate : RowsOrder, U64, Bool -> RowsOrderLocation
+rows_order_locate = |order, index, allow_end| rows_order_locate_node(order, order.root, index, allow_end)
+
+rows_order_get : RowsOrder, U64 -> Try(U64, [Missing])
+rows_order_get = |order, index|
+	if index >= rows_order_len(order) {
+		Err(Missing)
+	} else {
+		location = rows_order_locate(order, index, False)
+		leaf = order.nodes.get(location.leaf) ?? crash "Rows order leaf was missing"
+		match leaf {
+			OrderLeaf({ slots, .. }) =>
+				match slots.get(location.offset) {
+					Ok(slot) => Ok(slot)
+					Err(_) => Err(Missing)
+				}
+			OrderBranch(_) => crash "Rows order location named a branch"
+		}
+	}
+
+RowsOrderRewrite : { order : RowsOrder, replacements : List(U64) }
+
+rows_order_children_len : RowsOrder, List(U64) -> U64
+rows_order_children_len = |order, children| {
+	var $len = 0
+	for child_id in children {
+		child = order.nodes.get(child_id) ?? crash "Rows order child was missing while measuring"
+		$len = $len + rows_order_node_len(child)
+	}
+	$len
+}
+
+rows_order_set_child_parents : RowsOrder, U64, List(U64) -> RowsOrder
+rows_order_set_child_parents = |order, parent_id, children| {
+	var $parents = order.parents
+	var $index = 0
+	while $index < children.len() {
+		child_id = children.get($index) ?? crash "Rows order child index was invalid while parenting"
+		$parents = $parents.insert(child_id, OrderParent({ node: parent_id, child: $index }))
+		$index = $index + 1
+	}
+	{ ..order, parents: $parents }
+}
+
+rows_order_insert_node : RowsOrder, U64, U64, U64 -> RowsOrderRewrite
+rows_order_insert_node = |order, node_id, index, slot| {
+	node = order.nodes.get(node_id) ?? crash "Rows order insertion node was missing"
+	match node {
+		OrderLeaf({ slots, len }) => {
+			inserted = slots.take_first(index).concat([slot]).concat(slots.drop_first(index))
+			if inserted.len() <= 32 {
+				nodes = order.nodes.insert(node_id, OrderLeaf({ slots: inserted, len: len + 1 }))
+				updated_leaf_order = { ..order, nodes, slot_leaf: order.slot_leaf.insert(slot, node_id) }
+				{ order: updated_leaf_order, replacements: [node_id] }
+			} else {
+				left_slots = inserted.take_first(16)
+				right_slots = inserted.drop_first(16)
+				allocation = rows_order_allocate_node(order)
+				right_id = allocation.node
+				nodes =
+					allocation.order.nodes
+						.insert(node_id, OrderLeaf({ slots: left_slots, len: left_slots.len() }))
+						.insert(right_id, OrderLeaf({ slots: right_slots, len: right_slots.len() }))
+				var $slot_leaf = allocation.order.slot_leaf
+				for left_slot in left_slots {
+					$slot_leaf = $slot_leaf.insert(left_slot, node_id)
+				}
+				for right_slot in right_slots {
+					$slot_leaf = $slot_leaf.insert(right_slot, right_id)
+				}
+				parent = allocation.order.parents.get(node_id) ?? crash "Rows order leaf parent was missing"
+				parents = allocation.order.parents.insert(right_id, parent)
+				{
+					order: { ..allocation.order, nodes, parents, slot_leaf: $slot_leaf },
+					replacements: [node_id, right_id],
+				}
+			}
+		}
+		OrderBranch({ children, len }) => {
+			var $remaining = index
+			var $child_index = 0
+			var $chosen = children.len() - 1
+			var $found = False
+			while $found == False and $child_index < children.len() {
+				child_id = children.get($child_index) ?? crash "Rows order branch child was missing"
+				child = order.nodes.get(child_id) ?? crash "Rows order branch child node was missing"
+				child_len = rows_order_node_len(child)
+				if $remaining < child_len or ($remaining == child_len and $child_index + 1 == children.len()) {
+					$chosen = $child_index
+					$found = True
+				} else {
+					$remaining = $remaining - child_len
+					$child_index = $child_index + 1
+				}
+			}
+			chosen_id = children.get($chosen) ?? crash "Rows order branch had no insertion child"
+			child_rewrite = rows_order_insert_node(order, chosen_id, $remaining, slot)
+			replaced_children =
+				children.take_first($chosen).concat(child_rewrite.replacements).concat(children.drop_first($chosen + 1))
+			if replaced_children.len() <= 32 {
+				updated_order = {
+					..child_rewrite.order,
+					nodes: child_rewrite.order.nodes.insert(node_id, OrderBranch({ children: replaced_children, len: len + 1 })),
+				}
+				parented = rows_order_set_child_parents(updated_order, node_id, replaced_children)
+				{ order: parented, replacements: [node_id] }
+			} else {
+				left_children = replaced_children.take_first(16)
+				right_children = replaced_children.drop_first(16)
+				allocation = rows_order_allocate_node(child_rewrite.order)
+				right_id = allocation.node
+				left_len = rows_order_children_len(child_rewrite.order, left_children)
+				right_len = rows_order_children_len(child_rewrite.order, right_children)
+				nodes =
+					allocation.order.nodes
+						.insert(node_id, OrderBranch({ children: left_children, len: left_len }))
+						.insert(right_id, OrderBranch({ children: right_children, len: right_len }))
+				parent = allocation.order.parents.get(node_id) ?? crash "Rows order branch parent was missing"
+				parents = allocation.order.parents.insert(right_id, parent)
+				split_order = { ..allocation.order, nodes, parents }
+				left_parented = rows_order_set_child_parents(split_order, node_id, left_children)
+				right_parented = rows_order_set_child_parents(left_parented, right_id, right_children)
+				{ order: right_parented, replacements: [node_id, right_id] }
+			}
+		}
+	}
+}
+
+rows_order_insert : RowsOrder, U64, U64 -> RowsOrder
+rows_order_insert = |order, index, slot| {
+	if index > rows_order_len(order) {
+		crash "Rows order insertion index exceeded its length"
+	}
+	rewrite = rows_order_insert_node(order, order.root, index, slot)
+	if rewrite.replacements.len() == 1 {
+		rewrite.order
+	} else {
+		allocation = rows_order_allocate_node(rewrite.order)
+		root_id = allocation.node
+		root_len = rows_order_children_len(rewrite.order, rewrite.replacements)
+		nodes = allocation.order.nodes.insert(root_id, OrderBranch({ children: rewrite.replacements, len: root_len }))
+		parents = allocation.order.parents.insert(root_id, OrderRoot)
+		rooted = { ..allocation.order, root: root_id, nodes, parents }
+		rows_order_set_child_parents(rooted, root_id, rewrite.replacements)
+	}
+}
+
+RowsOrderRemoval : { order : RowsOrder, removed : U64, replacements : List(U64) }
+
+rows_order_remove_node : RowsOrder, U64, U64 -> RowsOrderRemoval
+rows_order_remove_node = |order, node_id, index| {
+	node = order.nodes.get(node_id) ?? crash "Rows order removal node was missing"
+	match node {
+		OrderLeaf({ slots, len }) => {
+			removed = slots.get(index) ?? crash "Rows order removal index exceeded its leaf"
+			remaining = slots.take_first(index).concat(slots.drop_first(index + 1))
+			nodes =
+				if remaining.is_empty() {
+					order.nodes.remove(node_id)
+				} else {
+					order.nodes.insert(node_id, OrderLeaf({ slots: remaining, len: len - 1 }))
+				}
+			parents = if remaining.is_empty() {
+				order.parents.remove(node_id)
+			} else {
+				order.parents
+			}
+			free_nodes = if remaining.is_empty() {
+				order.free_nodes.prepend(node_id)
+			} else {
+				order.free_nodes
+			}
+			next_order = { ..order, nodes, parents, free_nodes, slot_leaf: order.slot_leaf.remove(removed) }
+			{
+				order: next_order,
+				removed,
+				replacements: if remaining.is_empty() {
+					[]
+				} else {
+					[node_id]
+				},
+			}
+		}
+		OrderBranch({ children, len }) => {
+			var $remaining = index
+			var $child_index = 0
+			var $chosen = 0
+			var $found = False
+			while $found == False and $child_index < children.len() {
+				child_id = children.get($child_index) ?? crash "Rows order removal child was missing"
+				child = order.nodes.get(child_id) ?? crash "Rows order removal child node was missing"
+				child_len = rows_order_node_len(child)
+				if $remaining < child_len {
+					$chosen = $child_index
+					$found = True
+				} else {
+					$remaining = $remaining - child_len
+					$child_index = $child_index + 1
+				}
+			}
+			chosen_id = children.get($chosen) ?? crash "Rows order removal branch had no child"
+			child_removal = rows_order_remove_node(order, chosen_id, $remaining)
+			replaced_children =
+				children.take_first($chosen).concat(child_removal.replacements).concat(children.drop_first($chosen + 1))
+			nodes =
+				if replaced_children.is_empty() {
+					child_removal.order.nodes.remove(node_id)
+				} else {
+					child_removal.order.nodes.insert(node_id, OrderBranch({ children: replaced_children, len: len - 1 }))
+				}
+			parents = if replaced_children.is_empty() {
+				child_removal.order.parents.remove(node_id)
+			} else {
+				child_removal.order.parents
+			}
+			free_nodes = if replaced_children.is_empty() {
+				child_removal.order.free_nodes.prepend(node_id)
+			} else {
+				child_removal.order.free_nodes
+			}
+			updated = { ..child_removal.order, nodes, parents, free_nodes }
+			parented = rows_order_set_child_parents(updated, node_id, replaced_children)
+			{
+				order: parented,
+				removed: child_removal.removed,
+				replacements: if replaced_children.is_empty() {
+					[]
+				} else {
+					[node_id]
+				},
+			}
+		}
+	}
+}
+
+rows_order_remove : RowsOrder, U64 -> { order : RowsOrder, removed : U64 }
+rows_order_remove = |order, index| {
+	removal = rows_order_remove_node(order, order.root, index)
+	if removal.replacements.is_empty() {
+		fresh = rows_order_empty()
+		{ order: fresh, removed: removal.removed }
+	} else {
+		root_id = removal.replacements.get(0) ?? crash "Rows order removal lost its root"
+		root_node = removal.order.nodes.get(root_id) ?? crash "Rows order removal root was missing"
+		collapsed_root =
+			match root_node {
+				OrderBranch({ children, .. }) =>
+					if children.len() == 1 {
+						children.get(0) ?? crash "Rows order unary branch had no child"
+					} else {
+						root_id
+					}
+				OrderLeaf(_) => root_id
+			}
+		collapsed_order =
+			if collapsed_root == root_id {
+				removal.order
+			} else {
+				{ ..removal.order, nodes: removal.order.nodes.remove(root_id), parents: removal.order.parents.remove(root_id), free_nodes: removal.order.free_nodes.prepend(root_id) }
+			}
+		parents = collapsed_order.parents.insert(collapsed_root, OrderRoot)
+		{ order: { ..collapsed_order, root: collapsed_root, parents }, removed: removal.removed }
+	}
+}
+
+rows_order_rank : RowsOrder, U64 -> Try(U64, [Missing])
+rows_order_rank = |order, slot| {
+	leaf_id = order.slot_leaf.get(slot) ? |_| Missing
+	leaf = order.nodes.get(leaf_id) ?? crash "Rows slot leaf was missing"
+	leaf_offset =
+		match leaf {
+			OrderBranch(_) => crash "Rows slot leaf named a branch"
+			OrderLeaf({ slots, .. }) => {
+				var $index = 0
+				var $found = False
+				var $offset = 0
+				while $found == False and $index < slots.len() {
+					candidate = slots.get($index) ?? crash "Rows leaf slot index was invalid"
+					if candidate == slot {
+						$found = True
+						$offset = $index
+					}
+					$index = $index + 1
+				}
+				if $found == True {
+					$offset
+				} else {
+					crash "Rows slot leaf did not contain its slot"
+				}
+			}
+		}
+	var $rank = leaf_offset
+	var $node_id = leaf_id
+	var $done = False
+	while $done == False {
+		parent = order.parents.get($node_id) ?? crash "Rows order parent was missing"
+		match parent {
+			OrderRoot => {
+				$done = True
+			}
+			OrderParent({ node: parent_id, child: child_index }) => {
+				parent_node = order.nodes.get(parent_id) ?? crash "Rows order parent node was missing"
+				match parent_node {
+					OrderLeaf(_) => crash "Rows order parent was a leaf"
+					OrderBranch({ children, .. }) => {
+						var $sibling = 0
+						while $sibling < child_index {
+							sibling_id = children.get($sibling) ?? crash "Rows order sibling index was invalid"
+							sibling_node = order.nodes.get(sibling_id) ?? crash "Rows order sibling was missing"
+							$rank = $rank + rows_order_node_len(sibling_node)
+							$sibling = $sibling + 1
+						}
+					}
+				}
+				$node_id = parent_id
+			}
+		}
+	}
+	Ok($rank)
+}
+
+rows_order_fold_node : RowsOrder, U64, state, (state, U64 -> state) -> state
+rows_order_fold_node = |order, node_id, initial, push| {
+	node = order.nodes.get(node_id) ?? crash "Rows order fold node was missing"
+	match node {
+		OrderLeaf({ slots, .. }) => slots.fold(initial, push)
+		OrderBranch({ children, .. }) =>
+			children.fold(initial, |state, child_id| rows_order_fold_node(order, child_id, state, push))
+		}
+}
+
+rows_order_fold : RowsOrder, state, (state, U64 -> state) -> state
+rows_order_fold = |order, initial, push| rows_order_fold_node(order, order.root, initial, push)
+
+RowsSlotCell(item) : [RowsSlotLive({ generation : U64, key : Str, item : item }), RowsSlotVacant({ generation : U64 }), RowsSlotRetired]
+
+RowsSlotStore(item) : {
+	chunks : Dict(U64, List(RowsSlotCell(item))),
+	free : List(U64),
+	next_index : U64,
+}
+
+RowsSlotAllocation(item) : { slot : U64, slots : RowsSlotStore(item) }
+
+rows_slot_base : U64
+rows_slot_base = 4294967296
+
+rows_slot_pack : U64, U64 -> U64
+rows_slot_pack = |index, generation| generation * rows_slot_base + index
+
+rows_slot_index : U64 -> U64
+rows_slot_index = |slot| slot.rem_by(rows_slot_base)
+
+rows_slot_generation : U64 -> U64
+rows_slot_generation = |slot| slot.div_trunc_by(rows_slot_base)
+
+rows_slots_empty : () -> RowsSlotStore(item)
+rows_slots_empty = || {
+	chunks : Dict(U64, List(RowsSlotCell(item)))
+	chunks = Dict.empty()
+	{ chunks, free: [], next_index: 1 }
+}
+
+rows_slots_cell : RowsSlotStore(item), U64 -> Try(RowsSlotCell(item), [Missing])
+rows_slots_cell = |slots, index| {
+	if index == 0 {
+		Err(Missing)
+	} else {
+		zero_index = index - 1
+		chunk_index = zero_index.div_trunc_by(32)
+		offset = zero_index.rem_by(32)
+		chunk = slots.chunks.get(chunk_index) ? |_| Missing
+		match chunk.get(offset) {
+			Ok(cell) => Ok(cell)
+			Err(_) => Err(Missing)
+		}
+	}
+}
+
+rows_slots_set_cell : RowsSlotStore(item), U64, RowsSlotCell(item) -> RowsSlotStore(item)
+rows_slots_set_cell = |slots, index, cell| {
+	zero_index = index - 1
+	chunk_index = zero_index.div_trunc_by(32)
+	offset = zero_index.rem_by(32)
+	chunk = slots.chunks.get(chunk_index) ?? []
+	updated_chunk =
+		if offset == chunk.len() {
+			chunk.append(cell)
+		} else {
+			chunk.set(offset, cell) ?? crash "Rows slot chunk offset was invalid"
+		}
+	{ ..slots, chunks: slots.chunks.insert(chunk_index, updated_chunk) }
+}
+
+rows_slots_get : RowsSlotStore(item), U64 -> Try({ key : Str, item : item }, [Missing])
+rows_slots_get = |slots, slot| {
+	index = rows_slot_index(slot)
+	generation = rows_slot_generation(slot)
+	cell = rows_slots_cell(slots, index)?
+	match cell {
+		RowsSlotLive(live) =>
+			if live.generation == generation {
+				Ok({ key: live.key, item: live.item })
+			} else {
+				Err(Missing)
+			}
+		RowsSlotVacant(_) => Err(Missing)
+		RowsSlotRetired => Err(Missing)
+	}
+}
+
+rows_slots_allocate : RowsSlotStore(item), Str, item -> Try(RowsSlotAllocation(item), Rows.Error)
+rows_slots_allocate = |slots, key, item| {
+	match slots.free.first() {
+		Ok(index) => {
+			cell = rows_slots_cell(slots, index) ?? crash "Rows free slot was missing"
+			generation =
+				match cell {
+					RowsSlotVacant({ generation: stored_generation }) => stored_generation
+					_ => crash "Rows free slot was not vacant"
+				}
+			next_slots = { ..slots, free: slots.free.drop_first(1) }
+			stored = rows_slots_set_cell(next_slots, index, RowsSlotLive({ generation, key, item }))
+			Ok({ slot: rows_slot_pack(index, generation), slots: stored })
+		}
+		Err(_) => {
+			if slots.next_index >= rows_slot_base {
+				Err(Rows.Error.SlotExhausted)
+			} else {
+				index = slots.next_index
+				generation = 1
+				stored = rows_slots_set_cell({ ..slots, next_index: index + 1 }, index, RowsSlotLive({ generation, key, item }))
+				Ok({ slot: rows_slot_pack(index, generation), slots: stored })
+			}
+		}
+	}
+}
+
+rows_slots_replace : RowsSlotStore(item), U64, Str, item -> Try(RowsSlotStore(item), [Missing])
+rows_slots_replace = |slots, slot, key, item| {
+	index = rows_slot_index(slot)
+	generation = rows_slot_generation(slot)
+	cell = rows_slots_cell(slots, index)?
+	match cell {
+		RowsSlotLive(live) =>
+			if live.generation == generation {
+				Ok(rows_slots_set_cell(slots, index, RowsSlotLive({ generation, key, item })))
+			} else {
+				Err(Missing)
+			}
+		_ => Err(Missing)
+	}
+}
+
+rows_slots_release : RowsSlotStore(item), U64 -> Try(RowsSlotStore(item), [Missing])
+rows_slots_release = |slots, slot| {
+	index = rows_slot_index(slot)
+	generation = rows_slot_generation(slot)
+	cell = rows_slots_cell(slots, index)?
+	match cell {
+		RowsSlotLive(live) =>
+			if live.generation != generation {
+				Err(Missing)
+			} else if generation == 4294967295 {
+				Ok(rows_slots_set_cell(slots, index, RowsSlotRetired))
+			} else {
+				next_generation = generation + 1
+				vacant = rows_slots_set_cell(slots, index, RowsSlotVacant({ generation: next_generation }))
+				Ok({ ..vacant, free: vacant.free.prepend(index) })
+			}
+		_ => Err(Missing)
+	}
+}
+
+RowsTransition : [
 	ClearRows,
-	InsertRows({ at : U64, entries : List(RowsEntry(item)) }),
-	MoveRows({ from : U64, count : U64, to : U64 }),
-	RemoveRows({ at : U64, entries : List(RowsEntry(item)) }),
-	SetRow({ at : U64, before : RowsEntry(item), after : RowsEntry(item) }),
+	InsertRow({ before_slot : U64, key : Str, op_index : U64, slot : U64 }),
+	MoveRows({ before_slot : U64, count : U64, first_slot : U64, op_index : U64 }),
+	RemoveRows({ count : U64, first_slot : U64, op_index : U64 }),
+	UpdateRow({ key : Str, op_index : U64, slot : U64 }),
 ]
 
 RowsStorage(item) : {
 	token : RowsGenerationCallable,
 	parent : [NoParent, Parent(RowsGenerationCallable)],
-	transition : [Delta(List(RowsTransition(item))), Snapshot],
+	transition : [Delta(List(RowsTransition)), Snapshot],
 	key_of : Box((item -> Str)),
-	entries : List(RowsEntry(item)),
+	order : RowsOrder,
+	slots : RowsSlotStore(item),
 	key_index : Dict(Str, U64),
-	slot_index : Dict(U64, U64),
-	next_slot : U64,
+	snapshot_key_bytes : U64,
+	op_count : U64,
+	delta_key_count : U64,
+	delta_key_bytes : U64,
 }
 
 RowsBuild(item) : {
-	entries_rev : List(RowsEntry(item)),
+	order : RowsOrder,
+	slots : RowsSlotStore(item),
 	key_index : Dict(Str, U64),
-	slot_index : Dict(U64, U64),
-	next_slot : U64,
+	key_bytes : U64,
 }
 
 RowsEditState(item) : {
-	entries : List(RowsEntry(item)),
+	order : RowsOrder,
+	slots : RowsSlotStore(item),
 	key_index : Dict(Str, U64),
-	slot_index : Dict(U64, U64),
-	next_slot : U64,
+	key_bytes : U64,
 	removed : Dict(Str, RowsEntry(item)),
-	transitions_rev : List(RowsTransition(item)),
+	touched : Dict(U64, Bool),
+	touched_rev : List(U64),
 }
 
 rows_generation_callable : () -> RowsGenerationCallable
@@ -51,37 +617,24 @@ rows_generation_callable = || {
 	Box.box(identity)
 }
 
-rows_empty_indexes : () -> { key_index : Dict(Str, U64), slot_index : Dict(U64, U64) }
+rows_empty_indexes : () -> { key_index : Dict(Str, U64) }
 rows_empty_indexes = || {
 	key_index : Dict(Str, U64)
 	key_index = Dict.empty()
-	slot_index : Dict(U64, U64)
-	slot_index = Dict.empty()
-	{ key_index, slot_index }
+	{ key_index }
 }
 
-rows_reindex : List(RowsEntry(item)) -> { key_index : Dict(Str, U64), slot_index : Dict(U64, U64) }
-rows_reindex = |entries| {
-	indexes = rows_empty_indexes()
-	var $key_index = indexes.key_index
-	var $slot_index = indexes.slot_index
-	var $index = 0
-	while $index < entries.len() {
-		entry = entries.get($index) ?? crash "Rows internal order index was invalid"
-		$key_index = $key_index.insert(entry.key, $index)
-		$slot_index = $slot_index.insert(entry.slot, $index)
-		$index = $index + 1
-	}
-	{ key_index: $key_index, slot_index: $slot_index }
+rows_entry_for_slot : RowsSlotStore(item), U64 -> Try(RowsEntry(item), [Missing])
+rows_entry_for_slot = |slots, slot| {
+	stored = rows_slots_get(slots, slot)?
+	Ok({ slot, key: stored.key, item: stored.item })
 }
 
-rows_allocate_slot : U64 -> Try({ slot : U64, next_slot : U64 }, Rows.Error)
-rows_allocate_slot = |next_slot|
-	if next_slot == 18446744073709551615 {
-		Err(SlotExhausted)
-	} else {
-		Ok({ slot: next_slot, next_slot: next_slot + 1 })
-	}
+rows_entry_at : RowsOrder, RowsSlotStore(item), U64 -> Try(RowsEntry(item), [Missing])
+rows_entry_at = |order, slots, index| {
+	slot = rows_order_get(order, index)?
+	rows_entry_for_slot(slots, slot)
+}
 
 rows_build_fresh : List(item), Box((item -> Str)), U64, U64, RowsBuild(item) -> Try(RowsBuild(item), Rows.Error)
 rows_build_fresh = |items, key_of, index, len, build|
@@ -93,18 +646,17 @@ rows_build_fresh = |items, key_of, index, len, build|
 		match build.key_index.get(key) {
 			Ok(_) => Err(DuplicateKey(key))
 			Err(_) => {
-				allocated = rows_allocate_slot(build.next_slot)?
-				entry = { slot: allocated.slot, key, item }
+				allocated = rows_slots_allocate(build.slots, key, item)?
 				rows_build_fresh(
 					items,
 					key_of,
 					index + 1,
 					len,
 					{
-						entries_rev: build.entries_rev.prepend(entry),
-						key_index: build.key_index.insert(key, index),
-						slot_index: build.slot_index.insert(entry.slot, index),
-						next_slot: allocated.next_slot,
+						order: rows_order_insert(build.order, index, allocated.slot),
+						slots: allocated.slots,
+						key_index: build.key_index.insert(key, allocated.slot),
+						key_bytes: build.key_bytes + key.to_utf8().len(),
 					},
 				)
 			}
@@ -121,18 +673,17 @@ rows_build_replacement = |items, key_of, old, index, len, build|
 		match build.key_index.get(key) {
 			Ok(_) => Err(DuplicateKey(key))
 			Err(_) => {
-				entry_and_next =
+				entry_and_slots =
 					match old.key_index.get(key) {
-						Ok(old_index) => {
-							old_entry = old.entries.get(old_index) ?? crash "Rows key index did not name an entry"
-							{ entry: { slot: old_entry.slot, key, item }, next_slot: build.next_slot }
+						Ok(old_slot) => {
+							replaced = rows_slots_replace(build.slots, old_slot, key, item) ?? crash "Rows key index named a stale slot"
+							{ slot: old_slot, slots: replaced }
 						}
 						Err(_) => {
-							allocated = rows_allocate_slot(build.next_slot)?
-							{ entry: { slot: allocated.slot, key, item }, next_slot: allocated.next_slot }
+							allocated = rows_slots_allocate(build.slots, key, item)?
+							{ slot: allocated.slot, slots: allocated.slots }
 						}
 					}
-				entry = entry_and_next.entry
 				rows_build_replacement(
 					items,
 					key_of,
@@ -140,22 +691,32 @@ rows_build_replacement = |items, key_of, old, index, len, build|
 					index + 1,
 					len,
 					{
-						entries_rev: build.entries_rev.prepend(entry),
-						key_index: build.key_index.insert(key, index),
-						slot_index: build.slot_index.insert(entry.slot, index),
-						next_slot: entry_and_next.next_slot,
+						order: rows_order_insert(build.order, index, entry_and_slots.slot),
+						slots: entry_and_slots.slots,
+						key_index: build.key_index.insert(key, entry_and_slots.slot),
+						key_bytes: build.key_bytes + key.to_utf8().len(),
 					},
 				)
 			}
 		}
 	}
 
-rows_slice : List(a), U64, U64 -> List(a)
-rows_slice = |items, at, count| items.drop_first(at).take_first(count)
-
-rows_splice : List(a), U64, U64, List(a) -> List(a)
-rows_splice = |items, at, remove_count, inserted|
-	items.take_first(at).concat(inserted).concat(items.drop_first(at + remove_count))
+rows_release_replaced_slots : RowsStorage(item), RowsBuild(item) -> RowsSlotStore(item)
+rows_release_replaced_slots = |old, build| {
+	var $slots = build.slots
+	var $index = 0
+	while $index < rows_order_len(old.order) {
+		entry = rows_entry_at(old.order, old.slots, $index) ?? crash "Rows replacement old index was invalid"
+		match build.key_index.get(entry.key) {
+			Ok(_) => {}
+			Err(_) => {
+				$slots = rows_slots_release($slots, entry.slot) ?? crash "Rows replacement retired a stale slot"
+			}
+		}
+		$index = $index + 1
+	}
+	$slots
+}
 
 rows_reverse : List(a) -> List(a)
 rows_reverse = |items| {
@@ -166,34 +727,34 @@ rows_reverse = |items| {
 	$reversed
 }
 
-rows_state_with_entries : RowsEditState(item), List(RowsEntry(item)) -> RowsEditState(item)
-rows_state_with_entries = |state, entries| {
-	indexes = rows_reindex(entries)
-	{ ..state, entries, key_index: indexes.key_index, slot_index: indexes.slot_index }
-}
+rows_remove_at_loop : RowsEditState(item), U64, U64, List(RowsEntry(item)) -> RowsEditState(item)
+rows_remove_at_loop = |state, at, remaining, removed_rev|
+	if remaining == 0 {
+		_ = removed_rev
+		state
+	} else {
+		entry = rows_entry_at(state.order, state.slots, at) ?? crash "Rows removal index exceeded its order"
+		order_removal = rows_order_remove(state.order, at)
+		next = {
+			..state,
+			order: order_removal.order,
+			key_index: state.key_index.remove(entry.key),
+			key_bytes: state.key_bytes - entry.key.to_utf8().len(),
+			removed: state.removed.insert(entry.key, entry),
+			touched: state.touched.insert(entry.slot, True),
+			touched_rev: state.touched_rev.prepend(entry.slot),
+		}
+		rows_remove_at_loop(next, at, remaining - 1, removed_rev.prepend(entry))
+	}
 
 rows_remove_at : RowsEditState(item), U64, U64 -> RowsEditState(item)
-rows_remove_at = |state, at, count| {
-	removed_entries = rows_slice(state.entries, at, count)
-	var $removed = state.removed
-	for removed_entry in removed_entries {
-		$removed = $removed.insert(removed_entry.key, removed_entry)
-	}
-	remaining = rows_splice(state.entries, at, count, [])
-	next = rows_state_with_entries(state, remaining)
-	{
-		..next,
-		removed: $removed,
-		transitions_rev: next.transitions_rev.prepend(RemoveRows({ at, entries: removed_entries })),
-	}
-}
+rows_remove_at = |state, at, count| rows_remove_at_loop(state, at, count, [])
 
 rows_insert_items : RowsEditState(item), Box((item -> Str)), U64, List(item), U64, U64, List(RowsEntry(item)) -> Try(RowsEditState(item), Rows.Error)
 rows_insert_items = |state, key_of, at, items, item_index, item_len, entries_rev|
 	if item_index == item_len {
-		inserted = rows_reverse(entries_rev)
-		with_entries = rows_state_with_entries(state, rows_splice(state.entries, at, 0, inserted))
-		Ok({ ..with_entries, transitions_rev: with_entries.transitions_rev.prepend(InsertRows({ at, entries: inserted })) })
+		_ = entries_rev
+		Ok(state)
 	} else {
 		item = items.get(item_index) ?? crash "Rows inserted item length changed during construction"
 		key = Box.unbox(key_of)(item)
@@ -203,28 +764,58 @@ rows_insert_items = |state, key_of, at, items, item_index, item_len, entries_rev
 				entry_and_state =
 					match state.removed.get(key) {
 						Ok(removed_entry) => {
+							replaced_slots = rows_slots_replace(state.slots, removed_entry.slot, key, item) ?? crash "Rows removed entry slot became stale"
 							{
 								entry: { slot: removed_entry.slot, key, item },
-								state: { ..state, removed: state.removed.remove(key) },
+								state: { ..state, slots: replaced_slots, removed: state.removed.remove(key) },
 							}
 						}
 						Err(_) => {
-							allocated = rows_allocate_slot(state.next_slot)?
+							allocated = rows_slots_allocate(state.slots, key, item)?
 							{
 								entry: { slot: allocated.slot, key, item },
-								state: { ..state, next_slot: allocated.next_slot },
+								state: { ..state, slots: allocated.slots },
 							}
 						}
 					}
 				reserved_index = at + item_index
 				next_state = {
 					..entry_and_state.state,
-					key_index: entry_and_state.state.key_index.insert(key, reserved_index),
+					order: rows_order_insert(entry_and_state.state.order, reserved_index, entry_and_state.entry.slot),
+					key_index: entry_and_state.state.key_index.insert(key, entry_and_state.entry.slot),
+					key_bytes: entry_and_state.state.key_bytes + key.to_utf8().len(),
+					touched: entry_and_state.state.touched.insert(entry_and_state.entry.slot, True),
+					touched_rev: entry_and_state.state.touched_rev.prepend(entry_and_state.entry.slot),
 				}
 				rows_insert_items(next_state, key_of, at, items, item_index + 1, item_len, entries_rev.prepend(entry_and_state.entry))
 			}
 		}
 	}
+
+rows_order_take_range : RowsOrder, U64, U64 -> { order : RowsOrder, slots : List(U64) }
+rows_order_take_range = |order, from, count| {
+	var $order = order
+	var $slots_rev = []
+	var $remaining = count
+	while $remaining > 0 {
+		removal = rows_order_remove($order, from)
+		$order = removal.order
+		$slots_rev = $slots_rev.prepend(removal.removed)
+		$remaining = $remaining - 1
+	}
+	{ order: $order, slots: rows_reverse($slots_rev) }
+}
+
+rows_order_insert_range : RowsOrder, U64, List(U64) -> RowsOrder
+rows_order_insert_range = |order, at, slots| {
+	var $order = order
+	var $offset = 0
+	for slot in slots {
+		$order = rows_order_insert($order, at + $offset, slot)
+		$offset = $offset + 1
+	}
+	$order
+}
 
 rows_apply_one : RowsEditState(item), Box((item -> Str)), Rows.Edit(item) -> Try(RowsEditState(item), Rows.Error)
 	where [item.is_eq : item, item -> Bool]
@@ -234,18 +825,17 @@ rows_apply_one = |state, key_of, edit|
 			if items.is_empty() {
 				Ok(state)
 			} else {
-				rows_insert_items(state, key_of, state.entries.len(), items, 0, items.len(), [])
+				rows_insert_items(state, key_of, rows_order_len(state.order), items, 0, items.len(), [])
 			}
 		Clear =>
-			if state.entries.is_empty() {
+			if rows_order_len(state.order) == 0 {
 				Ok(state)
 			} else {
-				removed_state = rows_remove_at(state, 0, state.entries.len())
-				Ok({ ..removed_state, transitions_rev: state.transitions_rev.prepend(ClearRows) })
+				Ok(rows_remove_at(state, 0, rows_order_len(state.order)))
 			}
 		InsertAt({ at, items }) =>
-			if at > state.entries.len() {
-				Err(IndexOutOfBounds({ index: at, len: state.entries.len() }))
+			if at > rows_order_len(state.order) {
+				Err(IndexOutOfBounds({ index: at, len: rows_order_len(state.order) }))
 			} else if items.is_empty() {
 				Ok(state)
 			} else {
@@ -254,34 +844,39 @@ rows_apply_one = |state, key_of, edit|
 		InsertBefore({ before, items }) =>
 			match state.key_index.get(before) {
 				Err(_) => Err(KeyNotFound(before))
-				Ok(at) =>
+				Ok(before_slot) =>
 					if items.is_empty() {
 						Ok(state)
 					} else {
+						at = rows_order_rank(state.order, before_slot) ?? crash "Rows key slot was absent from order"
 						rows_insert_items(state, key_of, at, items, 0, items.len(), [])
 					}
 				}
 		MoveKeyBefore({ key, before }) =>
 			match state.key_index.get(key) {
 				Err(_) => Err(KeyNotFound(key))
-				Ok(from) => {
+				Ok(moving_slot) => {
+					from = rows_order_rank(state.order, moving_slot) ?? crash "Rows moving key slot was absent from order"
 					to_result : Try(U64, Rows.Error)
 					to_result =
 						match before {
-							End => Ok(state.entries.len() - 1)
+							End => Ok(rows_order_len(state.order) - 1)
 							Key(before_key) =>
 								if before_key == key {
 									Ok(from)
 								} else {
 									match state.key_index.get(before_key) {
 										Err(_) => Err(KeyNotFound(before_key))
-										Ok(before_index) => Ok(
-											if before_index > from {
-												before_index - 1
-											} else {
-												before_index
-											},
-										)
+										Ok(before_slot) => {
+											before_index = rows_order_rank(state.order, before_slot) ?? crash "Rows before key slot was absent from order"
+											Ok(
+												if before_index > from {
+													before_index - 1
+												} else {
+													before_index
+												},
+											)
+										}
 									}
 								}
 							}
@@ -289,16 +884,15 @@ rows_apply_one = |state, key_of, edit|
 					if from == to {
 						Ok(state)
 					} else {
-						entry = state.entries.get(from) ?? crash "Rows move key index did not name an entry"
-						without = rows_splice(state.entries, from, 1, [])
-						moved = rows_splice(without, to, 0, [entry])
-						next = rows_state_with_entries(state, moved)
-						Ok({ ..next, transitions_rev: next.transitions_rev.prepend(MoveRows({ from, count: 1, to })) })
+						taken = rows_order_take_range(state.order, from, 1)
+						moved_order = rows_order_insert_range(taken.order, to, taken.slots)
+						next = { ..state, order: moved_order, touched: state.touched.insert(moving_slot, True), touched_rev: state.touched_rev.prepend(moving_slot) }
+						Ok(next)
 					}
 				}
 			}
 		MoveRange({ from, count, to }) => {
-			len = state.entries.len()
+			len = rows_order_len(state.order)
 			if from > len or count > len - from {
 				Err(RangeOutOfBounds({ at: from, count, len }))
 			} else if to > len - count {
@@ -306,20 +900,28 @@ rows_apply_one = |state, key_of, edit|
 			} else if count == 0 or from == to {
 				Ok(state)
 			} else {
-				moving = rows_slice(state.entries, from, count)
-				without = rows_splice(state.entries, from, count, [])
-				moved = rows_splice(without, to, 0, moving)
-				next = rows_state_with_entries(state, moved)
-				Ok({ ..next, transitions_rev: next.transitions_rev.prepend(MoveRows({ from, count, to })) })
+				taken = rows_order_take_range(state.order, from, count)
+				moved_order = rows_order_insert_range(taken.order, to, taken.slots)
+				var $touched = state.touched
+				var $touched_rev = state.touched_rev
+				for moved_slot in taken.slots {
+					$touched = $touched.insert(moved_slot, True)
+					$touched_rev = $touched_rev.prepend(moved_slot)
+				}
+				next = { ..state, order: moved_order, touched: $touched, touched_rev: $touched_rev }
+				Ok(next)
 			}
 		}
 		RemoveKey(key) =>
 			match state.key_index.get(key) {
 				Err(_) => Err(KeyNotFound(key))
-				Ok(at) => Ok(rows_remove_at(state, at, 1))
+				Ok(slot) => {
+					at = rows_order_rank(state.order, slot) ?? crash "Rows removed key slot was absent from order"
+					Ok(rows_remove_at(state, at, 1))
+				}
 			}
 		RemoveRange({ at, count }) => {
-			len = state.entries.len()
+			len = rows_order_len(state.order)
 			if at > len or count > len - at {
 				Err(RangeOutOfBounds({ at, count, len }))
 			} else if count == 0 {
@@ -329,19 +931,19 @@ rows_apply_one = |state, key_of, edit|
 			}
 		}
 		SetAt({ at, item }) => {
-			len = state.entries.len()
+			len = rows_order_len(state.order)
 			if at >= len {
 				Err(IndexOutOfBounds({ index: at, len }))
 			} else {
-				before_entry = state.entries.get(at) ?? crash "Rows set index did not name an entry"
+				before_entry = rows_entry_at(state.order, state.slots, at) ?? crash "Rows set index did not name an entry"
 				new_key = Box.unbox(key_of)(item)
 				if new_key == before_entry.key {
 					if before_entry.item.is_eq(item) {
 						Ok(state)
 					} else {
-						after_entry = { ..before_entry, item }
-						next = rows_state_with_entries(state, state.entries.set(at, after_entry) ?? crash "Rows set index became invalid")
-						Ok({ ..next, transitions_rev: next.transitions_rev.prepend(SetRow({ at, before: before_entry, after: after_entry })) })
+						updated_slots = rows_slots_replace(state.slots, before_entry.slot, new_key, item) ?? crash "Rows set slot became stale"
+						next = { ..state, slots: updated_slots, touched: state.touched.insert(before_entry.slot, True), touched_rev: state.touched_rev.prepend(before_entry.slot) }
+						Ok(next)
 					}
 				} else {
 					match state.key_index.get(new_key) {
@@ -357,7 +959,10 @@ rows_apply_one = |state, key_of, edit|
 		SetKey({ key, item }) =>
 			match state.key_index.get(key) {
 				Err(_) => Err(KeyNotFound(key))
-				Ok(at) => rows_apply_one(state, key_of, SetAt({ at, item }))
+				Ok(slot) => {
+					at = rows_order_rank(state.order, slot) ?? crash "Rows set key slot was absent from order"
+					rows_apply_one(state, key_of, SetAt({ at, item }))
+				}
 			}
 		}
 
@@ -372,72 +977,215 @@ rows_apply_many = |state, key_of, edits, index, len|
 		rows_apply_many(next, key_of, edits, index + 1, len)
 	}
 
-rows_find_slot_from : List(RowsEntry(item)), U64, U64 -> [Found(U64), NotFound]
-rows_find_slot_from = |entries, slot, from| {
-	var $index = from
-	var $result = NotFound
-	while $result == NotFound and $index < entries.len() {
-		entry = entries.get($index) ?? crash "Rows slot search index was invalid"
-		if entry.slot == slot {
-			$result = Found($index)
+rows_touched_equal : RowsStorage(item), RowsEditState(item) -> Bool
+	where [item.is_eq : item, item -> Bool]
+rows_touched_equal = |old, final| {
+	if rows_order_len(old.order) != rows_order_len(final.order) {
+		False
+	} else {
+		var $equal = True
+		for slot in final.touched_rev {
+			if $equal {
+				old_rank = rows_order_rank(old.order, slot)
+				final_rank = rows_order_rank(final.order, slot)
+				match old_rank {
+					Err(_) =>
+						match final_rank {
+							Err(_) => {}
+							Ok(_) => {
+								$equal = False
+							}
+						}
+					Ok(old_at) =>
+						match final_rank {
+							Err(_) => {
+								$equal = False
+							}
+							Ok(final_at) => {
+								old_entry = rows_entry_for_slot(old.slots, slot) ?? crash "Rows original touched slot was stale"
+								final_entry = rows_entry_for_slot(final.slots, slot) ?? crash "Rows final touched slot was stale"
+								if old_at != final_at or old_entry.key != final_entry.key or !old_entry.item.is_eq(final_entry.item) {
+									$equal = False
+								}
+							}
+						}
+					}
+			}
 		}
-		$index = $index + 1
+		$equal
 	}
-	$result
 }
 
-rows_normalize_delta_from : List(RowsEntry(item)), List(RowsEntry(item)), U64, List(RowsTransition(item)) -> List(RowsTransition(item))
-	where [item.is_eq : item, item -> Bool]
-rows_normalize_delta_from = |working, target, index, transitions_rev|
-	if index == target.len() {
-		remaining = working.len() - index
-		if remaining == 0 {
-			rows_reverse(transitions_rev)
-		} else if index == 0 {
-			rows_reverse(transitions_rev.prepend(ClearRows))
-		} else {
-			removed = rows_slice(working, index, remaining)
-			rows_reverse(transitions_rev.prepend(RemoveRows({ at: index, entries: removed })))
-		}
-	} else {
-		target_entry = target.get(index) ?? crash "Rows normalized target index was invalid"
-		match rows_find_slot_from(working, target_entry.slot, index) {
-			NotFound => {
-				next_working = rows_splice(working, index, 0, [target_entry])
-				next_transitions = transitions_rev.prepend(InsertRows({ at: index, entries: [target_entry] }))
-				rows_normalize_delta_from(next_working, target, index + 1, next_transitions)
+rows_number_transitions : List(RowsTransition) -> List(RowsTransition)
+rows_number_transitions = |transitions| {
+	var $numbered = []
+	var $op_index = 0
+	for transition in transitions {
+		numbered_transition =
+			match transition {
+				ClearRows => ClearRows
+				InsertRow(payload) => InsertRow({ ..payload, op_index: $op_index })
+				MoveRows(payload) => MoveRows({ ..payload, op_index: $op_index })
+				RemoveRows(payload) => RemoveRows({ ..payload, op_index: $op_index })
+				UpdateRow(payload) => UpdateRow({ ..payload, op_index: $op_index })
 			}
-			Found(found_at) => {
-				moved =
-					if found_at == index {
-						working
-					} else {
-						entry = working.get(found_at) ?? crash "Rows normalized move index was invalid"
-						rows_splice(rows_splice(working, found_at, 1, []), index, 0, [entry])
+		$numbered = $numbered.prepend(numbered_transition)
+		$op_index = $op_index + 1
+	}
+	rows_reverse($numbered)
+}
+
+rows_canonical_transitions : RowsStorage(item), RowsEditState(item) -> List(RowsTransition)
+	where [item.is_eq : item, item -> Bool]
+rows_canonical_transitions = |old, final| {
+	if rows_order_len(final.order) == 0 {
+		rows_number_transitions([ClearRows])
+	} else {
+		seen : Dict(U64, Bool)
+		seen = Dict.empty()
+		var $seen = seen
+		var $touched = []
+		for slot in final.touched_rev {
+			match $seen.get(slot) {
+				Ok(_) => {}
+				Err(_) => {
+					$seen = $seen.insert(slot, True)
+					$touched = $touched.prepend(slot)
+				}
+			}
+		}
+
+		var $working = old.order
+		var $canonical_rev = []
+		for slot in $touched {
+			match rows_order_rank($working, slot) {
+				Err(_) => {}
+				Ok(at) =>
+					match rows_order_rank(final.order, slot) {
+						Ok(_) => {}
+						Err(_) => {
+							removal = rows_order_remove($working, at)
+							$working = removal.order
+							$canonical_rev = $canonical_rev.prepend(RemoveRows({ op_index: 0, first_slot: slot, count: 1 }))
+						}
 					}
-				moved_transitions =
-					if found_at == index {
-						transitions_rev
-					} else {
-						transitions_rev.prepend(MoveRows({ from: found_at, count: 1, to: index }))
+				}
+		}
+
+		target_rows =
+			$touched
+				.keep_if(
+					|slot|
+						match rows_order_rank(final.order, slot) {
+							Ok(_) => True
+							Err(_) => False
+						},
+				)
+				.map(|slot| { slot, rank: rows_order_rank(final.order, slot) ?? crash "Rows canonical target slot was absent" })
+				.sort_with(
+					|left, right|
+						if left.rank < right.rank {
+							Before
+						} else if left.rank > right.rank {
+							After
+						} else {
+							Same
+						},
+				)
+
+		for target in target_rows {
+			match rows_order_rank($working, target.slot) {
+				Err(_) => {
+					before_slot = rows_order_get($working, target.rank) ?? 0
+					$working = rows_order_insert($working, target.rank, target.slot)
+					entry = rows_entry_for_slot(final.slots, target.slot) ?? crash "Rows canonical inserted slot was stale"
+					$canonical_rev = $canonical_rev.prepend(InsertRow({ op_index: 0, before_slot, slot: target.slot, key: entry.key }))
+				}
+				Ok(current_rank) =>
+					if current_rank != target.rank {
+						removal = rows_order_remove($working, current_rank)
+						before_slot = rows_order_get(removal.order, target.rank) ?? 0
+						$working = rows_order_insert(removal.order, target.rank, target.slot)
+						$canonical_rev = $canonical_rev.prepend(MoveRows({ op_index: 0, first_slot: target.slot, count: 1, before_slot }))
 					}
-				before_entry = moved.get(index) ?? crash "Rows normalized set index was invalid"
-				if before_entry.key == target_entry.key and before_entry.item.is_eq(target_entry.item) {
-					rows_normalize_delta_from(moved, target, index + 1, moved_transitions)
-				} else {
-					next_working = moved.set(index, target_entry) ?? crash "Rows normalized set index became invalid"
-					next_transitions = moved_transitions.prepend(SetRow({ at: index, before: before_entry, after: target_entry }))
-					rows_normalize_delta_from(next_working, target, index + 1, next_transitions)
+				}
+		}
+
+		for target in target_rows {
+			match rows_order_rank(old.order, target.slot) {
+				Err(_) => {}
+				Ok(_) => {
+					old_entry = rows_entry_for_slot(old.slots, target.slot) ?? crash "Rows canonical old slot was stale"
+					final_entry = rows_entry_for_slot(final.slots, target.slot) ?? crash "Rows canonical final slot was stale"
+					if old_entry.key != final_entry.key or !old_entry.item.is_eq(final_entry.item) {
+						$canonical_rev = $canonical_rev.prepend(UpdateRow({ op_index: 0, slot: target.slot, key: final_entry.key }))
+					}
+				}
+			}
+		}
+		rows_number_transitions(rows_reverse($canonical_rev))
+	}
+}
+
+rows_release_absent_touched : RowsEditState(item) -> RowsSlotStore(item)
+rows_release_absent_touched = |state| {
+	seen : Dict(U64, Bool)
+	seen = Dict.empty()
+	var $seen = seen
+	var $slots = state.slots
+	for slot in state.touched_rev {
+		match $seen.get(slot) {
+			Ok(_) => {}
+			Err(_) => {
+				$seen = $seen.insert(slot, True)
+				match rows_order_rank(state.order, slot) {
+					Ok(_) => {}
+					Err(_) => {
+						$slots = rows_slots_release($slots, slot) ?? $slots
+					}
 				}
 			}
 		}
 	}
+	$slots
+}
 
-rows_normalize_delta : List(RowsEntry(item)), List(RowsEntry(item)) -> List(RowsTransition(item))
-	where [item.is_eq : item, item -> Bool]
-rows_normalize_delta = |old_entries, new_entries| rows_normalize_delta_from(old_entries, new_entries, 0, [])
+rows_delta_metadata : List(RowsTransition) -> { delta_key_bytes : U64, delta_key_count : U64, op_count : U64 }
+rows_delta_metadata = |transitions| {
+	var $key_bytes = 0
+	var $key_count = 0
+	for transition in transitions {
+		match transition {
+			InsertRow({ key, .. }) => {
+				$key_bytes = $key_bytes + key.to_utf8().len()
+				$key_count = $key_count + 1
+			}
+			UpdateRow({ key, .. }) => {
+				$key_bytes = $key_bytes + key.to_utf8().len()
+				$key_count = $key_count + 1
+			}
+			_ => {}
+		}
+	}
+	{ delta_key_bytes: $key_bytes, delta_key_count: $key_count, op_count: transitions.len() }
+}
 
-Rows(item) := [Rows(RowsStorage(item))].{
+Rows(item) :: [Rows(RowsStorage(item))].{
+
+	## Opaque callable identity carried by one immutable Rows generation.
+	RowsGenerationCallable : Box(({} -> Box({})))
+
+	## O(1) metadata used to reserve exact snapshot or delta sinks before copying.
+	Description : {
+		generation : RowsGenerationCallable,
+		parent : [NoParent, Parent(RowsGenerationCallable)],
+		kind : [Delta, Snapshot],
+		item_count : U64,
+		snapshot_key_bytes : U64,
+		op_count : U64,
+		delta_key_count : U64,
+		delta_key_bytes : U64,
+	}
 
 	## Errors are stable application values. Duplicate and missing-key errors carry
 	## the exact UTF-8 key bytes supplied by the collection's key function.
@@ -469,7 +1217,7 @@ Rows(item) := [Rows(RowsStorage(item))].{
 
 	## Platform-private transition description. Applications should use `Edit`;
 	## this form carries authenticated stable slots and cached keys to the engine.
-	Delta(item) : RowsTransition(item)
+	Delta(item) : RowsTransition
 
 	## Platform-private snapshot entry passed to adapter callbacks.
 	SnapshotEntry(item) : RowsEntry(item)
@@ -487,10 +1235,13 @@ Rows(item) := [Rows(RowsStorage(item))].{
 			parent: NoParent,
 			transition: Snapshot,
 			key_of: Box.box(key_of),
-			entries: [],
+			order: rows_order_empty(),
+			slots: rows_slots_empty(),
 			key_index: indexes.key_index,
-			slot_index: indexes.slot_index,
-			next_slot: 1,
+			snapshot_key_bytes: 0,
+			op_count: 0,
+			delta_key_count: 0,
+			delta_key_bytes: 0,
 		})
 	}
 
@@ -504,7 +1255,7 @@ Rows(item) := [Rows(RowsStorage(item))].{
 			key_of_box,
 			0,
 			items.len(),
-			{ entries_rev: [], key_index: indexes.key_index, slot_index: indexes.slot_index, next_slot: 1 },
+			{ order: rows_order_empty(), slots: rows_slots_empty(), key_index: indexes.key_index, key_bytes: 0 },
 		)?
 		Ok(
 			Rows({
@@ -512,10 +1263,13 @@ Rows(item) := [Rows(RowsStorage(item))].{
 				parent: NoParent,
 				transition: Snapshot,
 				key_of: key_of_box,
-				entries: rows_reverse(built.entries_rev),
+				order: built.order,
+				slots: built.slots,
 				key_index: built.key_index,
-				slot_index: built.slot_index,
-				next_slot: built.next_slot,
+				snapshot_key_bytes: built.key_bytes,
+				op_count: 0,
+				delta_key_count: 0,
+				delta_key_bytes: 0,
 			}),
 		)
 	}
@@ -531,18 +1285,22 @@ Rows(item) := [Rows(RowsStorage(item))].{
 			old,
 			0,
 			items.len(),
-			{ entries_rev: [], key_index: indexes.key_index, slot_index: indexes.slot_index, next_slot: old.next_slot },
+			{ order: rows_order_empty(), slots: old.slots, key_index: indexes.key_index, key_bytes: 0 },
 		)?
+		final_slots = rows_release_replaced_slots(old, built)
 		Ok(
 			Rows({
 				token: rows_generation_callable(),
 				parent: Parent(old.token),
 				transition: Snapshot,
 				key_of: old.key_of,
-				entries: rows_reverse(built.entries_rev),
+				order: built.order,
+				slots: final_slots,
 				key_index: built.key_index,
-				slot_index: built.slot_index,
-				next_slot: built.next_slot,
+				snapshot_key_bytes: built.key_bytes,
+				op_count: 0,
+				delta_key_count: 0,
+				delta_key_bytes: 0,
 			}),
 		)
 	}
@@ -557,28 +1315,34 @@ Rows(item) := [Rows(RowsStorage(item))].{
 		removed : Dict(Str, RowsEntry(item))
 		removed = Dict.empty()
 		state = {
-			entries: old.entries,
+			order: old.order,
+			slots: old.slots,
 			key_index: old.key_index,
-			slot_index: old.slot_index,
-			next_slot: old.next_slot,
+			key_bytes: old.snapshot_key_bytes,
 			removed,
-			transitions_rev: [],
+			touched: Dict.empty(),
+			touched_rev: [],
 		}
 		applied = rows_apply_many(state, old.key_of, edits, 0, edits.len())?
-		normalized = rows_normalize_delta(old.entries, applied.entries)
-		if normalized.is_empty() {
+		if rows_touched_equal(old, applied) {
 			Ok(rows)
 		} else {
+			normalized = rows_canonical_transitions(old, applied)
+			metadata = rows_delta_metadata(normalized)
+			final_slots = rows_release_absent_touched(applied)
 			Ok(
 				Rows({
 					token: rows_generation_callable(),
 					parent: Parent(old.token),
 					transition: Delta(normalized),
 					key_of: old.key_of,
-					entries: applied.entries,
+					order: applied.order,
+					slots: final_slots,
 					key_index: applied.key_index,
-					slot_index: applied.slot_index,
-					next_slot: applied.next_slot,
+					snapshot_key_bytes: applied.key_bytes,
+					op_count: metadata.op_count,
+					delta_key_count: metadata.delta_key_count,
+					delta_key_bytes: metadata.delta_key_bytes,
 				}),
 			)
 		}
@@ -586,14 +1350,14 @@ Rows(item) := [Rows(RowsStorage(item))].{
 
 	## Number of live rows.
 	len : Rows(item) -> U64
-	len = |Rows(storage)| storage.entries.len()
+	len = |Rows(storage)| rows_order_len(storage.order)
 
 	## Read by order index.
 	get : Rows(item), U64 -> Try(item, Error)
 	get = |Rows(storage), index|
-		match storage.entries.get(index) {
+		match rows_entry_at(storage.order, storage.slots, index) {
 			Ok(entry) => Ok(entry.item)
-			Err(_) => Err(IndexOutOfBounds({ index, len: storage.entries.len() }))
+			Err(_) => Err(IndexOutOfBounds({ index, len: rows_order_len(storage.order) }))
 		}
 
 	## Read by exact UTF-8 key.
@@ -601,20 +1365,31 @@ Rows(item) := [Rows(RowsStorage(item))].{
 	get_key = |Rows(storage), key|
 		match storage.key_index.get(key) {
 			Err(_) => Err(KeyNotFound(key))
-			Ok(index) =>
-				match storage.entries.get(index) {
-					Ok(entry) => Ok(entry.item)
-					Err(_) => crash "Rows key index did not name an entry"
+			Ok(slot) =>
+				match rows_slots_get(storage.slots, slot) {
+					Ok(stored) => Ok(stored.item)
+					Err(_) => crash "Rows key index named a stale slot"
 				}
 			}
 
 	## Iterate items in row order.
 	iter : Rows(item) -> Iter(item)
-	iter = |Rows(storage)| storage.entries.map(|entry| entry.item).iter()
+	iter = |rows| Rows.to_list(rows).iter()
 
 	## Materialize items in row order.
 	to_list : Rows(item) -> List(item)
-	to_list = |Rows(storage)| storage.entries.map(|entry| entry.item)
+	to_list = |Rows(storage)| {
+		reversed =
+			rows_order_fold(
+				storage.order,
+				[],
+				|items, slot| {
+					entry = rows_entry_for_slot(storage.slots, slot) ?? crash "Rows materialization slot was stale"
+					items.prepend(entry.item)
+				},
+			)
+		rows_reverse(reversed)
+	}
 
 	## O(1) generation equality used by ordinary signal pruning. The hosted hook
 	## compares raw boxed callable identity and never invokes the callable.
@@ -625,14 +1400,14 @@ Rows(item) := [Rows(RowsStorage(item))].{
 	content_is_eq : Rows(item), Rows(item) -> Bool
 		where [item.is_eq : item, item -> Bool]
 	content_is_eq = |Rows(left), Rows(right)| {
-		if left.entries.len() != right.entries.len() {
+		if rows_order_len(left.order) != rows_order_len(right.order) {
 			False
 		} else {
 			var $equal = True
 			var $index = 0
-			while $equal and $index < left.entries.len() {
-				left_entry = left.entries.get($index) ?? crash "Rows left content index was invalid"
-				right_entry = right.entries.get($index) ?? crash "Rows right content index was invalid"
+			while $equal and $index < rows_order_len(left.order) {
+				left_entry = rows_entry_at(left.order, left.slots, $index) ?? crash "Rows left content index was invalid"
+				right_entry = rows_entry_at(right.order, right.slots, $index) ?? crash "Rows right content index was invalid"
 				$equal = left_entry.key == right_entry.key and left_entry.item.is_eq(right_entry.item)
 				$index = $index + 1
 			}
@@ -657,20 +1432,40 @@ Rows(item) := [Rows(RowsStorage(item))].{
 			Snapshot => Snapshot
 		}
 
+	## Return cached reservation metadata without walking the generation.
+	platform_description : Rows(item) -> Description
+	platform_description = |Rows(storage)| {
+		kind =
+			match storage.transition {
+				Delta(_) => Delta
+				Snapshot => Snapshot
+			}
+		{
+			generation: storage.token,
+			parent: storage.parent,
+			kind,
+			item_count: rows_order_len(storage.order),
+			snapshot_key_bytes: storage.snapshot_key_bytes,
+			op_count: storage.op_count,
+			delta_key_count: storage.delta_key_count,
+			delta_key_bytes: storage.delta_key_bytes,
+		}
+	}
+
 	## Platform-private stable slot lookup by order index.
 	platform_slot_at : Rows(item), U64 -> Try(U64, Error)
 	platform_slot_at = |Rows(storage), index|
-		match storage.entries.get(index) {
-			Ok(entry) => Ok(entry.slot)
-			Err(_) => Err(IndexOutOfBounds({ index, len: storage.entries.len() }))
+		match rows_order_get(storage.order, index) {
+			Ok(slot) => Ok(slot)
+			Err(_) => Err(IndexOutOfBounds({ index, len: rows_order_len(storage.order) }))
 		}
 
 	## Platform-private cached-key lookup by order index.
 	platform_key_at : Rows(item), U64 -> Try(Str, Error)
 	platform_key_at = |Rows(storage), index|
-		match storage.entries.get(index) {
+		match rows_entry_at(storage.order, storage.slots, index) {
 			Ok(entry) => Ok(entry.key)
-			Err(_) => Err(IndexOutOfBounds({ index, len: storage.entries.len() }))
+			Err(_) => Err(IndexOutOfBounds({ index, len: rows_order_len(storage.order) }))
 		}
 
 	## Platform-private typed item lookup by order index.
@@ -680,27 +1475,25 @@ Rows(item) := [Rows(RowsStorage(item))].{
 	## Platform-private typed item lookup by stable slot.
 	platform_item_for_slot : Rows(item), U64 -> Try(item, [SlotNotFound(U64)])
 	platform_item_for_slot = |Rows(storage), slot|
-		match storage.slot_index.get(slot) {
+		match rows_slots_get(storage.slots, slot) {
 			Err(_) => Err(SlotNotFound(slot))
-			Ok(index) =>
-				match storage.entries.get(index) {
-					Ok(entry) => Ok(entry.item)
-					Err(_) => crash "Rows slot index did not name an entry"
-				}
-			}
+			Ok(stored) => Ok(stored.item)
+		}
 
 	## Platform-private allocation-free snapshot fold. The callback receives the
 	## order index plus stable slot, cached key, and typed item.
-	platform_copy_snapshot : Rows(item), state, (state, U64, U64, Str, item -> state) -> state
+	platform_copy_snapshot : Rows(item), state, (state, U64, U64, Str -> state) -> state
 	platform_copy_snapshot = |Rows(storage), initial, push| {
-		var $state = initial
-		var $index = 0
-		while $index < storage.entries.len() {
-			entry = storage.entries.get($index) ?? crash "Rows snapshot index was invalid"
-			$state = push($state, $index, entry.slot, entry.key, entry.item)
-			$index = $index + 1
-		}
-		$state
+		folded =
+			rows_order_fold(
+				storage.order,
+				{ index: 0, state: initial },
+				|next, slot| {
+					entry = rows_entry_for_slot(storage.slots, slot) ?? crash "Rows snapshot slot was stale"
+					{ index: next.index + 1, state: push(next.state, next.index, entry.slot, entry.key) }
+				},
+			)
+		folded.state
 	}
 
 	## Platform-private delta fold. Snapshot generations yield the initial state;
@@ -730,6 +1523,67 @@ rows_test_item = |key, value| RowsTestItem({ key, value })
 
 rows_test_key : RowsTestItem -> Str
 rows_test_key = |item| item.key()
+
+## The persistent order tree splits at the 32-way fanout and retains exact
+## indexed/rank lookup while path-copying inserts and removals.
+expect {
+	var $order = rows_order_empty()
+	var $slot = 1
+	while $slot <= 2048 {
+		$order = rows_order_insert($order, rows_order_len($order), $slot)
+		$slot = $slot + 1
+	}
+
+	all_indexed = rows_order_get($order, 1023)? == 1024 and rows_order_rank($order, 1537)? == 1536
+
+	var $removed = 0
+	while $removed < 1024 {
+		removal = rows_order_remove($order, 0)
+		$order = removal.order
+		$removed = $removed + 1
+	}
+
+	all_indexed and rows_order_len($order) == 1024 and rows_order_get($order, 0)? == 1025 and rows_order_rank($order, 2048)? == 1023
+}
+
+## Chunked slots advance their generation before reuse, so an old packed id
+## cannot read a new occupant of the same dense index.
+expect {
+	empty_slots : RowsSlotStore(RowsTestItem)
+	empty_slots = rows_slots_empty()
+	first = rows_slots_allocate(empty_slots, "a", rows_test_item("a", 1))?
+	released = rows_slots_release(first.slots, first.slot)?
+	second = rows_slots_allocate(released, "b", rows_test_item("b", 2))?
+	stale_missing =
+		match rows_slots_get(second.slots, first.slot) {
+			Err(Missing) => True
+			_ => False
+		}
+
+	stale_missing and rows_slot_index(first.slot) == rows_slot_index(second.slot) and rows_slot_generation(second.slot) == rows_slot_generation(first.slot) + 1 and (rows_slots_get(second.slots, second.slot)?).item.value() == 2
+}
+
+## Clearing a repeatedly split order tree releases dead node and parent records
+## in the new persistent generation instead of retaining the high-water shape.
+expect {
+	var $order = rows_order_empty()
+	var $cycle = 0
+	while $cycle < 64 {
+		var $slot = 1
+		while $slot <= 256 {
+			$order = rows_order_insert($order, rows_order_len($order), $slot)
+			$slot = $slot + 1
+		}
+		var $remaining = 256
+		while $remaining > 0 {
+			$order = rows_order_remove($order, 0).order
+			$remaining = $remaining - 1
+		}
+		$cycle = $cycle + 1
+	}
+
+	rows_order_len($order) == 0 and $order.nodes.len() == 1 and $order.parents.len() == 1 and $order.next_node == 2
+}
 
 ## Construction caches keys and rejects duplicate exact UTF-8 identity.
 expect {
@@ -864,6 +1718,33 @@ expect {
 	Rows.platform_transition_kind(updated) == Delta and transition_count == 1
 }
 
+## Cached descriptions count exact UTF-8 bytes and canonical stable-slot ops.
+expect {
+	initial = Rows.from_list([rows_test_item("a", 1), rows_test_item("é", 2)], rows_test_key)?
+	snapshot = Rows.platform_description(initial)
+	updated = Rows.apply(
+		initial,
+		[
+			SetKey({ key: "a", item: rows_test_item("a", 10) }),
+			Append([rows_test_item("xyz", 3)]),
+		],
+	)?
+	delta = Rows.platform_description(updated)
+	stable_operands =
+		Rows.platform_copy_delta(
+			updated,
+			True,
+			|valid, transition|
+				valid and match transition {
+					InsertRow({ op_index, before_slot, slot, key }) => op_index == 0 and before_slot == 0 and slot != 0 and key == "xyz"
+					UpdateRow({ op_index, slot, key }) => op_index == 1 and slot != 0 and key == "a"
+					_ => False
+				},
+		)
+
+	snapshot.kind == Snapshot and snapshot.snapshot_key_bytes == 3 and delta.kind == Delta and delta.item_count == 3 and delta.snapshot_key_bytes == 6 and delta.op_count == 2 and delta.delta_key_count == 2 and delta.delta_key_bytes == 4 and stable_operands
+}
+
 ## A key-changing set resets slot identity while a same-key replacement keeps it.
 expect {
 	initial = Rows.from_list([rows_test_item("a", 1)], rows_test_key)?
@@ -885,6 +1766,21 @@ expect {
 	expected = Rows.from_list([rows_test_item("b", 20), rows_test_item("c", 3)], rows_test_key)?
 
 	old_b_slot == new_b_slot and Rows.content_is_eq(replaced, expected)
+}
+
+## Published remove/reinsert churn reuses chunked slots and bounded order nodes.
+expect {
+	initial = Rows.from_list([rows_test_item("a", 1), rows_test_item("b", 2)], rows_test_key)?
+	var $rows = initial
+	var $cycle = 0
+	while $cycle < 256 {
+		removed = Rows.apply($rows, [RemoveKey("a")])?
+		$rows = Rows.apply(removed, [InsertAt({ at: 0, items: [rows_test_item("a", $cycle)] })])?
+		$cycle = $cycle + 1
+	}
+	Rows(storage) = $rows
+
+	storage.slots.next_index == 3 and storage.slots.chunks.len() == 1 and storage.order.nodes.len() <= 3 and storage.order.parents.len() <= 3
 }
 
 ## Invalid edits return structured errors at the narrow public boundary.
