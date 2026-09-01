@@ -4414,6 +4414,27 @@ pub fn Engine(comptime Ctx: type) type {
                 PreparedCustomAttrContext,
                 std.hash_map.default_max_load_percentage,
             );
+            const PreparedNamedEventKey = struct {
+                elem_id: u64,
+                name: []const u8,
+            };
+            const PreparedNamedEventContext = struct {
+                /// Hashes an element identity and its exact event-name bytes.
+                pub fn hash(_: @This(), key: PreparedNamedEventKey) u64 {
+                    return std.hash.Wyhash.hash(key.elem_id, key.name);
+                }
+
+                /// Compares both the element identity and exact event-name bytes.
+                pub fn eql(_: @This(), left: PreparedNamedEventKey, right: PreparedNamedEventKey) bool {
+                    return left.elem_id == right.elem_id and std.mem.eql(u8, left.name, right.name);
+                }
+            };
+            const PreparedNamedEventIndex = std.HashMapUnmanaged(
+                PreparedNamedEventKey,
+                void,
+                PreparedNamedEventContext,
+                std.hash_map.default_max_load_percentage,
+            );
             const PreparedRenderNode = union(enum) {
                 static: usize,
                 signal: usize,
@@ -4455,6 +4476,10 @@ pub fn Engine(comptime Ctx: type) type {
             prepared_custom_attrs: PreparedCustomAttrIndex = .empty,
             custom_attr_lookup_work: if (builtin.is_test) usize else void = if (builtin.is_test) 0 else {},
             prepared_events: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedEventDescriptor) = .empty,
+            /// Exact named-event bindings already staged by this transaction.
+            /// Keys borrow the corresponding prepared event's copied name.
+            prepared_named_events: PreparedNamedEventIndex = .empty,
+            named_event_lookup_work: if (builtin.is_test) usize else void = if (builtin.is_test) 0 else {},
             prepared_lifecycle: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedLifecycleDescriptor) = .empty,
             prepared_state_sites: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedScopeSite) = .empty,
             prepared_states: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedState) = .empty,
@@ -4646,6 +4671,7 @@ pub fn Engine(comptime Ctx: type) type {
                     signal_descriptors = try total(signal_descriptors, try total(self.signal_bool_attrs, self.signal_custom_bool_attrs));
                     signal_descriptors = try total(signal_descriptors, self.signal_text_nodes);
                     const named_events_u32 = std.math.cast(u32, self.named_events) orelse return error.ResourceLimit;
+                    const added_named_events_u32 = std.math.cast(u32, added.roots.named_events) orelse return error.ResourceLimit;
                     const state_cells = try total(self.state_sites, self.external_states);
                     collection.prepared_nodes.ensureUnusedCapacity(allocator, self.nodes) catch return error.OutOfMemory;
                     collection.prepared_render_order.ensureUnusedCapacity(allocator, self.nodes) catch return error.OutOfMemory;
@@ -4653,6 +4679,7 @@ pub fn Engine(comptime Ctx: type) type {
                     collection.prepared_signal_attrs.ensureUnusedCapacity(allocator, signal_descriptors) catch return error.OutOfMemory;
                     collection.prepared_custom_attrs.ensureUnusedCapacity(allocator, std.math.cast(u32, added.roots.custom_attrs) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                     collection.prepared_events.ensureUnusedCapacity(allocator, self.events) catch return error.OutOfMemory;
+                    collection.prepared_named_events.ensureUnusedCapacity(allocator, added_named_events_u32) catch return error.OutOfMemory;
                     collection.prepared_lifecycle.ensureUnusedCapacity(allocator, self.lifecycle) catch return error.OutOfMemory;
                     collection.prepared_state_sites.ensureUnusedCapacity(allocator, self.scope_sites) catch return error.OutOfMemory;
                     collection.prepared_states.ensureUnusedCapacity(allocator, self.state_sites) catch return error.OutOfMemory;
@@ -4790,6 +4817,9 @@ pub fn Engine(comptime Ctx: type) type {
                 // the materialized stream), so discard every borrow first.
                 self.prepared_custom_attrs.deinit(allocator);
                 self.prepared_custom_attrs = .empty;
+                // Named-event keys likewise borrow descriptor-owned names.
+                self.prepared_named_events.deinit(allocator);
+                self.prepared_named_events = .empty;
                 if (!self.phase.isCommitted()) {
                     var index = self.prepared_nodes.items.len;
                     if (!self.phase.isMaterialized()) {
@@ -6070,6 +6100,7 @@ pub fn Engine(comptime Ctx: type) type {
                             .payload_reducer = retainHostEventReducer(payload.msg.payload_reducer, &self.engine.pending_roc_metrics),
                         } });
                         self.prepared_named_event_groups.items[group_index].event_ordinals.appendAssumeCapacity(event_ordinal);
+                        self.rememberPreparedNamedEvent(elem_id, name_copy);
                         return;
                     },
                     .static_text => |payload| switch (payload.target) {
@@ -6149,14 +6180,15 @@ pub fn Engine(comptime Ctx: type) type {
                 if (result.found_existing) @panic("custom attribute was staged without duplicate validation");
             }
 
-            fn namedEventExists(self: *const @This(), elem_id: ids.ElemId, name: []const u8) bool {
+            fn namedEventExists(self: *@This(), elem_id: ids.ElemId, name: []const u8) bool {
+                if (builtin.is_test) self.named_event_lookup_work += 1;
                 if (self.stream.namedEventDescriptorExists(elem_id, name)) return true;
-                for (self.prepared_events.items) |prepared| {
-                    if (prepared.desc.elem_id != elem_id) continue;
-                    const binding = prepared.desc.named() orelse continue;
-                    if (std.mem.eql(u8, binding.name, name)) return true;
-                }
-                return false;
+                return self.prepared_named_events.contains(.{ .elem_id = elem_id.raw(), .name = name });
+            }
+
+            fn rememberPreparedNamedEvent(self: *@This(), elem_id: ids.ElemId, name: []const u8) void {
+                const result = self.prepared_named_events.getOrPutAssumeCapacity(.{ .elem_id = elem_id.raw(), .name = name });
+                if (result.found_existing) @panic("named event was staged without duplicate validation");
             }
 
             /// A group's ordinals are appended during preparation, one per
@@ -17214,6 +17246,56 @@ test "staged custom attributes perform one indexed lookup per descriptor and rej
     try std.testing.expectEqual(@as(u32, attr_count), collection.prepared_custom_attrs.count());
 }
 
+test "staged named event index preserves exact composite keys under collisions" {
+    const Collection = Engine(VerifyCtx).StagedCollectionCtx;
+    const CollisionContext = struct {
+        /// Forces every test key through the collision-resolution path.
+        pub fn hash(_: @This(), _: Collection.PreparedNamedEventKey) u64 {
+            return 0;
+        }
+
+        /// Retains production exact-key equality while hashes collide.
+        pub fn eql(_: @This(), left: Collection.PreparedNamedEventKey, right: Collection.PreparedNamedEventKey) bool {
+            return Collection.PreparedNamedEventContext.eql(.{}, left, right);
+        }
+    };
+    var index: std.HashMapUnmanaged(Collection.PreparedNamedEventKey, void, CollisionContext, std.hash_map.default_max_load_percentage) = .empty;
+    defer index.deinit(std.testing.allocator);
+    try index.put(std.testing.allocator, .{ .elem_id = 7, .name = "click" }, {});
+    try index.put(std.testing.allocator, .{ .elem_id = 7, .name = "input" }, {});
+    try index.put(std.testing.allocator, .{ .elem_id = 8, .name = "click" }, {});
+    try std.testing.expectEqual(@as(u32, 3), index.count());
+    try std.testing.expect(index.contains(.{ .elem_id = 7, .name = "click" }));
+    try std.testing.expect(index.contains(.{ .elem_id = 7, .name = "input" }));
+    try std.testing.expect(index.contains(.{ .elem_id = 8, .name = "click" }));
+    try std.testing.expect(!index.contains(.{ .elem_id = 7, .name = "change" }));
+}
+
+test "staged named event duplicate lookup work scales linearly" {
+    const measure = struct {
+        fn run(count: usize) !usize {
+            var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+            var engine = Engine(VerifyCtx).init();
+            defer deinitVerifyStaticEngine(&engine, &ctx);
+            var stream: HostNodeDescriptorStream = .{};
+            defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+            const names = try std.testing.allocator.alloc([16]u8, count);
+            defer std.testing.allocator.free(names);
+            var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .events = count, .named_events = count }, 0);
+            defer collection.deinit();
+            for (names, 0..) |*name_buffer, index| {
+                const name = try std.fmt.bufPrint(name_buffer, "event-{d}", .{index});
+                try std.testing.expect(!collection.namedEventExists(ids.ElemId.fromRaw(1), name));
+                collection.rememberPreparedNamedEvent(ids.ElemId.fromRaw(1), name);
+            }
+            try std.testing.expectEqual(@as(u32, @intCast(count)), collection.prepared_named_events.count());
+            return collection.named_event_lookup_work;
+        }
+    }.run;
+    try std.testing.expectEqual(@as(usize, 64), try measure(64));
+    try std.testing.expectEqual(@as(usize, 512), try measure(512));
+}
+
 test "staged scope identity reuse does not consume the fresh suffix" {
     var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
     var engine = Engine(VerifyCtx).init();
@@ -18053,6 +18135,7 @@ test "staged named event sweeps allocation failures and retries without visibili
 
         fault.configure(null);
         try collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }});
+        try std.testing.expectError(error.InvalidDescriptor, collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }}));
         collection.commit();
         try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
         try std.testing.expectEqualSlices(usize, &.{0}, stream.namedEventIndices(ids.ElemId.fromRaw(1)));
