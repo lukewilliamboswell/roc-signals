@@ -862,7 +862,7 @@ test("mount preserves a zero entropy seed", () => {
   assert.equal(host.initialEntropySeed, 0);
 });
 
-test("mount seeds wasm host with entropy, location, visibility, and online snapshots", () => {
+test("mount seeds wasm host from browser entropy independently of deterministic native specs", () => {
   const telemetry = [];
   const { host } = mountWith([], {
     location: { href: "https://ops.example.test/services/api?tab=logs#tail" },
@@ -872,6 +872,7 @@ test("mount seeds wasm host with entropy, location, visibility, and online snaps
   });
 
   assert.equal(host.initialEntropySeed, 0x12345678);
+  assert.notEqual(host.initialEntropySeed, 0);
   assert.ok(telemetry.some((entry) => entry.kind === "environment_snapshot" && entry.entropySeeded === true && entry.entropySeed === undefined));
   assert.deepEqual(host.initialLocationPayload, [
     ...stringBytes("/services/api"),

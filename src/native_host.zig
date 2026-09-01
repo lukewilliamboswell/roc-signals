@@ -31,6 +31,7 @@ const roc_alloc_ledger = @import("roc_alloc_ledger.zig");
 const crash_handlers = @import("crash_handlers.zig");
 
 const enable_runtime_metrics = host_fixtures or build_options.metrics;
+const default_native_entropy_seed: u32 = 0x726f6353;
 /// Test-only host machinery (value-kind tracking, the current-host binding,
 /// fixture builders) is also compiled into fuzz targets, which are ordinary
 /// builds that opt in through `-Dfuzz`'s options module.
@@ -421,7 +422,7 @@ fn writeStderr(bytes: []const u8) void {
 }
 
 fn writeUsage() void {
-    writeStderr("Usage: ./app [--verbose] [--trace-allocations] [--run-spec-json] [--fail-on-allocation N] <case.scm>\n       ./app --bench-app [--bench-name NAME] [--bench-warmup N] [--bench-iterations N] [--bench-samples N] <case.scm>\n");
+    writeStderr("Usage: ./app [--verbose] [--trace-allocations] [--run-spec-json] [--entropy-seed U32] [--fail-on-allocation N] <case.scm>\n       ./app --bench-app [--bench-name NAME] [--bench-warmup N] [--bench-iterations N] [--bench-samples N] <case.scm>\n");
 }
 
 const SpecJsonFailure = struct {
@@ -730,7 +731,7 @@ const HostEnv = struct {
     canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
     location_index: usize = 0,
-    entropy_seed: u32 = 0x726f6353,
+    entropy_seed: u32 = default_native_entropy_seed,
     visibility: boundary.VisibilitySnapshot = .visible,
     online: boundary.OnlineSnapshot = .online,
     storage_entries: std.ArrayListUnmanaged(NativeStorageEntry) = .empty,
@@ -3427,6 +3428,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
     var trace_allocations = false;
     var result_json = false;
     var fail_on_allocation: ?usize = null;
+    var entropy_seed: u32 = default_native_entropy_seed;
     var bench_app = false;
     var bench_name: []const u8 = "app_dispatch";
     var bench_warmup: usize = 0;
@@ -3444,6 +3446,16 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
             trace_allocations = true;
         } else if (std.mem.eql(u8, arg, "--run-spec-json")) {
             result_json = true;
+        } else if (std.mem.eql(u8, arg, "--entropy-seed")) {
+            i += 1;
+            if (i >= arg_count) {
+                writeStderr("Error: --entropy-seed requires a value\n");
+                return 1;
+            }
+            entropy_seed = std.fmt.parseInt(u32, std.mem.span(argv[i]), 10) catch {
+                writeStderr("Error: Invalid --entropy-seed value\n");
+                return 1;
+            };
         } else if (std.mem.eql(u8, arg, "--fail-on-allocation")) {
             i += 1;
             if (i >= arg_count) {
@@ -3536,7 +3548,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         };
     }
 
-    return platform_main(spec_file.?, verbose, trace_allocations, result_json, fail_on_allocation) catch |err| {
+    return platform_main(spec_file.?, verbose, trace_allocations, result_json, fail_on_allocation, entropy_seed) catch |err| {
         writeStderr("HOST ERROR: ");
         writeStderr(@errorName(err));
         writeStderr("\n");
@@ -3586,9 +3598,10 @@ fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void
     }
 }
 
-fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, result_json: bool, fail_on_allocation: ?usize) error{}!c_int {
+fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, result_json: bool, fail_on_allocation: ?usize, entropy_seed: u32) error{}!c_int {
     const started_ns = benchmark.nowNs();
     var host_env = HostEnv.init();
+    host_env.entropy_seed = entropy_seed;
     defer if (host_env.gpa.deinit() == .leak) failHost("native host leaked host-owned allocations at shutdown");
     const allocator = if (result_json) host_env.gpa.allocator() else host_env.hostAllocator();
 
@@ -6126,7 +6139,7 @@ test "signals host browser environment sources and commands update native state"
     }
 }
 
-test "signals host supplies the deterministic native entropy seed as little endian bytes" {
+test "signals host supplies the configured native entropy seed as little endian bytes" {
     var host = HostEnv.init();
     var roc_host = makeSignalsRocHost(&host);
     host.engine.roc_host = &roc_host;
@@ -6141,6 +6154,12 @@ test "signals host supplies the deterministic native entropy seed as little endi
     defer testDropHostValue(&roc_host, value);
     const payload = testReadHostValueU8List(&roc_host, value);
     try std.testing.expectEqualSlices(u8, &.{ 0x53, 0x63, 0x6f, 0x72 }, payload.items());
+
+    host.entropy_seed = 0;
+    const deterministic = host.initialEntropySeedPayload(&roc_host, cap);
+    defer testDropHostValue(&roc_host, deterministic);
+    const deterministic_payload = testReadHostValueU8List(&roc_host, deterministic);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, deterministic_payload.items());
 }
 
 test "signals host patches dirty leaf sinks without descriptor rebuild" {
