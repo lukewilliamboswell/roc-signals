@@ -576,6 +576,35 @@ test "Rows row claims reuse retired slots without wrapping generations" {
     try std.testing.expectError(error.InvalidRow, store.getRow(site, first_claim[0]));
 }
 
+test "scope retirement repairs stable order and reports the empty site exactly once" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+    const site = try store.createSite(try OwnerToken.fromRaw(1));
+    var claims: [2]RowId = undefined;
+    try store.prepareRowClaims(site, &.{}, &claims);
+    store.insertPreparedRow(site, claims[0], .{ .site_id = site, .key = try std.testing.allocator.dupe(u8, "a"), .metadata = .{ .item_slot = 1, .scope_id = 10 } });
+    store.insertPreparedRow(site, claims[1], .{ .site_id = site, .key = try std.testing.allocator.dupe(u8, "b"), .metadata = .{ .item_slot = 2, .scope_id = 20 } });
+    const site_value = try store.getSite(site);
+    site_value.head = claims[0];
+    site_value.tail = claims[1];
+    site_value.len = 2;
+    (try store.getRow(site, claims[0])).next = claims[1];
+    (try store.getRow(site, claims[1])).previous = claims[0];
+
+    const first = store.retireScope(10).?;
+    defer std.testing.allocator.free(first.key);
+    try std.testing.expectEqual(site, first.site_id);
+    try std.testing.expect(!first.site_empty);
+    try std.testing.expectEqual(claims[1], site_value.head.?);
+    try std.testing.expect((try store.getRow(site, claims[1])).previous == null);
+    try std.testing.expect(store.retireScope(10) == null);
+
+    const second = store.retireScope(20).?;
+    defer std.testing.allocator.free(second.key);
+    try std.testing.expect(second.site_empty);
+    try std.testing.expect(site_value.head == null and site_value.tail == null);
+}
+
 test "overlapping transitions keep recycled row claims independent of commit order" {
     var store = Store.initWithLimits(std.testing.allocator, 2, 2);
     defer store.deinit();

@@ -37,6 +37,7 @@ pub const Membership = struct {
 pub const RowRemoval = struct {
     scope_id: ids.ScopeId,
     key_hash: u64,
+    site_key: SiteKey = .{ .parent_scope_id = @enumFromInt(0), .site_ordinal = @enumFromInt(0) },
 };
 
 /// Owns validated keyed-row removals until the structural publication boundary.
