@@ -113,7 +113,10 @@ class BenchmarkManifestTests(unittest.TestCase):
             'Html.attr("aria-hidden", "true")',
             'Html.attr("id", "tbody")',
             'Signal.select(selected, key)',
-            'Ui.each(rows, |row| row.id.to_str()',
+            'import pf.Rows exposing [Rows]',
+            'Model : { rows : Rows(Row)',
+            'Rows.replace_all(model.rows, generated.rows)',
+            'Ui.each(rows, |each_row| render_row(model, selected, each_row.key(), each_row.signal()))',
         ):
             self.assertIn(expected, source)
 
