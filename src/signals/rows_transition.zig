@@ -28,6 +28,16 @@ pub const Error = std.mem.Allocator.Error || error{
     DuplicateSlot,
 };
 
+fn renderOrderError(err: rows_store.RenderOrder.Error) Error {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.ResourceLimit => error.ResourceLimit,
+        error.DuplicateRow => error.DuplicateSlot,
+        error.InvalidRow, error.InvalidRange, error.AnchorInsideRange => error.MissingSlot,
+        error.InvalidSpan => error.InvalidOwnerToken,
+    };
+}
+
 /// Payload for inserting one new row at a key-addressed position.
 pub const Insert = struct {
     key: []const u8,
@@ -232,10 +242,12 @@ pub const PreparedTransition = struct {
     slot_states: std.AutoHashMapUnmanaged(u64, KeyState) = .empty,
     fresh: std.ArrayListUnmanaged(Fresh) = .empty,
     order_edits: std.ArrayListUnmanaged(OrderEdit) = .empty,
+    render_order: rows_store.RenderOrder.PreparedEdits,
     render_spans: std.AutoHashMapUnmanaged(u64, rows_store.RowRenderSpan) = .empty,
     order_link_touches: usize = 0,
     removed_rows: []RowId = &.{},
     created_rows: []CreatedRow = &.{},
+    row_claims_prepared: bool = false,
     removals_committed: bool = false,
     phase: Phase = .preparing,
 
@@ -255,6 +267,7 @@ pub const PreparedTransition = struct {
             .head = if (committed.head) |row| existingRef(row) else null,
             .tail = if (committed.tail) |row| existingRef(row) else null,
             .len = committed.len,
+            .render_order = committed.render_order.prepare(),
         };
         errdefer self.deinit();
 
@@ -276,7 +289,7 @@ pub const PreparedTransition = struct {
         const committed = store.getSiteConst(site_id) catch return error.InvalidSite;
         if (committed.owner_token != parent_owner) return error.ParentMismatch;
         if (next_owner.raw() == 0 or next_owner == parent_owner) return error.InvalidOwnerToken;
-        var self = PreparedTransition{ .allocator = allocator, .store = store, .site_id = site_id, .next_owner = next_owner, .head = if (committed.head) |row| existingRef(row) else null, .tail = if (committed.tail) |row| existingRef(row) else null, .len = committed.len };
+        var self = PreparedTransition{ .allocator = allocator, .store = store, .site_id = site_id, .next_owner = next_owner, .head = if (committed.head) |row| existingRef(row) else null, .tail = if (committed.tail) |row| existingRef(row) else null, .len = committed.len, .render_order = committed.render_order.prepare() };
         errdefer self.deinit();
         for (edits) |edit| switch (edit) {
             .insert => |value| try self.applyStableInsert(value.slot, value.before_slot, value.key, value.metadata),
@@ -295,7 +308,7 @@ pub const PreparedTransition = struct {
     pub fn prepareInitial(allocator: std.mem.Allocator, store: *Store, site_id: SiteId, owner: OwnerToken, edits: []const StableEdit) Error!PreparedTransition {
         const committed = store.getSiteConst(site_id) catch return error.InvalidSite;
         if (committed.owner_token != owner or committed.len != 0) return error.ParentMismatch;
-        var self = PreparedTransition{ .allocator = allocator, .store = store, .site_id = site_id, .next_owner = owner, .head = null, .tail = null, .len = 0 };
+        var self = PreparedTransition{ .allocator = allocator, .store = store, .site_id = site_id, .next_owner = owner, .head = null, .tail = null, .len = 0, .render_order = committed.render_order.prepare() };
         errdefer self.deinit();
         for (edits) |edit| switch (edit) {
             .insert => |value| try self.applyStableInsert(value.slot, value.before_slot, value.key, value.metadata),
@@ -359,6 +372,23 @@ pub const PreparedTransition = struct {
         return self.order_link_touches;
     }
 
+    /// Returns candidate render-order work without walking untouched rows.
+    /// Root moves count direct roots in effective moved row ranges; created
+    /// and removed roots are reported separately by structural journals.
+    pub fn renderOrderStats(self: *const PreparedTransition) rows_store.RenderOrder.Stats {
+        if (self.phase == .preparing) @panic("Rows render-order stats read before preparation completed");
+        return self.render_order.stats();
+    }
+
+    /// Resolves the first direct render root owned by `slot` or a later
+    /// candidate row. The aggregate index skips arbitrarily long runs of rows
+    /// that render no direct root.
+    pub fn firstRenderRootAtOrAfterSlot(self: *const PreparedTransition, slot: u64) Error!?rows_store.RenderOrder.RootAnchor {
+        if (self.phase == .preparing) @panic("Rows render anchor read before preparation completed");
+        const row_id = try self.resolveOrderSlot(slot);
+        return self.render_order.firstRootAtOrAfter(row_id) catch |err| return renderOrderError(err);
+    }
+
     /// Resolves one live candidate row by its adapter-private stable item slot
     /// without traversing candidate order.
     pub fn candidateBySlot(self: *const PreparedTransition, slot: u64) ?CandidateRow {
@@ -386,6 +416,8 @@ pub const PreparedTransition = struct {
     pub fn setCandidateRenderSpanAssumeCapacity(self: *PreparedTransition, slot: u64, span: rows_store.RowRenderSpan) Error!void {
         if (self.phase != .prepared or !span.valid() or self.candidateBySlot(slot) == null) return error.InvalidOwnerToken;
         self.render_spans.putAssumeCapacity(slot, span);
+        const row_id = try self.resolveOrderSlot(slot);
+        _ = self.render_order.updateSpan(row_id, span) catch |err| return renderOrderError(err);
     }
 
     /// Publishes the candidate generation without allocation. Any scope/value
@@ -393,6 +425,7 @@ pub const PreparedTransition = struct {
     /// have succeeded before entering this irreversible boundary.
     pub fn commit(self: *PreparedTransition) void {
         if (self.phase != .prepared) @panic("Rows transition committed outside its prepared phase");
+        self.render_order.commitAssumePreflighted();
         self.commitRemovalsEarly();
 
         for (self.fresh.items, 0..) |*fresh, index| {
@@ -451,7 +484,7 @@ pub const PreparedTransition = struct {
     /// Releases candidate keys and scratch state. Before commit this is an
     /// abort; after commit transferred key allocations remain site-owned.
     pub fn deinit(self: *PreparedTransition) void {
-        if (self.phase == .prepared and self.created_rows.len != 0) {
+        if (self.phase != .committed and self.row_claims_prepared) {
             for (self.created_rows) |created| self.store.releaseRowClaims(&.{created.row_id});
         }
         for (self.fresh.items) |fresh| if (fresh.key.len != 0) self.store.allocator.free(fresh.key);
@@ -461,6 +494,7 @@ pub const PreparedTransition = struct {
         self.slot_states.deinit(self.allocator);
         self.fresh.deinit(self.allocator);
         self.order_edits.deinit(self.allocator);
+        self.render_order.deinit();
         self.render_spans.deinit(self.allocator);
         if (self.removed_rows.len != 0) self.allocator.free(self.removed_rows);
         if (self.created_rows.len != 0) self.allocator.free(self.created_rows);
@@ -510,13 +544,63 @@ pub const PreparedTransition = struct {
             };
             created_index += 1;
         }
+        self.row_claims_prepared = true;
         var order_link_touches: usize = 0;
         var shadows = self.shadows.valueIterator();
         while (shadows.next()) |shadow| if (shadow.order_touched) {
             order_link_touches = std.math.add(usize, order_link_touches, 1) catch return error.ResourceLimit;
         };
         self.order_link_touches = order_link_touches;
+        try self.prepareRenderOrder();
         self.phase = .prepared;
+    }
+
+    fn prepareRenderOrder(self: *PreparedTransition) Error!void {
+        for (self.order_edits.items) |edit| switch (edit) {
+            .insert => |value| {
+                const row_id = try self.resolveOrderSlot(value.slot);
+                const before = if (value.before_slot == 0) null else try self.resolveOrderSlot(value.before_slot);
+                const span = try self.renderSpanForSlot(value.slot);
+                self.render_order.insertBefore(row_id, before, span) catch |err| return renderOrderError(err);
+            },
+            .remove => |value| {
+                const row_id = try self.resolveOrderSlot(value.first_slot);
+                _ = self.render_order.removeRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit) catch |err| return renderOrderError(err);
+            },
+            .move => |value| {
+                const row_id = try self.resolveOrderSlot(value.first_slot);
+                const before = if (value.before_slot == 0) null else try self.resolveOrderSlot(value.before_slot);
+                _ = self.render_order.moveRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit, before) catch |err| return renderOrderError(err);
+            },
+            .clear => |value| {
+                if (value.count != self.render_order.len()) return error.InvalidOwnerToken;
+                if (value.count != 0) {
+                    const first = self.render_order.rowAt(0) catch return error.InvalidOwnerToken;
+                    _ = self.render_order.removeRange(first, value.count) catch |err| return renderOrderError(err);
+                }
+            },
+        };
+        if (self.render_order.len() != self.len) return error.InvalidOwnerToken;
+        self.render_order.preflightCommit() catch |err| return renderOrderError(err);
+    }
+
+    fn resolveOrderSlot(self: *const PreparedTransition, slot: u64) Error!RowId {
+        const state = self.slot_states.get(slot) orelse blk: {
+            const row_id = (self.store.findItemSlot(self.site_id, slot) catch return error.InvalidSite) orelse return error.MissingSlot;
+            break :blk KeyState{ .node = existingRef(row_id), .live = true };
+        };
+        if (!isFresh(state.node)) return existingId(state.node);
+        return self.fresh.items[freshIndex(state.node)].claim orelse error.InvalidOwnerToken;
+    }
+
+    fn renderSpanForSlot(self: *const PreparedTransition, slot: u64) Error!rows_store.RowRenderSpan {
+        const state = self.slot_states.get(slot) orelse blk: {
+            const row_id = (self.store.findItemSlot(self.site_id, slot) catch return error.InvalidSite) orelse return error.MissingSlot;
+            break :blk KeyState{ .node = existingRef(row_id), .live = true };
+        };
+        if (self.shadows.get(state.node)) |shadow| return shadow.metadata.render_span;
+        if (isFresh(state.node)) return error.InvalidOwnerToken;
+        return (self.store.getRowConst(self.site_id, existingId(state.node)) catch return error.InvalidSite).metadata.render_span;
     }
 
     fn applyInsert(self: *PreparedTransition, insert: Insert) Error!void {
@@ -833,16 +917,18 @@ fn expectOrder(store: *const Store, site_id: SiteId, expected: []const []const u
     try std.testing.expectEqual(expected.len, site.len);
     var current = site.head;
     var previous: ?RowId = null;
-    for (expected) |key| {
+    for (expected, 0..) |key, index| {
         const row_id = current orelse return error.TestExpectedEqual;
         const row = try store.getRowConst(site_id, row_id);
         try std.testing.expectEqualStrings(key, row.key);
         try std.testing.expectEqual(previous, row.previous);
+        try std.testing.expectEqual(row_id, try site.render_order.rowAt(index));
         previous = row_id;
         current = row.next;
     }
     try std.testing.expect(current == null);
     try std.testing.expectEqual(previous, site.tail);
+    try std.testing.expectEqual(expected.len, site.render_order.len());
 }
 
 test "Rows sparse transition inserts moves updates and removes touched rows" {
@@ -1032,9 +1118,11 @@ test "row render spans preserve empty and multi-root anchors through commit" {
     try seed.prepareRenderSpanUpdates(1);
     try seed.setCandidateRenderSpanAssumeCapacity(9, .{});
     try std.testing.expectEqual(rows_store.RowRenderSpan{}, seed.candidateBySlot(9).?.metadata.render_span);
+    try std.testing.expect((try seed.firstRenderRootAtOrAfterSlot(9)) == null);
     seed.commit();
     const row_id = (try store.findItemSlot(site, 9)).?;
     try std.testing.expectEqual(rows_store.RowRenderSpan{}, (try store.getRowConst(site, row_id)).metadata.render_span);
+    try std.testing.expectEqual(rows_store.RowRenderSpan{}, try (try store.getSiteConst(site)).render_order.span(row_id));
 
     var next = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(77), try OwnerToken.fromRaw(78), &.{});
     defer next.deinit();
@@ -1048,8 +1136,10 @@ test "row render spans preserve empty and multi-root anchors through commit" {
     try next.prepareRenderSpanUpdates(1);
     try next.setCandidateRenderSpanAssumeCapacity(9, multi);
     try std.testing.expectEqual(multi, next.candidateBySlot(9).?.metadata.render_span);
+    try std.testing.expectEqual(@as(u64, 101), (try next.firstRenderRootAtOrAfterSlot(9)).?.root_id);
     next.commit();
     try std.testing.expectEqual(multi, (try store.getRowConst(site, row_id)).metadata.render_span);
+    try std.testing.expectEqual(multi, try (try store.getSiteConst(site)).render_order.span(row_id));
 }
 
 test "changed candidate traversal and commit stay bounded by a one-row delta" {

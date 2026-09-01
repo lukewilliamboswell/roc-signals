@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const rows_ids = @import("rows_ids.zig");
+const rows_render_order = @import("rows_render_order.zig");
 
 pub const SiteId = rows_ids.SiteId;
 pub const RowId = rows_ids.RowId;
@@ -270,6 +271,11 @@ pub const RowMetadata = struct {
     render_span: RowRenderSpan = .{},
 };
 
+/// Sparse committed render order for one Rows construction site. The index is
+/// keyed by the same generation-checked row identities as the row store and
+/// aggregates direct-root spans across zero-root rows.
+pub const RenderOrder = rows_render_order.OrderIndex(RowRenderSpan);
+
 test "row render span validates empty and multi-root anchors" {
     try std.testing.expect((RowRenderSpan{}).valid());
     try std.testing.expect((RowRenderSpan{
@@ -324,6 +330,9 @@ pub const RetiredScopeRow = struct {
 /// One committed Rows site with exact-key lookup and intrusive row order.
 pub const Site = struct {
     owner_token: OwnerToken,
+    /// Heap-stable because preparing an outer site may create nested sites and
+    /// grow the site slot table before the outer transition commits.
+    render_order: *RenderOrder,
     head: ?RowId = null,
     tail: ?RowId = null,
     len: usize = 0,
@@ -331,6 +340,8 @@ pub const Site = struct {
     by_item_slot: std.AutoHashMapUnmanaged(u64, RowId) = .empty,
 
     fn deinit(self: *Site, allocator: std.mem.Allocator) void {
+        self.render_order.deinit();
+        allocator.destroy(self.render_order);
         self.by_key.deinit(allocator);
         self.by_item_slot.deinit(allocator);
         self.* = undefined;
@@ -387,7 +398,11 @@ pub const Store = struct {
 
     /// Creates an empty committed site for one authenticated Rows generation.
     pub fn createSite(self: *Store, owner_token: OwnerToken) Error!SiteId {
-        return self.sites.insert(self.allocator, .{ .owner_token = owner_token }) catch |err| switch (err) {
+        const render_order = try self.allocator.create(RenderOrder);
+        errdefer self.allocator.destroy(render_order);
+        render_order.* = RenderOrder.init(self.allocator);
+        errdefer render_order.deinit();
+        return self.sites.insert(self.allocator, .{ .owner_token = owner_token, .render_order = render_order }) catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             error.ResourceLimit => error.ResourceLimit,
         };
@@ -461,6 +476,7 @@ pub const Store = struct {
         if (next) |id| (self.getRow(location.site_id, id) catch @panic("Rows next link was stale")).previous = previous else site.tail = previous;
         if (site.len == 0) @panic("Rows site length underflow during scope retirement");
         site.len -= 1;
+        if (site.render_order.contains(location.row_id)) site.render_order.removeCommitted(location.row_id) catch @panic("Rows scope retirement lost its render-order row");
         const key = self.removePreparedRow(location.site_id, location.row_id);
         return .{ .site_id = location.site_id, .key = key, .site_empty = site.len == 0 };
     }

@@ -106,6 +106,39 @@ pub fn OrderIndex(comptime Span: type) type {
             return self.nodeRoots(self.root);
         }
 
+        /// Reports whether a generation-checked row participates in this
+        /// committed render order.
+        pub fn contains(self: *const Self, row_id: RowId) bool {
+            return self.nodes.contains(row_id);
+        }
+
+        /// Removes one committed row without allocating. This narrow path is
+        /// used only when an enclosing scope retires a row outside a Rows
+        /// generation transition; ordinary collection edits use
+        /// `PreparedEdits` so abort can preserve the committed topology.
+        pub fn removeCommitted(self: *Self, row_id: RowId) error{InvalidRow}!void {
+            const removed = self.nodes.get(row_id) orelse return error.InvalidRow;
+            const parent = removed.parent;
+            const replacement = self.mergeCommitted(removed.left, removed.right, parent);
+            if (parent) |parent_id| {
+                const parent_node = self.nodes.getPtr(parent_id) orelse unreachable;
+                if (parent_node.left == row_id) {
+                    parent_node.left = replacement;
+                } else if (parent_node.right == row_id) {
+                    parent_node.right = replacement;
+                } else unreachable;
+            } else {
+                self.root = replacement;
+            }
+            _ = self.nodes.remove(row_id);
+            var current = parent;
+            while (current) |id| {
+                const next = (self.nodes.get(id) orelse unreachable).parent;
+                self.refreshCommitted(id);
+                current = next;
+            }
+        }
+
         /// Returns the row occupying `index` in committed order.
         pub fn rowAt(self: *const Self, index: usize) error{InvalidRange}!RowId {
             if (index >= self.len()) return error.InvalidRange;
@@ -235,6 +268,55 @@ pub fn OrderIndex(comptime Span: type) type {
             return self.findFirstRoot(node.right, node_rank + 1, target);
         }
 
+        fn mergeCommitted(self: *Self, left_id: ?RowId, right_id: ?RowId, parent: ?RowId) ?RowId {
+            if (left_id == null) {
+                if (right_id) |id| self.nodes.getPtr(id).?.parent = parent;
+                return right_id;
+            }
+            if (right_id == null) {
+                self.nodes.getPtr(left_id.?).?.parent = parent;
+                return left_id;
+            }
+            const left = self.nodes.get(left_id.?).?;
+            const right = self.nodes.get(right_id.?).?;
+            if (precedes(left_id.?, left, right_id.?, right)) {
+                const node = self.nodes.getPtr(left_id.?).?;
+                node.parent = parent;
+                node.right = self.mergeCommitted(node.right, right_id, left_id);
+                self.refreshCommitted(left_id.?);
+                return left_id;
+            }
+            const node = self.nodes.getPtr(right_id.?).?;
+            node.parent = parent;
+            node.left = self.mergeCommitted(left_id, node.left, right_id);
+            self.refreshCommitted(right_id.?);
+            return right_id;
+        }
+
+        fn refreshCommitted(self: *Self, row_id: RowId) void {
+            const node = self.nodes.getPtr(row_id) orelse unreachable;
+            const left = if (node.left) |id| self.nodes.get(id).? else null;
+            const right = if (node.right) |id| self.nodes.get(id).? else null;
+            node.subtree_rows = 1 + (if (left) |value| value.subtree_rows else 0) + (if (right) |value| value.subtree_rows else 0);
+            node.subtree_roots = (if (left) |value| value.subtree_roots else 0) + spanRoots(node.span) + (if (right) |value| value.subtree_roots else 0);
+            node.subtree_first_root = if (left != null and left.?.subtree_first_root != null)
+                left.?.subtree_first_root
+            else if (node.span.first_root) |root_id|
+                root_id
+            else if (right) |value|
+                value.subtree_first_root
+            else
+                null;
+            node.subtree_last_root = if (right != null and right.?.subtree_last_root != null)
+                right.?.subtree_last_root
+            else if (node.span.last_root) |root_id|
+                root_id
+            else if (left) |value|
+                value.subtree_last_root
+            else
+                null;
+        }
+
         fn priorityFor(row_id: RowId) u64 {
             // Row ids are host-minted rather than app-controlled. SplitMix64
             // removes their sequential slot pattern while remaining exactly
@@ -359,8 +441,13 @@ pub fn OrderIndex(comptime Span: type) type {
                 _ = std.math.add(usize, self.rootCount(), spanRoots(span_value)) catch return error.ResourceLimit;
 
                 if (resurrecting) {
+                    if (!self.overlay.contains(row_id)) try self.overlay.ensureUnusedCapacity(self.allocator, 1);
                     _ = self.removed.remove(row_id);
-                    self.overlay.getPtr(row_id).?.* = nodeFromSpan(row_id, span_value);
+                    if (self.overlay.getPtr(row_id)) |node| {
+                        node.* = nodeFromSpan(row_id, span_value);
+                    } else {
+                        self.overlay.putAssumeCapacity(row_id, nodeFromSpan(row_id, span_value));
+                    }
                 } else {
                     try self.overlay.ensureUnusedCapacity(self.allocator, 1);
                     self.overlay.putAssumeCapacity(row_id, nodeFromSpan(row_id, span_value));
@@ -775,6 +862,28 @@ test "prepared commit remains allocation free after reservation" {
     try std.testing.expect(!failing.has_induced_failure);
     try expectOrder(&order, &.{ row(0), row(2), row(1) });
     try std.testing.expectEqual(oneRoot(11), try order.span(row(0)));
+}
+
+test "committed scope retirement removes one row without allocation" {
+    var order = TestOrder.init(std.testing.allocator);
+    defer order.deinit();
+    _ = try order.seed(&.{
+        .{ .row_id = row(0), .span = oneRoot(10) },
+        .{ .row_id = row(1), .span = .{} },
+        .{ .row_id = row(2), .span = .{ .first_root = 20, .last_root = 21, .root_count = 2 } },
+        .{ .row_id = row(3), .span = oneRoot(30) },
+    });
+
+    const normal_allocator = order.allocator;
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    order.allocator = failing.allocator();
+    try order.removeCommitted(row(2));
+    order.allocator = normal_allocator;
+
+    try std.testing.expect(!failing.has_induced_failure);
+    try expectOrder(&order, &.{ row(0), row(1), row(3) });
+    try std.testing.expectEqual(@as(usize, 2), order.rootCount());
+    try std.testing.expectEqual(TestOrder.RootAnchor{ .row_id = row(3), .root_id = 30 }, (try order.firstRootAtOrAfter(row(1))).?);
 }
 
 test "candidate operations reject inconsistent render spans" {
