@@ -14915,7 +14915,10 @@ pub fn Engine(comptime Ctx: type) type {
                     root_ids.appendAssumeCapacity(self.engine.requireActiveSignalRecordId(entry.record));
                 }
                 if (root_ids.items.len == 0) return allocator.alloc(HostDirtyStructuralSignal, 0) catch return error.OutOfMemory;
-                self.root_count = std.math.add(u64, self.root_count, @intCast(root_ids.items.len)) catch return error.ResourceLimit;
+                // Row sources are internal roots discovered while reconciling
+                // one already-counted app/host source transaction. Keep
+                // `dirty_source_roots` describing only those externally
+                // initiated roots, as documented by RuntimeMetrics.
                 const changed_dirty_ids = self.engine.scratchDirtyActiveSignalRecordIdsForRoots(self.host_ctx, root_ids.items);
                 const wave_changed = try self.engine.prepareChangedActiveSignalRecordIds(self.host_ctx, self.roc_host, &self.caches, changed_dirty_ids, &.{}, self.generation);
                 defer allocator.free(wave_changed);
