@@ -16,6 +16,7 @@
 # nothing silently infers as `Frac`.
 
 Recipes := [].{
+
 	## The canonical unit an ingredient is measured in. `unit_code` renders the
 	## wire code (`"g"`, `"ml"`, `"tsp"`, `"pinch"`) that shopping-list keys and
 	## metric labels are built from.
@@ -405,7 +406,11 @@ Recipes := [].{
 				acc.map(
 					|row|
 						if row.key == line.key {
-							{ ..row, per_serving: row.per_serving + line.per_serving, sources: row.sources + 1 }
+							combined_per_serving : U64
+							combined_per_serving = row.per_serving + line.per_serving
+							combined_sources : U64
+							combined_sources = row.sources + 1
+							{ ..row, per_serving: combined_per_serving, sources: combined_sources }
 						} else {
 							row
 						},
@@ -441,20 +446,20 @@ Recipes := [].{
 		contributions : List(ShoppingLine)
 		contributions =
 			catalogue
-			.drop_if(|recipe| !selected.contains(recipe.id))
-			.map(
-				|recipe|
-					recipe.ingredients.map(
-						|item| {
-							key: "${item.slug}-${unit_code(item.unit)}",
-							name: item.name,
-							unit: item.unit,
-							per_serving: item.per_serving,
-							sources: 1,
-						},
-					),
-			)
-			.join()
+				.drop_if(|recipe| !selected.contains(recipe.id))
+				.map(
+					|recipe|
+						recipe.ingredients.map(
+							|item| {
+								key: "${item.slug}-${unit_code(item.unit)}",
+								name: item.name,
+								unit: item.unit,
+								per_serving: item.per_serving,
+								sources: 1,
+							},
+						),
+				)
+				.join()
 
 		contributions.fold([], merge_line)
 	}
