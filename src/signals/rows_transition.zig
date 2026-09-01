@@ -398,6 +398,16 @@ pub const PreparedTransition = struct {
         return self.render_order.firstRootAtOrAfter(row_id) catch |err| return renderOrderError(err);
     }
 
+    /// Resolves the first direct root in the complete candidate site order.
+    /// The aggregate render index skips any leading rows that render no roots,
+    /// keeping sparse site-anchor publication independent of total row count.
+    pub fn firstCandidateRenderRoot(self: *const PreparedTransition) Error!?rows_store.RenderOrder.RootAnchor {
+        if (self.phase == .preparing) @panic("Rows candidate render anchor read before preparation completed");
+        if (self.render_order.len() == 0) return null;
+        const first_row = self.render_order.rowAt(0) catch |err| return renderOrderError(err);
+        return self.render_order.firstRootAtOrAfter(first_row) catch |err| return renderOrderError(err);
+    }
+
     /// Resolves one live candidate row by its adapter-private stable item slot
     /// without traversing candidate order.
     pub fn candidateBySlot(self: *const PreparedTransition, slot: u64) ?CandidateRow {
@@ -1142,12 +1152,18 @@ test "row render spans preserve empty and multi-root anchors through commit" {
     try seed.setCandidateRenderSpanAssumeCapacity(9, .{});
     try std.testing.expectEqual(rows_store.RowRenderSpan{}, seed.candidateBySlot(9).?.metadata.render_span);
     try std.testing.expect((try seed.firstRenderRootAtOrAfterSlot(9)) == null);
+    try std.testing.expect((try seed.firstCandidateRenderRoot()) == null);
     seed.commit();
     const row_id = (try store.findItemSlot(site, 9)).?;
     try std.testing.expectEqual(rows_store.RowRenderSpan{}, (try store.getRowConst(site, row_id)).metadata.render_span);
     try std.testing.expectEqual(rows_store.RowRenderSpan{}, try (try store.getSiteConst(site)).render_order.span(row_id));
 
-    var next = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(77), try OwnerToken.fromRaw(78), &.{});
+    var next = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(77), try OwnerToken.fromRaw(78), &.{.{ .insert = .{
+        .slot = 10,
+        .before_slot = 0,
+        .key = "rooted-row",
+        .metadata = .{ .item_slot = 10, .scope_id = 10 },
+    } }});
     defer next.deinit();
     const multi = rows_store.RowRenderSpan{
         .first_node = 101,
@@ -1157,13 +1173,14 @@ test "row render spans preserve empty and multi-root anchors through commit" {
         .root_count = 3,
     };
     try next.prepareRenderSpanUpdates(1);
-    try next.setCandidateRenderSpanAssumeCapacity(9, multi);
-    try std.testing.expectEqual(multi, next.candidateBySlot(9).?.metadata.render_span);
+    try next.setCandidateRenderSpanAssumeCapacity(10, multi);
+    try std.testing.expectEqual(multi, next.candidateBySlot(10).?.metadata.render_span);
     try std.testing.expectEqual(@as(u64, 101), (try next.firstRenderRootAtOrAfterSlot(9)).?.root_id);
+    try std.testing.expectEqual(@as(u64, 101), (try next.firstCandidateRenderRoot()).?.root_id);
     try std.testing.expect((try next.committedLastRenderRoot()) == null);
     next.commit();
-    try std.testing.expectEqual(multi, (try store.getRowConst(site, row_id)).metadata.render_span);
-    try std.testing.expectEqual(multi, try (try store.getSiteConst(site)).render_order.span(row_id));
+    try std.testing.expectEqual(rows_store.RowRenderSpan{}, (try store.getRowConst(site, row_id)).metadata.render_span);
+    try std.testing.expectEqual(rows_store.RowRenderSpan{}, try (try store.getSiteConst(site)).render_order.span(row_id));
     try std.testing.expectEqual(@as(?u64, 107), (try store.getSiteConst(site)).render_order.lastRoot());
 }
 

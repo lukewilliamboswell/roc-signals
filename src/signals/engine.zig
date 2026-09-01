@@ -8648,6 +8648,8 @@ pub fn Engine(comptime Ctx: type) type {
             retired_active_events: std.ArrayListUnmanaged(ActiveEventDesc) = .empty,
             initial_root: bool = false,
             sparse_render_membership: bool = false,
+            sparse_each_site_node_id: ?ids.NodeId = null,
+            sparse_each_first_render_root: ?ids.ElemId = null,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 try PreparedReplacementOwner.addRootCounts(total, next);
@@ -9093,6 +9095,12 @@ pub fn Engine(comptime Ctx: type) type {
                     error.ConflictingParent, error.MissingNode => return error.InvalidRenderTopology,
                 };
                 journal_owned = false;
+                self.sparse_each_site_node_id = site.node_id;
+                self.sparse_each_first_render_root = if (transition.firstCandidateRenderRoot() catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                    else => return error.InvalidDescriptor,
+                }) |anchor| ids.ElemId.fromRaw(anchor.root_id) else null;
                 splice.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
@@ -9388,6 +9396,15 @@ pub fn Engine(comptime Ctx: type) type {
                         Ctx.allocator(self.host_ctx),
                         &self.engine.active_stream,
                     );
+                    if (self.sparse_each_first_render_root) |root_id| {
+                        const node_id = self.sparse_each_site_node_id orelse @panic("sparse Rows render anchor lost its site identity");
+                        const descriptor_index = self.engine.active_stream.nodeDescriptorIndex(node_id) orelse @panic("sparse Rows render anchor lost its site descriptor");
+                        const site_index = descriptor_index.scope_sites.get(.each) orelse @panic("sparse Rows render anchor lost its each site");
+                        const render_index = self.engine.active_stream.renderNodeIndex(root_id) orelse @panic("sparse Rows render anchor named an absent root");
+                        const active_site = &self.engine.active_stream.scope_sites.items[site_index];
+                        if (active_site.node_id != node_id or active_site.kind != .each) @panic("sparse Rows render anchor resolved another site");
+                        active_site.render_insert_index = render_index;
+                    }
                     self.engine.active_stream.finishSparseRenderNodeRetirement(removal.scan.removed_elem_ids);
                 }
                 self.engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
