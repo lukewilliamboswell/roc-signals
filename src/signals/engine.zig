@@ -1179,6 +1179,9 @@ pub fn Engine(comptime Ctx: type) type {
             keys: []usize = &.{},
             items: []usize = &.{},
             item_equal: []bool = &.{},
+            // Snapshot reconciliation fills this at the same candidate index
+            // for both reused and created rows. Consumers must preserve that
+            // alignment instead of searching provisional or committed scopes.
             row_handles_by_index: []?row_handles.RowHandleId = &.{},
             candidate_bindings: each_generation.CandidateBindings,
             created_handles: std.ArrayListUnmanaged(row_handles.RowHandleId) = .empty,
@@ -1647,15 +1650,7 @@ pub fn Engine(comptime Ctx: type) type {
                     for (rows.next_scope_ids, 0..) |row_scope_id, row_index| {
                         const slot = inputs.slot(row_index) orelse return error.InvalidDescriptor;
                         const key = inputs.key(row_index) orelse return error.InvalidDescriptor;
-                        const row_handle = if (row_scope_id.index() < engine.scopes.items.len and engine.scopes.items[row_scope_id.index()].lifecycle.isActive())
-                            scope_runtime.eachRowHandle(engine.scopes.items, row_scope_id)
-                        else blk: {
-                            for (plan.scope_claims.rows.items) |claimed| if (claimed.scope_id == row_scope_id) switch (claimed.step) {
-                                .each_row => |row_step| break :blk row_step.row_handle,
-                                else => return error.InvalidDescriptor,
-                            };
-                            return error.InvalidDescriptor;
-                        };
+                        const row_handle = inputs.row_handles_by_index[row_index] orelse return error.InvalidDescriptor;
                         stable_edits[row_index + 1] = .{ .insert = .{
                             .slot = slot,
                             .before_slot = 0,
@@ -5599,12 +5594,7 @@ pub fn Engine(comptime Ctx: type) type {
                     for (rows.next_scope_ids, 0..) |row_scope_id, row_index| {
                         const slot = inputs.slot(row_index) orelse return error.InvalidDescriptor;
                         const key = inputs.key(row_index) orelse return error.InvalidDescriptor;
-                        const row_handle = if (rows.scope_created[row_index]) for (self.prepared_each_row_scopes.items) |prepared_scope| {
-                            if (prepared_scope.scope_id == row_scope_id) break switch (prepared_scope.step) {
-                                .each_row => |row| row.row_handle,
-                                else => return error.InvalidDescriptor,
-                            };
-                        } else return error.InvalidDescriptor else scope_runtime.eachRowHandle(engine_ptr.scopes.items, row_scope_id);
+                        const row_handle = inputs.row_handles_by_index[row_index] orelse return error.InvalidDescriptor;
                         stable_edits[row_index + 1] = .{ .insert = .{
                             .slot = slot,
                             .before_slot = 0,
@@ -5716,12 +5706,7 @@ pub fn Engine(comptime Ctx: type) type {
                         if (!structurally_dirty) return error.InvalidDescriptor;
                     }
                     const key = if (candidate_row) |candidate| candidate.key else inputs.key(index) orelse return error.InvalidDescriptor;
-                    const row_handle = if (candidate_row) |candidate| candidate.row_handle else if (created) for (self.prepared_each_row_scopes.items) |prepared_scope| {
-                        if (prepared_scope.scope_id == row_scope_id) break switch (prepared_scope.step) {
-                            .each_row => |row| row.row_handle,
-                            else => return error.InvalidDescriptor,
-                        };
-                    } else return error.InvalidDescriptor else scope_runtime.eachRowHandle(engine_ptr.scopes.items, row_scope_id);
+                    const row_handle = if (candidate_row) |candidate| candidate.row_handle else inputs.row_handles_by_index[index] orelse return error.InvalidDescriptor;
                     const elem = retained_values.callEachRowBuilder(roc_host, each.ops.row, abi.RocStr.fromSlice(key, roc_host), row_handle.raw());
                     row_elems[index] = elem;
                     try PreparedReplacementOwner.addRootCounts(&total, try countStaticRootNodes(elem));
