@@ -1,7 +1,7 @@
 //! Immutable collection generations and transaction-local keyed-row bindings.
 //!
-//! A generation owns exactly one opaque Roc collection cell plus the copied
-//! host key bytes derived from it. Row handles resolve through generation IDs,
+//! A generation owns exactly one opaque Roc collection cell. Stable keys and
+//! order belong to the engine's committed Rows site, while row handles resolve through generation IDs,
 //! never pointers, so moving generation storage cannot create dangling row
 //! bindings. A candidate binding overlay owns only its hash table; the
 //! generation transaction remains responsible for keeping every referenced
@@ -65,55 +65,30 @@ pub const Generation = struct {
     rows_generation: u64,
     collection: HostValueCell,
     ops: HostEachOps,
-    keys: KeyStorage,
-    rows: std.ArrayListUnmanaged(each_collection.SnapshotRow),
     item_count: usize,
     live: bool = true,
 
-    /// Adopts one collection value and completed host key storage, and retains
-    /// the typed collection operations needed to read this generation later.
-    ///
-    /// On success `keys_owner` is reset and the returned generation owns its
-    /// buffers. The incoming collection value is already independently owned;
-    /// this function retains the operations' collection capability as the
+    /// Adopts one independently owned collection value and retains the typed
+    /// operations needed to read stable item slots from this generation later.
+    /// The function retains the operations' collection capability as the
     /// cell's ownership edge and retains every typed operation separately.
-    pub fn initOwned(id: GenerationId, rows_generation: u64, collection: HostValue, ops: HostEachOps, snapshot_owner: *SnapshotStorage, item_count: usize, metrics: anytype) error{ InvalidGeneration, InvalidKeyCount }!Generation {
+    pub fn initOwned(id: GenerationId, rows_generation: u64, collection: HostValue, ops: HostEachOps, item_count: usize, metrics: anytype) error{InvalidGeneration}!Generation {
         if (!id.isValid() or rows_generation == 0) return error.InvalidGeneration;
-        if (!snapshot_owner.complete or snapshot_owner.expected_count != item_count or snapshot_owner.keys.offsets.items.len != item_count + 1 or snapshot_owner.rows.items.len != item_count) return error.InvalidKeyCount;
-        const keys = snapshot_owner.keys;
-        const rows = snapshot_owner.rows;
-        snapshot_owner.* = .{};
         return .{
             .id = id,
             .rows_generation = rows_generation,
             .collection = HostValueCell.initRetained(collection, ops.rows_capability, metrics),
             .ops = retained.retainHostEachOps(ops, metrics),
-            .keys = keys,
-            .rows = rows,
             .item_count = item_count,
         };
     }
 
-    /// Returns exact host-owned key bytes for one item in this generation.
-    pub fn key(self: *const Generation, item_index: usize) ?[]const u8 {
-        if (!self.live or item_index >= self.item_count) return null;
-        return self.keys.key(item_index);
-    }
-
-    /// Returns the immutable stable item slot at one snapshot order index.
-    pub fn slot(self: *const Generation, item_index: usize) ?u64 {
-        if (!self.live or item_index >= self.item_count) return null;
-        return self.rows.items[item_index].slot;
-    }
-
-    /// Releases the opaque Roc collection, retained typed operations, and host
-    /// key buffers exactly once.
+    /// Releases the opaque Roc collection and retained typed operations exactly once.
     pub fn deinit(self: *Generation, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        _ = allocator;
         if (!self.live) @panic("each generation deinitialized twice");
         self.collection.deinit(ctx, roc_host, metrics);
         retained.releaseHostEachOps(self.ops, roc_host, metrics);
-        self.keys.deinit(allocator);
-        self.rows.deinit(allocator);
         self.live = false;
     }
 };
@@ -121,7 +96,7 @@ pub const Generation = struct {
 /// Current immutable collection location for one stable row handle.
 pub const RowBinding = struct {
     generation_id: GenerationId,
-    item_index: usize,
+    item_slot: u64,
 
     /// Validates the binding's nonzero generation identity.
     pub fn validate(self: RowBinding) error{InvalidGeneration}!void {
@@ -295,17 +270,15 @@ test "generation owns one collection cell and exact host keys" {
     var metrics = TestMetrics{};
     var ctx = TestCtx{};
     var snapshot: SnapshotStorage = .{};
+    defer snapshot.deinit(std.testing.allocator);
     var snapshot_sink = try snapshot.prepare(std.testing.allocator, 2, 9);
     try snapshot_sink.pushBorrowed(0, 101, "alpha");
     try snapshot_sink.pushBorrowed(1, 202, "beta");
     try snapshot_sink.finish();
     test_drop_count = 0;
-    var generation = try Generation.initOwned(GenerationId.fromRaw(9), 900, HostValue.fromRaw(77), ops, &snapshot, 2, &metrics);
-    try std.testing.expectEqualStrings("alpha", generation.key(0).?);
-    try std.testing.expectEqualStrings("beta", generation.key(1).?);
-    try std.testing.expect(generation.key(2) == null);
-    try std.testing.expectEqual(@as(u64, 202), generation.slot(1).?);
-    try std.testing.expectEqual(@as(usize, 0), snapshot.keys.bytes.capacity);
+    var generation = try Generation.initOwned(GenerationId.fromRaw(9), 900, HostValue.fromRaw(77), ops, 2, &metrics);
+    try std.testing.expectEqualStrings("alpha", snapshot.keys.key(0).?);
+    try std.testing.expectEqual(@as(u64, 202), snapshot.rows.items[1].slot);
     generation.deinit(std.testing.allocator, &ctx, &roc_host, &metrics);
     try std.testing.expectEqual(@as(usize, 1), test_drop_count);
     try std.testing.expectEqual(@as(u64, 15), metrics.retains);
@@ -314,8 +287,8 @@ test "generation owns one collection cell and exact host keys" {
 
 test "candidate bindings override committed rows for delayed reads" {
     const row = RowHandleId.fromRaw(0x0000_0001_0000_0001);
-    const old = RowBinding{ .generation_id = GenerationId.fromRaw(4), .item_index = 2 };
-    const next = RowBinding{ .generation_id = GenerationId.fromRaw(5), .item_index = 7 };
+    const old = RowBinding{ .generation_id = GenerationId.fromRaw(4), .item_slot = 2 };
+    const next = RowBinding{ .generation_id = GenerationId.fromRaw(5), .item_slot = 7 };
     var committed = BindingTable{};
     defer committed.deinit(std.testing.allocator);
     try committed.entries.put(std.testing.allocator, row, old);
@@ -332,13 +305,13 @@ test "candidate bindings override committed rows for delayed reads" {
 
 test "aborted candidate bindings leave committed rows readable" {
     const row = RowHandleId.fromRaw(0x0000_0001_0000_0001);
-    const old = RowBinding{ .generation_id = GenerationId.fromRaw(10), .item_index = 1 };
+    const old = RowBinding{ .generation_id = GenerationId.fromRaw(10), .item_slot = 1 };
     var committed = BindingTable{};
     defer committed.deinit(std.testing.allocator);
     try committed.entries.put(std.testing.allocator, row, old);
     var overlay = CandidateBindings.init(std.testing.allocator);
     try overlay.reserve(1);
-    try overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(11), .item_index = 9 });
+    try overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(11), .item_slot = 9 });
     overlay.deinit();
 
     try std.testing.expectEqual(old, committed.get(row).?);
@@ -349,16 +322,16 @@ test "candidate bindings reject duplicates and invalid generations" {
     var overlay = CandidateBindings.init(std.testing.allocator);
     defer overlay.deinit();
     try overlay.reserve(2);
-    try std.testing.expectError(error.InvalidGeneration, overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(0), .item_index = 0 }));
-    try overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(1), .item_index = 0 });
-    try std.testing.expectError(error.DuplicateRowHandle, overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(1), .item_index = 1 }));
+    try std.testing.expectError(error.InvalidGeneration, overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(0), .item_slot = 1 }));
+    try overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(1), .item_slot = 1 });
+    try std.testing.expectError(error.DuplicateRowHandle, overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(1), .item_slot = 2 }));
 }
 
 test "candidate removal masks committed binding before and after commit" {
     const row = RowHandleId.fromRaw(0x0000_0001_0000_0001);
     var committed = BindingTable{};
     defer committed.deinit(std.testing.allocator);
-    try committed.entries.put(std.testing.allocator, row, .{ .generation_id = GenerationId.fromRaw(3), .item_index = 4 });
+    try committed.entries.put(std.testing.allocator, row, .{ .generation_id = GenerationId.fromRaw(3), .item_slot = 4 });
     var overlay = CandidateBindings.init(std.testing.allocator);
     defer overlay.deinit();
     try overlay.reserve(1);

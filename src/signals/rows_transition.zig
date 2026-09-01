@@ -73,6 +73,13 @@ pub const CreatedRow = struct {
     metadata: RowMetadata,
 };
 
+/// One row visible in the prepared candidate order before publication.
+pub const CandidateRow = struct {
+    row_id: ?RowId,
+    key: []const u8,
+    metadata: RowMetadata,
+};
+
 // Engine publication mapping (kept here beside the ownership boundary):
 //
 //   Store SiteId     -> one `(parent_scope_id, site_ordinal)` structural site
@@ -133,6 +140,27 @@ const Fresh = struct {
 };
 
 const Phase = enum { preparing, prepared, committed };
+
+/// Allocation-free traversal over the overlay's final intrusive order.
+pub const CandidateIterator = struct {
+    transition: *const PreparedTransition,
+    next_ref: ?NodeRef,
+
+    /// Advances without materializing untouched committed rows into scratch.
+    pub fn next(self: *CandidateIterator) ?CandidateRow {
+        const ref = self.next_ref orelse return null;
+        if (self.transition.shadows.get(ref)) |shadow| {
+            if (!shadow.live) @panic("candidate order referenced a removed row");
+            self.next_ref = shadow.next;
+            const row_id = if (isFresh(ref)) self.transition.fresh.items[freshIndex(ref)].claim else existingId(ref);
+            return .{ .row_id = row_id, .key = shadow.key, .metadata = shadow.metadata };
+        }
+        if (isFresh(ref)) @panic("candidate order omitted a provisional shadow");
+        const row = self.transition.store.getRowConst(self.transition.site_id, existingId(ref)) catch @panic("candidate order referenced a stale committed row");
+        self.next_ref = if (row.next) |next_row| existingRef(next_row) else null;
+        return .{ .row_id = existingId(ref), .key = row.key, .metadata = row.metadata };
+    }
+};
 
 /// Candidate overlay for one authenticated parent-to-child Rows generation.
 pub const PreparedTransition = struct {
@@ -202,6 +230,22 @@ pub const PreparedTransition = struct {
         return self;
     }
 
+    /// Prepares the first exact snapshot for a newly claimed empty site. The
+    /// site's owner is already the snapshot generation, so this path does not
+    /// invent a synthetic parent token merely to reuse delta authentication.
+    pub fn prepareInitial(allocator: std.mem.Allocator, store: *Store, site_id: SiteId, owner: OwnerToken, edits: []const StableEdit) Error!PreparedTransition {
+        const committed = store.getSiteConst(site_id) catch return error.InvalidSite;
+        if (committed.owner_token != owner or committed.len != 0) return error.ParentMismatch;
+        var self = PreparedTransition{ .allocator = allocator, .store = store, .site_id = site_id, .next_owner = owner, .head = null, .tail = null, .len = 0 };
+        errdefer self.deinit();
+        for (edits) |edit| switch (edit) {
+            .insert => |value| try self.applyStableInsert(value.slot, value.before_slot, value.key, value.metadata),
+            else => return error.ParentMismatch,
+        };
+        try self.finishPreparation();
+        return self;
+    }
+
     /// Returns newly live rows whose builders may be prepared before commit.
     pub fn createdRows(self: *const PreparedTransition) []const CreatedRow {
         if (self.phase == .preparing) @panic("Rows creation list read before preparation completed");
@@ -212,6 +256,12 @@ pub const PreparedTransition = struct {
     pub fn removedRows(self: *const PreparedTransition) []const RowId {
         if (self.phase == .preparing) @panic("Rows removal list read before preparation completed");
         return self.removed_rows;
+    }
+
+    /// Starts allocation-free traversal of the fully prepared candidate order.
+    pub fn iterateCandidate(self: *const PreparedTransition) CandidateIterator {
+        if (self.phase == .preparing) @panic("Rows candidate iterated before preparation completed");
+        return .{ .transition = self, .next_ref = self.head };
     }
 
     /// Publishes the candidate generation without allocation. Any scope/value
@@ -261,6 +311,9 @@ pub const PreparedTransition = struct {
     /// Releases candidate keys and scratch state. Before commit this is an
     /// abort; after commit transferred key allocations remain site-owned.
     pub fn deinit(self: *PreparedTransition) void {
+        if (self.phase == .prepared and self.created_rows.len != 0) {
+            for (self.created_rows) |created| self.store.releaseRowClaims(&.{created.row_id});
+        }
         for (self.fresh.items) |fresh| if (fresh.key.len != 0) self.store.allocator.free(fresh.key);
         self.shadows.deinit(self.allocator);
         self.touched.deinit(self.allocator);
@@ -440,6 +493,7 @@ pub const PreparedTransition = struct {
         const ref = try self.requireLiveSlot(slot);
         const shadow = try self.getShadow(ref);
         if (!std.mem.eql(u8, shadow.key, key)) return error.KeyMismatch;
+        if (shadow.metadata.scope_id != metadata.scope_id or shadow.metadata.row_handle != metadata.row_handle) return error.InvalidOwnerToken;
         shadow.metadata = metadata;
     }
 
@@ -682,17 +736,23 @@ test "canonical stable-slot delta resolves ranges without positional scans" {
 
     var next = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(71), try OwnerToken.fromRaw(72), &.{
         .{ .move = .{ .first_slot = 22, .count = 2, .before_slot = 11 } },
-        .{ .update = .{ .slot = 22, .key = "b", .metadata = .{ .item_slot = 22, .scope_id = 20 } } },
+        .{ .update = .{ .slot = 22, .key = "b", .metadata = .{ .item_slot = 22, .scope_id = 2 } } },
     });
     defer next.deinit();
+    var candidate = next.iterateCandidate();
+    try std.testing.expectEqualStrings("b", candidate.next().?.key);
+    try std.testing.expectEqualStrings("c", candidate.next().?.key);
+    try std.testing.expectEqualStrings("a", candidate.next().?.key);
+    try std.testing.expect(candidate.next() == null);
     next.commit();
     try expectOrder(&store, site, &.{ "b", "c", "a" });
     const row = (try store.findItemSlot(site, 22)).?;
-    try std.testing.expectEqual(@as(u64, 20), (try store.getRowConst(site, row)).metadata.scope_id);
+    try std.testing.expectEqual(@as(u64, 2), (try store.getRowConst(site, row)).metadata.scope_id);
+    try std.testing.expectEqual(row, store.findScope(2).?.row_id);
     try std.testing.expectError(error.KeyMismatch, PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(72), try OwnerToken.fromRaw(73), &.{.{ .update = .{
         .slot = 22,
         .key = "rekeyed",
-        .metadata = .{ .item_slot = 22, .scope_id = 20 },
+        .metadata = .{ .item_slot = 22, .scope_id = 2 },
     } }}));
     try expectOrder(&store, site, &.{ "b", "c", "a" });
 }

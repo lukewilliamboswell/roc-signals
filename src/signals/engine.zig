@@ -36,6 +36,8 @@ const scope_runtime = @import("scope_runtime.zig");
 const each_runtime = @import("each_runtime.zig");
 const each_collection = @import("each_collection.zig");
 const each_generation = @import("each_generation.zig");
+const rows_site_store = @import("rows_site_store.zig");
+const rows_transition = @import("rows_transition.zig");
 const row_handles = @import("row_handles.zig");
 const effects_runtime = @import("effects_runtime.zig");
 const collection_budget = @import("collection_budget.zig");
@@ -736,6 +738,10 @@ pub fn Engine(comptime Ctx: type) type {
         each_row_site_indexes: HostEachRowSiteIndexMap = .empty,
         each_row_sites: std.ArrayListUnmanaged(HostEachRowSite) = .empty,
         each_row_memberships_by_scope_id: std.ArrayListUnmanaged(?HostEachRowMembership) = .empty,
+        rows_store: ?rows_site_store.Store = null,
+        rows_site_ids: std.HashMapUnmanaged(each_runtime.SiteKey, rows_site_store.SiteId, each_runtime.SiteKeyContext, std.hash_map.default_max_load_percentage) = .empty,
+        each_generation_ids_by_rows_site: std.AutoHashMapUnmanaged(rows_site_store.SiteId, each_generation.GenerationId) = .empty,
+        reserved_rows_generation_entries: usize = 0,
         row_handle_registry: row_handles.Registry(void) = .init(),
         committed_row_bindings: each_generation.BindingTable = .{},
         each_generation_clock: each_generation.GenerationClock = .{},
@@ -892,15 +898,15 @@ pub fn Engine(comptime Ctx: type) type {
             /// Hashes an incoming key through the each descriptor capability.
             pub fn hashKey(self: *@This(), key: usize) u64 {
                 self.engine.recordEachKeyHash();
-                if (key >= self.inputs.generation.keys.hashes.items.len) @panic("each key index exceeded candidate generation");
-                return self.inputs.generation.keys.hashes.items[key];
+                if (key >= self.inputs.snapshot.keys.hashes.items.len) @panic("each key index exceeded candidate generation");
+                return self.inputs.snapshot.keys.hashes.items[key];
             }
 
             /// Compares candidate row keys exactly after hash lookup, preserving collision correctness.
             /// Compares two incoming keys before persistent publication.
             pub fn nextKeysEqual(self: *@This(), left: usize, right: usize) bool {
                 self.engine.recordEachKeyDuplicateCompare();
-                return std.mem.eql(u8, self.inputs.generation.key(left) orelse @panic("missing candidate key"), self.inputs.generation.key(right) orelse @panic("missing candidate key"));
+                return std.mem.eql(u8, self.inputs.key(left) orelse @panic("missing candidate key"), self.inputs.key(right) orelse @panic("missing candidate key"));
             }
 
             /// Performs existing key equals inside the shared engine while preserving transaction and changed-set invariants.
@@ -909,8 +915,10 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.recordEachKeyReuseCompare();
                 const handle = scope_runtime.eachRowHandle(self.engine.scopes.items, scope_id);
                 const binding = self.engine.committed_row_bindings.get(handle) orelse @panic("each row had no committed generation binding");
-                const generation = self.engine.each_generations.get(binding.generation_id) orelse @panic("each row generation was not retained");
-                return std.mem.eql(u8, generation.key(binding.item_index) orelse @panic("committed each key index exceeded generation"), self.inputs.generation.key(key) orelse @panic("candidate each key index exceeded generation"));
+                _ = self.engine.each_generations.get(binding.generation_id) orelse @panic("each row generation was not retained");
+                const location = self.engine.rows_store.?.findScope(scope_id.raw()) orelse @panic("committed each scope was absent from Rows store");
+                const committed = self.engine.rows_store.?.getRowConst(location.site_id, location.row_id) catch @panic("committed each row became stale");
+                return std.mem.eql(u8, committed.key, self.inputs.key(key) orelse @panic("candidate each key index exceeded generation"));
             }
 
             /// Performs row item equals through the keyed-row capabilities that own key and item values.
@@ -938,7 +946,7 @@ pub fn Engine(comptime Ctx: type) type {
             pub fn createRow(self: *@This(), parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, key_hash: u64, _: usize, item: usize) ids.ScopeId {
                 const handle = self.engine.row_handle_registry.insert(Ctx.allocator(self.ctx), {}) catch @panic("row handle resource limit");
                 self.inputs.created_handles.append(Ctx.allocator(self.ctx), handle) catch @panic("out of memory");
-                self.inputs.candidate_bindings.putAssumeCapacity(handle, .{ .generation_id = self.inputs.generation.id, .item_index = item }) catch @panic("invalid duplicate row binding");
+                self.inputs.candidate_bindings.putAssumeCapacity(handle, .{ .generation_id = self.inputs.generation.id, .item_slot = self.inputs.slot(item) orelse @panic("missing candidate Rows slot") }) catch @panic("invalid duplicate row binding");
                 return self.engine.createEachRowScope(self.ctx, parent_scope_id, site_ordinal, key_hash, handle);
             }
 
@@ -964,7 +972,7 @@ pub fn Engine(comptime Ctx: type) type {
             /// Rejects a duplicate keyed row at the narrow reconciliation boundary with a bounded diagnostic.
             pub fn failDuplicateEachKey(self: *@This(), parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, first_index: usize, second_index: usize, key: usize) noreturn {
                 var buf: [512]u8 = undefined;
-                const msg = formatEachDuplicateKeyDiagnostic(&buf, parent_scope_id.raw(), site_ordinal.raw(), first_index, second_index, self.inputs.generation.key(key) orelse "<invalid key>");
+                const msg = formatEachDuplicateKeyDiagnostic(&buf, parent_scope_id.raw(), site_ordinal.raw(), first_index, second_index, self.inputs.key(key) orelse "<invalid key>");
                 if (comptime @hasDecl(Ctx, "failWithMessage")) Ctx.failWithMessage(self.ctx, msg);
                 @panic(msg);
             }
@@ -1011,7 +1019,7 @@ pub fn Engine(comptime Ctx: type) type {
                     _ = self.base.engine.row_handle_registry.remove(row_handle) catch unreachable;
                     return error.OutOfMemory;
                 };
-                inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_index = input_index }) catch @panic("invalid duplicate row binding");
+                inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(input_index) orelse @panic("missing candidate Rows slot") }) catch @panic("invalid duplicate row binding");
                 inputs.row_handles_by_index[input_index] = row_handle;
                 const scope_id = try self.scopes.prepareRow(
                     &self.base.engine.scopes,
@@ -1044,9 +1052,9 @@ pub fn Engine(comptime Ctx: type) type {
                     if (old_generation) |existing| {
                         if (existing != generation) return error.ResourceLimit;
                     } else old_generation = generation;
-                    pairs.appendAssumeCapacity(generation.slot(binding.item_index) orelse return error.ResourceLimit);
-                    pairs.appendAssumeCapacity(inputs.generation.slot(next_index) orelse return error.ResourceLimit);
-                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_index = next_index }) catch return error.ResourceLimit;
+                    pairs.appendAssumeCapacity(binding.item_slot);
+                    pairs.appendAssumeCapacity(inputs.slot(next_index) orelse return error.ResourceLimit);
+                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(next_index) orelse return error.ResourceLimit }) catch return error.ResourceLimit;
                     inputs.row_handles_by_index[next_index] = row_handle;
                 }
                 const old = old_generation orelse return;
@@ -1143,19 +1151,51 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
+        const PreparedEachGeneration = struct {
+            generation: *each_generation.Generation,
+            description: each_collection.Description,
+            snapshot: each_collection.SnapshotStorage,
+            delta: ?each_collection.DeltaStorage,
+
+            fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: Ctx.Handle, roc_host: *abi.RocHost, metrics: anytype) void {
+                self.generation.deinit(allocator, ctx, roc_host, metrics);
+                allocator.destroy(self.generation);
+                self.snapshot.deinit(allocator);
+                if (self.delta) |*delta| delta.deinit(allocator);
+                self.* = undefined;
+            }
+        };
+
         pub const PreparedEachInputs = struct {
             allocator: std.mem.Allocator,
             engine: *Self,
             ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
             generation: *each_generation.Generation,
+            description: each_collection.Description,
+            snapshot: each_collection.SnapshotStorage,
+            delta: ?each_collection.DeltaStorage,
             keys: []usize = &.{},
             items: []usize = &.{},
             item_equal: []bool = &.{},
             row_handles_by_index: []?row_handles.RowHandleId = &.{},
             candidate_bindings: each_generation.CandidateBindings,
             created_handles: std.ArrayListUnmanaged(row_handles.RowHandleId) = .empty,
+            rows_site_id: ?rows_site_store.SiteId = null,
+            rows_site_key: ?each_runtime.SiteKey = null,
+            rows_transition: ?rows_transition.PreparedTransition = null,
+            rows_site_published: bool = false,
+            rows_generation_entry_reserved: bool = false,
             transferred: bool = false,
+
+            fn key(self: *const @This(), index: usize) ?[]const u8 {
+                return self.snapshot.keys.key(index);
+            }
+
+            fn slot(self: *const @This(), index: usize) ?u64 {
+                if (!self.snapshot.complete or index >= self.snapshot.rows.items.len) return null;
+                return self.snapshot.rows.items[index].slot;
+            }
 
             /// Extracts and retains keyed-row inputs while all compiler-owned capabilities are active.
             pub fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: HostNodeEachDesc) CollectionError!@This() {
@@ -1164,7 +1204,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             /// Test seam that faults host-side extraction storage without injecting into Roc callbacks.
             pub fn prepareWithAllocator(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: HostNodeEachDesc, allocator: std.mem.Allocator) CollectionError!@This() {
-                return prepareWithOverlay(engine, ctx, roc_host, &each, allocator, null, &.{});
+                return prepareWithOverlay(engine, ctx, roc_host, &each, allocator, null, &.{}, null);
             }
 
             /// Extracts keyed-row inputs for an each staged in the same
@@ -1174,27 +1214,28 @@ pub fn Engine(comptime Ctx: type) type {
             /// in the committed state table yet, so its capability must come
             /// from the provisional cell.
             pub fn prepareWithProvisionalStates(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: *const HostNodeEachDesc, allocator: std.mem.Allocator, provisional_states: []const HostState) CollectionError!@This() {
-                return prepareWithOverlay(engine, ctx, roc_host, each, allocator, null, provisional_states);
+                return prepareWithOverlay(engine, ctx, roc_host, each, allocator, null, provisional_states, null);
             }
 
-            fn prepareWithOverlay(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: *const HostNodeEachDesc, allocator: std.mem.Allocator, overlay: ?*const signal_records.PreparedCacheUpdates, provisional_states: []const HostState) CollectionError!@This() {
-                const generation = try engine.prepareEachGeneration(ctx, roc_host, each, overlay, provisional_states, allocator);
-                errdefer {
-                    generation.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
-                    allocator.destroy(generation);
-                }
-                const indices = allocator.alloc(usize, generation.item_count) catch return error.OutOfMemory;
+            fn prepareWithOverlay(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: *const HostNodeEachDesc, allocator: std.mem.Allocator, overlay: ?*const signal_records.PreparedCacheUpdates, provisional_states: []const HostState, expected_rows_parent: ?u64) CollectionError!@This() {
+                var prepared_generation = try engine.prepareEachGeneration(ctx, roc_host, each, overlay, provisional_states, expected_rows_parent, allocator);
+                errdefer prepared_generation.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                const generation = prepared_generation.generation;
+                const is_sparse_delta = prepared_generation.delta != null and !prepared_generation.snapshot.complete;
+                const scratch_count: usize = if (is_sparse_delta) 0 else generation.item_count;
+                const indices = allocator.alloc(usize, scratch_count) catch return error.OutOfMemory;
                 errdefer allocator.free(indices);
                 for (indices, 0..) |*index, value| index.* = value;
-                const item_equal = allocator.alloc(bool, generation.item_count) catch return error.OutOfMemory;
+                const item_equal = allocator.alloc(bool, scratch_count) catch return error.OutOfMemory;
                 errdefer allocator.free(item_equal);
                 @memset(item_equal, false);
-                const row_handles_by_index = allocator.alloc(?row_handles.RowHandleId, generation.item_count) catch return error.OutOfMemory;
+                const row_handles_by_index = allocator.alloc(?row_handles.RowHandleId, scratch_count) catch return error.OutOfMemory;
                 errdefer allocator.free(row_handles_by_index);
                 @memset(row_handles_by_index, null);
                 var candidate_bindings = each_generation.CandidateBindings.init(allocator);
                 errdefer candidate_bindings.deinit();
-                candidate_bindings.reserve(generation.item_count) catch |err| return switch (err) {
+                const binding_reserve = if (prepared_generation.delta) |delta| delta.ops.items.len else generation.item_count;
+                candidate_bindings.reserve(binding_reserve) catch |err| return switch (err) {
                     error.OutOfMemory => error.OutOfMemory,
                     error.ResourceLimit => error.ResourceLimit,
                 };
@@ -1204,6 +1245,9 @@ pub fn Engine(comptime Ctx: type) type {
                     .ctx = ctx,
                     .roc_host = roc_host,
                     .generation = generation,
+                    .description = prepared_generation.description,
+                    .snapshot = prepared_generation.snapshot,
+                    .delta = prepared_generation.delta,
                     .keys = indices,
                     .items = indices,
                     .item_equal = item_equal,
@@ -1223,11 +1267,26 @@ pub fn Engine(comptime Ctx: type) type {
             /// Releases a provisional generation unless commit transferred it
             /// into the engine's generation registry.
             pub fn deinit(self: *@This()) void {
+                if (self.rows_generation_entry_reserved) {
+                    if (self.engine.reserved_rows_generation_entries == 0) @panic("Rows generation reservation accounting underflow");
+                    self.engine.reserved_rows_generation_entries -= 1;
+                }
+                if (self.rows_transition) |*transition| transition.deinit();
+                if (self.rows_site_id) |site_id| if (!self.rows_site_published) {
+                    if (self.engine.rows_store) |*store| {
+                        store.destroyEmptySite(site_id) catch |err| switch (err) {
+                            error.SiteNotEmpty => @panic("unpublished Rows transition populated its committed site"),
+                            else => @panic("provisional Rows site became stale"),
+                        };
+                    } else @panic("provisional Rows site lost its store");
+                };
                 if (!self.transferred) {
                     for (self.created_handles.items) |handle| _ = self.engine.row_handle_registry.remove(handle) catch @panic("provisional each row handle was stale");
                     self.generation.deinit(self.allocator, self.ctx, self.roc_host, &self.engine.pending_roc_metrics);
                     self.allocator.destroy(self.generation);
                 }
+                self.snapshot.deinit(self.allocator);
+                if (self.delta) |*delta| delta.deinit(self.allocator);
                 self.allocator.free(self.keys);
                 self.allocator.free(self.item_equal);
                 self.allocator.free(self.row_handles_by_index);
@@ -1269,7 +1328,7 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.scope_claims.abort();
                     plan.scope_claims.deinit();
                 };
-                var inputs = try PreparedEachInputs.prepareWithOverlay(engine, ctx, roc_host, each, allocator, overlay, &.{});
+                var inputs = try PreparedEachInputs.prepareWithOverlay(engine, ctx, roc_host, each, allocator, overlay, &.{}, null);
                 errdefer inputs.deinit();
                 var hooks = PreparedEachRowSyncHooks.initWithScopeClaims(engine, ctx, roc_host, plan.scope_claims);
                 errdefer hooks.deinit();
@@ -1290,11 +1349,55 @@ pub fn Engine(comptime Ctx: type) type {
                     const row_handle = scope_runtime.eachRowHandle(engine.scopes.items, scope_id);
                     inputs.candidate_bindings.removeAssumeCapacity(row_handle) catch return error.InvalidDescriptor;
                 }
+                const rows_key = each_runtime.SiteKey{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
+                const rows_site_id = engine.rows_site_ids.get(rows_key) orelse return error.InvalidDescriptor;
+                const rows_store = engine.rowsStore(allocator);
+                const parent_owner = rows_store.getSiteConst(rows_site_id) catch return error.InvalidDescriptor;
+                const next_owner = rows_site_store.OwnerToken.fromRaw(inputs.generation.rows_generation) catch return error.InvalidDescriptor;
+                const stable_edit_count = std.math.add(usize, rows.next_scope_ids.len, 1) catch return error.ResourceLimit;
+                const stable_edits = allocator.alloc(rows_transition.StableEdit, stable_edit_count) catch return error.OutOfMemory;
+                defer allocator.free(stable_edits);
+                stable_edits[0] = .clear;
+                for (rows.next_scope_ids, 0..) |row_scope_id, row_index| {
+                    const slot = inputs.slot(row_index) orelse return error.InvalidDescriptor;
+                    const key = inputs.key(row_index) orelse return error.InvalidDescriptor;
+                    const row_handle = if (row_scope_id.index() < engine.scopes.items.len and engine.scopes.items[row_scope_id.index()].lifecycle.isActive())
+                        scope_runtime.eachRowHandle(engine.scopes.items, row_scope_id)
+                    else blk: {
+                        for (plan.scope_claims.rows.items) |claimed| if (claimed.scope_id == row_scope_id) switch (claimed.step) {
+                            .each_row => |row_step| break :blk row_step.row_handle,
+                            else => return error.InvalidDescriptor,
+                        };
+                        return error.InvalidDescriptor;
+                    };
+                    stable_edits[row_index + 1] = .{ .insert = .{
+                        .slot = slot,
+                        .before_slot = 0,
+                        .key = key,
+                        .metadata = .{
+                            .item_slot = slot,
+                            .scope_id = row_scope_id.raw(),
+                            .row_handle = row_handle.raw(),
+                        },
+                    } };
+                }
+                inputs.rows_transition = rows_transition.PreparedTransition.prepareStable(allocator, rows_store, rows_site_id, parent_owner.owner_token, next_owner, stable_edits) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    error.ResourceLimit => error.ResourceLimit,
+                    else => error.InvalidDescriptor,
+                };
+                inputs.rows_site_id = rows_site_id;
+                inputs.rows_site_published = true;
                 inputs.candidate_bindings.preflightCommit(&engine.committed_row_bindings) catch |err| return switch (err) {
                     error.OutOfMemory => error.OutOfMemory,
                     error.ResourceLimit => error.ResourceLimit,
                 };
                 engine.each_generations.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
+                const generation_entries_with_reservations = std.math.add(usize, engine.each_generation_ids_by_rows_site.count(), engine.reserved_rows_generation_entries) catch return error.ResourceLimit;
+                const generation_entry_bound = std.math.add(usize, generation_entries_with_reservations, 1) catch return error.ResourceLimit;
+                engine.each_generation_ids_by_rows_site.ensureTotalCapacity(allocator, std.math.cast(u32, generation_entry_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                engine.reserved_rows_generation_entries += 1;
+                inputs.rows_generation_entry_reserved = true;
                 const site_slot_count = std.math.add(usize, site_index, 1) catch return error.ResourceLimit;
                 engine.each_generation_ids_by_site_index.ensureTotalCapacity(allocator, site_slot_count) catch return error.OutOfMemory;
                 const removed_handles = allocator.alloc(row_handles.RowHandleId, rows.removed_scope_ids.len) catch return error.OutOfMemory;
@@ -1316,6 +1419,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.phase.isCommitted()) @panic("prepared active each rows committed twice");
                 if (self.owned_scope_claims != null) self.scope_claims.commit(&self.engine.scopes);
                 const result = self.rows.commit(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, self.inputs.keys, self.inputs.items, &self.hooks);
+                if (self.inputs.rows_transition) |*transition| transition.commit() else @panic("prepared active each lacked Rows transition");
                 const site_index = self.rows.site_index;
                 while (self.engine.each_generation_ids_by_site_index.items.len <= site_index) self.engine.each_generation_ids_by_site_index.appendAssumeCapacity(null);
                 if (self.engine.each_generation_ids_by_site_index.items[site_index]) |old_id| {
@@ -1323,6 +1427,11 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 self.engine.each_generations.putAssumeCapacity(self.inputs.generation.id, self.inputs.generation);
                 self.engine.each_generation_ids_by_site_index.items[site_index] = self.inputs.generation.id;
+                const rows_site_id = self.inputs.rows_site_id orelse @panic("prepared active each lacked stable Rows site");
+                self.engine.each_generation_ids_by_rows_site.putAssumeCapacity(rows_site_id, self.inputs.generation.id);
+                if (!self.inputs.rows_generation_entry_reserved or self.engine.reserved_rows_generation_entries == 0) @panic("prepared active each lacked generation-map reservation");
+                self.engine.reserved_rows_generation_entries -= 1;
+                self.inputs.rows_generation_entry_reserved = false;
                 self.inputs.candidate_bindings.commit(&self.engine.committed_row_bindings);
                 self.inputs.transfer();
                 self.hooks.base.recordRows(result.rows_reused, result.rows_created, result.rows_removed);
@@ -2203,8 +2312,9 @@ pub fn Engine(comptime Ctx: type) type {
             each: *const HostNodeEachDesc,
             overlay: ?*const signal_records.PreparedCacheUpdates,
             provisional_states: []const HostState,
+            expected_rows_parent: ?u64,
             allocator: std.mem.Allocator,
-        ) CollectionError!*each_generation.Generation {
+        ) CollectionError!PreparedEachGeneration {
             const items_slot = if (overlay) |prepared| prepared.readSlot(@constCast(&each.cached_value)) else &each.cached_value;
             const collection = self.cloneCachedSignalValue(ctx, items_slot);
             const items_cap = self.hostSignalRecordCapabilityWithProvisionalStates(ctx, each.items.record, provisional_states);
@@ -2223,21 +2333,44 @@ pub fn Engine(comptime Ctx: type) type {
                 .snapshot => |value| .{ .generation = value.generation, .item_count = value.item_count, .key_bytes = value.snapshot_key_bytes },
                 .delta => |value| .{ .generation = value.generation, .item_count = value.item_count, .key_bytes = value.snapshot_key_bytes },
             };
+            const use_direct_delta = switch (description) {
+                .snapshot => false,
+                .delta => |value| if (expected_rows_parent) |expected| value.parent == expected else false,
+            };
+            var delta: each_collection.DeltaStorage = .{};
+            var has_delta = false;
+            errdefer if (has_delta) delta.deinit(allocator);
+            if (use_direct_delta) {
+                const delta_shape = description.delta;
+                var delta_sink = delta.prepare(allocator, delta_shape.op_count, delta_shape.delta_key_count, delta_shape.delta_key_bytes) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    error.ResourceLimit => error.ResourceLimit,
+                    else => error.InvalidDescriptor,
+                };
+                has_delta = true;
+                const delta_token = self.active_each_sinks.activateDelta(&delta_sink) catch return error.ResourceLimit;
+                errdefer self.active_each_sinks.abort(delta_token) catch {};
+                const copied_delta = retained_values.callRowsCopyDelta(Ctx, ctx, roc_host, each.ops.rows_capability, each.ops.copy_delta, collection, @intFromEnum(delta_token));
+                if (copied_delta != @intFromEnum(delta_token)) return error.InvalidDescriptor;
+                self.active_each_sinks.finishDelta(delta_token) catch return error.InvalidDescriptor;
+            }
 
-            // Snapshot copying is the exact counted fallback and is valid for
-            // fresh sites and stale sibling generations. Direct-parent deltas
-            // are selected by the site reconciliation path before this helper.
             var snapshot: each_collection.SnapshotStorage = .{};
             errdefer snapshot.deinit(allocator);
-            var sink = snapshot.prepare(allocator, shape.item_count, shape.key_bytes) catch |err| return switch (err) {
-                error.OutOfMemory => error.OutOfMemory,
-                else => error.ResourceLimit,
-            };
-            const snapshot_token = self.active_each_sinks.activateSnapshot(&sink) catch return error.ResourceLimit;
-            errdefer self.active_each_sinks.abort(snapshot_token) catch {};
-            const copied = retained_values.callRowsCopySnapshot(Ctx, ctx, roc_host, each.ops.rows_capability, each.ops.copy_snapshot, collection, @intFromEnum(snapshot_token));
-            if (copied != @intFromEnum(snapshot_token)) return error.InvalidDescriptor;
-            self.active_each_sinks.finishSnapshot(snapshot_token) catch return error.InvalidDescriptor;
+            if (!use_direct_delta) {
+                // A fresh site, an explicit snapshot generation, or a stale
+                // sibling delta is authenticated through the exact counted
+                // snapshot fallback. We never retain both representations.
+                var sink = snapshot.prepare(allocator, shape.item_count, shape.key_bytes) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    else => error.ResourceLimit,
+                };
+                const snapshot_token = self.active_each_sinks.activateSnapshot(&sink) catch return error.ResourceLimit;
+                errdefer self.active_each_sinks.abort(snapshot_token) catch {};
+                const copied = retained_values.callRowsCopySnapshot(Ctx, ctx, roc_host, each.ops.rows_capability, each.ops.copy_snapshot, collection, @intFromEnum(snapshot_token));
+                if (copied != @intFromEnum(snapshot_token)) return error.InvalidDescriptor;
+                self.active_each_sinks.finishSnapshot(snapshot_token) catch return error.InvalidDescriptor;
+            }
 
             // Engine generation identity is site-publication identity, not the
             // Roc generation callable address: the same immutable Rows value
@@ -2245,9 +2378,17 @@ pub fn Engine(comptime Ctx: type) type {
             const id = self.each_generation_clock.mint() catch return error.ResourceLimit;
             const generation = allocator.create(each_generation.Generation) catch return error.OutOfMemory;
             errdefer allocator.destroy(generation);
-            generation.* = each_generation.Generation.initOwned(id, shape.generation, collection, each.ops, &snapshot, shape.item_count, &self.pending_roc_metrics) catch return error.InvalidDescriptor;
+            generation.* = each_generation.Generation.initOwned(id, shape.generation, collection, each.ops, shape.item_count, &self.pending_roc_metrics) catch return error.InvalidDescriptor;
             collection_owned = false;
-            return generation;
+            const result = PreparedEachGeneration{
+                .generation = generation,
+                .description = description,
+                .snapshot = snapshot,
+                .delta = if (has_delta) delta else null,
+            };
+            snapshot = .{};
+            has_delta = false;
+            return result;
         }
 
         /// Performs deinit scratch inside the shared engine while preserving transaction and changed-set invariants.
@@ -2780,6 +2921,15 @@ pub fn Engine(comptime Ctx: type) type {
 
         fn clearEachRowSites(self: *Self, allocator: std.mem.Allocator) void {
             each_runtime.clearSites(allocator, &self.each_row_sites, &self.each_row_site_indexes, &self.each_row_memberships_by_scope_id);
+            if (self.rows_store) |*store| store.deinit();
+            self.rows_store = null;
+            self.rows_site_ids.deinit(allocator);
+            self.rows_site_ids = .empty;
+        }
+
+        fn rowsStore(self: *Self, allocator: std.mem.Allocator) *rows_site_store.Store {
+            if (self.rows_store == null) self.rows_store = rows_site_store.Store.init(allocator);
+            return &self.rows_store.?;
         }
 
         fn deinitEachGenerationOwnership(self: *Self, allocator: std.mem.Allocator, ctx: Ctx.Handle, roc_host: *abi.RocHost) void {
@@ -2799,6 +2949,8 @@ pub fn Engine(comptime Ctx: type) type {
             self.each_generations = .{};
             self.each_generation_ids_by_site_index.deinit(allocator);
             self.each_generation_ids_by_site_index = .empty;
+            self.each_generation_ids_by_rows_site.deinit(allocator);
+            self.each_generation_ids_by_rows_site = .empty;
         }
 
         fn ensureEachRowSiteIndex(self: *Self, allocator: std.mem.Allocator, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal) usize {
@@ -3864,8 +4016,9 @@ pub fn Engine(comptime Ctx: type) type {
         fn buildEachRowElem(self: *Self, roc_host: *abi.RocHost, ops: HostEachOps, row_scope_id: ids.ScopeId) abi.Elem {
             const handle = scope_runtime.eachRowHandle(self.scopes.items, row_scope_id);
             const binding = self.committed_row_bindings.get(handle) orelse @panic("each row had no committed generation binding");
-            const generation = self.each_generations.get(binding.generation_id) orelse @panic("each row generation was not retained");
-            const key = generation.key(binding.item_index) orelse @panic("each row key index exceeded its generation");
+            _ = self.each_generations.get(binding.generation_id) orelse @panic("each row generation was not retained");
+            const location = self.rows_store.?.findScope(row_scope_id.raw()) orelse @panic("each row scope was absent from Rows store");
+            const key = (self.rows_store.?.getRowConst(location.site_id, location.row_id) catch @panic("each row became stale")).key;
             return retained_values.callEachRowBuilder(roc_host, ops.row, abi.RocStr.fromSlice(key, roc_host), handle.raw());
         }
 
@@ -4723,6 +4876,38 @@ pub fn Engine(comptime Ctx: type) type {
                     try self.engine.collectActiveEachRowElemDescriptorsWith(*Collection, self, self.host_ctx, roc_host, self.stream, prepared_each.desc, row.elem, row_scope_id, parent_elem_id, &row_ordinal, &row_dom_ordinal, binder_stack, true, dirty_source_node_ids);
                 }
 
+                const rows_key = each_runtime.SiteKey{ .parent_scope_id = scope_id, .site_ordinal = site_ordinal };
+                const rows_site_bound = std.math.add(usize, self.engine.rows_site_ids.count(), self.candidate_generation_count) catch return error.ResourceLimit;
+                self.engine.rows_site_ids.ensureTotalCapacity(allocator, std.math.cast(u32, rows_site_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                const stable_generation_bound = std.math.add(usize, self.engine.each_generation_ids_by_rows_site.count(), self.candidate_generation_count) catch return error.ResourceLimit;
+                self.engine.each_generation_ids_by_rows_site.ensureTotalCapacity(allocator, std.math.cast(u32, stable_generation_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                const owner = rows_site_store.OwnerToken.fromRaw(evaluated.inputs.generation.rows_generation) catch return error.InvalidDescriptor;
+                const rows_store = self.engine.rowsStore(allocator);
+                const rows_site_id = rows_store.createSite(owner) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    error.ResourceLimit => error.ResourceLimit,
+                    else => error.InvalidDescriptor,
+                };
+                evaluated.inputs.rows_site_id = rows_site_id;
+                evaluated.inputs.rows_site_key = rows_key;
+                const stable_edits = allocator.alloc(rows_transition.StableEdit, evaluated.rows.len) catch return error.OutOfMemory;
+                defer allocator.free(stable_edits);
+                for (evaluated.rows, prepared_site.scope_ids.items, 0..) |row, row_scope_id, row_index| {
+                    const slot = evaluated.inputs.slot(row_index) orelse return error.InvalidDescriptor;
+                    const key = evaluated.inputs.key(row_index) orelse return error.InvalidDescriptor;
+                    stable_edits[row_index] = .{ .insert = .{
+                        .slot = slot,
+                        .before_slot = 0,
+                        .key = key,
+                        .metadata = .{ .item_slot = slot, .scope_id = row_scope_id.raw(), .row_handle = row.row_handle.raw() },
+                    } };
+                }
+                evaluated.inputs.rows_transition = rows_transition.PreparedTransition.prepareInitial(allocator, rows_store, rows_site_id, owner, stable_edits) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    error.ResourceLimit => error.ResourceLimit,
+                    else => error.InvalidDescriptor,
+                };
+
                 self.prepared_state_sites.appendAssumeCapacity(site);
                 self.prepared_eaches.appendAssumeCapacity(prepared_each);
                 self.prepared_each_sites.appendAssumeCapacity(prepared_site);
@@ -4832,7 +5017,7 @@ pub fn Engine(comptime Ctx: type) type {
                 for (rows.next_scope_ids, rows.scope_created, rows.row_items_changed, 0..) |row_scope_id, created, changed, index| {
                     recollected[index] = !created and (changed or engine_ptr.scopeSubtreeHasDirtyStructuralSource(&engine_ptr.active_stream, row_scope_id.raw(), dirty_source_node_ids));
                     if (!created and !recollected[index]) continue;
-                    const key = inputs.generation.key(index) orelse return error.InvalidDescriptor;
+                    const key = inputs.key(index) orelse return error.InvalidDescriptor;
                     const row_handle = if (created) for (self.prepared_each_row_scopes.items) |prepared_scope| {
                         if (prepared_scope.scope_id == row_scope_id) break switch (prepared_scope.step) {
                             .each_row => |row| row.row_handle,
@@ -5391,6 +5576,13 @@ pub fn Engine(comptime Ctx: type) type {
                         const site_index = self.engine.each_row_sites.items.len;
                         self.engine.each_row_site_indexes.putAssumeCapacity(site.key, site_index);
                         self.engine.each_row_sites.appendAssumeCapacity(site);
+                        const rows_key = inputs.rows_site_key orelse @panic("prepared initial each lacked Rows site key");
+                        const rows_site_id = inputs.rows_site_id orelse @panic("prepared initial each lacked Rows site identity");
+                        if (self.engine.rows_site_ids.contains(rows_key)) @panic("prepared initial Rows site collided with a live site");
+                        if (inputs.rows_transition) |*transition| transition.commit() else @panic("prepared initial each lacked Rows transition");
+                        self.engine.rows_site_ids.putAssumeCapacity(rows_key, rows_site_id);
+                        self.engine.each_generation_ids_by_rows_site.putAssumeCapacity(rows_site_id, inputs.generation.id);
+                        inputs.rows_site_published = true;
                         self.engine.each_generations.putAssumeCapacity(inputs.generation.id, inputs.generation);
                         self.engine.each_generation_ids_by_site_index.appendAssumeCapacity(inputs.generation.id);
                         inputs.candidate_bindings.commit(&self.engine.committed_row_bindings);
@@ -5648,7 +5840,7 @@ pub fn Engine(comptime Ctx: type) type {
                     _ = self.base.engine.row_handle_registry.remove(row_handle) catch unreachable;
                     return error.OutOfMemory;
                 };
-                inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_index = input_index }) catch @panic("invalid duplicate row binding");
+                inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(input_index) orelse @panic("missing candidate Rows slot") }) catch @panic("invalid duplicate row binding");
                 inputs.row_handles_by_index[input_index] = row_handle;
                 const scope_id = self.collection.reserveEachRowScopeGeneration(parent_scope_id, site_ordinal, key_hash, row_handle) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
@@ -5680,9 +5872,9 @@ pub fn Engine(comptime Ctx: type) type {
                     if (old_generation) |existing| {
                         if (existing != generation) return error.ResourceLimit;
                     } else old_generation = generation;
-                    pairs.appendAssumeCapacity(generation.slot(binding.item_index) orelse return error.ResourceLimit);
-                    pairs.appendAssumeCapacity(inputs.generation.slot(next_index) orelse return error.ResourceLimit);
-                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_index = next_index }) catch return error.ResourceLimit;
+                    pairs.appendAssumeCapacity(binding.item_slot);
+                    pairs.appendAssumeCapacity(inputs.slot(next_index) orelse return error.ResourceLimit);
+                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(next_index) orelse return error.ResourceLimit }) catch return error.ResourceLimit;
                     inputs.row_handles_by_index[next_index] = row_handle;
                 }
                 const old = old_generation orelse return;
@@ -5930,9 +6122,9 @@ pub fn Engine(comptime Ctx: type) type {
 
                     const row_handle = engine.row_handle_registry.insert(allocator, {}) catch return error.ResourceLimit;
                     inputs.created_handles.append(allocator, row_handle) catch return error.OutOfMemory;
-                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_index = item }) catch return error.InvalidDescriptor;
+                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(item) orelse return error.InvalidDescriptor }) catch return error.InvalidDescriptor;
                     inputs.row_handles_by_index[item] = row_handle;
-                    const key_bytes = inputs.generation.key(key) orelse return error.InvalidDescriptor;
+                    const key_bytes = inputs.key(key) orelse return error.InvalidDescriptor;
                     const elem = retained_values.callEachRowBuilder(roc_host, each.ops.row, abi.RocStr.fromSlice(key_bytes, roc_host), row_handle.raw());
                     rows[index] = .{ .elem = elem, .counts = .{}, .key_hash = key_hash, .row_handle = row_handle };
                     evaluated += 1;
@@ -6367,7 +6559,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer for (plan.row_elems[0..evaluated]) |*entry| entry.elem.decref(roc_host);
                 for (rows.scope_created, 0..) |created, row_index| {
                     if (!created) continue;
-                    const key = inputs.generation.key(row_index) orelse return error.InvalidDescriptor;
+                    const key = inputs.key(row_index) orelse return error.InvalidDescriptor;
                     const row_handle = inputs.row_handles_by_index[row_index] orelse return error.InvalidDescriptor;
                     const elem = retained_values.callEachRowBuilder(roc_host, each.ops.row, abi.RocStr.fromSlice(key, roc_host), row_handle.raw());
                     plan.row_elems[evaluated] = .{ .row_index = row_index, .elem = elem };
@@ -10685,22 +10877,21 @@ pub fn Engine(comptime Ctx: type) type {
         /// Clones only changed surviving row items into ordinary source roots.
         /// Lookup and work are proportional to `row_handles_changed`; rows whose
         /// subtree never reads `Ui.Row` have no active source and need no clone.
-        fn prepareChangedRowSourceUpdates(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, generation: *each_generation.Generation, row_handles_changed: []const row_handles.RowHandleId, item_indexes: []const usize) CollectionError!signal_records.OwnedSourceUpdates {
-            if (row_handles_changed.len != item_indexes.len) return error.InvalidDescriptor;
+        fn prepareChangedRowSourceUpdates(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, generation: *each_generation.Generation, row_handles_changed: []const row_handles.RowHandleId, item_slots: []const u64) CollectionError!signal_records.OwnedSourceUpdates {
+            if (row_handles_changed.len != item_slots.len) return error.InvalidDescriptor;
             var expected: usize = 0;
             for (row_handles_changed) |handle| if (self.activeRowSourceRecord(handle) != null) {
                 expected = std.math.add(usize, expected, 1) catch return error.ResourceLimit;
             };
             var owned = signal_records.OwnedSourceUpdates.init(Ctx.allocator(ctx), expected) catch return error.OutOfMemory;
             errdefer owned.deinit(ctx, roc_host, &self.pending_roc_metrics);
-            for (row_handles_changed, item_indexes) |handle, item_index| {
+            for (row_handles_changed, item_slots) |handle, item_slot| {
                 const record = self.activeRowSourceRecord(handle) orelse continue;
                 const row = switch (record.payload) {
                     .row_source => |payload| payload,
                     else => unreachable,
                 };
                 assertHostValueCapabilitiesMatch(row.cap, generation.ops.item_capability, "changed row source capability did not match its candidate generation");
-                const index = generation.slot(item_index) orelse return error.InvalidDescriptor;
                 const value = retained_values.callRowsCloneItem(
                     Ctx,
                     ctx,
@@ -10709,7 +10900,7 @@ pub fn Engine(comptime Ctx: type) type {
                     generation.ops.item_capability,
                     generation.ops.clone_item,
                     generation.collection.value,
-                    index,
+                    item_slot,
                 );
                 owned.adoptAssumeCapacity(record, value, generation.ops.item_capability, &self.pending_roc_metrics) catch {
                     callHostValueToUnitWithCapability(ctx, roc_host, generation.ops.item_capability, hv.hostValueCapabilityDrop(generation.ops.item_capability), value);
@@ -10723,7 +10914,6 @@ pub fn Engine(comptime Ctx: type) type {
             const binding = self.resolveEachRowBinding(payload.row_handle) orelse @panic("row source resolved after its row scope was retired");
             const generation = self.eachGenerationForBinding(binding) orelse @panic("row source generation was not retained");
             assertHostValueCapabilitiesMatch(payload.cap, generation.ops.item_capability, "row source capability did not match its collection generation");
-            const index = generation.slot(binding.item_index) orelse @panic("row source item index exceeded the Rows snapshot");
             return retained_values.callRowsCloneItem(
                 Ctx,
                 ctx,
@@ -10732,7 +10922,7 @@ pub fn Engine(comptime Ctx: type) type {
                 generation.ops.item_capability,
                 generation.ops.clone_item,
                 generation.collection.value,
-                index,
+                binding.item_slot,
             );
         }
 
@@ -13788,21 +13978,21 @@ pub fn Engine(comptime Ctx: type) type {
                 const allocator = Ctx.allocator(self.host_ctx);
                 var handles = std.ArrayListUnmanaged(row_handles.RowHandleId).empty;
                 defer handles.deinit(allocator);
-                var indexes = std.ArrayListUnmanaged(usize).empty;
-                defer indexes.deinit(allocator);
+                var slots = std.ArrayListUnmanaged(u64).empty;
+                defer slots.deinit(allocator);
                 try handles.ensureTotalCapacity(allocator, rows.rows.next_scope_ids.len);
-                try indexes.ensureTotalCapacity(allocator, rows.rows.next_scope_ids.len);
+                try slots.ensureTotalCapacity(allocator, rows.rows.next_scope_ids.len);
                 for (rows.rows.next_scope_ids, rows.rows.scope_created, rows.rows.row_items_changed, 0..) |scope_id, created, changed, index| {
                     if (created or !changed) continue;
                     const handle = scope_runtime.eachRowHandle(self.engine.scopes.items, scope_id);
                     // Rows without `Row.signal` have no graph root to schedule.
                     if (self.engine.activeRowSourceRecord(handle) == null) continue;
                     handles.appendAssumeCapacity(handle);
-                    indexes.appendAssumeCapacity(index);
+                    slots.appendAssumeCapacity(rows.inputs.slot(index) orelse return error.InvalidDescriptor);
                 }
                 if (handles.items.len == 0) return allocator.alloc(HostDirtyStructuralSignal, 0) catch return error.OutOfMemory;
 
-                var owned = try self.engine.prepareChangedRowSourceUpdates(self.host_ctx, self.roc_host, rows.inputs.generation, handles.items, indexes.items);
+                var owned = try self.engine.prepareChangedRowSourceUpdates(self.host_ctx, self.roc_host, rows.inputs.generation, handles.items, slots.items);
                 defer owned.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 var root_ids = std.ArrayListUnmanaged(u64).empty;
                 defer root_ids.deinit(allocator);
