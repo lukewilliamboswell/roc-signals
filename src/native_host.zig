@@ -6322,8 +6322,8 @@ test "signals host evaluates shared dirty record once per batch" {
     const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
     try std.testing.expectEqual(state_id.index() + 1, host.engine.active_source_signal_routes.items.len);
     const expected_source_routes = [_]u64{source_record_id};
-    try std.testing.expectEqualSlices(u64, &expected_source_routes, host.engine.active_source_signal_routes.items[state_id.index()].items);
-    try std.testing.expectEqual(@as(usize, 2), host.engine.active_text_signal_routes.items[@intCast(shared_record_id)].items.len);
+    try std.testing.expectEqualSlices(u64, &expected_source_routes, host.engine.active_source_signal_routes.items[state_id.index()].slice());
+    try std.testing.expectEqual(@as(usize, 2), host.engine.active_text_signal_routes.items[@intCast(shared_record_id)].len());
 
     const state_index = host.engine.stateIndexByNodeId(state_id.raw()) orelse unreachable;
     testDropHostValue(&roc_host, host.engine.states.items[state_index].activePayload().cell.value);

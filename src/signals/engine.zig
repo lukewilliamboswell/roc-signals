@@ -13046,13 +13046,13 @@ pub fn Engine(comptime Ctx: type) type {
             var custom_route_upper: usize = 0;
             for (changed_record_ids) |record_id| {
                 const index = std.math.cast(usize, record_id) orelse return error.ResourceLimit;
-                if (index < self.active_text_signal_routes.items.len) custom_route_upper = std.math.add(usize, custom_route_upper, self.active_text_signal_routes.items[index].items.len) catch return error.ResourceLimit;
-                if (index < self.active_bool_signal_routes.items.len) custom_route_upper = std.math.add(usize, custom_route_upper, self.active_bool_signal_routes.items[index].items.len) catch return error.ResourceLimit;
+                if (index < self.active_text_signal_routes.items.len) custom_route_upper = std.math.add(usize, custom_route_upper, self.active_text_signal_routes.items[index].len()) catch return error.ResourceLimit;
+                if (index < self.active_bool_signal_routes.items.len) custom_route_upper = std.math.add(usize, custom_route_upper, self.active_bool_signal_routes.items[index].len()) catch return error.ResourceLimit;
             }
             custom_elem_ids.ensureTotalCapacity(allocator, custom_route_upper) catch return error.OutOfMemory;
             for (changed_record_ids) |record_id| {
                 const index = std.math.cast(usize, record_id) orelse return error.ResourceLimit;
-                if (index < self.active_text_signal_routes.items.len) for (self.active_text_signal_routes.items[index].items) |route| switch (route.kind) {
+                if (index < self.active_text_signal_routes.items.len) for (self.active_text_signal_routes.items[index].slice()) |route| switch (route.kind) {
                     .text_node, .text_attr => text_count = std.math.add(usize, text_count, 1) catch return error.ResourceLimit,
                     .custom_text_attr => {
                         if (route.index >= self.active_stream.signal_custom_text_attrs.items.len) return error.ResourceLimit;
@@ -13065,7 +13065,7 @@ pub fn Engine(comptime Ctx: type) type {
                         if (!u64SliceContains(custom_elem_ids.items, elem_id.raw())) custom_elem_ids.appendAssumeCapacity(elem_id.raw());
                     },
                 };
-                if (index < self.active_bool_signal_routes.items.len) for (self.active_bool_signal_routes.items[index].items) |route| switch (route.kind) {
+                if (index < self.active_bool_signal_routes.items.len) for (self.active_bool_signal_routes.items[index].slice()) |route| switch (route.kind) {
                     .bool_attr => bool_count = std.math.add(usize, bool_count, 1) catch return error.ResourceLimit,
                     .custom_bool_attr => {
                         if (route.index >= self.active_stream.signal_custom_bool_attrs.items.len) return error.ResourceLimit;
@@ -13096,7 +13096,7 @@ pub fn Engine(comptime Ctx: type) type {
             errdefer splice.deinit();
             for (changed_record_ids) |record_id| {
                 const index: usize = @intCast(record_id);
-                if (index < self.active_text_signal_routes.items.len) for (self.active_text_signal_routes.items[index].items) |route| {
+                if (index < self.active_text_signal_routes.items.len) for (self.active_text_signal_routes.items[index].slice()) |route| {
                     const desc_cache: *HostSignalCacheSlot, const binding: *HostSignalBinding, const read: HostTextRead, const elem_id: u64, const field: ?RenderTextField = switch (route.kind) {
                         .text_node => blk: {
                             const desc = &self.active_stream.signal_text_nodes.items[route.index];
@@ -13135,7 +13135,7 @@ pub fn Engine(comptime Ctx: type) type {
                         splice.addTextField(&self.render_cache, ids.ElemId.fromRaw(elem_id), text_field, text.asSlice()) catch |err| return renderSpliceError(err);
                     }
                 };
-                if (index < self.active_bool_signal_routes.items.len) for (self.active_bool_signal_routes.items[index].items) |route| {
+                if (index < self.active_bool_signal_routes.items.len) for (self.active_bool_signal_routes.items[index].slice()) |route| {
                     const desc_cache: *HostSignalCacheSlot, const binding: *HostSignalBinding, const read: HostBoolRead, const elem_id: u64, const field: ?RenderBoolField = switch (route.kind) {
                         .bool_attr => blk: {
                             const desc = &self.active_stream.signal_bool_attrs.items[route.index];
@@ -13174,7 +13174,7 @@ pub fn Engine(comptime Ctx: type) type {
             var route_count: usize = 0;
             for (changed_record_ids) |record_id| {
                 const index = std.math.cast(usize, record_id) orelse return error.ResourceLimit;
-                if (index < self.active_structural_signal_routes.items.len) route_count = std.math.add(usize, route_count, self.active_structural_signal_routes.items[index].items.len) catch return error.ResourceLimit;
+                if (index < self.active_structural_signal_routes.items.len) route_count = std.math.add(usize, route_count, self.active_structural_signal_routes.items[index].len()) catch return error.ResourceLimit;
             }
             var changes = std.ArrayListUnmanaged(HostDirtyStructuralSignal).empty;
             errdefer changes.deinit(allocator);
@@ -13183,7 +13183,7 @@ pub fn Engine(comptime Ctx: type) type {
             for (changed_record_ids) |record_id| {
                 const index: usize = @intCast(record_id);
                 if (index >= self.active_structural_signal_routes.items.len) continue;
-                for (self.active_structural_signal_routes.items[index].items) |route| switch (route.kind) {
+                for (self.active_structural_signal_routes.items[index].slice()) |route| switch (route.kind) {
                     .when => {
                         const desc = &self.active_stream.whens.items[route.index];
                         const site = self.activeScopeSiteByNodeId(desc.node_id.raw(), .when) orelse return error.InvalidDescriptor;
@@ -13238,14 +13238,14 @@ pub fn Engine(comptime Ctx: type) type {
             var expected: usize = 0;
             for (changed_record_ids) |record_id| {
                 const index = std.math.cast(usize, record_id) orelse return error.ResourceLimit;
-                if (index < self.active_change_signal_routes.items.len) expected = std.math.add(usize, expected, self.active_change_signal_routes.items[index].items.len) catch return error.ResourceLimit;
+                if (index < self.active_change_signal_routes.items.len) expected = std.math.add(usize, expected, self.active_change_signal_routes.items[index].len()) catch return error.ResourceLimit;
             }
             const total_expected = std.math.add(usize, pending.items.len, expected) catch return error.ResourceLimit;
             pending.ensureTotalCapacity(allocator, total_expected) catch return error.OutOfMemory;
             for (changed_record_ids) |record_id| {
                 const index: usize = @intCast(record_id);
                 if (index >= self.active_change_signal_routes.items.len) continue;
-                for (self.active_change_signal_routes.items[index].items) |route| {
+                for (self.active_change_signal_routes.items[index].slice()) |route| {
                     const desc = &self.active_stream.on_changes.items[route.index];
                     const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, desc.signal.record, dirty_source_node_ids, dirty_generation);
                     const cap = self.hostSignalBindingCapability(ctx, &desc.signal);
@@ -13276,7 +13276,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const route_index: usize = @intCast(record_id);
                 if (route_index >= self.active_structural_signal_routes.items.len) continue;
 
-                for (self.active_structural_signal_routes.items[route_index].items) |route| {
+                for (self.active_structural_signal_routes.items[route_index].slice()) |route| {
                     switch (route.kind) {
                         .when => {
                             const desc = &self.active_stream.whens.items[route.index];
@@ -15395,21 +15395,21 @@ pub fn Engine(comptime Ctx: type) type {
                     const record = self.engine.active_signal_graph.items[@intCast(record_id)].record;
                     self.caches.forgetEvaluation(record, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                     const route_index: usize = @intCast(record_id);
-                    if (route_index < self.engine.active_text_signal_routes.items.len) for (self.engine.active_text_signal_routes.items[route_index].items) |route| switch (route.kind) {
+                    if (route_index < self.engine.active_text_signal_routes.items.len) for (self.engine.active_text_signal_routes.items[route_index].slice()) |route| switch (route.kind) {
                         .text_node => self.caches.forgetCacheSlot(&self.engine.active_stream.signal_text_nodes.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
                         .text_attr => self.caches.forgetCacheSlot(&self.engine.active_stream.signal_text_attrs.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
                         .custom_text_attr => self.caches.forgetCacheSlot(&self.engine.active_stream.signal_custom_text_attrs.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
                         .custom_text_optional_attr => self.caches.forgetCacheSlot(&self.engine.active_stream.signal_optional_custom_text_attrs.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
                     };
-                    if (route_index < self.engine.active_bool_signal_routes.items.len) for (self.engine.active_bool_signal_routes.items[route_index].items) |route| switch (route.kind) {
+                    if (route_index < self.engine.active_bool_signal_routes.items.len) for (self.engine.active_bool_signal_routes.items[route_index].slice()) |route| switch (route.kind) {
                         .bool_attr => self.caches.forgetCacheSlot(&self.engine.active_stream.signal_bool_attrs.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
                         .custom_bool_attr => self.caches.forgetCacheSlot(&self.engine.active_stream.signal_custom_bool_attrs.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
                     };
-                    if (route_index < self.engine.active_structural_signal_routes.items.len) for (self.engine.active_structural_signal_routes.items[route_index].items) |route| switch (route.kind) {
+                    if (route_index < self.engine.active_structural_signal_routes.items.len) for (self.engine.active_structural_signal_routes.items[route_index].slice()) |route| switch (route.kind) {
                         .when => self.caches.forgetCacheSlot(&self.engine.active_stream.whens.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
                         .each => self.caches.forgetCacheSlot(&self.engine.active_stream.eaches.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
                     };
-                    if (route_index < self.engine.active_change_signal_routes.items.len) for (self.engine.active_change_signal_routes.items[route_index].items) |route| self.caches.forgetCacheSlot(&self.engine.active_stream.on_changes.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                    if (route_index < self.engine.active_change_signal_routes.items.len) for (self.engine.active_change_signal_routes.items[route_index].slice()) |route| self.caches.forgetCacheSlot(&self.engine.active_stream.on_changes.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 }
                 for (owned.entries.items) |entry| self.caches.forgetEvaluation(entry.record, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 root_ids.clearRetainingCapacity();
@@ -15602,10 +15602,10 @@ pub fn Engine(comptime Ctx: type) type {
                 if (owned.entries.items.len == 0 and state_update == null) return null;
                 const generation = std.math.add(u64, engine.dirty_signal_generation, 1) catch return error.ResourceLimit;
                 var expected = engine.active_signal_graph.items.len;
-                for (engine.active_text_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.items.len) catch return error.ResourceLimit;
-                for (engine.active_bool_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.items.len) catch return error.ResourceLimit;
-                for (engine.active_structural_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.items.len) catch return error.ResourceLimit;
-                for (engine.active_change_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.items.len) catch return error.ResourceLimit;
+                for (engine.active_text_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.len()) catch return error.ResourceLimit;
+                for (engine.active_bool_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.len()) catch return error.ResourceLimit;
+                for (engine.active_structural_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.len()) catch return error.ResourceLimit;
+                for (engine.active_change_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.len()) catch return error.ResourceLimit;
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
                 var caches = signal_records.PreparedCacheUpdates.init(allocator, expected) catch return error.OutOfMemory;
@@ -16242,7 +16242,7 @@ pub fn Engine(comptime Ctx: type) type {
             for (changed_record_ids) |record_id| {
                 const route_index: usize = @intCast(record_id);
                 if (route_index < self.active_text_signal_routes.items.len) {
-                    for (self.active_text_signal_routes.items[route_index].items) |route| {
+                    for (self.active_text_signal_routes.items[route_index].slice()) |route| {
                         switch (route.kind) {
                             .text_node => {
                                 const desc = &self.active_stream.signal_text_nodes.items[route.index];
@@ -16273,7 +16273,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
 
                 if (route_index < self.active_bool_signal_routes.items.len) {
-                    for (self.active_bool_signal_routes.items[route_index].items) |route| {
+                    for (self.active_bool_signal_routes.items[route_index].slice()) |route| {
                         switch (route.kind) {
                             .bool_attr => {
                                 const desc = &self.active_stream.signal_bool_attrs.items[route.index];
@@ -16292,7 +16292,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
 
                 if (route_index < self.active_change_signal_routes.items.len) {
-                    for (self.active_change_signal_routes.items[route_index].items) |route| {
+                    for (self.active_change_signal_routes.items[route_index].slice()) |route| {
                         const desc = &self.active_stream.on_changes.items[route.index];
                         if (self.evalDirtyOnChangeCommand(ctx, roc_host, desc, dirty_source_node_ids, dirty_generation)) |pending| {
                             pending_on_change_commands.append(allocator, pending) catch @panic("out of memory");
@@ -18909,20 +18909,20 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(replacement_record_refs_before_graph + 1, replacement_signal_record.ref_count);
                 try std.testing.expectEqual(@as(u64, 0), engine.active_signal_graph.items[@intCast(planned_signal_record_id)].rank);
                 try std.testing.expectEqualSlices(u64, &.{}, engine.active_signal_graph.items[@intCast(planned_signal_record_id)].dependents);
-                const replacement_source_route = engine.active_source_signal_routes.items[replacement_state_id.index()].items;
+                const replacement_source_route = engine.active_source_signal_routes.items[replacement_state_id.index()].slice();
                 try std.testing.expectEqual(@as(usize, 7), replacement_source_route.len);
                 const expected_source_records = [_]u64{ planned_text_node_record_id, planned_text_attr_record_id, planned_signal_record_id, planned_custom_text_record_id, planned_optional_text_record_id, planned_custom_bool_record_id, planned_change_record_id };
                 for (&expected_source_records) |record_id| {
                     try std.testing.expect(std.mem.indexOfScalar(u64, replacement_source_route, record_id) != null);
                 }
                 for (replacement_source_route) |record_id| try std.testing.expect(record_id < engine.active_signal_graph.items.len);
-                try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_text_node_record_id)].items.len);
-                try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_text_attr_record_id)].items.len);
-                try std.testing.expectEqual(@as(usize, 1), engine.active_bool_signal_routes.items[@intCast(planned_signal_record_id)].items.len);
-                try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_custom_text_record_id)].items.len);
-                try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_optional_text_record_id)].items.len);
-                try std.testing.expectEqual(@as(usize, 1), engine.active_bool_signal_routes.items[@intCast(planned_custom_bool_record_id)].items.len);
-                try std.testing.expectEqual(@as(usize, 1), engine.active_change_signal_routes.items[@intCast(planned_change_record_id)].items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_text_node_record_id)].len());
+                try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_text_attr_record_id)].len());
+                try std.testing.expectEqual(@as(usize, 1), engine.active_bool_signal_routes.items[@intCast(planned_signal_record_id)].len());
+                try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_custom_text_record_id)].len());
+                try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_optional_text_record_id)].len());
+                try std.testing.expectEqual(@as(usize, 1), engine.active_bool_signal_routes.items[@intCast(planned_custom_bool_record_id)].len());
+                try std.testing.expectEqual(@as(usize, 1), engine.active_change_signal_routes.items[@intCast(planned_change_record_id)].len());
                 try std.testing.expectEqual(@as(usize, 1), engine.cleanup_events.items.len);
                 try std.testing.expectEqualStrings("branch-cleanup-new", engine.cleanup_events.items[0]);
                 try std.testing.expect(!engine.scopes.items[@intCast(retired_row_scope_id.raw())].lifecycle.isActive());
@@ -19357,8 +19357,8 @@ test "aggregate branch collection sweeps allocation failures without publication
             const old_render_len = engine.active_stream.render_nodes.items.len;
             const old_root_children = try std.testing.allocator.dupe(ids.ElemId, engine.render_cache.nodes.items[1].children.items);
             defer std.testing.allocator.free(old_root_children);
-            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(old_first_id)].items.len);
-            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(old_second_id)].items.len);
+            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(old_first_id)].len());
+            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(old_second_id)].len());
             const cache_cap = HostValueCapability{ .clone = fixture.value_callable, .drop = fixture.value_callable, .eq = fixture.value_callable };
             const first_next_elem = engine.buildWhenElem(&ctx, &roc_host, first_when.ops, .invalid, cache_cap);
             defer first_next_elem.decref(&roc_host);
@@ -19487,10 +19487,10 @@ test "aggregate branch collection sweeps allocation failures without publication
                 .ref => |source_id| source_id,
                 else => return error.TestUnexpectedResult,
             };
-            try std.testing.expect(std.mem.indexOfScalar(u64, engine.active_source_signal_routes.items[@intCast(first_source_id)].items, first_input_id) != null);
-            try std.testing.expect(std.mem.indexOfScalar(u64, engine.active_source_signal_routes.items[@intCast(second_source_id)].items, second_input_id) != null);
-            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(first_new_id)].items.len);
-            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(second_new_id)].items.len);
+            try std.testing.expect(std.mem.indexOfScalar(u64, engine.active_source_signal_routes.items[@intCast(first_source_id)].slice(), first_input_id) != null);
+            try std.testing.expect(std.mem.indexOfScalar(u64, engine.active_source_signal_routes.items[@intCast(second_source_id)].slice(), second_input_id) != null);
+            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(first_new_id)].len());
+            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(second_new_id)].len());
             return attempts;
         }
     };
@@ -19599,7 +19599,7 @@ test "nested live when transaction subsumes inner change atomically" {
             const next_record = engine.active_stream.signal_text_nodes.items[0].signal.record;
             const next_id = next_record.active_graph_id.?;
             try std.testing.expectEqual(@as(u64, 1), active_graph.rank(HostSignalRecord, engine.active_signal_graph.items, next_id));
-            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(next_id)].items.len);
+            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(next_id)].len());
             try std.testing.expect(next_record.active_use_count != 0);
             try std.testing.expectEqual(@as(usize, 0), engine.pending_tasks.items.len);
             try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);

@@ -14,7 +14,120 @@ pub fn Node(comptime Record: type) type {
 
 /// Defines dense event and sink routes derived from the active descriptor stream.
 pub fn RouteTable(comptime Route: type) type {
-    return std.ArrayListUnmanaged(std.ArrayListUnmanaged(Route));
+    return std.ArrayListUnmanaged(SmallRouteList(Route));
+}
+
+/// Stores the common zero-or-one route case inline while retaining ordinary
+/// independently owned storage for records with multiple routes.
+pub fn SmallRouteList(comptime Route: type) type {
+    return union(enum) {
+        empty,
+        one: Route,
+        many: std.ArrayListUnmanaged(Route),
+
+        const Self = @This();
+
+        pub fn slice(self: *const Self) []const Route {
+            return switch (self.*) {
+                .empty => &.{},
+                .one => |*value| @as(*const [1]Route, @ptrCast(value))[0..],
+                .many => |list| list.items,
+            };
+        }
+
+        pub fn mutableSlice(self: *Self) []Route {
+            return switch (self.*) {
+                .empty => &.{},
+                .one => |*value| @as(*[1]Route, @ptrCast(value))[0..],
+                .many => |*list| list.items,
+            };
+        }
+
+        pub fn len(self: *const Self) usize {
+            return self.slice().len;
+        }
+
+        pub fn ensureUnusedCapacity(self: *Self, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
+            const required = std.math.add(usize, self.len(), additional) catch return error.OutOfMemory;
+            if (required <= 1) return;
+            switch (self.*) {
+                .empty => {
+                    var list: std.ArrayListUnmanaged(Route) = .empty;
+                    try list.ensureTotalCapacity(allocator, required);
+                    self.* = .{ .many = list };
+                },
+                .one => |value| {
+                    var list: std.ArrayListUnmanaged(Route) = .empty;
+                    try list.ensureTotalCapacity(allocator, required);
+                    list.appendAssumeCapacity(value);
+                    self.* = .{ .many = list };
+                },
+                .many => |*list| try list.ensureUnusedCapacity(allocator, additional),
+            }
+        }
+
+        pub fn append(self: *Self, allocator: std.mem.Allocator, value: Route) std.mem.Allocator.Error!void {
+            try self.ensureUnusedCapacity(allocator, 1);
+            self.appendAssumeCapacity(value);
+        }
+
+        pub fn appendAssumeCapacity(self: *Self, value: Route) void {
+            switch (self.*) {
+                .empty => self.* = .{ .one = value },
+                .one => @panic("small route list lacked prepared spill capacity"),
+                .many => |*list| list.appendAssumeCapacity(value),
+            }
+        }
+
+        pub fn swapRemove(self: *Self, index: usize) Route {
+            return switch (self.*) {
+                .empty => @panic("removed from empty route list"),
+                .one => |value| blk: {
+                    if (index != 0) @panic("route index out of bounds");
+                    self.* = .empty;
+                    break :blk value;
+                },
+                .many => |*list| list.swapRemove(index),
+            };
+        }
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            switch (self.*) {
+                .many => |*list| list.deinit(allocator),
+                .empty, .one => {},
+            }
+            self.* = .empty;
+        }
+    };
+}
+
+test "small route list keeps singleton inline and owns spilled storage" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var routes: SmallRouteList(u64) = .empty;
+    defer routes.deinit(fault.allocator());
+
+    fault.configure(1);
+    try routes.append(fault.allocator(), 11);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualSlices(u64, &.{11}, routes.slice());
+
+    try std.testing.expectError(error.OutOfMemory, routes.append(fault.allocator(), 22));
+    try std.testing.expectEqualSlices(u64, &.{11}, routes.slice());
+
+    fault.configure(null);
+    try routes.append(fault.allocator(), 22);
+    try routes.append(fault.allocator(), 33);
+    routes.mutableSlice()[1] = 44;
+    try std.testing.expectEqualSlices(u64, &.{ 11, 44, 33 }, routes.slice());
+    try std.testing.expectEqual(@as(u64, 44), routes.swapRemove(1));
+    try std.testing.expectEqualSlices(u64, &.{ 11, 33 }, routes.slice());
+
+    routes.deinit(fault.allocator());
+    try std.testing.expectEqual(@as(usize, 0), routes.len());
+    try routes.append(fault.allocator(), 55);
+    try std.testing.expectEqual(@as(u64, 55), routes.swapRemove(0));
+    try std.testing.expectEqual(@as(usize, 0), routes.len());
 }
 
 pub const SignalKind = enum(u64) {
@@ -123,7 +236,7 @@ pub fn PreparedRouteAppends(comptime Route: type) type {
         const Replacement = struct {
             route_index: u64,
             items: []Route,
-            retired: std.ArrayListUnmanaged(Route) = .empty,
+            retired: SmallRouteList(Route) = .empty,
         };
 
         /// Releases provisional and retired route storage.
@@ -149,7 +262,7 @@ pub fn PreparedRouteAppends(comptime Route: type) type {
                 const index: usize = @intCast(replacement.route_index);
                 if (index >= routes.items.len) @panic("prepared route append exceeded its destination table");
                 replacement.retired = routes.items[index];
-                routes.items[index] = .{ .items = replacement.items, .capacity = replacement.items.len };
+                routes.items[index] = .{ .many = .{ .items = replacement.items, .capacity = replacement.items.len } };
                 replacement.items = &.{};
             }
         }
@@ -179,7 +292,7 @@ pub fn prepareRouteAppends(comptime Route: type, allocator: std.mem.Allocator, r
         var end = start + 1;
         while (end < sorted.len and sorted[end].route_index == sorted[start].route_index) end += 1;
         const route_index: usize = @intCast(sorted[start].route_index);
-        const existing = if (route_index < routes.items.len) routes.items[route_index].items else &.{};
+        const existing = if (route_index < routes.items.len) routes.items[route_index].slice() else &.{};
         const merged_len = std.math.add(usize, existing.len, end - start) catch return error.InvalidAppend;
         const merged = try allocator.alloc(Route, merged_len);
         @memcpy(merged[0..existing.len], existing);
@@ -224,7 +337,7 @@ fn prepareRouteAppendsAfterReleaseWithWork(comptime Route: type, allocator: std.
         if (lookup_work) |counter| counter.* += 1;
         const existing = if (route_index < original_record_ids.len) blk: {
             const old_index = original_record_ids[route_index];
-            break :blk if (old_index < routes.items.len) routes.items[old_index].items else &.{};
+            break :blk if (old_index < routes.items.len) routes.items[old_index].slice() else &.{};
         } else &.{};
         const merged_len = std.math.add(usize, existing.len, end - start) catch return error.InvalidAppend;
         const merged = try allocator.alloc(Route, merged_len);
@@ -260,7 +373,7 @@ pub fn prepareSourceRouteAppendsAfterRelease(allocator: std.mem.Allocator, route
         var end = start + 1;
         while (end < sorted.len and sorted[end].route_index == sorted[start].route_index) end += 1;
         const route_index: usize = @intCast(sorted[start].route_index);
-        const existing = if (route_index < routes.items.len) routes.items[route_index].items else &.{};
+        const existing = if (route_index < routes.items.len) routes.items[route_index].slice() else &.{};
         var survivor_count: usize = 0;
         for (existing) |old_id| {
             const old_index: usize = @intCast(old_id);
@@ -355,7 +468,7 @@ fn editedSinkIndex(comptime Edit: type, record_id: u64, kind: anytype, initial: 
 
 fn containsTextSinkAfter(routes: *const RouteTable(TextSink), prior: []const TextSinkEdit, edit: TextSinkEdit) bool {
     if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].items) |sink| {
+    for (routes.items[@intCast(edit.record_id)].slice()) |sink| {
         if (sink.kind != edit.kind) continue;
         if (editedSinkIndex(TextSinkEdit, edit.record_id, edit.kind, sink.index, prior) == edit.old_index) return true;
     }
@@ -364,7 +477,7 @@ fn containsTextSinkAfter(routes: *const RouteTable(TextSink), prior: []const Tex
 
 fn containsBoolSinkAfter(routes: *const RouteTable(BoolSink), prior: []const BoolSinkEdit, edit: BoolSinkEdit) bool {
     if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].items) |sink| {
+    for (routes.items[@intCast(edit.record_id)].slice()) |sink| {
         if (sink.kind != edit.kind) continue;
         if (editedSinkIndex(BoolSinkEdit, edit.record_id, edit.kind, sink.index, prior) == edit.old_index) return true;
     }
@@ -373,7 +486,7 @@ fn containsBoolSinkAfter(routes: *const RouteTable(BoolSink), prior: []const Boo
 
 fn containsChangeSinkAfter(routes: *const RouteTable(ChangeSink), prior: []const ChangeSinkEdit, edit: ChangeSinkEdit) bool {
     if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].items) |sink| {
+    for (routes.items[@intCast(edit.record_id)].slice()) |sink| {
         if (editedSinkIndex(ChangeSinkEdit, edit.record_id, {}, sink.index, prior) == edit.old_index) return true;
     }
     return false;
@@ -381,7 +494,7 @@ fn containsChangeSinkAfter(routes: *const RouteTable(ChangeSink), prior: []const
 
 fn containsStructuralSinkAfter(routes: *const RouteTable(StructuralSink), prior: []const StructuralSinkEdit, edit: StructuralSinkEdit) bool {
     if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].items) |sink| {
+    for (routes.items[@intCast(edit.record_id)].slice()) |sink| {
         if (sink.kind != edit.kind) continue;
         if (editedSinkIndex(StructuralSinkEdit, edit.record_id, edit.kind, sink.index, prior) == edit.old_index) return true;
     }
@@ -390,22 +503,22 @@ fn containsStructuralSinkAfter(routes: *const RouteTable(StructuralSink), prior:
 
 fn containsTextSink(routes: *const RouteTable(TextSink), edit: TextSinkEdit) bool {
     if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].items) |sink| if (sink.kind == edit.kind and sink.index == edit.old_index) return true;
+    for (routes.items[@intCast(edit.record_id)].slice()) |sink| if (sink.kind == edit.kind and sink.index == edit.old_index) return true;
     return false;
 }
 fn containsBoolSink(routes: *const RouteTable(BoolSink), edit: BoolSinkEdit) bool {
     if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].items) |sink| if (sink.kind == edit.kind and sink.index == edit.old_index) return true;
+    for (routes.items[@intCast(edit.record_id)].slice()) |sink| if (sink.kind == edit.kind and sink.index == edit.old_index) return true;
     return false;
 }
 fn containsChangeSink(routes: *const RouteTable(ChangeSink), edit: ChangeSinkEdit) bool {
     if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].items) |sink| if (sink.index == edit.old_index) return true;
+    for (routes.items[@intCast(edit.record_id)].slice()) |sink| if (sink.index == edit.old_index) return true;
     return false;
 }
 fn containsStructuralSink(routes: *const RouteTable(StructuralSink), edit: StructuralSinkEdit) bool {
     if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].items) |sink| if (sink.kind == edit.kind and sink.index == edit.old_index) return true;
+    for (routes.items[@intCast(edit.record_id)].slice()) |sink| if (sink.kind == edit.kind and sink.index == edit.old_index) return true;
     return false;
 }
 
@@ -591,16 +704,16 @@ test "prepared sink route edits sweep failures and commit without allocation" {
         var fault = FaultAllocator.init(std.testing.allocator);
         fault.configure(failure_number);
         try std.testing.expectError(error.OutOfMemory, prepareSinkRouteEdits(fault.allocator(), &text_routes, &bool_routes, &change_routes, &structural_routes, &text_edits, &bool_edits, &change_edits, &structural_edits));
-        try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 0 }, .{ .kind = .text_attr, .index = 9 } }, text_routes.items[0].items);
-        try std.testing.expectEqualSlices(BoolSink, &.{ .{ .kind = .bool_attr, .index = 0 }, .{ .kind = .custom_bool_attr, .index = 9 } }, bool_routes.items[0].items);
+        try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 0 }, .{ .kind = .text_attr, .index = 9 } }, text_routes.items[0].slice());
+        try std.testing.expectEqualSlices(BoolSink, &.{ .{ .kind = .bool_attr, .index = 0 }, .{ .kind = .custom_bool_attr, .index = 9 } }, bool_routes.items[0].slice());
     }
     counter.configure(1);
     baseline.apply(&text_routes, &bool_routes, &change_routes, &structural_routes);
     try std.testing.expectEqual(@as(usize, 0), counter.attempts);
-    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_attr, .index = 1 }}, text_routes.items[0].items);
-    try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .custom_bool_attr, .index = 1 }}, bool_routes.items[0].items);
-    try std.testing.expectEqualSlices(ChangeSink, &.{.{ .index = 1 }}, change_routes.items[0].items);
-    try std.testing.expectEqualSlices(StructuralSink, &.{.{ .kind = .each, .index = 1 }}, structural_routes.items[0].items);
+    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_attr, .index = 1 }}, text_routes.items[0].slice());
+    try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .custom_bool_attr, .index = 1 }}, bool_routes.items[0].slice());
+    try std.testing.expectEqualSlices(ChangeSink, &.{.{ .index = 1 }}, change_routes.items[0].slice());
+    try std.testing.expectEqualSlices(StructuralSink, &.{.{ .kind = .each, .index = 1 }}, structural_routes.items[0].slice());
     counter.configure(null);
     baseline.deinit(counter.allocator());
 }
@@ -643,7 +756,7 @@ pub const DirtyRecordQueue = struct {
         comptime Record: type,
         allocator: std.mem.Allocator,
         nodes: []const Node(Record),
-        source_routes: []const std.ArrayListUnmanaged(u64),
+        source_routes: []const SmallRouteList(u64),
         dirty_source_node_ids: []const u64,
     ) []const u64 {
         var max_rank: u64 = 0;
@@ -653,7 +766,7 @@ pub const DirtyRecordQueue = struct {
             const route_index: usize = @intCast(source_node_id);
             if (route_index >= source_routes.len) continue;
 
-            for (source_routes[route_index].items) |record_id| {
+            for (source_routes[route_index].slice()) |record_id| {
                 self.enqueueRecord(Record, allocator, nodes, record_id, &max_rank);
             }
         }
@@ -844,7 +957,7 @@ pub fn clearRoutes(
 }
 
 /// Ensures source route capacity or state before publication can begin.
-pub fn ensureSourceRoute(allocator: std.mem.Allocator, source_routes: *RouteTable(u64), source_node_count: usize, source_node_id: u64) *std.ArrayListUnmanaged(u64) {
+pub fn ensureSourceRoute(allocator: std.mem.Allocator, source_routes: *RouteTable(u64), source_node_count: usize, source_node_id: u64) *SmallRouteList(u64) {
     if (source_node_id >= source_node_count) @panic("active source signal route referenced an unknown source node");
     const route_index: usize = @intCast(source_node_id);
     while (source_routes.items.len <= route_index) {
@@ -856,7 +969,7 @@ pub fn ensureSourceRoute(allocator: std.mem.Allocator, source_routes: *RouteTabl
 /// Appends source route using capacity that must already satisfy the caller's transaction contract.
 pub fn appendSourceRoute(allocator: std.mem.Allocator, source_routes: *RouteTable(u64), source_node_count: usize, source_node_id: u64, record_id: u64) void {
     const route = ensureSourceRoute(allocator, source_routes, source_node_count, source_node_id);
-    if (!containsU64(route.items, record_id)) {
+    if (!containsU64(route.slice(), record_id)) {
         route.append(allocator, record_id) catch @panic("out of memory");
     }
 }
@@ -871,7 +984,7 @@ pub fn appendFreshSourceRoute(allocator: std.mem.Allocator, source_routes: *Rout
 pub fn removeSourceRoute(source_routes: *RouteTable(u64), source_node_id: u64, record_id: u64) void {
     if (source_node_id >= source_routes.items.len) @panic("active source signal route removal referenced an unknown source node");
     var route = &source_routes.items[@intCast(source_node_id)];
-    for (route.items, 0..) |existing_id, index| {
+    for (route.slice(), 0..) |existing_id, index| {
         if (existing_id != record_id) continue;
         _ = route.swapRemove(index);
         return;
@@ -882,7 +995,7 @@ pub fn removeSourceRoute(source_routes: *RouteTable(u64), source_node_id: u64, r
 /// Replaces source route id while releasing displaced ownership exactly once.
 pub fn replaceSourceRouteId(source_routes: *RouteTable(u64), source_node_id: u64, old_record_id: u64, new_record_id: u64) void {
     if (source_node_id >= source_routes.items.len) @panic("active source signal route rewrite referenced an unknown source node");
-    const route = source_routes.items[@intCast(source_node_id)].items;
+    const route = source_routes.items[@intCast(source_node_id)].mutableSlice();
     for (route) |*existing_id| {
         if (existing_id.* != old_record_id) continue;
         existing_id.* = new_record_id;
@@ -892,22 +1005,22 @@ pub fn replaceSourceRouteId(source_routes: *RouteTable(u64), source_node_id: u64
 }
 
 /// Ensures text route capacity or state before publication can begin.
-pub fn ensureTextRoute(allocator: std.mem.Allocator, text_routes: *RouteTable(TextSink), graph_len: usize, record_id: u64) *std.ArrayListUnmanaged(TextSink) {
+pub fn ensureTextRoute(allocator: std.mem.Allocator, text_routes: *RouteTable(TextSink), graph_len: usize, record_id: u64) *SmallRouteList(TextSink) {
     return ensureSinkRoute(TextSink, allocator, text_routes, graph_len, record_id, "active text signal route referenced an unknown signal record");
 }
 
 /// Ensures bool route capacity or state before publication can begin.
-pub fn ensureBoolRoute(allocator: std.mem.Allocator, bool_routes: *RouteTable(BoolSink), graph_len: usize, record_id: u64) *std.ArrayListUnmanaged(BoolSink) {
+pub fn ensureBoolRoute(allocator: std.mem.Allocator, bool_routes: *RouteTable(BoolSink), graph_len: usize, record_id: u64) *SmallRouteList(BoolSink) {
     return ensureSinkRoute(BoolSink, allocator, bool_routes, graph_len, record_id, "active bool signal route referenced an unknown signal record");
 }
 
 /// Ensures change route capacity or state before publication can begin.
-pub fn ensureChangeRoute(allocator: std.mem.Allocator, change_routes: *RouteTable(ChangeSink), graph_len: usize, record_id: u64) *std.ArrayListUnmanaged(ChangeSink) {
+pub fn ensureChangeRoute(allocator: std.mem.Allocator, change_routes: *RouteTable(ChangeSink), graph_len: usize, record_id: u64) *SmallRouteList(ChangeSink) {
     return ensureSinkRoute(ChangeSink, allocator, change_routes, graph_len, record_id, "active change signal route referenced an unknown signal record");
 }
 
 /// Ensures structural route capacity or state before publication can begin.
-pub fn ensureStructuralRoute(allocator: std.mem.Allocator, structural_routes: *RouteTable(StructuralSink), graph_len: usize, record_id: u64) *std.ArrayListUnmanaged(StructuralSink) {
+pub fn ensureStructuralRoute(allocator: std.mem.Allocator, structural_routes: *RouteTable(StructuralSink), graph_len: usize, record_id: u64) *SmallRouteList(StructuralSink) {
     return ensureSinkRoute(StructuralSink, allocator, structural_routes, graph_len, record_id, "active structural signal route referenced an unknown signal record");
 }
 
@@ -937,7 +1050,7 @@ pub fn removeTextRoute(text_routes: *RouteTable(TextSink), record_id: u64, kind:
     const route_index: usize = @intCast(record_id);
     if (route_index >= text_routes.items.len) @panic("active text signal route removal referenced an unknown signal record");
     var route = &text_routes.items[route_index];
-    for (route.items, 0..) |sink, sink_index| {
+    for (route.slice(), 0..) |sink, sink_index| {
         if (sink.kind == kind and sink.index == index) {
             _ = route.swapRemove(sink_index);
             return;
@@ -951,7 +1064,7 @@ pub fn updateTextRouteIndex(text_routes: *RouteTable(TextSink), record_id: u64, 
     if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
     if (route_index >= text_routes.items.len) @panic("active text signal route update referenced an unknown signal record");
-    for (text_routes.items[route_index].items) |*sink| {
+    for (text_routes.items[route_index].mutableSlice()) |*sink| {
         if (sink.kind == kind and sink.index == old_index) {
             sink.index = new_index;
             return;
@@ -970,7 +1083,7 @@ pub fn removeBoolRoute(bool_routes: *RouteTable(BoolSink), record_id: u64, kind:
     const route_index: usize = @intCast(record_id);
     if (route_index >= bool_routes.items.len) @panic("active bool signal route removal referenced an unknown signal record");
     var route = &bool_routes.items[route_index];
-    for (route.items, 0..) |sink, sink_index| {
+    for (route.slice(), 0..) |sink, sink_index| {
         if (sink.kind == kind and sink.index == index) {
             _ = route.swapRemove(sink_index);
             return;
@@ -984,7 +1097,7 @@ pub fn updateBoolRouteIndex(bool_routes: *RouteTable(BoolSink), record_id: u64, 
     if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
     if (route_index >= bool_routes.items.len) @panic("active bool signal route update referenced an unknown signal record");
-    for (bool_routes.items[route_index].items) |*sink| {
+    for (bool_routes.items[route_index].mutableSlice()) |*sink| {
         if (sink.kind == kind and sink.index == old_index) {
             sink.index = new_index;
             return;
@@ -1003,7 +1116,7 @@ pub fn removeChangeRoute(change_routes: *RouteTable(ChangeSink), record_id: u64,
     const route_index: usize = @intCast(record_id);
     if (route_index >= change_routes.items.len) @panic("active change signal route removal referenced an unknown signal record");
     var route = &change_routes.items[route_index];
-    for (route.items, 0..) |sink, sink_index| {
+    for (route.slice(), 0..) |sink, sink_index| {
         if (sink.index == index) {
             _ = route.swapRemove(sink_index);
             return;
@@ -1017,7 +1130,7 @@ pub fn updateChangeRouteIndex(change_routes: *RouteTable(ChangeSink), record_id:
     if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
     if (route_index >= change_routes.items.len) @panic("active change signal route update referenced an unknown signal record");
-    for (change_routes.items[route_index].items) |*sink| {
+    for (change_routes.items[route_index].mutableSlice()) |*sink| {
         if (sink.index == old_index) {
             sink.index = new_index;
             return;
@@ -1036,7 +1149,7 @@ pub fn removeStructuralRoute(structural_routes: *RouteTable(StructuralSink), rec
     const route_index: usize = @intCast(record_id);
     if (route_index >= structural_routes.items.len) @panic("active structural signal route removal referenced an unknown signal record");
     var route = &structural_routes.items[route_index];
-    for (route.items, 0..) |sink, sink_index| {
+    for (route.slice(), 0..) |sink, sink_index| {
         if (sink.kind == kind and sink.index == index) {
             _ = route.swapRemove(sink_index);
             return;
@@ -1050,7 +1163,7 @@ pub fn updateStructuralRouteIndex(structural_routes: *RouteTable(StructuralSink)
     if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
     if (route_index >= structural_routes.items.len) @panic("active structural signal route update referenced an unknown signal record");
-    for (structural_routes.items[route_index].items) |*sink| {
+    for (structural_routes.items[route_index].mutableSlice()) |*sink| {
         if (sink.kind == kind and sink.index == old_index) {
             sink.index = new_index;
             return;
@@ -1203,10 +1316,10 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
         adjacency: []PreparedAdjacencyReplacement,
         retired_adjacency: [][]u64,
         retired_nodes: []Node(Record),
-        retired_text_routes: []std.ArrayListUnmanaged(TextSink),
-        retired_bool_routes: []std.ArrayListUnmanaged(BoolSink),
-        retired_change_routes: []std.ArrayListUnmanaged(ChangeSink),
-        retired_structural_routes: []std.ArrayListUnmanaged(StructuralSink),
+        retired_text_routes: []SmallRouteList(TextSink),
+        retired_bool_routes: []SmallRouteList(BoolSink),
+        retired_change_routes: []SmallRouteList(ChangeSink),
+        retired_structural_routes: []SmallRouteList(StructuralSink),
         phase: Phase = .prepared,
 
         /// Releases preparation storage without changing graph state.
@@ -1258,12 +1371,13 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
             }
             for (source_routes.items) |*route| {
                 var write: usize = 0;
-                for (route.items) |old_id| {
+                const items = route.mutableSlice();
+                for (items) |old_id| {
                     const next_id = self.final_record_ids[@intCast(old_id)] orelse continue;
-                    route.items[write] = next_id;
+                    items[write] = next_id;
                     write += 1;
                 }
-                route.items.len = write;
+                while (route.len() > write) _ = route.swapRemove(route.len() - 1);
             }
             var live_len = nodes.items.len;
             for (self.steps, 0..) |step, step_index| {
@@ -1287,9 +1401,9 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
             self.phase = .dense_committed;
         }
 
-        fn retireRouteSlot(comptime Route: type, routes: *RouteTable(Route), retired: []std.ArrayListUnmanaged(Route), removal_index: usize, last_index: usize, step_index: usize) void {
+        fn retireRouteSlot(comptime Route: type, routes: *RouteTable(Route), retired: []SmallRouteList(Route), removal_index: usize, last_index: usize, step_index: usize) void {
             if (removal_index >= routes.items.len) return;
-            if (routes.items[removal_index].items.len != 0) @panic("prepared graph removed a record with live sink routes");
+            if (routes.items[removal_index].len() != 0) @panic("prepared graph removed a record with live sink routes");
             retired[step_index] = routes.items[removal_index];
             if (removal_index != last_index and last_index < routes.items.len) {
                 routes.items[removal_index] = routes.items[last_index];
@@ -1847,16 +1961,16 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
     @memset(retired_adjacency, &.{});
     const retired_nodes = try allocator.alloc(Node(Record), records.items.len);
     errdefer allocator.free(retired_nodes);
-    const retired_text_routes = try allocator.alloc(std.ArrayListUnmanaged(TextSink), records.items.len);
+    const retired_text_routes = try allocator.alloc(SmallRouteList(TextSink), records.items.len);
     errdefer allocator.free(retired_text_routes);
     @memset(retired_text_routes, .empty);
-    const retired_bool_routes = try allocator.alloc(std.ArrayListUnmanaged(BoolSink), records.items.len);
+    const retired_bool_routes = try allocator.alloc(SmallRouteList(BoolSink), records.items.len);
     errdefer allocator.free(retired_bool_routes);
     @memset(retired_bool_routes, .empty);
-    const retired_change_routes = try allocator.alloc(std.ArrayListUnmanaged(ChangeSink), records.items.len);
+    const retired_change_routes = try allocator.alloc(SmallRouteList(ChangeSink), records.items.len);
     errdefer allocator.free(retired_change_routes);
     @memset(retired_change_routes, .empty);
-    const retired_structural_routes = try allocator.alloc(std.ArrayListUnmanaged(StructuralSink), records.items.len);
+    const retired_structural_routes = try allocator.alloc(SmallRouteList(StructuralSink), records.items.len);
     errdefer allocator.free(retired_structural_routes);
     @memset(retired_structural_routes, .empty);
     var adjacency_write: usize = 0;
@@ -2133,7 +2247,7 @@ fn removeNode(
     }
 }
 
-fn ensureSinkRoute(comptime Route: type, allocator: std.mem.Allocator, routes: *RouteTable(Route), graph_len: usize, record_id: u64, comptime unknown_record_message: []const u8) *std.ArrayListUnmanaged(Route) {
+fn ensureSinkRoute(comptime Route: type, allocator: std.mem.Allocator, routes: *RouteTable(Route), graph_len: usize, record_id: u64, comptime unknown_record_message: []const u8) *SmallRouteList(Route) {
     if (record_id >= graph_len) @panic(unknown_record_message);
     const route_index: usize = @intCast(record_id);
     while (routes.items.len <= route_index) {
@@ -2160,7 +2274,7 @@ fn removeRouteTableRecordId(
     if (routes.items.len > last_index + 1) @panic("active sink route table exceeded active signal graph length");
     if (record_index >= routes.items.len) return;
 
-    if (routes.items[record_index].items.len != 0) @panic(live_route_message);
+    if (routes.items[record_index].len() != 0) @panic(live_route_message);
     routes.items[record_index].deinit(allocator);
 
     if (record_index != last_index and last_index < routes.items.len) {
@@ -2356,15 +2470,15 @@ test "prepared route appends sweep failures and publish without allocation" {
         fault.configure(failure_number);
         try std.testing.expectError(error.OutOfMemory, prepareRouteAppends(TextSink, fault.allocator(), &routes, 3, &appends));
         try std.testing.expectEqual(@as(usize, 1), routes.items.len);
-        try std.testing.expectEqualDeep(TextSink{ .kind = .text_node, .index = 4 }, routes.items[0].items[0]);
+        try std.testing.expectEqualDeep(TextSink{ .kind = .text_node, .index = 4 }, routes.items[0].slice()[0]);
     }
     try baseline.reserveOuter(counter.allocator(), &routes, 3);
     counter.configure(1);
     baseline.apply(&routes, 3);
     try std.testing.expectEqual(@as(usize, 0), counter.attempts);
     try std.testing.expectEqual(@as(usize, 3), routes.items.len);
-    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 4 }, .{ .kind = .text_attr, .index = 7 } }, routes.items[0].items);
-    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .custom_text_attr, .index = 9 }}, routes.items[2].items);
+    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 4 }, .{ .kind = .text_attr, .index = 7 } }, routes.items[0].slice());
+    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .custom_text_attr, .index = 9 }}, routes.items[2].slice());
 }
 
 test "post-release route appends use direct sparse survivor inversion with linear work" {
@@ -2398,7 +2512,7 @@ test "post-release route appends use direct sparse survivor inversion with linea
         var fault = FaultAllocator.init(std.testing.allocator);
         fault.configure(failure_number);
         try std.testing.expectError(error.OutOfMemory, prepareRouteAppendsAfterRelease(TextSink, fault.allocator(), &routes, &original_record_ids, 4, &appends));
-        for (routes.items, 0..) |route, index| try std.testing.expectEqualDeep(TextSink{ .kind = .text_node, .index = index }, route.items[0]);
+        for (routes.items, 0..) |route, index| try std.testing.expectEqualDeep(TextSink{ .kind = .text_node, .index = index }, route.slice()[0]);
     }
     try std.testing.expectError(error.InvalidAppend, prepareRouteAppendsAfterRelease(TextSink, std.testing.allocator, &routes, &.{ 0, 1, 2 }, 2, &appends));
 
@@ -2406,9 +2520,9 @@ test "post-release route appends use direct sparse survivor inversion with linea
     counter.configure(1);
     baseline.apply(&routes, 4);
     try std.testing.expectEqual(@as(usize, 0), counter.attempts);
-    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 3 }, .{ .kind = .text_attr, .index = 10 } }, routes.items[0].items);
-    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 0 }, .{ .kind = .text_attr, .index = 11 } }, routes.items[1].items);
-    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_attr, .index = 13 }}, routes.items[3].items);
+    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 3 }, .{ .kind = .text_attr, .index = 10 } }, routes.items[0].slice());
+    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 0 }, .{ .kind = .text_attr, .index = 11 } }, routes.items[1].slice());
+    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_attr, .index = 13 }}, routes.items[3].slice());
 }
 
 test "post-release route inversion lookup work scales with appended groups" {
@@ -2460,7 +2574,7 @@ test "prepared graph append enumerates missing topology without mutating survivo
     }
     _ = retainRecord(LifecycleTestRecord, std.testing.allocator, &nodes, &source_routes, 4, &survivor, &hooks);
     try std.testing.expectEqual(@as(usize, 1), survivor.active_use_count);
-    try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].items);
+    try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].slice());
     const mapping = [_]?u64{0};
     const roots = [_]*LifecycleTestRecord{ &mapped, &root };
 
@@ -2496,7 +2610,7 @@ test "prepared graph append enumerates missing topology without mutating survivo
         try std.testing.expectEqual(@as(?u64, 0), survivor.active_graph_id);
         try std.testing.expectEqual(@as(usize, 1), survivor.active_use_count);
         try std.testing.expectEqualSlices(u64, &.{}, nodes.items[0].dependents);
-        try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].items);
+        try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].slice());
         for ([_]*LifecycleTestRecord{ &mapped, &fresh, &root }) |record| {
             try std.testing.expectEqual(@as(?u64, null), record.active_graph_id);
             try std.testing.expectEqual(@as(usize, 0), record.active_use_count);
@@ -2677,8 +2791,8 @@ test "prepared release closure nets replacement retains so a handed-over record 
     try std.testing.expectEqual(@as(usize, 1), new_root.active_use_count);
     try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[0].dependents);
     try std.testing.expectEqualSlices(u64, &.{2}, nodes.items[1].dependents);
-    try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].items);
-    try std.testing.expectEqualSlices(u64, &.{1}, source_routes.items[1].items);
+    try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].slice());
+    try std.testing.expectEqualSlices(u64, &.{1}, source_routes.items[1].slice());
     try std.testing.expectEqual(@as(u64, 1), hooks.record_releases);
     try std.testing.expectEqual(@as(usize, 1), old_root.ref_count);
     try std.testing.expectEqual(@as(usize, 2), new_root.ref_count);
@@ -2715,7 +2829,7 @@ test "prepared release closure preserves shared diamond and computes dense remap
         try structural_routes.append(std.testing.allocator, .empty);
     }
     try std.testing.expectEqual(@as(usize, 2), source.active_use_count);
-    try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].items);
+    try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].slice());
 
     var counter = FaultAllocator.init(std.testing.allocator);
     var baseline = try prepareReleaseClosure(LifecycleTestRecord, counter.allocator(), nodes.items, &.{&root}, &.{});
@@ -2754,7 +2868,7 @@ test "prepared release closure preserves shared diamond and computes dense remap
     try std.testing.expectEqual(@as(usize, 0), bool_routes.items.len);
     try std.testing.expectEqual(@as(usize, 0), change_routes.items.len);
     try std.testing.expectEqual(@as(usize, 0), structural_routes.items.len);
-    try std.testing.expectEqualSlices(u64, &.{}, source_routes.items[0].items);
+    try std.testing.expectEqualSlices(u64, &.{}, source_routes.items[0].slice());
     try std.testing.expectEqual(@as(usize, 0), counter.attempts);
     baseline.releaseRetired(counter.allocator(), &hooks);
     counter.configure(null);
@@ -2912,13 +3026,13 @@ test "active source routes replace and remove ids" {
 
     appendSourceRoute(std.testing.allocator, &source_routes, 4, 2, 7);
     appendSourceRoute(std.testing.allocator, &source_routes, 4, 2, 7);
-    try std.testing.expectEqualSlices(u64, &.{7}, source_routes.items[2].items);
+    try std.testing.expectEqualSlices(u64, &.{7}, source_routes.items[2].slice());
 
     replaceSourceRouteId(&source_routes, 2, 7, 3);
-    try std.testing.expectEqualSlices(u64, &.{3}, source_routes.items[2].items);
+    try std.testing.expectEqualSlices(u64, &.{3}, source_routes.items[2].slice());
 
     removeSourceRoute(&source_routes, 2, 3);
-    try std.testing.expectEqual(@as(usize, 0), source_routes.items[2].items.len);
+    try std.testing.expectEqual(@as(usize, 0), source_routes.items[2].len());
 }
 
 test "active sink routes use route-specific keys" {
@@ -2936,26 +3050,26 @@ test "active sink routes use route-specific keys" {
     appendTextRoute(std.testing.allocator, &text_routes, 2, 1, .{ .kind = .text_attr, .index = 3 });
     updateTextRouteIndex(&text_routes, 1, .text_attr, 3, 8);
     removeTextRoute(&text_routes, 1, .text_node, 3);
-    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_attr, .index = 8 }}, text_routes.items[1].items);
+    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_attr, .index = 8 }}, text_routes.items[1].slice());
 
     appendBoolRoute(std.testing.allocator, &bool_routes, 2, 1, .{ .kind = .bool_attr, .index = 4 });
     appendBoolRoute(std.testing.allocator, &bool_routes, 2, 1, .{ .kind = .custom_bool_attr, .index = 4 });
     updateBoolRouteIndex(&bool_routes, 1, .custom_bool_attr, 4, 9);
     removeBoolRoute(&bool_routes, 1, .bool_attr, 4);
-    try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .custom_bool_attr, .index = 9 }}, bool_routes.items[1].items);
+    try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .custom_bool_attr, .index = 9 }}, bool_routes.items[1].slice());
     removeBoolRoute(&bool_routes, 1, .custom_bool_attr, 9);
-    try std.testing.expectEqual(@as(usize, 0), bool_routes.items[1].items.len);
+    try std.testing.expectEqual(@as(usize, 0), bool_routes.items[1].len());
 
     appendChangeRoute(std.testing.allocator, &change_routes, 2, 1, .{ .index = 5 });
     updateChangeRouteIndex(&change_routes, 1, 5, 10);
     removeChangeRoute(&change_routes, 1, 10);
-    try std.testing.expectEqual(@as(usize, 0), change_routes.items[1].items.len);
+    try std.testing.expectEqual(@as(usize, 0), change_routes.items[1].len());
 
     appendStructuralRoute(std.testing.allocator, &structural_routes, 2, 1, .{ .kind = .when, .index = 6 });
     appendStructuralRoute(std.testing.allocator, &structural_routes, 2, 1, .{ .kind = .each, .index = 6 });
     updateStructuralRouteIndex(&structural_routes, 1, .each, 6, 11);
     removeStructuralRoute(&structural_routes, 1, .when, 6);
-    try std.testing.expectEqualSlices(StructuralSink, &.{.{ .kind = .each, .index = 11 }}, structural_routes.items[1].items);
+    try std.testing.expectEqualSlices(StructuralSink, &.{.{ .kind = .each, .index = 11 }}, structural_routes.items[1].slice());
 }
 
 test "active sink route record removal moves last route entries" {
@@ -2976,8 +3090,8 @@ test "active sink route record removal moves last route entries" {
     removeSinkRoutesForRecordId(std.testing.allocator, &text_routes, &bool_routes, &change_routes, &structural_routes, 0, 2);
 
     try std.testing.expectEqual(@as(usize, 2), text_routes.items.len);
-    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_node, .index = 9 }}, text_routes.items[0].items);
-    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_attr, .index = 4 }}, text_routes.items[1].items);
+    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_node, .index = 9 }}, text_routes.items[0].slice());
+    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_attr, .index = 4 }}, text_routes.items[1].slice());
 }
 
 test "active graph retain and release update moved record ids and routes" {
@@ -3008,8 +3122,8 @@ test "active graph retain and release update moved record ids and routes" {
     try std.testing.expectEqual(@as(?u64, 1), source_b.active_graph_id);
     try std.testing.expectEqual(@as(?u64, 2), mapped.active_graph_id);
     try std.testing.expectEqualSlices(u64, &.{2}, nodes.items[1].dependents);
-    try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[1].items);
-    try std.testing.expectEqualSlices(u64, &.{1}, source_routes.items[2].items);
+    try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[1].slice());
+    try std.testing.expectEqualSlices(u64, &.{1}, source_routes.items[2].slice());
 
     releaseRecord(
         LifecycleTestRecord,
@@ -3030,8 +3144,8 @@ test "active graph retain and release update moved record ids and routes" {
     try std.testing.expectEqual(&mapped, nodes.items[0].record);
     try std.testing.expectEqual(&source_b, nodes.items[1].record);
     try std.testing.expectEqualSlices(u64, &.{0}, nodes.items[1].dependents);
-    try std.testing.expectEqualSlices(u64, &.{}, source_routes.items[1].items);
-    try std.testing.expectEqualSlices(u64, &.{1}, source_routes.items[2].items);
+    try std.testing.expectEqualSlices(u64, &.{}, source_routes.items[1].slice());
+    try std.testing.expectEqualSlices(u64, &.{1}, source_routes.items[2].slice());
 
     releaseRecord(
         LifecycleTestRecord,
@@ -3185,13 +3299,13 @@ test "active graph stream rebuild retains records and rebuilds sink routes" {
         &stream,
     );
 
-    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .custom_text_attr, .index = 0 }, .{ .kind = .custom_text_optional_attr, .index = 0 } }, text_routes.items[0].items);
-    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 0 }, .{ .kind = .text_attr, .index = 0 } }, text_routes.items[1].items);
-    try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .bool_attr, .index = 0 }}, bool_routes.items[0].items);
-    try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .custom_bool_attr, .index = 0 }}, bool_routes.items[1].items);
-    try std.testing.expectEqualSlices(ChangeSink, &.{.{ .index = 0 }}, change_routes.items[1].items);
-    try std.testing.expectEqualSlices(StructuralSink, &.{.{ .kind = .when, .index = 0 }}, structural_routes.items[0].items);
-    try std.testing.expectEqualSlices(StructuralSink, &.{.{ .kind = .each, .index = 0 }}, structural_routes.items[1].items);
+    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .custom_text_attr, .index = 0 }, .{ .kind = .custom_text_optional_attr, .index = 0 } }, text_routes.items[0].slice());
+    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 0 }, .{ .kind = .text_attr, .index = 0 } }, text_routes.items[1].slice());
+    try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .bool_attr, .index = 0 }}, bool_routes.items[0].slice());
+    try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .custom_bool_attr, .index = 0 }}, bool_routes.items[1].slice());
+    try std.testing.expectEqualSlices(ChangeSink, &.{.{ .index = 0 }}, change_routes.items[1].slice());
+    try std.testing.expectEqualSlices(StructuralSink, &.{.{ .kind = .when, .index = 0 }}, structural_routes.items[0].slice());
+    try std.testing.expectEqualSlices(StructuralSink, &.{.{ .kind = .each, .index = 0 }}, structural_routes.items[1].slice());
 
     clear(LifecycleTestRecord, std.testing.allocator, &nodes, &hooks);
     try std.testing.expectEqual(@as(?u64, null), source.active_graph_id);
