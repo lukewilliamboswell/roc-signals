@@ -1067,7 +1067,7 @@ fn discoverStorageElem(elem: abi.Elem) void {
             discoverStorageSignalExpr(payload.condition.*);
         },
         .each => |payload| {
-            discoverStorageSignalExpr(payload.items.*);
+            discoverStorageSignalExpr(payload.rows.*);
         },
     }
 }
@@ -2093,13 +2093,49 @@ export fn roc_host_value_clone(value: u64) callconv(.c) u64 {
     }).toRaw();
 }
 
-export fn roc_each_key_sink_push(token: u64, index: u64, value: abi.RocStr) callconv(.c) u64 {
-    defer abi.RocStrRelease.release(value, &roc_host);
-    return shared_engine.pushEachKeySink(WasmCtx{}, token, index, value.asSlice()) catch failHostWith("each key sink rejected the active collection transaction");
-}
-
 export fn roc_each_bool_sink_push(token: u64, index: u64, value: bool) callconv(.c) u64 {
     return shared_engine.pushEachBoolSink(WasmCtx{}, token, index, value) catch failHostWith("each bool sink rejected the active collection transaction");
+}
+
+export fn roc_rows_snapshot_description_sink_push(token: u64, generation: abi.RocErasedCallable, item_count: u64, key_bytes: u64) callconv(.c) u64 {
+    defer abi.decrefErasedCallable(generation, &roc_host);
+    const generation_id = if (generation) |value| @intFromPtr(value) else 0;
+    return shared_engine.pushRowsSnapshotDescriptionSink(WasmCtx{}, token, generation_id, item_count, key_bytes) catch failHostWith("Rows snapshot description sink rejected the active transaction");
+}
+
+export fn roc_rows_delta_description_sink_push(token: u64, generation: abi.RocErasedCallable, parent: abi.RocErasedCallable, item_count: u64, snapshot_key_bytes: u64, op_count: u64, delta_key_count: u64, delta_key_bytes: u64) callconv(.c) u64 {
+    defer abi.decrefErasedCallable(generation, &roc_host);
+    defer abi.decrefErasedCallable(parent, &roc_host);
+    const generation_id = if (generation) |value| @intFromPtr(value) else 0;
+    const parent_id = if (parent) |value| @intFromPtr(value) else 0;
+    return shared_engine.pushRowsDeltaDescriptionSink(WasmCtx{}, token, generation_id, parent_id, item_count, snapshot_key_bytes, op_count, delta_key_count, delta_key_bytes) catch failHostWith("Rows delta description sink rejected the active transaction");
+}
+
+export fn roc_rows_snapshot_sink_push(token: u64, index: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
+    defer abi.RocStrRelease.release(key, &roc_host);
+    return shared_engine.pushRowsSnapshotSink(WasmCtx{}, token, index, slot, key.asSlice()) catch failHostWith("Rows snapshot sink rejected the active transaction");
+}
+
+export fn roc_rows_delta_clear_sink_push(token: u64, op_index: u64) callconv(.c) u64 {
+    return shared_engine.pushRowsDeltaClearSink(WasmCtx{}, token, op_index) catch failHostWith("Rows delta clear sink rejected the active transaction");
+}
+
+export fn roc_rows_delta_insert_sink_push(token: u64, op_index: u64, before_slot: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
+    defer abi.RocStrRelease.release(key, &roc_host);
+    return shared_engine.pushRowsDeltaInsertSink(WasmCtx{}, token, op_index, before_slot, slot, key.asSlice()) catch failHostWith("Rows delta insert sink rejected the active transaction");
+}
+
+export fn roc_rows_delta_move_range_sink_push(token: u64, op_index: u64, first_slot: u64, count: u64, before_slot: u64) callconv(.c) u64 {
+    return shared_engine.pushRowsDeltaMoveSink(WasmCtx{}, token, op_index, first_slot, count, before_slot) catch failHostWith("Rows delta move sink rejected the active transaction");
+}
+
+export fn roc_rows_delta_remove_range_sink_push(token: u64, op_index: u64, first_slot: u64, count: u64) callconv(.c) u64 {
+    return shared_engine.pushRowsDeltaRemoveSink(WasmCtx{}, token, op_index, first_slot, count) catch failHostWith("Rows delta remove sink rejected the active transaction");
+}
+
+export fn roc_rows_delta_update_sink_push(token: u64, op_index: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
+    defer abi.RocStrRelease.release(key, &roc_host);
+    return shared_engine.pushRowsDeltaUpdateSink(WasmCtx{}, token, op_index, slot, key.asSlice()) catch failHostWith("Rows delta update sink rejected the active transaction");
 }
 
 export fn roc_rows_same_generation_callable(left: abi.RocErasedCallable, right: abi.RocErasedCallable) callconv(.c) bool {

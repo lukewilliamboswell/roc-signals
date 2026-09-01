@@ -2075,16 +2075,63 @@ fn hostValueClone(value: u64) callconv(.c) u64 {
     return currentHost().cloneHostValue(HostValue.fromRaw(value)).toRaw();
 }
 
-fn eachKeySinkPush(token: u64, index: u64, value: abi.RocStr) callconv(.c) u64 {
-    const roc_host = current_roc_host orelse @panic("each key sink requires an active Roc host");
-    defer abi.RocStrRelease.release(value, roc_host);
-    const host = current_host orelse failHost("each key sink requires an active host transaction");
-    return host.engine.pushEachKeySink(host, token, index, value.asSlice()) catch failHost("each key sink rejected the active collection transaction");
-}
-
 fn eachBoolSinkPush(token: u64, index: u64, value: bool) callconv(.c) u64 {
     const host = current_host orelse failHost("each bool sink requires an active host transaction");
     return host.engine.pushEachBoolSink(host, token, index, value) catch failHost("each bool sink rejected the active collection transaction");
+}
+
+fn rowsSnapshotDescriptionSinkPush(token: u64, generation: abi.RocErasedCallable, item_count: u64, key_bytes: u64) callconv(.c) u64 {
+    const roc_host = current_roc_host orelse @panic("Rows description sink requires an active Roc host");
+    defer abi.decrefErasedCallable(generation, roc_host);
+    const generation_id = if (generation) |value| @intFromPtr(value) else 0;
+    const host = current_host orelse failHost("Rows description sink requires an active host transaction");
+    return host.engine.pushRowsSnapshotDescriptionSink(host, token, generation_id, item_count, key_bytes) catch failHost("Rows snapshot description sink rejected the active transaction");
+}
+
+fn rowsDeltaDescriptionSinkPush(token: u64, generation: abi.RocErasedCallable, parent: abi.RocErasedCallable, item_count: u64, snapshot_key_bytes: u64, op_count: u64, delta_key_count: u64, delta_key_bytes: u64) callconv(.c) u64 {
+    const roc_host = current_roc_host orelse @panic("Rows description sink requires an active Roc host");
+    defer abi.decrefErasedCallable(generation, roc_host);
+    defer abi.decrefErasedCallable(parent, roc_host);
+    const generation_id = if (generation) |value| @intFromPtr(value) else 0;
+    const parent_id = if (parent) |value| @intFromPtr(value) else 0;
+    const host = current_host orelse failHost("Rows description sink requires an active host transaction");
+    return host.engine.pushRowsDeltaDescriptionSink(host, token, generation_id, parent_id, item_count, snapshot_key_bytes, op_count, delta_key_count, delta_key_bytes) catch failHost("Rows delta description sink rejected the active transaction");
+}
+
+fn rowsSnapshotSinkPush(token: u64, index: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
+    const roc_host = current_roc_host orelse @panic("Rows snapshot sink requires an active Roc host");
+    defer abi.RocStrRelease.release(key, roc_host);
+    const host = current_host orelse failHost("Rows snapshot sink requires an active host transaction");
+    return host.engine.pushRowsSnapshotSink(host, token, index, slot, key.asSlice()) catch failHost("Rows snapshot sink rejected the active transaction");
+}
+
+fn rowsDeltaClearSinkPush(token: u64, op_index: u64) callconv(.c) u64 {
+    const host = current_host orelse failHost("Rows delta sink requires an active host transaction");
+    return host.engine.pushRowsDeltaClearSink(host, token, op_index) catch failHost("Rows delta clear sink rejected the active transaction");
+}
+
+fn rowsDeltaInsertSinkPush(token: u64, op_index: u64, before_slot: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
+    const roc_host = current_roc_host orelse @panic("Rows delta sink requires an active Roc host");
+    defer abi.RocStrRelease.release(key, roc_host);
+    const host = current_host orelse failHost("Rows delta sink requires an active host transaction");
+    return host.engine.pushRowsDeltaInsertSink(host, token, op_index, before_slot, slot, key.asSlice()) catch failHost("Rows delta insert sink rejected the active transaction");
+}
+
+fn rowsDeltaMoveRangeSinkPush(token: u64, op_index: u64, first_slot: u64, count: u64, before_slot: u64) callconv(.c) u64 {
+    const host = current_host orelse failHost("Rows delta sink requires an active host transaction");
+    return host.engine.pushRowsDeltaMoveSink(host, token, op_index, first_slot, count, before_slot) catch failHost("Rows delta move sink rejected the active transaction");
+}
+
+fn rowsDeltaRemoveRangeSinkPush(token: u64, op_index: u64, first_slot: u64, count: u64) callconv(.c) u64 {
+    const host = current_host orelse failHost("Rows delta sink requires an active host transaction");
+    return host.engine.pushRowsDeltaRemoveSink(host, token, op_index, first_slot, count) catch failHost("Rows delta remove sink rejected the active transaction");
+}
+
+fn rowsDeltaUpdateSinkPush(token: u64, op_index: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
+    const roc_host = current_roc_host orelse @panic("Rows delta sink requires an active Roc host");
+    defer abi.RocStrRelease.release(key, roc_host);
+    const host = current_host orelse failHost("Rows delta sink requires an active host transaction");
+    return host.engine.pushRowsDeltaUpdateSink(host, token, op_index, slot, key.asSlice()) catch failHost("Rows delta update sink rejected the active transaction");
 }
 
 fn rowsSameGenerationCallable(left: abi.RocErasedCallable, right: abi.RocErasedCallable) callconv(.c) bool {
@@ -3307,8 +3354,15 @@ comptime {
         @export(&hostDbg, .{ .name = "roc_dbg", .visibility = .hidden });
         @export(&hostExpectFailed, .{ .name = "roc_expect_failed", .visibility = .hidden });
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });
-        @export(&eachKeySinkPush, .{ .name = "roc_each_key_sink_push", .visibility = .hidden });
         @export(&eachBoolSinkPush, .{ .name = "roc_each_bool_sink_push", .visibility = .hidden });
+        @export(&rowsSnapshotDescriptionSinkPush, .{ .name = "roc_rows_snapshot_description_sink_push", .visibility = .hidden });
+        @export(&rowsDeltaDescriptionSinkPush, .{ .name = "roc_rows_delta_description_sink_push", .visibility = .hidden });
+        @export(&rowsSnapshotSinkPush, .{ .name = "roc_rows_snapshot_sink_push", .visibility = .hidden });
+        @export(&rowsDeltaClearSinkPush, .{ .name = "roc_rows_delta_clear_sink_push", .visibility = .hidden });
+        @export(&rowsDeltaInsertSinkPush, .{ .name = "roc_rows_delta_insert_sink_push", .visibility = .hidden });
+        @export(&rowsDeltaMoveRangeSinkPush, .{ .name = "roc_rows_delta_move_range_sink_push", .visibility = .hidden });
+        @export(&rowsDeltaRemoveRangeSinkPush, .{ .name = "roc_rows_delta_remove_range_sink_push", .visibility = .hidden });
+        @export(&rowsDeltaUpdateSinkPush, .{ .name = "roc_rows_delta_update_sink_push", .visibility = .hidden });
         @export(&rowsSameGenerationCallable, .{ .name = "roc_rows_same_generation_callable", .visibility = .hidden });
         @export(&hostValueClone, .{ .name = "roc_host_value_clone", .visibility = .hidden });
         @export(&hostValueGetWithCapability, .{ .name = "roc_host_value_get_with_capability", .visibility = .hidden });
@@ -4431,11 +4485,20 @@ fn testReadBoolCallable(roc_host: *abi.RocHost) abi.RocErasedCallable {
     );
 }
 
-fn testEachLenCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
-    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+fn testEachDescribeCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const capture = testCapturePtrAs(TestErasedI64Capture, capture_ptr);
+    const call_args = testErasedArgsAs(erased_calls.ErasedHostValueU64Args, args);
     defer testDropHostValue(roc_host, call_args.arg0);
     const list = testReadHostValueI64List(roc_host, call_args.arg0);
-    writeTestErasedResult(u64, ret, @intCast(list.length));
+    var key_bytes: u64 = 0;
+    for (list.items()) |value| {
+        var buffer: [32]u8 = undefined;
+        const projected = if (capture.amount == 0) value else @divTrunc(value, capture.amount);
+        key_bytes += @intCast((std.fmt.bufPrint(&buffer, "{d}", .{projected}) catch unreachable).len);
+    }
+    const host = hostFromRocHost(roc_host);
+    const token = host.engine.pushRowsSnapshotDescriptionSink(host, call_args.arg1, call_args.arg0, @intCast(list.length), key_bytes) catch @panic("test description sink rejected Rows adapter output");
+    writeTestErasedResult(u64, ret, token);
 }
 
 fn testEachCopyKeysCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
@@ -4450,13 +4513,13 @@ fn testEachCopyKeysCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const
         const key = std.fmt.bufPrint(&buffer, "{d}", .{projected}) catch unreachable;
         const owned_key = abi.RocStr.fromSlice(key, roc_host);
         defer abi.RocStrRelease.release(owned_key, roc_host);
-        token = hostFromRocHost(roc_host).engine.pushEachKeySink(hostFromRocHost(roc_host), token, @intCast(index), owned_key.asSlice()) catch @panic("test key sink rejected collection adapter output");
+        token = hostFromRocHost(roc_host).engine.pushRowsSnapshotSink(hostFromRocHost(roc_host), token, @intCast(index), @intCast(index + 1), owned_key.asSlice()) catch @panic("test snapshot sink rejected Rows adapter output");
     }
     writeTestErasedResult(u64, ret, token);
 }
 
 fn testEachComparePairsCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
-    const call_args = testErasedArgsAs(erased_calls.ErasedHostValueHostValueU64ListU64Args, args);
+    const call_args = testErasedArgsAs(erased_calls.ErasedRowsCompareSlotsArgs, args);
     defer testDropHostValue(roc_host, call_args.arg1);
     defer testDropHostValue(roc_host, call_args.arg0);
     const owned_pairs = call_args.arg2;
@@ -4468,7 +4531,9 @@ fn testEachComparePairsCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]c
     var result_index: usize = 0;
     var pair_index: usize = 0;
     while (pair_index < pairs.len) : (pair_index += 2) {
-        token = hostFromRocHost(roc_host).engine.pushEachBoolSink(hostFromRocHost(roc_host), token, @intCast(result_index), old_items[@intCast(pairs[pair_index])] == new_items[@intCast(pairs[pair_index + 1])]) catch @panic("test bool sink rejected collection adapter output");
+        const old_index = pairs[pair_index] - 1;
+        const new_index = pairs[pair_index + 1] - 1;
+        token = hostFromRocHost(roc_host).engine.pushEachBoolSink(hostFromRocHost(roc_host), token, @intCast(result_index), old_items[@intCast(old_index)] == new_items[@intCast(new_index)]) catch @panic("test bool sink rejected Rows adapter output");
         result_index += 1;
     }
     writeTestErasedResult(u64, ret, token);
@@ -4479,7 +4544,7 @@ fn testEachCloneItemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]cons
     defer testDropHostValue(roc_host, call_args.arg0);
     const list = testReadHostValueI64List(roc_host, call_args.arg0).items();
     const host = hostFromRocHost(roc_host);
-    writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, list[@intCast(call_args.arg1)])));
+    writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, list[@intCast(call_args.arg1 - 1)])));
 }
 
 fn testEachAdapterCallable(roc_host: *abi.RocHost, callback: abi.RocErasedCallableFn) abi.RocErasedCallable {
@@ -10099,7 +10164,7 @@ fn testNodeEachWithSignalCapabilityRowAndCapture(comptime Capture: type, roc_hos
 fn testNodeEachWithSignalCapabilityKeyOfRowAndCapture(comptime Capture: type, roc_host: *abi.RocHost, signal: abi.NodeSignalExpr, items_cap: HostValueCapability, key_of_fn: abi.RocErasedCallableFn, key_of_capture: TestErasedI64Capture, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
     _ = key_of_fn;
     const item_cap = testHostValueCapability(roc_host);
-    const len = testEachAdapterCallable(roc_host, &testEachLenCallable);
+    const describe = writeTestErasedCallable(TestErasedI64Capture, roc_host, &testEachDescribeCallable, &testErasedCallableOnDrop, key_of_capture);
     const copy_keys = writeTestErasedCallable(TestErasedI64Capture, roc_host, &testEachCopyKeysCallable, &testErasedCallableOnDrop, key_of_capture);
     const compare_pairs = testEachAdapterCallable(roc_host, &testEachComparePairsCallable);
     const clone_item_at = testEachAdapterCallable(roc_host, &testEachCloneItemCallable);
@@ -10131,14 +10196,15 @@ fn testNodeEachWithSignalCapabilityKeyOfRowAndCapture(comptime Capture: type, ro
     return .{
         .payload = .{
             .each = .{
-                .items = boxTestNodeSignalExpr(roc_host, signal),
+                .rows = boxTestNodeSignalExpr(roc_host, signal),
                 .ops = .{
-                    .items_capability = hv.retainHostValueCapability(items_cap),
+                    .rows_capability = hv.retainHostValueCapability(items_cap),
                     .item_capability = item_cap,
-                    .len = len,
-                    .copy_keys = copy_keys,
-                    .compare_pairs = compare_pairs,
-                    .clone_item_at = clone_item_at,
+                    .describe = describe,
+                    .copy_snapshot = copy_keys,
+                    .copy_delta = testEachAdapterCallable(roc_host, &testEachCopyKeysCallable),
+                    .compare_slots = compare_pairs,
+                    .clone_item = clone_item_at,
                     .row = row,
                 },
             },
@@ -10182,7 +10248,7 @@ fn testNodeEachWithItemsAndRow(roc_host: *abi.RocHost, items: []const HostValue,
 
 fn testNodeEachSignalWithNestedWhenRows(roc_host: *abi.RocHost, items_signal: abi.NodeSignalExpr, items_cap: HostValueCapability, condition_binder: HostBinderToken, condition_cap: HostValueCapability) abi.Elem {
     const item_cap = testHostValueCapability(roc_host);
-    const len = testEachAdapterCallable(roc_host, &testEachLenCallable);
+    const describe = testEachAdapterCallable(roc_host, &testEachDescribeCallable);
     const copy_keys = testEachAdapterCallable(roc_host, &testEachCopyKeysCallable);
     const compare_pairs = testEachAdapterCallable(roc_host, &testEachComparePairsCallable);
     const clone_item_at = testEachAdapterCallable(roc_host, &testEachCloneItemCallable);
@@ -10199,14 +10265,15 @@ fn testNodeEachSignalWithNestedWhenRows(roc_host: *abi.RocHost, items_signal: ab
     return .{
         .payload = .{
             .each = .{
-                .items = boxTestNodeSignalExpr(roc_host, items_signal),
+                .rows = boxTestNodeSignalExpr(roc_host, items_signal),
                 .ops = .{
-                    .items_capability = hv.retainHostValueCapability(items_cap),
+                    .rows_capability = hv.retainHostValueCapability(items_cap),
                     .item_capability = item_cap,
-                    .len = len,
-                    .copy_keys = copy_keys,
-                    .compare_pairs = compare_pairs,
-                    .clone_item_at = clone_item_at,
+                    .describe = describe,
+                    .copy_snapshot = copy_keys,
+                    .copy_delta = testEachAdapterCallable(roc_host, &testEachCopyKeysCallable),
+                    .compare_slots = compare_pairs,
+                    .clone_item = clone_item_at,
                     .row = row,
                 },
             },
@@ -10409,13 +10476,13 @@ test "signals host tracks descriptor stream closure lifecycle metrics" {
 
     host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
 
-    try std.testing.expectEqual(@as(u64, 76), host.engine.pending_roc_metrics.closure_retains);
+    try std.testing.expectEqual(@as(u64, 78), host.engine.pending_roc_metrics.closure_retains);
     try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.closure_releases);
 
     stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
 
-    try std.testing.expectEqual(@as(u64, 76), host.engine.pending_roc_metrics.closure_retains);
-    try std.testing.expectEqual(@as(u64, 56), host.engine.pending_roc_metrics.closure_releases);
+    try std.testing.expectEqual(@as(u64, 78), host.engine.pending_roc_metrics.closure_retains);
+    try std.testing.expectEqual(@as(u64, 57), host.engine.pending_roc_metrics.closure_releases);
 }
 
 test "signals host descriptors carry capability-owned extension records" {
@@ -10465,7 +10532,7 @@ test "signals host descriptors carry capability-owned extension records" {
 
     try std.testing.expectEqual(@as(usize, 1), stream.eaches.items.len);
     const each = &stream.eaches.items[0];
-    try std.testing.expect(hv.hostValueCapabilitiesMatch(each.ops.items_capability, hostSignalBindingCapability(&host, &each.items)));
+    try std.testing.expect(hv.hostValueCapabilitiesMatch(each.ops.rows_capability, hostSignalBindingCapability(&host, &each.items)));
 
     try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
     const event_reducer = stream.events.items[0].payload_reducer;
