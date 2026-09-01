@@ -1566,64 +1566,71 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.scope_claims.abort();
                     plan.scope_claims.deinit();
                 };
-                var inputs = try PreparedEachInputs.prepareWithOverlay(engine, ctx, roc_host, each, allocator, overlay, &.{}, null);
+                const rows_key = each_runtime.SiteKey{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
+                const rows_site_id = engine.rows_site_ids.get(rows_key) orelse return error.InvalidDescriptor;
+                const rows_store = engine.rowsStore(allocator);
+                const parent_owner = (rows_store.getSiteConst(rows_site_id) catch return error.InvalidDescriptor).owner_token;
+                var inputs = try PreparedEachInputs.prepareWithOverlay(engine, ctx, roc_host, each, allocator, overlay, &.{}, parent_owner.raw());
                 errdefer inputs.deinit();
                 var hooks = PreparedEachRowSyncHooks.initWithScopeClaims(engine, ctx, roc_host, plan.scope_claims);
                 errdefer hooks.deinit();
                 hooks.inputs = &inputs;
                 hooks.base.inputs = &inputs;
                 const site_index = engine.activeEachRowSiteIndex(site.scope_id, site.ordinal) orelse @panic("active each descriptor had no row site");
-                const binding_edits = std.math.add(usize, inputs.generation.item_count, engine.each_row_sites.items[site_index].scope_ids.items.len) catch return error.ResourceLimit;
-                inputs.candidate_bindings.reserve(binding_edits) catch |err| return switch (err) {
-                    error.OutOfMemory => error.OutOfMemory,
-                    error.ResourceLimit => error.ResourceLimit,
+                const direct_delta = inputs.delta != null and !inputs.snapshot.complete;
+                var rows = if (direct_delta)
+                    try prepareDirectRows(engine, ctx, allocator, site, site_index, rows_store, rows_site_id, parent_owner, &inputs, plan.scope_claims)
+                else blk: {
+                    const binding_edits = std.math.add(usize, inputs.generation.item_count, engine.each_row_sites.items[site_index].scope_ids.items.len) catch return error.ResourceLimit;
+                    inputs.candidate_bindings.reserve(binding_edits) catch |err| return switch (err) {
+                        error.OutOfMemory => error.OutOfMemory,
+                        error.ResourceLimit => error.ResourceLimit,
+                    };
+                    break :blk try each_runtime.PreparedRowSync.prepare(allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, site.scope_id, site.ordinal, inputs.keys, inputs.items, &hooks);
                 };
-                var rows = try each_runtime.PreparedRowSync.prepare(allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, site.scope_id, site.ordinal, inputs.keys, inputs.items, &hooks);
                 errdefer {
                     rows.abort(&hooks);
                     rows.deinit();
                 }
-                for (rows.removed_scope_ids) |scope_id| {
-                    const row_handle = scope_runtime.eachRowHandle(engine.scopes.items, scope_id);
-                    inputs.candidate_bindings.removeAssumeCapacity(row_handle) catch return error.InvalidDescriptor;
-                }
-                const rows_key = each_runtime.SiteKey{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
-                const rows_site_id = engine.rows_site_ids.get(rows_key) orelse return error.InvalidDescriptor;
-                const rows_store = engine.rowsStore(allocator);
-                const parent_owner = rows_store.getSiteConst(rows_site_id) catch return error.InvalidDescriptor;
-                const next_owner = rows_site_store.OwnerToken.fromRaw(inputs.generation.rows_generation) catch return error.InvalidDescriptor;
-                const stable_edit_count = std.math.add(usize, rows.next_scope_ids.len, 1) catch return error.ResourceLimit;
-                const stable_edits = allocator.alloc(rows_transition.StableEdit, stable_edit_count) catch return error.OutOfMemory;
-                defer allocator.free(stable_edits);
-                stable_edits[0] = .clear;
-                for (rows.next_scope_ids, 0..) |row_scope_id, row_index| {
-                    const slot = inputs.slot(row_index) orelse return error.InvalidDescriptor;
-                    const key = inputs.key(row_index) orelse return error.InvalidDescriptor;
-                    const row_handle = if (row_scope_id.index() < engine.scopes.items.len and engine.scopes.items[row_scope_id.index()].lifecycle.isActive())
-                        scope_runtime.eachRowHandle(engine.scopes.items, row_scope_id)
-                    else blk: {
-                        for (plan.scope_claims.rows.items) |claimed| if (claimed.scope_id == row_scope_id) switch (claimed.step) {
-                            .each_row => |row_step| break :blk row_step.row_handle,
-                            else => return error.InvalidDescriptor,
+                if (!direct_delta) {
+                    for (rows.removed_scope_ids) |scope_id| {
+                        const row_handle = scope_runtime.eachRowHandle(engine.scopes.items, scope_id);
+                        inputs.candidate_bindings.removeAssumeCapacity(row_handle) catch return error.InvalidDescriptor;
+                    }
+                    const next_owner = rows_site_store.OwnerToken.fromRaw(inputs.generation.rows_generation) catch return error.InvalidDescriptor;
+                    const stable_edit_count = std.math.add(usize, rows.next_scope_ids.len, 1) catch return error.ResourceLimit;
+                    const stable_edits = allocator.alloc(rows_transition.StableEdit, stable_edit_count) catch return error.OutOfMemory;
+                    defer allocator.free(stable_edits);
+                    stable_edits[0] = .clear;
+                    for (rows.next_scope_ids, 0..) |row_scope_id, row_index| {
+                        const slot = inputs.slot(row_index) orelse return error.InvalidDescriptor;
+                        const key = inputs.key(row_index) orelse return error.InvalidDescriptor;
+                        const row_handle = if (row_scope_id.index() < engine.scopes.items.len and engine.scopes.items[row_scope_id.index()].lifecycle.isActive())
+                            scope_runtime.eachRowHandle(engine.scopes.items, row_scope_id)
+                        else blk: {
+                            for (plan.scope_claims.rows.items) |claimed| if (claimed.scope_id == row_scope_id) switch (claimed.step) {
+                                .each_row => |row_step| break :blk row_step.row_handle,
+                                else => return error.InvalidDescriptor,
+                            };
+                            return error.InvalidDescriptor;
                         };
-                        return error.InvalidDescriptor;
+                        stable_edits[row_index + 1] = .{ .insert = .{
+                            .slot = slot,
+                            .before_slot = 0,
+                            .key = key,
+                            .metadata = .{
+                                .item_slot = slot,
+                                .scope_id = row_scope_id.raw(),
+                                .row_handle = row_handle.raw(),
+                            },
+                        } };
+                    }
+                    inputs.rows_transition = rows_transition.PreparedTransition.prepareStable(allocator, rows_store, rows_site_id, parent_owner, next_owner, stable_edits) catch |err| return switch (err) {
+                        error.OutOfMemory => error.OutOfMemory,
+                        error.ResourceLimit => error.ResourceLimit,
+                        else => error.InvalidDescriptor,
                     };
-                    stable_edits[row_index + 1] = .{ .insert = .{
-                        .slot = slot,
-                        .before_slot = 0,
-                        .key = key,
-                        .metadata = .{
-                            .item_slot = slot,
-                            .scope_id = row_scope_id.raw(),
-                            .row_handle = row_handle.raw(),
-                        },
-                    } };
                 }
-                inputs.rows_transition = rows_transition.PreparedTransition.prepareStable(allocator, rows_store, rows_site_id, parent_owner.owner_token, next_owner, stable_edits) catch |err| return switch (err) {
-                    error.OutOfMemory => error.OutOfMemory,
-                    error.ResourceLimit => error.ResourceLimit,
-                    else => error.InvalidDescriptor,
-                };
                 inputs.rows_site_id = rows_site_id;
                 inputs.rows_site_published = true;
                 inputs.candidate_bindings.preflightCommit(&engine.committed_row_bindings) catch |err| return switch (err) {
@@ -1646,6 +1653,7 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.hooks = hooks;
                 plan.rows = rows;
                 plan.removed_handles = removed_handles;
+                plan.direct_delta = direct_delta;
                 plan.phase = .prepared;
                 plan.hooks.inputs = &plan.inputs;
                 plan.hooks.base.inputs = &plan.inputs;
@@ -1656,7 +1664,7 @@ pub fn Engine(comptime Ctx: type) type {
             pub fn commit(self: *@This()) HostKeyedRowDiffResult {
                 if (self.phase.isCommitted()) @panic("prepared active each rows committed twice");
                 if (self.owned_scope_claims != null) self.scope_claims.commit(&self.engine.scopes);
-                const result = self.rows.commit(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, self.inputs.keys, self.inputs.items, &self.hooks);
+                const result = if (self.direct_delta) self.commitDirectRows() else self.rows.commit(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, self.inputs.keys, self.inputs.items, &self.hooks);
                 if (self.inputs.rows_transition) |*transition| transition.commit() else @panic("prepared active each lacked Rows transition");
                 const site_index = self.rows.site_index;
                 const rows_site_id = self.inputs.rows_site_id orelse @panic("prepared active each lacked stable Rows site");
@@ -1677,6 +1685,46 @@ pub fn Engine(comptime Ctx: type) type {
                 // scope-claim overlay does not count scopes on its own.
                 self.engine.recordScopesCreated(result.rows_created);
                 self.phase.markCommitted();
+                return result;
+            }
+
+            fn commitDirectRows(self: *@This()) HostKeyedRowDiffResult {
+                const site = &self.engine.each_row_sites.items[self.rows.site_index];
+                while (self.engine.each_row_memberships_by_scope_id.items.len <= self.rows.highest_scope_id.index()) self.engine.each_row_memberships_by_scope_id.appendAssumeCapacity(null);
+                for (site.scope_ids.items) |scope_id| self.engine.each_row_memberships_by_scope_id.items[scope_id.index()] = null;
+                site.scope_ids.clearRetainingCapacity();
+                site.scope_ids.appendSliceAssumeCapacity(self.rows.next_scope_ids);
+                site.hash_links.items.len = self.rows.next_scope_ids.len;
+                @memset(site.hash_links.items, each_runtime.missing_row_index);
+                site.hash_heads.clearRetainingCapacity();
+                for (self.rows.next_scope_ids, self.rows.key_hashes, 0..) |scope_id, key_hash, row_index| {
+                    const entry = site.hash_heads.getOrPutAssumeCapacity(key_hash);
+                    if (entry.found_existing) site.hash_links.items[row_index] = entry.value_ptr.*;
+                    entry.value_ptr.* = row_index;
+                    self.engine.each_row_memberships_by_scope_id.items[scope_id.index()] = .{ .site_index = self.rows.site_index, .row_index = row_index };
+                }
+
+                var unchanged_count: u64 = 0;
+                var updated_count: u64 = 0;
+                for (self.rows.scope_created, self.rows.row_items_changed) |created, changed| {
+                    if (created) continue;
+                    if (changed) updated_count += 1 else unchanged_count += 1;
+                }
+                const result = HostKeyedRowDiffResult{
+                    .scope_ids = self.rows.next_scope_ids,
+                    .row_items_changed = self.rows.row_items_changed,
+                    .scope_created = self.rows.scope_created,
+                    .removed_scope_ids = self.rows.removed_scope_ids,
+                    .rows_reused = self.rows.next_scope_ids.len - self.rows.created_count,
+                    .rows_created = @intCast(self.rows.created_count),
+                    .rows_removed = @intCast(self.rows.removed_scope_ids.len),
+                    .row_items_unchanged = unchanged_count,
+                    .row_items_updated = updated_count,
+                };
+                self.rows.next_scope_ids = &.{};
+                self.rows.row_items_changed = &.{};
+                self.rows.scope_created = &.{};
+                self.rows.removed_scope_ids = &.{};
                 return result;
             }
 
@@ -6843,14 +6891,30 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.free(plan.replacement_rows);
                 var evaluated: usize = 0;
                 errdefer for (plan.row_elems[0..evaluated]) |*entry| entry.elem.decref(roc_host);
-                for (rows.scope_created, 0..) |created, row_index| {
-                    if (!created) continue;
-                    const key = inputs.key(row_index) orelse return error.InvalidDescriptor;
-                    const row_handle = inputs.row_handles_by_index[row_index] orelse return error.InvalidDescriptor;
-                    const elem = retained_values.callEachRowBuilder(roc_host, each.ops.row, abi.RocStr.fromSlice(key, roc_host), row_handle.raw());
-                    plan.row_elems[evaluated] = .{ .row_index = row_index, .elem = elem };
-                    evaluated += 1;
-                    try AggregateBranchCollection.addCounts(&plan.counts, try countStaticRootNodes(elem));
+                if (inputs.delta != null and !inputs.snapshot.complete) {
+                    const transition = if (inputs.rows_transition) |*value| value else return error.InvalidDescriptor;
+                    var candidate = transition.iterateCandidate();
+                    for (rows.scope_created, 0..) |created, row_index| {
+                        const row = candidate.next() orelse return error.InvalidDescriptor;
+                        if (row.created != created or row.metadata.scope_id != rows.next_scope_ids[row_index].raw()) return error.InvalidDescriptor;
+                        if (!created) continue;
+                        if (row.metadata.row_handle == 0) return error.InvalidDescriptor;
+                        const elem = retained_values.callEachRowBuilder(roc_host, each.ops.row, abi.RocStr.fromSlice(row.key, roc_host), row.metadata.row_handle);
+                        plan.row_elems[evaluated] = .{ .row_index = row_index, .elem = elem };
+                        evaluated += 1;
+                        try AggregateBranchCollection.addCounts(&plan.counts, try countStaticRootNodes(elem));
+                    }
+                    if (candidate.next() != null) return error.InvalidDescriptor;
+                } else {
+                    for (rows.scope_created, 0..) |created, row_index| {
+                        if (!created) continue;
+                        const key = inputs.key(row_index) orelse return error.InvalidDescriptor;
+                        const row_handle = inputs.row_handles_by_index[row_index] orelse return error.InvalidDescriptor;
+                        const elem = retained_values.callEachRowBuilder(roc_host, each.ops.row, abi.RocStr.fromSlice(key, roc_host), row_handle.raw());
+                        plan.row_elems[evaluated] = .{ .row_index = row_index, .elem = elem };
+                        evaluated += 1;
+                        try AggregateBranchCollection.addCounts(&plan.counts, try countStaticRootNodes(elem));
+                    }
                 }
                 return plan;
             }
