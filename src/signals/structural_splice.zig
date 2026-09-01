@@ -524,7 +524,7 @@ pub fn prepareScopeOwnedRemoval(comptime Stream: type, allocator: std.mem.Alloca
     try parent_ids.ensureTotalCapacity(allocator, elem_count);
     try parent_set.ensureTotalCapacity(allocator, std.math.cast(u32, elem_count) orelse return error.ResourceLimit);
     for (elem_ids) |elem_id| {
-        const render_index = stream.renderNodeIndex(elem_id) orelse return error.InvalidDescriptor;
+        const render_index = stream.renderNodeIndexRaw(elem_id) orelse return error.InvalidDescriptor;
         if (render_index >= stream.render_nodes.items.len) return error.InvalidDescriptor;
         const parent_id = descriptor_stream.renderNodeParentElemId(Stream, stream, stream.render_nodes.items[render_index]).raw();
         if (elem_set.contains(parent_id)) continue;
@@ -1045,6 +1045,11 @@ const TestStream = struct {
     pub fn renderNodeIndex(self: *const @This(), elem_id: u64) ?usize {
         for (self.render_nodes.items, 0..) |node, index| if (node.elem_id.raw() == elem_id) return index;
         return null;
+    }
+
+    /// Resolves the test stream's raw render identity.
+    pub fn renderNodeIndexRaw(self: *const @This(), elem_id: u64) ?usize {
+        return self.renderNodeIndex(elem_id);
     }
 
     /// This minimal stream fixture has no node-owned structural descriptors.

@@ -1277,6 +1277,11 @@ pub const Stream = struct {
         return renderNodeIndexImpl(Stream, self, elem_id);
     }
 
+    /// Resolves a raw engine elem id at generic structural-planning seams.
+    pub fn renderNodeIndexRaw(self: *const Stream, elem_id: u64) ?usize {
+        return renderNodeIndexImpl(Stream, self, ElemId.fromRaw(elem_id));
+    }
+
     /// Records the dense render node descriptor index used for O(1) runtime lookup.
     pub fn recordRenderNodeIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, index: usize) void {
         recordRenderNodeIndexImpl(Stream, self, allocator, elem_id, index);
@@ -5664,7 +5669,9 @@ test "sparse render sibling range move touches constant links at 10k" {
 }
 
 test "sparse render membership retires and appends only exact ids" {
-    const allocator = std.testing.allocator;
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
     var active = TestStream{};
     defer active.deinit(allocator);
     var replacement = TestStream{};
@@ -5702,7 +5709,10 @@ test "sparse render membership retires and appends only exact ids" {
     appendRenderChild(TestStream, &replacement, allocator, ElemId.fromRaw(0), ElemId.fromRaw(4));
     appendRenderChild(TestStream, &replacement, allocator, ElemId.fromRaw(4), ElemId.fromRaw(5));
 
+    fault.configure(1);
     commitSparseRenderNodes(TestStream, &active, &replacement, &retired, &.{2});
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    fault.configure(null);
     try std.testing.expectEqual(@as(usize, 4), active.render_nodes.items.len);
     try std.testing.expectEqual(@as(?usize, null), renderNodeIndex(TestStream, &active, ElemId.fromRaw(2)));
     try std.testing.expectEqual(@as(?usize, 1), renderNodeIndex(TestStream, &active, ElemId.fromRaw(3)));

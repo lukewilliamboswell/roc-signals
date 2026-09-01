@@ -6980,54 +6980,45 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareExactRemoval(engine: *Self, allocator: std.mem.Allocator, retired_scope_ids: []const ids.ScopeId, removal: *const structural_splice.PreparedRemoval) CollectionError!@This() {
-                const retired_scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
-                defer allocator.free(retired_scopes);
-                @memset(retired_scopes, false);
-                for (retired_scope_ids) |scope_id| {
-                    if (scope_id.index() >= retired_scopes.len) return error.ResourceLimit;
-                    retired_scopes[scope_id.index()] = true;
-                }
-                const node_members = allocator.alloc(bool, engine.node_identities.items.len) catch return error.OutOfMemory;
-                defer allocator.free(node_members);
-                @memset(node_members, false);
+                var node_capacity = removal.node_indexes.scope_site_indexes.items.len;
+                for (retired_scope_ids) |scope_id| node_capacity = std.math.add(
+                    usize,
+                    node_capacity,
+                    engine.active_stream.scopeOwnedNodeIds(scope_id).len,
+                ) catch return error.ResourceLimit;
+                var unique_nodes = std.AutoHashMapUnmanaged(u64, void).empty;
+                defer unique_nodes.deinit(allocator);
+                unique_nodes.ensureTotalCapacity(allocator, std.math.cast(u32, node_capacity) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                var node_list = std.ArrayListUnmanaged(u64).empty;
+                errdefer node_list.deinit(allocator);
+                node_list.ensureTotalCapacity(allocator, node_capacity) catch return error.OutOfMemory;
+                for (retired_scope_ids) |scope_id| for (engine.active_stream.scopeOwnedNodeIds(scope_id)) |node_id| {
+                    const entry = unique_nodes.getOrPutAssumeCapacity(node_id.raw());
+                    if (!entry.found_existing) node_list.appendAssumeCapacity(node_id.raw());
+                };
                 for (removal.node_indexes.scope_site_indexes.items) |site_index| {
                     if (site_index >= engine.active_stream.scope_sites.items.len) return error.InvalidDescriptor;
                     const node_id = engine.active_stream.scope_sites.items[site_index].node_id;
-                    if (node_id.index() >= node_members.len) return error.ResourceLimit;
-                    node_members[node_id.index()] = true;
+                    const entry = unique_nodes.getOrPutAssumeCapacity(node_id.raw());
+                    if (!entry.found_existing) node_list.appendAssumeCapacity(node_id.raw());
                 }
-                var node_count: usize = 0;
-                for (engine.node_identities.items) |identity| {
-                    if (identity.scope_id.index() >= retired_scopes.len) return error.ResourceLimit;
-                    if (identity.lifecycle.isActive() and (retired_scopes[identity.scope_id.index()] or node_members[identity.node_id.index()])) node_count = std.math.add(usize, node_count, 1) catch return error.ResourceLimit;
+                for (node_list.items) |node_id_raw| {
+                    const node_id = ids.NodeId.fromRaw(node_id_raw);
+                    if (node_id.index() >= engine.node_identities.items.len) return error.ResourceLimit;
+                    const identity = engine.node_identities.items[node_id.index()];
+                    if (!identity.lifecycle.isActive() or identity.node_id != node_id) return error.InvalidDescriptor;
                 }
-                const node_ids = allocator.alloc(u64, node_count) catch return error.OutOfMemory;
+                const node_ids = node_list.toOwnedSlice(allocator) catch return error.OutOfMemory;
                 errdefer allocator.free(node_ids);
-                var node_write: usize = 0;
-                for (engine.node_identities.items) |identity| if (identity.lifecycle.isActive() and (retired_scopes[identity.scope_id.index()] or node_members[identity.node_id.index()])) {
-                    node_ids[node_write] = identity.node_id.raw();
-                    node_write += 1;
-                };
 
-                const dom_members = allocator.alloc(bool, engine.dom_identities.items.len + 1) catch return error.OutOfMemory;
-                defer allocator.free(dom_members);
-                @memset(dom_members, false);
-                for (removal.scan.removed_elem_ids) |elem_id| {
-                    if (elem_id == 0 or elem_id >= dom_members.len) return error.ResourceLimit;
-                    dom_members[@intCast(elem_id)] = true;
-                }
-                var dom_count: usize = 0;
-                for (engine.dom_identities.items, 1..) |identity, elem_id| {
-                    if (identity.scope_id.index() >= retired_scopes.len) return error.ResourceLimit;
-                    if (identity.lifecycle.isActive() and dom_members[elem_id]) dom_count = std.math.add(usize, dom_count, 1) catch return error.ResourceLimit;
-                }
-                const dom_ids = allocator.alloc(u64, dom_count) catch return error.OutOfMemory;
+                const dom_ids = allocator.alloc(u64, removal.scan.removed_elem_ids.len) catch return error.OutOfMemory;
                 errdefer allocator.free(dom_ids);
-                var dom_write: usize = 0;
-                for (engine.dom_identities.items, 1..) |identity, elem_id| if (identity.lifecycle.isActive() and dom_members[elem_id]) {
-                    dom_ids[dom_write] = elem_id;
-                    dom_write += 1;
-                };
+                for (removal.scan.removed_elem_ids, dom_ids) |elem_id, *dom_id_out| {
+                    if (elem_id == 0 or elem_id > engine.dom_identities.items.len) return error.ResourceLimit;
+                    const identity = engine.dom_identities.items[@intCast(elem_id - 1)];
+                    if (!identity.lifecycle.isActive()) return error.InvalidDescriptor;
+                    dom_id_out.* = elem_id;
+                }
                 return .{ .node_ids = node_ids, .dom_ids = dom_ids };
             }
 
@@ -7142,6 +7133,36 @@ pub fn Engine(comptime Ctx: type) type {
                 self.task_indexes_descending = allocator.alloc(usize, task_count) catch return error.OutOfMemory;
                 var write: usize = 0;
                 for (engine.pending_tasks.items, 0..) |task, index| if (target_scopes[task.owner_scope_id.index()]) {
+                    self.task_indexes_descending[write] = index;
+                    write += 1;
+                };
+                std.mem.sort(usize, self.task_indexes_descending, {}, descending);
+                self.retired_tasks.ensureUnusedCapacity(allocator, task_count) catch return error.OutOfMemory;
+                self.cleanup_names.ensureTotalCapacity(allocator, cleanup_indexes.len) catch return error.OutOfMemory;
+                for (cleanup_indexes) |cleanup_index| {
+                    if (cleanup_index >= engine.active_stream.cleanups.items.len) return error.ResourceLimit;
+                    const name = allocator.dupe(u8, engine.active_stream.cleanups.items[cleanup_index].name) catch return error.OutOfMemory;
+                    self.cleanup_names.appendAssumeCapacity(name);
+                }
+                engine.cleanup_events.ensureUnusedCapacity(allocator, self.cleanup_names.items.len) catch return error.OutOfMemory;
+                return self;
+            }
+
+            fn prepareScopeIds(engine: *Self, allocator: std.mem.Allocator, scope_ids: []const ids.ScopeId, cleanup_indexes: []const usize) CollectionError!@This() {
+                var target_scopes = std.AutoHashMapUnmanaged(u64, void).empty;
+                defer target_scopes.deinit(allocator);
+                target_scopes.ensureTotalCapacity(allocator, std.math.cast(u32, scope_ids.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                for (scope_ids) |scope_id| target_scopes.putAssumeCapacity(scope_id.raw(), {});
+
+                var self: @This() = .{};
+                errdefer self.deinit(allocator, null);
+                var task_count: usize = 0;
+                for (engine.pending_tasks.items) |task| if (target_scopes.contains(task.owner_scope_id.raw())) {
+                    task_count = std.math.add(usize, task_count, 1) catch return error.ResourceLimit;
+                };
+                self.task_indexes_descending = allocator.alloc(usize, task_count) catch return error.OutOfMemory;
+                var write: usize = 0;
+                for (engine.pending_tasks.items, 0..) |task, index| if (target_scopes.contains(task.owner_scope_id.raw())) {
                     self.task_indexes_descending[write] = index;
                     write += 1;
                 };
@@ -8596,6 +8617,7 @@ pub fn Engine(comptime Ctx: type) type {
             suppressed_render_parent_ids: []const u64 = &.{},
             retired_active_events: std.ArrayListUnmanaged(ActiveEventDesc) = .empty,
             initial_root: bool = false,
+            sparse_render_membership: bool = false,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 try PreparedReplacementOwner.addRootCounts(total, next);
@@ -8840,6 +8862,228 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer downstream.deinit();
                 try downstream.prepareEachRenderTopology(replacement, layout, render_parents.items);
                 return downstream;
+            }
+
+            fn prepareSparseExternalEach(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, rows: *PreparedActiveEachRows, replacement: *PreparedEachRowReplacementCollection, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
+                const allocator = Ctx.allocator(ctx);
+                const transition = if (rows.inputs.rows_transition) |*value| value else return error.InvalidDescriptor;
+                const rows_store = if (engine.rows_store) |*store| store else return error.InvalidDescriptor;
+                const rows_site_id = rows.inputs.rows_site_id orelse return error.InvalidDescriptor;
+                const previous_bindings = engine.active_each_candidate_bindings;
+                const previous_generation = engine.active_each_candidate_generation;
+                const previous_rows_site_id = engine.active_each_candidate_rows_site_id;
+                engine.active_each_candidate_bindings = &rows.inputs.candidate_bindings;
+                engine.active_each_candidate_generation = rows.inputs.generation;
+                engine.active_each_candidate_rows_site_id = rows_site_id;
+                defer {
+                    engine.active_each_candidate_bindings = previous_bindings;
+                    engine.active_each_candidate_generation = previous_generation;
+                    engine.active_each_candidate_rows_site_id = previous_rows_site_id;
+                }
+
+                const retired_roots = allocator.alloc(ids.ScopeId, transition.removedRows().len) catch return error.OutOfMemory;
+                defer allocator.free(retired_roots);
+                for (transition.removedRows(), retired_roots) |row_id, *scope_id| {
+                    const row = rows_store.getRowConst(rows_site_id, row_id) catch return error.InvalidDescriptor;
+                    scope_id.* = ids.ScopeId.fromRaw(row.metadata.scope_id);
+                }
+
+                const plan = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(plan);
+                plan.* = .{
+                    .engine = engine,
+                    .host_ctx = ctx,
+                    .roc_host = roc_host,
+                    .replacement = replacement.replacement,
+                    .owns_replacement = false,
+                    .sparse_render_membership = true,
+                };
+                errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+
+                const retirement = scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, allocator, engine.scopes.items, retired_roots) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.OverlappingSubtrees => return error.OverlappingRemoval,
+                };
+                const empty_targets = allocator.alloc(bool, 0) catch return error.OutOfMemory;
+                plan.targets = .{ .descriptor_target_scopes = empty_targets, .scope_retirement = retirement };
+                errdefer if (plan.targets) |*targets| targets.deinit(allocator);
+                const retirement_scope_ids = plan.targets.?.scope_retirement.?.scope_ids;
+
+                var exact_removal = structural_splice.prepareScopeOwnedRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, retirement_scope_ids) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                    error.InvalidDescriptor => return error.InvalidDescriptor,
+                };
+                var exact_removal_owned = true;
+                errdefer if (exact_removal_owned) exact_removal.deinit(allocator);
+                const empty_intervals = allocator.alloc(structural_splice.RenderRemovalInterval, 0) catch return error.OutOfMemory;
+                plan.removal = .{ .removal = exact_removal, .intervals_descending = empty_intervals };
+                exact_removal_owned = false;
+                errdefer if (plan.removal) |*removal| removal.deinit(allocator);
+
+                plan.identity_retirements = try PreparedIdentityRetirements.prepareExactRemoval(engine, allocator, retirement_scope_ids, &plan.removal.?.removal);
+                errdefer if (plan.identity_retirements) |*retirements| retirements.deinit(allocator);
+                plan.state_retirement = try PreparedStateRetirementIndexes.prepare(engine, allocator, plan.removal.?.removal.node_indexes.state_indexes.items);
+                errdefer if (plan.state_retirement) |*retirement_plan| retirement_plan.deinit(allocator);
+                try plan.state_retirement.?.reserveRetired(allocator, &plan.retired_state_cells);
+                errdefer plan.retired_state_cells.deinit(allocator);
+
+                var nested_row_scopes: std.ArrayListUnmanaged(ids.ScopeId) = .empty;
+                defer nested_row_scopes.deinit(allocator);
+                nested_row_scopes.ensureTotalCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
+                for (retirement_scope_ids) |scope_id| {
+                    const is_direct = for (retired_roots) |root| {
+                        if (root == scope_id) break true;
+                    } else false;
+                    if (!is_direct) nested_row_scopes.appendAssumeCapacity(scope_id);
+                }
+                plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, nested_row_scopes.items);
+                errdefer if (plan.row_retirement) |*retirement_plan| retirement_plan.deinit(allocator);
+                plan.retired_stable_generations.ensureTotalCapacity(allocator, plan.row_retirement.?.rows.len) catch return error.OutOfMemory;
+                errdefer plan.retired_stable_generations.deinit(allocator);
+                plan.effects_retirement = try PreparedEffectRetirements.prepareScopeIds(engine, allocator, retirement_scope_ids, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
+                errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
+                plan.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
+                errdefer plan.retired_scope_steps.deinit(allocator);
+
+                const removed_event_count = plan.removal.?.removal.descriptor_indexes.event_indexes.items.len;
+                const retained_event_count = std.math.sub(usize, engine.active_events.items.len, removed_event_count) catch return error.ResourceLimit;
+                const final_event_count = std.math.add(usize, retained_event_count, plan.replacement.stream.events.items.len) catch return error.ResourceLimit;
+                engine.active_events.ensureTotalCapacity(allocator, final_event_count) catch return error.OutOfMemory;
+                plan.retired_active_events.ensureTotalCapacity(allocator, removed_event_count) catch return error.OutOfMemory;
+                errdefer plan.retired_active_events.deinit(allocator);
+                if (cache_overlay) |overlay| try engine.reserveCacheBearingDescriptorPublication(allocator, &plan.replacement.stream, overlay);
+                try engine.active_stream.reserveMovedStreamPublication(allocator, &plan.replacement.stream);
+                try prepareRetiredStreamCapacity(engine, allocator, &plan.retired_stream, &plan.removal.?.removal, retirement_scope_ids);
+                const on_change_base = std.math.sub(usize, engine.active_stream.on_changes.items.len, plan.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
+                const mount_base = std.math.sub(usize, engine.active_stream.mounts.items.len, plan.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
+                plan.publication = structural_splice.preparePublicationDeltas(allocator, plan.replacement.stream.render_nodes.items, &.{}, on_change_base, plan.replacement.stream.on_changes.items.len, mount_base, plan.replacement.stream.mounts.items.len) catch return error.OutOfMemory;
+                errdefer if (plan.publication) |*publication| publication.deinit(allocator);
+
+                const suppressed_parent = [_]u64{site.parent_elem_id.raw()};
+                plan.suppressed_render_parent_ids = &suppressed_parent;
+                try plan.prepareGraphRenderAndPublication(allocator);
+                plan.suppressed_render_parent_ids = &.{};
+                try plan.adoptSparseEachRender(site, transition);
+                return plan;
+            }
+
+            fn adoptSparseEachRender(self: *@This(), site: HostNodeScopeSiteDesc, transition: *rows_transition.PreparedTransition) CollectionError!void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                const splice = &(self.render_splice orelse return error.InvalidRenderTopology);
+                if (self.publication_phase.needsAbort()) {
+                    self.render_batch_target.?.abort();
+                    self.publication_phase.resetPreflight();
+                }
+                if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| {
+                    publication.deinit();
+                    self.host_render_publication = null;
+                };
+
+                var touched_roots: usize = 0;
+                var wire_edits: usize = 0;
+                for (transition.orderEdits()) |edit| switch (edit) {
+                    .insert => |insert| {
+                        const candidate = transition.candidateBySlot(insert.slot) orelse return error.InvalidDescriptor;
+                        touched_roots = std.math.add(usize, touched_roots, candidate.metadata.render_span.root_count) catch return error.ResourceLimit;
+                        wire_edits = std.math.add(usize, wire_edits, candidate.metadata.render_span.root_count) catch return error.ResourceLimit;
+                    },
+                    .remove => |remove| touched_roots = std.math.add(usize, touched_roots, remove.root_count) catch return error.ResourceLimit,
+                    .move => |move| {
+                        touched_roots = std.math.add(usize, touched_roots, move.root_count) catch return error.ResourceLimit;
+                        wire_edits = std.math.add(usize, wire_edits, move.root_count) catch return error.ResourceLimit;
+                    },
+                    .clear => |clear| touched_roots = std.math.add(usize, touched_roots, clear.root_count) catch return error.ResourceLimit,
+                };
+                touched_roots = std.math.add(usize, touched_roots, std.math.mul(usize, transition.orderEdits().len, 4) catch return error.ResourceLimit) catch return error.ResourceLimit;
+                var journal = render_cache_mod.PreparedSparseChildren.init(Ctx, allocator, &self.engine.render_cache, site.parent_elem_id, touched_roots, wire_edits) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                    error.MissingParent => return error.InvalidRenderTopology,
+                };
+                var journal_owned = true;
+                defer if (journal_owned) journal.deinit();
+
+                const committed_last = transition.committedLastRenderRoot() catch return error.InvalidDescriptor;
+                const terminal_before: ?ids.ElemId = if (committed_last) |last_root|
+                    self.engine.render_cache.nextSibling(ids.ElemId.fromRaw(last_root))
+                else
+                    null;
+                var roots: std.ArrayListUnmanaged(ids.ElemId) = .empty;
+                defer roots.deinit(allocator);
+                roots.ensureTotalCapacity(allocator, wire_edits) catch return error.OutOfMemory;
+
+                for (transition.orderEdits()) |edit| switch (edit) {
+                    .insert => |insert| {
+                        const candidate = transition.candidateBySlot(insert.slot) orelse return error.InvalidDescriptor;
+                        const span = candidate.metadata.render_span;
+                        if (span.root_count == 0) continue;
+                        roots.clearRetainingCapacity();
+                        var current: ?ids.ElemId = if (span.first_root) |root_id| ids.ElemId.fromRaw(root_id) else null;
+                        for (0..span.root_count) |_| {
+                            const root_id = current orelse return error.InvalidRenderTopology;
+                            const node_index = self.replacement.stream.renderNodeIndex(root_id) orelse return error.InvalidRenderTopology;
+                            if (node_index >= self.replacement.stream.render_nodes.items.len) return error.InvalidRenderTopology;
+                            const node = self.replacement.stream.render_nodes.items[node_index];
+                            if (renderNodeParentElemId(&self.replacement.stream, node) != site.parent_elem_id.raw()) return error.InvalidRenderTopology;
+                            roots.appendAssumeCapacity(root_id);
+                            current = self.replacement.stream.nextRenderSibling(root_id);
+                        }
+                        const before = try sparseRenderAnchor(transition, insert.before_slot, insert.before_root, terminal_before);
+                        journal.insertRootsBefore(Ctx, &self.engine.render_cache, roots.items, before) catch |err| switch (err) {
+                            error.ResourceLimit => return error.ResourceLimit,
+                            error.InvalidAnchor, error.InvalidRange, error.MissingNode => return error.InvalidRenderTopology,
+                        };
+                    },
+                    .remove => |remove| {
+                        if (remove.root_count == 0) continue;
+                        journal.removeRange(Ctx, &self.engine.render_cache, ids.ElemId.fromRaw(remove.first_root orelse return error.InvalidRenderTopology), ids.ElemId.fromRaw(remove.last_root orelse return error.InvalidRenderTopology), remove.root_count) catch |err| switch (err) {
+                            error.ResourceLimit => return error.ResourceLimit,
+                            error.InvalidRange, error.MissingNode => return error.InvalidRenderTopology,
+                        };
+                    },
+                    .move => |move| {
+                        if (move.root_count == 0) continue;
+                        const before = try sparseRenderAnchor(transition, move.before_slot, move.before_root, terminal_before);
+                        journal.moveRangeBefore(Ctx, &self.engine.render_cache, ids.ElemId.fromRaw(move.first_root orelse return error.InvalidRenderTopology), ids.ElemId.fromRaw(move.last_root orelse return error.InvalidRenderTopology), move.root_count, before) catch |err| switch (err) {
+                            error.ResourceLimit => return error.ResourceLimit,
+                            error.InvalidAnchor, error.InvalidRange, error.MissingNode => return error.InvalidRenderTopology,
+                        };
+                    },
+                    .clear => |clear| {
+                        if (clear.root_count == 0) continue;
+                        journal.removeRange(Ctx, &self.engine.render_cache, ids.ElemId.fromRaw(clear.first_root orelse return error.InvalidRenderTopology), ids.ElemId.fromRaw(clear.last_root orelse return error.InvalidRenderTopology), clear.root_count) catch |err| switch (err) {
+                            error.ResourceLimit => return error.ResourceLimit,
+                            error.InvalidRange, error.MissingNode => return error.InvalidRenderTopology,
+                        };
+                    },
+                };
+                splice.adoptSparseChildren(&journal) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ConflictingParent, error.MissingNode => return error.InvalidRenderTopology,
+                };
+                journal_owned = false;
+                splice.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                };
+                self.publication_phase.markPreflighted();
+                if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
+                    self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, splice) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.ResourceLimit => return error.ResourceLimit,
+                        error.InvalidRenderTopology => return error.InvalidRenderTopology,
+                    };
+                }
+            }
+
+            fn sparseRenderAnchor(transition: *const rows_transition.PreparedTransition, before_slot: u64, prepared_root: ?u64, terminal_before: ?ids.ElemId) CollectionError!?ids.ElemId {
+                if (prepared_root) |root| return ids.ElemId.fromRaw(root);
+                if (before_slot != 0 and transition.candidateBySlot(before_slot) != null) {
+                    const anchor = transition.firstRenderRootAtOrAfterSlot(before_slot) catch return error.InvalidDescriptor;
+                    if (anchor) |value| return ids.ElemId.fromRaw(value.root_id);
+                }
+                return terminal_before;
             }
 
             fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, scan_scopes: ?[]const []const bool, external_row_sync: bool, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!void {
@@ -9103,6 +9347,19 @@ pub fn Engine(comptime Ctx: type) type {
                 } else if (!self.initial_root and self.final_render_topology != null) {
                     @panic("structural downstream committed a render topology without re-basing its scope sites");
                 }
+                if (self.sparse_render_membership) {
+                    self.engine.active_stream.commitSparseRenderNodesAssumeCapacity(
+                        &self.replacement.stream,
+                        &self.retired_stream,
+                        removal.scan.removed_elem_ids,
+                    );
+                    self.render_splice.?.applySparseChildrenToIndexedStream(
+                        HostNodeDescriptorStream,
+                        Ctx.allocator(self.host_ctx),
+                        &self.engine.active_stream,
+                    );
+                    self.engine.active_stream.finishSparseRenderNodeRetirement(removal.scan.removed_elem_ids);
+                }
                 self.engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
                     &self.replacement.stream,
                     &self.retired_stream,
@@ -9138,7 +9395,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.initial_root) {
                     std.mem.swap(std.ArrayListUnmanaged(HostRenderNode), &self.engine.active_stream.render_nodes, &self.replacement.stream.render_nodes);
                     std.mem.swap(std.AutoHashMapUnmanaged(u64, HostRenderElemIndex), &self.engine.active_stream.render_metadata_by_elem_id, &self.replacement.stream.render_metadata_by_elem_id);
-                } else if (self.final_render_topology) |*topology| topology.apply(&self.engine.active_stream);
+                } else if (!self.sparse_render_membership) if (self.final_render_topology) |*topology| topology.apply(&self.engine.active_stream);
                 self.engine.validateActiveRenderDescriptorIntegrity();
 
                 self.state_retirement.?.apply(self.engine, &self.retired_state_cells);
@@ -15314,9 +15571,13 @@ pub fn Engine(comptime Ctx: type) type {
                         }
                         plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, plan.each_rows.?, .{}, &.{}, &plan.caches, external_state);
                         errdefer plan.each_replacement.?.deinit();
-                        plan.each_layout = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &plan.each_rows.?.rows, plan.each_replacement.?.replacement_rows, &plan.each_replacement.?.replacement.collection);
-                        errdefer plan.each_layout.?.deinit();
-                        plan.structural_downstream = try PreparedStructuralDownstream.prepareExternalEach(engine, ctx, roc_host, &plan.each_rows.?.rows, &plan.each_rows.?.inputs, plan.each_replacement.?, &plan.each_layout.?, &plan.caches);
+                        if (plan.each_rows.?.direct_delta) {
+                            plan.structural_downstream = try PreparedStructuralDownstream.prepareSparseExternalEach(engine, ctx, roc_host, site, plan.each_rows.?, plan.each_replacement.?, &plan.caches);
+                        } else {
+                            plan.each_layout = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &plan.each_rows.?.rows, plan.each_replacement.?.replacement_rows, &plan.each_replacement.?.replacement.collection);
+                            errdefer plan.each_layout.?.deinit();
+                            plan.structural_downstream = try PreparedStructuralDownstream.prepareExternalEach(engine, ctx, roc_host, &plan.each_rows.?.rows, &plan.each_rows.?.inputs, plan.each_replacement.?, &plan.each_layout.?, &plan.caches);
+                        }
                     } else {
                         plan.structural_downstream = try prepareWhenDownstream(engine, ctx, roc_host, structural_changes, state_update, &plan.caches);
                     }
