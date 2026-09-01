@@ -160,7 +160,10 @@ pub fn build(b: *std.Build) void {
         ".test-out/oom/host.o",                               "-target",
         "wasm32-freestanding-none",                           "-fno-entry",
         "-rdynamic",                                          "-fallow-shlib-undefined",
-        "--initial-memory=1179648",                           "--max-memory=1179648",
+        // The linked fixture's static image currently requires 1,189,156
+        // bytes. Wasm memory is page-granular, so 19 pages is the narrowest
+        // fixed initial/max budget that still leaves memory.grow unavailable.
+        "--initial-memory=1245184",                           "--max-memory=1245184",
         "-femit-bin=.test-out/oom/host-fixture-bounded.wasm",
     });
     link_bounded_wasm_fixture.step.dependOn(&copy_wasm_fixture.step);

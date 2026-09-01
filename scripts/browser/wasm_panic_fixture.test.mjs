@@ -136,7 +136,10 @@ test("bounded linked Wasm memory.grow exhaustion enters fatal containment", asyn
   const host = instance.exports;
   const initialBytes = host.memory.buffer.byteLength;
 
-  assert.equal(initialBytes, 18 * 64 * 1024);
+  // The linker-authenticated static image needs 1,189,156 bytes. Keeping both
+  // initial and maximum at the next whole Wasm page preserves this test's
+  // fixed-memory contract while accommodating static code/data growth.
+  assert.equal(initialBytes, 19 * 64 * 1024);
   assert.throws(() => host.roc_alloc(initialBytes, 8), WebAssembly.RuntimeError);
   assert.equal(host.memory.buffer.byteLength, initialBytes);
   assert.equal(host.roc_ui_is_poisoned(), 1);
