@@ -553,12 +553,14 @@ const ensureElemDescriptorIndexImpl = ensureElemDescriptorIndex;
 const ensureFirstRenderChildSlotImpl = ensureFirstRenderChildSlot;
 const ensureLastRenderChildSlotImpl = ensureLastRenderChildSlot;
 const ensureNextRenderSiblingSlotImpl = ensureNextRenderSiblingSlot;
+const ensurePreviousRenderSiblingSlotImpl = ensurePreviousRenderSiblingSlot;
 const ensureNodeDescriptorIndexImpl = ensureNodeDescriptorIndex;
 const ensureRenderMetadataImpl = ensureRenderMetadata;
 const firstRenderChildImpl = firstRenderChild;
 const insertRenderChildrenImpl = insertRenderChildren;
 const lastRenderChildImpl = lastRenderChild;
 const nextRenderSiblingImpl = nextRenderSibling;
+const previousRenderSiblingImpl = previousRenderSibling;
 const namedEventIndicesImpl = namedEventIndices;
 const nodeDescriptorIndexImpl = nodeDescriptorIndex;
 const recordEachIndexImpl = recordEachIndex;
@@ -578,6 +580,7 @@ const recordWhenIndexImpl = recordWhenIndex;
 const refreshRenderIndexesFromImpl = refreshRenderIndexesFrom;
 const refreshRenderIndexesInRangeImpl = refreshRenderIndexesInRange;
 const removeRenderChildImpl = removeRenderChild;
+const moveRenderSiblingRangeBeforeImpl = moveRenderSiblingRangeBefore;
 const removeRenderMetadataIfEmptyImpl = removeRenderMetadataIfEmpty;
 const renderNodeIndexImpl = renderNodeIndex;
 const replaceRenderChildrenIndexImpl = replaceRenderChildrenIndex;
@@ -1240,6 +1243,11 @@ pub const Stream = struct {
         return ensureNextRenderSiblingSlotImpl(Stream, self, allocator, elem_id);
     }
 
+    /// Ensures the reverse sibling-link slot used by sparse structural splices.
+    pub fn ensurePreviousRenderSiblingSlot(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId) *?ElemId {
+        return ensurePreviousRenderSiblingSlotImpl(Stream, self, allocator, elem_id);
+    }
+
     /// Maintains first render child within the indexed descriptor stream used by both hosts.
     pub fn firstRenderChild(self: *const Stream, parent_elem_id: ElemId) ?ElemId {
         return firstRenderChildImpl(Stream, self, parent_elem_id);
@@ -1255,6 +1263,11 @@ pub const Stream = struct {
         return nextRenderSiblingImpl(Stream, self, elem_id);
     }
 
+    /// Returns the previous sibling without scanning the parent's child list.
+    pub fn previousRenderSibling(self: *const Stream, elem_id: ElemId) ?ElemId {
+        return previousRenderSiblingImpl(Stream, self, elem_id);
+    }
+
     /// Appends render child using capacity that must already satisfy the caller's transaction contract.
     pub fn appendRenderChild(self: *Stream, allocator: std.mem.Allocator, parent_elem_id: ElemId, elem_id: ElemId) void {
         appendRenderChildImpl(Stream, self, allocator, parent_elem_id, elem_id);
@@ -1268,6 +1281,17 @@ pub const Stream = struct {
     /// Removes child while preserving indexes for unaffected render nodes.
     pub fn removeRenderChild(self: *Stream, parent_elem_id: ElemId, elem_id: ElemId) void {
         removeRenderChildImpl(Stream, self, parent_elem_id, elem_id);
+    }
+
+    /// Moves one already-linked contiguous sibling range before an anchor.
+    ///
+    /// The caller must establish that `first_elem_id...last_elem_id` is a
+    /// contiguous child range of `parent_elem_id`, and that `before_elem_id`
+    /// is either null or a child outside that range. The operation mutates no
+    /// dense render-node storage and allocates nothing, so a prepared Rows
+    /// transition can publish a validated move without scanning siblings.
+    pub fn moveRenderSiblingRangeBefore(self: *Stream, parent_elem_id: ElemId, first_elem_id: ElemId, last_elem_id: ElemId, before_elem_id: ?ElemId) RenderSiblingMoveWork {
+        return moveRenderSiblingRangeBeforeImpl(Stream, self, parent_elem_id, first_elem_id, last_elem_id, before_elem_id);
     }
 
     /// Inserts children into prepared render metadata for the affected subtree.
@@ -1305,6 +1329,7 @@ pub const Stream = struct {
         var child: ?u64 = first_child;
         while (child) |child_id| {
             const next = replacement.nextRenderSibling(child_id);
+            self.ensurePreviousRenderSiblingSlot(allocator, child_id).* = replacement.previousRenderSibling(child_id);
             self.ensureNextRenderSiblingSlot(allocator, child_id).* = next;
             child = next;
         }
@@ -2181,6 +2206,7 @@ pub const Stream = struct {
                 const parent_entry = self.render_metadata_by_elem_id.getOrPutAssumeCapacity(desc.parent_elem_id.raw());
                 if (!parent_entry.found_existing) parent_entry.value_ptr.* = .{};
                 const last = parent_entry.value_ptr.last_child;
+                elem_entry.value_ptr.previous_sibling = last;
                 elem_entry.value_ptr.next_sibling = null;
                 if (last) |last_child| {
                     self.render_metadata_by_elem_id.getPtr(last_child.raw()).?.next_sibling = desc.elem_id;
@@ -2379,6 +2405,7 @@ pub const Stream = struct {
         const parent_entry = self.render_metadata_by_elem_id.getOrPutAssumeCapacity(prepared.parent_elem_id.raw());
         if (!parent_entry.found_existing) parent_entry.value_ptr.* = .{};
         const last = parent_entry.value_ptr.last_child;
+        elem_entry.value_ptr.previous_sibling = last;
         elem_entry.value_ptr.next_sibling = null;
         if (last) |last_child| {
             self.render_metadata_by_elem_id.getPtr(last_child.raw()).?.next_sibling = prepared.elem_id;
@@ -3104,12 +3131,18 @@ pub const RenderElemIndex = struct {
     render_node: ?usize = null,
     first_child: ?ElemId = null,
     last_child: ?ElemId = null,
+    previous_sibling: ?ElemId = null,
     next_sibling: ?ElemId = null,
 
     /// Returns an initialized empty value with no retained resources.
     pub fn empty(self: RenderElemIndex) bool {
-        return self.render_node == null and self.first_child == null and self.last_child == null and self.next_sibling == null;
+        return self.render_node == null and self.first_child == null and self.last_child == null and self.previous_sibling == null and self.next_sibling == null;
     }
+};
+
+/// Exact pointer-write work performed by one sparse render-sibling move.
+pub const RenderSiblingMoveWork = struct {
+    links_touched: u8 = 0,
 };
 
 pub const ElemDescriptorIndex = struct {
@@ -3504,6 +3537,11 @@ pub fn ensureNextRenderSiblingSlot(comptime StreamType: type, stream: *StreamTyp
     return &ensureRenderMetadata(StreamType, stream, allocator, elem_id).next_sibling;
 }
 
+/// Ensures the reverse sibling-link slot used by sparse structural splices.
+pub fn ensurePreviousRenderSiblingSlot(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: ElemId) *?ElemId {
+    return &ensureRenderMetadata(StreamType, stream, allocator, elem_id).previous_sibling;
+}
+
 /// Maintains first render child within the indexed descriptor stream used by both hosts.
 pub fn firstRenderChild(comptime StreamType: type, stream: *const StreamType, parent_elem_id: ElemId) ?ElemId {
     const metadata = stream.render_metadata_by_elem_id.get(parent_elem_id.raw()) orelse return null;
@@ -3522,6 +3560,12 @@ pub fn nextRenderSibling(comptime StreamType: type, stream: *const StreamType, e
     return metadata.next_sibling;
 }
 
+/// Returns the previous sibling without scanning the parent's child list.
+pub fn previousRenderSibling(comptime StreamType: type, stream: *const StreamType, elem_id: ElemId) ?ElemId {
+    const metadata = stream.render_metadata_by_elem_id.get(elem_id.raw()) orelse return null;
+    return metadata.previous_sibling;
+}
+
 /// Appends render child using capacity that must already satisfy the caller's transaction contract.
 pub fn appendRenderChild(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, parent_elem_id: ElemId, elem_id: ElemId) void {
     _ = ensureRenderMetadata(StreamType, stream, allocator, parent_elem_id);
@@ -3530,6 +3574,7 @@ pub fn appendRenderChild(comptime StreamType: type, stream: *StreamType, allocat
     const parent_metadata = stream.render_metadata_by_elem_id.getPtr(parent_elem_id.raw()) orelse @panic("render child index was missing its parent links");
     const elem_metadata = stream.render_metadata_by_elem_id.getPtr(elem_id.raw()) orelse @panic("render child index was missing its child links");
     const last = parent_metadata.last_child;
+    elem_metadata.previous_sibling = last;
     elem_metadata.next_sibling = null;
     if (last) |last_child| {
         const last_metadata = stream.render_metadata_by_elem_id.getPtr(last_child.raw()) orelse @panic("render child index was missing its last child links");
@@ -3546,6 +3591,7 @@ pub fn clearRenderChildren(comptime StreamType: type, stream: *StreamType, paren
     while (child) |child_id| {
         const next = nextRenderSibling(StreamType, stream, child_id);
         const child_metadata = stream.render_metadata_by_elem_id.getPtr(child_id) orelse @panic("render child index referenced a child without links");
+        child_metadata.previous_sibling = null;
         child_metadata.next_sibling = null;
         removeRenderMetadataIfEmpty(StreamType, stream, child_id);
         child = next;
@@ -3560,31 +3606,68 @@ pub fn clearRenderChildren(comptime StreamType: type, stream: *StreamType, paren
 /// Removes child while preserving indexes for unaffected render nodes.
 pub fn removeRenderChild(comptime StreamType: type, stream: *StreamType, parent_elem_id: ElemId, elem_id: ElemId) void {
     const parent_metadata = stream.render_metadata_by_elem_id.getPtr(parent_elem_id.raw()) orelse @panic("render child index was missing its parent list");
+    const elem_metadata = stream.render_metadata_by_elem_id.getPtr(elem_id.raw()) orelse @panic("render child index removed a child without links");
+    const previous = elem_metadata.previous_sibling;
+    const next = elem_metadata.next_sibling;
+    if (previous) |previous_id| {
+        const previous_metadata = stream.render_metadata_by_elem_id.getPtr(previous_id.raw()) orelse @panic("render child index referenced a previous child without links");
+        previous_metadata.next_sibling = next;
+    } else if (parent_metadata.first_child == elem_id) {
+        parent_metadata.first_child = next;
+    } else @panic("render child index was missing a child");
+    if (next) |next_id| {
+        const next_metadata = stream.render_metadata_by_elem_id.getPtr(next_id.raw()) orelse @panic("render child index referenced a next child without links");
+        next_metadata.previous_sibling = previous;
+    } else if (parent_metadata.last_child == elem_id) {
+        parent_metadata.last_child = previous;
+    } else @panic("render child index was missing a child");
+    elem_metadata.previous_sibling = null;
+    elem_metadata.next_sibling = null;
+    removeRenderMetadataIfEmpty(StreamType, stream, elem_id);
+    removeRenderMetadataIfEmpty(StreamType, stream, parent_elem_id);
+}
 
-    var previous: ?ElemId = null;
-    var current = parent_metadata.first_child;
-    while (current) |child_id| {
-        const next = nextRenderSibling(StreamType, stream, child_id);
-        if (child_id == elem_id) {
-            if (previous) |previous_id| {
-                const previous_metadata = stream.render_metadata_by_elem_id.getPtr(previous_id.raw()) orelse @panic("render child index referenced a previous child without links");
-                previous_metadata.next_sibling = next;
-            } else {
-                parent_metadata.first_child = next;
-            }
-            if (lastRenderChild(StreamType, stream, parent_elem_id) == elem_id) {
-                parent_metadata.last_child = previous;
-            }
-            const elem_metadata = stream.render_metadata_by_elem_id.getPtr(elem_id.raw()) orelse @panic("render child index removed a child without links");
-            elem_metadata.next_sibling = null;
-            removeRenderMetadataIfEmpty(StreamType, stream, elem_id);
-            removeRenderMetadataIfEmpty(StreamType, stream, parent_elem_id);
-            return;
-        }
-        previous = child_id;
-        current = next;
+/// Moves one already-linked contiguous sibling range before an anchor.
+///
+/// Range membership and anchor exclusion are validated by the Rows transition
+/// and its render-order overlay before this allocation-free publication step.
+pub fn moveRenderSiblingRangeBefore(comptime StreamType: type, stream: *StreamType, parent_elem_id: ElemId, first_elem_id: ElemId, last_elem_id: ElemId, before_elem_id: ?ElemId) RenderSiblingMoveWork {
+    if (before_elem_id == first_elem_id) return .{};
+    const parent = stream.render_metadata_by_elem_id.getPtr(parent_elem_id.raw()) orelse @panic("render sibling move was missing its parent");
+    const first = stream.render_metadata_by_elem_id.getPtr(first_elem_id.raw()) orelse @panic("render sibling move was missing its first child");
+    const last = stream.render_metadata_by_elem_id.getPtr(last_elem_id.raw()) orelse @panic("render sibling move was missing its last child");
+    const old_previous = first.previous_sibling;
+    const old_next = last.next_sibling;
+    if (old_next == before_elem_id) return .{};
+
+    if (old_previous) |previous_id| {
+        stream.render_metadata_by_elem_id.getPtr(previous_id.raw()).?.next_sibling = old_next;
+    } else {
+        parent.first_child = old_next;
     }
-    @panic("render child index was missing a child");
+    if (old_next) |next_id| {
+        stream.render_metadata_by_elem_id.getPtr(next_id.raw()).?.previous_sibling = old_previous;
+    } else {
+        parent.last_child = old_previous;
+    }
+
+    const insertion_previous = if (before_elem_id) |before_id|
+        (stream.render_metadata_by_elem_id.getPtr(before_id.raw()) orelse @panic("render sibling move was missing its anchor")).previous_sibling
+    else
+        parent.last_child;
+    first.previous_sibling = insertion_previous;
+    last.next_sibling = before_elem_id;
+    if (insertion_previous) |previous_id| {
+        stream.render_metadata_by_elem_id.getPtr(previous_id.raw()).?.next_sibling = first_elem_id;
+    } else {
+        parent.first_child = first_elem_id;
+    }
+    if (before_elem_id) |before_id| {
+        stream.render_metadata_by_elem_id.getPtr(before_id.raw()).?.previous_sibling = last_elem_id;
+    } else {
+        parent.last_child = last_elem_id;
+    }
+    return .{ .links_touched = 6 };
 }
 
 /// Inserts children into prepared render metadata for the affected subtree.
@@ -3608,7 +3691,9 @@ pub fn insertRenderChildren(comptime StreamType: type, stream: *StreamType, allo
     }
 
     for (elem_ids, 0..) |elem_id, elem_index| {
+        const previous_insert = if (elem_index == 0) previous else elem_ids[elem_index - 1];
         const next_insert = if (elem_index + 1 < elem_ids.len) elem_ids[elem_index + 1] else next;
+        ensurePreviousRenderSiblingSlot(StreamType, stream, allocator, elem_id).* = previous_insert;
         ensureNextRenderSiblingSlot(StreamType, stream, allocator, elem_id).* = next_insert;
     }
 
@@ -3620,6 +3705,8 @@ pub fn insertRenderChildren(comptime StreamType: type, stream: *StreamType, allo
     }
     if (next == null) {
         parent_metadata.last_child = elem_ids[elem_ids.len - 1];
+    } else {
+        ensurePreviousRenderSiblingSlot(StreamType, stream, allocator, next.?).* = elem_ids[elem_ids.len - 1];
     }
 }
 
@@ -5321,12 +5408,16 @@ test "render metadata helpers maintain child order and indexes" {
     var children = streamDirectChildren(TestStream, allocator, &stream, ElemId.fromRaw(0));
     defer allocator.free(children);
     try std.testing.expectEqualSlices(ElemId, &.{ ElemId.fromRaw(1), ElemId.fromRaw(2), ElemId.fromRaw(3) }, children);
+    try std.testing.expectEqual(@as(?ElemId, null), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(1)));
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(1)), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(2)));
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(2)), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(3)));
     try std.testing.expectEqual(@as(usize, 1), childInsertionIndexForRenderIndex(TestStream, &stream, ElemId.fromRaw(0), 1));
 
     removeRenderChild(TestStream, &stream, ElemId.fromRaw(0), ElemId.fromRaw(2));
     allocator.free(children);
     children = streamDirectChildren(TestStream, allocator, &stream, ElemId.fromRaw(0));
     try std.testing.expectEqualSlices(ElemId, &.{ ElemId.fromRaw(1), ElemId.fromRaw(3) }, children);
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(1)), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(3)));
 
     clearRenderNodeIndex(TestStream, &stream, ElemId.fromRaw(2), 1);
     try std.testing.expectEqual(@as(?usize, null), renderNodeIndex(TestStream, &stream, ElemId.fromRaw(2)));
@@ -5343,4 +5434,39 @@ test "render metadata helpers maintain child order and indexes" {
     refreshRenderIndexesFrom(TestStream, &stream, allocator, 2, &metrics);
     try std.testing.expectEqual(@as(?usize, 2), renderNodeIndex(TestStream, &stream, ElemId.fromRaw(2)));
     try std.testing.expectEqual(@as(u64, 2), metrics.render_indexes_refreshed);
+}
+
+test "sparse render sibling range move touches constant links at 10k" {
+    const allocator = std.testing.allocator;
+    var stream = TestStream{};
+    defer stream.deinit(allocator);
+
+    const parent = ElemId.fromRaw(0);
+    for (1..10_001) |raw| {
+        appendRenderChild(TestStream, &stream, allocator, parent, ElemId.fromRaw(@intCast(raw)));
+    }
+
+    const work = moveRenderSiblingRangeBefore(
+        TestStream,
+        &stream,
+        parent,
+        ElemId.fromRaw(5_000),
+        ElemId.fromRaw(5_001),
+        ElemId.fromRaw(2),
+    );
+    try std.testing.expectEqual(@as(u8, 6), work.links_touched);
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(1)), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(5_000)));
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(5_001)), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(2)));
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(4_999)), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(5_002)));
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(2)), nextRenderSibling(TestStream, &stream, ElemId.fromRaw(5_001)));
+
+    const no_op = moveRenderSiblingRangeBefore(
+        TestStream,
+        &stream,
+        parent,
+        ElemId.fromRaw(5_000),
+        ElemId.fromRaw(5_001),
+        ElemId.fromRaw(2),
+    );
+    try std.testing.expectEqual(@as(u8, 0), no_op.links_touched);
 }
