@@ -1681,35 +1681,42 @@ fn prepareGraphAppendWithWork(comptime Record: type, allocator: std.mem.Allocato
 /// entered, while a record outside the graph is walked once through its inputs.
 /// This is the same walk `prepareGraphAppend` performs, so a release closure
 /// prepared with the replacement roots nets the retains the append will add.
-fn countExistingRetains(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record, existing: []usize) (std.mem.Allocator.Error || error{InvalidRelease})!void {
-    var visited: std.ArrayListUnmanaged(*Record) = .empty;
+fn countExistingRetainsWithWork(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record, existing: []usize, lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidRelease})!void {
+    var visited: std.AutoHashMapUnmanaged(*Record, void) = .empty;
     defer visited.deinit(allocator);
+    const root_capacity = std.math.cast(u32, roots.len) orelse return error.InvalidRelease;
+    try visited.ensureUnusedCapacity(allocator, root_capacity);
     const Walker = struct {
-        fn walk(record: *Record, walk_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), counts: []usize, seen: *std.ArrayListUnmanaged(*Record)) (std.mem.Allocator.Error || error{InvalidRelease})!void {
+        fn walk(record: *Record, walk_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), counts: []usize, seen: *std.AutoHashMapUnmanaged(*Record, void), work: ?*usize) (std.mem.Allocator.Error || error{InvalidRelease})!void {
             if (record.active_graph_id) |original_id| {
                 const index: usize = @intCast(original_id);
                 if (index >= graph_nodes.len or graph_nodes[index].record != record) return error.InvalidRelease;
                 counts[index] = std.math.add(usize, counts[index], 1) catch return error.InvalidRelease;
                 return;
             }
-            if (recordSliceContains(Record, seen.items, record)) return;
-            try seen.append(walk_allocator, record);
+            if (work) |counter| counter.* += 1;
+            const entry = try seen.getOrPut(walk_allocator, record);
+            if (entry.found_existing) return;
             switch (record.payload) {
-                .map => |payload| try walk(payload.input, walk_allocator, graph_nodes, counts, seen),
-                .select => |payload| try walk(payload.input, walk_allocator, graph_nodes, counts, seen),
+                .map => |payload| try walk(payload.input, walk_allocator, graph_nodes, counts, seen, work),
+                .select => |payload| try walk(payload.input, walk_allocator, graph_nodes, counts, seen, work),
                 .map2 => |payload| {
-                    try walk(payload.left, walk_allocator, graph_nodes, counts, seen);
-                    if (payload.right != payload.left) try walk(payload.right, walk_allocator, graph_nodes, counts, seen);
+                    try walk(payload.left, walk_allocator, graph_nodes, counts, seen, work);
+                    if (payload.right != payload.left) try walk(payload.right, walk_allocator, graph_nodes, counts, seen, work);
                 },
                 .combine => |payload| for (payload.children, 0..) |child, child_index| {
                     if (recordSliceContains(Record, payload.children[0..child_index], child)) continue;
-                    try walk(child, walk_allocator, graph_nodes, counts, seen);
+                    try walk(child, walk_allocator, graph_nodes, counts, seen, work);
                 },
                 .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
             }
         }
     };
-    for (roots) |root| try Walker.walk(root, allocator, nodes, existing, &visited);
+    for (roots) |root| try Walker.walk(root, allocator, nodes, existing, &visited, lookup_work);
+}
+
+fn countExistingRetains(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record, existing: []usize) (std.mem.Allocator.Error || error{InvalidRelease})!void {
+    return countExistingRetainsWithWork(Record, allocator, nodes, roots, existing, null);
 }
 
 /// Simulates descriptor-root releases, recursive zero-use inputs, and dense
@@ -2473,6 +2480,37 @@ test "prepared graph append indexes new records with linear lookup work" {
     const large: usize = 512;
     try std.testing.expectEqual(3 * small, try measure(small));
     try std.testing.expectEqual(3 * large, try measure(large));
+}
+
+test "replacement retain indexing has linear work and terminates shared cycles" {
+    const measureShared = struct {
+        fn run(count: usize) !usize {
+            var shared = LifecycleTestRecord{ .id = 1, .payload = .const_value };
+            const maps = try std.testing.allocator.alloc(LifecycleTestRecord, count);
+            defer std.testing.allocator.free(maps);
+            const roots = try std.testing.allocator.alloc(*LifecycleTestRecord, count);
+            defer std.testing.allocator.free(roots);
+            for (maps, roots, 0..) |*map, *root, index| {
+                map.* = .{ .id = @intCast(index + 2), .payload = .{ .map = .{ .input = &shared } } };
+                root.* = map;
+            }
+            var work: usize = 0;
+            try countExistingRetainsWithWork(LifecycleTestRecord, std.testing.allocator, &.{}, roots, &.{}, &work);
+            return work;
+        }
+    }.run;
+
+    const small: usize = 64;
+    const large: usize = 512;
+    try std.testing.expectEqual(2 * small, try measureShared(small));
+    try std.testing.expectEqual(2 * large, try measureShared(large));
+
+    var left = LifecycleTestRecord{ .id = 1, .payload = .const_value };
+    var right = LifecycleTestRecord{ .id = 2, .payload = .{ .map = .{ .input = &left } } };
+    left.payload = .{ .map = .{ .input = &right } };
+    var cycle_work: usize = 0;
+    try countExistingRetainsWithWork(LifecycleTestRecord, std.testing.allocator, &.{}, &.{&left}, &.{}, &cycle_work);
+    try std.testing.expectEqual(@as(usize, 3), cycle_work);
 }
 
 test "prepared release closure nets replacement retains so a handed-over record survives" {
