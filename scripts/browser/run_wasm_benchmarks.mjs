@@ -66,6 +66,7 @@ function runAction(root, action) {
 
 function runtimeSignature(root, runtime) {
   const rowNodes = rows(root);
+  const { wasm_pages: _allocatorDependentPages, ...semanticRuntimeState } = runtime.benchmarkRuntimeState();
   return JSON.stringify({
     rowCount: rowNodes.length,
     first: rowNodes[0]?.getAttribute("data-row-id") ?? "",
@@ -74,7 +75,7 @@ function runtimeSignature(root, runtime) {
     last: rowNodes.at(-1)?.getAttribute("data-row-id") ?? "",
     selected: rowNodes.find((entry) => entry.className === "danger")?.getAttribute("data-row-id") ?? "",
     row1: row(root, "1")?.textContent ?? "",
-    ...runtime.benchmarkRuntimeState(),
+    ...semanticRuntimeState,
   });
 }
 

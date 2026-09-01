@@ -1482,6 +1482,36 @@ fn allocatedSizeForRocRequest(length: usize) usize {
     return if (length == 0) 1 else length;
 }
 
+const InlineRocAllocationHeader = struct {
+    requested_size: usize,
+    backing_size: usize,
+};
+
+fn inlineRocHeaderOffset(alignment: std.mem.Alignment) usize {
+    return std.mem.alignForward(usize, @sizeOf(InlineRocAllocationHeader), alignment.toByteUnits());
+}
+
+fn allocInlineRocMemory(length: usize, alignment_arg: usize) ?*anyopaque {
+    const alignment = alignmentFromBytes(@max(alignment_arg, @sizeOf(usize)));
+    const header_offset = inlineRocHeaderOffset(alignment);
+    const backing_size = std.math.add(usize, header_offset, allocatedSizeForRocRequest(length)) catch return null;
+    const base = allocator().rawAlloc(backing_size, alignment, @returnAddress()) orelse return null;
+    const user_ptr = base + header_offset;
+    const header: *InlineRocAllocationHeader = @ptrFromInt(@intFromPtr(user_ptr) - @sizeOf(InlineRocAllocationHeader));
+    header.* = .{ .requested_size = length, .backing_size = backing_size };
+    return @ptrCast(user_ptr);
+}
+
+fn freeInlineRocMemory(ptr: *anyopaque, alignment_arg: usize) InlineRocAllocationHeader {
+    const alignment = alignmentFromBytes(@max(alignment_arg, @sizeOf(usize)));
+    const user_ptr: [*]u8 = @ptrCast(ptr);
+    const header: *const InlineRocAllocationHeader = @ptrFromInt(@intFromPtr(user_ptr) - @sizeOf(InlineRocAllocationHeader));
+    const metadata = header.*;
+    const base = user_ptr - inlineRocHeaderOffset(alignment);
+    allocator().rawFree(base[0..metadata.backing_size], alignment, @returnAddress());
+    return metadata;
+}
+
 fn findRocAllocationIndex(ptr: *anyopaque) ?usize {
     const ptr_addr = @intFromPtr(ptr);
     for (roc_allocations.items, 0..) |alloc, index| {
@@ -1672,7 +1702,10 @@ fn freeRocAllocation(ptr: *anyopaque, alignment_arg: usize) RocAllocation {
 
 export fn roc_alloc(length: usize, alignment: usize) callconv(.c) ?*anyopaque {
     if (host_poisoned) @trap();
-    const result = allocRocMemory(length, alignment) orelse failHostWith("Roc allocation failed");
+    const result = if (comptime build_options.wasm_allocation_ledger)
+        allocRocMemory(length, alignment) orelse failHostWith("Roc allocation failed")
+    else
+        allocInlineRocMemory(length, alignment) orelse failHostWith("Roc allocation failed");
     if (comptime build_options.wasm_benchmark) {
         roc_benchmark_counters.alloc_calls += 1;
         roc_benchmark_counters.allocated_bytes += length;
@@ -1749,7 +1782,10 @@ export fn roc_ui_debug_live_allocation_phase(index: usize) callconv(.c) u32 {
 }
 
 export fn roc_dealloc(ptr: *anyopaque, alignment: usize) callconv(.c) void {
-    const freed = freeRocAllocation(ptr, alignment);
+    const freed = if (comptime build_options.wasm_allocation_ledger)
+        freeRocAllocation(ptr, alignment)
+    else
+        freeInlineRocMemory(ptr, alignment);
     if (comptime build_options.wasm_benchmark) {
         roc_benchmark_counters.dealloc_calls += 1;
         roc_benchmark_counters.deallocated_bytes += freed.requested_size;
@@ -1759,6 +1795,17 @@ export fn roc_dealloc(ptr: *anyopaque, alignment: usize) callconv(.c) void {
 }
 
 export fn roc_realloc(ptr: *anyopaque, new_length: usize, alignment_arg: usize) callconv(.c) ?*anyopaque {
+    if (comptime !build_options.wasm_allocation_ledger) {
+        const old_user_ptr: [*]const u8 = @ptrCast(ptr);
+        const old_header: *const InlineRocAllocationHeader = @ptrFromInt(@intFromPtr(old_user_ptr) - @sizeOf(InlineRocAllocationHeader));
+        const old_requested_size = old_header.requested_size;
+        const new_ptr = allocInlineRocMemory(new_length, alignment_arg) orelse failHostWith("Roc reallocation failed");
+        const new_user_ptr: [*]u8 = @ptrCast(new_ptr);
+        const copy_size = @min(old_requested_size, new_length);
+        @memcpy(new_user_ptr[0..copy_size], old_user_ptr[0..copy_size]);
+        _ = freeInlineRocMemory(ptr, alignment_arg);
+        return new_ptr;
+    }
     const old_index = findExactRocAllocationIndex(ptr) orelse {
         if (findRocAllocationIndex(ptr)) |interior_index| {
             const alloc = roc_allocations.items[interior_index];

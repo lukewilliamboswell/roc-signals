@@ -52,6 +52,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "metrics", metrics);
     build_options.addOption(bool, "fuzz_fixtures", false);
     build_options.addOption(bool, "wasm_benchmark", false);
+    build_options.addOption(bool, "wasm_allocation_ledger", optimize == .Debug or optimize == .ReleaseSafe);
     const build_options_module = build_options.createModule();
     // Fuzz targets drive the native host through its test fixture surface and
     // assert on runtime metrics, so they get their own options module.
@@ -59,6 +60,7 @@ pub fn build(b: *std.Build) void {
     fuzz_build_options.addOption(bool, "metrics", true);
     fuzz_build_options.addOption(bool, "fuzz_fixtures", true);
     fuzz_build_options.addOption(bool, "wasm_benchmark", false);
+    fuzz_build_options.addOption(bool, "wasm_allocation_ledger", true);
     const fuzz_build_options_module = fuzz_build_options.createModule();
 
     const build_hosts_step = b.step("build-test-hosts", "Build platform host artifacts");
@@ -95,6 +97,7 @@ pub fn build(b: *std.Build) void {
     wasm_benchmark_options.addOption(bool, "metrics", true);
     wasm_benchmark_options.addOption(bool, "fuzz_fixtures", false);
     wasm_benchmark_options.addOption(bool, "wasm_benchmark", true);
+    wasm_benchmark_options.addOption(bool, "wasm_allocation_ledger", true);
     const wasm_benchmark_host = buildWasmHostObject(b, wasm_target, .ReleaseFast, wasm_benchmark_options.createModule());
     const wasm_production_benchmark_host = buildWasmHostObject(b, wasm_target, .ReleaseFast, build_options_module);
     const install_wasm_production_benchmark_host = b.addInstallFileWithDir(
@@ -145,10 +148,17 @@ pub fn build(b: *std.Build) void {
         "scripts/browser/wasm_memory_views.test.mjs",
         "scripts/browser/wasm_panic_fixture.test.mjs",
     });
+    const wasm_integration_options = b.addOptions();
+    wasm_integration_options.addOption(bool, "metrics", metrics);
+    wasm_integration_options.addOption(bool, "fuzz_fixtures", false);
+    wasm_integration_options.addOption(bool, "wasm_benchmark", false);
+    wasm_integration_options.addOption(bool, "wasm_allocation_ledger", true);
+    const wasm_integration_host = buildWasmHostObject(b, wasm_target, optimize, wasm_integration_options.createModule());
     const mkdir_wasm_fixture = b.addSystemCommand(&.{ "mkdir", "-p", ".test-out/oom" });
-    const copy_wasm_fixture = b.addSystemCommand(&.{ "cp", "platform/targets/wasm32/host.wasm", ".test-out/oom/host.o" });
+    const copy_wasm_fixture = b.addSystemCommand(&.{"cp"});
+    copy_wasm_fixture.addFileArg(wasm_integration_host.getEmittedBin());
+    copy_wasm_fixture.addArg(".test-out/oom/host.o");
     copy_wasm_fixture.step.dependOn(&mkdir_wasm_fixture.step);
-    copy_wasm_fixture.step.dependOn(wasm_host_step);
     const link_wasm_fixture = b.addSystemCommand(&.{
         "zig",       "build-exe",                ".test-out/oom/host.o",
         "-target",   "wasm32-freestanding-none", "-fno-entry",
