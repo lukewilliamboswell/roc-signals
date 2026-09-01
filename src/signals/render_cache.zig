@@ -871,9 +871,9 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         custom_attr_wire_edits: std.ArrayListUnmanaged(PreparedCustomTextAttrsReplacement.WireEdit) = .empty,
         named_events: std.ArrayListUnmanaged(PreparedNamedEventsReplacement) = .empty,
         named_event_wire_edits: std.ArrayListUnmanaged(PreparedNamedEventsReplacement.WireEdit) = .empty,
-        provisional_nodes: std.AutoHashMapUnmanaged(u64, void) = .empty,
+        provisional_nodes: std.DynamicBitSetUnmanaged = .{},
         reused_nodes: std.AutoHashMapUnmanaged(u64, ReusedNodeFields) = .empty,
-        parent_intent_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
+        parent_intent_indexes: []usize = &.{},
         parent_intents: std.ArrayListUnmanaged(ParentIntent) = .empty,
         cache: *const Cache(Ctx),
         sink_command_count: usize = 0,
@@ -881,6 +881,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         phase: JournalPhase = .prepared,
 
         const ParentIntent = struct { child_id: ids.ElemId, next: ?ids.ElemId, retired: ?ids.ElemId };
+        const no_parent_intent = std.math.maxInt(usize);
 
         /// Reserves every plan-local journal and persistent tag slot before collection.
         pub fn init(allocator: std.mem.Allocator, cache: *Cache(Ctx), prepared_counts: PreparedRenderCounts) (std.mem.Allocator.Error || error{ResourceLimit})!Self {
@@ -903,24 +904,31 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             try self.custom_attr_wire_edits.ensureTotalCapacity(allocator, prepared_counts.custom_attr_wire_edits);
             try self.named_events.ensureTotalCapacity(allocator, prepared_counts.named_events);
             try self.named_event_wire_edits.ensureTotalCapacity(allocator, prepared_counts.named_event_wire_edits);
-            const creation_count = std.math.cast(u32, prepared_counts.creations) orelse return error.ResourceLimit;
-            const child_link_count = std.math.cast(u32, prepared_counts.child_links) orelse return error.ResourceLimit;
-            try self.provisional_nodes.ensureUnusedCapacity(allocator, creation_count);
+            const node_index_capacity = @max(prepared_counts.node_capacity, cache.nodes.items.len);
+            if (prepared_counts.creations != 0) self.provisional_nodes = try .initEmpty(allocator, node_index_capacity);
             const reuse_count = std.math.cast(u32, prepared_counts.reuses) orelse return error.ResourceLimit;
             try self.reused_nodes.ensureUnusedCapacity(allocator, reuse_count);
-            try self.parent_intent_indexes.ensureUnusedCapacity(allocator, child_link_count);
+            if (prepared_counts.child_links != 0) {
+                self.parent_intent_indexes = try allocator.alloc(usize, node_index_capacity);
+                @memset(self.parent_intent_indexes, no_parent_intent);
+            }
             try self.parent_intents.ensureTotalCapacity(allocator, prepared_counts.child_links);
             return self;
         }
 
+        fn isProvisional(self: *const Self, elem_id: ids.ElemId) bool {
+            const index = elem_id.index();
+            return index < self.provisional_nodes.capacity() and self.provisional_nodes.isSet(index);
+        }
+
         fn nodeExists(self: *const Self, cache: *const Cache(Ctx), elem_id: ids.ElemId) bool {
             const index = elem_id.index();
-            return self.provisional_nodes.contains(elem_id.raw()) or
+            return self.isProvisional(elem_id) or
                 (index < cache.nodes.items.len and cache.nodes.items[index].isActive());
         }
 
         fn activeNode(self: *const Self, cache: *const Cache(Ctx), elem_id: ids.ElemId) ?*const ScalarNode {
-            if (self.provisional_nodes.contains(elem_id.raw())) return null;
+            if (self.isProvisional(elem_id)) return null;
             const index = elem_id.index();
             if (index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) return null;
             return &cache.nodes.items[index];
@@ -936,8 +944,11 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// and cannot grow at that point.
         pub fn reserveAdditionalChildren(self: *Self, parents: usize, child_links: usize) (std.mem.Allocator.Error || error{ResourceLimit})!void {
             try self.children.ensureUnusedCapacity(self.allocator, parents);
-            const link_count = std.math.cast(u32, child_links) orelse return error.ResourceLimit;
-            try self.parent_intent_indexes.ensureUnusedCapacity(self.allocator, link_count);
+            if (child_links != 0 and self.parent_intent_indexes.len == 0) {
+                const node_index_capacity = @max(self.cache.nodes.capacity, self.cache.nodes.items.len);
+                self.parent_intent_indexes = try self.allocator.alloc(usize, node_index_capacity);
+                @memset(self.parent_intent_indexes, no_parent_intent);
+            }
             try self.parent_intents.ensureUnusedCapacity(self.allocator, child_links);
             try self.child_wire_edits.ensureUnusedCapacity(self.allocator, child_links);
         }
@@ -961,7 +972,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// nodes are released, and on failure the donor still owns everything
         /// it prepared.
         pub fn adoptScalarUpdates(self: *Self, donor: *Self) (std.mem.Allocator.Error || error{ResourceLimit})!void {
-            if (donor.removals.items.len != 0 or donor.creations.items.len != 0 or donor.children.items.len != 0 or donor.sparse_children.items.len != 0 or donor.fixed_events.items.len != 0 or donor.named_events.items.len != 0 or donor.provisional_nodes.count() != 0 or donor.parent_intents.items.len != 0) return error.ResourceLimit;
+            if (donor.removals.items.len != 0 or donor.creations.items.len != 0 or donor.children.items.len != 0 or donor.sparse_children.items.len != 0 or donor.fixed_events.items.len != 0 or donor.named_events.items.len != 0 or donor.parent_intents.items.len != 0) return error.ResourceLimit;
             var retired: std.AutoHashMapUnmanaged(u64, void) = .empty;
             defer retired.deinit(self.allocator);
             const retired_bound = std.math.add(usize, self.removals.items.len, self.reused_nodes.count()) catch return error.ResourceLimit;
@@ -1075,12 +1086,13 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         }
 
         fn addCreationOptions(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8, replaces_active: bool) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
-            if (self.provisional_nodes.contains(elem_id.raw())) return error.DuplicateNode;
+            if (elem_id.index() >= self.provisional_nodes.capacity()) return error.ResourceLimit;
+            if (self.isProvisional(elem_id)) return error.DuplicateNode;
             const prepared = if (replaces_active)
                 try PreparedNodeCreation.prepareReplacing(Ctx, self.allocator, cache, &self.tags, elem_id, tag)
             else
                 try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, elem_id, tag);
-            self.provisional_nodes.putAssumeCapacity(elem_id.raw(), {});
+            self.provisional_nodes.set(elem_id.index());
             self.creations.appendAssumeCapacity(prepared);
         }
 
@@ -1090,9 +1102,10 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// the same prepared root ownership.
         pub fn addHostRoot(self: *Self, cache: *Cache(Ctx)) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
             if (cache.hasRoot()) return error.ActiveNode;
-            if (self.provisional_nodes.contains(0)) return error.DuplicateNode;
+            if (self.provisional_nodes.capacity() == 0) return error.ResourceLimit;
+            if (self.isProvisional(ids.root_elem)) return error.DuplicateNode;
             const prepared = try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, ids.ElemId.fromRaw(0), "root");
-            self.provisional_nodes.putAssumeCapacity(0, {});
+            self.provisional_nodes.set(0);
             self.creations.appendAssumeCapacity(prepared);
             self.reset_dom = true;
         }
@@ -1101,7 +1114,11 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             if (!self.nodeExists(cache, ids.ElemId.fromRaw(child_id))) return error.MissingNode;
             const semantic_child_id = ids.ElemId.fromRaw(child_id);
             const semantic_next = ids.optionalElemFromRaw(next);
-            if (self.parent_intent_indexes.get(child_id)) |intent_index| {
+            const child_index = std.math.cast(usize, child_id) orelse return error.ResourceLimit;
+            if (child_index >= self.parent_intent_indexes.len) return error.ResourceLimit;
+            const existing_intent_index = self.parent_intent_indexes[child_index];
+            if (existing_intent_index != no_parent_intent) {
+                const intent_index = existing_intent_index;
                 const intent = &self.parent_intents.items[intent_index];
                 if (semantic_next != null and intent.next != null) {
                     if (intent.next.? == semantic_next.?) return error.DuplicateChild;
@@ -1110,11 +1127,10 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 if (semantic_next != null) intent.next = semantic_next;
                 return;
             }
-            const index = std.math.cast(usize, child_id) orelse return error.ResourceLimit;
-            const retired = if (index < cache.nodes.items.len and cache.nodes.items[index].isActive()) cache.nodes.items[index].parent_id else null;
+            const retired = if (child_index < cache.nodes.items.len and cache.nodes.items[child_index].isActive()) cache.nodes.items[child_index].parent_id else null;
             const intent_index = self.parent_intents.items.len;
             self.parent_intents.appendAssumeCapacity(.{ .child_id = semantic_child_id, .next = semantic_next, .retired = retired });
-            self.parent_intent_indexes.putAssumeCapacity(child_id, intent_index);
+            self.parent_intent_indexes[child_index] = intent_index;
         }
 
         /// Adds one complete parent-child replacement and final parent intents.
@@ -1222,7 +1238,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (journal.shadows.items) |entry| {
                 const index = entry.elem_id.index();
                 const active = index < self.cache.nodes.items.len and self.cache.nodes.items[index].isActive();
-                if (!active and !self.provisional_nodes.contains(entry.elem_id.raw())) return error.MissingNode;
+                if (!active and !self.isProvisional(entry.elem_id)) return error.MissingNode;
             }
             try self.sparse_children.append(self.allocator, journal.*);
             journal.* = undefined;
@@ -1601,7 +1617,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             self.creations.deinit(self.allocator);
             self.removals.deinit(self.allocator);
             self.parent_intents.deinit(self.allocator);
-            self.parent_intent_indexes.deinit(self.allocator);
+            self.allocator.free(self.parent_intent_indexes);
             self.provisional_nodes.deinit(self.allocator);
             self.reused_nodes.deinit(self.allocator);
             self.tags.deinit(self.allocator);
@@ -2529,6 +2545,62 @@ test "prepared render splice leaves rejected owned children with the caller" {
     try std.testing.expectError(error.DuplicateChild, plan.addOwnedChildren(&cache, ids.root_elem, owned));
     try std.testing.expectEqual(@as(usize, 0), plan.children.items.len);
     try std.testing.expectEqualSlices(ids.ElemId, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(1) }, owned);
+}
+
+test "prepared render splice dense indexes distinguish ids and enforce reserved bounds" {
+    const allocator = std.testing.allocator;
+    var cache: Cache(TestCtx) = .{};
+    var host = TestHost{};
+    defer cache.deinit(&host);
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 66,
+        .new_tags = 1,
+        .creations = 2,
+        .children = 1,
+        .child_links = 2,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.ElemId.fromRaw(1), "div");
+    try plan.addCreation(&cache, ids.ElemId.fromRaw(65), "div");
+    try std.testing.expectError(error.DuplicateNode, plan.addCreation(&cache, ids.ElemId.fromRaw(65), "div"));
+    try plan.addChildren(&cache, ids.root_elem, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(65) });
+    plan.apply(&cache);
+    try std.testing.expectEqual(@as(?ids.ElemId, ids.root_elem), cache.nodes.items[1].parent_id);
+    try std.testing.expectEqual(@as(?ids.ElemId, ids.root_elem), cache.nodes.items[65].parent_id);
+
+    var bounded = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 66,
+        .new_tags = 1,
+        .creations = 1,
+    });
+    defer bounded.deinit();
+    try std.testing.expectError(error.ResourceLimit, bounded.addCreation(&cache, ids.ElemId.fromRaw(66), "span"));
+}
+
+test "prepared render splice dense index allocation count is independent of node count" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Runner = struct {
+        fn allocationAttempts(node_count: usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            const allocator = fault.allocator();
+            var cache: Cache(TestCtx) = .{};
+            var host = TestHost{};
+            defer cache.deinit(&host);
+            fault.configure(null);
+            var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+                .node_capacity = node_count,
+                .creations = node_count - 1,
+                .child_links = node_count - 1,
+            });
+            const attempts = fault.attempts;
+            plan.deinit();
+            return attempts;
+        }
+    };
+
+    try std.testing.expectEqual(try Runner.allocationAttempts(128), try Runner.allocationAttempts(16 * 1024));
 }
 
 test "prepared render node removal defers ownership and applies allocation free" {
