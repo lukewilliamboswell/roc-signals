@@ -1962,6 +1962,20 @@ pub const Stream = struct {
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
     }
 
+    /// Preflights the exact static-node lanes without changing logical stream
+    /// contents. A staged collection can consequently transfer its owned tags
+    /// during allocation-free publication without reserving unused node kinds.
+    pub fn reservePreparedStaticNodeLanes(self: *Stream, allocator: std.mem.Allocator, elements: usize, texts: usize, total_render_nodes: usize, highest_elem_id: u64) ReserveError!void {
+        try self.render_nodes.ensureUnusedCapacity(allocator, total_render_nodes);
+        try self.elements.ensureUnusedCapacity(allocator, elements);
+        try self.text_nodes.ensureUnusedCapacity(allocator, texts);
+        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
+        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+        const metadata_entries = std.math.mul(usize, total_render_nodes, 2) catch return error.ResourceLimit;
+        try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
+    }
+
     pub const PreparedStaticAttr = union(enum) {
         text: struct { elem_id: ElemId, field: TextField, value: []u8 },
         boolean: struct { elem_id: ElemId, field: BoolField, value: bool },
@@ -2260,6 +2274,20 @@ pub const Stream = struct {
         }
     }
 
+    /// Preflights only the signal-attribute lanes the staged collection will
+    /// publish. Logical lengths and descriptor ownership remain unchanged, so
+    /// a later refusal can still discard the provisional descriptors safely.
+    pub fn reservePreparedSignalAttrLanes(self: *Stream, allocator: std.mem.Allocator, text: usize, boolean: usize, custom_text: usize, optional_custom_text: usize, custom_bool: usize, highest_elem_id: u64) ReserveError!void {
+        try self.signal_text_attrs.ensureUnusedCapacity(allocator, text);
+        try self.signal_bool_attrs.ensureUnusedCapacity(allocator, boolean);
+        try self.signal_custom_text_attrs.ensureUnusedCapacity(allocator, custom_text);
+        try self.signal_optional_custom_text_attrs.ensureUnusedCapacity(allocator, optional_custom_text);
+        try self.signal_custom_bool_attrs.ensureUnusedCapacity(allocator, custom_bool);
+        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
+        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+    }
+
     /// Publishes a prepared fixed signal attribute using capacity reserved by
     /// `reservePreparedSignalAttrs`. Ownership transfers to the stream.
     pub fn appendPreparedSignalDescriptor(self: *Stream, prepared: PreparedSignalDescriptor) void {
@@ -2328,6 +2356,16 @@ pub const Stream = struct {
         try self.static_bool_attrs.ensureUnusedCapacity(allocator, additional);
         try self.static_custom_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.static_custom_bool_attrs.ensureUnusedCapacity(allocator, additional);
+    }
+
+    /// Preflights only the static-attribute lanes the staged collection will
+    /// publish. No prepared string ownership transfers until the caller uses
+    /// the corresponding allocation-free append operations.
+    pub fn reservePreparedStaticAttrLanes(self: *Stream, allocator: std.mem.Allocator, text: usize, boolean: usize, custom_text: usize, custom_bool: usize) std.mem.Allocator.Error!void {
+        try self.static_text_attrs.ensureUnusedCapacity(allocator, text);
+        try self.static_bool_attrs.ensureUnusedCapacity(allocator, boolean);
+        try self.static_custom_text_attrs.ensureUnusedCapacity(allocator, custom_text);
+        try self.static_custom_bool_attrs.ensureUnusedCapacity(allocator, custom_bool);
     }
 
     /// Maintains prepare static text attr within the indexed descriptor stream used by both hosts.
@@ -4535,6 +4573,10 @@ fn deinitStaticPreparedTestStream(stream: *Stream, allocator: std.mem.Allocator)
     stream.render_nodes.deinit(allocator);
     stream.elements.deinit(allocator);
     stream.text_nodes.deinit(allocator);
+    stream.static_text_attrs.deinit(allocator);
+    stream.static_bool_attrs.deinit(allocator);
+    stream.static_custom_text_attrs.deinit(allocator);
+    stream.static_custom_bool_attrs.deinit(allocator);
     stream.signal_text_attrs.deinit(allocator);
     stream.signal_bool_attrs.deinit(allocator);
     stream.signal_custom_text_attrs.deinit(allocator);
@@ -4641,6 +4683,27 @@ test "prepared signal attr reservation leaves logical stream empty" {
     try std.testing.expectEqual(@as(usize, 0), stream.signal_bool_attrs.items.len);
     try std.testing.expectEqual(@as(usize, 0), stream.descriptor_indexes_by_elem_id.items.len);
     try std.testing.expect(stream.elemDescriptorIndex(ElemId.fromRaw(7)) == null);
+}
+
+test "exact prepared descriptor reservations leave mutually exclusive lanes empty" {
+    var stream: Stream = .{};
+    defer deinitStaticPreparedTestStream(&stream, std.testing.allocator);
+
+    try stream.reservePreparedStaticNodeLanes(std.testing.allocator, 3, 0, 3, 3);
+    try stream.reservePreparedStaticAttrLanes(std.testing.allocator, 4, 0, 0, 0);
+    try stream.reservePreparedSignalAttrLanes(std.testing.allocator, 0, 2, 0, 0, 0, 3);
+
+    try std.testing.expect(stream.elements.capacity >= 3);
+    try std.testing.expectEqual(@as(usize, 0), stream.text_nodes.capacity);
+    try std.testing.expect(stream.static_text_attrs.capacity >= 4);
+    try std.testing.expectEqual(@as(usize, 0), stream.static_bool_attrs.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.static_custom_text_attrs.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.static_custom_bool_attrs.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.signal_text_attrs.capacity);
+    try std.testing.expect(stream.signal_bool_attrs.capacity >= 2);
+    try std.testing.expectEqual(@as(usize, 0), stream.signal_custom_text_attrs.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.signal_optional_custom_text_attrs.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.signal_custom_bool_attrs.capacity);
 }
 
 test "prepared custom attribute reservation activates the maintained per-element index" {

@@ -4522,7 +4522,22 @@ pub fn Engine(comptime Ctx: type) type {
                 };
 
                 nodes: usize = 0,
+                elements: usize = 0,
+                text_nodes: usize = 0,
+                signal_text_nodes: usize = 0,
                 attrs: usize = 0,
+                static_text_attrs: usize = 0,
+                static_custom_text_attrs: usize = 0,
+                static_bool_attrs: usize = 0,
+                static_custom_bool_attrs: usize = 0,
+                signal_text_attrs: usize = 0,
+                signal_custom_text_attrs: usize = 0,
+                signal_optional_custom_text_attrs: usize = 0,
+                signal_bool_attrs: usize = 0,
+                signal_custom_bool_attrs: usize = 0,
+                events: usize = 0,
+                named_events: usize = 0,
+                custom_attrs: usize = 0,
                 lifecycle: usize = 0,
                 signal_records: usize = 0,
                 signal_roots: usize = 0,
@@ -4552,7 +4567,22 @@ pub fn Engine(comptime Ctx: type) type {
                 fn add(self: CapacityPlan, counts: Counts) CollectionError!CapacityPlan {
                     return .{
                         .nodes = try total(self.nodes, counts.roots.nodes),
+                        .elements = try total(self.elements, counts.roots.elements),
+                        .text_nodes = try total(self.text_nodes, counts.roots.text_nodes),
+                        .signal_text_nodes = try total(self.signal_text_nodes, counts.roots.signal_text_nodes),
                         .attrs = try total(self.attrs, counts.roots.attrs),
+                        .static_text_attrs = try total(self.static_text_attrs, counts.roots.static_text_attrs),
+                        .static_custom_text_attrs = try total(self.static_custom_text_attrs, counts.roots.static_custom_text_attrs),
+                        .static_bool_attrs = try total(self.static_bool_attrs, counts.roots.static_bool_attrs),
+                        .static_custom_bool_attrs = try total(self.static_custom_bool_attrs, counts.roots.static_custom_bool_attrs),
+                        .signal_text_attrs = try total(self.signal_text_attrs, counts.roots.signal_text_attrs),
+                        .signal_custom_text_attrs = try total(self.signal_custom_text_attrs, counts.roots.signal_custom_text_attrs),
+                        .signal_optional_custom_text_attrs = try total(self.signal_optional_custom_text_attrs, counts.roots.signal_optional_custom_text_attrs),
+                        .signal_bool_attrs = try total(self.signal_bool_attrs, counts.roots.signal_bool_attrs),
+                        .signal_custom_bool_attrs = try total(self.signal_custom_bool_attrs, counts.roots.signal_custom_bool_attrs),
+                        .events = try total(self.events, counts.roots.events),
+                        .named_events = try total(self.named_events, counts.roots.named_events),
+                        .custom_attrs = try total(self.custom_attrs, counts.roots.custom_attrs),
                         .lifecycle = try total(self.lifecycle, counts.roots.lifecycle),
                         .signal_records = try total(self.signal_records, counts.roots.signal_records),
                         .signal_roots = try total(self.signal_roots, try counts.signalRoots()),
@@ -4583,14 +4613,19 @@ pub fn Engine(comptime Ctx: type) type {
                     collection.node_identities.prepare(allocator, try added.scopeSites()) catch return error.OutOfMemory;
                     collection.dom_identities.prepare(allocator, added.roots.nodes) catch return error.OutOfMemory;
 
-                    const signal_descriptors = try total(self.attrs, self.nodes);
-                    const attrs_u32 = std.math.cast(u32, self.attrs) orelse return error.ResourceLimit;
+                    var static_attrs = try total(self.static_text_attrs, self.static_custom_text_attrs);
+                    static_attrs = try total(static_attrs, try total(self.static_bool_attrs, self.static_custom_bool_attrs));
+                    var signal_descriptors = try total(self.signal_text_attrs, self.signal_custom_text_attrs);
+                    signal_descriptors = try total(signal_descriptors, self.signal_optional_custom_text_attrs);
+                    signal_descriptors = try total(signal_descriptors, try total(self.signal_bool_attrs, self.signal_custom_bool_attrs));
+                    signal_descriptors = try total(signal_descriptors, self.signal_text_nodes);
+                    const named_events_u32 = std.math.cast(u32, self.named_events) orelse return error.ResourceLimit;
                     const state_cells = try total(self.state_sites, self.external_states);
                     collection.prepared_nodes.ensureUnusedCapacity(allocator, self.nodes) catch return error.OutOfMemory;
                     collection.prepared_render_order.ensureUnusedCapacity(allocator, self.nodes) catch return error.OutOfMemory;
-                    collection.prepared_attrs.ensureUnusedCapacity(allocator, self.attrs) catch return error.OutOfMemory;
+                    collection.prepared_attrs.ensureUnusedCapacity(allocator, static_attrs) catch return error.OutOfMemory;
                     collection.prepared_signal_attrs.ensureUnusedCapacity(allocator, signal_descriptors) catch return error.OutOfMemory;
-                    collection.prepared_events.ensureUnusedCapacity(allocator, self.attrs) catch return error.OutOfMemory;
+                    collection.prepared_events.ensureUnusedCapacity(allocator, self.events) catch return error.OutOfMemory;
                     collection.prepared_lifecycle.ensureUnusedCapacity(allocator, self.lifecycle) catch return error.OutOfMemory;
                     collection.prepared_state_sites.ensureUnusedCapacity(allocator, self.scope_sites) catch return error.OutOfMemory;
                     collection.prepared_states.ensureUnusedCapacity(allocator, self.state_sites) catch return error.OutOfMemory;
@@ -4599,8 +4634,8 @@ pub fn Engine(comptime Ctx: type) type {
                     collection.prepared_eaches.ensureUnusedCapacity(allocator, self.each_sites) catch return error.OutOfMemory;
                     collection.prepared_each_sites.ensureUnusedCapacity(allocator, self.each_sites) catch return error.OutOfMemory;
                     collection.prepared_each_row_scopes.ensureUnusedCapacity(allocator, self.each_rows) catch return error.OutOfMemory;
-                    collection.prepared_named_event_groups.ensureUnusedCapacity(allocator, self.attrs) catch return error.OutOfMemory;
-                    collection.prepared_named_event_group_by_elem.ensureUnusedCapacity(allocator, attrs_u32) catch return error.OutOfMemory;
+                    collection.prepared_named_event_groups.ensureUnusedCapacity(allocator, self.named_events) catch return error.OutOfMemory;
+                    collection.prepared_named_event_group_by_elem.ensureUnusedCapacity(allocator, named_events_u32) catch return error.OutOfMemory;
                     collection.signal_records.prepare(allocator, self.signal_records, self.signal_roots) catch return error.OutOfMemory;
                     collection.signal_bindings.ensureUnusedCapacity(allocator, self.signal_roots) catch return error.OutOfMemory;
 
@@ -4627,13 +4662,13 @@ pub fn Engine(comptime Ctx: type) type {
                     engine_ptr.each_row_site_indexes.ensureUnusedCapacity(allocator, std.math.cast(u32, self.each_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
 
                     const highest_elem_id: u64 = @intCast(try total(self.dom_base, self.nodes));
-                    try collection.stream.reservePreparedStaticNodes(allocator, self.nodes, highest_elem_id);
-                    try collection.stream.reservePreparedStaticAttrs(allocator, self.attrs);
-                    try collection.stream.reservePreparedSignalAttrs(allocator, self.attrs, highest_elem_id);
-                    try collection.stream.reservePreparedSignalTextNodes(allocator, self.nodes, highest_elem_id);
+                    try collection.stream.reservePreparedStaticNodeLanes(allocator, self.elements, self.text_nodes, self.nodes, highest_elem_id);
+                    try collection.stream.reservePreparedStaticAttrLanes(allocator, self.static_text_attrs, self.static_bool_attrs, self.static_custom_text_attrs, self.static_custom_bool_attrs);
+                    try collection.stream.reservePreparedSignalAttrLanes(allocator, self.signal_text_attrs, self.signal_bool_attrs, self.signal_custom_text_attrs, self.signal_optional_custom_text_attrs, self.signal_custom_bool_attrs, highest_elem_id);
+                    try collection.stream.reservePreparedSignalTextNodes(allocator, self.signal_text_nodes, highest_elem_id);
                     try collection.stream.reservePreparedSignalRecordPublication(allocator, self.signal_records);
-                    try collection.stream.reservePreparedEvents(allocator, self.attrs, highest_elem_id);
-                    try collection.stream.reservePreparedCustomAttrIndex(allocator, self.attrs);
+                    try collection.stream.reservePreparedEvents(allocator, self.events, highest_elem_id);
+                    try collection.stream.reservePreparedCustomAttrIndex(allocator, self.custom_attrs);
                     try collection.stream.reservePreparedLifecycle(allocator, self.lifecycle);
                     if (self.scope_sites != 0) {
                         const highest_node_id: u64 = @intCast(state_index_len - 1);
@@ -4651,9 +4686,11 @@ pub fn Engine(comptime Ctx: type) type {
                     const stream = collection.stream;
                     std.debug.assert(collection.prepared_nodes.capacity >= self.nodes);
                     std.debug.assert(collection.prepared_render_order.capacity >= self.nodes);
-                    std.debug.assert(collection.prepared_attrs.capacity >= self.attrs);
-                    std.debug.assert(collection.prepared_signal_attrs.capacity >= self.attrs +| self.nodes);
-                    std.debug.assert(collection.prepared_events.capacity >= self.attrs);
+                    const static_attrs = self.static_text_attrs +| self.static_custom_text_attrs +| self.static_bool_attrs +| self.static_custom_bool_attrs;
+                    const signal_descriptors = self.signal_text_attrs +| self.signal_custom_text_attrs +| self.signal_optional_custom_text_attrs +| self.signal_bool_attrs +| self.signal_custom_bool_attrs +| self.signal_text_nodes;
+                    std.debug.assert(collection.prepared_attrs.capacity >= static_attrs);
+                    std.debug.assert(collection.prepared_signal_attrs.capacity >= signal_descriptors);
+                    std.debug.assert(collection.prepared_events.capacity >= self.events);
                     std.debug.assert(collection.prepared_lifecycle.capacity >= self.lifecycle);
                     std.debug.assert(collection.prepared_state_sites.capacity >= self.scope_sites);
                     std.debug.assert(collection.prepared_states.capacity >= self.state_sites);
@@ -4662,24 +4699,24 @@ pub fn Engine(comptime Ctx: type) type {
                     std.debug.assert(collection.prepared_eaches.capacity >= self.each_sites);
                     std.debug.assert(collection.prepared_each_sites.capacity >= self.each_sites);
                     std.debug.assert(collection.prepared_each_row_scopes.capacity >= self.each_rows);
-                    std.debug.assert(collection.prepared_named_event_groups.capacity >= self.attrs);
+                    std.debug.assert(collection.prepared_named_event_groups.capacity >= self.named_events);
                     std.debug.assert(collection.signal_bindings.capacity >= self.signal_roots);
                     std.debug.assert(collection.signal_records.token_intents.capacity >= self.signal_records);
                     std.debug.assert(collection.signal_records.descriptor_roots.capacity >= self.signal_roots);
                     std.debug.assert(stream.render_nodes.capacity - stream.render_nodes.items.len >= self.nodes);
-                    std.debug.assert(stream.elements.capacity - stream.elements.items.len >= self.nodes);
-                    std.debug.assert(stream.text_nodes.capacity - stream.text_nodes.items.len >= self.nodes);
-                    std.debug.assert(stream.signal_text_nodes.capacity - stream.signal_text_nodes.items.len >= self.nodes);
-                    std.debug.assert(stream.static_text_attrs.capacity - stream.static_text_attrs.items.len >= self.attrs);
-                    std.debug.assert(stream.static_bool_attrs.capacity - stream.static_bool_attrs.items.len >= self.attrs);
-                    std.debug.assert(stream.static_custom_text_attrs.capacity - stream.static_custom_text_attrs.items.len >= self.attrs);
-                    std.debug.assert(stream.static_custom_bool_attrs.capacity - stream.static_custom_bool_attrs.items.len >= self.attrs);
-                    std.debug.assert(stream.signal_text_attrs.capacity - stream.signal_text_attrs.items.len >= self.attrs);
-                    std.debug.assert(stream.signal_bool_attrs.capacity - stream.signal_bool_attrs.items.len >= self.attrs);
-                    std.debug.assert(stream.signal_custom_text_attrs.capacity - stream.signal_custom_text_attrs.items.len >= self.attrs);
-                    std.debug.assert(stream.signal_optional_custom_text_attrs.capacity - stream.signal_optional_custom_text_attrs.items.len >= self.attrs);
-                    std.debug.assert(stream.signal_custom_bool_attrs.capacity - stream.signal_custom_bool_attrs.items.len >= self.attrs);
-                    std.debug.assert(stream.events.capacity - stream.events.items.len >= self.attrs);
+                    std.debug.assert(stream.elements.capacity - stream.elements.items.len >= self.elements);
+                    std.debug.assert(stream.text_nodes.capacity - stream.text_nodes.items.len >= self.text_nodes);
+                    std.debug.assert(stream.signal_text_nodes.capacity - stream.signal_text_nodes.items.len >= self.signal_text_nodes);
+                    std.debug.assert(stream.static_text_attrs.capacity - stream.static_text_attrs.items.len >= self.static_text_attrs);
+                    std.debug.assert(stream.static_bool_attrs.capacity - stream.static_bool_attrs.items.len >= self.static_bool_attrs);
+                    std.debug.assert(stream.static_custom_text_attrs.capacity - stream.static_custom_text_attrs.items.len >= self.static_custom_text_attrs);
+                    std.debug.assert(stream.static_custom_bool_attrs.capacity - stream.static_custom_bool_attrs.items.len >= self.static_custom_bool_attrs);
+                    std.debug.assert(stream.signal_text_attrs.capacity - stream.signal_text_attrs.items.len >= self.signal_text_attrs);
+                    std.debug.assert(stream.signal_bool_attrs.capacity - stream.signal_bool_attrs.items.len >= self.signal_bool_attrs);
+                    std.debug.assert(stream.signal_custom_text_attrs.capacity - stream.signal_custom_text_attrs.items.len >= self.signal_custom_text_attrs);
+                    std.debug.assert(stream.signal_optional_custom_text_attrs.capacity - stream.signal_optional_custom_text_attrs.items.len >= self.signal_optional_custom_text_attrs);
+                    std.debug.assert(stream.signal_custom_bool_attrs.capacity - stream.signal_custom_bool_attrs.items.len >= self.signal_custom_bool_attrs);
+                    std.debug.assert(stream.events.capacity - stream.events.items.len >= self.events);
                     std.debug.assert(stream.on_changes.capacity - stream.on_changes.items.len >= self.lifecycle);
                     std.debug.assert(stream.mounts.capacity - stream.mounts.items.len >= self.lifecycle);
                     std.debug.assert(stream.cleanups.capacity - stream.cleanups.items.len >= self.lifecycle);
@@ -6455,7 +6492,31 @@ pub fn Engine(comptime Ctx: type) type {
             try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, root, root_scope_id, ids.root_elem, &ordinal, &dom_ordinal, binder_stack, root_scope.created, dirty_source_node_ids);
         }
 
-        const StaticRootCounts = struct { nodes: usize = 0, attrs: usize = 0, lifecycle: usize = 0, signal_records: usize = 0, state_sites: usize = 0, component_sites: usize = 0, when_sites: usize = 0, each_sites: usize = 0 };
+        const StaticRootCounts = struct {
+            nodes: usize = 0,
+            elements: usize = 0,
+            text_nodes: usize = 0,
+            signal_text_nodes: usize = 0,
+            attrs: usize = 0,
+            static_text_attrs: usize = 0,
+            static_custom_text_attrs: usize = 0,
+            static_bool_attrs: usize = 0,
+            static_custom_bool_attrs: usize = 0,
+            signal_text_attrs: usize = 0,
+            signal_custom_text_attrs: usize = 0,
+            signal_optional_custom_text_attrs: usize = 0,
+            signal_bool_attrs: usize = 0,
+            signal_custom_bool_attrs: usize = 0,
+            events: usize = 0,
+            named_events: usize = 0,
+            custom_attrs: usize = 0,
+            lifecycle: usize = 0,
+            signal_records: usize = 0,
+            state_sites: usize = 0,
+            component_sites: usize = 0,
+            when_sites: usize = 0,
+            each_sites: usize = 0,
+        };
 
         fn countSignalExprRecords(expr: abi.NodeSignalExpr) CollectionError!usize {
             return switch (abi_view.SignalExpr.fromAbi(expr)) {
@@ -6481,28 +6542,63 @@ pub fn Engine(comptime Ctx: type) type {
         fn countStaticRootNodes(elem: abi.Elem) CollectionError!StaticRootCounts {
             return switch (abi_view.Elem.fromAbi(elem)) {
                 .element => |payload| blk: {
-                    var count = StaticRootCounts{ .nodes = 1, .attrs = payload.attrs.len };
+                    var count = StaticRootCounts{ .nodes = 1, .elements = 1, .attrs = payload.attrs.len };
                     for (payload.attrs) |attr| switch (abi_view.NodeAttr.fromAbi(attr)) {
-                        .signal_text => |signal| count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(signal.signal.*)) catch return error.ResourceLimit,
-                        .signal_optional_text => |signal| count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(signal.signal.*)) catch return error.ResourceLimit,
-                        .signal_bool => |signal| count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(signal.signal.*)) catch return error.ResourceLimit,
-                        else => {},
+                        .static_text => |value| switch (value.target) {
+                            .fixed => count.static_text_attrs += 1,
+                            .custom => {
+                                count.static_custom_text_attrs += 1;
+                                count.custom_attrs += 1;
+                            },
+                        },
+                        .static_bool => |value| switch (value.target) {
+                            .fixed => count.static_bool_attrs += 1,
+                            .custom => {
+                                count.static_custom_bool_attrs += 1;
+                                count.custom_attrs += 1;
+                            },
+                        },
+                        .signal_text => |signal| {
+                            switch (signal.target) {
+                                .fixed => count.signal_text_attrs += 1,
+                                .custom => {
+                                    count.signal_custom_text_attrs += 1;
+                                    count.custom_attrs += 1;
+                                },
+                            }
+                            count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(signal.signal.*)) catch return error.ResourceLimit;
+                        },
+                        .signal_optional_text => |signal| {
+                            count.signal_optional_custom_text_attrs += 1;
+                            count.custom_attrs += 1;
+                            count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(signal.signal.*)) catch return error.ResourceLimit;
+                        },
+                        .signal_bool => |signal| {
+                            switch (signal.target) {
+                                .fixed => count.signal_bool_attrs += 1,
+                                .custom => {
+                                    count.signal_custom_bool_attrs += 1;
+                                    count.custom_attrs += 1;
+                                },
+                            }
+                            count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(signal.signal.*)) catch return error.ResourceLimit;
+                        },
+                        .event => count.events += 1,
+                        .named_event => {
+                            count.events += 1;
+                            count.named_events += 1;
+                        },
                     };
                     for (payload.children) |child| {
                         const child_count = try countStaticRootNodes(child);
-                        count.nodes = std.math.add(usize, count.nodes, child_count.nodes) catch return error.ResourceLimit;
-                        count.attrs = std.math.add(usize, count.attrs, child_count.attrs) catch return error.ResourceLimit;
-                        count.lifecycle = std.math.add(usize, count.lifecycle, child_count.lifecycle) catch return error.ResourceLimit;
-                        count.signal_records = std.math.add(usize, count.signal_records, child_count.signal_records) catch return error.ResourceLimit;
-                        count.state_sites = std.math.add(usize, count.state_sites, child_count.state_sites) catch return error.ResourceLimit;
-                        count.component_sites = std.math.add(usize, count.component_sites, child_count.component_sites) catch return error.ResourceLimit;
-                        count.when_sites = std.math.add(usize, count.when_sites, child_count.when_sites) catch return error.ResourceLimit;
-                        count.each_sites = std.math.add(usize, count.each_sites, child_count.each_sites) catch return error.ResourceLimit;
+                        inline for (std.meta.fields(StaticRootCounts)) |field| {
+                            @field(count, field.name) = std.math.add(usize, @field(count, field.name), @field(child_count, field.name)) catch return error.ResourceLimit;
+                        }
                     }
                     break :blk count;
                 },
-                .text => .{ .nodes = 1 },
-                .text_signal => |payload| .{ .nodes = 1, .signal_records = try countSignalExprRecords(payload.signal.*) },
+                .text => .{ .nodes = 1, .text_nodes = 1 },
+                .text_signal => |payload| .{ .nodes = 1, .signal_text_nodes = 1, .signal_records = try countSignalExprRecords(payload.signal.*) },
                 .state => |payload| blk: {
                     var count = try countStaticRootNodes(payload.child.*);
                     count.state_sites = std.math.add(usize, count.state_sites, 1) catch return error.ResourceLimit;
@@ -6517,7 +6613,6 @@ pub fn Engine(comptime Ctx: type) type {
                     var count = StaticRootCounts{};
                     count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(payload.condition.*)) catch return error.ResourceLimit;
                     count.when_sites = std.math.add(usize, count.when_sites, 1) catch return error.ResourceLimit;
-                    count.attrs = std.math.add(usize, count.attrs, 1) catch return error.ResourceLimit;
                     break :blk count;
                 },
                 .cleanup, .on_mount => .{ .lifecycle = 1 },
@@ -7936,14 +8031,9 @@ pub fn Engine(comptime Ctx: type) type {
             collection: StagedCollectionCtx = undefined,
 
             fn addRootCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
-                total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
-                total.attrs = std.math.add(usize, total.attrs, next.attrs) catch return error.ResourceLimit;
-                total.lifecycle = std.math.add(usize, total.lifecycle, next.lifecycle) catch return error.ResourceLimit;
-                total.signal_records = std.math.add(usize, total.signal_records, next.signal_records) catch return error.ResourceLimit;
-                total.state_sites = std.math.add(usize, total.state_sites, next.state_sites) catch return error.ResourceLimit;
-                total.component_sites = std.math.add(usize, total.component_sites, next.component_sites) catch return error.ResourceLimit;
-                total.when_sites = std.math.add(usize, total.when_sites, next.when_sites) catch return error.ResourceLimit;
-                total.each_sites = std.math.add(usize, total.each_sites, next.each_sites) catch return error.ResourceLimit;
+                inline for (std.meta.fields(StaticRootCounts)) |field| {
+                    @field(total, field.name) = std.math.add(usize, @field(total, field.name), @field(next, field.name)) catch return error.ResourceLimit;
+                }
             }
 
             fn countRoots(elems: []const abi.Elem) CollectionError!StaticRootCounts {
@@ -17669,6 +17759,10 @@ test "static root counts nested signal attribute records" {
     const count = try Engine(VerifyCtx).countStaticRootNodes(root);
     try std.testing.expectEqual(@as(usize, 1), count.nodes);
     try std.testing.expectEqual(@as(usize, 1), count.attrs);
+    try std.testing.expectEqual(@as(usize, 1), count.elements);
+    try std.testing.expectEqual(@as(usize, 1), count.signal_text_attrs);
+    try std.testing.expectEqual(@as(usize, 0), count.static_text_attrs);
+    try std.testing.expectEqual(@as(usize, 0), count.signal_bool_attrs);
     try std.testing.expectEqual(@as(usize, 5), count.signal_records);
 }
 
@@ -17741,7 +17835,7 @@ test "staged fixed event publication is allocation free" {
     var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
     var roc_host = abi.makeRocHost(&roc_env);
     defer stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
-    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .nodes = 1, .attrs = 1 }, 1);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .nodes = 1, .attrs = 1, .events = 1 }, 1);
     defer collection.deinit();
 
     const binder: HostBinderToken = @ptrFromInt(0x8000);
@@ -17791,7 +17885,7 @@ test "staged named event sweeps allocation failures and retries without visibili
     var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
     var roc_host = abi.makeRocHost(&roc_env);
     {
-        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&counter_engine, &counter_ctx, &counter_stream, .{}, .{ .nodes = 1, .attrs = 1 }, 1);
+        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&counter_engine, &counter_ctx, &counter_stream, .{}, .{ .nodes = 1, .attrs = 1, .events = 1, .named_events = 1 }, 1);
         defer collection.deinit();
         counter.configure(null);
         try collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }});
@@ -17810,7 +17904,7 @@ test "staged named event sweeps allocation failures and retries without visibili
             stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
             deinitVerifyStaticEngine(&engine, &ctx);
         }
-        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .nodes = 1, .attrs = 1 }, 1);
+        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .nodes = 1, .attrs = 1, .events = 1, .named_events = 1 }, 1);
         defer collection.deinit();
 
         fault.configure(failure_number);
