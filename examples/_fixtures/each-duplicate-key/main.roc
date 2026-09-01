@@ -38,7 +38,15 @@ main = || {
 				[],
 				[
 					Html.heading("Duplicate each key fixture"),
-					Ui.each(Signal.map(items.signal(), |rows_items| Rows.from_list(rows_items, |item| item.id) ?? crash "duplicate row key"), |each_row| render_row(each_row.key(), each_row.signal())),
+					Ui.each(
+						Signal.map(
+							items.signal(),
+							|rows_items|
+								Rows.from_list(rows_items, |item| item.id)
+									?? crash "duplicate key \"alert-42\"",
+						),
+						|each_row| render_row(each_row.key(), each_row.signal()),
+					),
 				],
 			)
 		},
