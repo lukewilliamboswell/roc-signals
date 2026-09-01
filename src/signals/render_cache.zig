@@ -395,6 +395,21 @@ pub const PreparedSparseChildren = struct {
         self.phase = .applied;
     }
 
+    /// Mirrors this journal's final sibling links into the indexed descriptor
+    /// stream after sparse render-node membership has published. Retired nodes
+    /// are skipped; created and surviving roots already have preflighted
+    /// metadata slots. This keeps both native descriptor lookup and render
+    /// cache order under the same prepared topology authority.
+    pub fn applyIndexedStream(self: *const PreparedSparseChildren, comptime Stream: type, allocator: std.mem.Allocator, stream: *Stream) void {
+        stream.ensureFirstRenderChildSlot(allocator, self.parent_elem_id).* = self.first_child;
+        stream.ensureLastRenderChildSlot(allocator, self.parent_elem_id).* = self.last_child;
+        for (self.shadows.items) |entry| {
+            if (stream.renderNodeIndex(entry.elem_id) == null) continue;
+            stream.ensurePreviousRenderSiblingSlot(allocator, entry.elem_id).* = entry.previous;
+            stream.ensureNextRenderSiblingSlot(allocator, entry.elem_id).* = entry.next;
+        }
+    }
+
     /// Releases journal storage; committed cache links remain independently owned.
     pub fn deinit(self: *PreparedSparseChildren) void {
         self.wire_edits.deinit(self.allocator);
@@ -1509,6 +1524,12 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (self.custom_attrs.items) |*value| value.apply(Ctx, cache);
             for (self.named_events.items) |*value| value.apply(Ctx, cache);
             self.phase = .applied;
+        }
+
+        /// Applies every sparse parent journal to the descriptor stream after
+        /// its exact render-node membership splice has committed.
+        pub fn applySparseChildrenToIndexedStream(self: *const Self, comptime Stream: type, allocator: std.mem.Allocator, stream: *Stream) void {
+            for (self.sparse_children.items) |*journal| journal.applyIndexedStream(Stream, allocator, stream);
         }
 
         /// Releases provisional deltas on abort or retired cache ownership after commit.

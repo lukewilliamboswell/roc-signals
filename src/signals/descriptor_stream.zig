@@ -745,6 +745,7 @@ pub const Stream = struct {
         when_count: usize,
         each_count: usize,
     ) ReserveError!void {
+        try self.render_nodes.ensureUnusedCapacity(allocator, removed_elem_ids.len);
         try self.elements.ensureUnusedCapacity(allocator, element_count);
         try self.text_nodes.ensureUnusedCapacity(allocator, text_count);
         try self.static_text_attrs.ensureUnusedCapacity(allocator, static_text_count);
@@ -1170,6 +1171,25 @@ pub const Stream = struct {
             source.elem_ids.clearRetainingCapacity();
             source.node_ids.clearRetainingCapacity();
         }
+    }
+
+    /// Publishes the render-node membership of a sparse structural edit.
+    ///
+    /// The dense array is only an unordered descriptor pool on this path:
+    /// removed ids are swap-retired and replacement nodes append into reserved
+    /// capacity. Durable parent/sibling links remain the render-order authority
+    /// and are intentionally left for the prepared sparse order journal. New
+    /// top-level roots therefore enter detached, while links wholly inside a
+    /// replacement subtree transfer with that subtree.
+    pub fn commitSparseRenderNodesAssumeCapacity(self: *Stream, replacement: *Stream, retired: *Stream, removed_elem_ids: []const u64) void {
+        commitSparseRenderNodes(Stream, self, replacement, retired, removed_elem_ids);
+    }
+
+    /// Drops detached metadata left by sparse render-node retirement.
+    /// Reused ids have a replacement render-node index and deliberately retain
+    /// their newly published metadata.
+    pub fn finishSparseRenderNodeRetirement(self: *Stream, removed_elem_ids: []const u64) void {
+        finishSparseRenderNodeRetirementImpl(Stream, self, removed_elem_ids);
     }
 
     fn rememberSignalRecordTreeAssumeCapacity(self: *Stream, record: *SignalRecord) void {
@@ -3646,6 +3666,43 @@ pub fn clearRenderNodeIndex(comptime StreamType: type, stream: *StreamType, elem
     removeRenderMetadataIfEmpty(StreamType, stream, elem_id);
 }
 
+fn commitSparseRenderNodes(comptime StreamType: type, stream: *StreamType, replacement: *StreamType, retired: *StreamType, removed_elem_ids: []const u64) void {
+    for (removed_elem_ids) |raw_elem_id| {
+        const elem_id = ElemId.fromRaw(raw_elem_id);
+        const index = renderNodeIndex(StreamType, stream, elem_id) orelse @panic("sparse render retirement target was not indexed");
+        const removed = stream.render_nodes.swapRemove(index);
+        if (removed.elem_id != elem_id) @panic("sparse render retirement index named another node");
+        clearRenderNodeIndex(StreamType, stream, elem_id, index);
+        retired.render_nodes.appendAssumeCapacity(removed);
+        if (index < stream.render_nodes.items.len) updateRenderNodeIndex(StreamType, stream, stream.render_nodes.items[index].elem_id, index);
+    }
+
+    for (replacement.render_nodes.items) |node| {
+        const replacement_metadata = replacement.render_metadata_by_elem_id.get(node.elem_id.raw()) orelse @panic("sparse render replacement lacked metadata");
+        const parent_elem_id = renderNodeParentElemId(StreamType, replacement, node);
+        const top_level = renderNodeIndex(StreamType, replacement, parent_elem_id) == null;
+        const active_entry = stream.render_metadata_by_elem_id.getOrPutAssumeCapacity(node.elem_id.raw());
+        const retained_previous = if (active_entry.found_existing) active_entry.value_ptr.previous_sibling else null;
+        const retained_next = if (active_entry.found_existing) active_entry.value_ptr.next_sibling else null;
+        active_entry.value_ptr.* = replacement_metadata;
+        active_entry.value_ptr.render_node = stream.render_nodes.items.len;
+        if (top_level) {
+            active_entry.value_ptr.previous_sibling = retained_previous;
+            active_entry.value_ptr.next_sibling = retained_next;
+        }
+        stream.render_nodes.appendAssumeCapacity(node);
+    }
+    replacement.render_nodes.items.len = 0;
+}
+
+fn finishSparseRenderNodeRetirementImpl(comptime StreamType: type, stream: *StreamType, removed_elem_ids: []const u64) void {
+    for (removed_elem_ids) |raw_elem_id| {
+        const metadata = stream.render_metadata_by_elem_id.get(raw_elem_id) orelse continue;
+        if (metadata.render_node != null) continue;
+        _ = stream.render_metadata_by_elem_id.fetchRemove(raw_elem_id) orelse unreachable;
+    }
+}
+
 /// Ensures first render child slot capacity or state before publication can begin.
 pub fn ensureFirstRenderChildSlot(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, parent_elem_id: ElemId) *?ElemId {
     return &ensureRenderMetadata(StreamType, stream, allocator, parent_elem_id).first_child;
@@ -5604,4 +5661,62 @@ test "sparse render sibling range move touches constant links at 10k" {
         ElemId.fromRaw(2),
     );
     try std.testing.expectEqual(@as(u8, 0), no_op.links_touched);
+}
+
+test "sparse render membership retires and appends only exact ids" {
+    const allocator = std.testing.allocator;
+    var active = TestStream{};
+    defer active.deinit(allocator);
+    var replacement = TestStream{};
+    defer replacement.deinit(allocator);
+    var retired = TestStream{};
+    defer retired.deinit(allocator);
+
+    active.render_nodes.ensureTotalCapacity(allocator, 5) catch @panic("out of memory");
+    active.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, 6) catch @panic("out of memory");
+    retired.render_nodes.ensureTotalCapacity(allocator, 1) catch @panic("out of memory");
+    active.render_nodes.appendSliceAssumeCapacity(&.{
+        .{ .elem_id = ElemId.fromRaw(1), .kind = .element },
+        .{ .elem_id = ElemId.fromRaw(2), .kind = .element },
+        .{ .elem_id = ElemId.fromRaw(3), .kind = .element },
+    });
+    for (active.render_nodes.items, 0..) |node, index| {
+        active.elements.append(allocator, .{ .elem_id = node.elem_id.raw(), .parent_elem_id = 0, .scope_id = node.elem_id.raw(), .tag = "div" }) catch @panic("out of memory");
+        ensureTestElemDescriptorIndex(&active, allocator, node.elem_id.raw()).element = DescriptorIndex.init(index);
+        recordRenderNodeIndex(TestStream, &active, allocator, node.elem_id, index);
+        appendRenderChild(TestStream, &active, allocator, ElemId.fromRaw(0), node.elem_id);
+    }
+
+    replacement.render_nodes.appendSlice(allocator, &.{
+        .{ .elem_id = ElemId.fromRaw(4), .kind = .element },
+        .{ .elem_id = ElemId.fromRaw(5), .kind = .element },
+    }) catch @panic("out of memory");
+    replacement.elements.appendSlice(allocator, &.{
+        .{ .elem_id = 4, .parent_elem_id = 0, .scope_id = 4, .tag = "section" },
+        .{ .elem_id = 5, .parent_elem_id = 4, .scope_id = 4, .tag = "span" },
+    }) catch @panic("out of memory");
+    for (replacement.render_nodes.items, 0..) |node, index| {
+        ensureTestElemDescriptorIndex(&replacement, allocator, node.elem_id.raw()).element = DescriptorIndex.init(index);
+        recordRenderNodeIndex(TestStream, &replacement, allocator, node.elem_id, index);
+    }
+    appendRenderChild(TestStream, &replacement, allocator, ElemId.fromRaw(0), ElemId.fromRaw(4));
+    appendRenderChild(TestStream, &replacement, allocator, ElemId.fromRaw(4), ElemId.fromRaw(5));
+
+    commitSparseRenderNodes(TestStream, &active, &replacement, &retired, &.{2});
+    try std.testing.expectEqual(@as(usize, 4), active.render_nodes.items.len);
+    try std.testing.expectEqual(@as(?usize, null), renderNodeIndex(TestStream, &active, ElemId.fromRaw(2)));
+    try std.testing.expectEqual(@as(?usize, 1), renderNodeIndex(TestStream, &active, ElemId.fromRaw(3)));
+    try std.testing.expectEqual(@as(?usize, 2), renderNodeIndex(TestStream, &active, ElemId.fromRaw(4)));
+    try std.testing.expectEqual(@as(?usize, 3), renderNodeIndex(TestStream, &active, ElemId.fromRaw(5)));
+    try std.testing.expectEqual(ElemId.fromRaw(2), retired.render_nodes.items[0].elem_id);
+    try std.testing.expectEqual(@as(?ElemId, null), previousRenderSibling(TestStream, &active, ElemId.fromRaw(4)));
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(5)), firstRenderChild(TestStream, &active, ElemId.fromRaw(4)));
+
+    removeRenderChild(TestStream, &active, ElemId.fromRaw(0), ElemId.fromRaw(2));
+    insertRenderChildren(TestStream, &active, allocator, ElemId.fromRaw(0), 1, &.{ElemId.fromRaw(4)});
+    finishSparseRenderNodeRetirementImpl(TestStream, &active, &.{2});
+    const children = streamDirectChildren(TestStream, allocator, &active, ElemId.fromRaw(0));
+    defer allocator.free(children);
+    try std.testing.expectEqualSlices(ElemId, &.{ ElemId.fromRaw(1), ElemId.fromRaw(4), ElemId.fromRaw(3) }, children);
+    try std.testing.expect(!active.render_metadata_by_elem_id.contains(2));
 }
