@@ -23,6 +23,9 @@ pub const Error = std.mem.Allocator.Error || error{
     InvalidOwnerToken,
     DuplicateKey,
     MissingKey,
+    KeyMismatch,
+    MissingSlot,
+    DuplicateSlot,
 };
 
 /// Payload for inserting one new row at a key-addressed position.
@@ -53,12 +56,36 @@ pub const Edit = union(enum) {
     clear,
 };
 
+/// Canonical ABI operations addressed only by stable Roc item slots. Zero in a
+/// `before_slot` field denotes the end of the site.
+pub const StableEdit = union(enum) {
+    insert: struct { slot: u64, before_slot: u64, key: []const u8, metadata: RowMetadata },
+    remove: struct { first_slot: u64, count: u64 },
+    move: struct { first_slot: u64, count: u64, before_slot: u64 },
+    update: struct { slot: u64, key: []const u8, metadata: RowMetadata },
+    clear,
+};
+
 /// Provisional row identity available to a row builder before publication.
 pub const CreatedRow = struct {
     row_id: RowId,
     key: []const u8,
     metadata: RowMetadata,
 };
+
+// Engine publication mapping (kept here beside the ownership boundary):
+//
+//   Store SiteId     -> one `(parent_scope_id, site_ordinal)` structural site
+//   Store RowId      -> stable host row identity; never exposed to Roc
+//   RowMetadata.slot -> Roc's stable item slot used by clone/compare callbacks
+//   RowMetadata.scope_id -> the row scope that owns graph/render/lifecycle state
+//   CreatedRow       -> a preclaimed RowId paired with a preclaimed row scope
+//   removedRows()    -> committed RowIds whose metadata identifies retirement roots
+//
+// Preparation must claim row scopes/handles and build render journal entries
+// before `commit`; publication first commits those prepared owners and then this
+// transition without allocating. Abort releases provisional scopes/handles and
+// this transition together, leaving both the committed Store and DOM unchanged.
 
 const NodeRef = u128;
 const fresh_bit: u128 = @as(u128, 1) << 64;
@@ -119,6 +146,7 @@ pub const PreparedTransition = struct {
     shadows: std.AutoHashMapUnmanaged(NodeRef, Shadow) = .empty,
     touched: std.ArrayListUnmanaged(NodeRef) = .empty,
     key_states: std.StringHashMapUnmanaged(KeyState) = .empty,
+    slot_states: std.AutoHashMapUnmanaged(u64, KeyState) = .empty,
     fresh: std.ArrayListUnmanaged(Fresh) = .empty,
     removed_rows: []RowId = &.{},
     created_rows: []CreatedRow = &.{},
@@ -148,6 +176,26 @@ pub const PreparedTransition = struct {
             .remove_key => |key| try self.applyRemove(key),
             .move => |value| try self.applyMove(value),
             .set => |value| try self.applySet(value),
+            .clear => try self.applyClear(),
+        };
+        try self.finishPreparation();
+        return self;
+    }
+
+    /// Prepares the stable-slot delta emitted by `Rows.copy_delta`. All range
+    /// walks are bounded by the advertised changed count; no committed-site
+    /// scan is used to discover operands.
+    pub fn prepareStable(allocator: std.mem.Allocator, store: *Store, site_id: SiteId, parent_owner: OwnerToken, next_owner: OwnerToken, edits: []const StableEdit) Error!PreparedTransition {
+        const committed = store.getSiteConst(site_id) catch return error.InvalidSite;
+        if (committed.owner_token != parent_owner) return error.ParentMismatch;
+        if (next_owner.raw() == 0 or next_owner == parent_owner) return error.InvalidOwnerToken;
+        var self = PreparedTransition{ .allocator = allocator, .store = store, .site_id = site_id, .next_owner = next_owner, .head = if (committed.head) |row| existingRef(row) else null, .tail = if (committed.tail) |row| existingRef(row) else null, .len = committed.len };
+        errdefer self.deinit();
+        for (edits) |edit| switch (edit) {
+            .insert => |value| try self.applyStableInsert(value.slot, value.before_slot, value.key, value.metadata),
+            .remove => |value| try self.applyStableRemove(value.first_slot, value.count),
+            .move => |value| try self.applyStableMove(value.first_slot, value.count, value.before_slot),
+            .update => |value| try self.applyStableUpdate(value.slot, value.key, value.metadata),
             .clear => try self.applyClear(),
         };
         try self.finishPreparation();
@@ -217,6 +265,7 @@ pub const PreparedTransition = struct {
         self.shadows.deinit(self.allocator);
         self.touched.deinit(self.allocator);
         self.key_states.deinit(self.allocator);
+        self.slot_states.deinit(self.allocator);
         self.fresh.deinit(self.allocator);
         if (self.removed_rows.len != 0) self.allocator.free(self.removed_rows);
         if (self.created_rows.len != 0) self.allocator.free(self.created_rows);
@@ -251,7 +300,7 @@ pub const PreparedTransition = struct {
         self.store.prepareRowClaims(self.site_id, self.removed_rows, claims) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             error.ResourceLimit => error.ResourceLimit,
-            error.InvalidSite, error.SiteNotEmpty, error.InvalidRow, error.WrongSite, error.DuplicateKey, error.MissingKey => error.InvalidSite,
+            error.InvalidSite, error.SiteNotEmpty, error.InvalidRow, error.WrongSite, error.DuplicateKey, error.DuplicateItemSlot, error.MissingKey => error.InvalidSite,
         };
 
         var created_index: usize = 0;
@@ -270,13 +319,20 @@ pub const PreparedTransition = struct {
     }
 
     fn applyInsert(self: *PreparedTransition, insert: Insert) Error!void {
+        if (insert.metadata.item_slot == 0) return error.DuplicateSlot;
+        if (try self.lookupSlot(insert.metadata.item_slot)) |state| if (state.live) return error.DuplicateSlot;
         const before = if (insert.before) |key| try self.requireLiveKey(key) else null;
         if (try self.lookupKey(insert.key)) |state| {
             if (state.live) return error.DuplicateKey;
             const shadow = try self.getShadow(state.node);
+            if (shadow.metadata.item_slot != insert.metadata.item_slot) {
+                if (try self.lookupSlot(insert.metadata.item_slot)) |slot_state| if (slot_state.live) return error.DuplicateSlot;
+                try self.putSlotState(shadow.metadata.item_slot, .{ .node = state.node, .live = false });
+            }
             shadow.metadata = insert.metadata;
             try self.attachBefore(state.node, before);
             try self.putKeyState(shadow.key, .{ .node = state.node, .live = true });
+            try self.putSlotState(insert.metadata.item_slot, .{ .node = state.node, .live = true });
             return;
         }
 
@@ -296,6 +352,7 @@ pub const PreparedTransition = struct {
         });
         try self.attachBefore(ref, before);
         try self.putKeyState(owned_key, .{ .node = ref, .live = true });
+        try self.putSlotState(insert.metadata.item_slot, .{ .node = ref, .live = true });
     }
 
     fn applyRemove(self: *PreparedTransition, key: []const u8) Error!void {
@@ -303,6 +360,7 @@ pub const PreparedTransition = struct {
         const stable_key = (try self.getShadow(ref)).key;
         try self.detach(ref);
         try self.putKeyState(stable_key, .{ .node = ref, .live = false });
+        try self.putSlotState((try self.getShadow(ref)).metadata.item_slot, .{ .node = ref, .live = false });
     }
 
     fn applyMove(self: *PreparedTransition, move: Move) Error!void {
@@ -315,15 +373,92 @@ pub const PreparedTransition = struct {
 
     fn applySet(self: *PreparedTransition, set: Set) Error!void {
         const ref = try self.requireLiveKey(set.key);
-        (try self.getShadow(ref)).metadata = set.metadata;
+        const shadow = try self.getShadow(ref);
+        if (shadow.metadata.item_slot != set.metadata.item_slot) return error.DuplicateSlot;
+        shadow.metadata = set.metadata;
     }
 
     fn applyClear(self: *PreparedTransition) Error!void {
         while (self.head) |ref| {
             const key = (try self.getShadow(ref)).key;
+            const slot = (try self.getShadow(ref)).metadata.item_slot;
             try self.detach(ref);
             try self.putKeyState(key, .{ .node = ref, .live = false });
+            try self.putSlotState(slot, .{ .node = ref, .live = false });
         }
+    }
+
+    fn applyStableInsert(self: *PreparedTransition, slot: u64, before_slot: u64, key: []const u8, metadata: RowMetadata) Error!void {
+        if (slot == 0 or metadata.item_slot != slot) return error.DuplicateSlot;
+        const before = if (before_slot == 0) null else try self.requireLiveSlot(before_slot);
+        if (try self.lookupSlot(slot)) |state| if (state.live) return error.DuplicateSlot;
+        if (try self.lookupKey(key)) |state| if (state.live) return error.DuplicateKey;
+
+        const owned_key = try self.store.allocator.dupe(u8, key);
+        errdefer self.store.allocator.free(owned_key);
+        const index = self.fresh.items.len;
+        try self.fresh.append(self.allocator, .{ .key = owned_key, .metadata = metadata });
+        errdefer _ = self.fresh.pop();
+        const ref = freshRef(index);
+        try self.insertShadow(ref, .{ .key = owned_key, .metadata = metadata, .previous = null, .next = null, .live = false, .was_live = false });
+        try self.attachBefore(ref, before);
+        try self.putKeyState(owned_key, .{ .node = ref, .live = true });
+        try self.putSlotState(slot, .{ .node = ref, .live = true });
+    }
+
+    fn applyStableRemove(self: *PreparedTransition, first_slot: u64, count: u64) Error!void {
+        if (count == 0) return error.MissingSlot;
+        var current = try self.requireLiveSlot(first_slot);
+        var remaining = count;
+        while (remaining != 0) : (remaining -= 1) {
+            const shadow = (try self.getShadow(current)).*;
+            const next = shadow.next;
+            try self.detach(current);
+            try self.putKeyState(shadow.key, .{ .node = current, .live = false });
+            try self.putSlotState(shadow.metadata.item_slot, .{ .node = current, .live = false });
+            if (remaining != 1) current = next orelse return error.MissingSlot;
+        }
+    }
+
+    fn applyStableMove(self: *PreparedTransition, first_slot: u64, count: u64, before_slot: u64) Error!void {
+        if (count == 0) return error.MissingSlot;
+        const refs = try self.allocator.alloc(NodeRef, std.math.cast(usize, count) orelse return error.ResourceLimit);
+        defer self.allocator.free(refs);
+        var current = try self.requireLiveSlot(first_slot);
+        for (refs, 0..) |*out, index| {
+            out.* = current;
+            if (index + 1 != refs.len) current = (try self.getShadow(current)).next orelse return error.MissingSlot;
+        }
+        const before = if (before_slot == 0) null else try self.requireLiveSlot(before_slot);
+        for (refs) |ref| if (before != null and ref == before.?) return;
+        for (refs) |ref| try self.detach(ref);
+        for (refs) |ref| try self.attachBefore(ref, before);
+    }
+
+    fn applyStableUpdate(self: *PreparedTransition, slot: u64, key: []const u8, metadata: RowMetadata) Error!void {
+        if (slot == 0 or metadata.item_slot != slot) return error.MissingSlot;
+        const ref = try self.requireLiveSlot(slot);
+        const shadow = try self.getShadow(ref);
+        if (!std.mem.eql(u8, shadow.key, key)) return error.KeyMismatch;
+        shadow.metadata = metadata;
+    }
+
+    fn lookupSlot(self: *PreparedTransition, slot: u64) Error!?KeyState {
+        if (slot == 0) return null;
+        if (self.slot_states.get(slot)) |state| return state;
+        const row_id = self.store.findItemSlot(self.site_id, slot) catch return error.InvalidSite;
+        return if (row_id) |row| .{ .node = existingRef(row), .live = true } else null;
+    }
+
+    fn requireLiveSlot(self: *PreparedTransition, slot: u64) Error!NodeRef {
+        const state = (try self.lookupSlot(slot)) orelse return error.MissingSlot;
+        if (!state.live) return error.MissingSlot;
+        return state.node;
+    }
+
+    fn putSlotState(self: *PreparedTransition, slot: u64, state: KeyState) Error!void {
+        if (slot == 0) return error.DuplicateSlot;
+        self.slot_states.put(self.allocator, slot, state) catch return error.OutOfMemory;
     }
 
     fn lookupKey(self: *PreparedTransition, key: []const u8) Error!?KeyState {
@@ -458,7 +593,7 @@ test "Rows sparse transition inserts moves updates and removes touched rows" {
         .{ .move = .{ .key = "c", .before = "a" } },
         .{ .remove_key = "a" },
         .{ .insert = .{ .key = "d", .before = "b", .metadata = .{ .item_slot = 4, .scope_id = 44 } } },
-        .{ .set = .{ .key = "b", .metadata = .{ .item_slot = 20, .scope_id = 22, .render_root = 99 } } },
+        .{ .set = .{ .key = "b", .metadata = .{ .item_slot = 2, .scope_id = 22, .render_root = 99 } } },
     };
     var next = try PreparedTransition.prepare(std.testing.allocator, &store, site, try OwnerToken.fromRaw(2), try OwnerToken.fromRaw(3), &edits);
     defer next.deinit();
@@ -468,7 +603,7 @@ test "Rows sparse transition inserts moves updates and removes touched rows" {
 
     try expectOrder(&store, site, &.{ "c", "d", "b" });
     const b = (try store.findKey(site, "b")).?;
-    try std.testing.expectEqual(@as(u64, 20), (try store.getRowConst(site, b)).metadata.item_slot);
+    try std.testing.expectEqual(@as(u64, 2), (try store.getRowConst(site, b)).metadata.item_slot);
     try std.testing.expectEqual(@as(?u64, 99), (try store.getRowConst(site, b)).metadata.render_root);
 }
 
@@ -531,6 +666,35 @@ test "Rows commit is allocation free after persistent preflight" {
     prepared.commit();
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try expectOrder(&store, site, &.{"row"});
+}
+
+test "canonical stable-slot delta resolves ranges without positional scans" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+    const site = try store.createSite(try OwnerToken.fromRaw(70));
+    var initial = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(70), try OwnerToken.fromRaw(71), &.{
+        .{ .insert = .{ .slot = 11, .before_slot = 0, .key = "a", .metadata = .{ .item_slot = 11, .scope_id = 1 } } },
+        .{ .insert = .{ .slot = 22, .before_slot = 0, .key = "b", .metadata = .{ .item_slot = 22, .scope_id = 2 } } },
+        .{ .insert = .{ .slot = 33, .before_slot = 0, .key = "c", .metadata = .{ .item_slot = 33, .scope_id = 3 } } },
+    });
+    defer initial.deinit();
+    initial.commit();
+
+    var next = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(71), try OwnerToken.fromRaw(72), &.{
+        .{ .move = .{ .first_slot = 22, .count = 2, .before_slot = 11 } },
+        .{ .update = .{ .slot = 22, .key = "b", .metadata = .{ .item_slot = 22, .scope_id = 20 } } },
+    });
+    defer next.deinit();
+    next.commit();
+    try expectOrder(&store, site, &.{ "b", "c", "a" });
+    const row = (try store.findItemSlot(site, 22)).?;
+    try std.testing.expectEqual(@as(u64, 20), (try store.getRowConst(site, row)).metadata.scope_id);
+    try std.testing.expectError(error.KeyMismatch, PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(72), try OwnerToken.fromRaw(73), &.{.{ .update = .{
+        .slot = 22,
+        .key = "rekeyed",
+        .metadata = .{ .item_slot = 22, .scope_id = 20 },
+    } }}));
+    try expectOrder(&store, site, &.{ "b", "c", "a" });
 }
 
 test "Rows preparation fault sweep preserves the committed generation" {

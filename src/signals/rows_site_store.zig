@@ -19,6 +19,7 @@ pub const Error = std.mem.Allocator.Error || error{
     InvalidRow,
     WrongSite,
     DuplicateKey,
+    DuplicateItemSlot,
     MissingKey,
 };
 
@@ -181,7 +182,23 @@ fn SlotPool(comptime Id: type, comptime Payload: type) type {
 pub const RowMetadata = struct {
     item_slot: u64,
     scope_id: u64,
+    row_handle: u64 = 0,
     render_root: ?u64 = null,
+};
+
+/// Allocation-free intrusive-order iterator over one committed Rows site.
+pub const Iterator = struct {
+    store: *const Store,
+    site_id: SiteId,
+    next_id: ?RowId,
+
+    /// Advances to the next generation-checked row identity and metadata.
+    pub fn next(self: *Iterator) ?struct { id: RowId, row: *const Row } {
+        const id = self.next_id orelse return null;
+        const row = self.store.getRowConst(self.site_id, id) catch @panic("committed Rows order referenced a stale row");
+        self.next_id = row.next;
+        return .{ .id = id, .row = row };
+    }
 };
 
 /// Mutable row record used only by the shared engine and prepared transition.
@@ -200,9 +217,11 @@ pub const Site = struct {
     tail: ?RowId = null,
     len: usize = 0,
     by_key: std.StringHashMapUnmanaged(RowId) = .empty,
+    by_item_slot: std.AutoHashMapUnmanaged(u64, RowId) = .empty,
 
     fn deinit(self: *Site, allocator: std.mem.Allocator) void {
         self.by_key.deinit(allocator);
+        self.by_item_slot.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -295,6 +314,17 @@ pub const Store = struct {
         return (try self.getSiteConst(site_id)).by_key.get(key);
     }
 
+    /// Looks up one row by the immutable Roc generation's stable item slot.
+    pub fn findItemSlot(self: *const Store, site_id: SiteId, item_slot: u64) error{InvalidSite}!?RowId {
+        if (item_slot == 0) return null;
+        return (try self.getSiteConst(site_id)).by_item_slot.get(item_slot);
+    }
+
+    /// Starts allocation-free traversal in committed row order.
+    pub fn iterate(self: *const Store, site_id: SiteId) error{InvalidSite}!Iterator {
+        return .{ .store = self, .site_id = site_id, .next_id = (try self.getSiteConst(site_id)).head };
+    }
+
     /// Reserves row identities and dense slot growth for a prepared commit.
     /// `removed` must be retired in the same order before claims are inserted.
     pub fn prepareRowClaims(self: *Store, site_id: SiteId, removed: []const RowId, claims: []RowId) Error!void {
@@ -307,6 +337,7 @@ pub const Store = struct {
         };
         const final_bound = std.math.add(usize, site_value.by_key.count(), claims.len) catch return error.ResourceLimit;
         try site_value.by_key.ensureTotalCapacity(self.allocator, std.math.cast(u32, final_bound) orelse return error.ResourceLimit);
+        try site_value.by_item_slot.ensureTotalCapacity(self.allocator, std.math.cast(u32, final_bound) orelse return error.ResourceLimit);
     }
 
     /// Retires one prevalidated row during allocation-free publication and
@@ -315,6 +346,7 @@ pub const Store = struct {
         const site_value = self.getSite(site_id) catch @panic("prepared Rows site became stale before commit");
         const row_value = self.getRowConst(site_id, row_id) catch @panic("prepared Rows row became stale before commit");
         if (!site_value.by_key.remove(row_value.key)) @panic("prepared Rows removal key was absent from its site index");
+        if (!site_value.by_item_slot.remove(row_value.metadata.item_slot)) @panic("prepared Rows removal slot was absent from its site index");
         const removed = self.rows.remove(row_id) catch @panic("prepared Rows row could not be retired");
         return removed.key;
     }
@@ -324,9 +356,11 @@ pub const Store = struct {
     pub fn insertPreparedRow(self: *Store, site_id: SiteId, claim: RowId, row_value: Row) void {
         if (row_value.site_id != site_id) @panic("prepared Rows row targeted the wrong site");
         const site_value = self.getSite(site_id) catch @panic("prepared Rows site became stale before commit");
+        if (row_value.metadata.item_slot == 0 or site_value.by_item_slot.contains(row_value.metadata.item_slot)) @panic("prepared Rows insertion duplicated a stable item slot");
         self.rows.insertClaimed(claim, row_value);
         const committed = self.getRow(site_id, claim) catch @panic("claimed Rows row did not become live");
         site_value.by_key.putAssumeCapacity(committed.key, claim);
+        site_value.by_item_slot.putAssumeCapacity(committed.metadata.item_slot, claim);
     }
 };
 

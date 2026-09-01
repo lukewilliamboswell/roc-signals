@@ -16,6 +16,221 @@ pub const SinkError = error{
     WrongSinkKind,
     ReentrantSink,
     OutOfOrder,
+    InvalidSlot,
+    InvalidOperation,
+    DuplicateDescription,
+};
+
+pub const Description = union(enum) {
+    snapshot: struct {
+        generation: u64,
+        item_count: usize,
+        snapshot_key_bytes: usize,
+    },
+    delta: struct {
+        generation: u64,
+        parent: u64,
+        item_count: usize,
+        snapshot_key_bytes: usize,
+        op_count: usize,
+        delta_key_count: usize,
+        delta_key_bytes: usize,
+    },
+};
+
+pub const DescriptionSink = struct {
+    value: ?Description = null,
+
+    /// Records the single exact snapshot description emitted by Roc.
+    pub fn pushSnapshot(self: *DescriptionSink, generation: u64, item_count: u64, key_bytes: u64) SinkError!void {
+        if (self.value != null) return error.DuplicateDescription;
+        if (generation == 0) return error.InvalidOperation;
+        self.value = .{ .snapshot = .{
+            .generation = generation,
+            .item_count = std.math.cast(usize, item_count) orelse return error.ResourceLimit,
+            .snapshot_key_bytes = std.math.cast(usize, key_bytes) orelse return error.ResourceLimit,
+        } };
+    }
+
+    /// Records the single canonical delta description emitted by Roc.
+    pub fn pushDelta(self: *DescriptionSink, generation: u64, parent: u64, item_count: u64, snapshot_key_bytes: u64, op_count: u64, delta_key_count: u64, delta_key_bytes: u64) SinkError!void {
+        if (self.value != null) return error.DuplicateDescription;
+        if (generation == 0 or parent == 0 or generation == parent) return error.InvalidOperation;
+        self.value = .{ .delta = .{
+            .generation = generation,
+            .parent = parent,
+            .item_count = std.math.cast(usize, item_count) orelse return error.ResourceLimit,
+            .snapshot_key_bytes = std.math.cast(usize, snapshot_key_bytes) orelse return error.ResourceLimit,
+            .op_count = std.math.cast(usize, op_count) orelse return error.ResourceLimit,
+            .delta_key_count = std.math.cast(usize, delta_key_count) orelse return error.ResourceLimit,
+            .delta_key_bytes = std.math.cast(usize, delta_key_bytes) orelse return error.ResourceLimit,
+        } };
+    }
+};
+
+/// One exact row in a counted `Rows` snapshot. Key bytes live in the sibling
+/// `KeyStorage`; keeping the fixed-width fields dense avoids one allocation per
+/// row while retaining exact UTF-8 identity at the host boundary.
+pub const SnapshotRow = struct {
+    slot: u64,
+};
+
+/// Stable-slot operands copied from one canonical `Rows` delta.
+pub const DeltaOp = union(enum) {
+    clear,
+    insert: struct { slot: u64, before_slot: u64, key_index: usize },
+    move: struct { first_slot: u64, count: u64, before_slot: u64 },
+    remove: struct { first_slot: u64, count: u64 },
+    update: struct { slot: u64, key_index: usize },
+};
+
+/// Fully host-owned, exactly counted snapshot scratch. Preparation reserves all
+/// fixed-width and byte storage before Roc writes through the sink.
+pub const SnapshotStorage = struct {
+    rows: std.ArrayListUnmanaged(SnapshotRow) = .empty,
+    keys: KeyStorage = .{},
+    expected_count: usize = 0,
+    complete: bool = false,
+
+    /// Releases all snapshot scratch buffers.
+    pub fn deinit(self: *SnapshotStorage, allocator: std.mem.Allocator) void {
+        self.rows.deinit(allocator);
+        self.keys.deinit(allocator);
+        self.* = .{};
+    }
+
+    /// Reserves the exact advertised snapshot shape before activating its sink.
+    pub fn prepare(self: *SnapshotStorage, allocator: std.mem.Allocator, expected_count: usize, expected_key_bytes: usize) SinkError!PreparedSnapshotSink {
+        self.rows.clearRetainingCapacity();
+        try self.rows.ensureTotalCapacityPrecise(allocator, expected_count);
+        var keys = try self.keys.prepare(allocator, expected_count, expected_key_bytes);
+        if (expected_key_bytes != 0) try self.keys.bytes.ensureTotalCapacityPrecise(allocator, expected_key_bytes);
+        self.expected_count = expected_count;
+        self.complete = false;
+        keys.retry = true;
+        keys.retry_expected_bytes = expected_key_bytes;
+        return .{ .storage = self, .keys = keys };
+    }
+};
+
+pub const PreparedSnapshotSink = struct {
+    storage: *SnapshotStorage,
+    keys: PreparedKeySink,
+
+    /// Copies one ordered stable-slot/key record without allocating.
+    pub fn pushBorrowed(self: *PreparedSnapshotSink, index: usize, slot: u64, key: []const u8) SinkError!void {
+        if (index != self.storage.rows.items.len) return error.OutOfOrder;
+        if (slot == 0) return error.InvalidSlot;
+        try self.keys.pushBorrowed(key);
+        self.storage.rows.appendAssumeCapacity(.{ .slot = slot });
+    }
+
+    /// Validates exact counts and seals the snapshot.
+    pub fn finish(self: *PreparedSnapshotSink) SinkError!void {
+        if (self.storage.rows.items.len != self.storage.expected_count) return error.CountMismatch;
+        try self.keys.finish();
+        self.storage.complete = true;
+    }
+
+    /// Discards an incomplete snapshot while retaining reusable capacity.
+    pub fn abort(self: *PreparedSnapshotSink) void {
+        self.storage.rows.clearRetainingCapacity();
+        self.keys.abort();
+        self.storage.complete = false;
+    }
+};
+
+/// Fully host-owned canonical delta scratch. Key-bearing operations index the
+/// compact key arena, so no operation owns a separately allocated string.
+pub const DeltaStorage = struct {
+    ops: std.ArrayListUnmanaged(DeltaOp) = .empty,
+    keys: KeyStorage = .{},
+    expected_ops: usize = 0,
+    expected_keys: usize = 0,
+    complete: bool = false,
+
+    /// Releases all canonical delta scratch buffers.
+    pub fn deinit(self: *DeltaStorage, allocator: std.mem.Allocator) void {
+        self.ops.deinit(allocator);
+        self.keys.deinit(allocator);
+        self.* = .{};
+    }
+
+    /// Reserves the exact advertised delta shape before activating its sink.
+    pub fn prepare(self: *DeltaStorage, allocator: std.mem.Allocator, expected_ops: usize, expected_keys: usize, expected_key_bytes: usize) SinkError!PreparedDeltaSink {
+        self.ops.clearRetainingCapacity();
+        try self.ops.ensureTotalCapacityPrecise(allocator, expected_ops);
+        var keys = try self.keys.prepare(allocator, expected_keys, expected_key_bytes);
+        if (expected_key_bytes != 0) try self.keys.bytes.ensureTotalCapacityPrecise(allocator, expected_key_bytes);
+        keys.retry = true;
+        keys.retry_expected_bytes = expected_key_bytes;
+        self.expected_ops = expected_ops;
+        self.expected_keys = expected_keys;
+        self.complete = false;
+        return .{ .storage = self, .keys = keys };
+    }
+};
+
+pub const PreparedDeltaSink = struct {
+    storage: *DeltaStorage,
+    keys: PreparedKeySink,
+
+    fn checkIndex(self: *const PreparedDeltaSink, op_index: usize) SinkError!void {
+        if (op_index != self.storage.ops.items.len) return error.OutOfOrder;
+        if (op_index >= self.storage.expected_ops) return error.CountMismatch;
+    }
+
+    /// Appends one canonical clear operation.
+    pub fn pushClear(self: *PreparedDeltaSink, op_index: usize) SinkError!void {
+        try self.checkIndex(op_index);
+        self.storage.ops.appendAssumeCapacity(.clear);
+    }
+
+    /// Appends one stable-slot insert and copies its exact key.
+    pub fn pushInsert(self: *PreparedDeltaSink, op_index: usize, slot: u64, before_slot: u64, key: []const u8) SinkError!void {
+        try self.checkIndex(op_index);
+        if (slot == 0) return error.InvalidSlot;
+        const key_index = self.keys.emitted_count;
+        try self.keys.pushBorrowed(key);
+        self.storage.ops.appendAssumeCapacity(.{ .insert = .{ .slot = slot, .before_slot = before_slot, .key_index = key_index } });
+    }
+
+    /// Appends one nonempty stable-slot range move.
+    pub fn pushMove(self: *PreparedDeltaSink, op_index: usize, first_slot: u64, count: u64, before_slot: u64) SinkError!void {
+        try self.checkIndex(op_index);
+        if (first_slot == 0 or count == 0) return error.InvalidOperation;
+        self.storage.ops.appendAssumeCapacity(.{ .move = .{ .first_slot = first_slot, .count = count, .before_slot = before_slot } });
+    }
+
+    /// Appends one nonempty stable-slot range removal.
+    pub fn pushRemove(self: *PreparedDeltaSink, op_index: usize, first_slot: u64, count: u64) SinkError!void {
+        try self.checkIndex(op_index);
+        if (first_slot == 0 or count == 0) return error.InvalidOperation;
+        self.storage.ops.appendAssumeCapacity(.{ .remove = .{ .first_slot = first_slot, .count = count } });
+    }
+
+    /// Appends one stable-slot item update and copies its authenticated key.
+    pub fn pushUpdate(self: *PreparedDeltaSink, op_index: usize, slot: u64, key: []const u8) SinkError!void {
+        try self.checkIndex(op_index);
+        if (slot == 0) return error.InvalidSlot;
+        const key_index = self.keys.emitted_count;
+        try self.keys.pushBorrowed(key);
+        self.storage.ops.appendAssumeCapacity(.{ .update = .{ .slot = slot, .key_index = key_index } });
+    }
+
+    /// Validates exact operation/key counts and seals the delta.
+    pub fn finish(self: *PreparedDeltaSink) SinkError!void {
+        if (self.storage.ops.items.len != self.storage.expected_ops or self.keys.emitted_count != self.storage.expected_keys) return error.CountMismatch;
+        try self.keys.finish();
+        self.storage.complete = true;
+    }
+
+    /// Discards an incomplete delta while retaining reusable capacity.
+    pub fn abort(self: *PreparedDeltaSink) void {
+        self.storage.ops.clearRetainingCapacity();
+        self.keys.abort();
+        self.storage.complete = false;
+    }
 };
 
 const Phase = union(enum) {
@@ -213,8 +428,11 @@ pub const SinkToken = enum(u64) {
 };
 
 const ActiveSink = union(enum) {
+    description: struct { token: SinkToken, sink: *DescriptionSink },
     key: struct { token: SinkToken, sink: *PreparedKeySink },
     boolean: struct { token: SinkToken, sink: *PreparedBoolSink },
+    snapshot: struct { token: SinkToken, sink: *PreparedSnapshotSink },
+    delta: struct { token: SinkToken, sink: *PreparedDeltaSink },
 };
 
 pub const ActiveSinks = struct {
@@ -226,6 +444,40 @@ pub const ActiveSinks = struct {
         const token: SinkToken = @enumFromInt(self.next_token);
         self.next_token += 1;
         return token;
+    }
+
+    /// Activates the description sink for exactly one describe callback.
+    pub fn activateDescription(self: *ActiveSinks, sink: *DescriptionSink) SinkError!SinkToken {
+        if (self.active != null) return error.ReentrantSink;
+        const token = try self.mintToken();
+        sink.value = null;
+        self.active = .{ .description = .{ .token = token, .sink = sink } };
+        return token;
+    }
+
+    fn requireDescription(self: *ActiveSinks, token: SinkToken) SinkError!*DescriptionSink {
+        const active = self.active orelse return error.InactiveSink;
+        return switch (active) {
+            .description => |entry| if (entry.token == token) entry.sink else error.InvalidSinkToken,
+            inline else => |entry| if (entry.token == token) error.WrongSinkKind else error.InvalidSinkToken,
+        };
+    }
+
+    /// Routes an exact snapshot description through the active call token.
+    pub fn pushSnapshotDescription(self: *ActiveSinks, token: SinkToken, generation: u64, item_count: u64, key_bytes: u64) SinkError!void {
+        try (try self.requireDescription(token)).pushSnapshot(generation, item_count, key_bytes);
+    }
+
+    /// Routes a canonical delta description through the active call token.
+    pub fn pushDeltaDescription(self: *ActiveSinks, token: SinkToken, generation: u64, parent: u64, item_count: u64, snapshot_key_bytes: u64, op_count: u64, delta_key_count: u64, delta_key_bytes: u64) SinkError!void {
+        try (try self.requireDescription(token)).pushDelta(generation, parent, item_count, snapshot_key_bytes, op_count, delta_key_count, delta_key_bytes);
+    }
+
+    /// Closes the describe call and returns its single validated result.
+    pub fn finishDescription(self: *ActiveSinks, token: SinkToken) SinkError!Description {
+        const sink = try self.requireDescription(token);
+        self.active = null;
+        return sink.value orelse error.CountMismatch;
     }
 
     /// Activates one prepared key sink and returns its nonzero call-scoped token.
@@ -244,6 +496,67 @@ pub const ActiveSinks = struct {
         return token;
     }
 
+    /// Activates an exactly counted snapshot sink for one callback invocation.
+    pub fn activateSnapshot(self: *ActiveSinks, sink: *PreparedSnapshotSink) SinkError!SinkToken {
+        if (self.active != null) return error.ReentrantSink;
+        const token = try self.mintToken();
+        self.active = .{ .snapshot = .{ .token = token, .sink = sink } };
+        return token;
+    }
+
+    /// Activates an exactly counted canonical delta sink for one callback invocation.
+    pub fn activateDelta(self: *ActiveSinks, sink: *PreparedDeltaSink) SinkError!SinkToken {
+        if (self.active != null) return error.ReentrantSink;
+        const token = try self.mintToken();
+        self.active = .{ .delta = .{ .token = token, .sink = sink } };
+        return token;
+    }
+
+    /// Routes one snapshot row into fixed-width and exact-byte storage.
+    pub fn pushSnapshot(self: *ActiveSinks, token: SinkToken, index: usize, slot: u64, key: []const u8) SinkError!void {
+        const active = self.active orelse return error.InactiveSink;
+        switch (active) {
+            .snapshot => |entry| {
+                if (entry.token != token) return error.InvalidSinkToken;
+                return entry.sink.pushBorrowed(index, slot, key);
+            },
+            inline else => |entry| return if (entry.token == token) error.WrongSinkKind else error.InvalidSinkToken,
+        }
+    }
+
+    fn requireDelta(self: *ActiveSinks, token: SinkToken) SinkError!*PreparedDeltaSink {
+        const active = self.active orelse return error.InactiveSink;
+        return switch (active) {
+            .delta => |entry| if (entry.token == token) entry.sink else error.InvalidSinkToken,
+            inline else => |entry| if (entry.token == token) error.WrongSinkKind else error.InvalidSinkToken,
+        };
+    }
+
+    /// Routes one clear operation to the active delta sink.
+    pub fn pushDeltaClear(self: *ActiveSinks, token: SinkToken, op_index: usize) SinkError!void {
+        try (try self.requireDelta(token)).pushClear(op_index);
+    }
+
+    /// Routes one insert operation to the active delta sink.
+    pub fn pushDeltaInsert(self: *ActiveSinks, token: SinkToken, op_index: usize, slot: u64, before_slot: u64, key: []const u8) SinkError!void {
+        try (try self.requireDelta(token)).pushInsert(op_index, slot, before_slot, key);
+    }
+
+    /// Routes one range move to the active delta sink.
+    pub fn pushDeltaMove(self: *ActiveSinks, token: SinkToken, op_index: usize, first_slot: u64, count: u64, before_slot: u64) SinkError!void {
+        try (try self.requireDelta(token)).pushMove(op_index, first_slot, count, before_slot);
+    }
+
+    /// Routes one range removal to the active delta sink.
+    pub fn pushDeltaRemove(self: *ActiveSinks, token: SinkToken, op_index: usize, first_slot: u64, count: u64) SinkError!void {
+        try (try self.requireDelta(token)).pushRemove(op_index, first_slot, count);
+    }
+
+    /// Routes one item update to the active delta sink.
+    pub fn pushDeltaUpdate(self: *ActiveSinks, token: SinkToken, op_index: usize, slot: u64, key: []const u8) SinkError!void {
+        try (try self.requireDelta(token)).pushUpdate(op_index, slot, key);
+    }
+
     /// Routes one indexed owned Roc string to the active key sink and consumes it on every outcome.
     pub fn pushKey(self: *ActiveSinks, token: SinkToken, item_index: usize, value: abi.RocStr, roc_host: *abi.RocHost) SinkError!void {
         defer abi.RocStrRelease.release(value, roc_host);
@@ -260,7 +573,7 @@ pub const ActiveSinks = struct {
                 if (item_index != entry.sink.emitted_count) return error.OutOfOrder;
                 return entry.sink.pushBorrowed(value);
             },
-            .boolean => |entry| {
+            inline else => |entry| {
                 if (entry.token == token) return error.WrongSinkKind;
                 return error.InvalidSinkToken;
             },
@@ -275,7 +588,7 @@ pub const ActiveSinks = struct {
                 if (entry.token != token) return error.InvalidSinkToken;
                 return entry.sink.push(item_index, value);
             },
-            .key => |entry| {
+            inline else => |entry| {
                 if (entry.token == token) return error.WrongSinkKind;
                 return error.InvalidSinkToken;
             },
@@ -290,7 +603,7 @@ pub const ActiveSinks = struct {
                 if (entry.token != token) return error.InvalidSinkToken;
                 break :blk entry.sink;
             },
-            .boolean => |entry| {
+            inline else => |entry| {
                 if (entry.token == token) return error.WrongSinkKind;
                 return error.InvalidSinkToken;
             },
@@ -307,7 +620,41 @@ pub const ActiveSinks = struct {
                 if (entry.token != token) return error.InvalidSinkToken;
                 break :blk entry.sink;
             },
-            .key => |entry| {
+            inline else => |entry| {
+                if (entry.token == token) return error.WrongSinkKind;
+                return error.InvalidSinkToken;
+            },
+        };
+        self.active = null;
+        return sink.finish();
+    }
+
+    /// Finishes a snapshot call and invalidates its token on every outcome.
+    pub fn finishSnapshot(self: *ActiveSinks, token: SinkToken) SinkError!void {
+        const active = self.active orelse return error.InactiveSink;
+        const sink = switch (active) {
+            .snapshot => |entry| blk: {
+                if (entry.token != token) return error.InvalidSinkToken;
+                break :blk entry.sink;
+            },
+            inline else => |entry| {
+                if (entry.token == token) return error.WrongSinkKind;
+                return error.InvalidSinkToken;
+            },
+        };
+        self.active = null;
+        return sink.finish();
+    }
+
+    /// Finishes a canonical delta call and invalidates its token on every outcome.
+    pub fn finishDelta(self: *ActiveSinks, token: SinkToken) SinkError!void {
+        const active = self.active orelse return error.InactiveSink;
+        const sink = switch (active) {
+            .delta => |entry| blk: {
+                if (entry.token != token) return error.InvalidSinkToken;
+                break :blk entry.sink;
+            },
+            inline else => |entry| {
                 if (entry.token == token) return error.WrongSinkKind;
                 return error.InvalidSinkToken;
             },
@@ -327,6 +674,18 @@ pub const ActiveSinks = struct {
             .boolean => |entry| {
                 if (entry.token != token) return error.InvalidSinkToken;
                 entry.sink.abort();
+            },
+            .snapshot => |entry| {
+                if (entry.token != token) return error.InvalidSinkToken;
+                entry.sink.abort();
+            },
+            .delta => |entry| {
+                if (entry.token != token) return error.InvalidSinkToken;
+                entry.sink.abort();
+            },
+            .description => |entry| {
+                if (entry.token != token) return error.InvalidSinkToken;
+                entry.sink.value = null;
             },
         }
         self.active = null;
@@ -426,6 +785,35 @@ test "key sink rejects count and retry byte mismatches" {
     var retry = try storage.beginRetry(std.testing.allocator);
     try pushText(&retry, "short", &host);
     try std.testing.expectError(error.ByteCountMismatch, retry.finish());
+}
+
+test "counted Rows snapshot sink validates order slots and exact bytes" {
+    var storage: SnapshotStorage = .{};
+    defer storage.deinit(std.testing.allocator);
+    var sink = try storage.prepare(std.testing.allocator, 2, 3);
+    try sink.pushBorrowed(0, 17, "a");
+    try sink.pushBorrowed(1, 29, "bc");
+    try sink.finish();
+    try std.testing.expect(storage.complete);
+    try std.testing.expectEqual(@as(u64, 17), storage.rows.items[0].slot);
+    try std.testing.expectEqualStrings("bc", storage.keys.key(1).?);
+}
+
+test "counted Rows delta sink stores stable operands and rejects malformed ranges" {
+    var storage: DeltaStorage = .{};
+    defer storage.deinit(std.testing.allocator);
+    var sink = try storage.prepare(std.testing.allocator, 3, 2, 2);
+    try sink.pushInsert(0, 7, 0, "a");
+    try sink.pushMove(1, 7, 1, 9);
+    try sink.pushUpdate(2, 7, "b");
+    try sink.finish();
+    try std.testing.expect(storage.complete);
+    try std.testing.expectEqual(@as(usize, 3), storage.ops.items.len);
+    try std.testing.expectEqualStrings("a", storage.keys.key(0).?);
+
+    var malformed = try storage.prepare(std.testing.allocator, 1, 0, 0);
+    try std.testing.expectError(error.InvalidOperation, malformed.pushRemove(0, 7, 0));
+    malformed.abort();
 }
 
 test "key sink enforces configured and representational resource limits" {

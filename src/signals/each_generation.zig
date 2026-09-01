@@ -18,6 +18,7 @@ pub const HostValueCapability = retained.HostValueCapability;
 pub const HostValueCell = retained.HostValueCell;
 pub const HostEachOps = retained.HostEachOps;
 pub const KeyStorage = each_collection.KeyStorage;
+pub const SnapshotStorage = each_collection.SnapshotStorage;
 pub const RowHandleId = row_handles.RowHandleId;
 
 /// Nonzero, non-wrapping identity of one immutable list generation.
@@ -61,9 +62,11 @@ pub const GenerationClock = struct {
 /// One site-owned immutable collection generation.
 pub const Generation = struct {
     id: GenerationId,
+    rows_generation: u64,
     collection: HostValueCell,
     ops: HostEachOps,
     keys: KeyStorage,
+    rows: std.ArrayListUnmanaged(each_collection.SnapshotRow),
     item_count: usize,
     live: bool = true,
 
@@ -74,16 +77,19 @@ pub const Generation = struct {
     /// buffers. The incoming collection value is already independently owned;
     /// this function retains the operations' collection capability as the
     /// cell's ownership edge and retains every typed operation separately.
-    pub fn initOwned(id: GenerationId, collection: HostValue, ops: HostEachOps, keys_owner: *KeyStorage, item_count: usize, metrics: anytype) error{ InvalidGeneration, InvalidKeyCount }!Generation {
-        if (!id.isValid()) return error.InvalidGeneration;
-        if (keys_owner.expected_count != item_count or keys_owner.offsets.items.len != item_count + 1) return error.InvalidKeyCount;
-        const keys = keys_owner.*;
-        keys_owner.* = .{};
+    pub fn initOwned(id: GenerationId, rows_generation: u64, collection: HostValue, ops: HostEachOps, snapshot_owner: *SnapshotStorage, item_count: usize, metrics: anytype) error{ InvalidGeneration, InvalidKeyCount }!Generation {
+        if (!id.isValid() or rows_generation == 0) return error.InvalidGeneration;
+        if (!snapshot_owner.complete or snapshot_owner.expected_count != item_count or snapshot_owner.keys.offsets.items.len != item_count + 1 or snapshot_owner.rows.items.len != item_count) return error.InvalidKeyCount;
+        const keys = snapshot_owner.keys;
+        const rows = snapshot_owner.rows;
+        snapshot_owner.* = .{};
         return .{
             .id = id,
-            .collection = HostValueCell.initRetained(collection, ops.items_capability, metrics),
+            .rows_generation = rows_generation,
+            .collection = HostValueCell.initRetained(collection, ops.rows_capability, metrics),
             .ops = retained.retainHostEachOps(ops, metrics),
             .keys = keys,
+            .rows = rows,
             .item_count = item_count,
         };
     }
@@ -94,6 +100,12 @@ pub const Generation = struct {
         return self.keys.key(item_index);
     }
 
+    /// Returns the immutable stable item slot at one snapshot order index.
+    pub fn slot(self: *const Generation, item_index: usize) ?u64 {
+        if (!self.live or item_index >= self.item_count) return null;
+        return self.rows.items[item_index].slot;
+    }
+
     /// Releases the opaque Roc collection, retained typed operations, and host
     /// key buffers exactly once.
     pub fn deinit(self: *Generation, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
@@ -101,6 +113,7 @@ pub const Generation = struct {
         self.collection.deinit(ctx, roc_host, metrics);
         retained.releaseHostEachOps(self.ops, roc_host, metrics);
         self.keys.deinit(allocator);
+        self.rows.deinit(allocator);
         self.live = false;
     }
 };
@@ -270,26 +283,32 @@ test "generation owns one collection cell and exact host keys" {
     defer abi.decrefErasedCallable(drop, &roc_host);
     const cap = HostValueCapability{ .clone = ordinary, .drop = drop, .eq = ordinary };
     const ops = std.mem.zeroInit(HostEachOps, .{
-        .clone_item_at = ordinary,
-        .compare_pairs = ordinary,
-        .copy_keys = ordinary,
+        .clone_item = ordinary,
+        .compare_slots = ordinary,
+        .copy_delta = ordinary,
+        .copy_snapshot = ordinary,
+        .describe = ordinary,
         .item_capability = cap,
-        .items_capability = cap,
-        .len = ordinary,
+        .rows_capability = cap,
         .row = ordinary,
     });
     var metrics = TestMetrics{};
     var ctx = TestCtx{};
-    var keys = try completedKeys(std.testing.allocator, &.{ "alpha", "beta" });
+    var snapshot: SnapshotStorage = .{};
+    var snapshot_sink = try snapshot.prepare(std.testing.allocator, 2, 9);
+    try snapshot_sink.pushBorrowed(0, 101, "alpha");
+    try snapshot_sink.pushBorrowed(1, 202, "beta");
+    try snapshot_sink.finish();
     test_drop_count = 0;
-    var generation = try Generation.initOwned(GenerationId.fromRaw(9), HostValue.fromRaw(77), ops, &keys, 2, &metrics);
+    var generation = try Generation.initOwned(GenerationId.fromRaw(9), 900, HostValue.fromRaw(77), ops, &snapshot, 2, &metrics);
     try std.testing.expectEqualStrings("alpha", generation.key(0).?);
     try std.testing.expectEqualStrings("beta", generation.key(1).?);
     try std.testing.expect(generation.key(2) == null);
-    try std.testing.expectEqual(@as(usize, 0), keys.bytes.capacity);
+    try std.testing.expectEqual(@as(u64, 202), generation.slot(1).?);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.keys.bytes.capacity);
     generation.deinit(std.testing.allocator, &ctx, &roc_host, &metrics);
     try std.testing.expectEqual(@as(usize, 1), test_drop_count);
-    try std.testing.expectEqual(@as(u64, 14), metrics.retains);
+    try std.testing.expectEqual(@as(u64, 15), metrics.retains);
     try std.testing.expectEqual(metrics.retains, metrics.releases);
 }
 
@@ -355,4 +374,20 @@ test "generation identity mints maximum once and never wraps" {
     try std.testing.expectEqual(std.math.maxInt(u64) - 1, (try clock.mint()).raw());
     try std.testing.expectEqual(std.math.maxInt(u64), (try clock.mint()).raw());
     try std.testing.expectError(error.ResourceLimit, clock.mint());
+}
+
+test "shared immutable Rows token keeps distinct engine publication identities" {
+    var clock = GenerationClock{};
+    const first = try clock.mint();
+    const second = try clock.mint();
+    const shared_rows_generation: u64 = 0xCAFE;
+    try std.testing.expect(first != second);
+    try std.testing.expectEqual(shared_rows_generation, shared_rows_generation);
+    var registry: std.AutoHashMapUnmanaged(GenerationId, u64) = .empty;
+    defer registry.deinit(std.testing.allocator);
+    try registry.put(std.testing.allocator, first, shared_rows_generation);
+    try registry.put(std.testing.allocator, second, shared_rows_generation);
+    try std.testing.expectEqual(@as(usize, 2), registry.count());
+    try std.testing.expectEqual(shared_rows_generation, registry.get(first).?);
+    try std.testing.expectEqual(shared_rows_generation, registry.get(second).?);
 }
