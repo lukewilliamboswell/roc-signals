@@ -1,6 +1,6 @@
 # Fuzzing
 
-Five targets, driven by `scripts/fuzz.py`. Run `python3 scripts/fuzz.py list` for
+Six targets, driven by `scripts/fuzz.py`. Run `python3 scripts/fuzz.py list` for
 the one-line summaries and `--help` for the commands.
 
 Every target is a **generator**, not a byte sink. It decodes an arbitrary byte
@@ -24,6 +24,7 @@ step.
 |---|---|---|
 | `propagation` | dependency-ordered, glitch-free propagation and equality cutoffs | a slow evaluator that recomputes every node from the sources, with exact call and prune counts |
 | `keyed-scopes` | keyed-row identity, scope retirement, reuse barriers, disposal | a key list plus a predicted scope id for every intern |
+| `rows-transitions` | canonical stable-slot generations, lineage, abort, and retry | an ordered array of stable slots, exact keys, and values |
 | `structural` | collect/prepare/commit atomicity under allocation failure | committed topology derived from the shape and the current list |
 | `ownership` | retained-value and callable ownership across erased calls | a ledger of what each capability owns, checked every step |
 | `boundary` | boundary schema and event extraction plan parsing | the grammar itself, plus one-rule-broken trees |
