@@ -4393,6 +4393,10 @@ pub fn Engine(comptime Ctx: type) type {
                 owner: union(enum) { initial: usize, nested: usize },
                 range: RowRenderSpanRange,
             };
+            const ScopeDescriptorCounts = struct {
+                elems: usize = 0,
+                nodes: usize = 0,
+            };
             engine: *Self,
             host_ctx: Ctx.Handle,
             stream: *HostNodeDescriptorStream,
@@ -4447,6 +4451,7 @@ pub fn Engine(comptime Ctx: type) type {
             /// those until commit or abort.
             prepared_row_bindings: std.AutoHashMapUnmanaged(row_handles.RowHandleId, each_generation.RowBinding) = .empty,
             prepared_generations: std.AutoHashMapUnmanaged(each_generation.GenerationId, *each_generation.Generation) = .empty,
+            pending_scope_descriptor_counts: std.AutoHashMapUnmanaged(u64, ScopeDescriptorCounts) = .empty,
             prepared_named_event_groups: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedNamedEventIndexGroup) = .empty,
             prepared_named_event_group_by_elem: std.AutoHashMapUnmanaged(u64, usize) = .empty,
             signal_records: collection_plan.SignalRecordPlan(HostSignalToken, HostSignalRecord) = .{},
@@ -4806,6 +4811,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.row_render_span_intents.deinit(allocator);
                 self.prepared_row_bindings.deinit(allocator);
                 self.prepared_generations.deinit(allocator);
+                self.pending_scope_descriptor_counts.deinit(allocator);
                 self.signal_bindings.deinit(allocator);
                 const SignalReleaser = struct {
                     collection: *Collection,
@@ -4854,6 +4860,18 @@ pub fn Engine(comptime Ctx: type) type {
                 var next = try self.plan.add(counts);
                 try next.reserve(self, counts);
                 self.plan = next;
+            }
+
+            fn reserveScopeDescriptors(self: *@This(), scope_id: ids.ScopeId, additional_elems: usize, additional_nodes: usize) CollectionError!void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                const prior = self.pending_scope_descriptor_counts.get(scope_id.raw()) orelse ScopeDescriptorCounts{};
+                const next = ScopeDescriptorCounts{
+                    .elems = std.math.add(usize, prior.elems, additional_elems) catch return error.ResourceLimit,
+                    .nodes = std.math.add(usize, prior.nodes, additional_nodes) catch return error.ResourceLimit,
+                };
+                if (!self.pending_scope_descriptor_counts.contains(scope_id.raw())) self.pending_scope_descriptor_counts.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
+                try self.stream.reserveScopeDescriptorOwnership(allocator, scope_id, next.elems, next.nodes);
+                self.pending_scope_descriptor_counts.putAssumeCapacity(scope_id.raw(), next);
             }
 
             /// Stages the state value a transaction publishes so every signal
@@ -5084,6 +5102,7 @@ pub fn Engine(comptime Ctx: type) type {
                 binder_stack.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
                 const site_ordinal = ordinal.*;
                 const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
+                try self.reserveScopeDescriptors(scope_id, 0, 1);
                 var prepared_site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .state, binder_stack.items) catch return error.OutOfMemory;
                 prepared_site.desc.render_insert_index = self.prepared_render_order.items.len;
                 errdefer prepared_site.abort(allocator);
@@ -5106,6 +5125,7 @@ pub fn Engine(comptime Ctx: type) type {
                 try self.budget.charge(0, std.math.add(usize, @sizeOf(HostNodeScopeSiteDesc), binder_bytes) catch return error.ResourceLimit);
                 const site_ordinal = ordinal.*;
                 const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
+                try self.reserveScopeDescriptors(scope_id, 0, 1);
                 var prepared = self.stream.prepareScopeSite(Ctx.allocator(self.host_ctx), node_id, scope_id, site_ordinal, parent_elem_id, .component, binder_stack) catch return error.OutOfMemory;
                 prepared.desc.render_insert_index = self.prepared_render_order.items.len;
                 errdefer prepared.abort(Ctx.allocator(self.host_ctx));
@@ -5135,6 +5155,7 @@ pub fn Engine(comptime Ctx: type) type {
                 try self.budget.charge(0, std.math.add(usize, @sizeOf(HostNodeScopeSiteDesc) + @sizeOf(HostNodeWhenDesc), binder_bytes) catch return error.ResourceLimit);
                 const site_ordinal = ordinal.*;
                 const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
+                try self.reserveScopeDescriptors(scope_id, 0, 1);
                 var site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .when, binder_stack) catch return error.OutOfMemory;
                 site.desc.render_insert_index = self.prepared_render_order.items.len;
                 errdefer site.abort(allocator);
@@ -5176,6 +5197,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const allocator = Ctx.allocator(self.host_ctx);
                 const site_ordinal = ordinal.*;
                 const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
+                try self.reserveScopeDescriptors(scope_id, 0, 1);
                 var site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .each, binder_stack.items) catch return error.OutOfMemory;
                 site.desc.render_insert_index = self.prepared_render_order.items.len;
                 errdefer site.abort(allocator);
@@ -5769,6 +5791,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const descriptor_bytes = std.math.add(usize, @sizeOf(HostElementDesc), tag.len) catch return error.ResourceLimit;
                 try self.budget.charge(1, descriptor_bytes);
                 const elem_id = try self.reserveDomIdentity(scope_id, dom_ordinal.*);
+                try self.reserveScopeDescriptors(scope_id, 1, 0);
                 const prepared = try self.stream.prepareElement(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, tag);
                 self.prepared_nodes.appendAssumeCapacity(prepared);
                 self.prepared_render_order.appendAssumeCapacity(.{ .static = self.prepared_nodes.items.len - 1 });
@@ -5780,6 +5803,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const descriptor_bytes = std.math.add(usize, @sizeOf(HostNodeTextNodeDesc), value.len) catch return error.ResourceLimit;
                 try self.budget.charge(1, descriptor_bytes);
                 const elem_id = try self.reserveDomIdentity(scope_id, dom_ordinal.*);
+                try self.reserveScopeDescriptors(scope_id, 1, 0);
                 const prepared = try self.stream.prepareTextNode(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, value);
                 self.prepared_nodes.appendAssumeCapacity(prepared);
                 self.prepared_render_order.appendAssumeCapacity(.{ .static = self.prepared_nodes.items.len - 1 });
@@ -5789,6 +5813,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn appendSignalText(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, dom_ordinal: *ids.SiteOrdinal, payload: abi_view.TextSignalElem, binder_stack: []const HostBinderBinding) CollectionError!void {
                 try self.budget.charge(1, @sizeOf(HostNodeSignalTextNodeDesc));
                 const elem_id = try self.reserveDomIdentity(scope_id, dom_ordinal.*);
+                try self.reserveScopeDescriptors(scope_id, 1, 0);
                 const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
                 const read = retainHostTextRead(payload.read, &self.engine.pending_roc_metrics);
                 self.prepared_signal_attrs.appendAssumeCapacity(.{ .text_node = .{

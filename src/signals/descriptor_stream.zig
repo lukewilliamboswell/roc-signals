@@ -273,6 +273,25 @@ pub const LifecycleDescriptorIndex = struct {
     index: usize,
 };
 
+/// Stable descriptor identities owned directly by one explicit runtime scope.
+///
+/// Element and node ids survive dense descriptor-array swap removal, so this
+/// index can select one retiring subtree without scanning any descriptor
+/// family. Attribute and event ownership is reached through the element id;
+/// state and structural ownership is reached through the node id. Lifecycle
+/// descriptors keep their existing specialized per-scope index.
+pub const ScopeDescriptorOwnership = struct {
+    elem_ids: std.ArrayListUnmanaged(ElemId) = .empty,
+    node_ids: std.ArrayListUnmanaged(NodeId) = .empty,
+
+    /// Releases the scope-local identity lists.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.elem_ids.deinit(allocator);
+        self.node_ids.deinit(allocator);
+        self.* = .{};
+    }
+};
+
 const CustomAttrKeySet = std.HashMapUnmanaged(CustomAttrKey, CustomAttrDescriptorIndex, CustomAttrKeyContext, 80);
 
 pub const SignalBoolAttrDesc = struct {
@@ -631,6 +650,7 @@ pub const Stream = struct {
     custom_attr_keys: CustomAttrKeySet = .empty,
     custom_attr_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(CustomAttrDescriptorIndex)) = .empty,
     lifecycle_indices_by_scope_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(LifecycleDescriptorIndex)) = .empty,
+    scope_descriptor_ownership: std.ArrayListUnmanaged(ScopeDescriptorOwnership) = .empty,
     custom_attr_index_active: bool = false,
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .{},
     named_event_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)) = .empty,
@@ -674,6 +694,15 @@ pub const Stream = struct {
         }
         for (replacement.lifecycle_indices_by_scope_id.items, 0..) |indexes, scope_id| {
             if (indexes.items.len != 0) try self.reserveLifecycleScope(allocator, ScopeId.fromIndex(scope_id), indexes.items.len);
+        }
+        for (replacement.scope_descriptor_ownership.items, 0..) |ownership, scope_id| {
+            if (ownership.elem_ids.items.len == 0 and ownership.node_ids.items.len == 0) continue;
+            try self.reserveScopeDescriptorOwnership(
+                allocator,
+                ScopeId.fromIndex(scope_id),
+                ownership.elem_ids.items.len,
+                ownership.node_ids.items.len,
+            );
         }
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(replacement.render_metadata_by_elem_id.count()));
 
@@ -917,12 +946,14 @@ pub const Stream = struct {
     ) void {
         for (element_indexes) |index| {
             const removed = self.elements.swapRemove(index);
+            self.forgetScopeElem(removed.scope_id, removed.elem_id);
             self.clearElementIndex(removed.elem_id.raw(), index);
             retired.elements.appendAssumeCapacity(removed);
             if (index < self.elements.items.len) self.updateElementIndex(self.elements.items[index].elem_id.raw(), index);
         }
         for (text_indexes) |index| {
             const removed = self.text_nodes.swapRemove(index);
+            self.forgetScopeElem(removed.scope_id, removed.elem_id);
             self.clearTextNodeIndex(removed.elem_id.raw(), index);
             retired.text_nodes.appendAssumeCapacity(removed);
             if (index < self.text_nodes.items.len) self.updateTextNodeIndex(self.text_nodes.items[index].elem_id.raw(), index);
@@ -947,6 +978,7 @@ pub const Stream = struct {
         }
         for (signal_text_node_indexes) |index| {
             const removed = self.signal_text_nodes.swapRemove(index);
+            self.forgetScopeElem(removed.scope_id, removed.elem_id);
             self.clearSignalTextNodeIndex(removed.elem_id.raw(), index);
             self.forgetSignalRecordTree(removed.signal.record);
             retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
@@ -1023,6 +1055,7 @@ pub const Stream = struct {
         }
         for (scope_site_indexes) |index| {
             const removed = self.scope_sites.swapRemove(index);
+            self.forgetScopeNode(removed.scope_id, removed.node_id);
             self.clearScopeSiteIndex(removed.node_id.raw(), removed.kind, index);
             const retired_index = retired.scope_sites.items.len;
             retired.scope_sites.appendAssumeCapacity(removed);
@@ -1129,6 +1162,14 @@ pub const Stream = struct {
             setFreshIndex(&self.descriptor_indexes_by_node_id.items[desc.node_id.index()].each, index);
         }
         replacement.eaches.items.len = 0;
+        for (replacement.scope_descriptor_ownership.items, 0..) |*source, scope_index| {
+            if (source.elem_ids.items.len == 0 and source.node_ids.items.len == 0) continue;
+            const destination = &self.scope_descriptor_ownership.items[scope_index];
+            destination.elem_ids.appendSliceAssumeCapacity(source.elem_ids.items);
+            destination.node_ids.appendSliceAssumeCapacity(source.node_ids.items);
+            source.elem_ids.clearRetainingCapacity();
+            source.node_ids.clearRetainingCapacity();
+        }
     }
 
     fn rememberSignalRecordTreeAssumeCapacity(self: *Stream, record: *SignalRecord) void {
@@ -1162,6 +1203,7 @@ pub const Stream = struct {
         const new_elem_id = replacement.text_nodes.items[0].elem_id;
 
         const displaced_text = self.text_nodes.items[text_index];
+        const replacement_text = replacement.text_nodes.items[0];
         self.text_nodes.items[text_index] = replacement.text_nodes.items[0];
         replacement.text_nodes.items[0] = displaced_text;
         const displaced_render = self.render_nodes.items[old_render_index];
@@ -1175,6 +1217,8 @@ pub const Stream = struct {
         var replacement_metadata = removed_metadata.value;
         replacement_metadata.render_node = old_render_index;
         self.render_metadata_by_elem_id.putAssumeCapacity(new_elem_id, replacement_metadata);
+        self.forgetScopeElem(displaced_text.scope_id, displaced_text.elem_id);
+        self.recordScopeElemAssumeCapacity(replacement_text.scope_id, replacement_text.elem_id);
         self.next_elem_id = @max(self.next_elem_id, new_elem_id + 1);
     }
 
@@ -1739,6 +1783,8 @@ pub const Stream = struct {
         self.custom_attr_indices_by_elem_id.deinit(allocator);
         for (self.lifecycle_indices_by_scope_id.items) |*indexes| indexes.deinit(allocator);
         self.lifecycle_indices_by_scope_id.deinit(allocator);
+        for (self.scope_descriptor_ownership.items) |*ownership| ownership.deinit(allocator);
+        self.scope_descriptor_ownership.deinit(allocator);
         self.render_metadata_by_elem_id.deinit(allocator);
         self.descriptor_indexes_by_elem_id.deinit(allocator);
         self.descriptor_indexes_by_node_id.deinit(allocator);
@@ -1849,12 +1895,17 @@ pub const Stream = struct {
 
     /// Appends element using capacity that must already satisfy the caller's transaction contract.
     pub fn appendElement(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, tag: []const u8) ElemId {
-        return appendElementImpl(Stream, self, allocator, elem_id, parent_elem_id, scope_id, tag);
+        self.reserveScopeDescriptorOwnership(allocator, scope_id, 1, 0) catch @panic("out of memory");
+        const result = appendElementImpl(Stream, self, allocator, elem_id, parent_elem_id, scope_id, tag);
+        self.recordScopeElemAssumeCapacity(scope_id, elem_id);
+        return result;
     }
 
     /// Appends text node using capacity that must already satisfy the caller's transaction contract.
     pub fn appendTextNode(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, value: []const u8) void {
+        self.reserveScopeDescriptorOwnership(allocator, scope_id, 1, 0) catch @panic("out of memory");
         appendTextNodeImpl(Stream, self, allocator, elem_id, parent_elem_id, scope_id, value);
+        self.recordScopeElemAssumeCapacity(scope_id, elem_id);
     }
 
     pub const PreparedStaticNode = union(enum) {
@@ -2066,7 +2117,7 @@ pub const Stream = struct {
     }
 
     /// Maintains prepare scope site within the indexed descriptor stream used by both hosts.
-    pub fn prepareScopeSite(self: *const Stream, allocator: std.mem.Allocator, node_id: NodeId, scope_id: ScopeId, ordinal: SiteOrdinal, parent_elem_id: ElemId, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) std.mem.Allocator.Error!PreparedScopeSite {
+    pub fn prepareScopeSite(self: *Stream, allocator: std.mem.Allocator, node_id: NodeId, scope_id: ScopeId, ordinal: SiteOrdinal, parent_elem_id: ElemId, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) ReserveError!PreparedScopeSite {
         return .{ .desc = .{
             .node_id = node_id,
             .scope_id = scope_id,
@@ -2109,6 +2160,7 @@ pub const Stream = struct {
         const site_index = self.scope_sites.items.len;
         self.scope_sites.appendAssumeCapacity(site.desc);
         setFreshIndex(self.descriptor_indexes_by_node_id.items[node_id.index()].scope_sites.slot(site.desc.kind), site_index);
+        self.recordScopeNodeAssumeCapacity(site.desc.scope_id, node_id);
     }
 
     /// Maintains reserve prepared events within the indexed descriptor stream used by both hosts.
@@ -2214,6 +2266,7 @@ pub const Stream = struct {
                     parent_entry.value_ptr.first_child = desc.elem_id;
                 }
                 parent_entry.value_ptr.last_child = desc.elem_id;
+                self.recordScopeElemAssumeCapacity(desc.scope_id, desc.elem_id);
                 self.next_elem_id += 1;
             },
             .text_attr => |desc| {
@@ -2413,11 +2466,13 @@ pub const Stream = struct {
             parent_entry.value_ptr.first_child = prepared.elem_id;
         }
         parent_entry.value_ptr.last_child = prepared.elem_id;
+        self.recordScopeElemAssumeCapacity(prepared.scope_id, prepared.elem_id);
         self.next_elem_id += 1;
     }
 
     /// Appends signal text node using capacity that must already satisfy the caller's transaction contract.
     pub fn appendSignalTextNode(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, signal: HostSignalBinding, read: HostTextRead) void {
+        self.reserveScopeDescriptorOwnership(allocator, scope_id, 1, 0) catch @panic("out of memory");
         self.next_elem_id += 1;
         self.rememberSignalRecordTree(allocator, signal.record);
         const retained_read = retainHostTextRead(read, metrics);
@@ -2441,6 +2496,7 @@ pub const Stream = struct {
         self.recordSignalTextNodeIndex(allocator, elem_id.raw(), signal_text_node_index);
         self.recordRenderNodeIndex(allocator, elem_id, render_index);
         self.appendRenderChild(allocator, parent_elem_id, elem_id);
+        self.recordScopeElemAssumeCapacity(scope_id, elem_id);
     }
 
     /// Appends static text attr using capacity that must already satisfy the caller's transaction contract.
@@ -2777,6 +2833,70 @@ pub const Stream = struct {
         return self.lifecycle_indices_by_scope_id.items[scope_id.index()].items;
     }
 
+    /// Preflights scope-local descriptor identity publication without changing
+    /// either list's logical contents. Empty outer slots are harmless index
+    /// storage and may remain after an aborted transaction.
+    pub fn reserveScopeDescriptorOwnership(self: *Stream, allocator: std.mem.Allocator, scope_id: ScopeId, additional_elems: usize, additional_nodes: usize) ReserveError!void {
+        if (additional_elems == 0 and additional_nodes == 0) return;
+        const required = std.math.add(usize, scope_id.index(), 1) catch return error.ResourceLimit;
+        try self.scope_descriptor_ownership.ensureTotalCapacity(allocator, required);
+        while (self.scope_descriptor_ownership.items.len < required) self.scope_descriptor_ownership.appendAssumeCapacity(.{});
+        const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        try ownership.elem_ids.ensureUnusedCapacity(allocator, additional_elems);
+        try ownership.node_ids.ensureUnusedCapacity(allocator, additional_nodes);
+    }
+
+    /// Publishes one element identity into its already-reserved scope index.
+    pub fn recordScopeElemAssumeCapacity(self: *Stream, scope_id: ScopeId, elem_id: ElemId) void {
+        const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        ownership.elem_ids.appendAssumeCapacity(elem_id);
+    }
+
+    /// Publishes one construction-node identity into its already-reserved scope index.
+    pub fn recordScopeNodeAssumeCapacity(self: *Stream, scope_id: ScopeId, node_id: NodeId) void {
+        const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        ownership.node_ids.appendAssumeCapacity(node_id);
+    }
+
+    /// Returns exact element identities owned directly by one scope.
+    pub fn scopeOwnedElemIds(self: *const Stream, scope_id: ScopeId) []const ElemId {
+        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return &.{};
+        return self.scope_descriptor_ownership.items[scope_id.index()].elem_ids.items;
+    }
+
+    /// Returns exact construction-node identities owned directly by one scope.
+    pub fn scopeOwnedNodeIds(self: *const Stream, scope_id: ScopeId) []const NodeId {
+        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return &.{};
+        return self.scope_descriptor_ownership.items[scope_id.index()].node_ids.items;
+    }
+
+    /// Clears one retiring or re-collected scope after its descriptor-removal
+    /// journal has captured these stable ids. Capacity is retained for reuse.
+    pub fn clearScopeDescriptorOwnership(self: *Stream, scope_id: ScopeId) void {
+        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return;
+        const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        ownership.elem_ids.clearRetainingCapacity();
+        ownership.node_ids.clearRetainingCapacity();
+    }
+
+    fn forgetScopeElem(self: *Stream, scope_id: ScopeId, elem_id: ElemId) void {
+        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return;
+        const owned_ids = &self.scope_descriptor_ownership.items[scope_id.index()].elem_ids;
+        for (owned_ids.items, 0..) |candidate, index| if (candidate == elem_id) {
+            _ = owned_ids.swapRemove(index);
+            return;
+        };
+    }
+
+    fn forgetScopeNode(self: *Stream, scope_id: ScopeId, node_id: NodeId) void {
+        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return;
+        const owned_ids = &self.scope_descriptor_ownership.items[scope_id.index()].node_ids;
+        for (owned_ids.items, 0..) |candidate, index| if (candidate == node_id) {
+            _ = owned_ids.swapRemove(index);
+            return;
+        };
+    }
+
     /// Removes one lifecycle ownership entry and validates its dense descriptor index.
     pub fn removeLifecycleIndex(self: *Stream, scope_id: u64, expected: LifecycleDescriptorIndex) void {
         if (scope_id >= self.lifecycle_indices_by_scope_id.items.len) @panic("lifecycle removal missed its scope index");
@@ -2948,12 +3068,16 @@ pub const Stream = struct {
 
     /// Appends scope site using capacity that must already satisfy the caller's transaction contract.
     pub fn appendScopeSite(self: *Stream, allocator: std.mem.Allocator, node_id: NodeId, scope_id: ScopeId, ordinal: SiteOrdinal, parent_elem_id: ElemId, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) void {
+        self.reserveScopeDescriptorOwnership(allocator, scope_id, 0, 1) catch @panic("out of memory");
         appendScopeSiteImpl(Stream, self, allocator, node_id, scope_id, ordinal, parent_elem_id, kind, binder_bindings);
+        self.recordScopeNodeAssumeCapacity(scope_id, node_id);
     }
 
     /// Appends scope site at using capacity that must already satisfy the caller's transaction contract.
     pub fn appendScopeSiteAt(self: *Stream, allocator: std.mem.Allocator, node_id: NodeId, scope_id: ScopeId, ordinal: SiteOrdinal, parent_elem_id: ElemId, render_insert_index: usize, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) void {
+        self.reserveScopeDescriptorOwnership(allocator, scope_id, 0, 1) catch @panic("out of memory");
         appendScopeSiteAtImpl(Stream, self, allocator, node_id, scope_id, ordinal, parent_elem_id, render_insert_index, kind, binder_bindings);
+        self.recordScopeNodeAssumeCapacity(scope_id, node_id);
     }
 
     /// Appends state using capacity that must already satisfy the caller's transaction contract.
@@ -4337,12 +4461,15 @@ fn deinitStaticPreparedTestStream(stream: *Stream, allocator: std.mem.Allocator)
     stream.signal_custom_bool_attrs.deinit(allocator);
     stream.descriptor_indexes_by_elem_id.deinit(allocator);
     stream.render_metadata_by_elem_id.deinit(allocator);
+    for (stream.scope_descriptor_ownership.items) |*ownership| ownership.deinit(allocator);
+    stream.scope_descriptor_ownership.deinit(allocator);
 }
 
 test "prepared static append sweeps allocation failures without logical mutation and retries" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     var counter = FaultAllocator.init(std.testing.allocator);
     var counted_stream: Stream = .{};
+    try counted_stream.reserveScopeDescriptorOwnership(std.testing.allocator, ScopeId.fromRaw(0), 1, 0);
     const counted = try counted_stream.prepareElement(counter.allocator(), ElemId.fromRaw(1), ElemId.fromRaw(0), ScopeId.fromRaw(0), "section");
     counted.abort(counter.allocator());
     deinitStaticPreparedTestStream(&counted_stream, std.testing.allocator);
@@ -4353,6 +4480,7 @@ test "prepared static append sweeps allocation failures without logical mutation
         var fault = FaultAllocator.init(std.testing.allocator);
         var stream: Stream = .{};
         defer deinitStaticPreparedTestStream(&stream, std.testing.allocator);
+        try stream.reserveScopeDescriptorOwnership(std.testing.allocator, ScopeId.fromRaw(0), 1, 0);
         fault.configure(failure_number);
         try std.testing.expectError(error.OutOfMemory, stream.prepareElement(fault.allocator(), ElemId.fromRaw(1), ElemId.fromRaw(0), ScopeId.fromRaw(0), "section"));
         try std.testing.expectEqual(@as(u64, 1), stream.next_elem_id);
@@ -4369,6 +4497,7 @@ test "prepared static append sweeps allocation failures without logical mutation
         try std.testing.expectEqual(@as(usize, 1), stream.elements.items.len);
         try std.testing.expectEqualStrings("section", stream.elements.items[0].tag);
         try std.testing.expectEqual(ElemId.fromRaw(1), stream.firstRenderChild(ElemId.fromRaw(0)).?);
+        try std.testing.expectEqualSlices(ElemId, &.{ElemId.fromRaw(1)}, stream.scopeOwnedElemIds(ScopeId.fromRaw(0)));
     }
 }
 
@@ -4379,6 +4508,7 @@ test "prepared static batch reserves cumulative allocation-free publication capa
     defer deinitStaticPreparedTestStream(&stream, std.testing.allocator);
 
     try stream.reservePreparedStaticNodes(fault.allocator(), 2, 2);
+    try stream.reserveScopeDescriptorOwnership(std.testing.allocator, ScopeId.fromRaw(0), 2, 0);
     const element = try stream.prepareElement(fault.allocator(), ElemId.fromRaw(1), ElemId.fromRaw(0), ScopeId.fromRaw(0), "div");
     const text = try stream.prepareTextNode(fault.allocator(), ElemId.fromRaw(2), ElemId.fromRaw(1), ScopeId.fromRaw(0), "hello");
 
@@ -4687,6 +4817,7 @@ test "prepared state site publication is allocation free" {
     defer abi.decrefErasedCallable(initial, &roc_host);
 
     try stream.reservePreparedStateSites(allocator, 1, 4);
+    try stream.reserveScopeDescriptorOwnership(allocator, ScopeId.fromRaw(0), 0, 1);
     const binder: BinderToken = @ptrFromInt(0x9000);
     const site = try stream.prepareScopeSite(allocator, NodeId.fromRaw(4), ScopeId.fromRaw(0), SiteOrdinal.fromRaw(0), ElemId.fromRaw(1), .state, &.{.{ .token = binder, .node_id = NodeId.fromRaw(2) }});
     const state = stream.prepareState(NodeId.fromRaw(4), .fromAbi(initial), std.mem.zeroes(HostValueCapability), &metrics);
@@ -4729,8 +4860,10 @@ test "prepared state site replacement transfers ownership without allocation" {
     const token: BinderToken = @ptrFromInt(0x9200);
 
     try active.reservePreparedStateSites(allocator, 1, 4);
+    try active.reserveScopeDescriptorOwnership(allocator, ScopeId.fromRaw(1), 0, 1);
     active.appendPreparedStateSite(try active.prepareScopeSite(allocator, NodeId.fromRaw(4), ScopeId.fromRaw(1), SiteOrdinal.fromRaw(0), ElemId.fromRaw(1), .state, &.{.{ .token = token, .node_id = NodeId.fromRaw(4) }}), active.prepareState(NodeId.fromRaw(4), .fromAbi(initial), std.mem.zeroes(HostValueCapability), &metrics));
     try replacement.reservePreparedStateSites(allocator, 1, 5);
+    try replacement.reserveScopeDescriptorOwnership(allocator, ScopeId.fromRaw(2), 0, 1);
     replacement.appendPreparedStateSite(try replacement.prepareScopeSite(allocator, NodeId.fromRaw(5), ScopeId.fromRaw(2), SiteOrdinal.fromRaw(0), ElemId.fromRaw(2), .state, &.{.{ .token = token, .node_id = NodeId.fromRaw(5) }}), replacement.prepareState(NodeId.fromRaw(5), .fromAbi(initial), std.mem.zeroes(HostValueCapability), &metrics));
     try active.reserveMovedStreamPublication(allocator, &replacement);
     try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 0, &.{}, &active, &.{0}, 1, 0, 0);
@@ -4742,6 +4875,8 @@ test "prepared state site replacement transfers ownership without allocation" {
     try std.testing.expectEqual(@as(?usize, 0), active.nodeDescriptorIndex(NodeId.fromRaw(5)).?.state.get());
     try std.testing.expectEqual(NodeId.fromRaw(4), retired.states.items[0].node_id);
     try std.testing.expectEqual(token, retired.scope_sites.items[0].binder_bindings[0].token);
+    try std.testing.expectEqual(@as(usize, 0), active.scopeOwnedNodeIds(ScopeId.fromRaw(1)).len);
+    try std.testing.expectEqualSlices(NodeId, &.{NodeId.fromRaw(5)}, active.scopeOwnedNodeIds(ScopeId.fromRaw(2)));
 }
 
 test "when descriptor replacement transfers ownership without allocation" {
