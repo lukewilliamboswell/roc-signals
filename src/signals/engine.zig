@@ -7652,6 +7652,7 @@ pub fn Engine(comptime Ctx: type) type {
                         if (parent_entry.value_ptr.last_child) |previous_id| {
                             const previous = prepared.metadata.getPtr(previous_id.raw()) orelse return error.InvalidRenderTopology;
                             previous.next_sibling = node.elem_id;
+                            node_entry.value_ptr.previous_sibling = previous_id;
                         } else parent_entry.value_ptr.first_child = node.elem_id;
                         parent_entry.value_ptr.last_child = node.elem_id;
                     }
