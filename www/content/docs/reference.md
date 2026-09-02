@@ -92,10 +92,16 @@ For three or more inputs use the record builder rather than nesting `map2`:
 | `key` | `Row(a) -> Str` | exact UTF-8 row identity |
 | `signal` | `Row(a) -> Signal(a)` | stable live item source |
 | `map` | `Row(a), (a -> value) -> Signal(value)` where `value.is_eq` | ordinary equality-pruned projection |
+| `select` | `Row(a), Signal.Keyed(value) -> Signal(value)` | fused exact-key selected/unselected value |
 
 Keys are compared as exact UTF-8 bytes without normalization or case folding.
 `Row.map` is ordinary graph `Signal.map`; it does not introduce a separate row
 observer or snapshot lifecycle.
+
+Build a shared keyed selector once with
+`selected_key.keyed(when_selected, otherwise)`, then call `row.select(keyed)`.
+Each row remains an ordinary graph record, while the typed selector operations
+are retained once by the keyed construction site.
 
 ## Rows
 

@@ -104,6 +104,19 @@ pub const RowBinding = struct {
     }
 };
 
+/// Transaction-local location of a key in one prepared collection's
+/// host-owned key arenas. It is meaningful only while the matching candidate
+/// generation and its prepared inputs are active.
+pub const CandidateKeyLocator = union(enum) {
+    snapshot: usize,
+    delta: usize,
+};
+
+pub const CandidateEntry = struct {
+    binding: ?RowBinding,
+    key_locator: ?CandidateKeyLocator,
+};
+
 pub const BindingTable = struct {
     entries: std.AutoHashMapUnmanaged(RowHandleId, RowBinding) = .empty,
 
@@ -130,7 +143,7 @@ const OverlayPhase = enum { preparing, committed };
 /// generation lifetimes.
 pub const CandidateBindings = struct {
     allocator: std.mem.Allocator,
-    candidate: std.AutoHashMapUnmanaged(RowHandleId, ?RowBinding) = .empty,
+    candidate: std.AutoHashMapUnmanaged(RowHandleId, CandidateEntry) = .empty,
     phase: OverlayPhase = .preparing,
     commit_preflighted: bool = false,
 
@@ -146,12 +159,12 @@ pub const CandidateBindings = struct {
     }
 
     /// Stages one exact row binding using already-reserved capacity.
-    pub fn putAssumeCapacity(self: *CandidateBindings, row_handle: RowHandleId, binding: RowBinding) error{ InvalidGeneration, DuplicateRowHandle }!void {
+    pub fn putAssumeCapacity(self: *CandidateBindings, row_handle: RowHandleId, binding: RowBinding, key_locator: CandidateKeyLocator) error{ InvalidGeneration, DuplicateRowHandle }!void {
         if (self.phase != .preparing) @panic("committed each binding overlay cannot stage");
         try binding.validate();
         const entry = self.candidate.getOrPutAssumeCapacity(row_handle);
         if (entry.found_existing) return error.DuplicateRowHandle;
-        entry.value_ptr.* = binding;
+        entry.value_ptr.* = .{ .binding = binding, .key_locator = key_locator };
     }
 
     /// Stages explicit row retirement so preparation cannot fall back to the
@@ -160,14 +173,21 @@ pub const CandidateBindings = struct {
         if (self.phase != .preparing) @panic("committed each binding overlay cannot stage");
         const entry = self.candidate.getOrPutAssumeCapacity(row_handle);
         if (entry.found_existing) return error.DuplicateRowHandle;
-        entry.value_ptr.* = null;
+        entry.value_ptr.* = .{ .binding = null, .key_locator = null };
     }
 
     /// Resolves candidate state first, then committed state. This is the lookup
     /// law used by delayed structural builders during transaction preparation.
     pub fn resolve(self: *const CandidateBindings, committed: *const BindingTable, row_handle: RowHandleId) ?RowBinding {
-        if (self.candidate.get(row_handle)) |candidate| return candidate;
+        if (self.candidate.get(row_handle)) |candidate| return candidate.binding;
         return committed.get(row_handle);
+    }
+
+    /// Returns the locator for a staged live binding without exposing key bytes.
+    pub fn keyLocator(self: *const CandidateBindings, row_handle: RowHandleId) ?CandidateKeyLocator {
+        const entry = self.candidate.get(row_handle) orelse return null;
+        if (entry.binding == null) return null;
+        return entry.key_locator orelse @panic("candidate row binding lacked its key locator");
     }
 
     /// Reserves the persistent table for every possible inserted edit before
@@ -188,11 +208,11 @@ pub const CandidateBindings = struct {
         // within the preflighted final binding bound when one batch removes
         // and creates rows together.
         var removals = self.candidate.iterator();
-        while (removals.next()) |entry| if (entry.value_ptr.* == null) {
+        while (removals.next()) |entry| if (entry.value_ptr.binding == null) {
             _ = committed.entries.remove(entry.key_ptr.*);
         };
         var insertions = self.candidate.iterator();
-        while (insertions.next()) |entry| if (entry.value_ptr.*) |binding| {
+        while (insertions.next()) |entry| if (entry.value_ptr.binding) |binding| {
             committed.entries.putAssumeCapacity(entry.key_ptr.*, binding);
         };
         self.phase = .committed;
@@ -295,12 +315,35 @@ test "candidate bindings override committed rows for delayed reads" {
     var overlay = CandidateBindings.init(std.testing.allocator);
     defer overlay.deinit();
     try overlay.reserve(1);
-    try overlay.putAssumeCapacity(row, next);
+    try overlay.putAssumeCapacity(row, next, .{ .snapshot = 0 });
 
     try std.testing.expectEqual(next, overlay.resolve(&committed, row).?);
     try overlay.preflightCommit(&committed);
     overlay.commit(&committed);
     try std.testing.expectEqual(next, committed.get(row).?);
+}
+
+test "candidate key locators remain transaction local across commit and abort" {
+    const row = RowHandleId.fromRaw(0x0000_0001_0000_0001);
+    var committed = BindingTable{};
+    defer committed.deinit(std.testing.allocator);
+
+    var committed_overlay = CandidateBindings.init(std.testing.allocator);
+    defer committed_overlay.deinit();
+    try committed_overlay.reserve(1);
+    try committed_overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(2), .item_slot = 7 }, .{ .delta = 3 });
+    try std.testing.expectEqual(CandidateKeyLocator{ .delta = 3 }, committed_overlay.keyLocator(row).?);
+    try committed_overlay.preflightCommit(&committed);
+    committed_overlay.commit(&committed);
+    try std.testing.expectEqual(@as(u64, 7), committed.get(row).?.item_slot);
+
+    var aborted = CandidateBindings.init(std.testing.allocator);
+    try aborted.reserve(1);
+    const other = RowHandleId.fromRaw(0x0000_0001_0000_0002);
+    try aborted.putAssumeCapacity(other, .{ .generation_id = GenerationId.fromRaw(3), .item_slot = 9 }, .{ .snapshot = 4 });
+    try std.testing.expectEqual(CandidateKeyLocator{ .snapshot = 4 }, aborted.keyLocator(other).?);
+    aborted.deinit();
+    try std.testing.expect(committed.get(other) == null);
 }
 
 test "aborted candidate bindings leave committed rows readable" {
@@ -311,7 +354,7 @@ test "aborted candidate bindings leave committed rows readable" {
     try committed.entries.put(std.testing.allocator, row, old);
     var overlay = CandidateBindings.init(std.testing.allocator);
     try overlay.reserve(1);
-    try overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(11), .item_slot = 9 });
+    try overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(11), .item_slot = 9 }, .{ .snapshot = 0 });
     overlay.deinit();
 
     try std.testing.expectEqual(old, committed.get(row).?);
@@ -322,9 +365,9 @@ test "candidate bindings reject duplicates and invalid generations" {
     var overlay = CandidateBindings.init(std.testing.allocator);
     defer overlay.deinit();
     try overlay.reserve(2);
-    try std.testing.expectError(error.InvalidGeneration, overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(0), .item_slot = 1 }));
-    try overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(1), .item_slot = 1 });
-    try std.testing.expectError(error.DuplicateRowHandle, overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(1), .item_slot = 2 }));
+    try std.testing.expectError(error.InvalidGeneration, overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(0), .item_slot = 1 }, .{ .snapshot = 0 }));
+    try overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(1), .item_slot = 1 }, .{ .snapshot = 0 });
+    try std.testing.expectError(error.DuplicateRowHandle, overlay.putAssumeCapacity(row, .{ .generation_id = GenerationId.fromRaw(1), .item_slot = 2 }, .{ .snapshot = 1 }));
 }
 
 test "candidate removal masks committed binding before and after commit" {

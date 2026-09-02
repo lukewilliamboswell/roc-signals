@@ -96,7 +96,7 @@ Ui := [].{
 
 	## Stable keyed-row handle. A captured row remains valid for the lifetime of
 	## its row scope, including when a delayed structural builder first reads it.
-	Row(a) := { key_value : Str, source : Signal(a) }.{
+	Row(a) := { handle_value : U64, key_value : Str, source : Signal(a) }.{
 
 		## Return the exact UTF-8 key supplied by the keyed collection.
 		key : Row(a) -> Str
@@ -112,6 +112,10 @@ Ui := [].{
 				value.is_eq : value, value -> Bool,
 			]
 		map = |row, project| row.source.map(project)
+
+		## Select this exact row key from one site-shared keyed signal.
+		select : Row(a), Signal.Keyed(value) -> Signal(value)
+		select = |row, keyed| keyed.for_row(row.handle_value, row.key_value)
 	}
 
 	## A handle to a state binder, given to the `Ui.state` body. `signal` reads the
@@ -515,7 +519,7 @@ Ui := [].{
 					Node.SignalExpr.RowSource(row_handle, row_source_box, row_source_box, Capability.handle(item_cap)),
 					item_cap,
 				)
-			row({ key_value: key, source })
+			row({ handle_value: row_handle, key_value: key, source })
 		}
 		Elem.Each({
 			rows: Signal.to_expr(rows),

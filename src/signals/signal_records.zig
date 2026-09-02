@@ -408,6 +408,7 @@ pub const CombineRecord = struct {
 };
 
 pub const SelectRecord = struct {
+    keyed_identity: ?KeyedSelectIdentity = null,
     input: *Record,
     key: []const u8,
     input_read: HostTextRead,
@@ -418,6 +419,13 @@ pub const SelectRecord = struct {
     true_value: CacheSlot = .absent,
     cached_value: CacheSlot = .absent,
 };
+
+pub const KeyedSelectIdentity = struct {
+    site: HostSignalToken,
+    row_handle: row_handles.RowHandleId,
+};
+
+pub const KeyedSelectRecord = SelectRecord;
 
 pub const TaskSourceRecord = struct {
     name: []const u8,
@@ -489,6 +497,7 @@ pub const Payload = union(enum) {
     map: MapRecord,
     map2: Map2Record,
     select: SelectRecord,
+    keyed_select: KeyedSelectRecord,
     combine: CombineRecord,
     task_source: TaskSourceRecord,
     interval_source: IntervalSourceRecord,
@@ -567,7 +576,7 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 1);
         },
-        .select => |payload| {
+        .select, .keyed_select => |payload| {
             payload.input.release(allocator, ctx, roc_host, metrics);
             allocator.free(payload.key);
             var false_value = payload.false_value;
@@ -706,6 +715,7 @@ pub const Record = struct {
             .map => |payload| retained.hostSignalTokenFromCallable(payload.transform.toAbi()),
             .map2 => |payload| retained.hostSignalTokenFromCallable(payload.transform.toAbi()),
             .select => |payload| retained.hostSignalTokenFromCallable(payload.false_init.toAbi()),
+            .keyed_select => null,
             .combine => |payload| retained.hostSignalTokenFromCallable(payload.transform.toAbi()),
             .task_source => |payload| retained.hostSignalTokenFromCallable(payload.initial.toAbi()),
             .interval_source => |payload| retained.hostSignalTokenFromCallable(payload.initial.toAbi()),
@@ -718,6 +728,14 @@ pub const Record = struct {
         };
     }
 
+    /// Returns the composite construction-site and row identity of a fused keyed selector.
+    pub fn keyedSelectIdentity(self: *const Record) ?KeyedSelectIdentity {
+        return switch (self.payload) {
+            .keyed_select => |payload| payload.keyed_identity orelse @panic("keyed selector record lacked composite identity"),
+            else => null,
+        };
+    }
+
     /// Returns the retained cache slot owned by this signal record kind.
     pub fn cachedSlot(self: *Record) ?*CacheSlot {
         return switch (self.payload) {
@@ -726,6 +744,7 @@ pub const Record = struct {
             .map => |*payload| &payload.cached_value,
             .map2 => |*payload| &payload.cached_value,
             .select => |*payload| &payload.cached_value,
+            .keyed_select => |*payload| &payload.cached_value,
             .combine => |*payload| &payload.cached_value,
             .task_source => |*payload| &payload.cached_value,
             .interval_source => |*payload| &payload.cached_value,
@@ -746,6 +765,7 @@ pub const Record = struct {
             .map => |payload| payload.cap,
             .map2 => |payload| payload.cap,
             .select => |payload| payload.cap,
+            .keyed_select => |payload| payload.cap,
             .combine => |payload| payload.cap,
             .task_source => |payload| payload.cap,
             .interval_source => |payload| payload.cap,
@@ -762,7 +782,7 @@ pub const Record = struct {
     pub fn taskSource(self: *Record) ?*TaskSourceRecord {
         return switch (self.payload) {
             .task_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .select, .combine, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => null,
+            else => null,
         };
     }
 
@@ -775,7 +795,7 @@ pub const Record = struct {
     pub fn intervalSource(self: *Record) ?*IntervalSourceRecord {
         return switch (self.payload) {
             .interval_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => null,
+            else => null,
         };
     }
 
@@ -788,7 +808,7 @@ pub const Record = struct {
     pub fn locationSource(self: *Record) ?*LocationSourceRecord {
         return switch (self.payload) {
             .location_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .online_source, .visibility_source, .storage_source, .row_source => null,
+            else => null,
         };
     }
 
@@ -801,7 +821,7 @@ pub const Record = struct {
     pub fn onlineSource(self: *Record) ?*OnlineSourceRecord {
         return switch (self.payload) {
             .online_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .location_source, .visibility_source, .storage_source, .row_source => null,
+            else => null,
         };
     }
 
@@ -814,7 +834,7 @@ pub const Record = struct {
     pub fn visibilitySource(self: *Record) ?*VisibilitySourceRecord {
         return switch (self.payload) {
             .visibility_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .storage_source, .row_source => null,
+            else => null,
         };
     }
 
@@ -827,7 +847,7 @@ pub const Record = struct {
     pub fn storageSource(self: *Record) ?*StorageSourceRecord {
         return switch (self.payload) {
             .storage_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .row_source => null,
+            else => null,
         };
     }
 
@@ -847,7 +867,7 @@ pub const Record = struct {
             .visibility_source => |*payload| .{ .visibility = payload },
             .storage_source => |*payload| .{ .storage = payload },
             .row_source => |*payload| .{ .row = payload },
-            .ref, .const_value, .map, .map2, .select, .combine => null,
+            else => null,
         };
     }
 
@@ -897,7 +917,7 @@ pub fn walkTree(comptime Context: type, context: Context, record: *Record, compt
     switch (record.payload) {
         .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
         .map => |payload| walkTree(Context, context, payload.input, visit),
-        .select => |payload| walkTree(Context, context, payload.input, visit),
+        .select, .keyed_select => |payload| walkTree(Context, context, payload.input, visit),
         .map2 => |payload| {
             walkTree(Context, context, payload.left, visit);
             walkTree(Context, context, payload.right, visit);
@@ -932,7 +952,7 @@ pub fn appendSignalRecordSourceNodeIdsFallible(allocator: std.mem.Allocator, sou
         },
         .const_value => {},
         .map => |payload| try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, payload.input),
-        .select => |payload| try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, payload.input),
+        .select, .keyed_select => |payload| try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, payload.input),
         .map2 => |payload| {
             try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, payload.left);
             try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, payload.right);

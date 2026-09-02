@@ -87,16 +87,10 @@ remove_row = |model, id| { ..model, rows: Rows.apply(model.rows, [RemoveKey(id)]
 element : Str, List(Html.Attr), List(Elem) -> Elem
 element = |tag, attrs, children| Elem.Element({ tag, attrs, children })
 
-render_row : Ui.State(Model), Signal.Signal(Str), Str, Signal.Signal(Row) -> Elem
+render_row : Ui.State(Model), Signal.Keyed(Str), Str, Ui.Row(Row) -> Elem
 render_row = |model, selected, key, row| {
 	label = row.map(|value| value.label)
-	classes = Signal.select(selected, key).map(
-		|is_selected| if is_selected {
-			"danger"
-		} else {
-			""
-		},
-	)
+	classes = row.select(selected)
 	element(
 		"tr",
 		[Html.class_attr_s(classes), Html.attr("data-row-id", key), Html.test_id("row-${key}")],
@@ -134,6 +128,7 @@ main = || {
 			model_signal = model.signal()
 			rows = Signal.map(model_signal, |value| value.rows)
 			selected = Signal.map(model_signal, |value| value.selected)
+			selected_keyed = selected.keyed("danger", "")
 			Html.div(
 				[Html.class_attr("container")],
 				[
@@ -173,7 +168,7 @@ main = || {
 						"table",
 						[Html.class_attr("table table-hover table-striped test-data")],
 						[
-							element("tbody", [Html.attr("id", "tbody")], [Ui.each(rows, |each_row| render_row(model, selected, each_row.key(), each_row.signal()))]),
+							element("tbody", [Html.attr("id", "tbody")], [Ui.each(rows, |each_row| render_row(model, selected_keyed, each_row.key(), each_row))]),
 						],
 					),
 					element("span", [Html.class_attr("preloadicon glyphicon glyphicon-remove"), Html.attr("aria-hidden", "true")], []),

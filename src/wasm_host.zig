@@ -1026,6 +1026,7 @@ fn discoverStorageSignalExpr(expr: abi.NodeSignalExpr) void {
         .ref, .const_value, .row_source, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source => {},
         .map => |payload| discoverStorageSignalExpr(payload.input.*),
         .select => |payload| discoverStorageSignalExpr(payload.input.*),
+        .keyed_select => |payload| discoverStorageSignalExpr(payload.input.*),
         .map2 => |payload| {
             discoverStorageSignalExpr(payload.left.*);
             discoverStorageSignalExpr(payload.right.*);
@@ -1316,7 +1317,7 @@ fn resolveTask(request_id: ids.TaskRequestId, payload_text: []const u8, failed: 
     const record = shared_engine.activeTaskRecordByToken(pending.task_token) orelse failHostWith("task result matched no active task source");
     const task_payload = switch (record.payload) {
         .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .select, .combine, .row_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
+        .ref, .const_value, .map, .map2, .select, .keyed_select, .combine, .row_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
     if (record.token().? != pending.task_token) failHostWith("task result matched a pending request for a different task source");
 

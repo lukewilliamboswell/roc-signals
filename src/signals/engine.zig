@@ -748,6 +748,7 @@ pub fn Engine(comptime Ctx: type) type {
         each_generations: std.AutoHashMapUnmanaged(each_generation.GenerationId, *each_generation.Generation) = .{},
         each_generation_ids_by_site_index: std.ArrayListUnmanaged(?each_generation.GenerationId) = .empty,
         active_each_candidate_bindings: ?*const each_generation.CandidateBindings = null,
+        active_each_candidate_inputs: ?*const PreparedEachInputs = null,
         active_each_candidate_generation: ?*each_generation.Generation = null,
         active_each_candidate_rows_site_id: ?rows_site_store.SiteId = null,
         active_each_prepared_bindings: ?*const std.AutoHashMapUnmanaged(row_handles.RowHandleId, each_generation.RowBinding) = null,
@@ -850,7 +851,7 @@ pub fn Engine(comptime Ctx: type) type {
             /// Performs release record inside the shared engine while preserving transaction and changed-set invariants.
             pub fn releaseRecord(self: *@This(), record: *HostSignalRecord) void {
                 switch (record.payload) {
-                    .select => |payload| self.engine.selectors.unregister(Ctx.allocator(self.ctx), payload.input, payload.key, record),
+                    .select, .keyed_select => |payload| self.engine.selectors.unregister(Ctx.allocator(self.ctx), payload.input, payload.key, record),
                     .row_source => |payload| {
                         const removed = self.engine.active_row_sources.fetchRemove(payload.row_handle) orelse @panic("retired row source was absent from its handle index");
                         if (removed.value != record) @panic("retired row source index pointed at a different record");
@@ -947,7 +948,7 @@ pub fn Engine(comptime Ctx: type) type {
             pub fn createRow(self: *@This(), parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, key_hash: u64, _: usize, item: usize) ids.ScopeId {
                 const handle = self.engine.row_handle_registry.insert(Ctx.allocator(self.ctx), {}) catch @panic("row handle resource limit");
                 self.inputs.created_handles.append(Ctx.allocator(self.ctx), handle) catch @panic("out of memory");
-                self.inputs.candidate_bindings.putAssumeCapacity(handle, .{ .generation_id = self.inputs.generation.id, .item_slot = self.inputs.slot(item) orelse @panic("missing candidate Rows slot") }) catch @panic("invalid duplicate row binding");
+                self.inputs.candidate_bindings.putAssumeCapacity(handle, .{ .generation_id = self.inputs.generation.id, .item_slot = self.inputs.slot(item) orelse @panic("missing candidate Rows slot") }, .{ .snapshot = item }) catch @panic("invalid duplicate row binding");
                 return self.engine.createEachRowScope(self.ctx, parent_scope_id, site_ordinal, key_hash, handle);
             }
 
@@ -1020,7 +1021,7 @@ pub fn Engine(comptime Ctx: type) type {
                     _ = self.base.engine.row_handle_registry.remove(row_handle) catch unreachable;
                     return error.OutOfMemory;
                 };
-                inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(input_index) orelse @panic("missing candidate Rows slot") }) catch @panic("invalid duplicate row binding");
+                inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(input_index) orelse @panic("missing candidate Rows slot") }, .{ .snapshot = input_index }) catch @panic("invalid duplicate row binding");
                 inputs.row_handles_by_index[input_index] = row_handle;
                 const scope_id = try self.scopes.prepareRow(
                     &self.base.engine.scopes,
@@ -1055,7 +1056,7 @@ pub fn Engine(comptime Ctx: type) type {
                     } else old_generation = generation;
                     pairs.appendAssumeCapacity(binding.item_slot);
                     pairs.appendAssumeCapacity(inputs.slot(next_index) orelse return error.ResourceLimit);
-                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(next_index) orelse return error.ResourceLimit }) catch return error.ResourceLimit;
+                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(next_index) orelse return error.ResourceLimit }, .{ .snapshot = next_index }) catch return error.ResourceLimit;
                     inputs.row_handles_by_index[next_index] = row_handle;
                 }
                 const old = old_generation orelse return;
@@ -1194,6 +1195,13 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn key(self: *const @This(), index: usize) ?[]const u8 {
                 return self.snapshot.keys.key(index);
+            }
+
+            fn candidateKey(self: *const @This(), locator: each_generation.CandidateKeyLocator) ?[]const u8 {
+                return switch (locator) {
+                    .snapshot => |index| self.snapshot.keys.key(index),
+                    .delta => |index| if (self.delta) |*delta| delta.keys.key(index) else null,
+                };
             }
 
             fn slot(self: *const @This(), index: usize) ?u64 {
@@ -1466,7 +1474,7 @@ pub fn Engine(comptime Ctx: type) type {
                         inputs.candidate_bindings.putAssumeCapacity(row_handles.RowHandleId.fromRaw(row.metadata.row_handle), .{
                             .generation_id = inputs.generation.id,
                             .item_slot = value.slot,
-                        }) catch return error.InvalidDescriptor;
+                        }, .{ .delta = value.key_index }) catch return error.InvalidDescriptor;
                         break :blk .{ .update = .{
                             .slot = value.slot,
                             .key = key,
@@ -1497,7 +1505,7 @@ pub fn Engine(comptime Ctx: type) type {
                         inputs.candidate_bindings.putAssumeCapacity(row_handle, .{
                             .generation_id = inputs.generation.id,
                             .item_slot = value.slot,
-                        }) catch return error.InvalidDescriptor;
+                        }, .{ .delta = value.key_index }) catch return error.InvalidDescriptor;
                         break :blk .{ .insert = .{
                             .slot = value.slot,
                             .before_slot = value.before_slot,
@@ -1895,13 +1903,16 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 for (self.replacements[0..self.prepared_len], sites, eaches, 0..) |replacement, site, each, index| {
                     const previous_bindings = self.engine.active_each_candidate_bindings;
+                    const previous_inputs = self.engine.active_each_candidate_inputs;
                     const previous_generation = self.engine.active_each_candidate_generation;
                     const previous_rows_site_id = self.engine.active_each_candidate_rows_site_id;
                     self.engine.active_each_candidate_bindings = &self.rows[index].inputs.candidate_bindings;
+                    self.engine.active_each_candidate_inputs = &self.rows[index].inputs;
                     self.engine.active_each_candidate_generation = self.rows[index].inputs.generation;
                     self.engine.active_each_candidate_rows_site_id = self.rows[index].inputs.rows_site_id;
                     defer {
                         self.engine.active_each_candidate_bindings = previous_bindings;
+                        self.engine.active_each_candidate_inputs = previous_inputs;
                         self.engine.active_each_candidate_generation = previous_generation;
                         self.engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                     }
@@ -2332,13 +2343,16 @@ pub fn Engine(comptime Ctx: type) type {
                 var row_write: usize = 0;
                 for (rows.replacements[0..rows.prepared_len], rows.rows[0..rows.prepared_len], sites, eaches, each_change_indexes) |replacement, prepared_rows, site, each, change_index| {
                     const previous_bindings = engine.active_each_candidate_bindings;
+                    const previous_inputs = engine.active_each_candidate_inputs;
                     const previous_generation = engine.active_each_candidate_generation;
                     const previous_rows_site_id = engine.active_each_candidate_rows_site_id;
                     engine.active_each_candidate_bindings = &prepared_rows.inputs.candidate_bindings;
+                    engine.active_each_candidate_inputs = &prepared_rows.inputs;
                     engine.active_each_candidate_generation = prepared_rows.inputs.generation;
                     engine.active_each_candidate_rows_site_id = prepared_rows.inputs.rows_site_id;
                     defer {
                         engine.active_each_candidate_bindings = previous_bindings;
+                        engine.active_each_candidate_inputs = previous_inputs;
                         engine.active_each_candidate_generation = previous_generation;
                         engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                     }
@@ -2771,12 +2785,12 @@ pub fn Engine(comptime Ctx: type) type {
             for (self.active_signal_graph.items, release.final_record_ids) |node, final_id| {
                 if (final_id == null) continue;
                 switch (node.record.payload) {
-                    .select => |payload| prepared.register(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
+                    .select, .keyed_select => |payload| prepared.register(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
                     else => {},
                 }
             }
             for (append.new_nodes) |node| switch (node.record.payload) {
-                .select => |payload| prepared.register(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
+                .select, .keyed_select => |payload| prepared.register(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
                 else => {},
             };
             return prepared;
@@ -3302,7 +3316,7 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         fn deinitEachGenerationOwnership(self: *Self, allocator: std.mem.Allocator, ctx: Ctx.Handle, roc_host: *abi.RocHost) void {
-            if (self.active_each_candidate_bindings != null or self.active_each_candidate_generation != null or self.active_each_candidate_rows_site_id != null or self.active_each_prepared_bindings != null or self.active_each_prepared_generations != null) @panic("each generation ownership cleared during active reconciliation");
+            if (self.active_each_candidate_bindings != null or self.active_each_candidate_inputs != null or self.active_each_candidate_generation != null or self.active_each_candidate_rows_site_id != null or self.active_each_prepared_bindings != null or self.active_each_prepared_generations != null) @panic("each generation ownership cleared during active reconciliation");
 
             self.committed_row_bindings.deinit(allocator);
             self.row_handle_registry.deinit(allocator);
@@ -3704,6 +3718,12 @@ pub fn Engine(comptime Ctx: type) type {
             return null;
         }
 
+        fn signalRecordByKeyedSelectForStream(self: *Self, stream: *HostNodeDescriptorStream, identity: signal_records.KeyedSelectIdentity) ?*HostSignalRecord {
+            if (stream.signalRecordByKeyedSelectIdentity(identity)) |record| return record;
+            if (stream != &self.active_stream) return self.active_stream.signalRecordByKeyedSelectIdentity(identity);
+            return null;
+        }
+
         fn retainExistingSignalRecordForStream(self: *Self, allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, token: HostSignalToken, expected_tag: std.meta.Tag(HostSignalRecordPayload)) ?*HostSignalRecord {
             const record = self.signalRecordByTokenForStream(stream, token) orelse return null;
             validateExistingSignalRecord(record, expected_tag);
@@ -3726,6 +3746,13 @@ pub fn Engine(comptime Ctx: type) type {
                 return self.engine.retainExistingSignalRecordForStream(self.allocator, self.stream, token, expected_tag);
             }
 
+            fn retainExistingKeyed(self: @This(), identity: signal_records.KeyedSelectIdentity) error{OutOfMemory}!?*HostSignalRecord {
+                const record = self.engine.signalRecordByKeyedSelectForStream(self.stream, identity) orelse return null;
+                validateExistingSignalRecord(record, .keyed_select);
+                self.stream.rememberSignalRecord(self.allocator, record);
+                return record.retain();
+            }
+
             fn init(self: @This(), payload: HostSignalRecordPayload) error{OutOfMemory}!*HostSignalRecord {
                 return HostSignalRecord.tryInit(self.allocator, payload);
             }
@@ -3734,6 +3761,54 @@ pub fn Engine(comptime Ctx: type) type {
                 self.stream.rememberSignalRecord(self.allocator, record);
             }
         };
+
+        fn signalExprViewMatchesRecord(expr: abi_view.SignalExpr, binder_stack: []const HostBinderBinding, record: *HostSignalRecord) bool {
+            return switch (expr) {
+                .ref => |payload| switch (record.payload) {
+                    .ref => |node_id| node_id == resolveNodeBinderRef(binder_stack, payload.binder.callable),
+                    else => false,
+                },
+                .keyed_select => |payload| if (record.keyedSelectIdentity()) |identity|
+                    identity.site == payload.site and identity.row_handle.raw() == payload.row_handle
+                else
+                    false,
+                .const_value => |payload| record.token() == payload.token.callable,
+                .map => |payload| record.token() == payload.token.callable,
+                .map2 => |payload| record.token() == payload.token.callable,
+                .select => |payload| record.token() == payload.token.callable,
+                .combine => |payload| record.token() == payload.token.callable,
+                .task_source => |payload| record.token() == payload.token.callable,
+                .interval_source => |payload| record.token() == payload.token.callable,
+                .entropy_seed_source => |payload| record.token() == payload.token.callable,
+                .location_source => |payload| record.token() == payload.token.callable,
+                .online_source => |payload| record.token() == payload.token.callable,
+                .row_source => |payload| record.token() == payload.token.callable,
+                .visibility_source => |payload| record.token() == payload.token.callable,
+                .storage_source => |payload| record.token() == payload.token.callable,
+            };
+        }
+
+        fn validateKeyedSelectorRow(self: *Self, row_handle: row_handles.RowHandleId, key: []const u8) void {
+            if (!self.row_handle_registry.contains(row_handle)) @panic("keyed selector row handle was not active");
+            if (self.active_each_candidate_inputs) |inputs| {
+                const bindings = self.active_each_candidate_bindings orelse @panic("candidate each inputs lacked its binding overlay");
+                if (bindings != &inputs.candidate_bindings) @panic("candidate each key arena did not match its binding overlay");
+                if (bindings.candidate.get(row_handle)) |entry| {
+                    const binding = entry.binding orelse @panic("keyed selector referenced a retired candidate row");
+                    if (binding.generation_id != inputs.generation.id) @panic("keyed selector candidate generation did not match its key arena");
+                    const locator = bindings.keyLocator(row_handle) orelse @panic("keyed selector candidate lacked its key locator");
+                    const candidate_key = inputs.candidateKey(locator) orelse @panic("keyed selector candidate key locator was invalid");
+                    if (!std.mem.eql(u8, candidate_key, key)) @panic("keyed selector key did not match its candidate row handle");
+                    return;
+                }
+            }
+            if (self.active_each_candidate_bindings) |bindings| if (bindings.candidate.contains(row_handle))
+                @panic("keyed selector candidate binding had no matching active key arena");
+            const store = if (self.rows_store) |*rows_store| rows_store else @panic("keyed selector row handle had no row store");
+            const location = store.findRowHandle(row_handle.raw()) orelse @panic("keyed selector row handle was not indexed");
+            const row = store.getRowConst(location.site_id, location.row_id) catch @panic("keyed selector row handle referenced a stale row");
+            if (!std.mem.eql(u8, row.key, key)) @panic("keyed selector key did not match its row handle");
+        }
 
         fn bindSignalExprViewWith(self: *Self, comptime Binding: type, binding: Binding, expr: abi_view.SignalExpr, binder_stack: []const HostBinderBinding) error{OutOfMemory}!*HostSignalRecord {
             const allocator = binding.allocator;
@@ -3836,6 +3911,38 @@ pub fn Engine(comptime Ctx: type) type {
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     try binding.remember(record);
+                    break :blk record;
+                },
+                .keyed_select => |payload| blk: {
+                    const identity = signal_records.KeyedSelectIdentity{
+                        .site = payload.site,
+                        .row_handle = row_handles.RowHandleId.fromRaw(payload.row_handle),
+                    };
+                    self.validateKeyedSelectorRow(identity.row_handle, payload.key.asSlice());
+                    if (try binding.retainExistingKeyed(identity)) |record| {
+                        const existing = &record.payload.keyed_select;
+                        if (!signalExprViewMatchesRecord(abi_view.SignalExpr.fromAbi(payload.input.*), binder_stack, existing.input)) @panic("keyed selector identity was reused with a different input");
+                        if (!std.mem.eql(u8, existing.key, payload.key.asSlice())) @panic("keyed selector identity was reused with a different key");
+                        if (!std.meta.eql(existing.input_read, payload.input_read)) @panic("keyed selector identity was reused with a different key reader");
+                        if (retained_values.hostSignalTokenFromCallable(existing.false_init.toAbi()) != retained_values.hostSignalTokenFromCallable(payload.false_init.toAbi())) @panic("keyed selector identity was reused with a different false initializer");
+                        if (retained_values.hostSignalTokenFromCallable(existing.true_init.toAbi()) != retained_values.hostSignalTokenFromCallable(payload.true_init.toAbi())) @panic("keyed selector identity was reused with a different true initializer");
+                        if (!std.meta.eql(existing.cap, payload.capability)) @panic("keyed selector identity was reused with a different capability");
+                        break :blk record;
+                    }
+                    const input = try self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(payload.input.*), binder_stack);
+                    var input_unbound = true;
+                    errdefer if (input_unbound) if (comptime @hasDecl(Binding, "release")) binding.release(input);
+                    const key = try allocator.dupe(u8, payload.key.asSlice());
+                    input_unbound = false;
+                    const record = try binding.init(.{ .keyed_select = .{
+                        .keyed_identity = identity,
+                        .input = input,
+                        .key = key,
+                        .input_read = retainHostTextRead(payload.input_read, &self.pending_roc_metrics),
+                        .false_init = retainHostCallable(payload.false_init, &self.pending_roc_metrics),
+                        .true_init = retainHostCallable(payload.true_init, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
+                    } });
                     break :blk record;
                 },
                 .combine => |payload| blk: {
@@ -4519,7 +4626,7 @@ pub fn Engine(comptime Ctx: type) type {
             pending_scope_descriptor_counts: std.AutoHashMapUnmanaged(u64, ScopeDescriptorCounts) = .empty,
             prepared_named_event_groups: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedNamedEventIndexGroup) = .empty,
             prepared_named_event_group_by_elem: std.AutoHashMapUnmanaged(u64, usize) = .empty,
-            signal_records: collection_plan.SignalRecordPlan(HostSignalToken, HostSignalRecord) = .{},
+            signal_records: collection_plan.SignalRecordPlan(HostSignalToken, signal_records.KeyedSelectIdentity, HostSignalRecord) = .{},
             signal_bindings: std.ArrayListUnmanaged(HostSignalBinding) = .empty,
             signal_roc_host: ?*abi.RocHost = null,
             plan: CapacityPlan = .{},
@@ -4952,12 +5059,12 @@ pub fn Engine(comptime Ctx: type) type {
 
                 var live_count: usize = 0;
                 var count_iterator = inputs.candidate_bindings.candidate.valueIterator();
-                while (count_iterator.next()) |binding| if (binding.* != null) {
+                while (count_iterator.next()) |entry| if (entry.binding != null) {
                     live_count = std.math.add(usize, live_count, 1) catch return error.ResourceLimit;
                 };
                 self.prepared_row_bindings.ensureUnusedCapacity(allocator, std.math.cast(u32, live_count) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 var iterator = inputs.candidate_bindings.candidate.iterator();
-                while (iterator.next()) |entry| if (entry.value_ptr.*) |binding| {
+                while (iterator.next()) |entry| if (entry.value_ptr.binding) |binding| {
                     const prepared = self.prepared_row_bindings.getOrPutAssumeCapacity(entry.key_ptr.*);
                     if (prepared.found_existing and !std.meta.eql(prepared.value_ptr.*, binding)) return error.InvalidDescriptor;
                     prepared.value_ptr.* = binding;
@@ -5368,13 +5475,16 @@ pub fn Engine(comptime Ctx: type) type {
                 prepared_site.hash_heads.ensureTotalCapacity(allocator, std.math.cast(u32, evaluated.rows.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
 
                 const previous_bindings = self.engine.active_each_candidate_bindings;
+                const previous_inputs = self.engine.active_each_candidate_inputs;
                 const previous_generation = self.engine.active_each_candidate_generation;
                 const previous_rows_site_id = self.engine.active_each_candidate_rows_site_id;
                 self.engine.active_each_candidate_bindings = &evaluated.inputs.candidate_bindings;
+                self.engine.active_each_candidate_inputs = &evaluated.inputs;
                 self.engine.active_each_candidate_generation = evaluated.inputs.generation;
                 self.engine.active_each_candidate_rows_site_id = evaluated.inputs.rows_site_id;
                 defer {
                     self.engine.active_each_candidate_bindings = previous_bindings;
+                    self.engine.active_each_candidate_inputs = previous_inputs;
                     self.engine.active_each_candidate_generation = previous_generation;
                     self.engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
@@ -5529,7 +5639,7 @@ pub fn Engine(comptime Ctx: type) type {
                         inputs.candidate_bindings.putAssumeCapacity(row_handles.RowHandleId.fromRaw(row.metadata.row_handle), .{
                             .generation_id = inputs.generation.id,
                             .item_slot = value.slot,
-                        }) catch return error.InvalidDescriptor;
+                        }, .{ .delta = value.key_index }) catch return error.InvalidDescriptor;
                         break :blk .{ .update = .{
                             .slot = value.slot,
                             .key = key,
@@ -5551,7 +5661,7 @@ pub fn Engine(comptime Ctx: type) type {
                         inputs.candidate_bindings.putAssumeCapacity(row_handle, .{
                             .generation_id = inputs.generation.id,
                             .item_slot = value.slot,
-                        }) catch return error.InvalidDescriptor;
+                        }, .{ .delta = value.key_index }) catch return error.InvalidDescriptor;
                         break :blk .{ .insert = .{
                             .slot = value.slot,
                             .before_slot = value.before_slot,
@@ -5769,13 +5879,16 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                 }
                 const previous_bindings = engine_ptr.active_each_candidate_bindings;
+                const previous_inputs = engine_ptr.active_each_candidate_inputs;
                 const previous_generation = engine_ptr.active_each_candidate_generation;
                 const previous_rows_site_id = engine_ptr.active_each_candidate_rows_site_id;
                 engine_ptr.active_each_candidate_bindings = &inputs.candidate_bindings;
+                engine_ptr.active_each_candidate_inputs = &inputs;
                 engine_ptr.active_each_candidate_generation = inputs.generation;
                 engine_ptr.active_each_candidate_rows_site_id = inputs.rows_site_id;
                 defer {
                     engine_ptr.active_each_candidate_bindings = previous_bindings;
+                    engine_ptr.active_each_candidate_inputs = previous_inputs;
                     engine_ptr.active_each_candidate_generation = previous_generation;
                     engine_ptr.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
@@ -6232,6 +6345,17 @@ pub fn Engine(comptime Ctx: type) type {
                     return record.retain();
                 }
 
+                fn retainExistingKeyed(self: @This(), identity: signal_records.KeyedSelectIdentity) error{OutOfMemory}!?*HostSignalRecord {
+                    const persistent = self.collection.engine.signalRecordByKeyedSelectForStream(self.collection.stream, identity);
+                    const record = self.collection.signal_records.lookupComposite(identity, persistent) orelse return null;
+                    validateExistingSignalRecord(record, .keyed_select);
+                    if (!self.collection.signal_records.by_composite.contains(identity)) {
+                        if (self.collection.signal_records.composite_intents.items.len >= self.collection.plan.signal_records) return error.OutOfMemory;
+                        self.collection.signal_records.rememberCompositeAssumeCapacity(identity, record);
+                    }
+                    return record.retain();
+                }
+
                 fn init(self: @This(), payload: HostSignalRecordPayload) error{OutOfMemory}!*HostSignalRecord {
                     return HostSignalRecord.tryInitOwned(
                         self.allocator,
@@ -6252,6 +6376,12 @@ pub fn Engine(comptime Ctx: type) type {
                 }
 
                 fn remember(self: @This(), record: *HostSignalRecord) error{OutOfMemory}!void {
+                    if (record.keyedSelectIdentity()) |identity| {
+                        if (self.collection.signal_records.by_composite.contains(identity)) return;
+                        if (self.collection.signal_records.composite_intents.items.len >= self.collection.plan.signal_records) return error.OutOfMemory;
+                        self.collection.signal_records.rememberCompositeAssumeCapacity(identity, record);
+                        return;
+                    }
                     const token = record.token() orelse return;
                     if (self.collection.signal_records.by_token.contains(token)) return;
                     if (self.collection.signal_records.token_intents.items.len >= self.collection.plan.signal_records) return error.OutOfMemory;
@@ -6287,6 +6417,11 @@ pub fn Engine(comptime Ctx: type) type {
                 /// Publishes token during the allocation-free commit phase.
                 pub fn publishToken(self: @This(), token: HostSignalToken, record: *HostSignalRecord) void {
                     self.stream.rememberSignalRecordAssumeCapacity(token, record);
+                }
+
+                /// Publishes a keyed-selector composite identity after all index growth was preflighted.
+                pub fn publishComposite(self: @This(), identity: signal_records.KeyedSelectIdentity, record: *HostSignalRecord) void {
+                    self.stream.rememberKeyedSelectRecordAssumeCapacity(identity, record);
                 }
 
                 /// Publishes descriptor root during the allocation-free commit phase.
@@ -6595,6 +6730,7 @@ pub fn Engine(comptime Ctx: type) type {
                 .ref, .const_value, .row_source, .task_source, .interval_source, .entropy_seed_source, .location_source, .visibility_source, .online_source, .storage_source => 1,
                 .map => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
                 .select => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
+                .keyed_select => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
                 .map2 => |payload| blk: {
                     const left = try countSignalExprRecords(payload.left.*);
                     const right = try countSignalExprRecords(payload.right.*);
@@ -6741,7 +6877,7 @@ pub fn Engine(comptime Ctx: type) type {
                     _ = self.base.engine.row_handle_registry.remove(row_handle) catch unreachable;
                     return error.OutOfMemory;
                 };
-                inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(input_index) orelse @panic("missing candidate Rows slot") }) catch @panic("invalid duplicate row binding");
+                inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(input_index) orelse @panic("missing candidate Rows slot") }, .{ .snapshot = input_index }) catch @panic("invalid duplicate row binding");
                 inputs.row_handles_by_index[input_index] = row_handle;
                 const scope_id = self.collection.reserveEachRowScopeGeneration(parent_scope_id, site_ordinal, key_hash, row_handle) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
@@ -6775,7 +6911,7 @@ pub fn Engine(comptime Ctx: type) type {
                     } else old_generation = generation;
                     pairs.appendAssumeCapacity(binding.item_slot);
                     pairs.appendAssumeCapacity(inputs.slot(next_index) orelse return error.ResourceLimit);
-                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(next_index) orelse return error.ResourceLimit }) catch return error.ResourceLimit;
+                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(next_index) orelse return error.ResourceLimit }, .{ .snapshot = next_index }) catch return error.ResourceLimit;
                     inputs.row_handles_by_index[next_index] = row_handle;
                 }
                 const old = old_generation orelse return;
@@ -7076,7 +7212,7 @@ pub fn Engine(comptime Ctx: type) type {
                         _ = engine.row_handle_registry.remove(row_handle) catch unreachable;
                         return error.OutOfMemory;
                     };
-                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(item) orelse return error.InvalidDescriptor }) catch return error.InvalidDescriptor;
+                    inputs.candidate_bindings.putAssumeCapacity(row_handle, .{ .generation_id = inputs.generation.id, .item_slot = inputs.slot(item) orelse return error.InvalidDescriptor }, .{ .snapshot = key }) catch return error.InvalidDescriptor;
                     inputs.row_handles_by_index[item] = row_handle;
                     const key_bytes = inputs.key(key) orelse return error.InvalidDescriptor;
                     const elem = retained_values.callEachRowBuilder(roc_host, each.ops.row, abi.RocStr.fromSlice(key_bytes, roc_host), row_handle.raw());
@@ -7509,13 +7645,16 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, prepared_rows: *PreparedActiveEachRows, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, cache_overlay: ?*const signal_records.PreparedCacheUpdates, state_update: ?PreparedExternalState) CollectionError!*@This() {
                 const inputs = &prepared_rows.inputs;
                 const previous_bindings = engine.active_each_candidate_bindings;
+                const previous_inputs = engine.active_each_candidate_inputs;
                 const previous_generation = engine.active_each_candidate_generation;
                 const previous_rows_site_id = engine.active_each_candidate_rows_site_id;
                 engine.active_each_candidate_bindings = &inputs.candidate_bindings;
+                engine.active_each_candidate_inputs = inputs;
                 engine.active_each_candidate_generation = inputs.generation;
                 engine.active_each_candidate_rows_site_id = inputs.rows_site_id;
                 defer {
                     engine.active_each_candidate_bindings = previous_bindings;
+                    engine.active_each_candidate_inputs = previous_inputs;
                     engine.active_each_candidate_generation = previous_generation;
                     engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
@@ -9027,13 +9166,16 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepareExternalEach(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, rows: *const each_runtime.PreparedRowSync, inputs: *const PreparedEachInputs, replacement: *PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
                 const previous_bindings = engine.active_each_candidate_bindings;
+                const previous_inputs = engine.active_each_candidate_inputs;
                 const previous_generation = engine.active_each_candidate_generation;
                 const previous_rows_site_id = engine.active_each_candidate_rows_site_id;
                 engine.active_each_candidate_bindings = &inputs.candidate_bindings;
+                engine.active_each_candidate_inputs = inputs;
                 engine.active_each_candidate_generation = inputs.generation;
                 engine.active_each_candidate_rows_site_id = inputs.rows_site_id;
                 defer {
                     engine.active_each_candidate_bindings = previous_bindings;
+                    engine.active_each_candidate_inputs = previous_inputs;
                     engine.active_each_candidate_generation = previous_generation;
                     engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
@@ -9060,13 +9202,16 @@ pub fn Engine(comptime Ctx: type) type {
                 const rows_store = if (engine.rows_store) |*store| store else return error.InvalidDescriptor;
                 const rows_site_id = rows.inputs.rows_site_id orelse return error.InvalidDescriptor;
                 const previous_bindings = engine.active_each_candidate_bindings;
+                const previous_inputs = engine.active_each_candidate_inputs;
                 const previous_generation = engine.active_each_candidate_generation;
                 const previous_rows_site_id = engine.active_each_candidate_rows_site_id;
                 engine.active_each_candidate_bindings = &rows.inputs.candidate_bindings;
+                engine.active_each_candidate_inputs = &rows.inputs;
                 engine.active_each_candidate_generation = rows.inputs.generation;
                 engine.active_each_candidate_rows_site_id = rows_site_id;
                 defer {
                     engine.active_each_candidate_bindings = previous_bindings;
+                    engine.active_each_candidate_inputs = previous_inputs;
                     engine.active_each_candidate_generation = previous_generation;
                     engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
@@ -12224,7 +12369,7 @@ pub fn Engine(comptime Ctx: type) type {
         fn resolveEachRowBinding(self: *Self, row_handle: row_handles.RowHandleId) ?each_generation.RowBinding {
             if (!self.row_handle_registry.contains(row_handle)) return null;
             if (self.active_each_prepared_bindings) |prepared| if (prepared.get(row_handle)) |binding| return binding;
-            if (self.active_each_candidate_bindings) |candidate| if (candidate.candidate.get(row_handle)) |binding| return binding;
+            if (self.active_each_candidate_bindings) |candidate| if (candidate.candidate.get(row_handle)) |entry| return entry.binding;
             if (self.rows_store) |*store| if (store.findRowHandle(row_handle.raw())) |location| {
                 const generation_id = if (self.active_each_candidate_rows_site_id == location.site_id)
                     (if (self.active_each_candidate_generation) |candidate| candidate.id else return null)
@@ -12347,7 +12492,7 @@ pub fn Engine(comptime Ctx: type) type {
                     const value = callHostValueHostValueToHostValueWithCapabilities(ctx, roc_host, left_cap, right_cap, payload.transform.toAbi(), left, right);
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
-                .select => |*payload| {
+                .select, .keyed_select => |*payload| {
                     if (payload.false_value == .absent) {
                         const value = erased_calls.callValueInitThunk(roc_host, payload.false_init.toAbi());
                         payload.false_value.replace(ctx, roc_host, &self.pending_roc_metrics, value, payload.cap);
@@ -12675,7 +12820,7 @@ pub fn Engine(comptime Ctx: type) type {
                     debugPhase(ctx, .eval_dirty_map2_cache);
                     return self.rememberDirtySignalResult(record, dirty_generation, self.updateDirtySignalExprCache(ctx, roc_host, &payload.cached_value, value, payload.cap));
                 },
-                .select => |*payload| {
+                .select, .keyed_select => |*payload| {
                     const cache_was_absent = payload.cached_value == .absent;
                     const input = self.evalDirtyHostSignalRecord(ctx, roc_host, payload.input, dirty_source_node_ids, dirty_generation);
                     defer self.dropHostSignalRecordValue(ctx, roc_host, payload.input, input.value);
@@ -12830,7 +12975,7 @@ pub fn Engine(comptime Ctx: type) type {
                     const value = callHostValueHostValueToHostValueWithCapabilities(ctx, roc_host, self.hostSignalRecordCapability(ctx, payload.left), self.hostSignalRecordCapability(ctx, payload.right), payload.transform.toAbi(), left.value, right.value);
                     break :blk self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &payload.cached_value, value, payload.cap);
                 },
-                .select => |*payload| blk: {
+                .select, .keyed_select => |*payload| blk: {
                     const input = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, payload.input, dirty_source_node_ids, dirty_generation);
                     defer self.dropHostSignalRecordValue(ctx, roc_host, payload.input, input.value);
                     const slot = overlay.readSlot(&payload.cached_value);
@@ -12965,7 +13110,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const input_record = self.active_signal_graph.items[@intCast(record_id)].record;
                 const member = self.selectors.anyMember(input_record) orelse continue;
                 const selector = switch (member.payload) {
-                    .select => |*payload| payload,
+                    .select, .keyed_select => |*payload| payload,
                     else => return error.InvalidDescriptor,
                 };
 

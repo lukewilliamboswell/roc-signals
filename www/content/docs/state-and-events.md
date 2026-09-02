@@ -184,6 +184,17 @@ only the members for the old and new keys, independent of the list size. The
 selector itself runs no Roc transform; any `map` you place downstream still
 counts as ordinary derived work for the members that changed.
 
+Inside `Ui.each`, prefer the fused form when the row needs one of two stable
+values:
+
+```roc
+selection_class = selected_key.keyed("selected", "")
+row_class = row.select(selection_class)
+```
+
+The fused form preserves the same exact-key index and O(old-plus-new-key)
+dirtiness while sharing its typed capability and initializers across rows.
+
 ## Form controls
 
 Every control is **controlled**: its displayed value comes from a signal, and

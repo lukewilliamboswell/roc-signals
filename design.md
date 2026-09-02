@@ -374,7 +374,12 @@ intervals; transforms identify derived signals; browser sources use their
 `from_payload` transforms. The descriptor carries this pointer as both the
 record's identity and its evaluator, and ingestion asserts that they agree. Cloned signal descriptors therefore share a record, while two
 separately constructed signals get distinct callable allocations even when they
-use the same specialization. Callable addresses are lookup keys only; the host
+use the same specialization. A fused keyed-row selector instead has composite
+identity `(site callable, row handle)`: one site owns the typed reader,
+selected/unselected initializers, and output capability, while every row remains
+an ordinary independently cached graph record registered under its exact key.
+Persistent and transaction-local composite indexes are separate from the
+callable-only indexes used by other signals and effects. Callable addresses are lookup keys only; the host
 still owns separate dense node, active-graph, task-request, interval, and DOM ids.
 
 - Within a scope, node identity is **construction order** (the order the app
@@ -686,6 +691,9 @@ Signal.combine : List(Signal(a)) -> Signal(List(a))
 Signal.combine_map : List(Signal(a)), (List(a) -> b) -> Signal(b)
     where [b.is_eq : b, b -> Bool]
 Signal.select : Signal(Str), Str -> Signal(Bool)   # O(1) members dirtied per key change
+Signal.keyed : Signal(Str), value, value -> Signal.Keyed(value)
+    where [value.is_eq : value, value -> Bool]
+Ui.Row.select : Ui.Row(item), Signal.Keyed(value) -> Signal(value)
 # Named multi-signal composition should use Roc record-builder syntax:
 # { first: first_signal, last: last_signal, active: active_signal }.Signal
 

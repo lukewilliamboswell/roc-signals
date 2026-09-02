@@ -647,6 +647,8 @@ pub const Stream = struct {
     eaches: std.ArrayListUnmanaged(EachDesc) = .empty,
     signal_records_by_token: std.AutoHashMapUnmanaged(HostSignalToken, *SignalRecord) = .{},
     signal_record_descriptor_uses_by_token: std.AutoHashMapUnmanaged(HostSignalToken, usize) = .{},
+    keyed_select_records_by_identity: std.AutoHashMapUnmanaged(signal_records.KeyedSelectIdentity, *SignalRecord) = .{},
+    keyed_select_descriptor_uses_by_identity: std.AutoHashMapUnmanaged(signal_records.KeyedSelectIdentity, usize) = .{},
     custom_attr_keys: CustomAttrKeySet = .empty,
     custom_attr_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(CustomAttrDescriptorIndex)) = .empty,
     lifecycle_indices_by_scope_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(LifecycleDescriptorIndex)) = .empty,
@@ -684,6 +686,8 @@ pub const Stream = struct {
         try self.eaches.ensureUnusedCapacity(allocator, replacement.eaches.items.len);
         try self.signal_records_by_token.ensureUnusedCapacity(allocator, @intCast(replacement.signal_records_by_token.count()));
         try self.signal_record_descriptor_uses_by_token.ensureUnusedCapacity(allocator, @intCast(replacement.signal_record_descriptor_uses_by_token.count()));
+        try self.keyed_select_records_by_identity.ensureUnusedCapacity(allocator, @intCast(replacement.keyed_select_records_by_identity.count()));
+        try self.keyed_select_descriptor_uses_by_identity.ensureUnusedCapacity(allocator, @intCast(replacement.keyed_select_descriptor_uses_by_identity.count()));
         var custom_attrs = std.math.add(usize, replacement.static_custom_text_attrs.items.len, replacement.signal_custom_text_attrs.items.len) catch return error.ResourceLimit;
         custom_attrs = std.math.add(usize, custom_attrs, replacement.signal_optional_custom_text_attrs.items.len) catch return error.ResourceLimit;
         custom_attrs = std.math.add(usize, custom_attrs, replacement.static_custom_bool_attrs.items.len) catch return error.ResourceLimit;
@@ -1196,6 +1200,14 @@ pub const Stream = struct {
         const Context = struct {
             stream: *Stream,
             fn visit(ctx: @This(), current: *SignalRecord) void {
+                if (current.keyedSelectIdentity()) |identity| {
+                    const record_entry = ctx.stream.keyed_select_records_by_identity.getOrPutAssumeCapacity(identity);
+                    if (record_entry.found_existing and record_entry.value_ptr.* != current) @panic("keyed selector identity was bound to multiple host records");
+                    record_entry.value_ptr.* = current;
+                    const use_entry = ctx.stream.keyed_select_descriptor_uses_by_identity.getOrPutAssumeCapacity(identity);
+                    if (use_entry.found_existing) use_entry.value_ptr.* += 1 else use_entry.value_ptr.* = 1;
+                    return;
+                }
                 const token = current.token() orelse return;
                 ctx.stream.rememberSignalRecordAssumeCapacity(token, current);
                 const entry = ctx.stream.signal_record_descriptor_uses_by_token.getOrPutAssumeCapacity(token);
@@ -1803,6 +1815,8 @@ pub const Stream = struct {
 
         self.signal_records_by_token.deinit(allocator);
         self.signal_record_descriptor_uses_by_token.deinit(allocator);
+        self.keyed_select_records_by_identity.deinit(allocator);
+        self.keyed_select_descriptor_uses_by_identity.deinit(allocator);
         self.custom_attr_keys.deinit(allocator);
         for (self.custom_attr_indices_by_elem_id.items) |*indexes| indexes.deinit(allocator);
         self.custom_attr_indices_by_elem_id.deinit(allocator);
@@ -1822,10 +1836,17 @@ pub const Stream = struct {
         return self.signal_records_by_token.get(token);
     }
 
+    /// Resolves a fused keyed selector by its site-and-row identity.
+    pub fn signalRecordByKeyedSelectIdentity(self: *Stream, identity: signal_records.KeyedSelectIdentity) ?*SignalRecord {
+        return self.keyed_select_records_by_identity.get(identity);
+    }
+
     /// Maintains reserve prepared signal record publication within the indexed descriptor stream used by both hosts.
     pub fn reservePreparedSignalRecordPublication(self: *Stream, allocator: std.mem.Allocator, additional_records: usize) std.mem.Allocator.Error!void {
         try self.signal_records_by_token.ensureUnusedCapacity(allocator, @intCast(additional_records));
         try self.signal_record_descriptor_uses_by_token.ensureUnusedCapacity(allocator, @intCast(additional_records));
+        try self.keyed_select_records_by_identity.ensureUnusedCapacity(allocator, @intCast(additional_records));
+        try self.keyed_select_descriptor_uses_by_identity.ensureUnusedCapacity(allocator, @intCast(additional_records));
     }
 
     /// Maintains remember signal record assume capacity within the indexed descriptor stream used by both hosts.
@@ -1838,12 +1859,24 @@ pub const Stream = struct {
         entry.value_ptr.* = record;
     }
 
+    /// Publishes one composite keyed-selector identity using preflighted capacity.
+    pub fn rememberKeyedSelectRecordAssumeCapacity(self: *Stream, identity: signal_records.KeyedSelectIdentity, record: *SignalRecord) void {
+        const entry = self.keyed_select_records_by_identity.getOrPutAssumeCapacity(identity);
+        if (entry.found_existing and entry.value_ptr.* != record) @panic("keyed selector identity was bound to multiple host records");
+        entry.value_ptr.* = record;
+    }
+
     /// Maintains increment signal record descriptor tree assume capacity within the indexed descriptor stream used by both hosts.
     pub fn incrementSignalRecordDescriptorTreeAssumeCapacity(self: *Stream, root: *SignalRecord) void {
         const Context = struct {
             stream: *Stream,
 
             fn visit(ctx: @This(), current: *SignalRecord) void {
+                if (current.keyedSelectIdentity()) |identity| {
+                    const entry = ctx.stream.keyed_select_descriptor_uses_by_identity.getOrPutAssumeCapacity(identity);
+                    if (entry.found_existing) entry.value_ptr.* += 1 else entry.value_ptr.* = 1;
+                    return;
+                }
                 const token = current.token() orelse return;
                 const entry = ctx.stream.signal_record_descriptor_uses_by_token.getOrPutAssumeCapacity(token);
                 if (entry.found_existing) {
@@ -1858,6 +1891,12 @@ pub const Stream = struct {
 
     /// Maintains remember signal record within the indexed descriptor stream used by both hosts.
     pub fn rememberSignalRecord(self: *Stream, allocator: std.mem.Allocator, record: *SignalRecord) void {
+        if (record.keyedSelectIdentity()) |identity| {
+            const entry = self.keyed_select_records_by_identity.getOrPut(allocator, identity) catch @panic("out of memory");
+            if (entry.found_existing and entry.value_ptr.* != record) @panic("keyed selector identity was bound to multiple host records");
+            entry.value_ptr.* = record;
+            return;
+        }
         const token = record.token() orelse return;
         const entry = self.signal_records_by_token.getOrPut(allocator, token) catch @panic("out of memory");
         if (entry.found_existing) {
@@ -1868,6 +1907,11 @@ pub const Stream = struct {
     }
 
     fn incrementSignalRecordDescriptorUse(self: *Stream, allocator: std.mem.Allocator, record: *SignalRecord) void {
+        if (record.keyedSelectIdentity()) |identity| {
+            const entry = self.keyed_select_descriptor_uses_by_identity.getOrPut(allocator, identity) catch @panic("out of memory");
+            if (entry.found_existing) entry.value_ptr.* += 1 else entry.value_ptr.* = 1;
+            return;
+        }
         const token = record.token() orelse return;
         const key = token;
         const entry = self.signal_record_descriptor_uses_by_token.getOrPut(allocator, key) catch @panic("out of memory");
@@ -1879,6 +1923,17 @@ pub const Stream = struct {
     }
 
     fn decrementSignalRecordDescriptorUse(self: *Stream, record: *SignalRecord) void {
+        if (record.keyedSelectIdentity()) |identity| {
+            const count = self.keyed_select_descriptor_uses_by_identity.getPtr(identity) orelse @panic("keyed selector descriptor use underflow");
+            if (count.* == 0) @panic("keyed selector descriptor use underflow");
+            count.* -= 1;
+            if (count.* != 0) return;
+            _ = self.keyed_select_descriptor_uses_by_identity.fetchRemove(identity) orelse @panic("keyed selector descriptor use disappeared during removal");
+            const existing = self.keyed_select_records_by_identity.get(identity) orelse @panic("keyed selector descriptor use had no record");
+            if (existing != record) @panic("keyed selector descriptor use pointed at the wrong record");
+            _ = self.keyed_select_records_by_identity.fetchRemove(identity) orelse @panic("keyed selector record disappeared during removal");
+            return;
+        }
         const token = record.token() orelse return;
         const key = token;
         const count = self.signal_record_descriptor_uses_by_token.getPtr(key) orelse @panic("signal token descriptor use underflow");

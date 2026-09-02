@@ -14,6 +14,33 @@ Task(a, err) := { source : Node.TaskSource, cap : Capability(TaskStatus(a, err))
 ## thunks that can read, compare, transform, and release that cell.
 Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 
+	## One exact-key selector construction site shared by keyed rows.
+	Keyed(value) := {
+		input : Box(Node.SignalExpr),
+		input_read : HostValue.TextReadHandle,
+		false_init : Box((() -> HostValue)),
+		true_init : Box((() -> HostValue)),
+		cap : Capability(value),
+	}.{
+
+		## Build one ordinary keyed selector record for a stable row handle.
+		for_row : Keyed(value), U64, Str -> Signal(value)
+		for_row = |keyed, row_handle, key|
+			Signal.from_expr(
+				Node.SignalExpr.KeyedSelect(
+					row_handle,
+					keyed.false_init,
+					keyed.input,
+					key,
+					keyed.input_read,
+					keyed.false_init,
+					keyed.true_init,
+					Capability.handle(keyed.cap),
+				),
+				keyed.cap,
+			)
+	}
+
 	## Copy a boxed signal expression descriptor.
 	clone_expr : Box(Node.SignalExpr) -> Box(Node.SignalExpr)
 	clone_expr = |expr| expr
@@ -317,6 +344,28 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 					Capability.handle(output_cap),
 				),
 			),
+			cap: output_cap,
+		}
+	}
+
+	## Prepare exact-key selected and unselected values once for a keyed-row site.
+	keyed : Signal(Str), value, value -> Keyed(value)
+		where [
+			value.is_eq : value, value -> Bool,
+		]
+	keyed = |selected, when_selected, otherwise| {
+		output_cap = Capability.new()
+		read_selected : HostValue -> Str
+		read_selected = |input_hv| Box.unbox(Capability.get(input_hv, selected.cap))
+		init_false : () -> HostValue
+		init_false = || Capability.store(Box.box(otherwise), output_cap)
+		init_true : () -> HostValue
+		init_true = || Capability.store(Box.box(when_selected), output_cap)
+		{
+			input: selected.expr,
+			input_read: { capability: Capability.handle(selected.cap), read: Box.box(read_selected) },
+			false_init: Box.box(init_false),
+			true_init: Box.box(init_true),
 			cap: output_cap,
 		}
 	}
