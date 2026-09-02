@@ -907,7 +907,7 @@ rows_build_fresh_loop = |items, key_of, index, len, build|
 					index + 1,
 					len,
 					{
-						order_slots: build.order_slots.prepend(slot),
+						order_slots: build.order_slots.append(slot),
 						chunks: if chunk_complete {
 							build.chunks.insert(chunk_id, chunk)
 						} else {
@@ -932,8 +932,9 @@ rows_build_fresh_loop = |items, key_of, index, len, build|
 	}
 
 ## Build a fresh snapshot with one dictionary insertion per completed 32-cell
-## slot chunk. Exact-key lookup remains one preallocated hash insertion per row
-## so duplicate keys are rejected while their first occurrence is still known.
+## slot chunk. Ordered slots append into their final preallocated sequence, and
+## exact-key lookup remains one preallocated hash insertion per row so duplicate
+## keys are rejected while their first occurrence is still known.
 rows_build_fresh : List(item), Box((item -> Str)) -> Try(RowsBuild(item), Rows.Error)
 rows_build_fresh = |items, key_of| {
 	len = items.len()
@@ -947,7 +948,7 @@ rows_build_fresh = |items, key_of| {
 			0,
 			len,
 			{
-				order_slots: [],
+				order_slots: List.with_capacity(len),
 				chunks: Dict.with_capacity(chunk_capacity),
 				current_chunk: List.with_capacity(32),
 				key_index: Dict.with_capacity(len),
@@ -1046,7 +1047,7 @@ rows_build_replacement_loop = |items, key_of, old, index, len, build|
 					index + 1,
 					len,
 					{
-						order_slots: build.order_slots.prepend(reserved.slot),
+						order_slots: build.order_slots.append(reserved.slot),
 						key_index: build.key_index.insert(key, reserved.slot),
 						key_bytes: build.key_bytes + key.count_utf8_bytes(),
 						patches: rows_slots_patch(build.patches, rows_slot_index(reserved.slot), reserved.cell),
@@ -1069,7 +1070,7 @@ rows_build_replacement = |items, key_of, old| {
 		0,
 		len,
 		{
-			order_slots: [],
+			order_slots: List.with_capacity(len),
 			key_index: Dict.with_capacity(len),
 			key_bytes: 0,
 			patches: { by_chunk: Dict.with_capacity(patch_capacity), chunk_ids_rev: [] },
@@ -1693,7 +1694,7 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 				parent: NoParent,
 				transition: Snapshot,
 				key_of: key_of_box,
-				order: rows_order_from_slots(rows_reverse_u64(built.order_slots)),
+				order: rows_order_from_slots(built.order_slots),
 				slots: built.slots,
 				key_index: built.key_index,
 				snapshot_key_bytes: built.key_bytes,
@@ -1720,7 +1721,7 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 				parent: Parent(old.token),
 				transition: Snapshot,
 				key_of: old.key_of,
-				order: rows_order_from_slots(rows_reverse_u64(built.order_slots)),
+				order: rows_order_from_slots(built.order_slots),
 				slots: built.slots,
 				key_index: built.key_index,
 				snapshot_key_bytes: built.key_bytes,
@@ -2013,6 +2014,14 @@ expect {
 				last_slot = rows_slot_pack(count, 1)
 				(rows_slots_get(built.slots, last_slot)?).item.value() == count - 1
 			}
+		order_ok =
+			if count == 0 {
+				built.order_slots.is_empty()
+			} else {
+				built.order_slots.len() == count
+					and built.order_slots.get(0)? == rows_slot_pack(1, 1)
+						and built.order_slots.get(count - 1)? == rows_slot_pack(count, 1)
+			}
 		$valid =
 			$valid
 				and built.slot_chunks_written == expected_chunks
@@ -2022,6 +2031,7 @@ expect {
 								and built.key_index.len() == count
 									and last_chunk_ok
 										and last_slot_ok
+											and order_ok
 	}
 	$valid
 }
@@ -2524,14 +2534,8 @@ expect {
 ## slot generation, and leaves the reusable slot store at a fixed high-water
 ## mark instead of repeatedly rewriting the persistent order and key index.
 expect {
-	var $items = []
-	var $index = 0
-	while $index < 10000 {
-		key = $index.to_str()
-		$items = $items.prepend(rows_test_item(key, $index))
-		$index = $index + 1
-	}
-	initial = Rows.from_list($items, rows_test_key)?
+	items = rows_test_items(10000)
+	initial = Rows.from_list(items, rows_test_key)?
 	old_slot = Rows.platform_slot_at(initial, 0)?
 	cleared = Rows.apply(initial, [Clear])?
 	description = Rows.platform_description(cleared)
@@ -2546,7 +2550,7 @@ expect {
 				},
 	)
 	Rows(cleared_storage) = cleared
-	rebuilt = Rows.replace_all(cleared, $items)?
+	rebuilt = Rows.replace_all(cleared, items)?
 	Rows(rebuilt_storage) = rebuilt
 	old_slot_retired =
 		match Rows.platform_item_for_slot(cleared, old_slot) {
@@ -2555,7 +2559,16 @@ expect {
 		}
 
 	Rows(initial_storage) = initial
-	bulk_shape = initial_storage.order.nodes.len() == 11 and initial_storage.order.parents.len() == 11 and initial_storage.order.slot_leaf.len() == 313 and initial_storage.order.next_node == 325 and initial_storage.order.free_nodes.is_empty()
+	bulk_shape =
+		initial_storage.order.nodes.len() == 11
+			and initial_storage.order.parents.len() == 11
+				and initial_storage.order.slot_leaf.len() == 313
+					and initial_storage.order.next_node == 325
+						and initial_storage.order.free_nodes.is_empty()
+							and initial_storage.slots.chunks.len() == 313
+								and initial_storage.key_index.len() == 10000
+									and Rows.get(initial, 0)?.value() == 0
+										and Rows.get(initial, 9999)?.value() == 9999
 
 	cleared.len() == 0 and description.kind == Delta and description.op_count == 1 and transition_count == 1 and old_slot_retired and cleared_storage.slots.next_index == 10001 and rebuilt_storage.slots.next_index == 10001 and rebuilt.len() == 10000 and bulk_shape
 }
