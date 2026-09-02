@@ -1109,20 +1109,50 @@ rows_build_replacement = |items, key_of, old| {
 	})
 }
 
-## Retire every live slot without repeatedly path-copying the order tree or
-## deleting exact-key index entries. The old generation retains its immutable
-## storage; this produces the independently owned slot generation used by the
-## new empty collection.
+## Retire every live slot one chunk at a time. Rebuilding the dense chunk map
+## avoids path-copying the whole persistent dictionary and one 32-cell chunk
+## for every row. The old generation retains its immutable storage; this
+## produces the independently owned slot generation used by the new empty
+## collection. Vacant generations remain unchanged, saturated live slots retire
+## permanently, and the free list is rebuilt without duplicates from the cells
+## that the new generation actually owns.
 rows_release_all_slots : RowsStorage(item) -> RowsSlotStore(item)
 rows_release_all_slots = |old| {
-	var $slots = old.slots
-	var $index = 0
-	while $index < rows_order_len(old.order) {
-		slot = rows_order_get(old.order, $index) ?? crash "Rows clear order contained an invalid slot"
-		$slots = rows_slots_release($slots, slot) ?? crash "Rows clear retired a stale slot"
-		$index = $index + 1
+	chunk_count = old.slots.chunks.len()
+	free_capacity = old.slots.free.len() + rows_order_len(old.order)
+	empty_chunks : Dict(U64, List(RowsSlotCell(item)))
+	empty_chunks = Dict.with_capacity(chunk_count)
+	var $chunks = empty_chunks
+	var $free = List.with_capacity(free_capacity)
+	var $chunk_id = 0
+	while $chunk_id < chunk_count {
+		old_chunk = old.slots.chunks.get($chunk_id) ?? crash "Rows clear slot chunk was missing"
+		var $new_chunk = List.with_capacity(old_chunk.len())
+		var $offset = 0
+		for cell in old_chunk {
+			index = $chunk_id * 32 + $offset + 1
+			match cell {
+				RowsSlotLive({ generation, .. }) =>
+					if generation == 4294967295 {
+						$new_chunk = $new_chunk.append(RowsSlotRetired)
+					} else {
+						$new_chunk = $new_chunk.append(RowsSlotVacant({ generation: generation + 1 }))
+						$free = $free.append(index)
+					}
+				RowsSlotVacant(vacant) => {
+					$new_chunk = $new_chunk.append(RowsSlotVacant(vacant))
+					$free = $free.append(index)
+				}
+				RowsSlotRetired => {
+					$new_chunk = $new_chunk.append(RowsSlotRetired)
+				}
+			}
+			$offset = $offset + 1
+		}
+		$chunks = $chunks.insert($chunk_id, $new_chunk)
+		$chunk_id = $chunk_id + 1
 	}
-	$slots
+	{ chunks: $chunks, free: $free, next_index: old.slots.next_index }
 }
 
 rows_reverse : List(a) -> List(a)
@@ -2065,6 +2095,117 @@ expect {
 		}
 
 	retired and built.slots.free.is_empty() and built.slot_chunks_written == 1 and (rows_slots_get(old.slots, old_slot)?).item.value() == 1
+}
+
+## Bulk clear advances each live slot exactly once, keeps already-vacant
+## generations unchanged, and leaves the old immutable generations readable.
+expect {
+	initial = Rows.from_list([rows_test_item("a", 1), rows_test_item("b", 2), rows_test_item("c", 3)], rows_test_key)?
+	initial_a = Rows.platform_slot_at(initial, 0)?
+	initial_b = Rows.platform_slot_at(initial, 1)?
+	initial_c = Rows.platform_slot_at(initial, 2)?
+	removed = Rows.apply(initial, [RemoveKey("b")])?
+	cleared = Rows.apply(removed, [Clear])?
+	rebuilt = Rows.replace_all(cleared, [rows_test_item("x", 10), rows_test_item("y", 20), rows_test_item("z", 30)])?
+	rebuilt_a = Rows.platform_slot_at(rebuilt, 0)?
+	rebuilt_b = Rows.platform_slot_at(rebuilt, 1)?
+	rebuilt_c = Rows.platform_slot_at(rebuilt, 2)?
+	reused_indexes = [rows_slot_index(rebuilt_a), rows_slot_index(rebuilt_b), rows_slot_index(rebuilt_c)].sort_with(
+		|left, right| if left < right {
+			Before
+		} else if left > right {
+			After
+		} else {
+			Same
+		},
+	)
+
+	reused_indexes == [rows_slot_index(initial_a), rows_slot_index(initial_b), rows_slot_index(initial_c)]
+		and rows_slot_generation(rebuilt_a) == 2
+			and rows_slot_generation(rebuilt_b) == 2
+				and rows_slot_generation(rebuilt_c) == 2
+					and Rows.get(initial, 1)?.value() == 2
+						and Rows.get(removed, 0)?.value() == 1
+}
+
+## Bulk clear handles live, vacant, retired, and saturated cells in one chunk.
+## Reusable cells appear once in deterministic dense-index order, while both
+## live values remain readable through the previous immutable generation.
+expect {
+	max_generation = 4294967295
+	first_slot = rows_slot_pack(1, 1)
+	saturated_slot = rows_slot_pack(4, max_generation)
+	chunks : Dict(U64, List(RowsSlotCell(RowsTestItem)))
+	chunks = Dict.with_capacity(1).insert(
+		0,
+		[
+			RowsSlotLive({ generation: 1, key: "a", item: rows_test_item("a", 1) }),
+			RowsSlotVacant({ generation: 7 }),
+			RowsSlotRetired,
+			RowsSlotLive({ generation: max_generation, key: "d", item: rows_test_item("d", 4) }),
+		],
+	)
+	key_index : Dict(Str, U64)
+	key_index = Dict.with_capacity(2).insert("a", first_slot).insert("d", saturated_slot)
+	old_storage : RowsStorage(RowsTestItem)
+	old_storage = {
+		token: rows_generation_callable(),
+		parent: NoParent,
+		transition: Snapshot,
+		key_of: Box.box(rows_test_key),
+		order: rows_order_from_slots([first_slot, saturated_slot]),
+		slots: { chunks, free: [2], next_index: 5 },
+		key_index,
+		snapshot_key_bytes: 2,
+		op_count: 0,
+		delta_key_count: 0,
+		delta_key_bytes: 0,
+	}
+	old = Rows(old_storage)
+	cleared = Rows.apply(old, [Clear])?
+	Rows(cleared_storage) = cleared
+	first_vacant =
+		match rows_slots_cell(cleared_storage.slots, 1)? {
+			RowsSlotVacant({ generation: 2 }) => True
+			_ => False
+		}
+	second_preserved =
+		match rows_slots_cell(cleared_storage.slots, 2)? {
+			RowsSlotVacant({ generation: 7 }) => True
+			_ => False
+		}
+	third_retired =
+		match rows_slots_cell(cleared_storage.slots, 3)? {
+			RowsSlotRetired => True
+			_ => False
+		}
+	saturated_retired =
+		match rows_slots_cell(cleared_storage.slots, 4)? {
+			RowsSlotRetired => True
+			_ => False
+		}
+
+	first_vacant
+		and second_preserved
+			and third_retired
+				and saturated_retired
+					and cleared_storage.slots.free == [1, 2]
+						and Rows.platform_item_for_slot(old, first_slot)?.value() == 1
+							and Rows.platform_item_for_slot(old, saturated_slot)?.value() == 4
+}
+
+## Clearing an empty collection is a no-op snapshot and allocates no slot
+## generation solely to restate the existing empty value.
+expect {
+	empty = Rows.empty(rows_test_key)
+	cleared = Rows.apply(empty, [Clear])?
+	Rows(storage) = cleared
+
+	cleared.len() == 0
+		and Rows.platform_transition_kind(cleared) == Snapshot
+			and storage.slots.next_index == 1
+				and storage.slots.chunks.is_empty()
+					and storage.slots.free.is_empty()
 }
 
 ## Replacement failures publish no generation and leave the previous snapshot
