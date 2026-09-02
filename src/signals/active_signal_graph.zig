@@ -1261,7 +1261,7 @@ pub const PreparedReleaseStep = struct {
 
 pub const PreparedAdjacencyReplacement = struct {
     record_id: u64,
-    dependents: []u64,
+    dependents: signal_graph.OwnedAdjacency,
 };
 
 /// Owns a read-only simulation of recursive active-record release and dense remaps.
@@ -1284,7 +1284,7 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
         /// reaches zero once the same transaction's retains are netted in.
         survivor_use_decrements: []ExistingUseIncrement,
         adjacency: []PreparedAdjacencyReplacement,
-        retired_adjacency: [][]u64,
+        retired_adjacency: []signal_graph.OwnedAdjacency,
         retired_nodes: []Node(Record),
         retired_text_routes: []SmallRouteList(TextSink),
         retired_bool_routes: []SmallRouteList(BoolSink),
@@ -1300,8 +1300,8 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
             allocator.free(self.original_record_ids);
             allocator.free(self.survivor_use_decrements);
             switch (self.phase) {
-                .prepared => for (self.adjacency) |replacement| allocator.free(replacement.dependents),
-                .adjacency_committed, .dense_committed, .retired_released => for (self.retired_adjacency) |items| allocator.free(items),
+                .prepared => for (self.adjacency) |*replacement| replacement.dependents.deinit(allocator),
+                .adjacency_committed, .dense_committed, .retired_released => for (self.retired_adjacency) |*items| items.deinit(allocator),
             }
             allocator.free(self.adjacency);
             allocator.free(self.retired_adjacency);
@@ -1322,7 +1322,7 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
                 if (index >= nodes.len) @panic("prepared adjacency referenced an unknown record");
                 retired.* = nodes[index].dependents;
                 nodes[index].dependents = replacement.dependents;
-                replacement.dependents = &.{};
+                replacement.dependents = .empty;
             }
             self.phase = .adjacency_committed;
         }
@@ -1402,7 +1402,8 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
         pub fn releaseRetired(self: *@This(), allocator: std.mem.Allocator, hooks: anytype) void {
             if (self.phase != .dense_committed) @panic("retired graph ownership release order was invalid");
             for (self.retired_nodes) |node| {
-                allocator.free(node.dependents);
+                var dependents = node.dependents;
+                dependents.deinit(allocator);
                 switch (node.record.payload) {
                     .interval_source => hooks.removeInterval(node.record.token().?),
                     else => {},
@@ -1422,7 +1423,7 @@ pub const ExistingUseIncrement = struct { record_id: u64, count: usize };
 
 pub const SurvivorAdjacencyAppend = struct {
     record_id: u64,
-    dependents: []u64,
+    dependents: signal_graph.OwnedAdjacency,
 };
 
 /// Owns read-only topology and use-count decisions for replacement records.
@@ -1437,7 +1438,7 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
         existing_use_increments: []ExistingUseIncrement,
         survivor_adjacency: []SurvivorAdjacencyAppend,
         new_nodes: []Node(Record),
-        retired_adjacency: [][]u64,
+        retired_adjacency: []signal_graph.OwnedAdjacency,
         final_existing_record_ids: []?u64,
         survivor_count: usize,
         phase: Phase = .prepared,
@@ -1550,14 +1551,14 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
                 const index: usize = @intCast(replacement.record_id);
                 retired.* = nodes.items[index].dependents;
                 nodes.items[index].dependents = replacement.dependents;
-                replacement.dependents = &.{};
+                replacement.dependents = .empty;
             }
             for (self.new_nodes, self.record_ids, self.use_counts) |*node, id, uses| {
                 _ = node.record.retain();
                 node.record.active_graph_id = id;
                 node.record.active_use_count = uses;
                 nodes.appendAssumeCapacity(node.*);
-                node.dependents = &.{};
+                node.dependents = .empty;
             }
             self.phase = .committed;
         }
@@ -1569,11 +1570,11 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
             allocator.free(self.ranks);
             allocator.free(self.use_counts);
             allocator.free(self.existing_use_increments);
-            for (self.survivor_adjacency) |replacement| allocator.free(replacement.dependents);
+            for (self.survivor_adjacency) |*replacement| replacement.dependents.deinit(allocator);
             allocator.free(self.survivor_adjacency);
-            for (self.new_nodes) |node| allocator.free(node.dependents);
+            for (self.new_nodes) |*node| node.dependents.deinit(allocator);
             allocator.free(self.new_nodes);
-            for (self.retired_adjacency) |retired| allocator.free(retired);
+            for (self.retired_adjacency) |*retired| retired.deinit(allocator);
             allocator.free(self.retired_adjacency);
             allocator.free(self.final_existing_record_ids);
             self.* = undefined;
@@ -1667,7 +1668,7 @@ fn prepareGraphAppendWithWork(comptime Record: type, allocator: std.mem.Allocato
     const owned_increments = try increments.toOwnedSlice(allocator);
     errdefer allocator.free(owned_increments);
     const total_count = std.math.add(usize, survivor_count, owned_records.len) catch return error.InvalidAppend;
-    const adjacency_lists = try allocator.alloc(std.ArrayListUnmanaged(u64), total_count);
+    const adjacency_lists = try allocator.alloc(signal_graph.OwnedAdjacency, total_count);
     defer allocator.free(adjacency_lists);
     @memset(adjacency_lists, .empty);
     const adjacency_touched = try allocator.alloc(bool, survivor_count);
@@ -1694,24 +1695,22 @@ fn prepareGraphAppendWithWork(comptime Record: type, allocator: std.mem.Allocato
             return @intCast(std.math.add(usize, survivor_len, index) catch return error.InvalidAppend);
         }
 
-        fn append(input: *Record, dependent_id: u64, prepare_allocator: std.mem.Allocator, original_nodes: []const Node(Record), mapping: []const ?u64, survivor_len: usize, appended: *const std.AutoHashMapUnmanaged(*Record, usize), inverse: []const usize, lists: []std.ArrayListUnmanaged(u64), touched: []bool, work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!void {
+        fn append(input: *Record, dependent_id: u64, prepare_allocator: std.mem.Allocator, original_nodes: []const Node(Record), mapping: []const ?u64, survivor_len: usize, appended: *const std.AutoHashMapUnmanaged(*Record, usize), inverse: []const usize, lists: []signal_graph.OwnedAdjacency, touched: []bool, work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!void {
             const input_id = try resolvedRecordId(input, original_nodes, mapping, survivor_len, appended, work);
             const input_index: usize = @intCast(input_id);
             if (input_index >= lists.len) return error.InvalidAppend;
             if (input_index < survivor_len and !touched[input_index]) {
                 const original_index = inverse[input_index];
                 if (original_index == std.math.maxInt(usize) or original_index >= original_nodes.len) return error.InvalidAppend;
-                const source = original_nodes[original_index].dependents;
-                const capacity = std.math.add(usize, source.len, 1) catch return error.InvalidAppend;
-                try lists[input_index].ensureTotalCapacity(prepare_allocator, capacity);
+                const source = original_nodes[original_index].dependents.slice();
                 for (source) |original_dependent| {
                     const original_dependent_index: usize = @intCast(original_dependent);
                     if (original_dependent_index >= mapping.len) return error.InvalidAppend;
-                    if (mapping[original_dependent_index]) |final_dependent| lists[input_index].appendAssumeCapacity(final_dependent);
+                    if (mapping[original_dependent_index]) |final_dependent| try lists[input_index].append(prepare_allocator, final_dependent);
                 }
                 touched[input_index] = true;
             }
-            if (!containsU64(lists[input_index].items, dependent_id)) try lists[input_index].append(prepare_allocator, dependent_id);
+            if (!containsU64(lists[input_index].slice(), dependent_id)) try lists[input_index].append(prepare_allocator, dependent_id);
         }
     };
     for (owned_records, record_ids) |record, dependent_id| switch (record.payload) {
@@ -1734,21 +1733,23 @@ fn prepareGraphAppendWithWork(comptime Record: type, allocator: std.mem.Allocato
     errdefer allocator.free(survivor_replacements);
     var survivor_write: usize = 0;
     for (adjacency_touched, 0..) |touched, id| if (touched) {
-        survivor_replacements[survivor_write] = .{ .record_id = @intCast(id), .dependents = try adjacency_lists[id].toOwnedSlice(allocator) };
+        survivor_replacements[survivor_write] = .{ .record_id = @intCast(id), .dependents = adjacency_lists[id] };
+        adjacency_lists[id] = .empty;
         survivor_write += 1;
     };
-    errdefer for (survivor_replacements[0..survivor_write]) |replacement| allocator.free(replacement.dependents);
+    errdefer for (survivor_replacements[0..survivor_write]) |*replacement| replacement.dependents.deinit(allocator);
     const new_nodes = try allocator.alloc(Node(Record), owned_records.len);
     errdefer allocator.free(new_nodes);
     var new_node_write: usize = 0;
-    errdefer for (new_nodes[0..new_node_write]) |node| allocator.free(node.dependents);
+    errdefer for (new_nodes[0..new_node_write]) |*node| node.dependents.deinit(allocator);
     for (new_nodes, owned_records, owned_ranks, 0..) |*node, record, prepared_rank, index| {
-        node.* = .{ .record = record, .rank = prepared_rank, .dependents = try adjacency_lists[survivor_count + index].toOwnedSlice(allocator) };
+        node.* = .{ .record = record, .rank = prepared_rank, .dependents = adjacency_lists[survivor_count + index] };
+        adjacency_lists[survivor_count + index] = .empty;
         new_node_write += 1;
     }
-    const retired_adjacency = try allocator.alloc([]u64, survivor_replacements.len);
+    const retired_adjacency = try allocator.alloc(signal_graph.OwnedAdjacency, survivor_replacements.len);
     errdefer allocator.free(retired_adjacency);
-    @memset(retired_adjacency, &.{});
+    @memset(retired_adjacency, .empty);
     const owned_final_existing_ids = try allocator.dupe(?u64, final_record_ids);
     errdefer allocator.free(owned_final_existing_ids);
     return .{
@@ -1914,7 +1915,7 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
     for (nodes, 0..) |node, original_id| {
         var next_len: usize = 0;
         var changed = false;
-        for (node.dependents) |dependent_id| {
+        for (node.dependents.slice()) |dependent_id| {
             const final_id = final_record_ids[@intCast(dependent_id)] orelse {
                 changed = true;
                 continue;
@@ -1922,13 +1923,13 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
             if (final_id != dependent_id) changed = true;
             next_len += 1;
         }
-        if (changed or next_len != node.dependents.len or final_record_ids[original_id] == null and node.dependents.len != 0) adjacency_count += 1;
+        if (changed or next_len != node.dependents.len() or final_record_ids[original_id] == null and node.dependents.len() != 0) adjacency_count += 1;
     }
     const adjacency = try allocator.alloc(PreparedAdjacencyReplacement, adjacency_count);
     errdefer allocator.free(adjacency);
-    const retired_adjacency = try allocator.alloc([]u64, adjacency_count);
+    const retired_adjacency = try allocator.alloc(signal_graph.OwnedAdjacency, adjacency_count);
     errdefer allocator.free(retired_adjacency);
-    @memset(retired_adjacency, &.{});
+    @memset(retired_adjacency, .empty);
     const retired_nodes = try allocator.alloc(Node(Record), records.items.len);
     errdefer allocator.free(retired_nodes);
     const retired_text_routes = try allocator.alloc(SmallRouteList(TextSink), records.items.len);
@@ -1944,11 +1945,11 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
     errdefer allocator.free(retired_structural_routes);
     @memset(retired_structural_routes, .empty);
     var adjacency_write: usize = 0;
-    errdefer for (adjacency[0..adjacency_write]) |replacement| allocator.free(replacement.dependents);
+    errdefer for (adjacency[0..adjacency_write]) |*replacement| replacement.dependents.deinit(allocator);
     for (nodes, 0..) |node, original_id| {
         var next_len: usize = 0;
         var changed = false;
-        for (node.dependents) |dependent_id| {
+        for (node.dependents.slice()) |dependent_id| {
             const final_id = final_record_ids[@intCast(dependent_id)] orelse {
                 changed = true;
                 continue;
@@ -1956,15 +1957,15 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
             if (final_id != dependent_id) changed = true;
             next_len += 1;
         }
-        if (!changed and next_len == node.dependents.len and !(final_record_ids[original_id] == null and node.dependents.len != 0)) continue;
-        const replacement = try allocator.alloc(u64, next_len);
-        var write: usize = 0;
-        for (node.dependents) |dependent_id| {
+        if (!changed and next_len == node.dependents.len() and !(final_record_ids[original_id] == null and node.dependents.len() != 0)) continue;
+        var replacement: signal_graph.OwnedAdjacency = .empty;
+        errdefer replacement.deinit(allocator);
+        for (node.dependents.slice()) |dependent_id| {
             const final_id = final_record_ids[@intCast(dependent_id)] orelse continue;
-            replacement[write] = final_id;
-            write += 1;
+            try replacement.append(allocator, final_id);
         }
         adjacency[adjacency_write] = .{ .record_id = @intCast(original_id), .dependents = replacement };
+        replacement = .empty;
         adjacency_write += 1;
     }
     return .{
@@ -2026,7 +2027,8 @@ pub fn releaseRecord(
 /// Clears  while retaining bounded storage where the type promises reuse.
 pub fn clear(comptime Record: type, allocator: std.mem.Allocator, nodes: *std.ArrayListUnmanaged(Node(Record)), hooks: anytype) void {
     for (nodes.items, 0..) |node, index| {
-        allocator.free(node.dependents);
+        var dependents = node.dependents;
+        dependents.deinit(allocator);
         const active_graph_id = node.record.active_graph_id orelse @panic("active signal graph record was missing its dense id");
         if (active_graph_id != @as(u64, @intCast(index))) @panic("active signal graph record dense id did not match its slot");
         node.record.active_graph_id = null;
@@ -2199,9 +2201,9 @@ fn removeNode(
     const record_index: usize = @intCast(record_id);
     if (record_index >= nodes.items.len) @panic("active signal graph removal referenced an unknown record");
     if (nodes.items[record_index].record != record) @panic("active signal graph removal referenced the wrong record");
-    if (nodes.items[record_index].dependents.len != 0) @panic("active signal graph removed a record with live dependents");
+    if (nodes.items[record_index].dependents.len() != 0) @panic("active signal graph removed a record with live dependents");
 
-    allocator.free(nodes.items[record_index].dependents);
+    nodes.items[record_index].dependents.deinit(allocator);
     const last_index = nodes.items.len - 1;
     removeSinkRoutesForRecordId(allocator, text_routes, bool_routes, change_routes, structural_routes, record_index, last_index);
     _ = nodes.swapRemove(record_index);
@@ -2640,10 +2642,10 @@ test "prepared graph append enumerates missing topology without mutating survivo
     try std.testing.expectEqualSlices(ExistingUseIncrement, &.{.{ .record_id = 0, .count = 1 }}, baseline.existing_use_increments);
     try std.testing.expectEqual(@as(usize, 1), baseline.survivor_adjacency.len);
     try std.testing.expectEqual(@as(u64, 0), baseline.survivor_adjacency[0].record_id);
-    try std.testing.expectEqualSlices(u64, &.{1}, baseline.survivor_adjacency[0].dependents);
-    try std.testing.expectEqualSlices(u64, &.{3}, baseline.new_nodes[0].dependents);
-    try std.testing.expectEqualSlices(u64, &.{3}, baseline.new_nodes[1].dependents);
-    try std.testing.expectEqualSlices(u64, &.{}, baseline.new_nodes[2].dependents);
+    try std.testing.expectEqualSlices(u64, &.{1}, baseline.survivor_adjacency[0].dependents.slice());
+    try std.testing.expectEqualSlices(u64, &.{3}, baseline.new_nodes[0].dependents.slice());
+    try std.testing.expectEqualSlices(u64, &.{3}, baseline.new_nodes[1].dependents.slice());
+    try std.testing.expectEqualSlices(u64, &.{}, baseline.new_nodes[2].dependents.slice());
 
     for (1..attempts + 1) |failure_number| {
         var fault = FaultAllocator.init(std.testing.allocator);
@@ -2652,7 +2654,7 @@ test "prepared graph append enumerates missing topology without mutating survivo
         try std.testing.expectEqual(@as(usize, 1), nodes.items.len);
         try std.testing.expectEqual(@as(?u64, 0), survivor.active_graph_id);
         try std.testing.expectEqual(@as(usize, 1), survivor.active_use_count);
-        try std.testing.expectEqualSlices(u64, &.{}, nodes.items[0].dependents);
+        try std.testing.expectEqualSlices(u64, &.{}, nodes.items[0].dependents.slice());
         try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].slice());
         for ([_]*LifecycleTestRecord{ &mapped, &fresh, &root }) |record| {
             try std.testing.expectEqual(@as(?u64, null), record.active_graph_id);
@@ -2671,10 +2673,10 @@ test "prepared graph append enumerates missing topology without mutating survivo
     try std.testing.expectEqual(@as(usize, 4), bool_routes.items.len);
     try std.testing.expectEqual(@as(usize, 4), change_routes.items.len);
     try std.testing.expectEqual(@as(usize, 4), structural_routes.items.len);
-    try std.testing.expectEqualSlices(u64, &.{1}, nodes.items[0].dependents);
-    try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[1].dependents);
-    try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[2].dependents);
-    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[3].dependents);
+    try std.testing.expectEqualSlices(u64, &.{1}, nodes.items[0].dependents.slice());
+    try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[1].dependents.slice());
+    try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[2].dependents.slice());
+    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[3].dependents.slice());
     try std.testing.expectEqual(@as(usize, 2), survivor.active_use_count);
     try std.testing.expectEqual(@as(?u64, 1), mapped.active_graph_id);
     try std.testing.expectEqual(@as(usize, 2), mapped.active_use_count);
@@ -2832,8 +2834,8 @@ test "prepared release closure nets replacement retains so a handed-over record 
     try std.testing.expectEqual(@as(?u64, 2), keeper.active_graph_id);
     try std.testing.expectEqual(@as(?u64, 3), new_root.active_graph_id);
     try std.testing.expectEqual(@as(usize, 1), new_root.active_use_count);
-    try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[0].dependents);
-    try std.testing.expectEqualSlices(u64, &.{2}, nodes.items[1].dependents);
+    try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[0].dependents.slice());
+    try std.testing.expectEqualSlices(u64, &.{2}, nodes.items[1].dependents.slice());
     try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].slice());
     try std.testing.expectEqualSlices(u64, &.{1}, source_routes.items[1].slice());
     try std.testing.expectEqual(@as(u64, 1), hooks.record_releases);
@@ -2895,16 +2897,16 @@ test "prepared release closure preserves shared diamond and computes dense remap
         try std.testing.expectEqual(@as(usize, 1), right.active_use_count);
         try std.testing.expectEqual(@as(usize, 2), source.active_use_count);
         for (nodes.items, 0..) |node, index| try std.testing.expectEqual(@as(?u64, @intCast(index)), node.record.active_graph_id);
-        try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, nodes.items[0].dependents);
-        try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[1].dependents);
-        try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[2].dependents);
+        try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, nodes.items[0].dependents.slice());
+        try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[1].dependents.slice());
+        try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[2].dependents.slice());
     }
     counter.configure(1);
     baseline.applyAdjacency(nodes.items);
     try std.testing.expectEqual(@as(usize, 0), counter.attempts);
-    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[0].dependents);
-    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[1].dependents);
-    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[2].dependents);
+    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[0].dependents.slice());
+    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[1].dependents.slice());
+    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[2].dependents.slice());
     baseline.applyDense(&nodes, &source_routes, &text_routes, &bool_routes, &change_routes, &structural_routes);
     try std.testing.expectEqual(@as(usize, 0), nodes.items.len);
     try std.testing.expectEqual(@as(usize, 0), text_routes.items.len);
@@ -2933,7 +2935,7 @@ test "active graph dirty queue collects roots and dependents by rank" {
     };
     defer {
         for (&nodes) |*node| {
-            std.testing.allocator.free(node.dependents);
+            node.dependents.deinit(std.testing.allocator);
         }
     }
 
@@ -2957,7 +2959,7 @@ test "active graph dirty queue reservation sweeps failures and makes collection 
         .{ .record = &records[1], .rank = 1 },
         .{ .record = &records[2], .rank = 2 },
     };
-    defer for (&nodes) |*node| std.testing.allocator.free(node.dependents);
+    defer for (&nodes) |*node| node.dependents.deinit(std.testing.allocator);
     try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 0, 1);
     try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 1, 2);
 
@@ -2995,7 +2997,7 @@ test "active graph dirty queue collects source-route dependents by rank" {
     };
     defer {
         for (&nodes) |*node| {
-            std.testing.allocator.free(node.dependents);
+            node.dependents.deinit(std.testing.allocator);
         }
     }
     try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 1, 2);
@@ -3029,7 +3031,7 @@ test "active graph dirty queue reuses retained buffers and ranks reachable recor
     };
     defer {
         for (&nodes) |*node| {
-            std.testing.allocator.free(node.dependents);
+            node.dependents.deinit(std.testing.allocator);
         }
     }
     try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 0, 1);
@@ -3164,7 +3166,7 @@ test "active graph retain and release update moved record ids and routes" {
     try std.testing.expectEqual(@as(?u64, 0), source_a.active_graph_id);
     try std.testing.expectEqual(@as(?u64, 1), source_b.active_graph_id);
     try std.testing.expectEqual(@as(?u64, 2), mapped.active_graph_id);
-    try std.testing.expectEqualSlices(u64, &.{2}, nodes.items[1].dependents);
+    try std.testing.expectEqualSlices(u64, &.{2}, nodes.items[1].dependents.slice());
     try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[1].slice());
     try std.testing.expectEqualSlices(u64, &.{1}, source_routes.items[2].slice());
 
@@ -3186,7 +3188,7 @@ test "active graph retain and release update moved record ids and routes" {
     try std.testing.expectEqual(@as(?u64, 0), mapped.active_graph_id);
     try std.testing.expectEqual(&mapped, nodes.items[0].record);
     try std.testing.expectEqual(&source_b, nodes.items[1].record);
-    try std.testing.expectEqualSlices(u64, &.{0}, nodes.items[1].dependents);
+    try std.testing.expectEqualSlices(u64, &.{0}, nodes.items[1].dependents.slice());
     try std.testing.expectEqualSlices(u64, &.{}, source_routes.items[1].slice());
     try std.testing.expectEqualSlices(u64, &.{1}, source_routes.items[2].slice());
 
@@ -3234,7 +3236,7 @@ test "row source is an ordinary rank zero root with normal dependents" {
     try std.testing.expectEqual(@as(usize, 2), nodes.items.len);
     try std.testing.expectEqual(@as(u64, 0), nodes.items[@intCast(row_source.active_graph_id.?)].rank);
     try std.testing.expectEqual(@as(u64, 1), nodes.items[@intCast(mapped.active_graph_id.?)].rank);
-    try std.testing.expectEqualSlices(u64, &.{mapped.active_graph_id.?}, nodes.items[@intCast(row_source.active_graph_id.?)].dependents);
+    try std.testing.expectEqualSlices(u64, &.{mapped.active_graph_id.?}, nodes.items[@intCast(row_source.active_graph_id.?)].dependents.slice());
     try std.testing.expectEqual(@as(usize, 0), source_routes.items.len);
 
     releaseRecord(

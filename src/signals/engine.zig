@@ -18948,7 +18948,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(?u64, planned_signal_record_id), replacement_signal_record.active_graph_id);
                 try std.testing.expectEqual(replacement_record_refs_before_graph + 1, replacement_signal_record.ref_count);
                 try std.testing.expectEqual(@as(u64, 0), engine.active_signal_graph.items[@intCast(planned_signal_record_id)].rank);
-                try std.testing.expectEqualSlices(u64, &.{}, engine.active_signal_graph.items[@intCast(planned_signal_record_id)].dependents);
+                try std.testing.expectEqualSlices(u64, &.{}, engine.active_signal_graph.items[@intCast(planned_signal_record_id)].dependents.slice());
                 const replacement_source_route = engine.active_source_signal_routes.items[replacement_state_id.index()].slice();
                 try std.testing.expectEqual(@as(usize, 7), replacement_source_route.len);
                 const expected_source_records = [_]u64{ planned_text_node_record_id, planned_text_attr_record_id, planned_signal_record_id, planned_custom_text_record_id, planned_optional_text_record_id, planned_custom_bool_record_id, planned_change_record_id };
