@@ -360,7 +360,7 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
                         roc_bin,
                         "build",
                         "--target=wasm32",
-                        "--opt=dev",
+                        "--opt=size",
                         "--no-cache",
                         f"--output={output}",
                         source_root / example.source,
