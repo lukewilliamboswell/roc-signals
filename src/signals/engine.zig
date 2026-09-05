@@ -4778,15 +4778,17 @@ pub fn Engine(comptime Ctx: type) type {
                     signal_descriptors = try total(signal_descriptors, try total(self.signal_bool_attrs, self.signal_custom_bool_attrs));
                     signal_descriptors = try total(signal_descriptors, self.signal_text_nodes);
                     const named_events_u32 = std.math.cast(u32, self.named_events) orelse return error.ResourceLimit;
-                    const added_named_events_u32 = std.math.cast(u32, added.roots.named_events) orelse return error.ResourceLimit;
                     const state_cells = try total(self.state_sites, self.external_states);
                     collection.prepared_nodes.ensureUnusedCapacity(allocator, self.nodes) catch return error.OutOfMemory;
                     collection.prepared_render_order.ensureUnusedCapacity(allocator, self.nodes) catch return error.OutOfMemory;
                     collection.prepared_attrs.ensureUnusedCapacity(allocator, static_attrs) catch return error.OutOfMemory;
                     collection.prepared_signal_attrs.ensureUnusedCapacity(allocator, signal_descriptors) catch return error.OutOfMemory;
-                    collection.prepared_custom_attrs.ensureUnusedCapacity(allocator, std.math.cast(u32, added.roots.custom_attrs) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                    // A nested branch can reserve before its parent's remaining
+                    // attributes or events have been inserted. Reserve the whole
+                    // plan, including those outstanding parent entries.
+                    collection.prepared_custom_attrs.ensureTotalCapacity(allocator, std.math.cast(u32, self.custom_attrs) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                     collection.prepared_events.ensureUnusedCapacity(allocator, self.events) catch return error.OutOfMemory;
-                    collection.prepared_named_events.ensureUnusedCapacity(allocator, added_named_events_u32) catch return error.OutOfMemory;
+                    collection.prepared_named_events.ensureTotalCapacity(allocator, named_events_u32) catch return error.OutOfMemory;
                     collection.prepared_lifecycle.ensureUnusedCapacity(allocator, self.lifecycle) catch return error.OutOfMemory;
                     collection.prepared_state_sites.ensureUnusedCapacity(allocator, self.scope_sites) catch return error.OutOfMemory;
                     collection.prepared_states.ensureUnusedCapacity(allocator, self.state_sites) catch return error.OutOfMemory;
@@ -17333,6 +17335,36 @@ test "staged DOM identity reuse does not consume the fresh suffix" {
     try std.testing.expectEqual(@as(u64, 1), (try collection.reserveDomIdentity(ids.ScopeId.fromRaw(1), ids.SiteOrdinal.fromRaw(0))).raw());
     try std.testing.expectEqual(@as(u64, 2), (try collection.reserveDomIdentity(ids.ScopeId.fromRaw(2), ids.SiteOrdinal.fromRaw(0))).raw());
     try std.testing.expectEqual(@as(u64, 4), (try collection.reserveDomIdentity(ids.ScopeId.fromRaw(3), ids.SiteOrdinal.fromRaw(0))).raw());
+}
+
+test "nested collection reservations preserve outstanding custom attributes and named events" {
+    for ([_]usize{ 1, 6, 16, 64 }) |batch_size| {
+        var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+        var engine = Engine(VerifyCtx).init();
+        defer deinitVerifyStaticEngine(&engine, &ctx);
+        var stream: HostNodeDescriptorStream = .{};
+        defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{
+            .custom_attrs = batch_size,
+            .named_events = batch_size,
+        }, 0);
+        defer collection.deinit();
+
+        // Nested builders reserve before the parent resumes. None of these
+        // entries is inserted yet, so unused capacity alone cannot account
+        // for all four batches' promises.
+        for (0..3) |_| try collection.reserveCounts(.{ .roots = .{
+            .custom_attrs = batch_size,
+            .named_events = batch_size,
+        } });
+        for (0..4 * batch_size) |index| {
+            const elem_id = ids.ElemId.fromRaw(index + 1);
+            collection.rememberPreparedCustomAttr(elem_id, "data-value");
+            collection.rememberPreparedNamedEvent(elem_id, "custom-event");
+        }
+        try std.testing.expectEqual(@as(u32, @intCast(4 * batch_size)), collection.prepared_custom_attrs.count());
+        try std.testing.expectEqual(@as(u32, @intCast(4 * batch_size)), collection.prepared_named_events.count());
+    }
 }
 
 test "staged custom attribute duplicate index uses exact composite keys under collisions" {

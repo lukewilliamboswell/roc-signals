@@ -11529,6 +11529,7 @@ pub const fuzz_fixtures = struct {
 
     pub const element = testElement;
     pub const elementWith = testElementWith;
+    pub const customTextAttr = testNodeStaticCustomTextAttr;
     pub const text = testNodeText;
     pub const state = testNodeState;
     pub const stateWithTokenInitialAndCapability = testNodeStateWithTokenAndInitialCapability;
