@@ -299,6 +299,7 @@ def run_fuzz_suite() -> None:
 
 def run_browser_suite() -> None:
     run(["zig", "build", "run-test-browser"])
+    run([sys.executable, "-m", "unittest", "scripts/test_bundle_browser.py"])
 
 
 def run_roc_checks(

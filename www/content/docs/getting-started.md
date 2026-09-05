@@ -24,7 +24,8 @@ WebAssembly.
 **Only if you want to build the full site**
 
 - Python 3, Node.js, [Zola](https://www.getzola.org/), and the
-  [Tailwind CSS standalone CLI](https://tailwindcss.com/blog/standalone-cli).
+  [Tailwind CSS standalone CLI](https://tailwindcss.com/blog/standalone-cli)
+  version 3.4.17 (the site configuration is for Tailwind v3).
 
 ## Get the platform
 
@@ -232,9 +233,17 @@ The runtime is a plain ES module with no dependencies:
 </script>
 ```
 
-Copy `www/static/signals.mjs` next to your `.wasm`. It must come from the same
-platform version — the runtime checks a wire protocol version at mount and
-fails immediately on a mismatch rather than misbehaving.
+Copy `signals.mjs`, `wasm_memory_views.mjs`, and `controlled_input_policy.mjs`
+from `www/static/` next to your `.wasm`, preserving their relative paths.
+Alternatively, run `python3 scripts/bundle_browser.py` and extract the resulting
+`.test-out/signals-browser.zip` there. New releases include this browser archive
+alongside the platform bundle. It contains the runtime's imported modules and a
+manifest recording the compiler pin and file digests.
+
+The runtime must come from the same compatible platform version as the app —
+it checks the wire protocol at mount and rejects a mismatch. Keep the files
+together when deploying under a GitHub Pages project path; the relative URLs
+above work without assuming that your app lives at the domain root.
 
 `mountSignalsApp` also accepts `taskHandler` (to intercept HTTP tasks),
 `behaviors` (to attach JavaScript widgets), `telemetry`, and `onError`. See

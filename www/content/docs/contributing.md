@@ -19,7 +19,7 @@ Install:
 - Python 3,
 - Node.js,
 - Zola,
-- the Tailwind CSS standalone CLI,
+- the Tailwind CSS 3.4.17 standalone CLI (the site uses the v3 configuration),
 - Roc.
 
 Local scripts use `roc` from `PATH` by default. Override it with `ROC_BIN`,
@@ -308,6 +308,7 @@ Build host artifacts first, then create a platform bundle:
 ```sh
 zig build build-test-hosts -Doptimize=ReleaseSmall
 scripts/bundle.sh
+python3 scripts/bundle_browser.py
 ```
 
 The bundle script uses `ROC_BIN`, `ROC`, or `roc` from `PATH`. By default it
@@ -384,11 +385,15 @@ python3 scripts/serve.py --no-server --app-opt size
 
 ## Releases
 
-The `Release` GitHub Actions workflow is manually triggered. Provide the exact
+The `Release` GitHub Actions workflow is manually triggered. It installs the
+compiler pinned in `.roc-version` for both building and testing. Provide the exact
 release tag to publish, matching the URL you intend to put in
 `www/config.toml`; the workflow builds ReleaseSmall host artifacts, creates the
 platform bundle, tests the downloaded bundle on Intel and Apple Silicon macOS
-runners, then creates a GitHub release with the bundle attached.
+runners, then creates a GitHub release with the platform bundle and
+`signals-browser.zip` attached. The browser archive contains the executor and
+its relative imports, plus a compiler-pin and SHA-256 manifest. The workflow
+checks that the downloaded runtime imports successfully outside the checkout.
 
 ## Spec Language
 

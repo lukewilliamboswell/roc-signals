@@ -34,10 +34,14 @@ jobs:
           version: 0.16.0
           use-cache: false
 
+      - name: Read pinned Roc version
+        run: printf 'ROC_NIGHTLY_TAG=%s\n' "$(sed -n '1p' .roc-version)" >> "$GITHUB_ENV"
+
       - name: Install Roc
         uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
         with:
           version: nightly-new-compiler
+          nightly-tag: ${{ env.ROC_NIGHTLY_TAG }}
 
       - name: Build ReleaseSmall host artifacts
         run: zig build build-test-hosts -Doptimize=ReleaseSmall
@@ -59,11 +63,14 @@ jobs:
           echo "bundle_path=$bundle_path" >> "$GITHUB_OUTPUT"
           echo "bundle_filename=$bundle_filename" >> "$GITHUB_OUTPUT"
 
+      - name: Bundle browser runtime
+        run: python3 scripts/bundle_browser.py --output "$RUNNER_TEMP/platform-bundle/signals-browser.zip"
+
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
         with:
           name: platform-bundle
-          path: ${{ steps.bundle.outputs.bundle_path }}
+          path: ${{ runner.temp }}/platform-bundle/
           retention-days: 30
 
   test-bundle:
@@ -89,10 +96,14 @@ jobs:
           version: 0.16.0
           use-cache: false
 
+      - name: Read pinned Roc version
+        run: printf 'ROC_NIGHTLY_TAG=%s\n' "$(sed -n '1p' .roc-version)" >> "$GITHUB_ENV"
+
       - name: Install Roc
         uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
         with:
           version: nightly-new-compiler
+          nightly-tag: ${{ env.ROC_NIGHTLY_TAG }}
 
       - name: Download bundle artifact
         uses: actions/download-artifact@v4
@@ -104,6 +115,12 @@ jobs:
         run: |
           bundle_file="platform-bundle/${{ needs.build-and-bundle.outputs.bundle_filename }}"
           python3 scripts/test.py bundle --bundle always --bundle-ref "$bundle_file"
+
+      - name: Check the downloaded browser runtime in isolation
+        run: |
+          python3 -m zipfile -e platform-bundle/signals-browser.zip "$RUNNER_TEMP/signals-browser"
+          cd "$RUNNER_TEMP/signals-browser"
+          node --input-type=module -e 'import { mountSignalsApp } from "./signals.mjs"; if (typeof mountSignalsApp !== "function") throw new Error("missing mount");'
 
   create-release:
     name: Create GitHub Release
@@ -135,6 +152,7 @@ jobs:
 
           gh release create "${{ inputs.release_tag }}" \
             "$bundle_file" \
+            "platform-bundle/signals-browser.zip" \
             --target "${{ github.sha }}" \
             --title "${{ inputs.release_tag }}" \
             --generate-notes \
