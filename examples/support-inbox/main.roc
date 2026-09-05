@@ -21,6 +21,7 @@ app [main] { pf: platform "../../platform/main.roc" }
 import Inbox
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -590,7 +591,7 @@ main = || {
 															Html.div_c(
 																"grid gap-2",
 																[
-																	Ui.each(visible, |row| row.id, |each_row| conversation_row(session, each_row.key(), each_row.signal())),
+																	Ui.each(Signal.map(visible, |rows_items| Rows.from_list(rows_items, |row| row.id) ?? crash "duplicate row key"), |each_row| conversation_row(session, each_row.key(), each_row.signal())),
 																	Ui.when(
 																		has_rows,
 																		|| Html.div([Html.test_id("conv-nonempty")], []),
@@ -620,7 +621,7 @@ main = || {
 													Html.div_c(
 														"grid gap-3",
 														[
-													Ui.each(thread, |row| row.key, |each_row| message_row(each_row.key(), each_row.signal())),
+													Ui.each(Signal.map(thread, |rows_items| Rows.from_list(rows_items, |row| row.key) ?? crash "duplicate row key"), |each_row| message_row(each_row.key(), each_row.signal())),
 															Ui.when(
 																has_thread,
 																|| Html.div([Html.test_id("thread-nonempty")], []),

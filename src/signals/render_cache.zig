@@ -63,6 +63,12 @@ pub const ScalarNode = struct {
     } = .vacant,
     parent_id: ?ids.ElemId = null,
     children: std.ArrayListUnmanaged(ids.ElemId) = .empty,
+    children_snapshot_valid: bool = true,
+    first_child: ?ids.ElemId = null,
+    last_child: ?ids.ElemId = null,
+    previous_sibling: ?ids.ElemId = null,
+    next_sibling: ?ids.ElemId = null,
+    child_count: usize = 0,
     event_bindings: EventBindings = .{},
     text: ?[]const u8 = null,
     role: ?[]const u8 = null,
@@ -163,6 +169,256 @@ pub const ScalarNode = struct {
     }
 };
 
+/// Journals local edits to one parent's durable sibling topology.
+///
+/// The dense `children` array remains a snapshot surface for full structural
+/// reconciliation. Sparse row edits use these links instead: preparation
+/// shadows only roots whose links change, and application writes that bounded
+/// shadow without allocating or shifting an unrelated child suffix.
+pub const PreparedSparseChildren = struct {
+    pub const WireEdit = PreparedChildrenReplacement.WireEdit;
+
+    const Shadow = struct {
+        elem_id: ids.ElemId,
+        parent_id: ?ids.ElemId,
+        previous: ?ids.ElemId,
+        next: ?ids.ElemId,
+    };
+
+    allocator: std.mem.Allocator,
+    parent_elem_id: ids.ElemId,
+    first_child: ?ids.ElemId,
+    last_child: ?ids.ElemId,
+    child_count: usize,
+    shadow_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
+    shadows: std.ArrayListUnmanaged(Shadow) = .empty,
+    wire_edits: std.ArrayListUnmanaged(WireEdit) = .empty,
+    phase: JournalPhase = .prepared,
+    links_read: usize = 0,
+
+    /// Reserves all touched-link and command storage before sparse preparation.
+    pub fn init(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), parent_elem_id: ids.ElemId, touched_roots: usize, wire_edit_count: usize) (std.mem.Allocator.Error || error{ MissingParent, ResourceLimit })!PreparedSparseChildren {
+        const parent_index = parent_elem_id.index();
+        if (parent_index >= cache.nodes.items.len or !cache.nodes.items[parent_index].isActive()) return error.MissingParent;
+        const parent = &cache.nodes.items[parent_index];
+        var self = PreparedSparseChildren{
+            .allocator = allocator,
+            .parent_elem_id = parent_elem_id,
+            .first_child = parent.first_child,
+            .last_child = parent.last_child,
+            .child_count = parent.child_count,
+        };
+        errdefer self.deinit();
+        try self.shadow_indexes.ensureUnusedCapacity(allocator, std.math.cast(u32, touched_roots) orelse return error.ResourceLimit);
+        try self.shadows.ensureTotalCapacity(allocator, touched_roots);
+        try self.wire_edits.ensureTotalCapacity(allocator, wire_edit_count);
+        return self;
+    }
+
+    fn shadow(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx), elem_id: ids.ElemId, allow_missing: bool) error{ MissingNode, ResourceLimit }!*Shadow {
+        if (self.shadow_indexes.get(elem_id.raw())) |index| return &self.shadows.items[index];
+        if (self.shadow_indexes.available == 0 or self.shadows.items.len == self.shadows.capacity) return error.ResourceLimit;
+        const index = elem_id.index();
+        const initial: Shadow = if (index < cache.nodes.items.len and cache.nodes.items[index].isActive()) blk: {
+            const node = &cache.nodes.items[index];
+            self.links_read += 1;
+            break :blk .{
+                .elem_id = elem_id,
+                .parent_id = node.parent_id,
+                .previous = node.previous_sibling,
+                .next = node.next_sibling,
+            };
+        } else if (allow_missing) .{
+            .elem_id = elem_id,
+            .parent_id = null,
+            .previous = null,
+            .next = null,
+        } else return error.MissingNode;
+        const shadow_index = self.shadows.items.len;
+        self.shadows.appendAssumeCapacity(initial);
+        self.shadow_indexes.putAssumeCapacity(elem_id.raw(), shadow_index);
+        return &self.shadows.items[shadow_index];
+    }
+
+    fn validateRange(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx), first: ids.ElemId, last: ids.ElemId, count: usize) error{ InvalidRange, MissingNode, ResourceLimit }!void {
+        if (count == 0) return error.InvalidRange;
+        var current: ?ids.ElemId = first;
+        var previous: ?ids.ElemId = null;
+        var index: usize = 0;
+        while (index < count) : (index += 1) {
+            const elem_id = current orelse return error.InvalidRange;
+            const entry = try self.shadow(Ctx, cache, elem_id, false);
+            if (entry.parent_id == null or entry.parent_id.? != self.parent_elem_id) return error.InvalidRange;
+            if (index != 0 and entry.previous != previous) return error.InvalidRange;
+            previous = elem_id;
+            current = entry.next;
+        }
+        if (previous == null or previous.? != last) return error.InvalidRange;
+    }
+
+    fn rangeContains(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx), first: ids.ElemId, count: usize, target: ids.ElemId) error{ MissingNode, ResourceLimit }!bool {
+        var current: ?ids.ElemId = first;
+        var index: usize = 0;
+        while (index < count) : (index += 1) {
+            const elem_id = current orelse return false;
+            if (elem_id == target) return true;
+            current = (try self.shadow(Ctx, cache, elem_id, false)).next;
+        }
+        return false;
+    }
+
+    fn detach(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx), first: ids.ElemId, last: ids.ElemId, count: usize) error{ MissingNode, ResourceLimit }!void {
+        const first_entry = try self.shadow(Ctx, cache, first, false);
+        const before = first_entry.previous;
+        const last_entry = try self.shadow(Ctx, cache, last, false);
+        const after = last_entry.next;
+        if (before) |elem_id| {
+            (try self.shadow(Ctx, cache, elem_id, false)).next = after;
+        } else {
+            self.first_child = after;
+        }
+        if (after) |elem_id| {
+            (try self.shadow(Ctx, cache, elem_id, false)).previous = before;
+        } else {
+            self.last_child = before;
+        }
+        first_entry.previous = null;
+        last_entry.next = null;
+        self.child_count -= count;
+    }
+
+    fn attach(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx), first: ids.ElemId, last: ids.ElemId, count: usize, before: ?ids.ElemId) error{ InvalidAnchor, MissingNode, ResourceLimit }!void {
+        const previous = if (before) |before_id| blk: {
+            const before_entry = try self.shadow(Ctx, cache, before_id, false);
+            if (before_entry.parent_id == null or before_entry.parent_id.? != self.parent_elem_id) return error.InvalidAnchor;
+            break :blk before_entry.previous;
+        } else self.last_child;
+        const first_entry = try self.shadow(Ctx, cache, first, false);
+        const last_entry = try self.shadow(Ctx, cache, last, false);
+        first_entry.previous = previous;
+        last_entry.next = before;
+        if (previous) |previous_id| {
+            (try self.shadow(Ctx, cache, previous_id, false)).next = first;
+        } else {
+            self.first_child = first;
+        }
+        if (before) |before_id| {
+            (try self.shadow(Ctx, cache, before_id, false)).previous = last;
+        } else {
+            self.last_child = last;
+        }
+        self.child_count += count;
+    }
+
+    /// Moves one contiguous root range before an existing sibling or the end.
+    /// Exact no-op moves produce neither link writes nor host commands.
+    pub fn moveRangeBefore(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx), first: ids.ElemId, last: ids.ElemId, count: usize, before: ?ids.ElemId) error{ InvalidAnchor, InvalidRange, MissingNode, ResourceLimit }!void {
+        try self.validateRange(Ctx, cache, first, last, count);
+        const last_next = (try self.shadow(Ctx, cache, last, false)).next;
+        if (before == last_next or (before == null and last == self.last_child.?)) return;
+        if (before) |before_id| if (try self.rangeContains(Ctx, cache, first, count, before_id)) return error.InvalidAnchor;
+        if (self.wire_edits.capacity - self.wire_edits.items.len < count) return error.ResourceLimit;
+        try self.detach(Ctx, cache, first, last, count);
+        try self.attach(Ctx, cache, first, last, count, before);
+        var current: ?ids.ElemId = first;
+        var index: usize = 0;
+        while (index < count) : (index += 1) {
+            const elem_id = current orelse unreachable;
+            self.wire_edits.appendAssumeCapacity(.{ .move_before = .{ .child = elem_id, .before = before } });
+            current = (try self.shadow(Ctx, cache, elem_id, false)).next;
+        }
+    }
+
+    /// Inserts newly-created detached roots before a sibling or at the end.
+    /// Missing cache slots are allowed because creation and link publication
+    /// are separate journals in the same prepared structural transaction.
+    pub fn insertRootsBefore(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx), roots: []const ids.ElemId, before: ?ids.ElemId) error{ InvalidAnchor, InvalidRange, MissingNode, ResourceLimit }!void {
+        if (roots.len == 0) return;
+        if (self.wire_edits.capacity - self.wire_edits.items.len < roots.len) return error.ResourceLimit;
+        for (roots, 0..) |elem_id, index| {
+            const entry = try self.shadow(Ctx, cache, elem_id, true);
+            if (entry.parent_id != null or entry.previous != null or entry.next != null) return error.InvalidRange;
+            entry.parent_id = self.parent_elem_id;
+            entry.previous = if (index == 0) null else roots[index - 1];
+            entry.next = if (index + 1 == roots.len) null else roots[index + 1];
+        }
+        try self.attach(Ctx, cache, roots[0], roots[roots.len - 1], roots.len, before);
+        for (roots) |elem_id| self.wire_edits.appendAssumeCapacity(if (before) |anchor|
+            .{ .move_before = .{ .child = elem_id, .before = anchor } }
+        else
+            .{ .append = elem_id });
+    }
+
+    /// Detaches one contiguous root range. Node-retirement journals own the
+    /// corresponding host removals and resource release.
+    pub fn removeRange(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx), first: ids.ElemId, last: ids.ElemId, count: usize) error{ InvalidRange, MissingNode, ResourceLimit }!void {
+        try self.validateRange(Ctx, cache, first, last, count);
+        try self.detach(Ctx, cache, first, last, count);
+        var current: ?ids.ElemId = first;
+        var index: usize = 0;
+        while (index < count) : (index += 1) {
+            const elem_id = current orelse unreachable;
+            const entry = try self.shadow(Ctx, cache, elem_id, false);
+            current = entry.next;
+            entry.parent_id = null;
+            entry.previous = null;
+            entry.next = null;
+        }
+    }
+
+    /// Returns the exact number of durable child-link records read from cache.
+    pub fn linksRead(self: *const PreparedSparseChildren) usize {
+        return self.links_read;
+    }
+
+    /// Returns host commands decided by the sparse topology journal.
+    pub fn wireEdits(self: *const PreparedSparseChildren) []const WireEdit {
+        return self.wire_edits.items;
+    }
+
+    /// Applies final parent and sibling links without allocation.
+    pub fn apply(self: *PreparedSparseChildren, comptime Ctx: type, cache: *Cache(Ctx)) void {
+        if (self.phase.isApplied()) @panic("prepared sparse children committed twice");
+        const parent = &cache.nodes.items[self.parent_elem_id.index()];
+        parent.first_child = self.first_child;
+        parent.last_child = self.last_child;
+        parent.child_count = self.child_count;
+        parent.children_snapshot_valid = false;
+        for (self.shadows.items) |entry| {
+            const index = entry.elem_id.index();
+            if (index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) continue;
+            const node = &cache.nodes.items[index];
+            node.parent_id = entry.parent_id;
+            node.previous_sibling = entry.previous;
+            node.next_sibling = entry.next;
+        }
+        self.phase = .applied;
+    }
+
+    /// Mirrors this journal's final sibling links into the indexed descriptor
+    /// stream after sparse render-node membership has published. Retired nodes
+    /// are skipped; created and surviving roots already have preflighted
+    /// metadata slots. This keeps both native descriptor lookup and render
+    /// cache order under the same prepared topology authority.
+    pub fn applyIndexedStream(self: *const PreparedSparseChildren, comptime Stream: type, allocator: std.mem.Allocator, stream: *Stream) void {
+        stream.ensureFirstRenderChildSlot(allocator, self.parent_elem_id).* = self.first_child;
+        stream.ensureLastRenderChildSlot(allocator, self.parent_elem_id).* = self.last_child;
+        for (self.shadows.items) |entry| {
+            if (stream.renderNodeIndex(entry.elem_id) == null) continue;
+            stream.ensurePreviousRenderSiblingSlot(allocator, entry.elem_id).* = entry.previous;
+            stream.ensureNextRenderSiblingSlot(allocator, entry.elem_id).* = entry.next;
+        }
+    }
+
+    /// Releases journal storage; committed cache links remain independently owned.
+    pub fn deinit(self: *PreparedSparseChildren) void {
+        self.wire_edits.deinit(self.allocator);
+        self.shadows.deinit(self.allocator);
+        self.shadow_indexes.deinit(self.allocator);
+        self.* = undefined;
+    }
+};
+
 fn elemSliceIndex(items: []const ids.ElemId, target: ids.ElemId) ?usize {
     for (items, 0..) |item, index| {
         if (item == target) return index;
@@ -222,9 +478,11 @@ pub const PreparedChildrenReplacement = struct {
     /// Swaps the prepared order into the cache without allocating.
     pub fn apply(self: *PreparedChildrenReplacement, comptime Ctx: type, cache: *Cache(Ctx)) void {
         if (self.phase.isApplied()) @panic("prepared child replacement committed twice");
+        cache.replaceChildLinks(self.parent_elem_id, self.next);
         const node = &cache.nodes.items[self.parent_elem_id.index()];
         self.retired = node.children;
         node.children = .{ .items = self.next, .capacity = self.next.len };
+        node.children_snapshot_valid = true;
         self.next = &.{};
         self.phase = .applied;
     }
@@ -604,6 +862,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         removals: std.ArrayListUnmanaged(PreparedNodeRemoval) = .empty,
         creations: std.ArrayListUnmanaged(PreparedNodeCreation) = .empty,
         children: std.ArrayListUnmanaged(PreparedChildrenReplacement) = .empty,
+        sparse_children: std.ArrayListUnmanaged(PreparedSparseChildren) = .empty,
         child_wire_edits: std.ArrayListUnmanaged(PreparedChildrenReplacement.WireEdit) = .empty,
         text_fields: std.ArrayListUnmanaged(PreparedTextFieldUpdate) = .empty,
         bool_fields: std.ArrayListUnmanaged(PreparedBoolFieldUpdate) = .empty,
@@ -612,9 +871,9 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         custom_attr_wire_edits: std.ArrayListUnmanaged(PreparedCustomTextAttrsReplacement.WireEdit) = .empty,
         named_events: std.ArrayListUnmanaged(PreparedNamedEventsReplacement) = .empty,
         named_event_wire_edits: std.ArrayListUnmanaged(PreparedNamedEventsReplacement.WireEdit) = .empty,
-        provisional_nodes: std.AutoHashMapUnmanaged(u64, void) = .empty,
+        provisional_nodes: std.DynamicBitSetUnmanaged = .{},
         reused_nodes: std.AutoHashMapUnmanaged(u64, ReusedNodeFields) = .empty,
-        parent_intent_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
+        parent_intent_indexes: []usize = &.{},
         parent_intents: std.ArrayListUnmanaged(ParentIntent) = .empty,
         cache: *const Cache(Ctx),
         sink_command_count: usize = 0,
@@ -622,6 +881,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         phase: JournalPhase = .prepared,
 
         const ParentIntent = struct { child_id: ids.ElemId, next: ?ids.ElemId, retired: ?ids.ElemId };
+        const no_parent_intent = std.math.maxInt(usize);
 
         /// Reserves every plan-local journal and persistent tag slot before collection.
         pub fn init(allocator: std.mem.Allocator, cache: *Cache(Ctx), prepared_counts: PreparedRenderCounts) (std.mem.Allocator.Error || error{ResourceLimit})!Self {
@@ -644,24 +904,31 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             try self.custom_attr_wire_edits.ensureTotalCapacity(allocator, prepared_counts.custom_attr_wire_edits);
             try self.named_events.ensureTotalCapacity(allocator, prepared_counts.named_events);
             try self.named_event_wire_edits.ensureTotalCapacity(allocator, prepared_counts.named_event_wire_edits);
-            const creation_count = std.math.cast(u32, prepared_counts.creations) orelse return error.ResourceLimit;
-            const child_link_count = std.math.cast(u32, prepared_counts.child_links) orelse return error.ResourceLimit;
-            try self.provisional_nodes.ensureUnusedCapacity(allocator, creation_count);
+            const node_index_capacity = @max(prepared_counts.node_capacity, cache.nodes.items.len);
+            if (prepared_counts.creations != 0) self.provisional_nodes = try .initEmpty(allocator, node_index_capacity);
             const reuse_count = std.math.cast(u32, prepared_counts.reuses) orelse return error.ResourceLimit;
             try self.reused_nodes.ensureUnusedCapacity(allocator, reuse_count);
-            try self.parent_intent_indexes.ensureUnusedCapacity(allocator, child_link_count);
+            if (prepared_counts.child_links != 0) {
+                self.parent_intent_indexes = try allocator.alloc(usize, node_index_capacity);
+                @memset(self.parent_intent_indexes, no_parent_intent);
+            }
             try self.parent_intents.ensureTotalCapacity(allocator, prepared_counts.child_links);
             return self;
         }
 
+        fn isProvisional(self: *const Self, elem_id: ids.ElemId) bool {
+            const index = elem_id.index();
+            return index < self.provisional_nodes.capacity() and self.provisional_nodes.isSet(index);
+        }
+
         fn nodeExists(self: *const Self, cache: *const Cache(Ctx), elem_id: ids.ElemId) bool {
             const index = elem_id.index();
-            return self.provisional_nodes.contains(elem_id.raw()) or
+            return self.isProvisional(elem_id) or
                 (index < cache.nodes.items.len and cache.nodes.items[index].isActive());
         }
 
         fn activeNode(self: *const Self, cache: *const Cache(Ctx), elem_id: ids.ElemId) ?*const ScalarNode {
-            if (self.provisional_nodes.contains(elem_id.raw())) return null;
+            if (self.isProvisional(elem_id)) return null;
             const index = elem_id.index();
             if (index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) return null;
             return &cache.nodes.items[index];
@@ -677,8 +944,11 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// and cannot grow at that point.
         pub fn reserveAdditionalChildren(self: *Self, parents: usize, child_links: usize) (std.mem.Allocator.Error || error{ResourceLimit})!void {
             try self.children.ensureUnusedCapacity(self.allocator, parents);
-            const link_count = std.math.cast(u32, child_links) orelse return error.ResourceLimit;
-            try self.parent_intent_indexes.ensureUnusedCapacity(self.allocator, link_count);
+            if (child_links != 0 and self.parent_intent_indexes.len == 0) {
+                const node_index_capacity = @max(self.cache.nodes.capacity, self.cache.nodes.items.len);
+                self.parent_intent_indexes = try self.allocator.alloc(usize, node_index_capacity);
+                @memset(self.parent_intent_indexes, no_parent_intent);
+            }
             try self.parent_intents.ensureUnusedCapacity(self.allocator, child_links);
             try self.child_wire_edits.ensureUnusedCapacity(self.allocator, child_links);
         }
@@ -702,7 +972,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// nodes are released, and on failure the donor still owns everything
         /// it prepared.
         pub fn adoptScalarUpdates(self: *Self, donor: *Self) (std.mem.Allocator.Error || error{ResourceLimit})!void {
-            if (donor.removals.items.len != 0 or donor.creations.items.len != 0 or donor.children.items.len != 0 or donor.fixed_events.items.len != 0 or donor.named_events.items.len != 0 or donor.provisional_nodes.count() != 0 or donor.parent_intents.items.len != 0) return error.ResourceLimit;
+            if (donor.removals.items.len != 0 or donor.creations.items.len != 0 or donor.children.items.len != 0 or donor.sparse_children.items.len != 0 or donor.fixed_events.items.len != 0 or donor.named_events.items.len != 0 or donor.parent_intents.items.len != 0) return error.ResourceLimit;
             var retired: std.AutoHashMapUnmanaged(u64, void) = .empty;
             defer retired.deinit(self.allocator);
             const retired_bound = std.math.add(usize, self.removals.items.len, self.reused_nodes.count()) catch return error.ResourceLimit;
@@ -816,12 +1086,13 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         }
 
         fn addCreationOptions(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8, replaces_active: bool) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
-            if (self.provisional_nodes.contains(elem_id.raw())) return error.DuplicateNode;
+            if (elem_id.index() >= self.provisional_nodes.capacity()) return error.ResourceLimit;
+            if (self.isProvisional(elem_id)) return error.DuplicateNode;
             const prepared = if (replaces_active)
                 try PreparedNodeCreation.prepareReplacing(Ctx, self.allocator, cache, &self.tags, elem_id, tag)
             else
                 try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, elem_id, tag);
-            self.provisional_nodes.putAssumeCapacity(elem_id.raw(), {});
+            self.provisional_nodes.set(elem_id.index());
             self.creations.appendAssumeCapacity(prepared);
         }
 
@@ -831,9 +1102,10 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// the same prepared root ownership.
         pub fn addHostRoot(self: *Self, cache: *Cache(Ctx)) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
             if (cache.hasRoot()) return error.ActiveNode;
-            if (self.provisional_nodes.contains(0)) return error.DuplicateNode;
+            if (self.provisional_nodes.capacity() == 0) return error.ResourceLimit;
+            if (self.isProvisional(ids.root_elem)) return error.DuplicateNode;
             const prepared = try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, ids.ElemId.fromRaw(0), "root");
-            self.provisional_nodes.putAssumeCapacity(0, {});
+            self.provisional_nodes.set(0);
             self.creations.appendAssumeCapacity(prepared);
             self.reset_dom = true;
         }
@@ -842,7 +1114,11 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             if (!self.nodeExists(cache, ids.ElemId.fromRaw(child_id))) return error.MissingNode;
             const semantic_child_id = ids.ElemId.fromRaw(child_id);
             const semantic_next = ids.optionalElemFromRaw(next);
-            if (self.parent_intent_indexes.get(child_id)) |intent_index| {
+            const child_index = std.math.cast(usize, child_id) orelse return error.ResourceLimit;
+            if (child_index >= self.parent_intent_indexes.len) return error.ResourceLimit;
+            const existing_intent_index = self.parent_intent_indexes[child_index];
+            if (existing_intent_index != no_parent_intent) {
+                const intent_index = existing_intent_index;
                 const intent = &self.parent_intents.items[intent_index];
                 if (semantic_next != null and intent.next != null) {
                     if (intent.next.? == semantic_next.?) return error.DuplicateChild;
@@ -851,27 +1127,39 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 if (semantic_next != null) intent.next = semantic_next;
                 return;
             }
-            const index = std.math.cast(usize, child_id) orelse return error.ResourceLimit;
-            const retired = if (index < cache.nodes.items.len and cache.nodes.items[index].isActive()) cache.nodes.items[index].parent_id else null;
+            const retired = if (child_index < cache.nodes.items.len and cache.nodes.items[child_index].isActive()) cache.nodes.items[child_index].parent_id else null;
             const intent_index = self.parent_intents.items.len;
             self.parent_intents.appendAssumeCapacity(.{ .child_id = semantic_child_id, .next = semantic_next, .retired = retired });
-            self.parent_intent_indexes.putAssumeCapacity(child_id, intent_index);
+            self.parent_intent_indexes[child_index] = intent_index;
         }
 
         /// Adds one complete parent-child replacement and final parent intents.
-        pub fn addChildren(self: *Self, cache: *const Cache(Ctx), parent_elem_id: ids.ElemId, next: []const ids.ElemId) (std.mem.Allocator.Error || error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit })!void {
+        pub fn addChildren(self: *Self, cache: *Cache(Ctx), parent_elem_id: ids.ElemId, next: []const ids.ElemId) (std.mem.Allocator.Error || error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit })!void {
+            const copied = try self.allocator.dupe(ids.ElemId, next);
+            errdefer self.allocator.free(copied);
+            try self.addOwnedChildren(cache, parent_elem_id, copied);
+        }
+
+        /// Adopts one independently owned final child order after validating
+        /// topology and preparing its wire edits. Ownership transfers only on
+        /// success; on failure the caller still owns `next`. The slice is then
+        /// held by this transaction until abort or transferred into the render
+        /// cache by the allocation-free commit.
+        pub fn addOwnedChildren(self: *Self, cache: *Cache(Ctx), parent_elem_id: ids.ElemId, next: []ids.ElemId) (std.mem.Allocator.Error || error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, parent_elem_id)) return error.MissingNode;
             const parent_index = parent_elem_id.index();
             const old_children: []const ids.ElemId = if (parent_index < cache.nodes.items.len and cache.nodes.items[parent_index].isActive())
-                cache.nodes.items[parent_index].children.items
+                cache.materializeChildrenSnapshot(self.allocator, parent_elem_id) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.MissingParent => unreachable,
+                    error.InvalidChildLinks => @panic("render cache child links were incoherent"),
+                }
             else
                 &.{};
             if (parent_index < cache.nodes.items.len and cache.nodes.items[parent_index].isActive()) {
                 for (old_children) |child_id| try self.setParentIntent(cache, child_id.raw(), null);
             }
             for (next) |child_id| try self.setParentIntent(cache, child_id.raw(), parent_elem_id.raw());
-            const copied = try self.allocator.dupe(ids.ElemId, next);
-            errdefer self.allocator.free(copied);
             const wire_edit_offset = self.child_wire_edits.items.len;
             var wire_edit_len: usize = 0;
             if (old_children.len == 0) {
@@ -879,7 +1167,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                     self.child_wire_edits.appendAssumeCapacity(.{ .append = child_id });
                     wire_edit_len += 1;
                 }
-                self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = copied, .wire_edit_offset = wire_edit_offset, .wire_edit_len = wire_edit_len });
+                self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = next, .wire_edit_offset = wire_edit_offset, .wire_edit_len = wire_edit_len });
                 return;
             }
             var old_indexes = std.AutoHashMapUnmanaged(u64, usize).empty;
@@ -933,7 +1221,27 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 } });
                 wire_edit_len += 1;
             }
-            self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = copied, .wire_edit_offset = wire_edit_offset, .wire_edit_len = wire_edit_len });
+            self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = next, .wire_edit_offset = wire_edit_offset, .wire_edit_len = wire_edit_len });
+        }
+
+        /// Transfers one fully prepared sparse child journal into this splice.
+        /// A parent has one topology authority per transaction: mixing a dense
+        /// replacement with a sparse journal, or adopting two sparse journals
+        /// prepared from the same committed links, is rejected before commit.
+        pub fn adoptSparseChildren(self: *Self, journal: *PreparedSparseChildren) (std.mem.Allocator.Error || error{ ConflictingParent, MissingNode })!void {
+            for (self.children.items) |replacement| {
+                if (replacement.parent_elem_id == journal.parent_elem_id) return error.ConflictingParent;
+            }
+            for (self.sparse_children.items) |existing| {
+                if (existing.parent_elem_id == journal.parent_elem_id) return error.ConflictingParent;
+            }
+            for (journal.shadows.items) |entry| {
+                const index = entry.elem_id.index();
+                const active = index < self.cache.nodes.items.len and self.cache.nodes.items[index].isActive();
+                if (!active and !self.isProvisional(entry.elem_id)) return error.MissingNode;
+            }
+            try self.sparse_children.append(self.allocator, journal.*);
+            journal.* = undefined;
         }
 
         fn childWireEdits(self: *const Self, children: PreparedChildrenReplacement) []const PreparedChildrenReplacement.WireEdit {
@@ -983,7 +1291,12 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// Adds final custom attributes for an active or provisional node.
         pub fn addCustomAttrs(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, attrs: []const CustomTextAttr) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
-            if (self.activeNode(cache, elem_id)) |node| {
+            const active = self.activeNode(cache, elem_id);
+            // A provisional node starts with no custom attributes. An empty
+            // descriptor therefore needs neither owned state nor a journal;
+            // active nodes still pass through so an old set can be cleared.
+            if (active == null and attrs.len == 0) return;
+            if (active) |node| {
                 if (node.custom_text_attrs.items.len == attrs.len) {
                     var equal = true;
                     for (node.custom_text_attrs.items, attrs) |old, next| {
@@ -1033,7 +1346,12 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// Adds final named events for an active or provisional node.
         pub fn addNamedEvents(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, events: []const NamedEvent) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
-            if (self.activeNode(cache, elem_id)) |node| {
+            const active = self.activeNode(cache, elem_id);
+            // A provisional node starts with no named events. Avoid recording
+            // an empty replacement, while retaining the active-node path that
+            // clears bindings owned by the committed cache.
+            if (active == null and events.len == 0) return;
+            if (active) |node| {
                 if (node.named_events.items.len == events.len) {
                     var equal = true;
                     for (node.named_events.items, events) |old, next| {
@@ -1097,6 +1415,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 try result.addFixed(if (std.mem.eql(u8, creation.tag, "text")) 0 else creation.tag.len);
             }
             for (self.children.items) |children| for (self.childWireEdits(children)) |_| try result.addFixed(0);
+            for (self.sparse_children.items) |children| for (children.wireEdits()) |_| try result.addFixed(0);
             for (self.text_fields.items) |field| try result.addFixed(if (field.next) |bytes| bytes.len else 0);
             for (self.bool_fields.items) |_| try result.addFixed(0);
             for (self.fixed_events.items) |event| if (event.next) |binding| {
@@ -1126,6 +1445,10 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (self.removals.items) |removal| if (removal.publication == .subtree_root) result.addRemoveNode();
             for (self.creations.items) |creation| if (creation.elem_id != ids.root_elem) result.addCreateElement();
             for (self.children.items) |children| for (self.childWireEdits(children)) |edit| switch (edit) {
+                .append => result.addAppendChild(),
+                .move_before => result.addMoveBefore(),
+            };
+            for (self.sparse_children.items) |children| for (children.wireEdits()) |edit| switch (edit) {
                 .append => result.addAppendChild(),
                 .move_before => result.addMoveBefore(),
             };
@@ -1169,6 +1492,10 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 if (std.mem.eql(u8, creation.tag, "text")) try batch.staged.commands.appendRaw(allocator, .create_text, wireElem(creation.elem_id).raw(), 0, 0, 0, 0) else try appendText(batch, allocator, .create_element, creation.elem_id, creation.tag);
             }
             for (self.children.items) |children| for (self.childWireEdits(children)) |edit| switch (edit) {
+                .append => |child| try batch.staged.commands.appendRaw(allocator, .append_child, wireElem(children.parent_elem_id).raw(), wireElem(child).raw(), 0, 0, 0),
+                .move_before => |move| try batch.staged.commands.appendRaw(allocator, .move_before, wireElem(children.parent_elem_id).raw(), wireElem(move.child).raw(), if (move.before) |before| wireElem(before).raw() else 0, 0, 0),
+            };
+            for (self.sparse_children.items) |children| for (children.wireEdits()) |edit| switch (edit) {
                 .append => |child| try batch.staged.commands.appendRaw(allocator, .append_child, wireElem(children.parent_elem_id).raw(), wireElem(child).raw(), 0, 0, 0),
                 .move_before => |move| try batch.staged.commands.appendRaw(allocator, .move_before, wireElem(children.parent_elem_id).raw(), wireElem(move.child).raw(), if (move.before) |before| wireElem(before).raw() else 0, 0, 0),
             };
@@ -1224,6 +1551,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (self.removals.items) |*value| value.apply(Ctx, cache);
             for (self.creations.items) |*value| value.apply(Ctx, cache);
             for (self.children.items) |*value| value.apply(Ctx, cache);
+            for (self.sparse_children.items) |*value| value.apply(Ctx, cache);
             for (self.parent_intents.items) |intent| cache.nodes.items[intent.child_id.index()].parent_id = intent.next;
             for (self.text_fields.items) |*value| value.apply(Ctx, cache);
             for (self.bool_fields.items) |*value| value.apply(Ctx, cache);
@@ -1231,6 +1559,12 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (self.custom_attrs.items) |*value| value.apply(Ctx, cache);
             for (self.named_events.items) |*value| value.apply(Ctx, cache);
             self.phase = .applied;
+        }
+
+        /// Applies every sparse parent journal to the descriptor stream after
+        /// its exact render-node membership splice has committed.
+        pub fn applySparseChildrenToIndexedStream(self: *const Self, comptime Stream: type, allocator: std.mem.Allocator, stream: *Stream) void {
+            for (self.sparse_children.items) |*journal| journal.applyIndexedStream(Stream, allocator, stream);
         }
 
         /// Releases provisional deltas on abort or retired cache ownership after commit.
@@ -1255,6 +1589,11 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 index -= 1;
                 self.children.items[index].deinit(self.allocator);
             }
+            index = self.sparse_children.items.len;
+            while (index != 0) {
+                index -= 1;
+                self.sparse_children.items[index].deinit();
+            }
             index = self.creations.items.len;
             while (index != 0) {
                 index -= 1;
@@ -1273,11 +1612,12 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             self.bool_fields.deinit(self.allocator);
             self.text_fields.deinit(self.allocator);
             self.children.deinit(self.allocator);
+            self.sparse_children.deinit(self.allocator);
             self.child_wire_edits.deinit(self.allocator);
             self.creations.deinit(self.allocator);
             self.removals.deinit(self.allocator);
             self.parent_intents.deinit(self.allocator);
-            self.parent_intent_indexes.deinit(self.allocator);
+            self.allocator.free(self.parent_intent_indexes);
             self.provisional_nodes.deinit(self.allocator);
             self.reused_nodes.deinit(self.allocator);
             self.tags.deinit(self.allocator);
@@ -1330,6 +1670,75 @@ pub fn Cache(comptime Ctx: type) type {
             try self.nodes.items[index].children.ensureTotalCapacity(allocator, capacity);
         }
 
+        /// Refreshes the dense fallback snapshot from durable sibling links.
+        /// Sparse update paths never call this; full reconciliation may pay
+        /// O(parent children) once when it intentionally requests a snapshot.
+        pub fn materializeChildrenSnapshot(self: *Self, allocator: std.mem.Allocator, parent_elem_id: ids.ElemId) (std.mem.Allocator.Error || error{ InvalidChildLinks, MissingParent })![]const ids.ElemId {
+            const parent_index = parent_elem_id.index();
+            if (parent_index >= self.nodes.items.len or !self.nodes.items[parent_index].isActive()) return error.MissingParent;
+            const parent = &self.nodes.items[parent_index];
+            if (parent.children_snapshot_valid) return parent.children.items;
+            try parent.children.ensureTotalCapacity(allocator, parent.child_count);
+            parent.children.clearRetainingCapacity();
+            var current = parent.first_child;
+            var previous: ?ids.ElemId = null;
+            while (current) |elem_id| {
+                if (parent.children.items.len == parent.child_count) return error.InvalidChildLinks;
+                const index = elem_id.index();
+                if (index >= self.nodes.items.len or !self.nodes.items[index].isActive()) return error.InvalidChildLinks;
+                const child = &self.nodes.items[index];
+                if (child.parent_id == null or child.parent_id.? != parent_elem_id or child.previous_sibling != previous) return error.InvalidChildLinks;
+                parent.children.appendAssumeCapacity(elem_id);
+                previous = elem_id;
+                current = child.next_sibling;
+            }
+            if (parent.children.items.len != parent.child_count or previous != parent.last_child) return error.InvalidChildLinks;
+            parent.children_snapshot_valid = true;
+            return parent.children.items;
+        }
+
+        fn replaceChildLinks(self: *Self, parent_elem_id: ids.ElemId, next: []const ids.ElemId) void {
+            const parent = &self.nodes.items[parent_elem_id.index()];
+            for (parent.children.items) |old_child_id| {
+                const old_index = old_child_id.index();
+                if (old_index >= self.nodes.items.len or !self.nodes.items[old_index].isActive()) continue;
+                const old_child = &self.nodes.items[old_index];
+                if (old_child.parent_id != null and old_child.parent_id.? == parent_elem_id) {
+                    old_child.parent_id = null;
+                    old_child.previous_sibling = null;
+                    old_child.next_sibling = null;
+                }
+            }
+            for (next, 0..) |child_id, index| {
+                const child = &self.nodes.items[child_id.index()];
+                child.parent_id = parent_elem_id;
+                child.previous_sibling = if (index == 0) null else next[index - 1];
+                child.next_sibling = if (index + 1 == next.len) null else next[index + 1];
+            }
+            parent.first_child = if (next.len == 0) null else next[0];
+            parent.last_child = if (next.len == 0) null else next[next.len - 1];
+            parent.child_count = next.len;
+        }
+
+        fn unlinkChild(self: *Self, parent_elem_id: ids.ElemId, child_elem_id: ids.ElemId) void {
+            const parent = &self.nodes.items[parent_elem_id.index()];
+            const child = &self.nodes.items[child_elem_id.index()];
+            if (child.previous_sibling) |previous| {
+                self.nodes.items[previous.index()].next_sibling = child.next_sibling;
+            } else {
+                parent.first_child = child.next_sibling;
+            }
+            if (child.next_sibling) |next| {
+                self.nodes.items[next.index()].previous_sibling = child.previous_sibling;
+            } else {
+                parent.last_child = child.previous_sibling;
+            }
+            parent.child_count -= 1;
+            child.parent_id = null;
+            child.previous_sibling = null;
+            child.next_sibling = null;
+        }
+
         /// Ensures node capacity or traps at the legacy infallible boundary.
         pub fn ensureNodeCapacity(self: *Self, ctx: Ctx.Handle, capacity: usize) void {
             self.preflightNodeCapacity(Ctx.allocator(ctx), capacity) catch @panic("out of memory");
@@ -1339,6 +1748,34 @@ pub fn Cache(comptime Ctx: type) type {
         pub fn hasActiveNode(self: *const Self, elem_id: ids.ElemId) bool {
             const index = elem_id.index();
             return index < self.nodes.items.len and self.nodes.items[index].isActive();
+        }
+
+        /// Returns the first direct child from durable sparse topology.
+        pub fn firstChild(self: *const Self, parent_elem_id: ids.ElemId) ?ids.ElemId {
+            const index = parent_elem_id.index();
+            if (index >= self.nodes.items.len or !self.nodes.items[index].isActive()) @panic("render cache referenced missing parent");
+            return self.nodes.items[index].first_child;
+        }
+
+        /// Returns the sibling after one active child in O(1).
+        pub fn nextSibling(self: *const Self, elem_id: ids.ElemId) ?ids.ElemId {
+            const index = elem_id.index();
+            if (index >= self.nodes.items.len or !self.nodes.items[index].isActive()) @panic("render cache referenced missing child");
+            return self.nodes.items[index].next_sibling;
+        }
+
+        /// Returns the sibling before one active child in O(1).
+        pub fn previousSibling(self: *const Self, elem_id: ids.ElemId) ?ids.ElemId {
+            const index = elem_id.index();
+            if (index >= self.nodes.items.len or !self.nodes.items[index].isActive()) @panic("render cache referenced missing child");
+            return self.nodes.items[index].previous_sibling;
+        }
+
+        /// Returns the maintained direct-child count without materializing a snapshot.
+        pub fn childCount(self: *const Self, parent_elem_id: ids.ElemId) usize {
+            const index = parent_elem_id.index();
+            if (index >= self.nodes.items.len or !self.nodes.items[index].isActive()) @panic("render cache referenced missing parent");
+            return self.nodes.items[index].child_count;
         }
 
         /// Returns active node tag differs from the maintained active-runtime indexes.
@@ -1406,7 +1843,17 @@ pub fn Cache(comptime Ctx: type) type {
             const parent = self.activeNode(parent_elem_id);
             const child = self.activeNode(elem_id);
             child.parent_id = parent_elem_id;
+            child.previous_sibling = parent.last_child;
+            child.next_sibling = null;
+            if (parent.last_child) |previous| {
+                self.activeNode(previous).next_sibling = elem_id;
+            } else {
+                parent.first_child = elem_id;
+            }
+            parent.last_child = elem_id;
+            parent.child_count += 1;
             parent.children.append(Ctx.allocator(ctx), elem_id) catch @panic("out of memory");
+            parent.children_snapshot_valid = true;
             Ctx.sink(ctx).appendNode(elem_id, parent_elem_id, tag);
         }
 
@@ -1429,10 +1876,14 @@ pub fn Cache(comptime Ctx: type) type {
             if (self.nodes.items[index].parent_id) |parent_id| {
                 const parent_index = parent_id.index();
                 if (parent_index < self.nodes.items.len and self.nodes.items[parent_index].isActive()) {
-                    const parent = &self.nodes.items[parent_index];
-                    if (elemSliceIndex(parent.children.items, elem_id)) |child_index| {
-                        _ = parent.children.orderedRemove(child_index);
+                    if (self.nodes.items[parent_index].children_snapshot_valid and self.nodes.items[parent_index].child_count != self.nodes.items[parent_index].children.items.len) {
+                        self.replaceChildLinks(parent_id, self.nodes.items[parent_index].children.items);
                     }
+                    const parent = &self.nodes.items[parent_index];
+                    if (parent.children_snapshot_valid) if (elemSliceIndex(parent.children.items, elem_id)) |child_index| {
+                        _ = parent.children.orderedRemove(child_index);
+                    };
+                    self.unlinkChild(parent_id, elem_id);
                 }
             }
             Ctx.sink(ctx).removeNode(elem_id);
@@ -1443,11 +1894,15 @@ pub fn Cache(comptime Ctx: type) type {
         fn deactivateSubtree(self: *Self, allocator: std.mem.Allocator, elem_id: ids.ElemId) void {
             const index = elem_id.index();
             if (index >= self.nodes.items.len or !self.nodes.items[index].isActive()) return;
+            if (self.nodes.items[index].children_snapshot_valid and self.nodes.items[index].child_count != self.nodes.items[index].children.items.len) {
+                self.replaceChildLinks(elem_id, self.nodes.items[index].children.items);
+            }
 
-            const child_ids = allocator.dupe(ids.ElemId, self.nodes.items[index].children.items) catch @panic("out of memory");
-            defer allocator.free(child_ids);
-            for (child_ids) |child_id| {
-                self.deactivateSubtree(allocator, child_id);
+            var child_id = self.nodes.items[index].first_child;
+            while (child_id) |current| {
+                const next = self.nodes.items[current.index()].next_sibling;
+                self.deactivateSubtree(allocator, current);
+                child_id = next;
             }
             self.nodes.items[index].deinit(allocator);
         }
@@ -1495,9 +1950,11 @@ pub fn Cache(comptime Ctx: type) type {
                 child.parent_id = semantic_parent_id;
             }
 
+            self.replaceChildLinks(parent_elem_id, next_child_ids);
             parent.children.deinit(allocator);
             parent.children = .empty;
             parent.children.appendSlice(allocator, next_child_ids) catch @panic("out of memory");
+            parent.children_snapshot_valid = true;
             Ctx.sink(ctx).replaceChildren(parent_elem_id, next_child_ids);
         }
 
@@ -1535,12 +1992,11 @@ pub fn Cache(comptime Ctx: type) type {
                 counts.addMoveBefore();
             }
 
-            for (next_child_ids) |child_id| {
-                self.activeNode(child_id).parent_id = parent_elem_id;
-            }
+            self.replaceChildLinks(parent_elem_id, next_child_ids);
             parent.children.deinit(allocator);
             parent.children = .empty;
             parent.children.appendSlice(allocator, next_child_ids) catch @panic("out of memory");
+            parent.children_snapshot_valid = true;
             Ctx.sink(ctx).replaceChildrenForMoves(parent_elem_id, next_child_ids);
         }
 
@@ -1606,6 +2062,12 @@ pub fn Cache(comptime Ctx: type) type {
         /// Asserts that committed render-cache state matches the host sink after publication.
         pub fn debugAssertMatchesSink(self: *Self, ctx: Ctx.Handle) void {
             if (comptime builtin.mode != .Debug) return;
+
+            for (self.nodes.items, 0..) |cached, index| {
+                if (cached.isActive() and !cached.children_snapshot_valid) {
+                    _ = self.materializeChildrenSnapshot(Ctx.allocator(ctx), ids.ElemId.fromIndex(index)) catch @panic("render cache child links were incoherent");
+                }
+            }
 
             for (self.nodes.items, 0..) |cached, index| {
                 Ctx.sink(ctx).debugAssertNode(
@@ -1796,6 +2258,149 @@ const TestSink = struct {
     pub fn debugAssertNode(_: TestSink, _: ids.ElemId, _: bool, _: ?[]const u8, _: ?ids.ElemId, _: []const ids.ElemId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId) void {}
 };
 
+fn initTestChildCache(child_count: usize) !Cache(TestCtx) {
+    const allocator = std.testing.allocator;
+    var cache: Cache(TestCtx) = .{};
+    errdefer {
+        var host = TestHost{};
+        cache.deinit(&host);
+    }
+    try cache.nodes.ensureTotalCapacity(allocator, child_count + 1);
+    cache.nodes.appendAssumeCapacity(ScalarNode.initActive("root"));
+    try cache.nodes.items[0].children.ensureTotalCapacity(allocator, child_count);
+    for (0..child_count) |index| {
+        const elem_id = ids.ElemId.fromIndex(index + 1);
+        cache.nodes.appendAssumeCapacity(ScalarNode.initActive("div"));
+        cache.nodes.items[0].children.appendAssumeCapacity(elem_id);
+    }
+    cache.replaceChildLinks(ids.root_elem, cache.nodes.items[0].children.items);
+    return cache;
+}
+
+test "sparse child journal inserts and removes a complete root set" {
+    const allocator = std.testing.allocator;
+    var host = TestHost{};
+    var cache = try initTestChildCache(0);
+    defer cache.deinit(&host);
+    try cache.nodes.ensureTotalCapacity(allocator, 4);
+    for (0..3) |_| cache.nodes.appendAssumeCapacity(ScalarNode.initActive("div"));
+    const roots = [_]ids.ElemId{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(2), ids.ElemId.fromRaw(3) };
+
+    var insertion = try PreparedSparseChildren.init(TestCtx, allocator, &cache, ids.root_elem, 3, 3);
+    defer insertion.deinit();
+    try insertion.insertRootsBefore(TestCtx, &cache, &roots, null);
+    try std.testing.expectEqual(@as(usize, 3), insertion.linksRead());
+    try std.testing.expectEqual(@as(usize, 3), insertion.wireEdits().len);
+    insertion.apply(TestCtx, &cache);
+    try std.testing.expectEqual(@as(usize, 3), cache.childCount(ids.root_elem));
+    try std.testing.expectEqual(roots[0], cache.firstChild(ids.root_elem).?);
+    try std.testing.expectEqual(roots[1], cache.nextSibling(roots[0]).?);
+    try std.testing.expectEqual(roots[2], cache.nextSibling(roots[1]).?);
+
+    var removal = try PreparedSparseChildren.init(TestCtx, allocator, &cache, ids.root_elem, 3, 0);
+    defer removal.deinit();
+    try removal.removeRange(TestCtx, &cache, roots[0], roots[2], roots.len);
+    try std.testing.expectEqual(@as(usize, 3), removal.linksRead());
+    removal.apply(TestCtx, &cache);
+    try std.testing.expectEqual(@as(usize, 0), cache.childCount(ids.root_elem));
+    try std.testing.expectEqual(@as(?ids.ElemId, null), cache.firstChild(ids.root_elem));
+    try std.testing.expectEqual(@as(?ids.ElemId, null), cache.nodes.items[1].parent_id);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{}, try cache.materializeChildrenSnapshot(allocator, ids.root_elem));
+}
+
+test "sparse child journal moves a multi-root range and refreshes dense fallback" {
+    const allocator = std.testing.allocator;
+    var host = TestHost{};
+    var cache = try initTestChildCache(6);
+    defer cache.deinit(&host);
+
+    var journal = try PreparedSparseChildren.init(TestCtx, allocator, &cache, ids.root_elem, 6, 2);
+    defer journal.deinit();
+    try journal.moveRangeBefore(
+        TestCtx,
+        &cache,
+        ids.ElemId.fromRaw(2),
+        ids.ElemId.fromRaw(3),
+        2,
+        ids.ElemId.fromRaw(6),
+    );
+    try std.testing.expectEqual(@as(usize, 6), journal.linksRead());
+    try std.testing.expectEqual(@as(usize, 2), journal.wireEdits().len);
+    journal.apply(TestCtx, &cache);
+
+    try std.testing.expectEqualSlices(ids.ElemId, &.{
+        ids.ElemId.fromRaw(1),
+        ids.ElemId.fromRaw(4),
+        ids.ElemId.fromRaw(5),
+        ids.ElemId.fromRaw(2),
+        ids.ElemId.fromRaw(3),
+        ids.ElemId.fromRaw(6),
+    }, try cache.materializeChildrenSnapshot(allocator, ids.root_elem));
+}
+
+test "sparse one-child move reads constant links at ten thousand children" {
+    const allocator = std.testing.allocator;
+    var host = TestHost{};
+    var cache = try initTestChildCache(10_000);
+    defer cache.deinit(&host);
+
+    var journal = try PreparedSparseChildren.init(TestCtx, allocator, &cache, ids.root_elem, 6, 1);
+    defer journal.deinit();
+    try journal.moveRangeBefore(
+        TestCtx,
+        &cache,
+        ids.ElemId.fromRaw(5_000),
+        ids.ElemId.fromRaw(5_000),
+        1,
+        ids.ElemId.fromRaw(2),
+    );
+    try std.testing.expectEqual(@as(usize, 5), journal.linksRead());
+    try std.testing.expectEqual(@as(usize, 1), journal.wireEdits().len);
+    journal.apply(TestCtx, &cache);
+
+    try std.testing.expectEqual(@as(usize, 10_000), cache.childCount(ids.root_elem));
+    try std.testing.expectEqual(ids.ElemId.fromRaw(1), cache.firstChild(ids.root_elem).?);
+    try std.testing.expectEqual(ids.ElemId.fromRaw(5_000), cache.nextSibling(ids.ElemId.fromRaw(1)).?);
+    try std.testing.expectEqual(ids.ElemId.fromRaw(2), cache.nextSibling(ids.ElemId.fromRaw(5_000)).?);
+    try std.testing.expect(!cache.nodes.items[0].children_snapshot_valid);
+    // The sparse commit did not rewrite or shift the parent-wide fallback array.
+    try std.testing.expectEqual(ids.ElemId.fromRaw(2), cache.nodes.items[0].children.items[1]);
+}
+
+test "prepared render splice adopts sparse child links and their wire command atomically" {
+    const allocator = std.testing.allocator;
+    var host = TestHost{};
+    var cache = try initTestChildCache(4);
+    defer cache.deinit(&host);
+
+    var sparse: ?PreparedSparseChildren = try PreparedSparseChildren.init(TestCtx, allocator, &cache, ids.root_elem, 4, 1);
+    defer if (sparse) |*journal| journal.deinit();
+    try sparse.?.moveRangeBefore(
+        TestCtx,
+        &cache,
+        ids.ElemId.fromRaw(2),
+        ids.ElemId.fromRaw(2),
+        1,
+        ids.ElemId.fromRaw(4),
+    );
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{});
+    defer plan.deinit();
+    try plan.adoptSparseChildren(&sparse.?);
+    sparse = null;
+    try std.testing.expectEqual(@as(u64, 1), plan.counts().move_before);
+
+    var batch: render.TransactionalBatch = .{};
+    defer batch.deinit(allocator);
+    try plan.preflight(&batch, allocator);
+    try plan.stageAssumeCapacity(&batch, allocator);
+    try std.testing.expectEqual(@as(usize, 1), batch.staged.commands.len());
+    try std.testing.expectEqual(@intFromEnum(render.Op.move_before), batch.staged.commands.records.items[0].op);
+    plan.apply(&cache);
+    try std.testing.expectEqual(ids.ElemId.fromRaw(3), cache.nextSibling(ids.ElemId.fromRaw(1)).?);
+    try std.testing.expectEqual(ids.ElemId.fromRaw(2), cache.nextSibling(ids.ElemId.fromRaw(3)).?);
+    try std.testing.expectEqual(ids.ElemId.fromRaw(4), cache.nextSibling(ids.ElemId.fromRaw(2)).?);
+}
+
 test "applying unchanged text field emits no duplicate command" {
     var host = TestHost{};
     var cache: Cache(TestCtx) = .{};
@@ -1848,11 +2453,15 @@ test "prepared child replacement aborts cleanly and commits allocation free" {
     const allocator = fault.allocator();
     var cache: Cache(TestCtx) = .{};
     defer {
-        cache.nodes.items[0].children.deinit(allocator);
+        for (cache.nodes.items) |*node| node.deinit(allocator);
         cache.nodes.deinit(allocator);
     }
     try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+    try cache.nodes.append(allocator, ScalarNode.initActive("div"));
+    try cache.nodes.append(allocator, ScalarNode.initActive("div"));
+    try cache.nodes.append(allocator, ScalarNode.initActive("div"));
     try cache.nodes.items[0].children.appendSlice(allocator, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(2) });
+    cache.replaceChildLinks(ids.root_elem, cache.nodes.items[0].children.items);
 
     fault.configure(1);
     try std.testing.expectError(error.OutOfMemory, PreparedChildrenReplacement.prepare(TestCtx, allocator, &cache, ids.ElemId.fromRaw(0), &.{ ids.ElemId.fromRaw(2), ids.ElemId.fromRaw(3) }));
@@ -1871,6 +2480,127 @@ test "prepared child replacement aborts cleanly and commits allocation free" {
     try std.testing.expectEqualSlices(ids.ElemId, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(2) }, committed.retired.items);
     fault.configure(null);
     committed.deinit(allocator);
+}
+
+test "prepared render splice adopts a final child slice without allocating" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        for (cache.nodes.items) |*node| node.deinit(allocator);
+        cache.nodes.deinit(allocator);
+        var tags = cache.interned_tags.valueIterator();
+        while (tags.next()) |tag| allocator.free(tag.*);
+        cache.interned_tags.deinit(allocator);
+    }
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 2,
+        .new_tags = 1,
+        .creations = 1,
+        .children = 1,
+        .child_links = 1,
+        .wire_commands = 2,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.ElemId.fromRaw(1), "div");
+    const owned = try allocator.dupe(ids.ElemId, &.{ids.ElemId.fromRaw(1)});
+    fault.configure(1);
+    try plan.addOwnedChildren(&cache, ids.root_elem, owned);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ids.ElemId.fromRaw(1)}, plan.children.items[0].next);
+
+    plan.apply(&cache);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ids.ElemId.fromRaw(1)}, cache.nodes.items[0].children.items);
+    try std.testing.expectEqual(@as(?ids.ElemId, ids.root_elem), cache.nodes.items[1].parent_id);
+    fault.configure(null);
+}
+
+test "prepared render splice leaves rejected owned children with the caller" {
+    const allocator = std.testing.allocator;
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        for (cache.nodes.items) |*node| node.deinit(allocator);
+        cache.nodes.deinit(allocator);
+        var tags = cache.interned_tags.valueIterator();
+        while (tags.next()) |tag| allocator.free(tag.*);
+        cache.interned_tags.deinit(allocator);
+    }
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 2,
+        .new_tags = 1,
+        .creations = 1,
+        .children = 1,
+        .child_links = 2,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.ElemId.fromRaw(1), "div");
+    const owned = try allocator.dupe(ids.ElemId, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(1) });
+    defer allocator.free(owned);
+    try std.testing.expectError(error.DuplicateChild, plan.addOwnedChildren(&cache, ids.root_elem, owned));
+    try std.testing.expectEqual(@as(usize, 0), plan.children.items.len);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(1) }, owned);
+}
+
+test "prepared render splice dense indexes distinguish ids and enforce reserved bounds" {
+    const allocator = std.testing.allocator;
+    var cache: Cache(TestCtx) = .{};
+    var host = TestHost{};
+    defer cache.deinit(&host);
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 66,
+        .new_tags = 1,
+        .creations = 2,
+        .children = 1,
+        .child_links = 2,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.ElemId.fromRaw(1), "div");
+    try plan.addCreation(&cache, ids.ElemId.fromRaw(65), "div");
+    try std.testing.expectError(error.DuplicateNode, plan.addCreation(&cache, ids.ElemId.fromRaw(65), "div"));
+    try plan.addChildren(&cache, ids.root_elem, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(65) });
+    plan.apply(&cache);
+    try std.testing.expectEqual(@as(?ids.ElemId, ids.root_elem), cache.nodes.items[1].parent_id);
+    try std.testing.expectEqual(@as(?ids.ElemId, ids.root_elem), cache.nodes.items[65].parent_id);
+
+    var bounded = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 66,
+        .new_tags = 1,
+        .creations = 1,
+    });
+    defer bounded.deinit();
+    try std.testing.expectError(error.ResourceLimit, bounded.addCreation(&cache, ids.ElemId.fromRaw(66), "span"));
+}
+
+test "prepared render splice dense index allocation count is independent of node count" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Runner = struct {
+        fn allocationAttempts(node_count: usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            const allocator = fault.allocator();
+            var cache: Cache(TestCtx) = .{};
+            var host = TestHost{};
+            defer cache.deinit(&host);
+            fault.configure(null);
+            var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+                .node_capacity = node_count,
+                .creations = node_count - 1,
+                .child_links = node_count - 1,
+            });
+            const attempts = fault.attempts;
+            plan.deinit();
+            return attempts;
+        }
+    };
+
+    try std.testing.expectEqual(try Runner.allocationAttempts(128), try Runner.allocationAttempts(16 * 1024));
 }
 
 test "prepared render node removal defers ownership and applies allocation free" {
@@ -2238,6 +2968,59 @@ test "prepared render splice leaves unchanged retained values allocation free" {
     try std.testing.expectEqual(@as(usize, 0), plan.named_events.items.len);
     try std.testing.expectEqual(@as(u64, 0), plan.counts().total);
     fault.configure(null);
+}
+
+test "provisional empty dynamic metadata skips journals while active metadata clears" {
+    const allocator = std.testing.allocator;
+    var cache: Cache(TestCtx) = .{};
+    var host = TestHost{};
+    defer cache.deinit(&host);
+
+    var root = ScalarNode.initActive("root");
+    try root.custom_text_attrs.append(allocator, .{
+        .name = try allocator.dupe(u8, "data-old"),
+        .value = try allocator.dupe(u8, "value"),
+    });
+    try root.named_events.append(allocator, .{
+        .name = try allocator.dupe(u8, "focus"),
+        .binding = .{
+            .event_id = ids.EventId.fromRaw(1),
+            .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
+        },
+    });
+    try cache.nodes.append(allocator, root);
+
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 2,
+        .new_tags = 1,
+        .creations = 1,
+        .custom_attrs = 1,
+        .custom_attr_wire_edits = 1,
+        .named_events = 1,
+        .named_event_wire_edits = 1,
+        .wire_commands = 3,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.ElemId.fromRaw(1), "div");
+
+    try plan.addCustomAttrs(&cache, ids.ElemId.fromRaw(1), &.{});
+    try plan.addNamedEvents(&cache, ids.ElemId.fromRaw(1), &.{});
+    try std.testing.expectEqual(@as(usize, 0), plan.custom_attrs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), plan.named_events.items.len);
+
+    try plan.addCustomAttrs(&cache, ids.root_elem, &.{});
+    try plan.addNamedEvents(&cache, ids.root_elem, &.{});
+    try std.testing.expectEqual(@as(usize, 1), plan.custom_attrs.items.len);
+    try std.testing.expectEqual(@as(usize, 1), plan.custom_attr_wire_edits.items.len);
+    try std.testing.expectEqual(@as(usize, 1), plan.named_events.items.len);
+    try std.testing.expectEqual(@as(usize, 1), plan.named_event_wire_edits.items.len);
+    try std.testing.expectEqual(@as(u64, 3), plan.counts().total);
+
+    plan.apply(&cache);
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[0].custom_text_attrs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[0].named_events.items.len);
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[1].custom_text_attrs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[1].named_events.items.len);
 }
 
 test "prepared render wire commands own borrowed preparation inputs" {

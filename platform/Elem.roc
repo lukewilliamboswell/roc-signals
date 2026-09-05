@@ -41,14 +41,15 @@ Elem := [
 	),
 	Each(
 		{
-			items : Box(Node.SignalExpr),
+			rows : Box(Node.SignalExpr),
 			ops : {
-				items_capability : HostValue.CapabilityHandle,
+				rows_capability : HostValue.CapabilityHandle,
 				item_capability : HostValue.CapabilityHandle,
-				len : Box((HostValue -> U64)),
-				copy_keys : Box((HostValue, U64 -> U64)),
-				compare_pairs : Box((HostValue, HostValue, List(U64), U64 -> U64)),
-				clone_item_at : Box((HostValue, U64 -> HostValue)),
+				describe : Box((HostValue, U64 -> U64)),
+				copy_snapshot : Box((HostValue, U64 -> U64)),
+				copy_delta : Box((HostValue, U64 -> U64)),
+				compare_slots : Box((HostValue, HostValue, List(U64), U64 -> U64)),
+				clone_item : Box((HostValue, U64 -> HostValue)),
 				row : Box((Str, U64 -> Elem)),
 			},
 		},

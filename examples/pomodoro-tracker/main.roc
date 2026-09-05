@@ -27,6 +27,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -413,7 +414,7 @@ board = |b, extras| {
 					Ui.when(
 						projects.map(|list| list.is_empty()),
 						|| Html.paragraph_c("No projects in the ledger yet.", "empty-state"),
-						|| Ui.each(projects, |p| p.id, |each_row| render_row({ attach, ledger, live }, each_row.key(), each_row.signal())),
+						|| Ui.each(Signal.map(projects, |rows_items| Rows.from_list(rows_items, |p| p.id) ?? crash "duplicate row key"), |each_row| render_row({ attach, ledger, live }, each_row.key(), each_row.signal())),
 					),
 				],
 			),
@@ -486,7 +487,7 @@ main = ||
 									),
 								],
 							),
-							Ui.each(seed, |saved| saved, |each_row| tracker({ attach, run, attached }, each_row.key())),
+							Ui.each(Signal.map(seed, |rows_items| Rows.from_list(rows_items, |saved| saved) ?? crash "duplicate row key"), |each_row| tracker({ attach, run, attached }, each_row.key())),
 							Ui.on_change(attached, |value| Browser.set_local_storage_text(project_key, value)),
 						],
 					)

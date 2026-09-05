@@ -155,7 +155,7 @@ Ui.when(
         || Ui.when(
             is_empty,
             || Html.paragraph_c("No articles are here... yet.", "rounded-xl border border-dashed border-zinc-300 bg-white p-8 text-center text-zinc-500"),
-            || Ui.each(articles, article_key, |row| article_row(row.key(), row.signal())),
+            || Ui.each(articles, |row| article_row(row.key(), row.signal())),
         ),
     ),
 )

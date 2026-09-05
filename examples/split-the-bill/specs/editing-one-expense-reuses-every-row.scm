@@ -21,16 +21,16 @@
     (expect-text (test-id "transfer-Chloe>Ana-amount") "$118.00")
     (expect-text (test-id "transfer-Ben>Ana") "Ben pays Ana")
     (expect-text (test-id "transfer-Ben>Ana-amount") "$52.00")
-    ; Nothing structural happens: no row is created, removed, or re-scoped. The 11
-    ; reused rows are the three expense rows, the three person rows, the two
-    ; settlement rows, and the three participation checkboxes belonging to the one
-    ; expense whose display record changed. Cabin's and Taxi's checkbox lists are
-    ; not re-diffed at all, because their row values are unchanged.
+    ; Nothing structural happens: no row is created, removed, or re-scoped. The
+    ; eight reconciled rows are the three expense rows, the three person rows, and
+    ; the two settlement rows. Projecting `members` from the changed Dinner row
+    ; equality-prunes because changing its amount does not change membership, so
+    ; none of the nested participation lists are re-diffed.
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta scopes_created 0)
     (expect-metric-delta scopes_disposed 0)
-    (expect-metric-delta rows_reused 11)
+    (expect-metric-delta rows_reused 8)
     (expect-metric-delta dirty_source_roots 1)
     ; One more patch than before the totals were laid out as a stat grid: the new
     ; "Per person" figure is derived from the same trip signal as the bill total,

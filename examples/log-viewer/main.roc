@@ -28,6 +28,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -461,7 +462,7 @@ stream_panel = |{ levels, query, follow_tail, newest_first }| {
 					),
 					Ui.when(
 						has_lines,
-						|| Html.section_c("Log lines", stream_class, [Ui.each(ordered, |line| line.id, |each_row| render_row(each_row.key(), each_row.signal()))]),
+						|| Html.section_c("Log lines", stream_class, [Ui.each(Signal.map(ordered, |rows_items| Rows.from_list(rows_items, |line| line.id) ?? crash "duplicate row key"), |each_row| render_row(each_row.key(), each_row.signal()))]),
 						|| Html.section_c("Log empty", "grid gap-2", [Html.paragraph_c("Log buffer is empty", "empty-state")]),
 					),
 					Ui.on_cleanup(Signal.cleanup("log stream cleanup")),

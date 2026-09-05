@@ -63,6 +63,7 @@ Node := [].{
 		LocationSource(Box((HostValue -> HostValue)), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
 		StorageSource(Box((HostValue -> HostValue)), U64, Str, Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
 		VisibilitySource(Box((HostValue -> HostValue)), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
+		KeyedSelect(U64, Box((() -> HostValue)), Box(SignalExpr), Str, HostValue.TextReadHandle, Box((() -> HostValue)), Box((() -> HostValue)), HostValue.CapabilityHandle),
 		Map(Box((HostValue -> HostValue)), Box(SignalExpr), Box((HostValue -> HostValue)), HostValue.CapabilityHandle),
 		Map2(Box((HostValue, HostValue -> HostValue)), Box(SignalExpr), Box(SignalExpr), Box((HostValue, HostValue -> HostValue)), HostValue.CapabilityHandle),
 		Select(Box((() -> HostValue)), Box(SignalExpr), Str, HostValue.TextReadHandle, Box((() -> HostValue)), Box((() -> HostValue)), HostValue.CapabilityHandle),

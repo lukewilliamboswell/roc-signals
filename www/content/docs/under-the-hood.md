@@ -74,10 +74,19 @@ dirty set.
 ## How keyed collection generations cross the boundary
 
 The engine never asks Roc to return temporary lists of keys, items, or equality
-results. A `Ui.each` site retains the immutable `List(item)` generation as one
-opaque capability-owned value. App-compiled adapter closures report its length,
-push exact UTF-8 keys and pair-comparison booleans into preallocated host sinks,
-and clone an item only when a new or changed row source needs one.
+results. A `Ui.each` site retains the immutable `Rows(item)` generation as one
+opaque capability-owned value. `Rows` has already projected, validated, and
+cached each exact UTF-8 key. App-compiled adapter closures report its length,
+push cached keys and pair-comparison booleans into preallocated host sinks, and
+clone an item only when a new or changed row source needs one.
+
+The current adapter presents each candidate as a complete keyed snapshot to the
+existing reconciliation engine. `Rows` already records stable slots, immediate
+generation lineage, and normalized snapshot-or-delta transitions; the target
+sparse adapter will consume those transitions directly so a small edit does not
+copy or rescan the unchanged collection. Until that engine path lands, the
+public ownership and identity semantics are in place but snapshot preparation
+still costs work proportional to the collection size.
 
 The old and candidate generations coexist only during reconciliation. All key
 bytes, matches, item clones, row handles, structural changes, and commands live

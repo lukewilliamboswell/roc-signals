@@ -9,6 +9,7 @@ import Session
 import Styles
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Http
 import pf.Signal
 import pf.Ui
@@ -166,7 +167,7 @@ Profile := {}.{
 										tag: "nav",
 								attrs: [Html.attr("aria-label", "Profile tabs"), Html.class_attr("flex border-b border-zinc-200")],
 										children: [
-											Ui.each(tab_rows, |name| name, |each_row| tab_links(each_row.key(), favorites, intent)),
+											Ui.each(Signal.map(tab_rows, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| tab_links(each_row.key(), favorites, intent)),
 										],
 									},
 								),

@@ -10,6 +10,7 @@ import Styles
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Http
 import pf.Signal
 import pf.Ui
@@ -232,11 +233,7 @@ Auth := {}.{
 					tag: "ul",
 					attrs: [Html.class_attr(Styles.error_list)],
 					children: [
-						Ui.each(
-							keyed,
-							|item| item.key,
-							|each_row| Elem.Element({ tag: "li", attrs: [], children: [Html.text_s(each_row.map(|value| value.text))] }),
-						),
+						Ui.each(Signal.map(keyed, |rows_items| Rows.from_list(rows_items, |item| item.key) ?? crash "duplicate row key"), |each_row| Elem.Element({ tag: "li", attrs: [], children: [Html.text_s(each_row.map(|value| value.text))] })),
 					],
 				},
 			),

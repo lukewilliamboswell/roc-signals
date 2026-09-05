@@ -11,6 +11,7 @@ import Styles
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Http
 import pf.Signal
 import pf.Ui
@@ -271,7 +272,7 @@ Article := {}.{
 												Html.div_c(
 													"flex flex-wrap items-center gap-2 py-4 text-sm text-zinc-500",
 													[
-														Ui.each(author_rows, |name| name, |each_row| Nav.link(each_row.key(), "font-medium text-emerald-600", Route.profile_location(each_row.key()), intent)),
+														Ui.each(Signal.map(author_rows, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| Nav.link(each_row.key(), "font-medium text-emerald-600", Route.profile_location(each_row.key()), intent)),
 														Html.text_s(meta),
 													],
 												),
@@ -420,7 +421,7 @@ Article := {}.{
 						is_failed,
 						|| Html.paragraph_s_c(message, "text-red-700"),
 
-						|| Ui.each(comments, |comment| comment.id.to_str(), |each_row| comment_row(each_row.key(), each_row.signal(), session, model)),
+						|| Ui.each(Signal.map(comments, |rows_items| Rows.from_list(rows_items, |comment| comment.id.to_str()) ?? crash "duplicate row key"), |each_row| comment_row(each_row.key(), each_row.signal(), session, model)),
 					),
 				),
 			],

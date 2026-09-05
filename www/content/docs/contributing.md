@@ -613,13 +613,20 @@ leaf sinks recorded in the retained descriptor stream. Structural `when` and
 `Ui.each` changes are applied through local active-stream splices, row moves,
 and affected event-binding refreshes rather than a full root rebuild.
 
-`Ui.each` retains each immutable `List(item)` generation behind its app-compiled
-capability. Its `len`, `copy_keys`, `compare_pairs`, and `clone_item_at`
-operations interpret that value in Roc; key and comparison results are pushed
-into bounded host buffers reserved before the callback. They are not returned
-as temporary Roc lists, and the host does not persist typed key/item cells per
-row. Candidate generations and row changes stay provisional until an
-allocation-free commit publishes the complete structural generation.
+`Ui.each` retains each immutable `Rows(item)` generation behind its app-compiled
+capability. `Rows` owns key projection and cached exact keys. The current
+`len`, `copy_keys`, `compare_pairs`, and `clone_item_at` adapter operations
+interpret that value in Roc; key and comparison results are pushed into bounded
+host buffers reserved before the callback. They are not returned as temporary
+Roc lists, and the host does not persist typed key/item cells per row. Candidate
+generations and row changes stay provisional until an allocation-free commit
+publishes the complete structural generation.
+
+This is the snapshot compatibility path. `Rows` also records stable slots,
+immediate generation lineage, and snapshot-or-delta transitions for the target
+sparse engine adapter. Do not describe delta consumption as implemented until
+the shared engine uses that ABI; today a candidate still exposes all cached keys
+to the existing reconciliation path.
 
 ## Glue
 

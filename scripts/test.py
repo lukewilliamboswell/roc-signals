@@ -755,6 +755,10 @@ class BundleServer:
 
 
 def bundle_platform(roc_bin: str) -> Path:
+    # Bundles ship stripped release hosts. Besides matching the release
+    # workflow, this keeps the complete multi-target package within Roc's
+    # bounded dependency budget; Debug archives carry large symbol tables.
+    run(["zig", "build", "build-test-hosts", "-Doptimize=ReleaseSmall"])
     env = os.environ.copy()
     env["ROC_BIN"] = roc_bin
     bundle_out = TEST_OUT / "bundles"

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import redirect_stdout
+from io import StringIO
 import sys
 import tempfile
 import unittest
@@ -54,9 +56,13 @@ class LedgerTests(unittest.TestCase):
     def test_report_exit_status(self) -> None:
         ledger = self.ledger()
         ledger.record("native", "ex/old.scm", False)
-        self.assertEqual(known_failures.report(ledger, Path("x")), 0)
+        output = StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(known_failures.report(ledger, Path("x")), 0)
         ledger.record("native", "ex/new.scm", False)
-        self.assertEqual(known_failures.report(ledger, Path("x")), 1)
+        with redirect_stdout(output):
+            self.assertEqual(known_failures.report(ledger, Path("x")), 1)
+        self.assertIn("REGRESSION  native ex/new.scm", output.getvalue())
 
 
 class UpdateTests(unittest.TestCase):

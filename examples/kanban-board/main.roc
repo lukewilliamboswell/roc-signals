@@ -2,6 +2,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -612,7 +613,7 @@ render_column = |board, column, signals| {
 				"panel-body",
 				[
 					Html.paragraph_s_attrs(matching_text, [Html.class_attr("hint numeric"), Html.test_id("matching-${slug}")]),
-					Ui.each(signals.views, |item| item.title, |each_row| render_card(board, each_row.key(), each_row.signal())),
+					Ui.each(Signal.map(signals.views, |rows_items| Rows.from_list(rows_items, |item| item.title) ?? crash "duplicate row key"), |each_row| render_card(board, each_row.key(), each_row.signal())),
 					# The dashed box exists only while there is nothing to show, so
 					# there is no hidden copy of it behind a populated column.
 					Ui.when(

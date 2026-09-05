@@ -744,7 +744,7 @@ const Harness = struct {
         for (self.records) |*record| {
             record.cachedSlot().?.deinit(&self.host, &self.roc_host, &self.engine.pending_roc_metrics);
         }
-        for (self.engine.active_signal_graph.items) |node| gpa.free(node.dependents);
+        for (self.engine.active_signal_graph.items) |*node| node.dependents.deinit(gpa);
         self.engine.active_signal_graph.deinit(gpa);
         self.engine.scratch.deinit(gpa);
         self.engine.render_cache.deinit(&self.host);

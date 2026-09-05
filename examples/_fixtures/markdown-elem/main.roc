@@ -2,6 +2,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -316,7 +317,7 @@ keyed_children = |texts|
 inline_view : Signal.Signal(Str) -> Elem
 inline_view = |source| {
 	segments = source.map(inline_segments)
-	Elem.Element({ tag: "span", attrs: [], children: [Ui.each(segments, |segment| segment.key, |each_row| render_inline_segment(each_row.key(), each_row.signal()))] })
+	Elem.Element({ tag: "span", attrs: [], children: [Ui.each(Signal.map(segments, |rows_items| Rows.from_list(rows_items, |segment| segment.key) ?? crash "duplicate row key"), |each_row| render_inline_segment(each_row.key(), each_row.signal()))] })
 }
 
 render_inline_segment : Str, Signal.Signal(InlineSegment) -> Elem
@@ -381,7 +382,7 @@ render_list_item = |_, item| {
 				Ui.when(
 					empty_children,
 					|| Html.text(""),
-					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(children_signal, |child| child.key, |each_row| render_child_item(each_row.key(), each_row.signal()))] }),
+					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(Signal.map(children_signal, |rows_items| Rows.from_list(rows_items, |child| child.key) ?? crash "duplicate row key"), |each_row| render_child_item(each_row.key(), each_row.signal()))] }),
 				),
 			],
 		},
@@ -409,7 +410,7 @@ render_markdown_block = |key, block| {
 		items : Signal.Signal(List(MarkdownListItem))
 		items = block.map(|value| value.items)
 
-		Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(items, |item| item.key, |each_row| render_list_item(each_row.key(), each_row.signal()))] })
+		Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(Signal.map(items, |rows_items| Rows.from_list(rows_items, |item| item.key) ?? crash "duplicate row key"), |each_row| render_list_item(each_row.key(), each_row.signal()))] })
 	} else {
 		Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
 	}
@@ -418,7 +419,7 @@ render_markdown_block = |key, block| {
 markdown_view : Signal.Signal(Str) -> Elem
 markdown_view = |source| {
 	blocks = source.map(parse_markdown)
-	Html.div([Html.attr("data-fixture", "markdown-preview")], [Ui.each(blocks, |block| block.key, |each_row| render_markdown_block(each_row.key(), each_row.signal()))])
+	Html.div([Html.attr("data-fixture", "markdown-preview")], [Ui.each(Signal.map(blocks, |rows_items| Rows.from_list(rows_items, |block| block.key) ?? crash "duplicate row key"), |each_row| render_markdown_block(each_row.key(), each_row.signal()))])
 }
 
 render_static_segment : InlineSegment -> Elem

@@ -28,5 +28,16 @@
     (expect-text (test-id "row-r1") "Row: one!")
     (expect-metric-delta retained_alloc_delta 0)
     (expect-metric-delta host_retained_bytes_delta 0)
+
+    ; Reused dense scope identities may rotate among the branch and row
+    ; shapes, but inactive identities do not retain historic per-scope index
+    ; capacity. A further equivalent cycle must therefore remain at the same
+    ; numeric footprint rather than merely approaching a later high-water mark.
+    (mark-metrics)
+    (click (role button :name "Toggle"))
+    (click (role button :name "Toggle"))
+    (expect-text (test-id "row-r1") "Row: one!")
+    (expect-metric-delta retained_alloc_delta 0)
+    (expect-metric-delta host_retained_bytes_delta 0)
   )
 )

@@ -81,17 +81,21 @@ a `match` on a route type would be.
 
 ## Keyed lists
 
-`Ui.each` renders a list:
+`Ui.each` renders a keyed `Rows` collection:
 
 ```roc
-Ui.each(books, |book| book.id, book_row)
+books = Rows.from_list(book_list, |book| book.id)?
+Ui.each(Signal.const(books), book_row)
 ```
 
-Three arguments:
+`Ui.each` has two arguments:
 
-1. a `Signal(List(item))`,
-2. `item -> Str`, producing a **stable** key,
-3. `Ui.Row(item) -> Elem`, the row renderer.
+1. a `Signal(Rows(item))`,
+2. `Ui.Row(item) -> Elem`, the row renderer.
+
+The `Rows` value owns the `item -> Str` key projection supplied to
+`Rows.from_list` or `Rows.empty`. It evaluates and validates that projection
+when a generation is constructed, so rendering does not recompute keys.
 
 The row renderer receives an opaque row. `row.key()` returns its stable key,
 `row.signal()` exposes the live item signal, and `row.map(...)` derives directly
@@ -116,7 +120,8 @@ it appear to have changed, so the host rebuilds them and any row-local state
 lands on the wrong row.
 
 Keys must also be unique within one list. Duplicates are a hard error at mount
-(`duplicate key "..."`) rather than a subtle rendering bug.
+(`Rows.Error.DuplicateKey("...")`) when constructing or editing `Rows`, rather
+than a subtle rendering bug.
 
 ### Rows expose identity and a live source
 

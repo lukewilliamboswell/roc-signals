@@ -3,6 +3,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 import Recipes
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -535,7 +536,7 @@ page = |controls| {
 							line_head("Ingredient"),
 							Html.div(
 								[Html.test_id("ingredient-rows"), Html.class_attr("grid")],
-								[Ui.each(ingredients_signal, |item| item.slug, |each_row| ingredient_row(each_row.key(), each_row.signal(), ctx))],
+								[Ui.each(Signal.map(ingredients_signal, |rows_items| Rows.from_list(rows_items, |item| item.slug) ?? crash "duplicate row key"), |each_row| ingredient_row(each_row.key(), each_row.signal(), ctx))],
 							),
 						],
 					),
@@ -570,7 +571,7 @@ page = |controls| {
 										line_head("Combined ingredient"),
 										Html.div(
 											[Html.test_id("shopping-rows"), Html.class_attr("grid")],
-											[Ui.each(lines_signal, |line| line.key, |each_row| shopping_row(each_row.key(), each_row.signal(), ctx))],
+											[Ui.each(Signal.map(lines_signal, |rows_items| Rows.from_list(rows_items, |line| line.key) ?? crash "duplicate row key"), |each_row| shopping_row(each_row.key(), each_row.signal(), ctx))],
 										),
 									],
 								),

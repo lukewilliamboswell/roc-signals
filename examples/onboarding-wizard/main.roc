@@ -54,6 +54,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -305,7 +306,9 @@ expect Step.slug(Step.from_slug("review")) == "review"
 expect Step.index(Step.previous(Step.ReviewStep)) == 2
 
 Account : { email : Str, full_name : Str }
+
 Org : { name : Str, plan : Plan, region : Region }
+
 StepSummary : { step : Step, detail : Str, done : Bool }
 
 empty_account : Account
@@ -447,15 +450,17 @@ parse_draft = |text| {
 	} else {
 		plan = Plan.from_str(parts.get(3)?)
 		role = Role.from_str(parts.get(6)?)
-		Ok(
-			{
-				account: { email: parts.get(0)?, full_name: parts.get(1)? },
-				org: { name: parts.get(2)?, plan, region: Region.from_str(parts.get(4)?) },
-				emails: parts.get(5)?,
-				role: if plan_includes(plan, role) { role } else { default_role },
-				step: Step.from_slug(parts.get(7)?),
+		Ok({
+			account: { email: parts.get(0)?, full_name: parts.get(1)? },
+			org: { name: parts.get(2)?, plan, region: Region.from_str(parts.get(4)?) },
+			emails: parts.get(5)?,
+			role: if plan_includes(plan, role) {
+				role
+			} else {
+				default_role
 			},
-		)
+			step: Step.from_slug(parts.get(7)?),
+		})
 	}
 }
 
@@ -546,14 +551,22 @@ role_message = |plan, role|
 account_summary_of : Account -> StepSummary
 account_summary_of = |value| {
 	step: Step.AccountStep,
-	detail: if value.email.trim().is_empty() { "No email yet" } else { "${value.email.trim()} / ${value.full_name.trim()}" },
+	detail: if value.email.trim().is_empty() {
+		"No email yet"
+	} else {
+		"${value.email.trim()} / ${value.full_name.trim()}"
+	},
 	done: account_ok(value),
 }
 
 org_summary_of : Org -> StepSummary
 org_summary_of = |value| {
 	step: Step.OrgStep,
-	detail: if value.name.trim().is_empty() { "No organisation yet" } else { "${value.name.trim()} on ${Plan.label(value.plan)} in ${Region.label(value.region)}" },
+	detail: if value.name.trim().is_empty() {
+		"No organisation yet"
+	} else {
+		"${value.name.trim()} on ${Plan.label(value.plan)} in ${Region.label(value.region)}"
+	},
 	done: org_ok(value),
 }
 
@@ -567,12 +580,22 @@ invites_summary_of = |raw, role| {
 review_summary_of : Bool -> StepSummary
 review_summary_of = |ready| {
 	step: Step.ReviewStep,
-	detail: if ready { "Ready to create the workspace" } else { "Finish the earlier steps first" },
+	detail: if ready {
+		"Ready to create the workspace"
+	} else {
+		"Finish the earlier steps first"
+	},
 	done: ready,
 }
 
 summary_line : StepSummary -> Str
-summary_line = |value| "${Step.title(value.step)}: ${value.detail} (${if value.done { "complete" } else { "incomplete" }})"
+summary_line = |value| "${Step.title(value.step)}: ${value.detail} (${
+	if value.done {
+		"complete"
+	} else {
+		"incomplete"
+	}
+})"
 
 ## A ready review row reads as complete and says the workspace can be created.
 expect summary_line(review_summary_of(True)) == "Review: Ready to create the workspace (complete)"
@@ -648,18 +671,16 @@ main = || {
 															Ui.state(
 																no_draft,
 																|inbox|
-																	wizard(
-																		{
-																			step,
-																			account,
-																			org,
-																			emails,
-																			role,
-																			attempts,
-																			reset_token,
-																			inbox,
-																		},
-																	),
+																	wizard({
+																		step,
+																		account,
+																		org,
+																		emails,
+																		role,
+																		attempts,
+																		reset_token,
+																		inbox,
+																	}),
 															),
 													),
 											),
@@ -704,20 +725,21 @@ wizard = |h| {
 	can_submit = Signal.combine([account_valid, org_valid, invites_valid]).map(|flags| !flags.contains(False))
 
 	# --- derived summaries: a second fan-in, one row per step ----------------
-	summaries : Signal.Signal(List(StepSummary))
+	summaries : Signal.Signal(Rows.Rows(StepSummary))
 	summaries =
-		Signal.combine(
+		Signal.combine_map(
 			[
 				account_signal.map(account_summary_of),
 				org_signal.map(org_summary_of),
 				Signal.map2(emails_signal, role_signal, invites_summary_of),
 				can_submit.map(review_summary_of),
 			],
+			|rows| Rows.from_list(rows, |row| Step.slug(row.step)) ?? crash "duplicate onboarding summary key",
 		)
 
 	progress_label = step_signal.map(|current| "Step ${(Step.index(current) + 1).to_str()} of 4 — ${Step.title(current)}")
-	progress_complete = summaries.map(|rows| "${complete_count(rows).to_str()} of 4 steps complete")
-	progress_attr = summaries.map(|rows| complete_count(rows).to_str())
+	progress_complete = summaries.map(|rows| "${complete_count(Rows.to_list(rows)).to_str()} of 4 steps complete")
+	progress_attr = summaries.map(|rows| complete_count(Rows.to_list(rows)).to_str())
 
 	step_valid =
 		Signal.map2(
@@ -734,7 +756,11 @@ wizard = |h| {
 			step_valid,
 			|current, ok|
 				if Step.is_eq(current, Step.ReviewStep) {
-					if ok { "Everything checks out. Create the workspace." } else { "Go back and finish the incomplete steps." }
+					if ok {
+						"Everything checks out. Create the workspace."
+					} else {
+						"Go back and finish the incomplete steps."
+					}
 				} else if ok {
 					"Ready for the next step."
 				} else {
@@ -744,7 +770,15 @@ wizard = |h| {
 
 	# --- the plan clamps the invite role. Reset, not hide: the value the user
 	# --- sees is the value that is saved and submitted.
-	clamped_role = Signal.map2(role_signal, plan_signal, |current, plan| if plan_includes(plan, current) { current } else { default_role })
+	clamped_role = Signal.map2(
+		role_signal,
+		plan_signal,
+		|current, plan| if plan_includes(plan, current) {
+			current
+		} else {
+			default_role
+		},
+	)
 
 	# --- draft persistence ---------------------------------------------------
 	whole : Signal.Signal(Draft)
@@ -804,17 +838,15 @@ wizard = |h| {
 					|| org_panel(h.step, h.org, org_signal),
 					|| Ui.when(
 						step_signal.map(|current| Step.is_eq(current, Step.InvitesStep)),
-						|| invites_panel(
-							{
-								step: h.step,
-								emails: h.emails,
-								role: h.role,
-								org: h.org,
-								emails_signal,
-								role_signal,
-								plan_signal,
-							},
-						),
+						|| invites_panel({
+							step: h.step,
+							emails: h.emails,
+							role: h.role,
+							org: h.org,
+							emails_signal,
+							role_signal,
+							plan_signal,
+						}),
 						|| review_panel(h.attempts, summaries, submit_status, submit_disabled),
 					),
 				),
@@ -860,7 +892,14 @@ wizard = |h| {
 			Ui.on_change(inbox_signal.map(|value| draft_or_empty(value).emails), |value| h.emails.set_cmd(value)),
 			Ui.on_change(inbox_signal.map(|value| draft_or_empty(value).role), |value| h.role.set_cmd(value)),
 			# Keep the saved draft in step with the form; an empty form saves nothing.
-			Ui.on_change(draft_text, |text| if text == blank_draft { Browser.remove_local_storage(draft_key) } else { Browser.set_local_storage_text(draft_key, text) }),
+			Ui.on_change(
+				draft_text,
+				|text| if text == blank_draft {
+					Browser.remove_local_storage(draft_key)
+				} else {
+					Browser.set_local_storage_text(draft_key, text)
+				},
+			),
 			# The plan changed underneath the role: write the clamped value back.
 			Ui.on_change(clamped_role, |value| h.role.set_cmd(value)),
 			# Start over: one click, six `set_cmd` commands off one source change.
@@ -870,7 +909,14 @@ wizard = |h| {
 			Ui.on_change(reset_signal, |_| h.role.set_cmd(default_role)),
 			Ui.on_change(reset_signal, |_| h.step.set_cmd(first_step)),
 			Ui.on_change(reset_signal, |_| h.attempts.set_cmd(0)),
-			Ui.on_change(attempts_signal, |n| if n == 0 { Signal.noop } else { Signal.start_str(submit_task, submit_request_text(n)) }),
+			Ui.on_change(
+				attempts_signal,
+				|n| if n == 0 {
+					Signal.noop
+				} else {
+					Signal.start_str(submit_task, submit_request_text(n))
+				},
+			),
 		],
 	)
 }
@@ -881,7 +927,7 @@ wizard = |h| {
 ## site can swap the label for the count.
 ProgressView : {
 	step : Ui.State(Step),
-	summaries : Signal.Signal(List(StepSummary)),
+	summaries : Signal.Signal(Rows.Rows(StepSummary)),
 	label : Signal.Signal(Str),
 	complete : Signal.Signal(Str),
 	attr : Signal.Signal(Str),
@@ -904,9 +950,9 @@ progress_panel = |view|
 			# the text, so the bar can never disagree with the count beside it.
 			Html.div_c(
 				"h-1.5 w-full overflow-hidden rounded-full bg-zinc-200",
-				[Html.div_sc(view.summaries.map(progress_bar_class), [])],
+				[Html.div_sc(view.summaries.map(|rows| progress_bar_class(Rows.to_list(rows))), [])],
 			),
-			Ui.each(view.summaries, |row| Step.slug(row.step), |each_row| summary_row(view.step, each_row.key(), each_row.signal())),
+			Ui.each(view.summaries, |each_row| summary_row(view.step, each_row.key(), each_row.signal())),
 		],
 	)
 
@@ -942,19 +988,33 @@ summary_row = |step, key, row| {
 			Html.button_attrs(
 				"Go to ${Step.title(target)}",
 				[Html.attr("type", "button"), Html.class_attr("button button-sm shrink-0")],
-				step.on_unit(|current| if Step.index(target) < Step.index(current) { target } else { current }),
+				step.on_unit(
+					|current| if Step.index(target) < Step.index(current) {
+						target
+					} else {
+						current
+					},
+				),
 			),
 		],
 	)
 }
 
 step_badge_label : StepSummary -> Str
-step_badge_label = |value| if value.done { "Done" } else { "To do" }
+step_badge_label = |value| if value.done {
+	"Done"
+} else {
+	"To do"
+}
 
 ## The badge colour and its caption come off the same row signal, so a row can
 ## never show "Done" in the neutral tone.
 step_badge_class : StepSummary -> Str
-step_badge_class = |value| if value.done { "badge badge-ok shrink-0" } else { "badge badge-neutral shrink-0" }
+step_badge_class = |value| if value.done {
+	"badge badge-ok shrink-0"
+} else {
+	"badge badge-neutral shrink-0"
+}
 
 # --- step 1: account ----------------------------------------------------------
 
@@ -965,41 +1025,46 @@ account_panel = |step, account, account_signal|
 		panel_class,
 		[
 			Html.heading_c("Account", step_title_class),
-			field(
-				{
-					label: "Work email",
-					control: Html.text_input_attrs(
-						"Work email",
-						account_signal.map(|value| value.email),
-						[
-							Html.class_attr(input_class),
-							Html.attr("placeholder", "you@company.com"),
-							Html.aria_describedby("account-email-error"),
-							Html.aria_invalid_s(account_signal.map(|value| value.email != "" and !valid_email(value.email))),
-						],
-						account.on_str(|value, text| { ..value, email: text }),
-					),
-					message: account_signal.map(email_message),
-					tone: account_signal.map(|value| note_tone(value.email != "")),
-					error_id: "account-email-error",
-				},
-			),
-			field(
-				{
-					label: "Full name",
-					control: Html.text_input_attrs(
-						"Full name",
-						account_signal.map(|value| value.full_name),
-						[Html.class_attr(input_class), Html.attr("placeholder", "Ada Lovelace"), Html.aria_describedby("account-name-error")],
-						account.on_str(|value, text| { ..value, full_name: text }),
-					),
-					message: account_signal.map(full_name_message),
-					tone: account_signal.map(|value| note_tone(value.full_name != "")),
-					error_id: "account-name-error",
-				},
-			),
+			field({
+				label: "Work email",
+				control: Html.text_input_attrs(
+					"Work email",
+					account_signal.map(|value| value.email),
+					[
+						Html.class_attr(input_class),
+						Html.attr("placeholder", "you@company.com"),
+						Html.aria_describedby("account-email-error"),
+						Html.aria_invalid_s(account_signal.map(|value| value.email != "" and !valid_email(value.email))),
+					],
+					account.on_str(|value, text| { ..value, email: text }),
+				),
+				message: account_signal.map(email_message),
+				tone: account_signal.map(|value| note_tone(value.email != "")),
+				error_id: "account-email-error",
+			}),
+			field({
+				label: "Full name",
+				control: Html.text_input_attrs(
+					"Full name",
+					account_signal.map(|value| value.full_name),
+					[Html.class_attr(input_class), Html.attr("placeholder", "Ada Lovelace"), Html.aria_describedby("account-name-error")],
+					account.on_str(|value, text| { ..value, full_name: text }),
+				),
+				message: account_signal.map(full_name_message),
+				tone: account_signal.map(|value| note_tone(value.full_name != "")),
+				error_id: "account-name-error",
+			}),
 			# The guard lives in the reducer: it reads `account` while writing `step`.
-			next_button(step.on_unit_with(account, |current, value| if account_ok(value) { Step.OrgStep } else { current })),
+			next_button(
+				step.on_unit_with(
+					account,
+					|current, value| if account_ok(value) {
+						Step.OrgStep
+					} else {
+						current
+					},
+				),
+			),
 		],
 	)
 
@@ -1053,20 +1118,18 @@ org_panel = |step, org, org_signal| {
 		panel_class,
 		[
 			Html.heading_c("Organisation", step_title_class),
-			field(
-				{
-					label: "Organisation name",
-					control: Html.text_input_attrs(
-						"Organisation name",
-						org_signal.map(|value| value.name),
-						[Html.class_attr(input_class), Html.attr("placeholder", "Analytical Engines Ltd"), Html.aria_describedby("org-name-error")],
-						org.on_str(|value, text| { ..value, name: text }),
-					),
-					message: org_signal.map(org_name_message),
-					tone: org_signal.map(|value| note_tone(value.name != "")),
-					error_id: "org-name-error",
-				},
-			),
+			field({
+				label: "Organisation name",
+				control: Html.text_input_attrs(
+					"Organisation name",
+					org_signal.map(|value| value.name),
+					[Html.class_attr(input_class), Html.attr("placeholder", "Analytical Engines Ltd"), Html.aria_describedby("org-name-error")],
+					org.on_str(|value, text| { ..value, name: text }),
+				),
+				message: org_signal.map(org_name_message),
+				tone: org_signal.map(|value| note_tone(value.name != "")),
+				error_id: "org-name-error",
+			}),
 			Html.div_c(
 				"field",
 				[
@@ -1105,7 +1168,16 @@ org_panel = |step, org, org_signal| {
 					),
 				],
 			),
-			next_button(step.on_unit_with(org, |current, value| if org_ok(value) { Step.InvitesStep } else { current })),
+			next_button(
+				step.on_unit_with(
+					org,
+					|current, value| if org_ok(value) {
+						Step.InvitesStep
+					} else {
+						current
+					},
+				),
+			),
 		],
 	)
 }
@@ -1134,7 +1206,11 @@ invites_panel = |view| {
 			view.org,
 			|current, org_value, text| {
 				picked = Role.from_str(text)
-				if plan_includes(org_value.plan, picked) { picked } else { current }
+				if plan_includes(org_value.plan, picked) {
+					picked
+				} else {
+					current
+				}
 			},
 		)
 	selected_role = view.role_signal.map(Role.to_str)
@@ -1144,20 +1220,18 @@ invites_panel = |view| {
 		panel_class,
 		[
 			Html.heading_c("Team invites", step_title_class),
-			field(
-				{
-					label: "Invite emails",
-					control: Html.textarea_attrs(
-						"Invite emails",
-						view.emails_signal,
-						[Html.class_attr(textarea_class), Html.attr("placeholder", "One address per line"), Html.aria_describedby("invite-emails-error")],
-						view.emails.on_str(|_current, text| text),
-					),
-					message: view.emails_signal.map(invite_message),
-					tone: view.emails_signal.map(|value| note_tone(value != "")),
-					error_id: "invite-emails-error",
-				},
-			),
+			field({
+				label: "Invite emails",
+				control: Html.textarea_attrs(
+					"Invite emails",
+					view.emails_signal,
+					[Html.class_attr(textarea_class), Html.attr("placeholder", "One address per line"), Html.aria_describedby("invite-emails-error")],
+					view.emails.on_str(|_current, text| text),
+				),
+				message: view.emails_signal.map(invite_message),
+				tone: view.emails_signal.map(|value| note_tone(value != "")),
+				error_id: "invite-emails-error",
+			}),
 			Html.div_c(
 				"field",
 				[
@@ -1183,14 +1257,23 @@ invites_panel = |view| {
 					Html.paragraph_s_attrs(Signal.map2(view.plan_signal, view.role_signal, role_message), [Html.test_id("invite-role-note"), Html.class_attr(hint_class)]),
 				],
 			),
-			next_button(view.step.on_unit_with(view.emails, |current, value| if invites_ok(value) { Step.ReviewStep } else { current })),
+			next_button(
+				view.step.on_unit_with(
+					view.emails,
+					|current, value| if invites_ok(value) {
+						Step.ReviewStep
+					} else {
+						current
+					},
+				),
+			),
 		],
 	)
 }
 
 # --- step 4: review -----------------------------------------------------------
 
-review_panel : Ui.State(U64), Signal.Signal(List(StepSummary)), Signal.Signal(Str), Signal.Signal(Bool) -> Elem
+review_panel : Ui.State(U64), Signal.Signal(Rows.Rows(StepSummary)), Signal.Signal(Str), Signal.Signal(Bool) -> Elem
 review_panel = |attempts, summaries, submit_status, submit_disabled|
 	Html.section_c(
 		"Review step",
@@ -1200,9 +1283,9 @@ review_panel = |attempts, summaries, submit_status, submit_disabled|
 			Html.div_c(
 				"grid gap-2",
 				[
-					review_row("Account", summaries.map(|rows| summary_at(rows, 0)), "review-account"),
-					review_row("Organisation", summaries.map(|rows| summary_at(rows, 1)), "review-organisation"),
-					review_row("Team invites", summaries.map(|rows| summary_at(rows, 2)), "review-invites"),
+					review_row("Account", summaries.map(|rows| summary_at(Rows.to_list(rows), 0)), "review-account"),
+					review_row("Organisation", summaries.map(|rows| summary_at(Rows.to_list(rows), 1)), "review-organisation"),
+					review_row("Team invites", summaries.map(|rows| summary_at(Rows.to_list(rows), 2)), "review-invites"),
 				],
 			),
 			Html.div_c(

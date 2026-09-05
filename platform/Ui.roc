@@ -4,6 +4,7 @@ import Capability exposing [Capability]
 import EventExtraction
 import EachSink
 import Node
+import Rows exposing [Rows]
 import Signal exposing [Signal]
 
 state_event_msg : Node.BinderRef, Node.BinderRef, Node.EventExtractionPlan, HostValue.EventReducerHandle -> Node.Msg
@@ -95,7 +96,7 @@ Ui := [].{
 
 	## Stable keyed-row handle. A captured row remains valid for the lifetime of
 	## its row scope, including when a delayed structural builder first reads it.
-	Row(a) := { key_value : Str, source : Signal(a) }.{
+	Row(a) := { handle_value : U64, key_value : Str, source : Signal(a) }.{
 
 		## Return the exact UTF-8 key supplied by the keyed collection.
 		key : Row(a) -> Str
@@ -111,6 +112,10 @@ Ui := [].{
 				value.is_eq : value, value -> Bool,
 			]
 		map = |row, project| row.source.map(project)
+
+		## Select this exact row key from one site-shared keyed signal.
+		select : Row(a), Signal.Keyed(value) -> Signal(value)
+		select = |row, keyed| keyed.for_row(row.handle_value, row.key_value)
 	}
 
 	## A handle to a state binder, given to the `Ui.state` body. `signal` reads the
@@ -425,60 +430,84 @@ Ui := [].{
 			},
 		)
 
-	## Keyed list with exact UTF-8 identity. The app-compiled adapter retains each
-	## immutable list generation and writes keys/comparison results into reserved
-	## host sinks; the host never inspects `List(item)` or temporary Roc lists.
-	each : Signal(List(item)), (item -> Str), (Row(item) -> Elem) -> Elem
+	## Keyed rows with exact UTF-8 identity. App-compiled adapters consume an
+	## independently owned generation clone and write authenticated metadata,
+	## snapshots, deltas, and selected comparisons into preallocated host sinks.
+	each : Signal(Rows(item)), (Row(item) -> Elem) -> Elem
 		where [
 			item.is_eq : item, item -> Bool,
 		]
-	each = |items, key_of, row| {
-		items_cap = items.cap
+	each = |rows, row| {
+		rows_cap = rows.cap
 		item_cap = Capability.new()
-		read_items : HostValue -> List(item)
-		read_items = |items_hv| {
-			typed_items : List(item)
-			typed_items = Box.unbox(Capability.take(items_hv, items_cap))
-			typed_items
+		read_rows : HostValue -> Rows(item)
+		read_rows = |rows_hv| {
+			typed_rows : Rows(item)
+			typed_rows = Box.unbox(Capability.take(rows_hv, rows_cap))
+			typed_rows
 		}
-		len_hv : HostValue -> U64
-		len_hv = |owner| read_items(owner).len()
-		copy_keys_hv : HostValue, U64 -> U64
-		copy_keys_hv = |owner, initial_token| {
-			typed_items = read_items(owner)
-			var $index = 0
-			var $token = initial_token
-			while $index < typed_items.len() {
-				item = typed_items.get($index) ?? crash "keyed collection index exceeded its generation"
-				$token = EachSink.push_key!($token, $index, key_of(item))
-				$index = $index + 1
+		describe_hv : HostValue, U64 -> U64
+		describe_hv = |owner, initial_token| {
+			description = Rows.platform_description(read_rows(owner))
+			match description.kind {
+				Snapshot => EachSink.push_snapshot_description!(initial_token, description.generation, description.item_count, description.snapshot_key_bytes)
+				Delta => {
+					parent =
+						match description.parent {
+							NoParent => crash "Rows delta generation did not retain its parent identity"
+							Parent(parent_token) => parent_token
+						}
+					EachSink.push_delta_description!(initial_token, description.generation, parent, description.item_count, description.snapshot_key_bytes, description.op_count, description.delta_key_count, description.delta_key_bytes)
+				}
 			}
-			$token
 		}
-		compare_pairs_hv : HostValue, HostValue, List(U64), U64 -> U64
-		compare_pairs_hv = |old_owner, new_owner, pairs, initial_token| {
-			old_items = read_items(old_owner)
-			new_items = read_items(new_owner)
+		copy_snapshot_hv : HostValue, U64 -> U64
+		copy_snapshot_hv = |owner, initial_token|
+			Rows.platform_copy_snapshot(
+				read_rows(owner),
+				initial_token,
+				|token, index, slot, key| EachSink.push_snapshot!(token, index, slot, key),
+			)
+		copy_delta_hv : HostValue, U64 -> U64
+		copy_delta_hv = |owner, initial_token| {
+			typed_rows = read_rows(owner)
+			Rows.platform_copy_delta(
+				typed_rows,
+				initial_token,
+				|token, transition|
+					match transition {
+						ClearRows => EachSink.push_delta_clear!(token, 0)
+						InsertRow({ op_index, before_slot, slot, key }) => EachSink.push_delta_insert!(token, op_index, before_slot, slot, key)
+						MoveRows({ op_index, first_slot, count, before_slot }) => EachSink.push_delta_move_range!(token, op_index, first_slot, count, before_slot)
+						RemoveRows({ op_index, first_slot, count }) => EachSink.push_delta_remove_range!(token, op_index, first_slot, count)
+						UpdateRow({ op_index, slot, key }) => EachSink.push_delta_update!(token, op_index, slot, key)
+					},
+			)
+		}
+		compare_slots_hv : HostValue, HostValue, List(U64), U64 -> U64
+		compare_slots_hv = |old_owner, new_owner, pairs, initial_token| {
+			old_rows = read_rows(old_owner)
+			new_rows = read_rows(new_owner)
 			if pairs.len() % 2 != 0 {
-				crash "keyed collection comparison pairs must be interleaved"
+				crash "Rows comparison pairs must be interleaved"
 			}
 			var $pair_index = 0
 			var $result_index = 0
 			var $token = initial_token
 			while $pair_index < pairs.len() {
-				old_index = pairs.get($pair_index) ?? crash "missing old keyed collection index"
-				new_index = pairs.get($pair_index + 1) ?? crash "missing new keyed collection index"
-				old_item = old_items.get(old_index) ?? crash "old keyed collection index exceeded its generation"
-				new_item = new_items.get(new_index) ?? crash "new keyed collection index exceeded its generation"
+				old_slot = pairs.get($pair_index) ?? crash "missing old Rows slot"
+				new_slot = pairs.get($pair_index + 1) ?? crash "missing new Rows slot"
+				old_item = Rows.platform_item_for_slot(old_rows, old_slot) ?? crash "old Rows slot was not live"
+				new_item = Rows.platform_item_for_slot(new_rows, new_slot) ?? crash "new Rows slot was not live"
 				$token = EachSink.push_bool!($token, $result_index, old_item.is_eq(new_item))
 				$pair_index = $pair_index + 2
 				$result_index = $result_index + 1
 			}
 			$token
 		}
-		clone_item_at_hv : HostValue, U64 -> HostValue
-		clone_item_at_hv = |owner, index| {
-			item = read_items(owner).get(index) ?? crash "keyed collection item index exceeded its generation"
+		clone_item_hv : HostValue, U64 -> HostValue
+		clone_item_hv = |owner, slot| {
+			item = Rows.platform_item_for_slot(read_rows(owner), slot) ?? crash "Rows item slot was not live"
 			Capability.store(Box.box(item), item_cap)
 		}
 		row_hv : Str, U64 -> Elem
@@ -490,17 +519,18 @@ Ui := [].{
 					Node.SignalExpr.RowSource(row_handle, row_source_box, row_source_box, Capability.handle(item_cap)),
 					item_cap,
 				)
-			row({ key_value: key, source })
+			row({ handle_value: row_handle, key_value: key, source })
 		}
 		Elem.Each({
-			items: Signal.to_expr(items),
+			rows: Signal.to_expr(rows),
 			ops: {
-				items_capability: Capability.handle(items_cap),
+				rows_capability: Capability.handle(rows_cap),
 				item_capability: Capability.handle(item_cap),
-				len: Box.box(len_hv),
-				copy_keys: Box.box(copy_keys_hv),
-				compare_pairs: Box.box(compare_pairs_hv),
-				clone_item_at: Box.box(clone_item_at_hv),
+				describe: Box.box(describe_hv),
+				copy_snapshot: Box.box(copy_snapshot_hv),
+				copy_delta: Box.box(copy_delta_hv),
+				compare_slots: Box.box(compare_slots_hv),
+				clone_item: Box.box(clone_item_hv),
 				row: Box.box(row_hv),
 			},
 		})

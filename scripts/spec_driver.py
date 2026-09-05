@@ -19,6 +19,7 @@ from typing import Any, Iterable
 PROTOCOL = "roc-signals/spec-result/v2"
 PASSING_STATUSES = {"passed"}
 NATIVE_STATUSES = {"passed", "failed", "error"}
+NATIVE_SPEC_ENTROPY_SEED = 0
 
 
 @dataclass(frozen=True)
@@ -90,7 +91,12 @@ def run_case(
     verbose: bool,
     worker_args: tuple[str, ...] = (),
 ) -> SpecResult:
-    command = [str(executable), "--run-spec-json"]
+    command = [
+        str(executable),
+        "--run-spec-json",
+        "--entropy-seed",
+        str(NATIVE_SPEC_ENTROPY_SEED),
+    ]
     if verbose:
         command.append("--verbose")
     command.extend(worker_args)
@@ -341,7 +347,7 @@ def run_fault_suite(
         for allocation in range(1, probe.host_allocation_attempts + 1):
             case = SpecCase(f"{probe.id}::allocation@{allocation}", source_cases[probe.id].path)
             args = ("--fail-on-allocation", str(allocation))
-            replay = f"{executable} --run-spec-json {' '.join(args)} {case.path}"
+            replay = f"{executable} --run-spec-json --entropy-seed {NATIVE_SPEC_ENTROPY_SEED} {' '.join(args)} {case.path}"
             jobs_to_run.append((case, args, replay))
     if not jobs_to_run:
         raise ValueError("clean specs reported no host allocation opportunities")

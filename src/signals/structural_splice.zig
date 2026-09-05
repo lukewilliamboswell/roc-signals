@@ -482,6 +482,140 @@ fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, s
     return prepared;
 }
 
+/// Builds a descriptor-retirement journal from maintained per-scope ownership
+/// indexes. Work and allocation are proportional to descriptors owned by the
+/// selected scopes; unrelated descriptor families and scope slots are never
+/// scanned. `scope_ids` must be the exact post-order subtree retirement list.
+pub fn prepareScopeOwnedRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, scope_ids: []const ids.ScopeId) (PrepareError || error{InvalidDescriptor})!PreparedRemoval {
+    var elem_count: usize = 0;
+    var node_count: usize = 0;
+    var lifecycle_counts = [_]usize{0} ** 3;
+    for (scope_ids) |scope_id| {
+        elem_count = std.math.add(usize, elem_count, stream.scopeOwnedElemIds(scope_id).len) catch return error.ResourceLimit;
+        node_count = std.math.add(usize, node_count, stream.scopeOwnedNodeIds(scope_id).len) catch return error.ResourceLimit;
+        for (stream.lifecycleIndices(scope_id)) |lifecycle| {
+            const offset: usize = switch (lifecycle.kind) {
+                .on_change => 0,
+                .mount => 1,
+                .cleanup => 2,
+            };
+            lifecycle_counts[offset] = std.math.add(usize, lifecycle_counts[offset], 1) catch return error.ResourceLimit;
+        }
+    }
+
+    const elem_ids = try allocator.alloc(u64, elem_count);
+    var scan_transferred = false;
+    errdefer if (!scan_transferred) allocator.free(elem_ids);
+    var elem_cursor: usize = 0;
+    var elem_set: std.AutoHashMapUnmanaged(u64, void) = .empty;
+    defer elem_set.deinit(allocator);
+    try elem_set.ensureTotalCapacity(allocator, std.math.cast(u32, elem_count) orelse return error.ResourceLimit);
+    for (scope_ids) |scope_id| for (stream.scopeOwnedElemIds(scope_id)) |elem_id| {
+        const entry = elem_set.getOrPutAssumeCapacity(elem_id.raw());
+        if (entry.found_existing) return error.InvalidDescriptor;
+        elem_ids[elem_cursor] = elem_id.raw();
+        elem_cursor += 1;
+    };
+
+    var parent_ids: std.ArrayListUnmanaged(u64) = .empty;
+    errdefer parent_ids.deinit(allocator);
+    var parent_set: std.AutoHashMapUnmanaged(u64, void) = .empty;
+    defer parent_set.deinit(allocator);
+    try parent_ids.ensureTotalCapacity(allocator, elem_count);
+    try parent_set.ensureTotalCapacity(allocator, std.math.cast(u32, elem_count) orelse return error.ResourceLimit);
+    for (elem_ids) |elem_id| {
+        const render_index = stream.renderNodeIndexRaw(elem_id) orelse return error.InvalidDescriptor;
+        if (render_index >= stream.render_nodes.items.len) return error.InvalidDescriptor;
+        const parent_id = descriptor_stream.renderNodeParentElemId(Stream, stream, stream.render_nodes.items[render_index]).raw();
+        if (elem_set.contains(parent_id)) continue;
+        const entry = parent_set.getOrPutAssumeCapacity(parent_id);
+        if (!entry.found_existing) parent_ids.appendAssumeCapacity(parent_id);
+    }
+    const owned_parent_ids = try parent_ids.toOwnedSlice(allocator);
+    errdefer if (!scan_transferred) allocator.free(owned_parent_ids);
+
+    var prepared = PreparedRemoval{
+        .scan = .{
+            .removed_elem_ids = elem_ids,
+            .touched_parent_ids = owned_parent_ids,
+            .removed_render_count = elem_ids.len,
+            .target_scan_count = elem_ids.len,
+        },
+        .descriptor_indexes = .{},
+        .node_indexes = .{},
+    };
+    scan_transferred = true;
+    errdefer prepared.deinit(allocator);
+
+    try prepared.descriptor_indexes.prepare(allocator, elem_ids.len);
+    var named_event_count: usize = 0;
+    var custom_counts = [_]usize{0} ** 5;
+    for (elem_ids) |elem_id| {
+        named_event_count = std.math.add(usize, named_event_count, stream.namedEventIndices(ids.ElemId.fromRaw(elem_id)).len) catch return error.ResourceLimit;
+        for (stream.customAttrIndices(ids.ElemId.fromRaw(elem_id))) |custom| {
+            const offset: usize = switch (custom.kind) {
+                .static_text => 0,
+                .signal_text => 1,
+                .signal_text_optional => 2,
+                .static_bool => 3,
+                .signal_bool => 4,
+            };
+            custom_counts[offset] = std.math.add(usize, custom_counts[offset], 1) catch return error.ResourceLimit;
+        }
+    }
+    try prepared.descriptor_indexes.event_indexes.ensureUnusedCapacity(allocator, named_event_count);
+    try prepared.descriptor_indexes.static_custom_text_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[0]);
+    try prepared.descriptor_indexes.signal_custom_text_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[1]);
+    try prepared.descriptor_indexes.signal_optional_custom_text_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[2]);
+    try prepared.descriptor_indexes.static_custom_bool_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[3]);
+    try prepared.descriptor_indexes.signal_custom_bool_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[4]);
+    for (elem_ids) |elem_id| {
+        if (stream.elemDescriptorIndex(ids.ElemId.fromRaw(elem_id))) |descriptor_index| prepared.descriptor_indexes.appendDescriptorIndexesAssumeCapacity(descriptor_index) else return error.InvalidDescriptor;
+        prepared.descriptor_indexes.event_indexes.appendSliceAssumeCapacity(stream.namedEventIndices(ids.ElemId.fromRaw(elem_id)));
+        for (stream.customAttrIndices(ids.ElemId.fromRaw(elem_id))) |custom| switch (custom.kind) {
+            .static_text => prepared.descriptor_indexes.static_custom_text_attr_indexes.appendAssumeCapacity(custom.index),
+            .signal_text => prepared.descriptor_indexes.signal_custom_text_attr_indexes.appendAssumeCapacity(custom.index),
+            .signal_text_optional => prepared.descriptor_indexes.signal_optional_custom_text_attr_indexes.appendAssumeCapacity(custom.index),
+            .static_bool => prepared.descriptor_indexes.static_custom_bool_attr_indexes.appendAssumeCapacity(custom.index),
+            .signal_bool => prepared.descriptor_indexes.signal_custom_bool_attr_indexes.appendAssumeCapacity(custom.index),
+        };
+    }
+    prepared.descriptor_indexes.sortDescending();
+
+    try prepared.node_indexes.scope_site_indexes.ensureUnusedCapacity(allocator, node_count);
+    try prepared.node_indexes.state_indexes.ensureUnusedCapacity(allocator, node_count);
+    try prepared.node_indexes.when_indexes.ensureUnusedCapacity(allocator, node_count);
+    try prepared.node_indexes.each_indexes.ensureUnusedCapacity(allocator, node_count);
+    try prepared.node_indexes.on_change_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[0]);
+    try prepared.node_indexes.mount_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[1]);
+    try prepared.node_indexes.cleanup_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[2]);
+    for (scope_ids) |scope_id| {
+        for (stream.scopeOwnedNodeIds(scope_id)) |node_id| {
+            const node_index = stream.nodeDescriptorIndex(node_id) orelse return error.InvalidDescriptor;
+            inline for (std.meta.fields(descriptor_stream.ScopeSiteKind)) |field| {
+                const kind: descriptor_stream.ScopeSiteKind = @enumFromInt(field.value);
+                appendRemovalIndexAssumeCapacity(&prepared.node_indexes.scope_site_indexes, descriptorIndexValue(node_index.scope_sites.get(kind)));
+            }
+            appendRemovalIndexAssumeCapacity(&prepared.node_indexes.state_indexes, descriptorIndexValue(node_index.state));
+            appendRemovalIndexAssumeCapacity(&prepared.node_indexes.when_indexes, descriptorIndexValue(node_index.when));
+            appendRemovalIndexAssumeCapacity(&prepared.node_indexes.each_indexes, descriptorIndexValue(node_index.each));
+        }
+        for (stream.lifecycleIndices(scope_id)) |lifecycle| switch (lifecycle.kind) {
+            .on_change => prepared.node_indexes.on_change_indexes.appendAssumeCapacity(lifecycle.index),
+            .mount => prepared.node_indexes.mount_indexes.appendAssumeCapacity(lifecycle.index),
+            .cleanup => prepared.node_indexes.cleanup_indexes.appendAssumeCapacity(lifecycle.index),
+        };
+    }
+    sortRemovalIndexesDescending(prepared.node_indexes.scope_site_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.state_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.when_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.each_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.on_change_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.mount_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.cleanup_indexes.items);
+    return prepared;
+}
+
 /// Prepares one contiguous render interval and its union descriptor journals.
 pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) (PrepareError || error{InvalidDescriptor})!PreparedRemoval {
     const scan = try prepareRenderRemovalScan(Stream, allocator, stream, render_insert_index, target_scopes);
@@ -854,6 +988,8 @@ const TestStream = struct {
     states: std.ArrayListUnmanaged(descriptor_stream.StateDesc) = .empty,
     whens: std.ArrayListUnmanaged(descriptor_stream.WhenDesc) = .empty,
     eaches: std.ArrayListUnmanaged(descriptor_stream.EachDesc) = .empty,
+    owned_scope_id: ids.ScopeId = ids.ScopeId.fromRaw(0),
+    owned_elem_ids: []const ids.ElemId = &.{},
 
     fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.render_nodes.deinit(allocator);
@@ -895,11 +1031,68 @@ const TestStream = struct {
         return &.{};
     }
 
+    /// Returns fixture-owned element ids without consulting unrelated descriptors.
+    pub fn scopeOwnedElemIds(self: *const @This(), scope_id: ids.ScopeId) []const ids.ElemId {
+        return if (scope_id == self.owned_scope_id) self.owned_elem_ids else &.{};
+    }
+
+    /// This minimal fixture owns no construction-node descriptors.
+    pub fn scopeOwnedNodeIds(_: *const @This(), _: ids.ScopeId) []const ids.NodeId {
+        return &.{};
+    }
+
+    /// Resolves fixture render identity; production streams use their dense O(1) index.
+    pub fn renderNodeIndex(self: *const @This(), elem_id: u64) ?usize {
+        for (self.render_nodes.items, 0..) |node, index| if (node.elem_id.raw() == elem_id) return index;
+        return null;
+    }
+
+    /// Resolves the test stream's raw render identity.
+    pub fn renderNodeIndexRaw(self: *const @This(), elem_id: u64) ?usize {
+        return self.renderNodeIndex(elem_id);
+    }
+
     /// This minimal stream fixture has no node-owned structural descriptors.
     pub fn nodeDescriptorIndex(_: *const @This(), _: ids.NodeId) ?descriptor_stream.NodeDescriptorIndex {
         return null;
     }
 };
+
+test "scope-owned removal ignores unrelated descriptor scopes and sweeps faults" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const owned = [_]ids.ElemId{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(2) };
+    var stream = TestStream{ .owned_scope_id = ids.ScopeId.fromRaw(10), .owned_elem_ids = &owned };
+    defer stream.deinit(std.testing.allocator);
+    try stream.render_nodes.appendSlice(std.testing.allocator, &.{
+        .{ .elem_id = ids.ElemId.fromRaw(1), .kind = .element },
+        .{ .elem_id = ids.ElemId.fromRaw(2), .kind = .text },
+    });
+    try stream.elements.append(std.testing.allocator, .{ .elem_id = ids.ElemId.fromRaw(1), .parent_elem_id = ids.ElemId.fromRaw(0), .scope_id = ids.ScopeId.fromRaw(10), .tag = "row" });
+    try stream.text_nodes.append(std.testing.allocator, .{ .elem_id = ids.ElemId.fromRaw(2), .parent_elem_id = ids.ElemId.fromRaw(1), .scope_id = ids.ScopeId.fromRaw(10), .value = "value" });
+    var unrelated: usize = 0;
+    while (unrelated < 10_000) : (unrelated += 1) {
+        const raw: u64 = @intCast(unrelated + 100);
+        try stream.render_nodes.append(std.testing.allocator, .{ .elem_id = ids.ElemId.fromRaw(raw), .kind = .text });
+        try stream.text_nodes.append(std.testing.allocator, .{ .elem_id = ids.ElemId.fromRaw(raw), .parent_elem_id = ids.ElemId.fromRaw(99), .scope_id = ids.ScopeId.fromRaw(20), .value = "unrelated" });
+    }
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var baseline = try prepareScopeOwnedRemoval(TestStream, counter.allocator(), &stream, &.{ids.ScopeId.fromRaw(10)});
+    try std.testing.expectEqual(@as(usize, 2), baseline.scan.target_scan_count);
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, baseline.scan.removed_elem_ids);
+    try std.testing.expectEqualSlices(u64, &.{0}, baseline.scan.touched_parent_ids);
+    try std.testing.expectEqualSlices(usize, &.{0}, baseline.descriptor_indexes.element_indexes.items);
+    try std.testing.expectEqualSlices(usize, &.{0}, baseline.descriptor_indexes.text_node_indexes.items);
+    const attempts = counter.attempts;
+    baseline.deinit(counter.allocator());
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareScopeOwnedRemoval(TestStream, fault.allocator(), &stream, &.{ids.ScopeId.fromRaw(10)}));
+        try std.testing.expectEqual(@as(usize, 10_002), stream.render_nodes.items.len);
+    }
+}
 
 test "structural splice scans removed render range" {
     const allocator = std.testing.allocator;

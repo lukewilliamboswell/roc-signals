@@ -86,14 +86,7 @@ pub const PreparedScopeClaims = struct {
     pub fn commit(self: *PreparedEachRowScopes, scopes: *std.ArrayListUnmanaged(Scope)) void {
         if (self.phase.isCommitted() or scopes.items.len != self.original_scope_len) @panic("invalid provisional each-row scope commit");
         for (self.rows.items) |scope| {
-            const index = scope.scope_id.index();
-            if (index < self.original_scope_len) {
-                if (scopes.items[index].lifecycle.isActive()) @panic("provisional each-row scope reused an active slot");
-                scopes.items[index] = scope;
-            } else {
-                if (index != scopes.items.len) @panic("provisional each-row scope suffix was not contiguous");
-                scopes.appendAssumeCapacity(scope);
-            }
+            scope_tree.publishScopeAssumeCapacity(EachRowScopeStep, scopes, self.original_scope_len, scope);
         }
         self.rows.clearRetainingCapacity();
         self.inactive_cursor = 0;
@@ -232,18 +225,79 @@ test "shared prepared scope claims assign distinct ids and retry after every OOM
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
-/// Disposes a scope subtree in post-order, releasing all values, effects, identities, and render ownership.
+test "prepared scope claims publish dense reused rows into child topology" {
+    var scopes: std.ArrayListUnmanaged(Scope) = .empty;
+    defer scopes.deinit(std.testing.allocator);
+    _ = try scope_tree.internRoot(EachRowScopeStep, std.testing.allocator, &scopes);
+    const retired = (try appendFreshEachRow(
+        std.testing.allocator,
+        &scopes,
+        semantic_ids.root_scope,
+        semantic_ids.SiteOrdinal.fromRaw(1),
+        1,
+        row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001),
+    )).scope_id;
+    scope_tree.retireScopeAssumeValid(EachRowScopeStep, scopes.items, retired, semantic_ids.Generation.fromRaw(1));
+
+    var claims = PreparedScopeClaims.init(std.testing.allocator, scopes.items);
+    defer claims.deinit();
+    const reused = try claims.prepareRow(
+        &scopes,
+        semantic_ids.root_scope,
+        semantic_ids.SiteOrdinal.fromRaw(2),
+        2,
+        row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0002),
+    );
+    const fresh = try claims.prepareRow(
+        &scopes,
+        semantic_ids.root_scope,
+        semantic_ids.SiteOrdinal.fromRaw(3),
+        3,
+        row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0003),
+    );
+    try std.testing.expectEqual(retired, reused);
+    try std.testing.expectEqual(semantic_ids.ScopeId.fromRaw(2), fresh);
+    try std.testing.expectEqual(@as(usize, 2), scopes.items.len);
+
+    claims.commit(&scopes);
+    try std.testing.expectEqual(@as(usize, 3), scopes.items.len);
+    try std.testing.expectEqual(@as(?semantic_ids.ScopeId, reused), scopes.items[semantic_ids.root_scope.index()].first_child_scope_id);
+    try std.testing.expectEqual(@as(?semantic_ids.ScopeId, fresh), scopes.items[semantic_ids.root_scope.index()].last_child_scope_id);
+    try std.testing.expectEqual(@as(?semantic_ids.ScopeId, fresh), scopes.items[reused.index()].next_sibling_scope_id);
+    try std.testing.expectEqual(@as(?semantic_ids.ScopeId, reused), scopes.items[fresh.index()].previous_sibling_scope_id);
+}
+
+/// Counts exact intrusive-topology work performed while selecting or disposing
+/// scope subtrees. Preparation visits each selected scope twice: once to size
+/// exact storage and once to materialize the stable post-order journal.
+pub const SubtreeTraversalWork = struct {
+    scope_visits: usize = 0,
+    child_links_followed: usize = 0,
+    validation_roots_checked: usize = 0,
+    validation_parent_links_followed: usize = 0,
+};
+
+/// Disposes a scope subtree in post-order, releasing all values, effects,
+/// identities, and render ownership without searching unrelated scope slots.
 pub fn disposeSubtree(comptime Row: type, scopes: []scope_tree.Scope(Row), scope_id: semantic_ids.ScopeId, retirement_generation: scope_tree.Generation, hooks: anytype) void {
+    var work: SubtreeTraversalWork = .{};
+    disposeSubtreeImpl(Row, scopes, scope_id, retirement_generation, hooks, &work);
+}
+
+/// Disposes a scope subtree like `disposeSubtree` and exposes exact topology
+/// work for invariant tests and native observability seams.
+pub fn disposeSubtreeMeasured(comptime Row: type, scopes: []scope_tree.Scope(Row), scope_id: semantic_ids.ScopeId, retirement_generation: scope_tree.Generation, hooks: anytype, work: *SubtreeTraversalWork) void {
+    disposeSubtreeImpl(Row, scopes, scope_id, retirement_generation, hooks, work);
+}
+
+fn disposeSubtreeImpl(comptime Row: type, scopes: []scope_tree.Scope(Row), scope_id: semantic_ids.ScopeId, retirement_generation: scope_tree.Generation, hooks: anytype, work: *SubtreeTraversalWork) void {
     if (scope_id.index() >= scopes.len) @panic("scope disposal referenced an unknown scope");
     if (scopes[scope_id.index()].scope_id != scope_id or !scopes[scope_id.index()].lifecycle.isActive()) @panic("scope id has no host scope descriptor");
+    work.scope_visits += 1;
 
-    var child_index: usize = 0;
-    while (child_index < scopes.len) : (child_index += 1) {
-        const child = scopes[child_index];
-        if (!child.lifecycle.isActive()) continue;
-        if (child.parent_scope_id == scope_id) {
-            disposeSubtree(Row, scopes, child.scope_id, retirement_generation, hooks);
-        }
+    while (scopes[scope_id.index()].first_child_scope_id) |child_scope_id| {
+        work.child_links_followed += 1;
+        disposeSubtreeImpl(Row, scopes, child_scope_id, retirement_generation, hooks, work);
     }
 
     hooks.deactivateNodeIdentities(scope_id);
@@ -257,7 +311,7 @@ pub fn disposeSubtree(comptime Row: type, scopes: []scope_tree.Scope(Row), scope
         .root, .component, .when_branch => {},
     }
     hooks.deinitScopeStep(&scope.step);
-    scope.lifecycle = .{ .retired = retirement_generation };
+    scope_tree.retireScopeAssumeValid(Row, scopes, scope_id, retirement_generation);
     hooks.recordScopeDisposed();
 }
 
@@ -266,6 +320,7 @@ pub fn disposeSubtree(comptime Row: type, scopes: []scope_tree.Scope(Row), scope
 /// and intentionally does not release step-owned resources.
 pub const PreparedSubtreeRetirement = struct {
     scope_ids: []semantic_ids.ScopeId,
+    work: SubtreeTraversalWork,
 
     /// Releases preparation storage without changing live scopes.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -276,9 +331,7 @@ pub const PreparedSubtreeRetirement = struct {
     /// Marks the prepared subtree inactive after replacement publication.
     pub fn applyMetadata(self: *const @This(), comptime Row: type, scopes: []scope_tree.Scope(Row), retirement_generation: scope_tree.Generation) void {
         for (self.scope_ids) |scope_id| {
-            const scope = &scopes[scope_id.index()];
-            if (!scope.lifecycle.isActive() or scope.scope_id != scope_id) @panic("prepared scope retirement no longer matched live state");
-            scope.lifecycle = .{ .retired = retirement_generation };
+            scope_tree.retireScopeAssumeValid(Row, scopes, scope_id, retirement_generation);
         }
     }
 };
@@ -286,42 +339,70 @@ pub const PreparedSubtreeRetirement = struct {
 /// Prepares a stable post-order scope-subtree snapshot without mutating scopes.
 pub fn prepareSubtreeRetirement(comptime Row: type, allocator: std.mem.Allocator, scopes: []const scope_tree.Scope(Row), root_scope_id: semantic_ids.ScopeId) std.mem.Allocator.Error!PreparedSubtreeRetirement {
     if (root_scope_id.index() >= scopes.len or scopes[root_scope_id.index()].scope_id != root_scope_id or !scopes[root_scope_id.index()].lifecycle.isActive()) return error.OutOfMemory;
-    var ids: std.ArrayListUnmanaged(semantic_ids.ScopeId) = .empty;
-    errdefer ids.deinit(allocator);
-    try ids.ensureTotalCapacity(allocator, scopes.len);
-    try appendSubtreePostOrder(Row, scopes, root_scope_id, &ids);
-    return .{ .scope_ids = try ids.toOwnedSlice(allocator) };
+    var work: SubtreeTraversalWork = .{};
+    const scope_count = try countSubtree(Row, scopes, root_scope_id, &work);
+    const scope_ids = try allocator.alloc(semantic_ids.ScopeId, scope_count);
+    var cursor: usize = 0;
+    appendSubtreePostOrder(Row, scopes, root_scope_id, scope_ids, &cursor, &work);
+    std.debug.assert(cursor == scope_ids.len);
+    return .{ .scope_ids = scope_ids, .work = work };
 }
 
 /// Prepares disjoint scope subtrees as one stable post-order retirement journal.
 pub fn prepareSubtreesRetirement(comptime Row: type, allocator: std.mem.Allocator, scopes: []const scope_tree.Scope(Row), root_scope_ids: []const semantic_ids.ScopeId) (std.mem.Allocator.Error || error{OverlappingSubtrees})!PreparedSubtreeRetirement {
-    const selected = try allocator.alloc(bool, scopes.len);
-    defer allocator.free(selected);
-    @memset(selected, false);
-    var ids: std.ArrayListUnmanaged(semantic_ids.ScopeId) = .empty;
-    errdefer ids.deinit(allocator);
-    try ids.ensureTotalCapacity(allocator, scopes.len);
+    var work: SubtreeTraversalWork = .{};
+    const is_root = try allocator.alloc(bool, scopes.len);
+    defer allocator.free(is_root);
+    @memset(is_root, false);
     for (root_scope_ids) |root_scope_id| {
+        work.validation_roots_checked += 1;
         if (root_scope_id.index() >= scopes.len or scopes[root_scope_id.index()].scope_id != root_scope_id or !scopes[root_scope_id.index()].lifecycle.isActive()) return error.OverlappingSubtrees;
-        try appendDisjointSubtreePostOrder(Row, scopes, root_scope_id, selected, &ids);
+        if (is_root[root_scope_id.index()]) return error.OverlappingSubtrees;
+        is_root[root_scope_id.index()] = true;
     }
-    return .{ .scope_ids = try ids.toOwnedSlice(allocator) };
+    for (root_scope_ids) |root_scope_id| {
+        var ancestor = scopes[root_scope_id.index()].parent_scope_id;
+        while (ancestor) |ancestor_scope_id| {
+            work.validation_parent_links_followed += 1;
+            if (ancestor_scope_id.index() >= scopes.len or scopes[ancestor_scope_id.index()].scope_id != ancestor_scope_id) return error.OverlappingSubtrees;
+            if (is_root[ancestor_scope_id.index()]) return error.OverlappingSubtrees;
+            ancestor = scopes[ancestor_scope_id.index()].parent_scope_id;
+        }
+    }
+
+    var scope_count: usize = 0;
+    for (root_scope_ids) |root_scope_id| {
+        scope_count = std.math.add(usize, scope_count, try countSubtree(Row, scopes, root_scope_id, &work)) catch return error.OutOfMemory;
+    }
+    const scope_ids = try allocator.alloc(semantic_ids.ScopeId, scope_count);
+    var cursor: usize = 0;
+    for (root_scope_ids) |root_scope_id| appendSubtreePostOrder(Row, scopes, root_scope_id, scope_ids, &cursor, &work);
+    std.debug.assert(cursor == scope_ids.len);
+    return .{ .scope_ids = scope_ids, .work = work };
 }
 
-fn appendDisjointSubtreePostOrder(comptime Row: type, scopes: []const scope_tree.Scope(Row), scope_id: semantic_ids.ScopeId, selected: []bool, ids: *std.ArrayListUnmanaged(semantic_ids.ScopeId)) error{OverlappingSubtrees}!void {
-    if (selected[scope_id.index()]) return error.OverlappingSubtrees;
-    selected[scope_id.index()] = true;
-    for (scopes) |child| {
-        if (child.lifecycle.isActive() and child.parent_scope_id != null and child.parent_scope_id.? == scope_id) try appendDisjointSubtreePostOrder(Row, scopes, child.scope_id, selected, ids);
+fn countSubtree(comptime Row: type, scopes: []const scope_tree.Scope(Row), scope_id: semantic_ids.ScopeId, work: *SubtreeTraversalWork) std.mem.Allocator.Error!usize {
+    work.scope_visits += 1;
+    var count: usize = 1;
+    var child_scope_id = scopes[scope_id.index()].first_child_scope_id;
+    while (child_scope_id) |child_id| {
+        work.child_links_followed += 1;
+        count = std.math.add(usize, count, try countSubtree(Row, scopes, child_id, work)) catch return error.OutOfMemory;
+        child_scope_id = scopes[child_id.index()].next_sibling_scope_id;
     }
-    ids.appendAssumeCapacity(scope_id);
+    return count;
 }
 
-fn appendSubtreePostOrder(comptime Row: type, scopes: []const scope_tree.Scope(Row), scope_id: semantic_ids.ScopeId, ids: *std.ArrayListUnmanaged(semantic_ids.ScopeId)) std.mem.Allocator.Error!void {
-    for (scopes) |child| {
-        if (child.lifecycle.isActive() and child.parent_scope_id != null and child.parent_scope_id.? == scope_id) try appendSubtreePostOrder(Row, scopes, child.scope_id, ids);
+fn appendSubtreePostOrder(comptime Row: type, scopes: []const scope_tree.Scope(Row), scope_id: semantic_ids.ScopeId, scope_ids: []semantic_ids.ScopeId, cursor: *usize, work: *SubtreeTraversalWork) void {
+    work.scope_visits += 1;
+    var child_scope_id = scopes[scope_id.index()].first_child_scope_id;
+    while (child_scope_id) |child_id| {
+        work.child_links_followed += 1;
+        appendSubtreePostOrder(Row, scopes, child_id, scope_ids, cursor, work);
+        child_scope_id = scopes[child_id.index()].next_sibling_scope_id;
     }
-    ids.appendAssumeCapacity(scope_id);
+    scope_ids[cursor.*] = scope_id;
+    cursor.* += 1;
 }
 
 const TestRow = struct {
@@ -484,7 +565,131 @@ test "prepared disjoint scope retirement unions roots and rejects overlap" {
     }
 
     try std.testing.expectError(error.OverlappingSubtrees, prepareSubtreesRetirement(TestRow, std.testing.allocator, scopes.items, &.{ semantic_ids.ScopeId.fromRaw(1), semantic_ids.ScopeId.fromRaw(2) }));
+    try std.testing.expectError(error.OverlappingSubtrees, prepareSubtreesRetirement(TestRow, std.testing.allocator, scopes.items, &.{ semantic_ids.ScopeId.fromRaw(4), semantic_ids.ScopeId.fromRaw(4) }));
     for (scopes.items) |scope| try std.testing.expect(scope.lifecycle.isActive());
+}
+
+test "scope subtree work ignores ten thousand unrelated scopes and retries after OOM" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var scopes: std.ArrayListUnmanaged(scope_tree.Scope(TestRow)) = .empty;
+    defer scopes.deinit(std.testing.allocator);
+    _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
+
+    const target = (try scope_tree.appendFreshEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, .{
+        .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(1),
+        .key_hash = 1,
+        .row_handle = row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001),
+    })).scope_id;
+    const target_child = (try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, target, semantic_ids.SiteOrdinal.fromRaw(1), semantic_ids.initial_generation)).scope_id;
+    const target_grandchild = (try scope_tree.appendFreshEachRow(TestRow, std.testing.allocator, &scopes, target_child, .{
+        .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(2),
+        .key_hash = 2,
+        .row_handle = row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0002),
+    })).scope_id;
+
+    var unrelated_index: usize = 0;
+    while (unrelated_index < 10_000) : (unrelated_index += 1) {
+        _ = try scope_tree.appendFreshEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, .{
+            .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(@intCast(unrelated_index + 10)),
+            .key_hash = unrelated_index + 10,
+            .row_handle = row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0003),
+        });
+    }
+
+    var baseline_fault = FaultAllocator.init(std.testing.allocator);
+    var baseline = try prepareSubtreeRetirement(TestRow, baseline_fault.allocator(), scopes.items, target);
+    try std.testing.expectEqual(@as(usize, 1), baseline_fault.attempts);
+    try std.testing.expectEqualSlices(semantic_ids.ScopeId, &.{ target_grandchild, target_child, target }, baseline.scope_ids);
+    try std.testing.expectEqual(@as(usize, 6), baseline.work.scope_visits);
+    try std.testing.expectEqual(@as(usize, 4), baseline.work.child_links_followed);
+    try std.testing.expectEqual(@as(usize, 0), baseline.work.validation_parent_links_followed);
+    baseline.deinit(baseline_fault.allocator());
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, prepareSubtreeRetirement(TestRow, fault.allocator(), scopes.items, target));
+    for (scopes.items) |scope| try std.testing.expect(scope.lifecycle.isActive());
+
+    fault.configure(null);
+    var retry = try prepareSubtreeRetirement(TestRow, fault.allocator(), scopes.items, target);
+    defer retry.deinit(fault.allocator());
+    retry.applyMetadata(TestRow, scopes.items, semantic_ids.Generation.fromRaw(11));
+    try std.testing.expect(!scopes.items[target.index()].lifecycle.isActive());
+    try std.testing.expect(!scopes.items[target_child.index()].lifecycle.isActive());
+    try std.testing.expect(!scopes.items[target_grandchild.index()].lifecycle.isActive());
+    try std.testing.expect(scopes.items[semantic_ids.ScopeId.fromRaw(4).index()].lifecycle.isActive());
+    try std.testing.expectEqual(@as(?semantic_ids.ScopeId, semantic_ids.ScopeId.fromRaw(4)), scopes.items[semantic_ids.root_scope.index()].first_child_scope_id);
+}
+
+test "ten thousand flat retirement roots validate with linear indexed work and retry after every allocation failure" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var scopes: std.ArrayListUnmanaged(scope_tree.Scope(TestRow)) = .empty;
+    defer scopes.deinit(std.testing.allocator);
+    _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
+
+    var roots: std.ArrayListUnmanaged(semantic_ids.ScopeId) = .empty;
+    defer roots.deinit(std.testing.allocator);
+    try roots.ensureTotalCapacity(std.testing.allocator, 10_000);
+    for (0..10_000) |index| {
+        const row = try scope_tree.appendFreshEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, .{
+            .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(@intCast(index + 1)),
+            .key_hash = index,
+            .row_handle = row_handles.RowHandleId.fromRaw(@intCast(0x0000_0001_0000_0001 + index)),
+        });
+        roots.appendAssumeCapacity(row.scope_id);
+    }
+
+    var baseline_fault = FaultAllocator.init(std.testing.allocator);
+    var baseline = try prepareSubtreesRetirement(TestRow, baseline_fault.allocator(), scopes.items, roots.items);
+    const attempts = baseline_fault.attempts;
+    try std.testing.expectEqual(@as(usize, 2), attempts);
+    try std.testing.expectEqual(@as(usize, 10_000), baseline.scope_ids.len);
+    try std.testing.expectEqual(@as(usize, 10_000), baseline.work.validation_roots_checked);
+    try std.testing.expectEqual(@as(usize, 10_000), baseline.work.validation_parent_links_followed);
+    try std.testing.expectEqual(@as(usize, 20_000), baseline.work.scope_visits);
+    try std.testing.expectEqual(@as(usize, 0), baseline.work.child_links_followed);
+    baseline.deinit(baseline_fault.allocator());
+
+    for (1..attempts + 1) |fail_at| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(fail_at);
+        try std.testing.expectError(error.OutOfMemory, prepareSubtreesRetirement(TestRow, fault.allocator(), scopes.items, roots.items));
+        for (scopes.items) |scope| try std.testing.expect(scope.lifecycle.isActive());
+    }
+
+    var retry_fault = FaultAllocator.init(std.testing.allocator);
+    var retry = try prepareSubtreesRetirement(TestRow, retry_fault.allocator(), scopes.items, roots.items);
+    defer retry.deinit(retry_fault.allocator());
+    try std.testing.expectEqualSlices(semantic_ids.ScopeId, roots.items, retry.scope_ids);
+}
+
+test "measured immediate subtree disposal follows only descendant links" {
+    var scopes: std.ArrayListUnmanaged(scope_tree.Scope(TestRow)) = .empty;
+    defer scopes.deinit(std.testing.allocator);
+    _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
+    const target = (try scope_tree.appendFreshEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, .{
+        .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(1),
+        .key_hash = 1,
+        .row_handle = row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001),
+    })).scope_id;
+    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, target, semantic_ids.SiteOrdinal.fromRaw(1), semantic_ids.initial_generation);
+    var unrelated_index: usize = 0;
+    while (unrelated_index < 10_000) : (unrelated_index += 1) {
+        _ = try scope_tree.appendFreshEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, .{
+            .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(@intCast(unrelated_index + 10)),
+            .key_hash = unrelated_index + 10,
+            .row_handle = row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0002),
+        });
+    }
+
+    var hooks = TestDisposeHooks{};
+    defer hooks.deinit(std.testing.allocator);
+    var work: SubtreeTraversalWork = .{};
+    disposeSubtreeMeasured(TestRow, scopes.items, target, semantic_ids.Generation.fromRaw(12), &hooks, &work);
+    try std.testing.expectEqual(@as(usize, 2), work.scope_visits);
+    try std.testing.expectEqual(@as(usize, 1), work.child_links_followed);
+    try std.testing.expectEqual(@as(u64, 2), hooks.disposed_scopes);
+    try std.testing.expect(scopes.items[semantic_ids.ScopeId.fromRaw(3).index()].lifecycle.isActive());
 }
 
 test "scope runtime owns stable each-row handle and key hash" {

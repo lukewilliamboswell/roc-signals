@@ -2,6 +2,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal exposing [Signal]
 import pf.Ui
 
@@ -306,8 +307,10 @@ main = || {
 												)
 
 											# fan-in: windowed rows + row context -> rendered rows
-											view_rows : Signal(List(GridData.ViewRow))
-											view_rows = Signal.map2(page_rows, row_ctx, GridData.decorate)
+											view_rows : Signal(Rows.Rows(GridData.ViewRow))
+											view_rows =
+												Signal.map2(page_rows, row_ctx, |rows, ctx|
+													Rows.from_list(GridData.decorate(rows, ctx), |row| row.id.to_str()) ?? crash "duplicate row key")
 
 											# fan-in over the FULL filtered dataset, not the page
 											summary : Signal(GridData.Summary)
@@ -427,7 +430,7 @@ main = || {
 																				"min-w-[46rem]",
 																				[
 																					grid_header,
-																			Ui.each(view_rows, |row| row.id.to_str(), |each_row| render_row(selected_state, notes, each_row.key(), each_row.signal())),
+																					Ui.each(view_rows, |each_row| render_row(selected_state, notes, each_row.key(), each_row.signal())),
 																				],
 																			),
 																		],

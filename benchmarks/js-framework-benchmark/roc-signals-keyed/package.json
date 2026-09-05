@@ -12,7 +12,7 @@
   "scripts": {
     "dev": "npm run build-prod",
     "build-prod": "python3 build.py",
-    "verify": "node ../../../scripts/browser/verify_js_framework_artifact.mjs ./dist/app.wasm"
+    "verify": "python3 verify.py"
   },
   "license": "UPL-1.0"
 }

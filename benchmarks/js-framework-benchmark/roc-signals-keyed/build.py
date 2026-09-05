@@ -16,12 +16,18 @@ def signals_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-builder = signals_root() / "scripts" / "build_js_framework_benchmark.py"
-if not builder.is_file():
-    raise SystemExit(
-        "cannot locate scripts/build_js_framework_benchmark.py; "
-        "set ROC_SIGNALS_ROOT to a Roc Signals checkout"
-    )
+def main() -> None:
+    """Delegate to the repository's canonical benchmark builder."""
+    builder = signals_root() / "scripts" / "build_js_framework_benchmark.py"
+    if not builder.is_file():
+        raise SystemExit(
+            "cannot locate scripts/build_js_framework_benchmark.py; "
+            "set ROC_SIGNALS_ROOT to a Roc Signals checkout"
+        )
 
-os.environ["ROC_SIGNALS_ADAPTER_DIR"] = str(Path(__file__).resolve().parent)
-runpy.run_path(str(builder), run_name="__main__")
+    os.environ["ROC_SIGNALS_ADAPTER_DIR"] = str(Path(__file__).resolve().parent)
+    runpy.run_path(str(builder), run_name="__main__")
+
+
+if __name__ == "__main__":
+    main()

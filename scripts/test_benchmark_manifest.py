@@ -112,8 +112,11 @@ class BenchmarkManifestTests(unittest.TestCase):
             'Html.class_attr("preloadicon glyphicon glyphicon-remove")',
             'Html.attr("aria-hidden", "true")',
             'Html.attr("id", "tbody")',
-            'Signal.select(selected, key)',
-            'Ui.each(rows, |row| row.id.to_str()',
+            'selected.keyed("danger", "")',
+            'import pf.Rows exposing [Rows]',
+            'Model : { rows : Rows(Row)',
+            'Rows.replace_all(model.rows, generated.rows)',
+            'Ui.each(rows, |each_row| render_row(model, selected_keyed, each_row.key(), each_row))',
         ):
             self.assertIn(expected, source)
 

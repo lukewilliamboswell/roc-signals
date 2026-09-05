@@ -51,10 +51,13 @@
     (mark-metrics)
     (click (role button :name "Demote the last heading"))
     (expect-attr (test-id "toc:one") data-level "6")
-    ; Nothing remounts. The block key no longer carries the block kind, so the
-    ; row survives the h5-to-h6 change and `Ui.switch` swaps only the structural
-    ; branch inside it. The outline row is patched, as it always was.
-    (expect-metric-delta rows_created 0)
+    ; The keyed block and outline rows survive because their keys are unchanged.
+    ; The heading tag is structural, however, so `Ui.switch` retires the h5
+    ; branch and creates the h6 branch. Its nested inline-segment row belongs to
+    ; that branch scope and is therefore created once in the replacement branch.
+    ; Retiring the old branch is scope disposal, not a keyed reconciliation
+    ; removal, so it intentionally does not increment rows_removed.
+    (expect-metric-delta rows_created 1)
     (expect-metric-delta rows_removed 0)
     ; Level six is the floor: another demotion is a no-op.
     (mark-metrics)

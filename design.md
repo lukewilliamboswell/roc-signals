@@ -374,7 +374,12 @@ intervals; transforms identify derived signals; browser sources use their
 `from_payload` transforms. The descriptor carries this pointer as both the
 record's identity and its evaluator, and ingestion asserts that they agree. Cloned signal descriptors therefore share a record, while two
 separately constructed signals get distinct callable allocations even when they
-use the same specialization. Callable addresses are lookup keys only; the host
+use the same specialization. A fused keyed-row selector instead has composite
+identity `(site callable, row handle)`: one site owns the typed reader,
+selected/unselected initializers, and output capability, while every row remains
+an ordinary independently cached graph record registered under its exact key.
+Persistent and transaction-local composite indexes are separate from the
+callable-only indexes used by other signals and effects. Callable addresses are lookup keys only; the host
 still owns separate dense node, active-graph, task-request, interval, and DOM ids.
 
 - Within a scope, node identity is **construction order** (the order the app
@@ -386,13 +391,17 @@ still owns separate dense node, active-graph, task-request, interval, and DOM id
   around: "where you built it is your identity," so the seams that can shift
   (branches, lists) are explicit scope boundaries.
 - **Dynamic lists use stable UTF-8 key material, not position.** `Ui.each` takes
-  a key function `item -> Str`. Identity is the exact UTF-8 byte sequence of
-  that string: no normalization, case folding, locale transform, lossy decode,
-  or hash-only equality is permitted. The host owns copied key bytes for the
-  committed generation and hashes them privately for its row lookup table;
-  collisions and duplicate-key checks compare the complete bytes. A row's
-  identity is that key, so per-row local state survives reorder/insert/delete.
-  Duplicate byte-identical keys are a contract error, never silently aliased.
+  a `Signal(Rows(item))`; the immutable `Rows` value owns the one
+  `item -> Str` key function used for every generation. Identity is the exact
+  UTF-8 byte sequence returned when an item enters or changes: no normalization,
+  case folding, locale transform, lossy decode, or hash-only equality is
+  permitted. `Rows` caches that key beside the item and maintains an exact-key
+  index; the host owns copied key bytes for each live row and hashes them
+  privately for its site lookup table. Collisions and duplicate-key checks
+  compare complete bytes. A row's identity is that key, so per-row local state
+  survives reorder/insert/delete. Duplicate byte-identical keys are an ordinary
+  `Rows.Error` while constructing or editing a value and a contract error if an
+  adapter violates the authenticated transition ABI; they are never aliases.
   Row handles, sink tokens, generations, and all host-minted dense identities
   are nonzero and nonwrapping: an exhausted generation retires its slot instead
   of aliasing an earlier lifetime, and an exhausted dense id space is a resource
@@ -518,9 +527,10 @@ CapabilityHandle := {
   `{ capability, read : HostValue -> Str }` record; a `Ui.when` condition owns a
   `{ capability, read : HostValue -> Bool }` record; a task request read and an
   event reducer carry their operation the same way; `Ui.each` owns one ops
-  record containing its collection/item capabilities plus `len`, `copy_keys`,
-  `compare_pairs`, `clone_item_at`, and `row`. These records are carried by the
-  edge that needs them, never invented by the host.
+  record containing its `Rows`/item capabilities plus `describe`,
+  `copy_snapshot`, `copy_delta`, `compare_slots`, `clone_item`, and `row`.
+  These records are carried by the edge that needs them, never invented by the
+  host.
 - **The capability is app-compiled, not host-authored.** The prebuilt host sees
   only the platform ABI; `a` is made concrete by the *application* (`Signal(a)`,
   `Model`, a row item type). The capability's closures are emitted by
@@ -528,70 +538,91 @@ CapabilityHandle := {
   `RocErasedCallable` values. The host stores and invokes them; it never inspects
   the layout they encapsulate.
 
-### Immutable collection generations and preallocated sinks
+### Immutable `Rows` generations and preallocated sinks
 
-`Ui.each` does not materialize `List(HostValue)`, `List(Str)`, or a returned
-comparison batch. Its signal value is one capability-owned, immutable
-`List(item)` generation retained as an opaque `HostValue`. The app-compiled ops
-record is the only code allowed to interpret it:
+`Rows(item)` is an opaque, ordinary Roc value: it can live in state, task
+results, records, and derived signals. It owns `key_of`, cached exact keys, and
+stable generational slot ids, and publishes either a full snapshot or a
+normalized delta from its immediate parent. `Rows.is_eq` compares a private
+boxed-callable generation identity in O(1); cloning a value preserves identity,
+while every content-changing operation creates a fresh identity. A hosted
+callable-identity hook is the only code allowed to compare those tokens. The ABI
+proof must establish uniqueness in optimized native and Wasm builds and balanced
+ARC ownership; no pointer/content approximation may replace that proof.
+
+The persistent representation is a 32-way order tree over stable slot ids, a
+chunked generational slot store containing items and cached keys, and an
+exact-key persistent hash index. Slot ids pack a nonzero 32-bit index and a
+32-bit generation. A generation never wraps: a saturated slot retires, and
+exhausting the available slot space returns `Rows.SlotExhausted`. A value retains
+only its immediate parent token and transition, never an unbounded history.
+
+`Rows.apply` validates edits sequentially. `MoveRange.to` is interpreted after
+source removal. Equal same-key sets normalize away; an unequal same-key set
+keeps its slot, while a key-changing set is remove-plus-insert and therefore
+resets row-local state. Removing and reinserting the same key within one
+unpublished batch preserves that slot when the final value still contains it.
+Invalid indexes/ranges, missing keys, and duplicate exact keys return structured
+`Rows.Error` values without publishing a partial generation. `replace_all`
+publishes an explicit snapshot and reuses stable slots for surviving keys.
+
+`Ui.each` does not materialize `List(HostValue)`, `List(Str)`, or returned
+comparison/edit batches. Its signal value is one capability-owned `Rows(item)`
+generation retained as an opaque `HostValue`. The app-compiled ops record is the
+only code allowed to interpret it:
 
 ```text
-len            : HostValue -> U64
-copy_keys      : HostValue, U64 -> U64
-compare_pairs  : HostValue, HostValue, List(U64), U64 -> U64
-clone_item_at  : HostValue, U64 -> HostValue
-row            : Str, U64 -> Elem
+describe       : HostValue, metadata_sink -> void
+copy_snapshot  : HostValue, slot_and_key_sink -> void
+copy_delta     : HostValue, edit_and_key_sink -> void
+compare_slots  : HostValue, HostValue, slot_pairs, bool_sink -> void
+clone_item     : HostValue, slot_id -> HostValue
+row            : Str, row_handle -> Elem
 ```
 
 Every callback receives an independently owned clone of each collection-owner
-argument. The generation's retained owner is never passed as an untracked
-borrow; consuming or rejecting a callback input cannot invalidate the retained
-generation. The callback consumes those owner clones exactly once.
+argument. A generation retained by the site is never passed as an untracked
+borrow; consuming or rejecting callback input cannot invalidate it. The callback
+consumes those owner clones exactly once. The host reserves exact bounded storage
+from `describe`, then activates transaction-scoped sink tokens. Snapshot and
+delta callbacks write directly into those sinks. Sinks consume owned strings and
+primitive batches and validate token, count, order, byte bounds, slot validity,
+transition kind, parent identity, and capability ownership. Tokens are
+unforgeable within the instance, nonzero, nonwrapping, valid only for their
+active callback, and invalidated on success or abort. Missing, stale, duplicate,
+out-of-range, or incomplete pushes are contract errors; no persistent returned
+Roc batch exists.
 
-The host calls `len`, reserves exact bounded storage, then activates a
-transaction-scoped sink token before `copy_keys`. Roc writes each key directly
-into the reserved slot through the hosted sink operation. The sink consumes the
-owned `Str`, validates index/order/count, and copies the exact UTF-8 bytes into
-host-owned candidate storage. Tokens are unforgeable within the instance,
-nonzero, nonwrapping, valid only for their active callback, and invalidated on
-success or abort. A missing, stale, duplicate, out-of-range, or incomplete push
-is a contract error. The same protocol applies to `compare_pairs`: the host
-passes a primitive interleaved `List(U64)` of old/new indexes and Roc writes
-booleans into a preallocated result sink. The primitive pair list is an owned
-callback input and contains no retained Roc values; it is released exactly once
-after the call. No persistent returned Roc batch list exists.
+A matching immediate parent token selects the sparse delta path. A valid but
+nonmatching token deterministically selects exact full-snapshot reconciliation
+and increments `rows_snapshot_batches`; it is not an error or heuristic. A null,
+malformed, or falsely claimed delta token is a contract error. After a stale
+sibling takes the snapshot path, its next direct edit again has a matching parent
+and resumes sparse processing.
 
-The old and candidate collection values remain independently retained for the
-whole comparison. Their item-container capabilities must match. The host clones
-an item through `clone_item_at` only when a new row must be materialized or a
-surviving row's ordinary graph source must receive a changed value; the result
-is owned by the adapter's item capability. Unchanged and removed rows do not
-cause every item to be boxed. A row builder runs only for a newly live key.
-`Ui.Row.map` is normal `Signal.map` over the stable row source, so row updates
-participate in dependency ordering and equality pruning instead of using a
-parallel row-observer mechanism.
+The old and candidate `Rows` values remain independently retained through
+comparison. Their item capabilities must match. The host clones an item through
+`clone_item` only when a new row must be materialized or a surviving row's
+ordinary graph source receives an unequal value. Unchanged and removed rows do
+not box every item. A row builder runs only for a newly live key. `Ui.Row.map` is
+normal `Signal.map` over the stable row source, so row updates participate in
+dependency ordering and equality pruning rather than a parallel observer path.
 
-Reconciliation is a candidate overlay. Key bytes, duplicate detection, matched
-indexes, equality results, row-handle reservations, item clones, structural
-plans, and command reservations are provisional until all validation and
-fallible host allocation succeeds. Commit then swaps the collection generation,
-publishes row-source updates and structural splices, and exposes one complete
-command batch without allocation. Abort releases the candidate generation,
-provisional item values, keys, handles, and sink state and leaves the committed
-generation and DOM untouched. The old generation is released only after a
-successful commit; no row keeps a persistent typed key or item cell.
+Reconciliation is a candidate overlay. Key bytes, duplicate detection, slot
+comparisons, row-handle reservations, item clones, structural plans, and command
+reservations are provisional until validation and all fallible host allocation
+succeeds. Commit swaps the generation, publishes row-source updates and local
+structural splices, and exposes one complete command batch without allocation.
+Abort releases candidate ownership, provisional items, keys, handles, and sink
+state and leaves the committed generation and DOM untouched. The old generation
+is released only after successful publication.
 
 Generation ownership is site-scoped. At most the committed generation plus a
 transaction's candidate generation are retained for one `Ui.each` site, apart
-from explicit independently owned item clones installed in live row-source
-nodes. Disposal releases the committed generation, adapter callables and
-capabilities, row sources, keys, handles, and subtrees deterministically.
-
-This design deliberately does not introduce a general `DescriptorOwner`, a
-global descriptor arena, or cross-site/global key, string, item, or callable
-pool. Those are separate optimizations requiring independent lifetime,
-saturation, and teardown evidence; the collection adapter must remain correct
-and bounded without them.
+from independently owned item clones installed in live row-source nodes.
+Disposal releases the committed generation, adapter callables and capabilities,
+row sources, keys, handles, and subtrees deterministically. There is no general
+descriptor owner or cross-site/global key, string, item, or callable pool.
 
 **The split law.** `get`/`get_tagged` is *split-and-replace clone, never a
 borrow*. The capability's app-compiled clone operation uses its private typed
@@ -641,6 +672,7 @@ resolves and specializes.
 ```roc
 # Opaque to the app:
 Signal(a)
+Rows(item)
 Elem
 Task(a, err)
 TaskStatus(a, err)
@@ -656,7 +688,12 @@ Signal.map2 : Signal(a), Signal(b), (a, b -> c) -> Signal(c)
     where [c.is_eq : c, c -> Bool]
 Signal.combine : List(Signal(a)) -> Signal(List(a))
     where [a.is_eq : a, a -> Bool]
+Signal.combine_map : List(Signal(a)), (List(a) -> b) -> Signal(b)
+    where [b.is_eq : b, b -> Bool]
 Signal.select : Signal(Str), Str -> Signal(Bool)   # O(1) members dirtied per key change
+Signal.keyed : Signal(Str), value, value -> Signal.Keyed(value)
+    where [value.is_eq : value, value -> Bool]
+Ui.Row.select : Ui.Row(item), Signal.Keyed(value) -> Signal(value)
 # Named multi-signal composition should use Roc record-builder syntax:
 # { first: first_signal, last: last_signal, active: active_signal }.Signal
 
@@ -815,10 +852,41 @@ Ui.Row.key : Ui.Row(a) -> Str
 Ui.Row.signal : Ui.Row(a) -> Signal(a)
 Ui.Row.map : Ui.Row(a), (a -> value) -> Signal(value)
     where [value.is_eq : value, value -> Bool]
-Ui.each : Signal(List(item)), (item -> Str), (Ui.Row(item) -> Elem) -> Elem
-    where [
-        item.is_eq : item, item -> Bool,
-    ]
+
+Rows.Error := [
+    DuplicateKey(Str),
+    IndexOutOfBounds({ index : U64, len : U64 }),
+    KeyNotFound(Str),
+    RangeOutOfBounds({ at : U64, count : U64, len : U64 }),
+    SlotExhausted,
+]
+Rows.Before := [End, Key(Str)]
+Rows.Edit(item) := [
+    Append(List(item)),
+    Clear,
+    InsertAt({ at : U64, items : List(item) }),
+    InsertBefore({ before : Str, items : List(item) }),
+    MoveKeyBefore({ key : Str, before : Rows.Before }),
+    MoveRange({ from : U64, count : U64, to : U64 }),
+    RemoveKey(Str),
+    RemoveRange({ at : U64, count : U64 }),
+    SetAt({ at : U64, item : item }),
+    SetKey({ key : Str, item : item }),
+]
+Rows.empty : (item -> Str) -> Rows(item)
+Rows.from_list : List(item), (item -> Str) -> Try(Rows(item), Rows.Error)
+Rows.replace_all : Rows(item), List(item) -> Try(Rows(item), Rows.Error)
+Rows.apply : Rows(item), List(Rows.Edit(item)) -> Try(Rows(item), Rows.Error)
+    where [item.is_eq : item, item -> Bool]
+Rows.len : Rows(item) -> U64
+Rows.get : Rows(item), U64 -> Try(item, Rows.Error)
+Rows.get_key : Rows(item), Str -> Try(item, Rows.Error)
+Rows.iter : Rows(item) -> Iter(item)
+Rows.to_list : Rows(item) -> List(item)
+Rows.content_is_eq : Rows(item), Rows(item) -> Bool
+    where [item.is_eq : item, item -> Bool]
+Rows.is_eq : Rows(item), Rows(item) -> Bool
+Ui.each : Signal(Rows(item)), (Ui.Row(item) -> Elem) -> Elem
 
 # Components (a scope with inputs and children)
 Ui.component : (() -> Elem) -> Elem
@@ -1044,14 +1112,13 @@ string and not by re-derived tree position.
 ### Example: keyed list with per-row local state
 
 ```roc
-todo_list : Signal(List(Todo)) -> Elem
+todo_list : Signal(Rows(Todo)) -> Elem
 todo_list = |todos|
     Html.div(
         [],
         [
             Ui.each(
                 todos,
-                |todo| todo.id,
                 |row| {
                     Ui.state(Bool.false, |editing_state| {
                         editing = editing_state.signal()
@@ -1141,7 +1208,7 @@ SignalExpr := [
 erasure). They are produced from `Signal.map`/`map2`/`Ui.state` at the call site,
 so their input and output types are pinned to the surrounding `Signal(a)`. A
 source's initial value, sink reads, event payloads, structural conditions, and
-immutable keyed-collection generations are carried as opaque `HostValue`
+immutable `Rows` generations are carried as opaque `HostValue`
 handles, each
 paired with the per-edge **capability** (clone/split, equality, drop) plus any
 capability-owned extension record for the edge-specific operation — see *The
@@ -1184,7 +1251,7 @@ roc_ui_init : () -> Box(Elem)
   **retained builder closure**, not a new entrypoint. The row builder you pass to
   `Ui.each` and each branch body of `Ui.when` are captured at
   init as `RocErasedCallable` values. For `Ui.each`, the host first reconciles
-  immutable collection generations through the retained adapter operations;
+  immutable `Rows` generations through the retained snapshot/delta operations;
   only when a key has no surviving row does it call `row` with the host-owned
   key text and a generation-checked `RowHandle`. The builder receives no item
   snapshot. It constructs `Ui.Row(item)` around the ordinary graph row source
@@ -1398,8 +1465,9 @@ change; L = rows at the affected `Ui.each` site):
 | non-structural event propagation | O(C + fanout) | O(N); O(fanout²) dedup/sort |
 | selector key change (M members) | O(1) members dirtied, 0 derived Roc calls, O(1) capability reads | O(M) member recompute or `is_eq` scan |
 | `Ui.when` branch flip | O(changed subtree) | O(N) field/route/graph rebuild |
-| `Ui.each` keyed diff | O(L) via key hash index | O(L²) `is_eq` scan |
-| `Ui.each` append/remove/filter | O(K) | O(N) per touched row |
+| `Ui.each` direct-parent delta | O(edit operations + touched key bytes + affected scopes/fanout) | O(L) snapshot scan or O(N) global work |
+| `Ui.each` snapshot/stale sibling | O(L) via exact key hash index | O(L²) `is_eq` scan |
+| `Ui.each` append/remove/filter | O(K) after explicit `Rows` edits | O(N) per touched row |
 | `Ui.each` reorder | O(K moved) DOM moves | O(L) whole-site re-collect + rebuild |
 | dependency-graph maintenance after a splice | O(affected scope) | full clear-and-rebuild of the active graph over N |
 | host allocation / free bookkeeping | O(1) per alloc/free | O(live allocations) scan per free |
@@ -1420,8 +1488,10 @@ Non-negotiable structural rules that follow from the budget:
 - **`Ui.each` carries a host-private key hash index.** The key text is
   load-bearing, not decorative: the host hashes it into a `HashMap` for each
   each site and compares exact UTF-8 bytes to resolve collisions and duplicate-key
-  checks. Linear equality-only matching is a budget violation. Dropping the hash
-  index is a regression to fix, not a host workaround to absorb.
+  checks. Direct-parent deltas address stable slots without scanning this index;
+  snapshots use it for exact reconciliation. Linear equality-only matching is a
+  budget violation. Dropping the hash index is a regression to fix, not a host
+  workaround to absorb.
 - **Reorder moves, it does not rebuild.** A pure permutation of surviving rows
   must emit only DOM moves for displaced rows (computed against a longest-stable
   subsequence so unmoved rows cost nothing) and must not re-collect row
@@ -1484,6 +1554,34 @@ identities, DOM identities, native simulated DOM elements, component scopes, and
 Reclamation must never be implemented by scanning all live nodes or rebuilding
 the graph.
 
+Each keyed site and row keep only the local topology needed for sparse work:
+
+```text
+EachSite
+    stable generational site id
+    committed/candidate Rows owners
+    exact-key hash index
+    intrusive row-order head/tail
+
+RowEntry
+    row handle and scope id
+    host key slot
+    adapter item slot
+    previous/next row handles
+```
+
+Exact key bytes live in reclaiming site-owned storage for the row lifetime.
+Delayed `Ui.Row.signal` reads resolve through the site's committed or candidate
+owner plus stable item slot, so a captured row never contains a stale item
+snapshot. One item is materialized only when an active row source reads it;
+multiple `Ui.Row.map` projections share that ordinary graph source. Scope-child
+adjacency, scope-owned descriptor indexes, per-row render-root anchors, and
+sibling render links make insert/remove/move local: sparse edits may not scan a
+whole scope, descriptor stream, each site, or global render order to find the
+affected structure. Candidate overlays remain live through nested building,
+propagation, render preparation, and allocation-free publication; the previous
+owner is released only after all of those phases succeed.
+
 `keep_alive` is an explicit per-scope flag, never a heuristic.
 
 **Leak invariant:** the host holds exactly one refcount per live retained
@@ -1537,6 +1635,16 @@ is preserved across the update. These counters are what the simulated host buys
 us: they let a spec assert *exactly* how much work an event caused, which is the
 property we most need to prove and which a real browser would not expose.
 
+`Rows` reconciliation additionally exposes
+`rows_delta_batches`, `rows_snapshot_batches`, `rows_edit_candidates`,
+`rows_edits_applied`, `rows_snapshot_items_scanned`, `rows_keys_copied`,
+`rows_key_bytes_copied`, `rows_key_bytes_validated`, `rows_items_compared`,
+`rows_items_materialized`, `row_sources_dirtied`, `row_builders_called`,
+`rows_order_links_touched`, and `rows_render_roots_moved`. These distinguish
+sparse transition cost from snapshot fallback and make key copying, item
+materialization, graph fanout, order maintenance, and DOM movement independently
+auditable.
+
 Counters that measure update amplification (`patches_emitted`,
 `derived_calls_into_roc`) are necessary but not sufficient: they count *emitted* and
 *recomputed* work, so an O(N²) splice or a full graph rebuild can sit underneath a
@@ -1583,6 +1691,18 @@ cycle, not growth across a long session. Proving "retained memory over a long
 session is flat" requires a distinct experiment that reuses one `HostEnv` across
 many events and watches the live `allocs − deallocs` gauge over time (see Measures
 of Effectiveness); per-iteration deltas cannot establish it.
+
+`Rows` timing evidence uses ReleaseFast Zig and Roc `--opt=speed` builds against
+the durable official `js-framework-benchmark` checkout and downloaded browser
+artifacts. All nine Node/Wasm and official-browser operations are reported, with
+every sample, median/range, script/paint/total time, weighted geometric mean,
+allocation traffic, retained memory, wire bytes, and the `Rows` counters above.
+Canonical keyed Solid is the primary comparison and solid-store the secondary.
+Update, swap, remove, and append target no worse than 2× Solid, with 1.25× as the
+stretch target; create, replace, selection, startup, compressed size, and memory
+may not materially regress. If counters prove O(changed) work but browser time
+does not improve, profiling the remaining cost is required before the
+performance objective is complete.
 
 ## Glitch Freedom, Ordering, and Async
 
@@ -2226,6 +2346,21 @@ than passing silently:
   and row counters so shared-signal amplification is pinned on the live path.
 - **A reorder host test at large N** that fails if reorder degrades from
   moves-only to whole-site re-collect.
+- **`Rows` transition model and fault tests** compare every public edit sequence
+  against a simple reference list, including lineage forks, stale siblings,
+  duplicate keys, invalid ranges, remove/reinsert slot preservation, key-changing
+  sets, delayed row reads, nested structure, and stale slot handles. A matching
+  parent must increment only `rows_delta_batches`; a valid stale sibling must
+  increment `rows_snapshot_batches` and scan exactly N snapshot items; its next
+  direct edit must resume delta processing. Exhaustive host-allocation fault
+  placement preserves the previous generation and publishes nothing. A
+  model-based fuzz target crosses those sequences with fault positions and must
+  be mutation-tested against a deliberately broken transition implementation.
+- **Long-session `Rows` plateaus** warm a 10,000-row site, then run at least
+  1,000 fixed-size update, move, remove/reinsert, and nested-scope cycles. Live
+  allocations, retained bytes, table capacities, and Wasm pages must plateau;
+  same-key updates must report no snapshot scan, untouched-key projection or
+  builder calls, order-link touches, DOM moves, or global graph work.
 
 ## Open Questions
 

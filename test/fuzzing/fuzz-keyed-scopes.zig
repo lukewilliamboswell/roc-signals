@@ -540,7 +540,7 @@ const Provisional = struct {
     item_token: usize,
     /// What the slot held before preparation claimed it, so an abort can put it
     /// back rather than leave a retirement behind.
-    previous_lifecycle: scope_tree.Lifecycle,
+    previous_scope: ?Scope,
     /// Whether the slot was appended rather than recycled, which decides whether
     /// an abort pops it or restores it.
     appended: bool,
@@ -553,7 +553,7 @@ const Provisional = struct {
 /// to put the slot back exactly as preparation found it.
 const InternedRow = struct {
     scope_id: ScopeId,
-    previous_lifecycle: scope_tree.Lifecycle,
+    previous_scope: ?Scope,
     appended: bool,
     was_retired: bool,
 };
@@ -1249,7 +1249,7 @@ const World = struct {
         const expected = self.expectedInternId();
         // Read before the append, because a recycled slot is about to be
         // overwritten and an abort has to be able to put back what was there.
-        const previous_lifecycle = if (expected.index() < scope_count) self.scopes.items[expected.index()].lifecycle else .active;
+        const previous_scope = if (expected.index() < scope_count) self.scopes.items[expected.index()] else null;
         const was_retired = containsId(self.retired_ever.items, expected);
 
         // Only exhaustion may be refused. The remaining errors describe an
@@ -1267,7 +1267,7 @@ const World = struct {
         self.noteInterned(expected, result.scope_id, "a keyed row");
         return .{
             .scope_id = result.scope_id,
-            .previous_lifecycle = previous_lifecycle,
+            .previous_scope = previous_scope,
             .appended = result.scope_id.index() >= scope_count,
             .was_retired = was_retired,
         };
@@ -1303,7 +1303,7 @@ const World = struct {
             .values = .{ .key = key.key, .version = item.version, .hash = hash },
             .key_token = key.token,
             .item_token = item.token,
-            .previous_lifecycle = interned.previous_lifecycle,
+            .previous_scope = interned.previous_scope,
             .appended = interned.appended,
             .was_retired = interned.was_retired,
         });
@@ -1350,10 +1350,16 @@ const World = struct {
             self.release(entry.item_token);
             self.live_scopes -= 1;
             if (entry.was_retired) self.retired_ever.appendAssumeCapacity(entry.scope_id);
+            // Prepared rows are published into the intrusive child topology so
+            // the harness exercises the same committed primitives as the
+            // engine. Undo that topology before either popping a fresh suffix
+            // slot or restoring a recycled retired slot.
+            scope_tree.retireScopeAssumeValid(Row, self.scopes.items, entry.scope_id, self.generation);
             if (entry.appended) {
                 self.scopes.items.len -= 1;
             } else {
-                self.scopes.items[entry.scope_id.index()].lifecycle = entry.previous_lifecycle;
+                self.scopes.items[entry.scope_id.index()] = entry.previous_scope orelse
+                    fail("{s} recycled provisional scope {d} had no prior slot", .{ self.name(), entry.scope_id.raw() });
             }
         }
         self.provisional.clearRetainingCapacity();

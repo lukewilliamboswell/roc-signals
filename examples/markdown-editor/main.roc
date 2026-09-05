@@ -6,6 +6,7 @@ import Outline
 import Stats
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -203,7 +204,7 @@ outline_panel = |rows, numbered, numbered_signal| {
 							{
 								tag: "ul",
 								attrs: [Html.attr("data-panel", "outline-body"), Html.class_attr("grid gap-0.5")],
-								children: [Ui.each(rows, |row| row.key, |each_row| render_outline_row(each_row.key(), each_row.signal()))],
+								children: [Ui.each(Signal.map(rows, |rows_items| Rows.from_list(rows_items, |row| row.key) ?? crash "duplicate row key"), |each_row| render_outline_row(each_row.key(), each_row.signal()))],
 							},
 						),
 					),

@@ -118,19 +118,27 @@ app [main] { pf: platform "../../platform/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows exposing [Rows]
 import pf.Signal
 import pf.Ui
 
 Book : { id : Str, title : Str, read : Bool }
 
-Model : { books : List(Book), draft : Str, next_id : U64 }
+Model : { books : Rows(Book), draft : Str, next_id : U64 }
+
+initial_books : Rows(Book)
+initial_books =
+    Rows.from_list(
+        [
+            { id: "b1", title: "Structure and Interpretation", read: True },
+            { id: "b2", title: "Thinking in Systems", read: False },
+        ],
+        |book| book.id,
+    ) ?? crash "initial book keys must be unique"
 
 initial : Model
 initial = {
-    books: [
-        { id: "b1", title: "Structure and Interpretation", read: True },
-        { id: "b2", title: "Thinking in Systems", read: False },
-    ],
+    books: initial_books,
     draft: "",
     next_id: 3,
 }
@@ -156,16 +164,17 @@ main = ||
                 "grid gap-4",
                 [
                     Html.heading_c("Reading List", "text-2xl font-semibold"),
-                    Ui.each(books, |book| book.id, book_row),
+                    Ui.each(books, book_row),
                 ],
             )
         },
     )
 ```
 
-**`Ui.each(books, key_of, row)`** renders a keyed list. It takes a
-`Signal(List(item))`, a function producing a stable string key, and a row
-renderer receiving an opaque `Ui.Row(item)`.
+**`Ui.each(books, row)`** renders keyed rows. It takes a
+`Signal(Rows(item))` and a row renderer receiving an opaque `Ui.Row(item)`.
+`Rows.from_list(items, key_of)` owns the stable key projection and rejects
+duplicates before the collection can reach the renderer.
 
 The key must come from the item's identity — a database id, slug, or generated
 id — **never the list index**. Rows are matched across updates by key, so a
@@ -173,9 +182,12 @@ correct key means reordering, inserting, and filtering reuse existing DOM nodes
 and preserve any state a row owns. An index key throws that away.
 
 Notice `book_row` derives through `row.map(...)`, not a snapshot `Book`. Rows are
-live: when one book changes, that row's own signals update and nothing else in
-the list is touched. Use `row.key()` for the stable key or `row.signal()` when a
-combinator requires the complete item signal.
+live: when one book changes, only that row source dirties and its dependent
+signals update. The current compatibility adapter still scans the generation's
+cached keys during reconciliation; the sparse delta adapter is intended to
+remove that remaining whole-collection preparation work. Use `row.key()` for
+the stable key or `row.signal()` when a combinator requires the complete item
+signal.
 
 ### The annotation that saves you an hour
 
@@ -203,7 +215,10 @@ add_book = |model|
     } else {
         {
             ..model,
-            books: model.books.append({ id: "b${model.next_id.to_str()}", title: model.draft, read: False }),
+            books: Rows.apply(
+                model.books,
+                [Rows.Edit.Append([{ id: "b${model.next_id.to_str()}", title: model.draft, read: False }])],
+            ) ?? crash "the generated book id must be unique",
             draft: "",
             next_id: model.next_id + 1,
         }
@@ -247,15 +262,9 @@ Each row gets a checkbox that toggles that book. The reducer needs the row's id:
 ```roc
 toggle_read : Model, Str -> Model
 toggle_read = |model, id| {
-    ..model,
-    books: model.books.map(
-        |book|
-            if book.id == id {
-                { ..book, read: !book.read }
-            } else {
-                book
-            },
-    ),
+    book = Rows.get_key(model.books, id) ?? crash "the row key must still exist"
+    updated = { ..book, read: !book.read }
+    { ..model, books: Rows.apply(model.books, [Rows.Edit.SetKey({ key: id, item: updated })]) ?? crash "the row key must still exist" }
 }
 ```
 
@@ -302,7 +311,7 @@ and to `initial`:
 
 ```roc
 Model : {
-    books : List(Book),
+    books : Rows(Book),
     draft : Str,
     unread_only : Bool,
     next_id : U64,
@@ -310,10 +319,7 @@ Model : {
 
 initial : Model
 initial = {
-    books: [
-        { id: "b1", title: "Structure and Interpretation", read: True },
-        { id: "b2", title: "Thinking in Systems", read: False },
-    ],
+    books: initial_books,
     draft: "",
     unread_only: False,
     next_id: 3,
@@ -323,16 +329,17 @@ initial = {
 Then two more top-level helpers:
 
 ```roc
-visible_books : Model -> List(Book)
+visible_books : Model -> Rows(Book)
 visible_books = |model|
     if model.unread_only {
-        model.books.keep_if(|book| !book.read)
+        visible = Rows.to_list(model.books).keep_if(|book| !book.read)
+        Rows.replace_all(model.books, visible) ?? crash "filtered books retain unique keys"
     } else {
         model.books
     }
 
-unread_count : List(Book) -> U64
-unread_count = |books| books.keep_if(|book| !book.read).len()
+unread_count : Rows(Book) -> U64
+unread_count = |books| Rows.to_list(books).keep_if(|book| !book.read).len()
 ```
 
 These are annotated top-level helpers on purpose. You *could* inline
@@ -348,7 +355,7 @@ signals join it:
 books = state.map(visible_books)
 unread_only = state.map(|value| value.unread_only)
 summary = state.map(|value| "${unread_count(value.books).to_str()} unread")
-empty = books.map(|list| list.is_empty())
+empty = books.map(|rows| rows.len() == 0)
 ```
 
 Then in `section_c`'s children, add the checkbox and summary, and replace the
@@ -364,7 +371,7 @@ Html.text_s(summary),
 Ui.when(
     empty,
     || Html.paragraph("Nothing to show."),
-    || Ui.each(books, |book| book.id, book_row),
+    || Ui.each(books, book_row),
 ),
 ```
 
@@ -387,24 +394,32 @@ app [main] { pf: platform "../../platform/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows exposing [Rows]
 import pf.Signal
 import pf.Ui
 
 Book : { id : Str, title : Str, read : Bool }
 
 Model : {
-    books : List(Book),
+    books : Rows(Book),
     draft : Str,
     unread_only : Bool,
     next_id : U64,
 }
 
-initial : Model
-initial = {
-    books: [
+initial_books : Rows(Book)
+initial_books =
+    Rows.from_list(
+        [
         { id: "b1", title: "Structure and Interpretation", read: True },
         { id: "b2", title: "Thinking in Systems", read: False },
-    ],
+        ],
+        |book| book.id,
+    ) ?? crash "initial book keys must be unique"
+
+initial : Model
+initial = {
+    books: initial_books,
     draft: "",
     unread_only: False,
     next_id: 3,
@@ -417,7 +432,10 @@ add_book = |model|
     } else {
         {
             ..model,
-            books: model.books.append({ id: "b${model.next_id.to_str()}", title: model.draft, read: False }),
+            books: Rows.apply(
+                model.books,
+                [Rows.Edit.Append([{ id: "b${model.next_id.to_str()}", title: model.draft, read: False }])],
+            ) ?? crash "the generated book id must be unique",
             draft: "",
             next_id: model.next_id + 1,
         }
@@ -425,27 +443,22 @@ add_book = |model|
 
 toggle_read : Model, Str -> Model
 toggle_read = |model, id| {
-    ..model,
-    books: model.books.map(
-        |book|
-            if book.id == id {
-                { ..book, read: !book.read }
-            } else {
-                book
-            },
-    ),
+    book = Rows.get_key(model.books, id) ?? crash "the row key must still exist"
+    updated = { ..book, read: !book.read }
+    { ..model, books: Rows.apply(model.books, [Rows.Edit.SetKey({ key: id, item: updated })]) ?? crash "the row key must still exist" }
 }
 
-visible_books : Model -> List(Book)
+visible_books : Model -> Rows(Book)
 visible_books = |model|
     if model.unread_only {
-        model.books.keep_if(|book| !book.read)
+        visible = Rows.to_list(model.books).keep_if(|book| !book.read)
+        Rows.replace_all(model.books, visible) ?? crash "filtered books retain unique keys"
     } else {
         model.books
     }
 
-unread_count : List(Book) -> U64
-unread_count = |books| books.keep_if(|book| !book.read).len()
+unread_count : Rows(Book) -> U64
+unread_count = |books| Rows.to_list(books).keep_if(|book| !book.read).len()
 
 main : () -> Elem
 main = ||
@@ -459,7 +472,7 @@ main = ||
             books = state.map(visible_books)
             unread_only = state.map(|value| value.unread_only)
             summary = state.map(|value| "${unread_count(value.books).to_str()} unread")
-            empty = books.map(|list| list.is_empty())
+            empty = books.map(|rows| rows.len() == 0)
 
             book_row : Ui.Row(Book) -> Elem
             book_row = |row| {
@@ -503,7 +516,7 @@ main = ||
                     Ui.when(
                         empty,
                         || Html.paragraph("Nothing to show."),
-                        || Ui.each(books, |book| book.id, book_row),
+                        || Ui.each(books, book_row),
                     ),
                 ],
             )

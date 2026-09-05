@@ -6,6 +6,7 @@
 ## roc-parser package exists yet).
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -39,7 +40,7 @@ Markdown := {}.{
 	view : Signal.Signal(Str) -> Elem
 	view = |source| {
 		blocks = source.map(parse)
-		Html.div([Html.attr("data-conduit", "markdown"), Html.class_attr("conduit-prose my-10")], [Ui.each(blocks, |block| block.key, |each_row| render_block(each_row.key(), each_row.signal()))])
+		Html.div([Html.attr("data-conduit", "markdown"), Html.class_attr("conduit-prose my-10")], [Ui.each(Signal.map(blocks, |rows_items| Rows.from_list(rows_items, |block| block.key) ?? crash "duplicate row key"), |each_row| render_block(each_row.key(), each_row.signal()))])
 	}
 
 	parse : Str -> List(Markdown.Block)
@@ -270,7 +271,7 @@ Markdown := {}.{
 	inline_view : Signal.Signal(Str) -> Elem
 	inline_view = |source| {
 		segments = source.map(inline_segments)
-		Elem.Element({ tag: "span", attrs: [], children: [Ui.each(segments, |segment| segment.key, |each_row| render_segment(each_row.key(), each_row.signal()))] })
+		Elem.Element({ tag: "span", attrs: [], children: [Ui.each(Signal.map(segments, |rows_items| Rows.from_list(rows_items, |segment| segment.key) ?? crash "duplicate row key"), |each_row| render_segment(each_row.key(), each_row.signal()))] })
 	}
 
 	render_segment : Str, Signal.Signal(Markdown.Segment) -> Elem
@@ -324,7 +325,7 @@ Markdown := {}.{
 				Ui.when(
 					empty_children,
 					|| Html.text(""),
-					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(children_signal, |child| child.key, |each_row| render_child(each_row.key(), each_row.signal()))] }),
+					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(Signal.map(children_signal, |rows_items| Rows.from_list(rows_items, |child| child.key) ?? crash "duplicate row key"), |each_row| render_child(each_row.key(), each_row.signal()))] }),
 				),
 			],
 		})
@@ -350,7 +351,7 @@ Markdown := {}.{
 					items : Signal.Signal(List(Markdown.ListItem))
 					items = block.map(|value| value.items)
 
-					Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(items, |item| item.key, |each_row| render_item(each_row.key(), each_row.signal()))] })
+					Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(Signal.map(items, |rows_items| Rows.from_list(rows_items, |item| item.key) ?? crash "duplicate row key"), |each_row| render_item(each_row.key(), each_row.signal()))] })
 				}
 				Paragraph => Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
 			},

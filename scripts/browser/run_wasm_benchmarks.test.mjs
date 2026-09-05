@@ -39,6 +39,13 @@ test("production/diagnostic parity includes behavior wire opcodes and decode wor
   assert.notEqual(parityFacts(result), parityFacts(changed));
 });
 
+test("production/diagnostic parity leaves allocator-dependent page capacity out of the semantic signature", async () => {
+  const source = await readFile("scripts/browser/run_wasm_benchmarks.mjs", "utf8");
+  const signature = captureBlock(source, "function runtimeSignature(root, runtime) {", "\n}\n\nasync function runIteration");
+  assert.match(signature, /wasm_pages: _allocatorDependentPages/);
+  assert.match(source, /live_runtime_wasm_pages: production\.state\.wasm_pages/);
+});
+
 test("opcode columns are a stable complete protocol registry", () => {
   assert.equal(OPCODE_NAMES.length, 32);
   assert.equal(new Set(OPCODE_NAMES).size, OPCODE_NAMES.length);

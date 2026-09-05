@@ -37,6 +37,7 @@ pub const Membership = struct {
 pub const RowRemoval = struct {
     scope_id: ids.ScopeId,
     key_hash: u64,
+    site_key: SiteKey = .{ .parent_scope_id = @enumFromInt(0), .site_ordinal = @enumFromInt(0) },
 };
 
 /// Owns validated keyed-row removals until the structural publication boundary.
@@ -51,28 +52,44 @@ pub const PreparedRowRemovals = struct {
 
     /// Removes every prepared row and repairs moved dense/hash indexes without allocation.
     pub fn apply(self: *const @This(), allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, memberships: *std.ArrayListUnmanaged(?Membership), row_keys: anytype) void {
+        self.applyRows(sites, memberships, row_keys);
+        pruneEmptySites(allocator, sites, site_indexes, memberships, row_keys);
+    }
+
+    /// Unlinks prepared rows while preserving dense site indexes until other
+    /// prepared reconciliations that captured those indexes have committed.
+    pub fn applyRows(self: *const @This(), sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), row_keys: anytype) void {
         for (self.rows) |row| removeRowFromSiteIndex(sites, memberships, row.scope_id, row.key_hash, row_keys);
-        var index = sites.items.len;
-        while (index != 0) {
-            index -= 1;
-            if (sites.items[index].scope_ids.items.len != 0) continue;
-            if (row_keys.siteRemainsActive(sites.items[index].key)) continue;
-            const removed = sites.swapRemove(index);
-            if (!site_indexes.remove(removed.key)) @panic("empty each site was missing its maintained index");
-            var retired = removed;
-            retired.deinit(allocator);
-            if (index < sites.items.len) {
-                const moved = &sites.items[index];
-                const mapped = site_indexes.getPtr(moved.key) orelse @panic("moved each site was missing its maintained index");
-                mapped.* = index;
-                for (moved.scope_ids.items) |scope_id| {
-                    const membership = &memberships.items[scope_id.index()];
-                    if (membership.*) |*entry| entry.site_index = index else @panic("moved each site row was missing membership");
-                }
+    }
+
+    /// Removes empty inactive sites after every reconciliation holding a dense
+    /// site index has crossed its publication boundary.
+    pub fn pruneSites(_: *const @This(), allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, memberships: *std.ArrayListUnmanaged(?Membership), row_keys: anytype) void {
+        pruneEmptySites(allocator, sites, site_indexes, memberships, row_keys);
+    }
+};
+
+fn pruneEmptySites(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, memberships: *std.ArrayListUnmanaged(?Membership), row_keys: anytype) void {
+    var index = sites.items.len;
+    while (index != 0) {
+        index -= 1;
+        if (sites.items[index].scope_ids.items.len != 0) continue;
+        if (row_keys.siteRemainsActive(sites.items[index].key)) continue;
+        const removed = sites.swapRemove(index);
+        if (!site_indexes.remove(removed.key)) @panic("empty each site was missing its maintained index");
+        var retired = removed;
+        retired.deinit(allocator);
+        if (index < sites.items.len) {
+            const moved = &sites.items[index];
+            const mapped = site_indexes.getPtr(moved.key) orelse @panic("moved each site was missing its maintained index");
+            mapped.* = index;
+            for (moved.scope_ids.items) |scope_id| {
+                const membership = &memberships.items[scope_id.index()];
+                if (membership.*) |*entry| entry.site_index = index else @panic("moved each site row was missing membership");
             }
         }
     }
-};
+}
 
 /// Copies and validates exact row removals without mutating maintained indexes.
 pub fn prepareRowRemovals(allocator: std.mem.Allocator, sites: []const Site, memberships: []const ?Membership, rows: []const RowRemoval) (std.mem.Allocator.Error || error{InvalidScope})!PreparedRowRemovals {

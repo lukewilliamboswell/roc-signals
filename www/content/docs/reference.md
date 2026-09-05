@@ -45,6 +45,7 @@ receiver-style (`signal.map(f)`), which is the idiomatic form.
 | `map` | `Signal(a), (a -> b) -> Signal(b)` | derived node; the edge |
 | `map2` | `Signal(a), Signal(b), (a, b -> c) -> Signal(c)` | two inputs |
 | `combine` | `List(Signal(a)) -> Signal(List(a))` | homogeneous list |
+| `combine_map` | `List(Signal(a)), (List(a) -> b) -> Signal(b)` | homogeneous inputs projected by one derived node |
 | `const` | `a -> Signal(a)` | never changes |
 | `interval` | `U64 -> Signal(U64)` | ticks from 0 while mounted |
 | `noop` | `Cmd` | a command that does nothing |
@@ -78,7 +79,7 @@ For three or more inputs use the record builder rather than nesting `map2`:
 | `state` | `a, (State(a) -> Elem) -> Elem` | introduce a source |
 | `component` | `(() -> Elem) -> Elem` | private identity scope |
 | `when` | `Signal(Bool), (() -> Elem), (() -> Elem) -> Elem` | conditional |
-| `each` | `Signal(List(item)), (item -> Str), (Ui.Row(item) -> Elem) -> Elem` | keyed list |
+| `each` | `Signal(Rows(item)), (Ui.Row(item) -> Elem) -> Elem` | keyed rows |
 | `on_mount` | `(() -> Cmd) -> Elem` | run on scope mount |
 | `on_change` | `Signal(a), (a -> Cmd) -> Elem` | run on value change |
 | `on_change_initial` | `Signal(a), (a -> Cmd) -> Elem` | first value **and** changes |
@@ -91,10 +92,31 @@ For three or more inputs use the record builder rather than nesting `map2`:
 | `key` | `Row(a) -> Str` | exact UTF-8 row identity |
 | `signal` | `Row(a) -> Signal(a)` | stable live item source |
 | `map` | `Row(a), (a -> value) -> Signal(value)` where `value.is_eq` | ordinary equality-pruned projection |
+| `select` | `Row(a), Signal.Keyed(value) -> Signal(value)` | fused exact-key selected/unselected value |
 
 Keys are compared as exact UTF-8 bytes without normalization or case folding.
 `Row.map` is ordinary graph `Signal.map`; it does not introduce a separate row
 observer or snapshot lifecycle.
+
+Build a shared keyed selector once with
+`selected_key.keyed(when_selected, otherwise)`, then call `row.select(keyed)`.
+Each row remains an ordinary graph record, while the typed selector operations
+are retained once by the keyed construction site.
+
+## Rows
+
+`Rows(item)` is an immutable keyed collection. It owns the key projection,
+caches exact keys, and carries generation lineage plus stable row slots. Create
+one with `Rows.from_list(items, key_of)` or `Rows.empty(key_of)`, then produce a
+new generation with `Rows.apply(rows, edits)` or
+`Rows.replace_all(rows, items)`. Construction and edits return `Try` so duplicate
+keys, missing keys, and invalid ranges are handled before rendering.
+
+Common edits include `Rows.Edit.Append`, `Rows.Edit.InsertAt`,
+`Rows.Edit.RemoveKey`, `Rows.Edit.RemoveRange`, `Rows.Edit.SetKey`,
+`Rows.Edit.SetAt`, `Rows.Edit.MoveKeyBefore`, `Rows.Edit.MoveRange`, and
+`Rows.Edit.Clear`. A batch is applied in order; removing and reinserting a key
+within one unpublished batch preserves that row's stable slot.
 
 ### `Ui.State(a)`
 

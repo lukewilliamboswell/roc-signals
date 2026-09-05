@@ -312,7 +312,7 @@ pub fn RecordOverlay(comptime Token: type, comptime Record: type) type {
 /// Signal graph staging separates non-owning token publication from owning
 /// descriptor roots. Child records are transitively owned by their parents;
 /// releasing every token intent would therefore double-release graph edges.
-pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
+pub fn SignalRecordPlan(comptime Token: type, comptime Composite: type, comptime Record: type) type {
     return struct {
         const Self = @This();
         const DescriptorRoot = union(enum) {
@@ -326,14 +326,18 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
             }
         };
         by_token: std.AutoHashMapUnmanaged(Token, *Record) = .{},
+        by_composite: std.AutoHashMapUnmanaged(Composite, *Record) = .{},
         token_intents: std.ArrayListUnmanaged(struct { token: Token, record: *Record }) = .empty,
+        composite_intents: std.ArrayListUnmanaged(struct { identity: Composite, record: *Record }) = .empty,
         descriptor_roots: std.ArrayListUnmanaged(DescriptorRoot) = .empty,
         phase: TransactionPhase = .preparing,
 
         /// Preflights fallible growth so the later commit phase can remain allocation-free.
         pub fn prepare(self: *Self, allocator: std.mem.Allocator, tokens: usize, roots: usize) std.mem.Allocator.Error!void {
             try self.by_token.ensureUnusedCapacity(allocator, @intCast(tokens));
+            try self.by_composite.ensureUnusedCapacity(allocator, @intCast(tokens));
             try self.token_intents.ensureUnusedCapacity(allocator, tokens);
+            try self.composite_intents.ensureUnusedCapacity(allocator, tokens);
             try self.descriptor_roots.ensureUnusedCapacity(allocator, roots);
         }
 
@@ -342,12 +346,25 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
             return self.by_token.get(token) orelse persistent;
         }
 
+        /// Resolves one composite identity from the transaction overlay before committed state.
+        pub fn lookupComposite(self: *const Self, identity: Composite, persistent: ?*Record) ?*Record {
+            return self.by_composite.get(identity) orelse persistent;
+        }
+
         /// Records a token-to-record association after preparation has guaranteed insertion capacity.
         pub fn rememberTokenAssumeCapacity(self: *Self, token: Token, record: *Record) void {
             if (self.phase == .committed) @panic("signal record plan cannot remember after commit");
             if (self.by_token.contains(token)) return;
             self.by_token.putAssumeCapacity(token, record);
             self.token_intents.appendAssumeCapacity(.{ .token = token, .record = record });
+        }
+
+        /// Records a composite identity association after preparation reserved insertion capacity.
+        pub fn rememberCompositeAssumeCapacity(self: *Self, identity: Composite, record: *Record) void {
+            if (self.phase == .committed) @panic("signal record plan cannot remember after commit");
+            if (self.by_composite.contains(identity)) return;
+            self.by_composite.putAssumeCapacity(identity, record);
+            self.composite_intents.appendAssumeCapacity(.{ .identity = identity, .record = record });
         }
 
         /// Transfers ownership of descriptor root assume capacity into the current preparation plan.
@@ -384,7 +401,9 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
                 }
             }
             self.by_token.clearRetainingCapacity();
+            self.by_composite.clearRetainingCapacity();
             self.token_intents.clearRetainingCapacity();
+            self.composite_intents.clearRetainingCapacity();
             self.descriptor_roots.clearRetainingCapacity();
         }
 
@@ -392,6 +411,7 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
         pub fn commit(self: *Self, publisher: anytype) void {
             if (self.phase == .committed) @panic("signal record plan committed twice");
             for (self.token_intents.items) |intent| publisher.publishToken(intent.token, intent.record);
+            for (self.composite_intents.items) |intent| publisher.publishComposite(intent.identity, intent.record);
             for (self.descriptor_roots.items) |root| publisher.publishDescriptorRoot(root.record());
             self.phase = .committed;
         }
@@ -405,7 +425,9 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, releaser: anytype) void {
             if (self.phase == .preparing) self.abort(releaser);
             self.by_token.deinit(allocator);
+            self.by_composite.deinit(allocator);
             self.token_intents.deinit(allocator);
+            self.composite_intents.deinit(allocator);
             self.descriptor_roots.deinit(allocator);
             self.* = .{};
         }
@@ -430,10 +452,10 @@ test "signal record plan releases descriptor roots but not token intents" {
             self.count.* += 1;
         }
     };
-    var plan = SignalRecordPlan(u64, TestRecord){};
+    var plan = SignalRecordPlan(u64, u64, TestRecord){};
     try plan.prepare(std.testing.allocator, 2, 1);
     plan.rememberTokenAssumeCapacity(10, &child);
-    plan.rememberTokenAssumeCapacity(20, &root);
+    plan.rememberCompositeAssumeCapacity(20, &root);
     plan.ownDescriptorRootAssumeCapacity(&root);
     plan.abort(Releaser{ .count = &releases, .root = &root, .child = &child });
     try std.testing.expectEqual(@as(usize, 2), releases);
@@ -453,6 +475,8 @@ test "signal record plan transfer prevents abort release and preserves publicati
         published: *?*TestRecord,
         /// Publishes token during the allocation-free commit phase.
         pub fn publishToken(_: @This(), _: u64, _: *TestRecord) void {}
+        /// Publishes composite identity during the allocation-free commit phase.
+        pub fn publishComposite(_: @This(), _: u64, _: *TestRecord) void {}
         /// Publishes descriptor root during the allocation-free commit phase.
         pub fn publishDescriptorRoot(self: @This(), record: *TestRecord) void {
             self.published.* = record;
@@ -461,7 +485,7 @@ test "signal record plan transfer prevents abort release and preserves publicati
 
     var record = TestRecord{ .id = 1 };
     var releases: usize = 0;
-    var aborted = SignalRecordPlan(u64, TestRecord){};
+    var aborted = SignalRecordPlan(u64, u64, TestRecord){};
     try aborted.prepare(std.testing.allocator, 0, 1);
     aborted.ownDescriptorRootAssumeCapacity(&record);
     aborted.transferDescriptorRoot(&record);
@@ -470,7 +494,7 @@ test "signal record plan transfer prevents abort release and preserves publicati
     aborted.deinit(std.testing.allocator, Releaser{ .count = &releases });
 
     var published: ?*TestRecord = null;
-    var committed = SignalRecordPlan(u64, TestRecord){};
+    var committed = SignalRecordPlan(u64, u64, TestRecord){};
     try committed.prepare(std.testing.allocator, 0, 1);
     committed.ownDescriptorRootAssumeCapacity(&record);
     committed.transferDescriptorRoot(&record);
@@ -492,7 +516,7 @@ test "signal record plan preparation sweeps allocation failures and retries" {
     };
 
     var counter = FaultAllocator.init(std.testing.allocator);
-    var counted = SignalRecordPlan(u64, TestRecord){};
+    var counted = SignalRecordPlan(u64, u64, TestRecord){};
     try counted.prepare(counter.allocator(), 2, 1);
     const attempts = counter.attempts;
     var ignored: usize = 0;
@@ -501,15 +525,17 @@ test "signal record plan preparation sweeps allocation failures and retries" {
     for (1..attempts + 1) |failure_number| {
         var fault = FaultAllocator.init(std.testing.allocator);
         fault.configure(failure_number);
-        var plan = SignalRecordPlan(u64, TestRecord){};
+        var plan = SignalRecordPlan(u64, u64, TestRecord){};
         try std.testing.expectError(error.OutOfMemory, plan.prepare(fault.allocator(), 2, 1));
         try std.testing.expectEqual(@as(usize, 0), plan.token_intents.items.len);
+        try std.testing.expectEqual(@as(usize, 0), plan.composite_intents.items.len);
         try std.testing.expectEqual(@as(usize, 0), plan.descriptor_roots.items.len);
 
         fault.configure(null);
         try plan.prepare(fault.allocator(), 2, 1);
         var record = TestRecord{ .id = 1 };
         plan.rememberTokenAssumeCapacity(10, &record);
+        plan.rememberCompositeAssumeCapacity(20, &record);
         plan.ownDescriptorRootAssumeCapacity(&record);
         var releases: usize = 0;
         plan.deinit(std.testing.allocator, Releaser{ .count = &releases });

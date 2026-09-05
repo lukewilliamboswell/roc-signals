@@ -168,6 +168,11 @@ declared just as explicitly.
 Signal(List(a))` for a homogeneous list. In practice the record builder covers
 nearly everything.
 
+When homogeneous inputs naturally produce a different collection or aggregate,
+`Signal.combine_map(signals, project)` applies `project` in that same combine
+node. For example, a keyed `Rows` value can be derived without adding a second
+`map` node solely to convert the combined list.
+
 For keyed selection, use `Signal.select : Signal(Str), Str -> Signal(Bool)`:
 
 ```roc
@@ -178,6 +183,17 @@ The host indexes members by their string key. Changing `selected_key` dirties
 only the members for the old and new keys, independent of the list size. The
 selector itself runs no Roc transform; any `map` you place downstream still
 counts as ordinary derived work for the members that changed.
+
+Inside `Ui.each`, prefer the fused form when the row needs one of two stable
+values:
+
+```roc
+selection_class = selected_key.keyed("selected", "")
+row_class = row.select(selection_class)
+```
+
+The fused form preserves the same exact-key index and O(old-plus-new-key)
+dirtiness while sharing its typed capability and initializers across rows.
 
 ## Form controls
 

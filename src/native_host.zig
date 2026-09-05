@@ -31,6 +31,7 @@ const roc_alloc_ledger = @import("roc_alloc_ledger.zig");
 const crash_handlers = @import("crash_handlers.zig");
 
 const enable_runtime_metrics = host_fixtures or build_options.metrics;
+const default_native_entropy_seed: u32 = 0x726f6353;
 /// Test-only host machinery (value-kind tracking, the current-host binding,
 /// fixture builders) is also compiled into fuzz targets, which are ordinary
 /// builds that opt in through `-Dfuzz`'s options module.
@@ -99,12 +100,39 @@ const NativeRenderPublication = struct {
         }
     }
 
+    fn prepareSparseChildEdit(parent: *sim_dom.Element, edit: render_cache.PreparedChildrenReplacement.WireEdit) error{InvalidRenderTopology}!void {
+        switch (edit) {
+            .append => |child| {
+                for (parent.children.items) |existing| if (existing == child.raw()) return error.InvalidRenderTopology;
+                parent.children.appendAssumeCapacity(child.raw());
+            },
+            .move_before => |move| {
+                var child_index: ?usize = null;
+                for (parent.children.items, 0..) |existing, index| if (existing == move.child.raw()) {
+                    child_index = index;
+                    break;
+                };
+                const child = parent.children.orderedRemove(child_index orelse return error.InvalidRenderTopology);
+                if (move.before) |before| {
+                    var before_index: ?usize = null;
+                    for (parent.children.items, 0..) |existing, index| if (existing == before.raw()) {
+                        before_index = index;
+                        break;
+                    };
+                    parent.children.insertAssumeCapacity(before_index orelse return error.InvalidRenderTopology, child);
+                } else {
+                    parent.children.appendAssumeCapacity(child);
+                }
+            },
+        }
+    }
+
     fn prepare(host: *HostEnv, splice: anytype) PrepareError!NativeRenderPublication {
         const allocator = host.hostAllocator();
         var touched: std.AutoHashMapUnmanaged(u64, void) = .empty;
         defer touched.deinit(allocator);
         var count: usize = 0;
-        inline for (.{ splice.removals.items.len, splice.creations.items.len, splice.children.items.len, splice.parent_intents.items.len, splice.text_fields.items.len, splice.bool_fields.items.len, splice.fixed_events.items.len, splice.custom_attrs.items.len, splice.named_events.items.len }) |additional| {
+        inline for (.{ splice.removals.items.len, splice.creations.items.len, splice.children.items.len, splice.sparse_children.items.len, splice.parent_intents.items.len, splice.text_fields.items.len, splice.bool_fields.items.len, splice.fixed_events.items.len, splice.custom_attrs.items.len, splice.named_events.items.len }) |additional| {
             count = std.math.add(usize, count, additional) catch return error.ResourceLimit;
         }
         try touched.ensureUnusedCapacity(allocator, std.math.cast(u32, count) orelse return error.ResourceLimit);
@@ -118,6 +146,10 @@ const NativeRenderPublication = struct {
             max_elem_id = @max(max_elem_id, entry.elem_id.raw());
         }
         for (splice.children.items) |entry| {
+            touched.putAssumeCapacity(entry.parent_elem_id.raw(), {});
+            max_elem_id = @max(max_elem_id, entry.parent_elem_id.raw());
+        }
+        for (splice.sparse_children.items) |entry| {
             touched.putAssumeCapacity(entry.parent_elem_id.raw(), {});
             max_elem_id = @max(max_elem_id, entry.parent_elem_id.raw());
         }
@@ -153,6 +185,16 @@ const NativeRenderPublication = struct {
             parent.children = .empty;
             try parent.children.ensureTotalCapacity(allocator, entry.next.len);
             for (entry.next) |child_id| parent.children.appendAssumeCapacity(child_id.raw());
+        }
+        for (splice.sparse_children.items) |entry| {
+            const parent = dom.node(entry.parent_elem_id.raw()) orelse return error.InvalidRenderTopology;
+            var appended: usize = 0;
+            for (entry.wireEdits()) |edit| switch (edit) {
+                .append => appended = std.math.add(usize, appended, 1) catch return error.ResourceLimit,
+                .move_before => {},
+            };
+            try parent.children.ensureUnusedCapacity(allocator, appended);
+            for (entry.wireEdits()) |edit| try prepareSparseChildEdit(parent, edit);
         }
         for (splice.parent_intents.items) |intent| (dom.node(intent.child_id.raw()) orelse return error.InvalidRenderTopology).parent_id = if (intent.next) |parent_id| parent_id.raw() else null;
         for (splice.text_fields.items) |entry| {
@@ -380,7 +422,7 @@ fn writeStderr(bytes: []const u8) void {
 }
 
 fn writeUsage() void {
-    writeStderr("Usage: ./app [--verbose] [--trace-allocations] [--run-spec-json] [--fail-on-allocation N] <case.scm>\n       ./app --bench-app [--bench-name NAME] [--bench-warmup N] [--bench-iterations N] [--bench-samples N] <case.scm>\n");
+    writeStderr("Usage: ./app [--verbose] [--trace-allocations] [--run-spec-json] [--entropy-seed U32] [--fail-on-allocation N] <case.scm>\n       ./app --bench-app [--bench-name NAME] [--bench-warmup N] [--bench-iterations N] [--bench-samples N] <case.scm>\n");
 }
 
 const SpecJsonFailure = struct {
@@ -689,7 +731,7 @@ const HostEnv = struct {
     canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
     location_index: usize = 0,
-    entropy_seed: u32 = 0x726f6353,
+    entropy_seed: u32 = default_native_entropy_seed,
     visibility: boundary.VisibilitySnapshot = .visible,
     online: boundary.OnlineSnapshot = .online,
     storage_entries: std.ArrayListUnmanaged(NativeStorageEntry) = .empty,
@@ -2075,16 +2117,70 @@ fn hostValueClone(value: u64) callconv(.c) u64 {
     return currentHost().cloneHostValue(HostValue.fromRaw(value)).toRaw();
 }
 
-fn eachKeySinkPush(token: u64, index: u64, value: abi.RocStr) callconv(.c) u64 {
-    const roc_host = current_roc_host orelse @panic("each key sink requires an active Roc host");
-    defer abi.RocStrRelease.release(value, roc_host);
-    const host = current_host orelse failHost("each key sink requires an active host transaction");
-    return host.engine.pushEachKeySink(host, token, index, value.asSlice()) catch failHost("each key sink rejected the active collection transaction");
-}
-
 fn eachBoolSinkPush(token: u64, index: u64, value: bool) callconv(.c) u64 {
     const host = current_host orelse failHost("each bool sink requires an active host transaction");
     return host.engine.pushEachBoolSink(host, token, index, value) catch failHost("each bool sink rejected the active collection transaction");
+}
+
+fn rowsSnapshotDescriptionSinkPush(token: u64, generation: abi.RocErasedCallable, item_count: u64, key_bytes: u64) callconv(.c) u64 {
+    const roc_host = current_roc_host orelse @panic("Rows description sink requires an active Roc host");
+    defer abi.decrefErasedCallable(generation, roc_host);
+    const generation_id = if (generation) |value| @intFromPtr(value) else 0;
+    const host = current_host orelse failHost("Rows description sink requires an active host transaction");
+    return host.engine.pushRowsSnapshotDescriptionSink(host, token, generation_id, item_count, key_bytes) catch failHost("Rows snapshot description sink rejected the active transaction");
+}
+
+fn rowsDeltaDescriptionSinkPush(token: u64, generation: abi.RocErasedCallable, parent: abi.RocErasedCallable, item_count: u64, snapshot_key_bytes: u64, op_count: u64, delta_key_count: u64, delta_key_bytes: u64) callconv(.c) u64 {
+    const roc_host = current_roc_host orelse @panic("Rows description sink requires an active Roc host");
+    defer abi.decrefErasedCallable(generation, roc_host);
+    defer abi.decrefErasedCallable(parent, roc_host);
+    const generation_id = if (generation) |value| @intFromPtr(value) else 0;
+    const parent_id = if (parent) |value| @intFromPtr(value) else 0;
+    const host = current_host orelse failHost("Rows description sink requires an active host transaction");
+    return host.engine.pushRowsDeltaDescriptionSink(host, token, generation_id, parent_id, item_count, snapshot_key_bytes, op_count, delta_key_count, delta_key_bytes) catch failHost("Rows delta description sink rejected the active transaction");
+}
+
+fn rowsSnapshotSinkPush(token: u64, index: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
+    const roc_host = current_roc_host orelse @panic("Rows snapshot sink requires an active Roc host");
+    defer abi.RocStrRelease.release(key, roc_host);
+    const host = current_host orelse failHost("Rows snapshot sink requires an active host transaction");
+    return host.engine.pushRowsSnapshotSink(host, token, index, slot, key.asSlice()) catch failHost("Rows snapshot sink rejected the active transaction");
+}
+
+fn rowsDeltaClearSinkPush(token: u64, op_index: u64) callconv(.c) u64 {
+    const host = current_host orelse failHost("Rows delta sink requires an active host transaction");
+    return host.engine.pushRowsDeltaClearSink(host, token, op_index) catch failHost("Rows delta clear sink rejected the active transaction");
+}
+
+fn rowsDeltaInsertSinkPush(token: u64, op_index: u64, before_slot: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
+    const roc_host = current_roc_host orelse @panic("Rows delta sink requires an active Roc host");
+    defer abi.RocStrRelease.release(key, roc_host);
+    const host = current_host orelse failHost("Rows delta sink requires an active host transaction");
+    return host.engine.pushRowsDeltaInsertSink(host, token, op_index, before_slot, slot, key.asSlice()) catch failHost("Rows delta insert sink rejected the active transaction");
+}
+
+fn rowsDeltaMoveRangeSinkPush(token: u64, op_index: u64, first_slot: u64, count: u64, before_slot: u64) callconv(.c) u64 {
+    const host = current_host orelse failHost("Rows delta sink requires an active host transaction");
+    return host.engine.pushRowsDeltaMoveSink(host, token, op_index, first_slot, count, before_slot) catch failHost("Rows delta move sink rejected the active transaction");
+}
+
+fn rowsDeltaRemoveRangeSinkPush(token: u64, op_index: u64, first_slot: u64, count: u64) callconv(.c) u64 {
+    const host = current_host orelse failHost("Rows delta sink requires an active host transaction");
+    return host.engine.pushRowsDeltaRemoveSink(host, token, op_index, first_slot, count) catch failHost("Rows delta remove sink rejected the active transaction");
+}
+
+fn rowsDeltaUpdateSinkPush(token: u64, op_index: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
+    const roc_host = current_roc_host orelse @panic("Rows delta sink requires an active Roc host");
+    defer abi.RocStrRelease.release(key, roc_host);
+    const host = current_host orelse failHost("Rows delta sink requires an active host transaction");
+    return host.engine.pushRowsDeltaUpdateSink(host, token, op_index, slot, key.asSlice()) catch failHost("Rows delta update sink rejected the active transaction");
+}
+
+fn rowsSameGenerationCallable(left: abi.RocErasedCallable, right: abi.RocErasedCallable) callconv(.c) bool {
+    const roc_host = current_roc_host orelse @panic("Rows generation comparison requires an active Roc host");
+    defer abi.decrefErasedCallable(left, roc_host);
+    defer abi.decrefErasedCallable(right, roc_host);
+    return left != null and left == right;
 }
 
 fn hostValueGetWithCapability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {
@@ -2282,7 +2378,7 @@ fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, 
     const record = host.engine.activeTaskRecordByToken(pending.task_token) orelse failHost("fake task result matched no active task source");
     const task_payload = switch (record.payload) {
         .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .select, .combine, .row_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
+        .ref, .const_value, .map, .map2, .select, .keyed_select, .combine, .row_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
     if (record.token().? != pending.task_token) {
         failHost("fake task result matched a pending request for a different task source");
@@ -3300,8 +3396,16 @@ comptime {
         @export(&hostDbg, .{ .name = "roc_dbg", .visibility = .hidden });
         @export(&hostExpectFailed, .{ .name = "roc_expect_failed", .visibility = .hidden });
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });
-        @export(&eachKeySinkPush, .{ .name = "roc_each_key_sink_push", .visibility = .hidden });
         @export(&eachBoolSinkPush, .{ .name = "roc_each_bool_sink_push", .visibility = .hidden });
+        @export(&rowsSnapshotDescriptionSinkPush, .{ .name = "roc_rows_snapshot_description_sink_push", .visibility = .hidden });
+        @export(&rowsDeltaDescriptionSinkPush, .{ .name = "roc_rows_delta_description_sink_push", .visibility = .hidden });
+        @export(&rowsSnapshotSinkPush, .{ .name = "roc_rows_snapshot_sink_push", .visibility = .hidden });
+        @export(&rowsDeltaClearSinkPush, .{ .name = "roc_rows_delta_clear_sink_push", .visibility = .hidden });
+        @export(&rowsDeltaInsertSinkPush, .{ .name = "roc_rows_delta_insert_sink_push", .visibility = .hidden });
+        @export(&rowsDeltaMoveRangeSinkPush, .{ .name = "roc_rows_delta_move_range_sink_push", .visibility = .hidden });
+        @export(&rowsDeltaRemoveRangeSinkPush, .{ .name = "roc_rows_delta_remove_range_sink_push", .visibility = .hidden });
+        @export(&rowsDeltaUpdateSinkPush, .{ .name = "roc_rows_delta_update_sink_push", .visibility = .hidden });
+        @export(&rowsSameGenerationCallable, .{ .name = "roc_rows_same_generation_callable", .visibility = .hidden });
         @export(&hostValueClone, .{ .name = "roc_host_value_clone", .visibility = .hidden });
         @export(&hostValueGetWithCapability, .{ .name = "roc_host_value_get_with_capability", .visibility = .hidden });
         @export(&hostValueGetWithSplit, .{ .name = "roc_host_value_get_with_split", .visibility = .hidden });
@@ -3324,6 +3428,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
     var trace_allocations = false;
     var result_json = false;
     var fail_on_allocation: ?usize = null;
+    var entropy_seed: u32 = default_native_entropy_seed;
     var bench_app = false;
     var bench_name: []const u8 = "app_dispatch";
     var bench_warmup: usize = 0;
@@ -3341,6 +3446,16 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
             trace_allocations = true;
         } else if (std.mem.eql(u8, arg, "--run-spec-json")) {
             result_json = true;
+        } else if (std.mem.eql(u8, arg, "--entropy-seed")) {
+            i += 1;
+            if (i >= arg_count) {
+                writeStderr("Error: --entropy-seed requires a value\n");
+                return 1;
+            }
+            entropy_seed = std.fmt.parseInt(u32, std.mem.span(argv[i]), 10) catch {
+                writeStderr("Error: Invalid --entropy-seed value\n");
+                return 1;
+            };
         } else if (std.mem.eql(u8, arg, "--fail-on-allocation")) {
             i += 1;
             if (i >= arg_count) {
@@ -3433,7 +3548,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         };
     }
 
-    return platform_main(spec_file.?, verbose, trace_allocations, result_json, fail_on_allocation) catch |err| {
+    return platform_main(spec_file.?, verbose, trace_allocations, result_json, fail_on_allocation, entropy_seed) catch |err| {
         writeStderr("HOST ERROR: ");
         writeStderr(@errorName(err));
         writeStderr("\n");
@@ -3483,9 +3598,10 @@ fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void
     }
 }
 
-fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, result_json: bool, fail_on_allocation: ?usize) error{}!c_int {
+fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, result_json: bool, fail_on_allocation: ?usize, entropy_seed: u32) error{}!c_int {
     const started_ns = benchmark.nowNs();
     var host_env = HostEnv.init();
+    host_env.entropy_seed = entropy_seed;
     defer if (host_env.gpa.deinit() == .leak) failHost("native host leaked host-owned allocations at shutdown");
     const allocator = if (result_json) host_env.gpa.allocator() else host_env.hostAllocator();
 
@@ -4065,6 +4181,36 @@ test "native prepared render publication keeps DOM unchanged until armed apply" 
     host.configureAllocationFailure(null);
 }
 
+test "native prepared render publication applies sparse child moves atomically" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+    const allocator = host.hostAllocator();
+    host.engine.resetRenderTree(&host);
+    for (1..4) |raw| host.engine.appendRenderNode(&host, ids.ElemId.fromRaw(@intCast(raw)), ids.root_elem, "div");
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, host.dom_elements.items[0].children.items);
+
+    var sparse = try render_cache.PreparedSparseChildren.init(NativeCtx, allocator, &host.engine.render_cache, ids.root_elem, 5, 1);
+    var sparse_owned = true;
+    defer if (sparse_owned) sparse.deinit();
+    try sparse.moveRangeBefore(NativeCtx, &host.engine.render_cache, ids.ElemId.fromRaw(3), ids.ElemId.fromRaw(3), 1, ids.ElemId.fromRaw(1));
+    var splice = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{});
+    defer splice.deinit();
+    try splice.adoptSparseChildren(&sparse);
+    sparse_owned = false;
+
+    var publication = try NativeRenderPublication.prepare(&host, &splice);
+    defer publication.deinit();
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, host.dom_elements.items[0].children.items);
+    splice.apply(&host.engine.render_cache);
+    publication.apply(&host);
+    try std.testing.expectEqualSlices(u64, &.{ 3, 1, 2 }, host.dom_elements.items[0].children.items);
+}
+
 test "native engine identity preparation sweeps all recoverable allocation failures" {
     const node_count = blk: {
         var host = HostEnv.init();
@@ -4423,11 +4569,20 @@ fn testReadBoolCallable(roc_host: *abi.RocHost) abi.RocErasedCallable {
     );
 }
 
-fn testEachLenCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
-    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+fn testEachDescribeCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const capture = testCapturePtrAs(TestErasedI64Capture, capture_ptr);
+    const call_args = testErasedArgsAs(erased_calls.ErasedHostValueU64Args, args);
     defer testDropHostValue(roc_host, call_args.arg0);
     const list = testReadHostValueI64List(roc_host, call_args.arg0);
-    writeTestErasedResult(u64, ret, @intCast(list.length));
+    var key_bytes: u64 = 0;
+    for (list.items()) |value| {
+        var buffer: [32]u8 = undefined;
+        const projected = if (capture.amount == 0) value else @divTrunc(value, capture.amount);
+        key_bytes += @intCast((std.fmt.bufPrint(&buffer, "{d}", .{projected}) catch unreachable).len);
+    }
+    const host = hostFromRocHost(roc_host);
+    const token = host.engine.pushRowsSnapshotDescriptionSink(host, call_args.arg1, call_args.arg0, @intCast(list.length), key_bytes) catch @panic("test description sink rejected Rows adapter output");
+    writeTestErasedResult(u64, ret, token);
 }
 
 fn testEachCopyKeysCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
@@ -4442,13 +4597,13 @@ fn testEachCopyKeysCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const
         const key = std.fmt.bufPrint(&buffer, "{d}", .{projected}) catch unreachable;
         const owned_key = abi.RocStr.fromSlice(key, roc_host);
         defer abi.RocStrRelease.release(owned_key, roc_host);
-        token = hostFromRocHost(roc_host).engine.pushEachKeySink(hostFromRocHost(roc_host), token, @intCast(index), owned_key.asSlice()) catch @panic("test key sink rejected collection adapter output");
+        token = hostFromRocHost(roc_host).engine.pushRowsSnapshotSink(hostFromRocHost(roc_host), token, @intCast(index), @intCast(index + 1), owned_key.asSlice()) catch @panic("test snapshot sink rejected Rows adapter output");
     }
     writeTestErasedResult(u64, ret, token);
 }
 
 fn testEachComparePairsCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
-    const call_args = testErasedArgsAs(erased_calls.ErasedHostValueHostValueU64ListU64Args, args);
+    const call_args = testErasedArgsAs(erased_calls.ErasedRowsCompareSlotsArgs, args);
     defer testDropHostValue(roc_host, call_args.arg1);
     defer testDropHostValue(roc_host, call_args.arg0);
     const owned_pairs = call_args.arg2;
@@ -4460,7 +4615,9 @@ fn testEachComparePairsCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]c
     var result_index: usize = 0;
     var pair_index: usize = 0;
     while (pair_index < pairs.len) : (pair_index += 2) {
-        token = hostFromRocHost(roc_host).engine.pushEachBoolSink(hostFromRocHost(roc_host), token, @intCast(result_index), old_items[@intCast(pairs[pair_index])] == new_items[@intCast(pairs[pair_index + 1])]) catch @panic("test bool sink rejected collection adapter output");
+        const old_index = pairs[pair_index] - 1;
+        const new_index = pairs[pair_index + 1] - 1;
+        token = hostFromRocHost(roc_host).engine.pushEachBoolSink(hostFromRocHost(roc_host), token, @intCast(result_index), old_items[@intCast(old_index)] == new_items[@intCast(new_index)]) catch @panic("test bool sink rejected Rows adapter output");
         result_index += 1;
     }
     writeTestErasedResult(u64, ret, token);
@@ -4471,7 +4628,7 @@ fn testEachCloneItemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]cons
     defer testDropHostValue(roc_host, call_args.arg0);
     const list = testReadHostValueI64List(roc_host, call_args.arg0).items();
     const host = hostFromRocHost(roc_host);
-    writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, list[@intCast(call_args.arg1)])));
+    writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, list[@intCast(call_args.arg1 - 1)])));
 }
 
 fn testEachAdapterCallable(roc_host: *abi.RocHost, callback: abi.RocErasedCallableFn) abi.RocErasedCallable {
@@ -5982,7 +6139,7 @@ test "signals host browser environment sources and commands update native state"
     }
 }
 
-test "signals host supplies the deterministic native entropy seed as little endian bytes" {
+test "signals host supplies the configured native entropy seed as little endian bytes" {
     var host = HostEnv.init();
     var roc_host = makeSignalsRocHost(&host);
     host.engine.roc_host = &roc_host;
@@ -5997,6 +6154,12 @@ test "signals host supplies the deterministic native entropy seed as little endi
     defer testDropHostValue(&roc_host, value);
     const payload = testReadHostValueU8List(&roc_host, value);
     try std.testing.expectEqualSlices(u8, &.{ 0x53, 0x63, 0x6f, 0x72 }, payload.items());
+
+    host.entropy_seed = 0;
+    const deterministic = host.initialEntropySeedPayload(&roc_host, cap);
+    defer testDropHostValue(&roc_host, deterministic);
+    const deterministic_payload = testReadHostValueU8List(&roc_host, deterministic);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, deterministic_payload.items());
 }
 
 test "signals host patches dirty leaf sinks without descriptor rebuild" {
@@ -6159,8 +6322,8 @@ test "signals host evaluates shared dirty record once per batch" {
     const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
     try std.testing.expectEqual(state_id.index() + 1, host.engine.active_source_signal_routes.items.len);
     const expected_source_routes = [_]u64{source_record_id};
-    try std.testing.expectEqualSlices(u64, &expected_source_routes, host.engine.active_source_signal_routes.items[state_id.index()].items);
-    try std.testing.expectEqual(@as(usize, 2), host.engine.active_text_signal_routes.items[@intCast(shared_record_id)].items.len);
+    try std.testing.expectEqualSlices(u64, &expected_source_routes, host.engine.active_source_signal_routes.items[state_id.index()].slice());
+    try std.testing.expectEqual(@as(usize, 2), host.engine.active_text_signal_routes.items[@intCast(shared_record_id)].len());
 
     const state_index = host.engine.stateIndexByNodeId(state_id.raw()) orelse unreachable;
     testDropHostValue(&roc_host, host.engine.states.items[state_index].activePayload().cell.value);
@@ -9207,6 +9370,7 @@ fn testNodeSignalExprCapability(signal: abi.NodeSignalExpr) ?HostValueCapability
         .Map => signal.payload_map()._3,
         .Map2 => signal.payload_map2()._4,
         .Select => signal.payload_select()._6,
+        .KeyedSelect => signal.payload_keyed_select()._7,
         .Combine => signal.payload_combine()._3,
         .TaskSource => signal.payload_task_source().cap,
         .IntervalSource => signal.payload_interval_source().cap,
@@ -10091,7 +10255,7 @@ fn testNodeEachWithSignalCapabilityRowAndCapture(comptime Capture: type, roc_hos
 fn testNodeEachWithSignalCapabilityKeyOfRowAndCapture(comptime Capture: type, roc_host: *abi.RocHost, signal: abi.NodeSignalExpr, items_cap: HostValueCapability, key_of_fn: abi.RocErasedCallableFn, key_of_capture: TestErasedI64Capture, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
     _ = key_of_fn;
     const item_cap = testHostValueCapability(roc_host);
-    const len = testEachAdapterCallable(roc_host, &testEachLenCallable);
+    const describe = writeTestErasedCallable(TestErasedI64Capture, roc_host, &testEachDescribeCallable, &testErasedCallableOnDrop, key_of_capture);
     const copy_keys = writeTestErasedCallable(TestErasedI64Capture, roc_host, &testEachCopyKeysCallable, &testErasedCallableOnDrop, key_of_capture);
     const compare_pairs = testEachAdapterCallable(roc_host, &testEachComparePairsCallable);
     const clone_item_at = testEachAdapterCallable(roc_host, &testEachCloneItemCallable);
@@ -10123,14 +10287,15 @@ fn testNodeEachWithSignalCapabilityKeyOfRowAndCapture(comptime Capture: type, ro
     return .{
         .payload = .{
             .each = .{
-                .items = boxTestNodeSignalExpr(roc_host, signal),
+                .rows = boxTestNodeSignalExpr(roc_host, signal),
                 .ops = .{
-                    .items_capability = hv.retainHostValueCapability(items_cap),
+                    .rows_capability = hv.retainHostValueCapability(items_cap),
                     .item_capability = item_cap,
-                    .len = len,
-                    .copy_keys = copy_keys,
-                    .compare_pairs = compare_pairs,
-                    .clone_item_at = clone_item_at,
+                    .describe = describe,
+                    .copy_snapshot = copy_keys,
+                    .copy_delta = testEachAdapterCallable(roc_host, &testEachCopyKeysCallable),
+                    .compare_slots = compare_pairs,
+                    .clone_item = clone_item_at,
                     .row = row,
                 },
             },
@@ -10174,7 +10339,7 @@ fn testNodeEachWithItemsAndRow(roc_host: *abi.RocHost, items: []const HostValue,
 
 fn testNodeEachSignalWithNestedWhenRows(roc_host: *abi.RocHost, items_signal: abi.NodeSignalExpr, items_cap: HostValueCapability, condition_binder: HostBinderToken, condition_cap: HostValueCapability) abi.Elem {
     const item_cap = testHostValueCapability(roc_host);
-    const len = testEachAdapterCallable(roc_host, &testEachLenCallable);
+    const describe = testEachAdapterCallable(roc_host, &testEachDescribeCallable);
     const copy_keys = testEachAdapterCallable(roc_host, &testEachCopyKeysCallable);
     const compare_pairs = testEachAdapterCallable(roc_host, &testEachComparePairsCallable);
     const clone_item_at = testEachAdapterCallable(roc_host, &testEachCloneItemCallable);
@@ -10191,14 +10356,15 @@ fn testNodeEachSignalWithNestedWhenRows(roc_host: *abi.RocHost, items_signal: ab
     return .{
         .payload = .{
             .each = .{
-                .items = boxTestNodeSignalExpr(roc_host, items_signal),
+                .rows = boxTestNodeSignalExpr(roc_host, items_signal),
                 .ops = .{
-                    .items_capability = hv.retainHostValueCapability(items_cap),
+                    .rows_capability = hv.retainHostValueCapability(items_cap),
                     .item_capability = item_cap,
-                    .len = len,
-                    .copy_keys = copy_keys,
-                    .compare_pairs = compare_pairs,
-                    .clone_item_at = clone_item_at,
+                    .describe = describe,
+                    .copy_snapshot = copy_keys,
+                    .copy_delta = testEachAdapterCallable(roc_host, &testEachCopyKeysCallable),
+                    .compare_slots = compare_pairs,
+                    .clone_item = clone_item_at,
                     .row = row,
                 },
             },
@@ -10401,13 +10567,13 @@ test "signals host tracks descriptor stream closure lifecycle metrics" {
 
     host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
 
-    try std.testing.expectEqual(@as(u64, 76), host.engine.pending_roc_metrics.closure_retains);
+    try std.testing.expectEqual(@as(u64, 78), host.engine.pending_roc_metrics.closure_retains);
     try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.closure_releases);
 
     stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
 
-    try std.testing.expectEqual(@as(u64, 76), host.engine.pending_roc_metrics.closure_retains);
-    try std.testing.expectEqual(@as(u64, 56), host.engine.pending_roc_metrics.closure_releases);
+    try std.testing.expectEqual(@as(u64, 78), host.engine.pending_roc_metrics.closure_retains);
+    try std.testing.expectEqual(@as(u64, 57), host.engine.pending_roc_metrics.closure_releases);
 }
 
 test "signals host descriptors carry capability-owned extension records" {
@@ -10457,7 +10623,7 @@ test "signals host descriptors carry capability-owned extension records" {
 
     try std.testing.expectEqual(@as(usize, 1), stream.eaches.items.len);
     const each = &stream.eaches.items[0];
-    try std.testing.expect(hv.hostValueCapabilitiesMatch(each.ops.items_capability, hostSignalBindingCapability(&host, &each.items)));
+    try std.testing.expect(hv.hostValueCapabilitiesMatch(each.ops.rows_capability, hostSignalBindingCapability(&host, &each.items)));
 
     try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
     const event_reducer = stream.events.items[0].payload_reducer;

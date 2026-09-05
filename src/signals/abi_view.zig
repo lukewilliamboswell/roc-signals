@@ -108,6 +108,17 @@ pub const SelectSignal = struct {
     capability: HostValueCapability,
 };
 
+pub const KeyedSelectSignal = struct {
+    site: retained.HostSignalToken,
+    row_handle: u64,
+    input: *const abi.NodeSignalExpr,
+    key: RocStrView,
+    input_read: HostTextRead,
+    false_init: roles.Initializer,
+    true_init: roles.Initializer,
+    capability: HostValueCapability,
+};
+
 pub const TaskSourceSignal = struct {
     token: SignalToken,
     name: RocStrView,
@@ -176,6 +187,7 @@ pub const SignalExpr = union(enum) {
     map: MapSignal,
     map2: Map2Signal,
     select: SelectSignal,
+    keyed_select: KeyedSelectSignal,
     combine: CombineSignal,
     task_source: TaskSourceSignal,
     interval_source: IntervalSourceSignal,
@@ -237,6 +249,21 @@ pub const SignalExpr = union(enum) {
                     .false_init = .fromAbi(payload._4),
                     .true_init = .fromAbi(payload._5),
                     .capability = payload._6,
+                } };
+            },
+            .KeyedSelect => blk: {
+                const payload = expr.payload_keyed_select();
+                const token = SignalToken.fromAbi(payload._1);
+                validateIdentityCallable(token, payload._5);
+                break :blk .{ .keyed_select = .{
+                    .site = token.callable,
+                    .row_handle = payload._0,
+                    .input = payload._2,
+                    .key = RocStrView.fromAbi(payload._3),
+                    .input_read = payload._4,
+                    .false_init = .fromAbi(payload._5),
+                    .true_init = .fromAbi(payload._6),
+                    .capability = payload._7,
                 } };
             },
             .Combine => blk: {
@@ -589,7 +616,7 @@ pub const WhenElem = struct {
 };
 
 pub const EachElem = struct {
-    items: *const abi.NodeSignalExpr,
+    rows: *const abi.NodeSignalExpr,
     ops: HostEachOps,
 };
 
@@ -683,7 +710,7 @@ pub const Elem = union(enum) {
             .Each => blk: {
                 const payload = elem.payload_each();
                 break :blk .{ .each = .{
-                    .items = payload.items,
+                    .rows = payload.rows,
                     .ops = payload.ops,
                 } };
             },
@@ -813,6 +840,30 @@ test "SignalExpr.fromAbi decodes map, map2, select, and combine expressions" {
     switch (SignalExpr.fromAbi(map_expr)) {
         .map => |payload| {
             try std.testing.expectEqual(map_token, payload.token.callable);
+            try std.testing.expectEqual(&input, payload.input);
+            try std.testing.expectEqual(capability, payload.capability);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const keyed_site = testCallableToken(0x5800);
+    const keyed_expr = abi.NodeSignalExpr{
+        .payload = .{ .keyed_select = .{
+            ._0 = 42,
+            ._1 = keyed_site,
+            ._2 = &input,
+            ._3 = abi.RocStr.empty(),
+            ._4 = std.mem.zeroes(HostTextRead),
+            ._5 = keyed_site,
+            ._6 = testCallableToken(0x5900),
+            ._7 = capability,
+        } },
+        .tag = .KeyedSelect,
+    };
+    switch (SignalExpr.fromAbi(keyed_expr)) {
+        .keyed_select => |payload| {
+            try std.testing.expectEqual(keyed_site, payload.site);
+            try std.testing.expectEqual(@as(u64, 42), payload.row_handle);
             try std.testing.expectEqual(&input, payload.input);
             try std.testing.expectEqual(capability, payload.capability);
         },
@@ -1376,22 +1427,22 @@ test "Elem.fromAbi decodes component when and each payloads" {
         else => return error.TestUnexpectedResult,
     }
 
-    const items_token = testCallableToken(0x13000);
-    var items = abi.NodeSignalExpr{
-        .payload = .{ .ref = items_token },
+    const rows_token = testCallableToken(0x13000);
+    var rows = abi.NodeSignalExpr{
+        .payload = .{ .ref = rows_token },
         .tag = .Ref,
     };
     const ops = std.mem.zeroes(HostEachOps);
     const each = abi.Elem{
         .payload = .{ .each = .{
-            .items = &items,
+            .rows = &rows,
             .ops = ops,
         } },
         .tag = .Each,
     };
     switch (Elem.fromAbi(each)) {
         .each => |payload| {
-            try std.testing.expectEqual(&items, payload.items);
+            try std.testing.expectEqual(&rows, payload.rows);
             try std.testing.expectEqual(ops, payload.ops);
         },
         else => return error.TestUnexpectedResult,

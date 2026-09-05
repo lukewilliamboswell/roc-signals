@@ -2,6 +2,7 @@ app [main] { pf: platform "../../platform/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -209,7 +210,11 @@ day_label : U64 -> Str
 day_label = |index| Try.map_ok(Day.from_index(index), Day.to_str) ?? "???"
 
 pad2 : U64 -> Str
-pad2 = |value| if value < 10 { "0${value.to_str()}" } else { value.to_str() }
+pad2 = |value| if value < 10 {
+	"0${value.to_str()}"
+} else {
+	value.to_str()
+}
 
 clock : U64 -> Str
 clock = |minute_of_day| "${pad2(minute_of_day // 60)}:${pad2(minute_of_day % 60)}"
@@ -356,7 +361,7 @@ slot_class = |view| {
 				Busy => "${base} border-amber-200 bg-amber-50"
 				Unmarked => base
 			}
-	}
+		}
 }
 
 status_badge_class : RowView -> Str
@@ -396,7 +401,16 @@ day_header = |free_names, day| {
 				"No availability",
 				[
 					Html.test_id("free-${name}"),
-					Html.class_attr_s(Signal.map(free_names, |free| if free.any(|other| Day.is_eq(other, day)) { "hint italic" } else { "hidden" })),
+					Html.class_attr_s(
+						Signal.map(
+							free_names,
+							|free| if free.any(|other| Day.is_eq(other, day)) {
+								"hint italic"
+							} else {
+								"hidden"
+							},
+						),
+					),
 				],
 			),
 		],
@@ -414,7 +428,7 @@ draft_tone = |draft|
 				MissingTitle => "hint"
 				_ => "notice notice-error"
 			}
-	}
+		}
 
 empty_slot : Slot
 empty_slot = { id: "", title: "", abs_start: 0, duration: 0, status: Status.Unmarked }
@@ -449,7 +463,13 @@ move_earlier = |slots, id| {
 
 set_status : List(Slot), Str, Status -> List(Slot)
 set_status = |slots, id, status|
-	slots.map(|slot| if slot.id == id { { ..slot, status } } else { slot })
+	slots.map(
+		|slot| if slot.id == id {
+			{ ..slot, status }
+		} else {
+			slot
+		},
+	)
 
 ## A non-empty run of ASCII digits. The guard is what rejects "8h", "+9" and
 ## "", and the builtin does the actual arithmetic.
@@ -523,7 +543,7 @@ draft_status = |draft|
 				BadStart => "Start time must be HH:MM"
 				BadLength => "Length must be 1-720 minutes"
 			}
-	}
+		}
 
 slot_id_of : List(Slot) -> Str
 slot_id_of = |slots| {
@@ -584,7 +604,7 @@ render_row = |slots, key, row|
 ## and `free` are both lists off the same fan-in, and nothing but the field name
 ## would stop a call site swapping them.
 WeekView : {
-	rows : Signal.Signal(List(RowView)),
+	rows : Signal.Signal(Rows.Rows(RowView)),
 	free : Signal.Signal(List(Day)),
 	banner : Signal.Signal(Banner),
 	empty : Signal.Signal(Bool),
@@ -616,7 +636,7 @@ week_panel = |slots, view|
 					# single keyed list placed by `col-start` would otherwise do.
 					Html.div_c(
 						"grid items-start gap-2 sm:grid-cols-7 sm:[grid-auto-flow:row_dense]",
-						[Ui.each(view.rows, |row| row.id, |each_row| render_row(slots, each_row.key(), each_row.signal()))],
+						[Ui.each(view.rows, |each_row| render_row(slots, each_row.key(), each_row.signal()))],
 					),
 					Ui.when(
 						view.empty,
@@ -834,7 +854,8 @@ main = ||
 							rows =
 								Signal.map(
 									{ slots: slots_signal, zone: zone_signal, conflicts: conflicts }.Signal,
-									|value| row_views(value.slots, value.zone, value.conflicts),
+									|value|
+										Rows.from_list(row_views(value.slots, value.zone, value.conflicts), |row| row.id) ?? crash "duplicate row key",
 								)
 
 							# fan-in C: slots x zone -> which local days have no availability
@@ -869,10 +890,10 @@ main = ||
 	)
 
 ## A known day wire value round-trips through the tag back to its own label.
-expect Day.from_str("Fri").ok_or(Day.Mon) |> Day.to_str() == "Fri"
+expect Day.from_str("Fri").ok_or(Day.Mon) |> Day.to_str == "Fri"
 
 ## An unrecognised day wire value falls back to Monday rather than failing.
-expect Day.from_str("Nope").ok_or(Day.Mon) |> Day.to_str() == "Mon"
+expect Day.from_str("Nope").ok_or(Day.Mon) |> Day.to_str == "Mon"
 
 ## A day's column index maps back to the same day.
 expect Day.from_index(Day.index(Day.Sun)).ok_or(Day.Mon) |> Day.is_eq(Day.Sun)

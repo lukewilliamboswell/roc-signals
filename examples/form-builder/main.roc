@@ -31,6 +31,7 @@ app [main] { pf: platform "../../platform/main.roc" }
 import Form
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -355,7 +356,7 @@ render_preview_row = |answers, key, row| {
 						[Html.class_attr("input"), Html.aria_invalid_s(invalid)],
 						[
 							Html.option("", "Choose..."),
-							Ui.each(options, |option| option, |each_row| Html.option(each_row.key(), each_row.key())),
+							Ui.each(Signal.map(options, |rows_items| Rows.from_list(rows_items, |option| option) ?? crash "duplicate row key"), |each_row| Html.option(each_row.key(), each_row.key())),
 						],
 						write_text,
 					),
@@ -399,7 +400,7 @@ designer_panel = |schema, fields, has_fields|
 				[
 					Ui.when(
 						has_fields,
-						|| Ui.each(fields, |field| field.id, |each_row| render_builder_row(schema, each_row.key(), each_row.signal())),
+						|| Ui.each(Signal.map(fields, |rows_items| Rows.from_list(rows_items, |field| field.id) ?? crash "duplicate row key"), |each_row| render_builder_row(schema, each_row.key(), each_row.signal())),
 						|| empty_state("No fields yet. Add a field to start designing."),
 					),
 				],
@@ -455,7 +456,7 @@ preview_panel = |answers, submits, view|
 						[
 							Ui.when(
 								view.has_fields,
-								|| Ui.each(view.rows, |row| row.id, |each_row| render_preview_row(answers, each_row.key(), each_row.signal())),
+								|| Ui.each(Signal.map(view.rows, |rows_items| Rows.from_list(rows_items, |row| row.id) ?? crash "duplicate row key"), |each_row| render_preview_row(answers, each_row.key(), each_row.signal())),
 								|| empty_state("No fields yet. The generated form is empty."),
 							),
 							Html.div_c(

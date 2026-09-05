@@ -6,6 +6,7 @@ import Sheet
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -91,7 +92,11 @@ cell_view = |input, index| {
 	{
 		key: ref,
 		ref,
-		value: if input.formulas { source } else { out.text },
+		value: if input.formulas {
+			source
+		} else {
+			out.text
+		},
 		kind: out.kind,
 		selected,
 	}
@@ -189,7 +194,11 @@ tone_class = |cell| {
 			Empty => " bg-white text-left text-zinc-900"
 			Text => " bg-white text-left text-zinc-900"
 		}
-	selection = if cell.selected { " relative z-10 bg-emerald-50 ring-2 ring-inset ring-emerald-500" } else { "" }
+	selection = if cell.selected {
+		" relative z-10 bg-emerald-50 ring-2 ring-inset ring-emerald-500"
+	} else {
+		""
+	}
 	"${base}${tone}${selection}"
 }
 
@@ -233,14 +242,14 @@ render_cell = |sheet, cursor, key, cell| {
 ## exactly the rows holding dependents of the edited cell.
 render_row : Ui.State(List(Str)), Ui.State(Cursor), Str, Signal.Signal(RowView) -> Elem
 render_row = |sheet, cursor, key, row| {
-	cells = Signal.map(row, |view| view.cells)
+	cells = Signal.map(row, |view| Rows.from_list(view.cells, |cell| cell.key) ?? crash "duplicate spreadsheet cell key")
 
 	Html.section_c(
 		"Row ${key}",
 		row_class,
 		[
 			Html.div_c(gutter_class, [Html.text(key)]),
-			Ui.each(cells, |cell| cell.key, |each_row| render_cell(sheet, cursor, each_row.key(), each_row.signal())),
+			Ui.each(cells, |each_row| render_cell(sheet, cursor, each_row.key(), each_row.signal())),
 		],
 	)
 }
@@ -286,10 +295,26 @@ formula_bar = |sheet, cursor, book| {
 						],
 					),
 					Html.paragraph_s_attrs(
-						Signal.map(bar, |view| if view.editing { "Editing" } else { "Showing value" }),
+						Signal.map(
+							bar,
+							|view| if view.editing {
+								"Editing"
+							} else {
+								"Showing value"
+							},
+						),
 						[
 							Html.test_id("bar-mode"),
-							Html.class_attr_s(Signal.map(bar, |view| if view.editing { "badge badge-info" } else { "badge badge-neutral" })),
+							Html.class_attr_s(
+								Signal.map(
+									bar,
+									|view| if view.editing {
+										"badge badge-info"
+									} else {
+										"badge badge-neutral"
+									},
+								),
+							),
 						],
 					),
 				],
@@ -303,7 +328,14 @@ formula_bar = |sheet, cursor, book| {
 							Html.paragraph_c("Contents of the selected cell", "field-label"),
 							Html.text_input_attrs(
 								"Formula",
-								Signal.map(bar, |view| if view.editing { view.source } else { view.value }),
+								Signal.map(
+									bar,
+									|view| if view.editing {
+										view.source
+									} else {
+										view.value
+									},
+								),
 								[
 									Html.test_id("formula-bar"),
 									Html.class_attr("input tabular-nums"),
@@ -322,7 +354,14 @@ formula_bar = |sheet, cursor, book| {
 						[
 							readout(
 								"Source",
-								Signal.map(bar, |view| if view.source.is_empty() { "(empty)" } else { view.source }),
+								Signal.map(
+									bar,
+									|view| if view.source.is_empty() {
+										"(empty)"
+									} else {
+										view.source
+									},
+								),
 								"bar-source",
 							),
 							# The bar's value tone is read off the same `kind` tag as the
@@ -332,7 +371,14 @@ formula_bar = |sheet, cursor, book| {
 								[
 									Html.paragraph_c("Value", "label"),
 									Html.paragraph_s_attrs(
-										Signal.map(bar, |view| if view.value.is_empty() { "(empty)" } else { view.value }),
+										Signal.map(
+											bar,
+											|view| if view.value.is_empty() {
+												"(empty)"
+											} else {
+												view.value
+											},
+										),
 										[
 											Html.test_id("bar-value"),
 											Html.class_attr_s(Signal.map(bar, value_tone_class)),
@@ -434,142 +480,160 @@ main = || {
 													reversed: reversed_signal,
 												}.Signal
 
-											rows = Signal.map(grid_input, build_rows)
+											rows = Signal.map(grid_input, |input| Rows.from_list(build_rows(input), |row| row.key) ?? crash "duplicate spreadsheet row key")
 
-										# Fan-in: selection, grid mode, and error count are three
-										# unrelated signals joined into one status record, which then
-										# drives the three tiles of the summary strip.
-										selection_text = Signal.map(selected_index, |index| Cells.ref_of(index))
-										mode_text =
-											Signal.map(formulas_signal, |on| if on { "Formulas" } else { "Values" })
-										error_text =
-											Signal.map(outs, |computed| count_errors(computed).to_str())
-										status : Signal.Signal(Status)
-										status =
-											Signal.map2(
-												selection_text,
-												Signal.map2(mode_text, error_text, |mode, errors| { mode, errors }),
-												|selection, rest| { selected: selection, mode: rest.mode, errors: rest.errors },
-											)
+											# Fan-in: selection, grid mode, and error count are three
+											# unrelated signals joined into one status record, which then
+											# drives the three tiles of the summary strip.
+											selection_text = Signal.map(selected_index, |index| Cells.ref_of(index))
+											mode_text =
+												Signal.map(
+													formulas_signal,
+													|on| if on {
+														"Formulas"
+													} else {
+														"Values"
+													},
+												)
+											error_text =
+												Signal.map(outs, |computed| count_errors(computed).to_str())
+											status : Signal.Signal(Status)
+											status =
+												Signal.map2(
+													selection_text,
+													Signal.map2(mode_text, error_text, |mode, errors| { mode, errors }),
+													|selection, rest| { selected: selection, mode: rest.mode, errors: rest.errors },
+												)
 
-										# How many rows the grid is currently drawing, for the tile
-										# that explains what "Hide empty rows" just did. Derived from
-										# the same two inputs `build_rows` filters on rather than from
-										# `rows` itself, which is already consumed as a keyed list.
-										visible_rows = Signal.map2(sources, hide_signal, visible_row_text)
+											# How many rows the grid is currently drawing, for the tile
+											# that explains what "Hide empty rows" just did. Derived from
+											# the same two inputs `build_rows` filters on rather than from
+											# `rows` itself, which is already consumed as a keyed list.
+											visible_rows = Signal.map2(sources, hide_signal, visible_row_text)
 
-										Html.div_c(
-											page_class,
-											[
-												Html.section_c(
-													"Spreadsheet Lite",
-													"app-header",
-													[
-														Html.heading_c("Spreadsheet Lite", "app-title"),
-														Html.paragraph_c(
-															"A quarterly budget on an 8 by 12 sheet, where every formula is a dependency edge. Editing a cell recomputes only the cells that transitively depend on it.",
-															"app-subtitle",
-														),
-													],
-												),
-												formula_bar(sheet, cursor, book),
-												Html.section_c(
-													"Sheet controls",
-													"panel",
-													[
-														Html.div_c(
-															"panel-head",
-															[
-																Html.paragraph_c("Sheet controls", "panel-title"),
-																Html.div_c(
-																	"toolbar",
-																	[
-																		Html.button_s_attrs(
-																			Signal.map(
-																				formulas_signal,
-																				|on| if on { "Show values" } else { "Show formulas" },
-																			),
-																			[Html.attr("type", "button"), Html.class_attr("button button-sm")],
-																			show_formulas.on_unit(|on| !on),
-																		),
-																		Html.button_s_attrs(
-																			Signal.map(
-																				hide_signal,
-																				|on| if on { "Show all rows" } else { "Hide empty rows" },
-																			),
-																			[Html.attr("type", "button"), Html.class_attr("button button-sm")],
-																			hide_empty.on_unit(|on| !on),
-																		),
-																		Html.button_s_attrs(
-																			Signal.map(
-																				reversed_signal,
-																				|on| if on { "Top to bottom" } else { "Reverse row order" },
-																			),
-																			[Html.attr("type", "button"), Html.class_attr("button button-sm")],
-																			reverse_rows.on_unit(|on| !on),
-																		),
-																	],
-																),
-															],
-														),
-														Html.div_c(
-															"panel-body",
-															[
-																Html.div_c(
-																	"stat-grid",
-																	[
-																		stat_tile("Selected cell", Signal.map(status, |view| view.selected), "stat-selected"),
-																		stat_tile("Grid mode", Signal.map(status, |view| view.mode), "stat-mode"),
-																		stat_tile("Formula errors", Signal.map(status, |view| view.errors), "status-line"),
-																		stat_tile("Rows shown", visible_rows, "stat-rows"),
-																	],
-																),
-															],
-														),
-													],
-												),
-												Html.section_c(
-													"Sheet grid",
-													"panel",
-													[
-														Html.div_c(
-															"panel-head",
-															[
-																Html.paragraph_c("Sheet grid", "panel-title"),
-																Html.paragraph_c(
-																	"Numbers right-aligned, text left-aligned, errors in red.",
-																	"hint",
-																),
-															],
-														),
-														Html.div_c(
-															"panel-body",
-															[
-																# The cell area scrolls sideways inside the panel; the
-																# page itself never grows a horizontal scrollbar.
-																Html.div_c(
-																	"table-scroll",
-																	[
-																		Html.div_c(
-																			grid_frame_class,
-																			[
-																				column_header,
-																						Ui.each(
-																							rows,
-																							|row| row.key,
-																							|each_row| render_row(sheet, cursor, each_row.key(), each_row.signal()),
+											Html.div_c(
+												page_class,
+												[
+													Html.section_c(
+														"Spreadsheet Lite",
+														"app-header",
+														[
+															Html.heading_c("Spreadsheet Lite", "app-title"),
+															Html.paragraph_c(
+																"A quarterly budget on an 8 by 12 sheet, where every formula is a dependency edge. Editing a cell recomputes only the cells that transitively depend on it.",
+																"app-subtitle",
+															),
+														],
+													),
+													formula_bar(sheet, cursor, book),
+													Html.section_c(
+														"Sheet controls",
+														"panel",
+														[
+															Html.div_c(
+																"panel-head",
+																[
+																	Html.paragraph_c("Sheet controls", "panel-title"),
+																	Html.div_c(
+																		"toolbar",
+																		[
+																			Html.button_s_attrs(
+																				Signal.map(
+																					formulas_signal,
+																					|on| if on {
+																						"Show values"
+																					} else {
+																						"Show formulas"
+																					},
 																				),
-																			],
-																		),
-																	],
-																),
-															],
-														),
-													],
-												),
-											],
-										)
-																			},
+																				[Html.attr("type", "button"), Html.class_attr("button button-sm")],
+																				show_formulas.on_unit(|on| !on),
+																			),
+																			Html.button_s_attrs(
+																				Signal.map(
+																					hide_signal,
+																					|on| if on {
+																						"Show all rows"
+																					} else {
+																						"Hide empty rows"
+																					},
+																				),
+																				[Html.attr("type", "button"), Html.class_attr("button button-sm")],
+																				hide_empty.on_unit(|on| !on),
+																			),
+																			Html.button_s_attrs(
+																				Signal.map(
+																					reversed_signal,
+																					|on| if on {
+																						"Top to bottom"
+																					} else {
+																						"Reverse row order"
+																					},
+																				),
+																				[Html.attr("type", "button"), Html.class_attr("button button-sm")],
+																				reverse_rows.on_unit(|on| !on),
+																			),
+																		],
+																	),
+																],
+															),
+															Html.div_c(
+																"panel-body",
+																[
+																	Html.div_c(
+																		"stat-grid",
+																		[
+																			stat_tile("Selected cell", Signal.map(status, |view| view.selected), "stat-selected"),
+																			stat_tile("Grid mode", Signal.map(status, |view| view.mode), "stat-mode"),
+																			stat_tile("Formula errors", Signal.map(status, |view| view.errors), "status-line"),
+																			stat_tile("Rows shown", visible_rows, "stat-rows"),
+																		],
+																	),
+																],
+															),
+														],
+													),
+													Html.section_c(
+														"Sheet grid",
+														"panel",
+														[
+															Html.div_c(
+																"panel-head",
+																[
+																	Html.paragraph_c("Sheet grid", "panel-title"),
+																	Html.paragraph_c(
+																		"Numbers right-aligned, text left-aligned, errors in red.",
+																		"hint",
+																	),
+																],
+															),
+															Html.div_c(
+																"panel-body",
+																[
+																	# The cell area scrolls sideways inside the panel; the
+																	# page itself never grows a horizontal scrollbar.
+																	Html.div_c(
+																		"table-scroll",
+																		[
+																			Html.div_c(
+																				grid_frame_class,
+																				[
+																					column_header,
+																					Ui.each(
+																						rows,
+																						|each_row| render_row(sheet, cursor, each_row.key(), each_row.signal()),
+																					),
+																				],
+																			),
+																		],
+																	),
+																],
+															),
+														],
+													),
+												],
+											)
+										},
 									),
 							),
 					),

@@ -378,7 +378,7 @@ var roc_benchmark_counters: AllocationCounters = .{};
 var benchmark_host_baseline: AllocationCounters = .{};
 var benchmark_roc_baseline_live_count: u64 = 0;
 var benchmark_roc_baseline_live_bytes: u64 = 0;
-const benchmark_metrics_schema_version: u32 = 2;
+const benchmark_metrics_schema_version: u32 = 3;
 const runtime_metric_count = std.meta.fields(engine.RuntimeMetrics).len;
 const BenchmarkMetricsBlock = extern struct {
     roc: [10]u64,
@@ -1026,6 +1026,7 @@ fn discoverStorageSignalExpr(expr: abi.NodeSignalExpr) void {
         .ref, .const_value, .row_source, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source => {},
         .map => |payload| discoverStorageSignalExpr(payload.input.*),
         .select => |payload| discoverStorageSignalExpr(payload.input.*),
+        .keyed_select => |payload| discoverStorageSignalExpr(payload.input.*),
         .map2 => |payload| {
             discoverStorageSignalExpr(payload.left.*);
             discoverStorageSignalExpr(payload.right.*);
@@ -1067,7 +1068,7 @@ fn discoverStorageElem(elem: abi.Elem) void {
             discoverStorageSignalExpr(payload.condition.*);
         },
         .each => |payload| {
-            discoverStorageSignalExpr(payload.items.*);
+            discoverStorageSignalExpr(payload.rows.*);
         },
     }
 }
@@ -1316,7 +1317,7 @@ fn resolveTask(request_id: ids.TaskRequestId, payload_text: []const u8, failed: 
     const record = shared_engine.activeTaskRecordByToken(pending.task_token) orelse failHostWith("task result matched no active task source");
     const task_payload = switch (record.payload) {
         .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .select, .combine, .row_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
+        .ref, .const_value, .map, .map2, .select, .keyed_select, .combine, .row_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
     if (record.token().? != pending.task_token) failHostWith("task result matched a pending request for a different task source");
 
@@ -1480,6 +1481,36 @@ export fn __multi3(result: *align(8) u128, a_low: u64, a_high: u64, b_low: u64, 
 
 fn allocatedSizeForRocRequest(length: usize) usize {
     return if (length == 0) 1 else length;
+}
+
+const InlineRocAllocationHeader = struct {
+    requested_size: usize,
+    backing_size: usize,
+};
+
+fn inlineRocHeaderOffset(alignment: std.mem.Alignment) usize {
+    return std.mem.alignForward(usize, @sizeOf(InlineRocAllocationHeader), alignment.toByteUnits());
+}
+
+fn allocInlineRocMemory(length: usize, alignment_arg: usize) ?*anyopaque {
+    const alignment = alignmentFromBytes(@max(alignment_arg, @sizeOf(usize)));
+    const header_offset = inlineRocHeaderOffset(alignment);
+    const backing_size = std.math.add(usize, header_offset, allocatedSizeForRocRequest(length)) catch return null;
+    const base = allocator().rawAlloc(backing_size, alignment, @returnAddress()) orelse return null;
+    const user_ptr = base + header_offset;
+    const header: *InlineRocAllocationHeader = @ptrFromInt(@intFromPtr(user_ptr) - @sizeOf(InlineRocAllocationHeader));
+    header.* = .{ .requested_size = length, .backing_size = backing_size };
+    return @ptrCast(user_ptr);
+}
+
+fn freeInlineRocMemory(ptr: *anyopaque, alignment_arg: usize) InlineRocAllocationHeader {
+    const alignment = alignmentFromBytes(@max(alignment_arg, @sizeOf(usize)));
+    const user_ptr: [*]u8 = @ptrCast(ptr);
+    const header: *const InlineRocAllocationHeader = @ptrFromInt(@intFromPtr(user_ptr) - @sizeOf(InlineRocAllocationHeader));
+    const metadata = header.*;
+    const base = user_ptr - inlineRocHeaderOffset(alignment);
+    allocator().rawFree(base[0..metadata.backing_size], alignment, @returnAddress());
+    return metadata;
 }
 
 fn findRocAllocationIndex(ptr: *anyopaque) ?usize {
@@ -1672,7 +1703,10 @@ fn freeRocAllocation(ptr: *anyopaque, alignment_arg: usize) RocAllocation {
 
 export fn roc_alloc(length: usize, alignment: usize) callconv(.c) ?*anyopaque {
     if (host_poisoned) @trap();
-    const result = allocRocMemory(length, alignment) orelse failHostWith("Roc allocation failed");
+    const result = if (comptime build_options.wasm_allocation_ledger)
+        allocRocMemory(length, alignment) orelse failHostWith("Roc allocation failed")
+    else
+        allocInlineRocMemory(length, alignment) orelse failHostWith("Roc allocation failed");
     if (comptime build_options.wasm_benchmark) {
         roc_benchmark_counters.alloc_calls += 1;
         roc_benchmark_counters.allocated_bytes += length;
@@ -1749,7 +1783,10 @@ export fn roc_ui_debug_live_allocation_phase(index: usize) callconv(.c) u32 {
 }
 
 export fn roc_dealloc(ptr: *anyopaque, alignment: usize) callconv(.c) void {
-    const freed = freeRocAllocation(ptr, alignment);
+    const freed = if (comptime build_options.wasm_allocation_ledger)
+        freeRocAllocation(ptr, alignment)
+    else
+        freeInlineRocMemory(ptr, alignment);
     if (comptime build_options.wasm_benchmark) {
         roc_benchmark_counters.dealloc_calls += 1;
         roc_benchmark_counters.deallocated_bytes += freed.requested_size;
@@ -1759,6 +1796,17 @@ export fn roc_dealloc(ptr: *anyopaque, alignment: usize) callconv(.c) void {
 }
 
 export fn roc_realloc(ptr: *anyopaque, new_length: usize, alignment_arg: usize) callconv(.c) ?*anyopaque {
+    if (comptime !build_options.wasm_allocation_ledger) {
+        const old_user_ptr: [*]const u8 = @ptrCast(ptr);
+        const old_header: *const InlineRocAllocationHeader = @ptrFromInt(@intFromPtr(old_user_ptr) - @sizeOf(InlineRocAllocationHeader));
+        const old_requested_size = old_header.requested_size;
+        const new_ptr = allocInlineRocMemory(new_length, alignment_arg) orelse failHostWith("Roc reallocation failed");
+        const new_user_ptr: [*]u8 = @ptrCast(new_ptr);
+        const copy_size = @min(old_requested_size, new_length);
+        @memcpy(new_user_ptr[0..copy_size], old_user_ptr[0..copy_size]);
+        _ = freeInlineRocMemory(ptr, alignment_arg);
+        return new_ptr;
+    }
     const old_index = findExactRocAllocationIndex(ptr) orelse {
         if (findRocAllocationIndex(ptr)) |interior_index| {
             const alloc = roc_allocations.items[interior_index];
@@ -2093,13 +2141,55 @@ export fn roc_host_value_clone(value: u64) callconv(.c) u64 {
     }).toRaw();
 }
 
-export fn roc_each_key_sink_push(token: u64, index: u64, value: abi.RocStr) callconv(.c) u64 {
-    defer abi.RocStrRelease.release(value, &roc_host);
-    return shared_engine.pushEachKeySink(WasmCtx{}, token, index, value.asSlice()) catch failHostWith("each key sink rejected the active collection transaction");
-}
-
 export fn roc_each_bool_sink_push(token: u64, index: u64, value: bool) callconv(.c) u64 {
     return shared_engine.pushEachBoolSink(WasmCtx{}, token, index, value) catch failHostWith("each bool sink rejected the active collection transaction");
+}
+
+export fn roc_rows_snapshot_description_sink_push(token: u64, generation: abi.RocErasedCallable, item_count: u64, key_bytes: u64) callconv(.c) u64 {
+    defer abi.decrefErasedCallable(generation, &roc_host);
+    const generation_id = if (generation) |value| @intFromPtr(value) else 0;
+    return shared_engine.pushRowsSnapshotDescriptionSink(WasmCtx{}, token, generation_id, item_count, key_bytes) catch failHostWith("Rows snapshot description sink rejected the active transaction");
+}
+
+export fn roc_rows_delta_description_sink_push(token: u64, generation: abi.RocErasedCallable, parent: abi.RocErasedCallable, item_count: u64, snapshot_key_bytes: u64, op_count: u64, delta_key_count: u64, delta_key_bytes: u64) callconv(.c) u64 {
+    defer abi.decrefErasedCallable(generation, &roc_host);
+    defer abi.decrefErasedCallable(parent, &roc_host);
+    const generation_id = if (generation) |value| @intFromPtr(value) else 0;
+    const parent_id = if (parent) |value| @intFromPtr(value) else 0;
+    return shared_engine.pushRowsDeltaDescriptionSink(WasmCtx{}, token, generation_id, parent_id, item_count, snapshot_key_bytes, op_count, delta_key_count, delta_key_bytes) catch failHostWith("Rows delta description sink rejected the active transaction");
+}
+
+export fn roc_rows_snapshot_sink_push(token: u64, index: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
+    defer abi.RocStrRelease.release(key, &roc_host);
+    return shared_engine.pushRowsSnapshotSink(WasmCtx{}, token, index, slot, key.asSlice()) catch failHostWith("Rows snapshot sink rejected the active transaction");
+}
+
+export fn roc_rows_delta_clear_sink_push(token: u64, op_index: u64) callconv(.c) u64 {
+    return shared_engine.pushRowsDeltaClearSink(WasmCtx{}, token, op_index) catch failHostWith("Rows delta clear sink rejected the active transaction");
+}
+
+export fn roc_rows_delta_insert_sink_push(token: u64, op_index: u64, before_slot: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
+    defer abi.RocStrRelease.release(key, &roc_host);
+    return shared_engine.pushRowsDeltaInsertSink(WasmCtx{}, token, op_index, before_slot, slot, key.asSlice()) catch failHostWith("Rows delta insert sink rejected the active transaction");
+}
+
+export fn roc_rows_delta_move_range_sink_push(token: u64, op_index: u64, first_slot: u64, count: u64, before_slot: u64) callconv(.c) u64 {
+    return shared_engine.pushRowsDeltaMoveSink(WasmCtx{}, token, op_index, first_slot, count, before_slot) catch failHostWith("Rows delta move sink rejected the active transaction");
+}
+
+export fn roc_rows_delta_remove_range_sink_push(token: u64, op_index: u64, first_slot: u64, count: u64) callconv(.c) u64 {
+    return shared_engine.pushRowsDeltaRemoveSink(WasmCtx{}, token, op_index, first_slot, count) catch failHostWith("Rows delta remove sink rejected the active transaction");
+}
+
+export fn roc_rows_delta_update_sink_push(token: u64, op_index: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
+    defer abi.RocStrRelease.release(key, &roc_host);
+    return shared_engine.pushRowsDeltaUpdateSink(WasmCtx{}, token, op_index, slot, key.asSlice()) catch failHostWith("Rows delta update sink rejected the active transaction");
+}
+
+export fn roc_rows_same_generation_callable(left: abi.RocErasedCallable, right: abi.RocErasedCallable) callconv(.c) bool {
+    defer abi.decrefErasedCallable(left, &roc_host);
+    defer abi.decrefErasedCallable(right, &roc_host);
+    return left != null and left == right;
 }
 
 export fn roc_host_value_get_with_capability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {

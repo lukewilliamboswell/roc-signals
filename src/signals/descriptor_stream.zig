@@ -273,6 +273,25 @@ pub const LifecycleDescriptorIndex = struct {
     index: usize,
 };
 
+/// Stable descriptor identities owned directly by one explicit runtime scope.
+///
+/// Element and node ids survive dense descriptor-array swap removal, so this
+/// index can select one retiring subtree without scanning any descriptor
+/// family. Attribute and event ownership is reached through the element id;
+/// state and structural ownership is reached through the node id. Lifecycle
+/// descriptors keep their existing specialized per-scope index.
+pub const ScopeDescriptorOwnership = struct {
+    elem_ids: std.ArrayListUnmanaged(ElemId) = .empty,
+    node_ids: std.ArrayListUnmanaged(NodeId) = .empty,
+
+    /// Releases the scope-local identity lists.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.elem_ids.deinit(allocator);
+        self.node_ids.deinit(allocator);
+        self.* = .{};
+    }
+};
+
 const CustomAttrKeySet = std.HashMapUnmanaged(CustomAttrKey, CustomAttrDescriptorIndex, CustomAttrKeyContext, 80);
 
 pub const SignalBoolAttrDesc = struct {
@@ -553,12 +572,14 @@ const ensureElemDescriptorIndexImpl = ensureElemDescriptorIndex;
 const ensureFirstRenderChildSlotImpl = ensureFirstRenderChildSlot;
 const ensureLastRenderChildSlotImpl = ensureLastRenderChildSlot;
 const ensureNextRenderSiblingSlotImpl = ensureNextRenderSiblingSlot;
+const ensurePreviousRenderSiblingSlotImpl = ensurePreviousRenderSiblingSlot;
 const ensureNodeDescriptorIndexImpl = ensureNodeDescriptorIndex;
 const ensureRenderMetadataImpl = ensureRenderMetadata;
 const firstRenderChildImpl = firstRenderChild;
 const insertRenderChildrenImpl = insertRenderChildren;
 const lastRenderChildImpl = lastRenderChild;
 const nextRenderSiblingImpl = nextRenderSibling;
+const previousRenderSiblingImpl = previousRenderSibling;
 const namedEventIndicesImpl = namedEventIndices;
 const nodeDescriptorIndexImpl = nodeDescriptorIndex;
 const recordEachIndexImpl = recordEachIndex;
@@ -578,6 +599,7 @@ const recordWhenIndexImpl = recordWhenIndex;
 const refreshRenderIndexesFromImpl = refreshRenderIndexesFrom;
 const refreshRenderIndexesInRangeImpl = refreshRenderIndexesInRange;
 const removeRenderChildImpl = removeRenderChild;
+const moveRenderSiblingRangeBeforeImpl = moveRenderSiblingRangeBefore;
 const removeRenderMetadataIfEmptyImpl = removeRenderMetadataIfEmpty;
 const renderNodeIndexImpl = renderNodeIndex;
 const replaceRenderChildrenIndexImpl = replaceRenderChildrenIndex;
@@ -625,9 +647,12 @@ pub const Stream = struct {
     eaches: std.ArrayListUnmanaged(EachDesc) = .empty,
     signal_records_by_token: std.AutoHashMapUnmanaged(HostSignalToken, *SignalRecord) = .{},
     signal_record_descriptor_uses_by_token: std.AutoHashMapUnmanaged(HostSignalToken, usize) = .{},
+    keyed_select_records_by_identity: std.AutoHashMapUnmanaged(signal_records.KeyedSelectIdentity, *SignalRecord) = .{},
+    keyed_select_descriptor_uses_by_identity: std.AutoHashMapUnmanaged(signal_records.KeyedSelectIdentity, usize) = .{},
     custom_attr_keys: CustomAttrKeySet = .empty,
     custom_attr_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(CustomAttrDescriptorIndex)) = .empty,
     lifecycle_indices_by_scope_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(LifecycleDescriptorIndex)) = .empty,
+    scope_descriptor_ownership: std.ArrayListUnmanaged(ScopeDescriptorOwnership) = .empty,
     custom_attr_index_active: bool = false,
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .{},
     named_event_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)) = .empty,
@@ -661,6 +686,8 @@ pub const Stream = struct {
         try self.eaches.ensureUnusedCapacity(allocator, replacement.eaches.items.len);
         try self.signal_records_by_token.ensureUnusedCapacity(allocator, @intCast(replacement.signal_records_by_token.count()));
         try self.signal_record_descriptor_uses_by_token.ensureUnusedCapacity(allocator, @intCast(replacement.signal_record_descriptor_uses_by_token.count()));
+        try self.keyed_select_records_by_identity.ensureUnusedCapacity(allocator, @intCast(replacement.keyed_select_records_by_identity.count()));
+        try self.keyed_select_descriptor_uses_by_identity.ensureUnusedCapacity(allocator, @intCast(replacement.keyed_select_descriptor_uses_by_identity.count()));
         var custom_attrs = std.math.add(usize, replacement.static_custom_text_attrs.items.len, replacement.signal_custom_text_attrs.items.len) catch return error.ResourceLimit;
         custom_attrs = std.math.add(usize, custom_attrs, replacement.signal_optional_custom_text_attrs.items.len) catch return error.ResourceLimit;
         custom_attrs = std.math.add(usize, custom_attrs, replacement.static_custom_bool_attrs.items.len) catch return error.ResourceLimit;
@@ -671,6 +698,15 @@ pub const Stream = struct {
         }
         for (replacement.lifecycle_indices_by_scope_id.items, 0..) |indexes, scope_id| {
             if (indexes.items.len != 0) try self.reserveLifecycleScope(allocator, ScopeId.fromIndex(scope_id), indexes.items.len);
+        }
+        for (replacement.scope_descriptor_ownership.items, 0..) |ownership, scope_id| {
+            if (ownership.elem_ids.items.len == 0 and ownership.node_ids.items.len == 0) continue;
+            try self.reserveScopeDescriptorOwnership(
+                allocator,
+                ScopeId.fromIndex(scope_id),
+                ownership.elem_ids.items.len,
+                ownership.node_ids.items.len,
+            );
         }
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(replacement.render_metadata_by_elem_id.count()));
 
@@ -713,6 +749,7 @@ pub const Stream = struct {
         when_count: usize,
         each_count: usize,
     ) ReserveError!void {
+        try self.render_nodes.ensureUnusedCapacity(allocator, removed_elem_ids.len);
         try self.elements.ensureUnusedCapacity(allocator, element_count);
         try self.text_nodes.ensureUnusedCapacity(allocator, text_count);
         try self.static_text_attrs.ensureUnusedCapacity(allocator, static_text_count);
@@ -914,12 +951,14 @@ pub const Stream = struct {
     ) void {
         for (element_indexes) |index| {
             const removed = self.elements.swapRemove(index);
+            self.forgetScopeElem(removed.scope_id, removed.elem_id);
             self.clearElementIndex(removed.elem_id.raw(), index);
             retired.elements.appendAssumeCapacity(removed);
             if (index < self.elements.items.len) self.updateElementIndex(self.elements.items[index].elem_id.raw(), index);
         }
         for (text_indexes) |index| {
             const removed = self.text_nodes.swapRemove(index);
+            self.forgetScopeElem(removed.scope_id, removed.elem_id);
             self.clearTextNodeIndex(removed.elem_id.raw(), index);
             retired.text_nodes.appendAssumeCapacity(removed);
             if (index < self.text_nodes.items.len) self.updateTextNodeIndex(self.text_nodes.items[index].elem_id.raw(), index);
@@ -944,6 +983,7 @@ pub const Stream = struct {
         }
         for (signal_text_node_indexes) |index| {
             const removed = self.signal_text_nodes.swapRemove(index);
+            self.forgetScopeElem(removed.scope_id, removed.elem_id);
             self.clearSignalTextNodeIndex(removed.elem_id.raw(), index);
             self.forgetSignalRecordTree(removed.signal.record);
             retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
@@ -1020,6 +1060,7 @@ pub const Stream = struct {
         }
         for (scope_site_indexes) |index| {
             const removed = self.scope_sites.swapRemove(index);
+            self.forgetScopeNode(removed.scope_id, removed.node_id);
             self.clearScopeSiteIndex(removed.node_id.raw(), removed.kind, index);
             const retired_index = retired.scope_sites.items.len;
             retired.scope_sites.appendAssumeCapacity(removed);
@@ -1126,12 +1167,47 @@ pub const Stream = struct {
             setFreshIndex(&self.descriptor_indexes_by_node_id.items[desc.node_id.index()].each, index);
         }
         replacement.eaches.items.len = 0;
+        for (replacement.scope_descriptor_ownership.items, 0..) |*source, scope_index| {
+            if (source.elem_ids.items.len == 0 and source.node_ids.items.len == 0) continue;
+            const destination = &self.scope_descriptor_ownership.items[scope_index];
+            destination.elem_ids.appendSliceAssumeCapacity(source.elem_ids.items);
+            destination.node_ids.appendSliceAssumeCapacity(source.node_ids.items);
+            source.elem_ids.clearRetainingCapacity();
+            source.node_ids.clearRetainingCapacity();
+        }
+    }
+
+    /// Publishes the render-node membership of a sparse structural edit.
+    ///
+    /// The dense array is only an unordered descriptor pool on this path:
+    /// removed ids are swap-retired and replacement nodes append into reserved
+    /// capacity. Durable parent/sibling links remain the render-order authority
+    /// and are intentionally left for the prepared sparse order journal. New
+    /// top-level roots therefore enter detached, while links wholly inside a
+    /// replacement subtree transfer with that subtree.
+    pub fn commitSparseRenderNodesAssumeCapacity(self: *Stream, replacement: *Stream, retired: *Stream, removed_elem_ids: []const u64) void {
+        commitSparseRenderNodes(Stream, self, replacement, retired, removed_elem_ids);
+    }
+
+    /// Drops detached metadata left by sparse render-node retirement.
+    /// Reused ids have a replacement render-node index and deliberately retain
+    /// their newly published metadata.
+    pub fn finishSparseRenderNodeRetirement(self: *Stream, removed_elem_ids: []const u64) void {
+        finishSparseRenderNodeRetirementImpl(Stream, self, removed_elem_ids);
     }
 
     fn rememberSignalRecordTreeAssumeCapacity(self: *Stream, record: *SignalRecord) void {
         const Context = struct {
             stream: *Stream,
             fn visit(ctx: @This(), current: *SignalRecord) void {
+                if (current.keyedSelectIdentity()) |identity| {
+                    const record_entry = ctx.stream.keyed_select_records_by_identity.getOrPutAssumeCapacity(identity);
+                    if (record_entry.found_existing and record_entry.value_ptr.* != current) @panic("keyed selector identity was bound to multiple host records");
+                    record_entry.value_ptr.* = current;
+                    const use_entry = ctx.stream.keyed_select_descriptor_uses_by_identity.getOrPutAssumeCapacity(identity);
+                    if (use_entry.found_existing) use_entry.value_ptr.* += 1 else use_entry.value_ptr.* = 1;
+                    return;
+                }
                 const token = current.token() orelse return;
                 ctx.stream.rememberSignalRecordAssumeCapacity(token, current);
                 const entry = ctx.stream.signal_record_descriptor_uses_by_token.getOrPutAssumeCapacity(token);
@@ -1159,6 +1235,7 @@ pub const Stream = struct {
         const new_elem_id = replacement.text_nodes.items[0].elem_id;
 
         const displaced_text = self.text_nodes.items[text_index];
+        const replacement_text = replacement.text_nodes.items[0];
         self.text_nodes.items[text_index] = replacement.text_nodes.items[0];
         replacement.text_nodes.items[0] = displaced_text;
         const displaced_render = self.render_nodes.items[old_render_index];
@@ -1172,6 +1249,8 @@ pub const Stream = struct {
         var replacement_metadata = removed_metadata.value;
         replacement_metadata.render_node = old_render_index;
         self.render_metadata_by_elem_id.putAssumeCapacity(new_elem_id, replacement_metadata);
+        self.forgetScopeElem(displaced_text.scope_id, displaced_text.elem_id);
+        self.recordScopeElemAssumeCapacity(replacement_text.scope_id, replacement_text.elem_id);
         self.next_elem_id = @max(self.next_elem_id, new_elem_id + 1);
     }
 
@@ -1210,6 +1289,11 @@ pub const Stream = struct {
         return renderNodeIndexImpl(Stream, self, elem_id);
     }
 
+    /// Resolves a raw engine elem id at generic structural-planning seams.
+    pub fn renderNodeIndexRaw(self: *const Stream, elem_id: u64) ?usize {
+        return renderNodeIndexImpl(Stream, self, ElemId.fromRaw(elem_id));
+    }
+
     /// Records the dense render node descriptor index used for O(1) runtime lookup.
     pub fn recordRenderNodeIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, index: usize) void {
         recordRenderNodeIndexImpl(Stream, self, allocator, elem_id, index);
@@ -1240,6 +1324,11 @@ pub const Stream = struct {
         return ensureNextRenderSiblingSlotImpl(Stream, self, allocator, elem_id);
     }
 
+    /// Ensures the reverse sibling-link slot used by sparse structural splices.
+    pub fn ensurePreviousRenderSiblingSlot(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId) *?ElemId {
+        return ensurePreviousRenderSiblingSlotImpl(Stream, self, allocator, elem_id);
+    }
+
     /// Maintains first render child within the indexed descriptor stream used by both hosts.
     pub fn firstRenderChild(self: *const Stream, parent_elem_id: ElemId) ?ElemId {
         return firstRenderChildImpl(Stream, self, parent_elem_id);
@@ -1255,6 +1344,11 @@ pub const Stream = struct {
         return nextRenderSiblingImpl(Stream, self, elem_id);
     }
 
+    /// Returns the previous sibling without scanning the parent's child list.
+    pub fn previousRenderSibling(self: *const Stream, elem_id: ElemId) ?ElemId {
+        return previousRenderSiblingImpl(Stream, self, elem_id);
+    }
+
     /// Appends render child using capacity that must already satisfy the caller's transaction contract.
     pub fn appendRenderChild(self: *Stream, allocator: std.mem.Allocator, parent_elem_id: ElemId, elem_id: ElemId) void {
         appendRenderChildImpl(Stream, self, allocator, parent_elem_id, elem_id);
@@ -1268,6 +1362,17 @@ pub const Stream = struct {
     /// Removes child while preserving indexes for unaffected render nodes.
     pub fn removeRenderChild(self: *Stream, parent_elem_id: ElemId, elem_id: ElemId) void {
         removeRenderChildImpl(Stream, self, parent_elem_id, elem_id);
+    }
+
+    /// Moves one already-linked contiguous sibling range before an anchor.
+    ///
+    /// The caller must establish that `first_elem_id...last_elem_id` is a
+    /// contiguous child range of `parent_elem_id`, and that `before_elem_id`
+    /// is either null or a child outside that range. The operation mutates no
+    /// dense render-node storage and allocates nothing, so a prepared Rows
+    /// transition can publish a validated move without scanning siblings.
+    pub fn moveRenderSiblingRangeBefore(self: *Stream, parent_elem_id: ElemId, first_elem_id: ElemId, last_elem_id: ElemId, before_elem_id: ?ElemId) RenderSiblingMoveWork {
+        return moveRenderSiblingRangeBeforeImpl(Stream, self, parent_elem_id, first_elem_id, last_elem_id, before_elem_id);
     }
 
     /// Inserts children into prepared render metadata for the affected subtree.
@@ -1305,6 +1410,7 @@ pub const Stream = struct {
         var child: ?u64 = first_child;
         while (child) |child_id| {
             const next = replacement.nextRenderSibling(child_id);
+            self.ensurePreviousRenderSiblingSlot(allocator, child_id).* = replacement.previousRenderSibling(child_id);
             self.ensureNextRenderSiblingSlot(allocator, child_id).* = next;
             child = next;
         }
@@ -1709,11 +1815,15 @@ pub const Stream = struct {
 
         self.signal_records_by_token.deinit(allocator);
         self.signal_record_descriptor_uses_by_token.deinit(allocator);
+        self.keyed_select_records_by_identity.deinit(allocator);
+        self.keyed_select_descriptor_uses_by_identity.deinit(allocator);
         self.custom_attr_keys.deinit(allocator);
         for (self.custom_attr_indices_by_elem_id.items) |*indexes| indexes.deinit(allocator);
         self.custom_attr_indices_by_elem_id.deinit(allocator);
         for (self.lifecycle_indices_by_scope_id.items) |*indexes| indexes.deinit(allocator);
         self.lifecycle_indices_by_scope_id.deinit(allocator);
+        for (self.scope_descriptor_ownership.items) |*ownership| ownership.deinit(allocator);
+        self.scope_descriptor_ownership.deinit(allocator);
         self.render_metadata_by_elem_id.deinit(allocator);
         self.descriptor_indexes_by_elem_id.deinit(allocator);
         self.descriptor_indexes_by_node_id.deinit(allocator);
@@ -1726,10 +1836,17 @@ pub const Stream = struct {
         return self.signal_records_by_token.get(token);
     }
 
+    /// Resolves a fused keyed selector by its site-and-row identity.
+    pub fn signalRecordByKeyedSelectIdentity(self: *Stream, identity: signal_records.KeyedSelectIdentity) ?*SignalRecord {
+        return self.keyed_select_records_by_identity.get(identity);
+    }
+
     /// Maintains reserve prepared signal record publication within the indexed descriptor stream used by both hosts.
     pub fn reservePreparedSignalRecordPublication(self: *Stream, allocator: std.mem.Allocator, additional_records: usize) std.mem.Allocator.Error!void {
         try self.signal_records_by_token.ensureUnusedCapacity(allocator, @intCast(additional_records));
         try self.signal_record_descriptor_uses_by_token.ensureUnusedCapacity(allocator, @intCast(additional_records));
+        try self.keyed_select_records_by_identity.ensureUnusedCapacity(allocator, @intCast(additional_records));
+        try self.keyed_select_descriptor_uses_by_identity.ensureUnusedCapacity(allocator, @intCast(additional_records));
     }
 
     /// Maintains remember signal record assume capacity within the indexed descriptor stream used by both hosts.
@@ -1742,12 +1859,24 @@ pub const Stream = struct {
         entry.value_ptr.* = record;
     }
 
+    /// Publishes one composite keyed-selector identity using preflighted capacity.
+    pub fn rememberKeyedSelectRecordAssumeCapacity(self: *Stream, identity: signal_records.KeyedSelectIdentity, record: *SignalRecord) void {
+        const entry = self.keyed_select_records_by_identity.getOrPutAssumeCapacity(identity);
+        if (entry.found_existing and entry.value_ptr.* != record) @panic("keyed selector identity was bound to multiple host records");
+        entry.value_ptr.* = record;
+    }
+
     /// Maintains increment signal record descriptor tree assume capacity within the indexed descriptor stream used by both hosts.
     pub fn incrementSignalRecordDescriptorTreeAssumeCapacity(self: *Stream, root: *SignalRecord) void {
         const Context = struct {
             stream: *Stream,
 
             fn visit(ctx: @This(), current: *SignalRecord) void {
+                if (current.keyedSelectIdentity()) |identity| {
+                    const entry = ctx.stream.keyed_select_descriptor_uses_by_identity.getOrPutAssumeCapacity(identity);
+                    if (entry.found_existing) entry.value_ptr.* += 1 else entry.value_ptr.* = 1;
+                    return;
+                }
                 const token = current.token() orelse return;
                 const entry = ctx.stream.signal_record_descriptor_uses_by_token.getOrPutAssumeCapacity(token);
                 if (entry.found_existing) {
@@ -1762,6 +1891,12 @@ pub const Stream = struct {
 
     /// Maintains remember signal record within the indexed descriptor stream used by both hosts.
     pub fn rememberSignalRecord(self: *Stream, allocator: std.mem.Allocator, record: *SignalRecord) void {
+        if (record.keyedSelectIdentity()) |identity| {
+            const entry = self.keyed_select_records_by_identity.getOrPut(allocator, identity) catch @panic("out of memory");
+            if (entry.found_existing and entry.value_ptr.* != record) @panic("keyed selector identity was bound to multiple host records");
+            entry.value_ptr.* = record;
+            return;
+        }
         const token = record.token() orelse return;
         const entry = self.signal_records_by_token.getOrPut(allocator, token) catch @panic("out of memory");
         if (entry.found_existing) {
@@ -1772,6 +1907,11 @@ pub const Stream = struct {
     }
 
     fn incrementSignalRecordDescriptorUse(self: *Stream, allocator: std.mem.Allocator, record: *SignalRecord) void {
+        if (record.keyedSelectIdentity()) |identity| {
+            const entry = self.keyed_select_descriptor_uses_by_identity.getOrPut(allocator, identity) catch @panic("out of memory");
+            if (entry.found_existing) entry.value_ptr.* += 1 else entry.value_ptr.* = 1;
+            return;
+        }
         const token = record.token() orelse return;
         const key = token;
         const entry = self.signal_record_descriptor_uses_by_token.getOrPut(allocator, key) catch @panic("out of memory");
@@ -1783,6 +1923,17 @@ pub const Stream = struct {
     }
 
     fn decrementSignalRecordDescriptorUse(self: *Stream, record: *SignalRecord) void {
+        if (record.keyedSelectIdentity()) |identity| {
+            const count = self.keyed_select_descriptor_uses_by_identity.getPtr(identity) orelse @panic("keyed selector descriptor use underflow");
+            if (count.* == 0) @panic("keyed selector descriptor use underflow");
+            count.* -= 1;
+            if (count.* != 0) return;
+            _ = self.keyed_select_descriptor_uses_by_identity.fetchRemove(identity) orelse @panic("keyed selector descriptor use disappeared during removal");
+            const existing = self.keyed_select_records_by_identity.get(identity) orelse @panic("keyed selector descriptor use had no record");
+            if (existing != record) @panic("keyed selector descriptor use pointed at the wrong record");
+            _ = self.keyed_select_records_by_identity.fetchRemove(identity) orelse @panic("keyed selector record disappeared during removal");
+            return;
+        }
         const token = record.token() orelse return;
         const key = token;
         const count = self.signal_record_descriptor_uses_by_token.getPtr(key) orelse @panic("signal token descriptor use underflow");
@@ -1824,12 +1975,17 @@ pub const Stream = struct {
 
     /// Appends element using capacity that must already satisfy the caller's transaction contract.
     pub fn appendElement(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, tag: []const u8) ElemId {
-        return appendElementImpl(Stream, self, allocator, elem_id, parent_elem_id, scope_id, tag);
+        self.reserveScopeDescriptorOwnership(allocator, scope_id, 1, 0) catch @panic("out of memory");
+        const result = appendElementImpl(Stream, self, allocator, elem_id, parent_elem_id, scope_id, tag);
+        self.recordScopeElemAssumeCapacity(scope_id, elem_id);
+        return result;
     }
 
     /// Appends text node using capacity that must already satisfy the caller's transaction contract.
     pub fn appendTextNode(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, value: []const u8) void {
+        self.reserveScopeDescriptorOwnership(allocator, scope_id, 1, 0) catch @panic("out of memory");
         appendTextNodeImpl(Stream, self, allocator, elem_id, parent_elem_id, scope_id, value);
+        self.recordScopeElemAssumeCapacity(scope_id, elem_id);
     }
 
     pub const PreparedStaticNode = union(enum) {
@@ -1858,6 +2014,20 @@ pub const Stream = struct {
             try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
         }
         const metadata_entries = std.math.mul(usize, additional, 2) catch return error.ResourceLimit;
+        try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
+    }
+
+    /// Preflights the exact static-node lanes without changing logical stream
+    /// contents. A staged collection can consequently transfer its owned tags
+    /// during allocation-free publication without reserving unused node kinds.
+    pub fn reservePreparedStaticNodeLanes(self: *Stream, allocator: std.mem.Allocator, elements: usize, texts: usize, total_render_nodes: usize, highest_elem_id: u64) ReserveError!void {
+        try self.render_nodes.ensureUnusedCapacity(allocator, total_render_nodes);
+        try self.elements.ensureUnusedCapacity(allocator, elements);
+        try self.text_nodes.ensureUnusedCapacity(allocator, texts);
+        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
+        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+        const metadata_entries = std.math.mul(usize, total_render_nodes, 2) catch return error.ResourceLimit;
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
     }
 
@@ -2041,7 +2211,7 @@ pub const Stream = struct {
     }
 
     /// Maintains prepare scope site within the indexed descriptor stream used by both hosts.
-    pub fn prepareScopeSite(self: *const Stream, allocator: std.mem.Allocator, node_id: NodeId, scope_id: ScopeId, ordinal: SiteOrdinal, parent_elem_id: ElemId, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) std.mem.Allocator.Error!PreparedScopeSite {
+    pub fn prepareScopeSite(self: *Stream, allocator: std.mem.Allocator, node_id: NodeId, scope_id: ScopeId, ordinal: SiteOrdinal, parent_elem_id: ElemId, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) ReserveError!PreparedScopeSite {
         return .{ .desc = .{
             .node_id = node_id,
             .scope_id = scope_id,
@@ -2084,6 +2254,7 @@ pub const Stream = struct {
         const site_index = self.scope_sites.items.len;
         self.scope_sites.appendAssumeCapacity(site.desc);
         setFreshIndex(self.descriptor_indexes_by_node_id.items[node_id.index()].scope_sites.slot(site.desc.kind), site_index);
+        self.recordScopeNodeAssumeCapacity(site.desc.scope_id, node_id);
     }
 
     /// Maintains reserve prepared events within the indexed descriptor stream used by both hosts.
@@ -2158,6 +2329,20 @@ pub const Stream = struct {
         }
     }
 
+    /// Preflights only the signal-attribute lanes the staged collection will
+    /// publish. Logical lengths and descriptor ownership remain unchanged, so
+    /// a later refusal can still discard the provisional descriptors safely.
+    pub fn reservePreparedSignalAttrLanes(self: *Stream, allocator: std.mem.Allocator, text: usize, boolean: usize, custom_text: usize, optional_custom_text: usize, custom_bool: usize, highest_elem_id: u64) ReserveError!void {
+        try self.signal_text_attrs.ensureUnusedCapacity(allocator, text);
+        try self.signal_bool_attrs.ensureUnusedCapacity(allocator, boolean);
+        try self.signal_custom_text_attrs.ensureUnusedCapacity(allocator, custom_text);
+        try self.signal_optional_custom_text_attrs.ensureUnusedCapacity(allocator, optional_custom_text);
+        try self.signal_custom_bool_attrs.ensureUnusedCapacity(allocator, custom_bool);
+        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
+        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+    }
+
     /// Publishes a prepared fixed signal attribute using capacity reserved by
     /// `reservePreparedSignalAttrs`. Ownership transfers to the stream.
     pub fn appendPreparedSignalDescriptor(self: *Stream, prepared: PreparedSignalDescriptor) void {
@@ -2181,6 +2366,7 @@ pub const Stream = struct {
                 const parent_entry = self.render_metadata_by_elem_id.getOrPutAssumeCapacity(desc.parent_elem_id.raw());
                 if (!parent_entry.found_existing) parent_entry.value_ptr.* = .{};
                 const last = parent_entry.value_ptr.last_child;
+                elem_entry.value_ptr.previous_sibling = last;
                 elem_entry.value_ptr.next_sibling = null;
                 if (last) |last_child| {
                     self.render_metadata_by_elem_id.getPtr(last_child.raw()).?.next_sibling = desc.elem_id;
@@ -2188,6 +2374,7 @@ pub const Stream = struct {
                     parent_entry.value_ptr.first_child = desc.elem_id;
                 }
                 parent_entry.value_ptr.last_child = desc.elem_id;
+                self.recordScopeElemAssumeCapacity(desc.scope_id, desc.elem_id);
                 self.next_elem_id += 1;
             },
             .text_attr => |desc| {
@@ -2224,6 +2411,16 @@ pub const Stream = struct {
         try self.static_bool_attrs.ensureUnusedCapacity(allocator, additional);
         try self.static_custom_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.static_custom_bool_attrs.ensureUnusedCapacity(allocator, additional);
+    }
+
+    /// Preflights only the static-attribute lanes the staged collection will
+    /// publish. No prepared string ownership transfers until the caller uses
+    /// the corresponding allocation-free append operations.
+    pub fn reservePreparedStaticAttrLanes(self: *Stream, allocator: std.mem.Allocator, text: usize, boolean: usize, custom_text: usize, custom_bool: usize) std.mem.Allocator.Error!void {
+        try self.static_text_attrs.ensureUnusedCapacity(allocator, text);
+        try self.static_bool_attrs.ensureUnusedCapacity(allocator, boolean);
+        try self.static_custom_text_attrs.ensureUnusedCapacity(allocator, custom_text);
+        try self.static_custom_bool_attrs.ensureUnusedCapacity(allocator, custom_bool);
     }
 
     /// Maintains prepare static text attr within the indexed descriptor stream used by both hosts.
@@ -2379,6 +2576,7 @@ pub const Stream = struct {
         const parent_entry = self.render_metadata_by_elem_id.getOrPutAssumeCapacity(prepared.parent_elem_id.raw());
         if (!parent_entry.found_existing) parent_entry.value_ptr.* = .{};
         const last = parent_entry.value_ptr.last_child;
+        elem_entry.value_ptr.previous_sibling = last;
         elem_entry.value_ptr.next_sibling = null;
         if (last) |last_child| {
             self.render_metadata_by_elem_id.getPtr(last_child.raw()).?.next_sibling = prepared.elem_id;
@@ -2386,11 +2584,13 @@ pub const Stream = struct {
             parent_entry.value_ptr.first_child = prepared.elem_id;
         }
         parent_entry.value_ptr.last_child = prepared.elem_id;
+        self.recordScopeElemAssumeCapacity(prepared.scope_id, prepared.elem_id);
         self.next_elem_id += 1;
     }
 
     /// Appends signal text node using capacity that must already satisfy the caller's transaction contract.
     pub fn appendSignalTextNode(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, signal: HostSignalBinding, read: HostTextRead) void {
+        self.reserveScopeDescriptorOwnership(allocator, scope_id, 1, 0) catch @panic("out of memory");
         self.next_elem_id += 1;
         self.rememberSignalRecordTree(allocator, signal.record);
         const retained_read = retainHostTextRead(read, metrics);
@@ -2414,6 +2614,7 @@ pub const Stream = struct {
         self.recordSignalTextNodeIndex(allocator, elem_id.raw(), signal_text_node_index);
         self.recordRenderNodeIndex(allocator, elem_id, render_index);
         self.appendRenderChild(allocator, parent_elem_id, elem_id);
+        self.recordScopeElemAssumeCapacity(scope_id, elem_id);
     }
 
     /// Appends static text attr using capacity that must already satisfy the caller's transaction contract.
@@ -2750,6 +2951,89 @@ pub const Stream = struct {
         return self.lifecycle_indices_by_scope_id.items[scope_id.index()].items;
     }
 
+    /// Preflights scope-local descriptor identity publication without changing
+    /// either list's logical contents. Empty outer slots are harmless index
+    /// storage and may remain after an aborted transaction.
+    pub fn reserveScopeDescriptorOwnership(self: *Stream, allocator: std.mem.Allocator, scope_id: ScopeId, additional_elems: usize, additional_nodes: usize) ReserveError!void {
+        if (additional_elems == 0 and additional_nodes == 0) return;
+        const required = std.math.add(usize, scope_id.index(), 1) catch return error.ResourceLimit;
+        try self.scope_descriptor_ownership.ensureTotalCapacity(allocator, required);
+        while (self.scope_descriptor_ownership.items.len < required) self.scope_descriptor_ownership.appendAssumeCapacity(.{});
+        const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        try ownership.elem_ids.ensureUnusedCapacity(allocator, additional_elems);
+        try ownership.node_ids.ensureUnusedCapacity(allocator, additional_nodes);
+    }
+
+    /// Publishes one element identity into its already-reserved scope index.
+    pub fn recordScopeElemAssumeCapacity(self: *Stream, scope_id: ScopeId, elem_id: ElemId) void {
+        const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        ownership.elem_ids.appendAssumeCapacity(elem_id);
+    }
+
+    /// Publishes one construction-node identity into its already-reserved scope index.
+    pub fn recordScopeNodeAssumeCapacity(self: *Stream, scope_id: ScopeId, node_id: NodeId) void {
+        const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        ownership.node_ids.appendAssumeCapacity(node_id);
+    }
+
+    /// Returns exact element identities owned directly by one scope.
+    pub fn scopeOwnedElemIds(self: *const Stream, scope_id: ScopeId) []const ElemId {
+        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return &.{};
+        return self.scope_descriptor_ownership.items[scope_id.index()].elem_ids.items;
+    }
+
+    /// Returns exact construction-node identities owned directly by one scope.
+    pub fn scopeOwnedNodeIds(self: *const Stream, scope_id: ScopeId) []const NodeId {
+        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return &.{};
+        return self.scope_descriptor_ownership.items[scope_id.index()].node_ids.items;
+    }
+
+    /// Clears one retiring or re-collected scope after its descriptor-removal
+    /// journal has captured these stable ids. Capacity is retained for reuse.
+    pub fn clearScopeDescriptorOwnership(self: *Stream, scope_id: ScopeId) void {
+        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return;
+        const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        ownership.elem_ids.clearRetainingCapacity();
+        ownership.node_ids.clearRetainingCapacity();
+    }
+
+    /// Releases empty per-scope descriptor indexes after the owning scope is
+    /// retired. Scope identities may later be reused for a differently shaped
+    /// subtree, so keeping every inactive slot's historic peak capacity would
+    /// make retained memory grow across otherwise identical mount/dispose
+    /// cycles. Descriptor and lifecycle removal must precede this call.
+    pub fn releaseRetiredScopeIndexes(self: *Stream, allocator: std.mem.Allocator, scope_id: ScopeId) void {
+        if (scope_id.index() < self.scope_descriptor_ownership.items.len) {
+            const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+            if (ownership.elem_ids.items.len != 0 or ownership.node_ids.items.len != 0) @panic("retired scope still owned active descriptors");
+            ownership.deinit(allocator);
+        }
+        if (scope_id.index() < self.lifecycle_indices_by_scope_id.items.len) {
+            const lifecycle = &self.lifecycle_indices_by_scope_id.items[scope_id.index()];
+            if (lifecycle.items.len != 0) @panic("retired scope still owned active lifecycle descriptors");
+            lifecycle.deinit(allocator);
+            lifecycle.* = .empty;
+        }
+    }
+
+    fn forgetScopeElem(self: *Stream, scope_id: ScopeId, elem_id: ElemId) void {
+        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return;
+        const owned_ids = &self.scope_descriptor_ownership.items[scope_id.index()].elem_ids;
+        for (owned_ids.items, 0..) |candidate, index| if (candidate == elem_id) {
+            _ = owned_ids.swapRemove(index);
+            return;
+        };
+    }
+
+    fn forgetScopeNode(self: *Stream, scope_id: ScopeId, node_id: NodeId) void {
+        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return;
+        const owned_ids = &self.scope_descriptor_ownership.items[scope_id.index()].node_ids;
+        for (owned_ids.items, 0..) |candidate, index| if (candidate == node_id) {
+            _ = owned_ids.swapRemove(index);
+            return;
+        };
+    }
+
     /// Removes one lifecycle ownership entry and validates its dense descriptor index.
     pub fn removeLifecycleIndex(self: *Stream, scope_id: u64, expected: LifecycleDescriptorIndex) void {
         if (scope_id >= self.lifecycle_indices_by_scope_id.items.len) @panic("lifecycle removal missed its scope index");
@@ -2921,12 +3205,16 @@ pub const Stream = struct {
 
     /// Appends scope site using capacity that must already satisfy the caller's transaction contract.
     pub fn appendScopeSite(self: *Stream, allocator: std.mem.Allocator, node_id: NodeId, scope_id: ScopeId, ordinal: SiteOrdinal, parent_elem_id: ElemId, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) void {
+        self.reserveScopeDescriptorOwnership(allocator, scope_id, 0, 1) catch @panic("out of memory");
         appendScopeSiteImpl(Stream, self, allocator, node_id, scope_id, ordinal, parent_elem_id, kind, binder_bindings);
+        self.recordScopeNodeAssumeCapacity(scope_id, node_id);
     }
 
     /// Appends scope site at using capacity that must already satisfy the caller's transaction contract.
     pub fn appendScopeSiteAt(self: *Stream, allocator: std.mem.Allocator, node_id: NodeId, scope_id: ScopeId, ordinal: SiteOrdinal, parent_elem_id: ElemId, render_insert_index: usize, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) void {
+        self.reserveScopeDescriptorOwnership(allocator, scope_id, 0, 1) catch @panic("out of memory");
         appendScopeSiteAtImpl(Stream, self, allocator, node_id, scope_id, ordinal, parent_elem_id, render_insert_index, kind, binder_bindings);
+        self.recordScopeNodeAssumeCapacity(scope_id, node_id);
     }
 
     /// Appends state using capacity that must already satisfy the caller's transaction contract.
@@ -3104,12 +3392,18 @@ pub const RenderElemIndex = struct {
     render_node: ?usize = null,
     first_child: ?ElemId = null,
     last_child: ?ElemId = null,
+    previous_sibling: ?ElemId = null,
     next_sibling: ?ElemId = null,
 
     /// Returns an initialized empty value with no retained resources.
     pub fn empty(self: RenderElemIndex) bool {
-        return self.render_node == null and self.first_child == null and self.last_child == null and self.next_sibling == null;
+        return self.render_node == null and self.first_child == null and self.last_child == null and self.previous_sibling == null and self.next_sibling == null;
     }
+};
+
+/// Exact pointer-write work performed by one sparse render-sibling move.
+pub const RenderSiblingMoveWork = struct {
+    links_touched: u8 = 0,
 };
 
 pub const ElemDescriptorIndex = struct {
@@ -3489,6 +3783,43 @@ pub fn clearRenderNodeIndex(comptime StreamType: type, stream: *StreamType, elem
     removeRenderMetadataIfEmpty(StreamType, stream, elem_id);
 }
 
+fn commitSparseRenderNodes(comptime StreamType: type, stream: *StreamType, replacement: *StreamType, retired: *StreamType, removed_elem_ids: []const u64) void {
+    for (removed_elem_ids) |raw_elem_id| {
+        const elem_id = ElemId.fromRaw(raw_elem_id);
+        const index = renderNodeIndex(StreamType, stream, elem_id) orelse @panic("sparse render retirement target was not indexed");
+        const removed = stream.render_nodes.swapRemove(index);
+        if (removed.elem_id != elem_id) @panic("sparse render retirement index named another node");
+        clearRenderNodeIndex(StreamType, stream, elem_id, index);
+        retired.render_nodes.appendAssumeCapacity(removed);
+        if (index < stream.render_nodes.items.len) updateRenderNodeIndex(StreamType, stream, stream.render_nodes.items[index].elem_id, index);
+    }
+
+    for (replacement.render_nodes.items) |node| {
+        const replacement_metadata = replacement.render_metadata_by_elem_id.get(node.elem_id.raw()) orelse @panic("sparse render replacement lacked metadata");
+        const parent_elem_id = renderNodeParentElemId(StreamType, replacement, node);
+        const top_level = renderNodeIndex(StreamType, replacement, parent_elem_id) == null;
+        const active_entry = stream.render_metadata_by_elem_id.getOrPutAssumeCapacity(node.elem_id.raw());
+        const retained_previous = if (active_entry.found_existing) active_entry.value_ptr.previous_sibling else null;
+        const retained_next = if (active_entry.found_existing) active_entry.value_ptr.next_sibling else null;
+        active_entry.value_ptr.* = replacement_metadata;
+        active_entry.value_ptr.render_node = stream.render_nodes.items.len;
+        if (top_level) {
+            active_entry.value_ptr.previous_sibling = retained_previous;
+            active_entry.value_ptr.next_sibling = retained_next;
+        }
+        stream.render_nodes.appendAssumeCapacity(node);
+    }
+    replacement.render_nodes.items.len = 0;
+}
+
+fn finishSparseRenderNodeRetirementImpl(comptime StreamType: type, stream: *StreamType, removed_elem_ids: []const u64) void {
+    for (removed_elem_ids) |raw_elem_id| {
+        const metadata = stream.render_metadata_by_elem_id.get(raw_elem_id) orelse continue;
+        if (metadata.render_node != null) continue;
+        _ = stream.render_metadata_by_elem_id.fetchRemove(raw_elem_id) orelse unreachable;
+    }
+}
+
 /// Ensures first render child slot capacity or state before publication can begin.
 pub fn ensureFirstRenderChildSlot(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, parent_elem_id: ElemId) *?ElemId {
     return &ensureRenderMetadata(StreamType, stream, allocator, parent_elem_id).first_child;
@@ -3502,6 +3833,11 @@ pub fn ensureLastRenderChildSlot(comptime StreamType: type, stream: *StreamType,
 /// Ensures next render sibling slot capacity or state before publication can begin.
 pub fn ensureNextRenderSiblingSlot(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: ElemId) *?ElemId {
     return &ensureRenderMetadata(StreamType, stream, allocator, elem_id).next_sibling;
+}
+
+/// Ensures the reverse sibling-link slot used by sparse structural splices.
+pub fn ensurePreviousRenderSiblingSlot(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: ElemId) *?ElemId {
+    return &ensureRenderMetadata(StreamType, stream, allocator, elem_id).previous_sibling;
 }
 
 /// Maintains first render child within the indexed descriptor stream used by both hosts.
@@ -3522,6 +3858,12 @@ pub fn nextRenderSibling(comptime StreamType: type, stream: *const StreamType, e
     return metadata.next_sibling;
 }
 
+/// Returns the previous sibling without scanning the parent's child list.
+pub fn previousRenderSibling(comptime StreamType: type, stream: *const StreamType, elem_id: ElemId) ?ElemId {
+    const metadata = stream.render_metadata_by_elem_id.get(elem_id.raw()) orelse return null;
+    return metadata.previous_sibling;
+}
+
 /// Appends render child using capacity that must already satisfy the caller's transaction contract.
 pub fn appendRenderChild(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, parent_elem_id: ElemId, elem_id: ElemId) void {
     _ = ensureRenderMetadata(StreamType, stream, allocator, parent_elem_id);
@@ -3530,6 +3872,7 @@ pub fn appendRenderChild(comptime StreamType: type, stream: *StreamType, allocat
     const parent_metadata = stream.render_metadata_by_elem_id.getPtr(parent_elem_id.raw()) orelse @panic("render child index was missing its parent links");
     const elem_metadata = stream.render_metadata_by_elem_id.getPtr(elem_id.raw()) orelse @panic("render child index was missing its child links");
     const last = parent_metadata.last_child;
+    elem_metadata.previous_sibling = last;
     elem_metadata.next_sibling = null;
     if (last) |last_child| {
         const last_metadata = stream.render_metadata_by_elem_id.getPtr(last_child.raw()) orelse @panic("render child index was missing its last child links");
@@ -3546,6 +3889,7 @@ pub fn clearRenderChildren(comptime StreamType: type, stream: *StreamType, paren
     while (child) |child_id| {
         const next = nextRenderSibling(StreamType, stream, child_id);
         const child_metadata = stream.render_metadata_by_elem_id.getPtr(child_id) orelse @panic("render child index referenced a child without links");
+        child_metadata.previous_sibling = null;
         child_metadata.next_sibling = null;
         removeRenderMetadataIfEmpty(StreamType, stream, child_id);
         child = next;
@@ -3560,31 +3904,68 @@ pub fn clearRenderChildren(comptime StreamType: type, stream: *StreamType, paren
 /// Removes child while preserving indexes for unaffected render nodes.
 pub fn removeRenderChild(comptime StreamType: type, stream: *StreamType, parent_elem_id: ElemId, elem_id: ElemId) void {
     const parent_metadata = stream.render_metadata_by_elem_id.getPtr(parent_elem_id.raw()) orelse @panic("render child index was missing its parent list");
+    const elem_metadata = stream.render_metadata_by_elem_id.getPtr(elem_id.raw()) orelse @panic("render child index removed a child without links");
+    const previous = elem_metadata.previous_sibling;
+    const next = elem_metadata.next_sibling;
+    if (previous) |previous_id| {
+        const previous_metadata = stream.render_metadata_by_elem_id.getPtr(previous_id.raw()) orelse @panic("render child index referenced a previous child without links");
+        previous_metadata.next_sibling = next;
+    } else if (parent_metadata.first_child == elem_id) {
+        parent_metadata.first_child = next;
+    } else @panic("render child index was missing a child");
+    if (next) |next_id| {
+        const next_metadata = stream.render_metadata_by_elem_id.getPtr(next_id.raw()) orelse @panic("render child index referenced a next child without links");
+        next_metadata.previous_sibling = previous;
+    } else if (parent_metadata.last_child == elem_id) {
+        parent_metadata.last_child = previous;
+    } else @panic("render child index was missing a child");
+    elem_metadata.previous_sibling = null;
+    elem_metadata.next_sibling = null;
+    removeRenderMetadataIfEmpty(StreamType, stream, elem_id);
+    removeRenderMetadataIfEmpty(StreamType, stream, parent_elem_id);
+}
 
-    var previous: ?ElemId = null;
-    var current = parent_metadata.first_child;
-    while (current) |child_id| {
-        const next = nextRenderSibling(StreamType, stream, child_id);
-        if (child_id == elem_id) {
-            if (previous) |previous_id| {
-                const previous_metadata = stream.render_metadata_by_elem_id.getPtr(previous_id.raw()) orelse @panic("render child index referenced a previous child without links");
-                previous_metadata.next_sibling = next;
-            } else {
-                parent_metadata.first_child = next;
-            }
-            if (lastRenderChild(StreamType, stream, parent_elem_id) == elem_id) {
-                parent_metadata.last_child = previous;
-            }
-            const elem_metadata = stream.render_metadata_by_elem_id.getPtr(elem_id.raw()) orelse @panic("render child index removed a child without links");
-            elem_metadata.next_sibling = null;
-            removeRenderMetadataIfEmpty(StreamType, stream, elem_id);
-            removeRenderMetadataIfEmpty(StreamType, stream, parent_elem_id);
-            return;
-        }
-        previous = child_id;
-        current = next;
+/// Moves one already-linked contiguous sibling range before an anchor.
+///
+/// Range membership and anchor exclusion are validated by the Rows transition
+/// and its render-order overlay before this allocation-free publication step.
+pub fn moveRenderSiblingRangeBefore(comptime StreamType: type, stream: *StreamType, parent_elem_id: ElemId, first_elem_id: ElemId, last_elem_id: ElemId, before_elem_id: ?ElemId) RenderSiblingMoveWork {
+    if (before_elem_id == first_elem_id) return .{};
+    const parent = stream.render_metadata_by_elem_id.getPtr(parent_elem_id.raw()) orelse @panic("render sibling move was missing its parent");
+    const first = stream.render_metadata_by_elem_id.getPtr(first_elem_id.raw()) orelse @panic("render sibling move was missing its first child");
+    const last = stream.render_metadata_by_elem_id.getPtr(last_elem_id.raw()) orelse @panic("render sibling move was missing its last child");
+    const old_previous = first.previous_sibling;
+    const old_next = last.next_sibling;
+    if (old_next == before_elem_id) return .{};
+
+    if (old_previous) |previous_id| {
+        stream.render_metadata_by_elem_id.getPtr(previous_id.raw()).?.next_sibling = old_next;
+    } else {
+        parent.first_child = old_next;
     }
-    @panic("render child index was missing a child");
+    if (old_next) |next_id| {
+        stream.render_metadata_by_elem_id.getPtr(next_id.raw()).?.previous_sibling = old_previous;
+    } else {
+        parent.last_child = old_previous;
+    }
+
+    const insertion_previous = if (before_elem_id) |before_id|
+        (stream.render_metadata_by_elem_id.getPtr(before_id.raw()) orelse @panic("render sibling move was missing its anchor")).previous_sibling
+    else
+        parent.last_child;
+    first.previous_sibling = insertion_previous;
+    last.next_sibling = before_elem_id;
+    if (insertion_previous) |previous_id| {
+        stream.render_metadata_by_elem_id.getPtr(previous_id.raw()).?.next_sibling = first_elem_id;
+    } else {
+        parent.first_child = first_elem_id;
+    }
+    if (before_elem_id) |before_id| {
+        stream.render_metadata_by_elem_id.getPtr(before_id.raw()).?.previous_sibling = last_elem_id;
+    } else {
+        parent.last_child = last_elem_id;
+    }
+    return .{ .links_touched = 6 };
 }
 
 /// Inserts children into prepared render metadata for the affected subtree.
@@ -3608,7 +3989,9 @@ pub fn insertRenderChildren(comptime StreamType: type, stream: *StreamType, allo
     }
 
     for (elem_ids, 0..) |elem_id, elem_index| {
+        const previous_insert = if (elem_index == 0) previous else elem_ids[elem_index - 1];
         const next_insert = if (elem_index + 1 < elem_ids.len) elem_ids[elem_index + 1] else next;
+        ensurePreviousRenderSiblingSlot(StreamType, stream, allocator, elem_id).* = previous_insert;
         ensureNextRenderSiblingSlot(StreamType, stream, allocator, elem_id).* = next_insert;
     }
 
@@ -3620,6 +4003,8 @@ pub fn insertRenderChildren(comptime StreamType: type, stream: *StreamType, allo
     }
     if (next == null) {
         parent_metadata.last_child = elem_ids[elem_ids.len - 1];
+    } else {
+        ensurePreviousRenderSiblingSlot(StreamType, stream, allocator, next.?).* = elem_ids[elem_ids.len - 1];
     }
 }
 
@@ -4243,6 +4628,10 @@ fn deinitStaticPreparedTestStream(stream: *Stream, allocator: std.mem.Allocator)
     stream.render_nodes.deinit(allocator);
     stream.elements.deinit(allocator);
     stream.text_nodes.deinit(allocator);
+    stream.static_text_attrs.deinit(allocator);
+    stream.static_bool_attrs.deinit(allocator);
+    stream.static_custom_text_attrs.deinit(allocator);
+    stream.static_custom_bool_attrs.deinit(allocator);
     stream.signal_text_attrs.deinit(allocator);
     stream.signal_bool_attrs.deinit(allocator);
     stream.signal_custom_text_attrs.deinit(allocator);
@@ -4250,12 +4639,42 @@ fn deinitStaticPreparedTestStream(stream: *Stream, allocator: std.mem.Allocator)
     stream.signal_custom_bool_attrs.deinit(allocator);
     stream.descriptor_indexes_by_elem_id.deinit(allocator);
     stream.render_metadata_by_elem_id.deinit(allocator);
+    for (stream.scope_descriptor_ownership.items) |*ownership| ownership.deinit(allocator);
+    stream.scope_descriptor_ownership.deinit(allocator);
+}
+
+test "retired scope indexes release historic capacity before identity reuse" {
+    var stream: Stream = .{};
+    defer {
+        for (stream.scope_descriptor_ownership.items) |*ownership| ownership.deinit(std.testing.allocator);
+        stream.scope_descriptor_ownership.deinit(std.testing.allocator);
+        for (stream.lifecycle_indices_by_scope_id.items) |*indexes| indexes.deinit(std.testing.allocator);
+        stream.lifecycle_indices_by_scope_id.deinit(std.testing.allocator);
+    }
+
+    const scope_id = ScopeId.fromRaw(4);
+    try stream.reserveScopeDescriptorOwnership(std.testing.allocator, scope_id, 3, 2);
+    try stream.reserveLifecycleScope(std.testing.allocator, scope_id, 2);
+    try std.testing.expect(stream.scope_descriptor_ownership.items[scope_id.index()].elem_ids.capacity >= 3);
+    try std.testing.expect(stream.scope_descriptor_ownership.items[scope_id.index()].node_ids.capacity >= 2);
+    try std.testing.expect(stream.lifecycle_indices_by_scope_id.items[scope_id.index()].capacity >= 2);
+
+    stream.releaseRetiredScopeIndexes(std.testing.allocator, scope_id);
+    try std.testing.expectEqual(@as(usize, 0), stream.scope_descriptor_ownership.items[scope_id.index()].elem_ids.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.scope_descriptor_ownership.items[scope_id.index()].node_ids.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.lifecycle_indices_by_scope_id.items[scope_id.index()].capacity);
+
+    // A later occupant of the same dense scope identity can reserve a new
+    // shape without inheriting the retired subtree's storage.
+    try stream.reserveScopeDescriptorOwnership(std.testing.allocator, scope_id, 1, 0);
+    try std.testing.expect(stream.scope_descriptor_ownership.items[scope_id.index()].elem_ids.capacity >= 1);
 }
 
 test "prepared static append sweeps allocation failures without logical mutation and retries" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     var counter = FaultAllocator.init(std.testing.allocator);
     var counted_stream: Stream = .{};
+    try counted_stream.reserveScopeDescriptorOwnership(std.testing.allocator, ScopeId.fromRaw(0), 1, 0);
     const counted = try counted_stream.prepareElement(counter.allocator(), ElemId.fromRaw(1), ElemId.fromRaw(0), ScopeId.fromRaw(0), "section");
     counted.abort(counter.allocator());
     deinitStaticPreparedTestStream(&counted_stream, std.testing.allocator);
@@ -4266,6 +4685,7 @@ test "prepared static append sweeps allocation failures without logical mutation
         var fault = FaultAllocator.init(std.testing.allocator);
         var stream: Stream = .{};
         defer deinitStaticPreparedTestStream(&stream, std.testing.allocator);
+        try stream.reserveScopeDescriptorOwnership(std.testing.allocator, ScopeId.fromRaw(0), 1, 0);
         fault.configure(failure_number);
         try std.testing.expectError(error.OutOfMemory, stream.prepareElement(fault.allocator(), ElemId.fromRaw(1), ElemId.fromRaw(0), ScopeId.fromRaw(0), "section"));
         try std.testing.expectEqual(@as(u64, 1), stream.next_elem_id);
@@ -4282,6 +4702,7 @@ test "prepared static append sweeps allocation failures without logical mutation
         try std.testing.expectEqual(@as(usize, 1), stream.elements.items.len);
         try std.testing.expectEqualStrings("section", stream.elements.items[0].tag);
         try std.testing.expectEqual(ElemId.fromRaw(1), stream.firstRenderChild(ElemId.fromRaw(0)).?);
+        try std.testing.expectEqualSlices(ElemId, &.{ElemId.fromRaw(1)}, stream.scopeOwnedElemIds(ScopeId.fromRaw(0)));
     }
 }
 
@@ -4292,6 +4713,7 @@ test "prepared static batch reserves cumulative allocation-free publication capa
     defer deinitStaticPreparedTestStream(&stream, std.testing.allocator);
 
     try stream.reservePreparedStaticNodes(fault.allocator(), 2, 2);
+    try stream.reserveScopeDescriptorOwnership(std.testing.allocator, ScopeId.fromRaw(0), 2, 0);
     const element = try stream.prepareElement(fault.allocator(), ElemId.fromRaw(1), ElemId.fromRaw(0), ScopeId.fromRaw(0), "div");
     const text = try stream.prepareTextNode(fault.allocator(), ElemId.fromRaw(2), ElemId.fromRaw(1), ScopeId.fromRaw(0), "hello");
 
@@ -4316,6 +4738,27 @@ test "prepared signal attr reservation leaves logical stream empty" {
     try std.testing.expectEqual(@as(usize, 0), stream.signal_bool_attrs.items.len);
     try std.testing.expectEqual(@as(usize, 0), stream.descriptor_indexes_by_elem_id.items.len);
     try std.testing.expect(stream.elemDescriptorIndex(ElemId.fromRaw(7)) == null);
+}
+
+test "exact prepared descriptor reservations leave mutually exclusive lanes empty" {
+    var stream: Stream = .{};
+    defer deinitStaticPreparedTestStream(&stream, std.testing.allocator);
+
+    try stream.reservePreparedStaticNodeLanes(std.testing.allocator, 3, 0, 3, 3);
+    try stream.reservePreparedStaticAttrLanes(std.testing.allocator, 4, 0, 0, 0);
+    try stream.reservePreparedSignalAttrLanes(std.testing.allocator, 0, 2, 0, 0, 0, 3);
+
+    try std.testing.expect(stream.elements.capacity >= 3);
+    try std.testing.expectEqual(@as(usize, 0), stream.text_nodes.capacity);
+    try std.testing.expect(stream.static_text_attrs.capacity >= 4);
+    try std.testing.expectEqual(@as(usize, 0), stream.static_bool_attrs.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.static_custom_text_attrs.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.static_custom_bool_attrs.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.signal_text_attrs.capacity);
+    try std.testing.expect(stream.signal_bool_attrs.capacity >= 2);
+    try std.testing.expectEqual(@as(usize, 0), stream.signal_custom_text_attrs.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.signal_optional_custom_text_attrs.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.signal_custom_bool_attrs.capacity);
 }
 
 test "prepared custom attribute reservation activates the maintained per-element index" {
@@ -4600,6 +5043,7 @@ test "prepared state site publication is allocation free" {
     defer abi.decrefErasedCallable(initial, &roc_host);
 
     try stream.reservePreparedStateSites(allocator, 1, 4);
+    try stream.reserveScopeDescriptorOwnership(allocator, ScopeId.fromRaw(0), 0, 1);
     const binder: BinderToken = @ptrFromInt(0x9000);
     const site = try stream.prepareScopeSite(allocator, NodeId.fromRaw(4), ScopeId.fromRaw(0), SiteOrdinal.fromRaw(0), ElemId.fromRaw(1), .state, &.{.{ .token = binder, .node_id = NodeId.fromRaw(2) }});
     const state = stream.prepareState(NodeId.fromRaw(4), .fromAbi(initial), std.mem.zeroes(HostValueCapability), &metrics);
@@ -4642,8 +5086,10 @@ test "prepared state site replacement transfers ownership without allocation" {
     const token: BinderToken = @ptrFromInt(0x9200);
 
     try active.reservePreparedStateSites(allocator, 1, 4);
+    try active.reserveScopeDescriptorOwnership(allocator, ScopeId.fromRaw(1), 0, 1);
     active.appendPreparedStateSite(try active.prepareScopeSite(allocator, NodeId.fromRaw(4), ScopeId.fromRaw(1), SiteOrdinal.fromRaw(0), ElemId.fromRaw(1), .state, &.{.{ .token = token, .node_id = NodeId.fromRaw(4) }}), active.prepareState(NodeId.fromRaw(4), .fromAbi(initial), std.mem.zeroes(HostValueCapability), &metrics));
     try replacement.reservePreparedStateSites(allocator, 1, 5);
+    try replacement.reserveScopeDescriptorOwnership(allocator, ScopeId.fromRaw(2), 0, 1);
     replacement.appendPreparedStateSite(try replacement.prepareScopeSite(allocator, NodeId.fromRaw(5), ScopeId.fromRaw(2), SiteOrdinal.fromRaw(0), ElemId.fromRaw(2), .state, &.{.{ .token = token, .node_id = NodeId.fromRaw(5) }}), replacement.prepareState(NodeId.fromRaw(5), .fromAbi(initial), std.mem.zeroes(HostValueCapability), &metrics));
     try active.reserveMovedStreamPublication(allocator, &replacement);
     try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 0, &.{}, &active, &.{0}, 1, 0, 0);
@@ -4655,6 +5101,8 @@ test "prepared state site replacement transfers ownership without allocation" {
     try std.testing.expectEqual(@as(?usize, 0), active.nodeDescriptorIndex(NodeId.fromRaw(5)).?.state.get());
     try std.testing.expectEqual(NodeId.fromRaw(4), retired.states.items[0].node_id);
     try std.testing.expectEqual(token, retired.scope_sites.items[0].binder_bindings[0].token);
+    try std.testing.expectEqual(@as(usize, 0), active.scopeOwnedNodeIds(ScopeId.fromRaw(1)).len);
+    try std.testing.expectEqualSlices(NodeId, &.{NodeId.fromRaw(5)}, active.scopeOwnedNodeIds(ScopeId.fromRaw(2)));
 }
 
 test "when descriptor replacement transfers ownership without allocation" {
@@ -5321,12 +5769,16 @@ test "render metadata helpers maintain child order and indexes" {
     var children = streamDirectChildren(TestStream, allocator, &stream, ElemId.fromRaw(0));
     defer allocator.free(children);
     try std.testing.expectEqualSlices(ElemId, &.{ ElemId.fromRaw(1), ElemId.fromRaw(2), ElemId.fromRaw(3) }, children);
+    try std.testing.expectEqual(@as(?ElemId, null), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(1)));
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(1)), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(2)));
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(2)), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(3)));
     try std.testing.expectEqual(@as(usize, 1), childInsertionIndexForRenderIndex(TestStream, &stream, ElemId.fromRaw(0), 1));
 
     removeRenderChild(TestStream, &stream, ElemId.fromRaw(0), ElemId.fromRaw(2));
     allocator.free(children);
     children = streamDirectChildren(TestStream, allocator, &stream, ElemId.fromRaw(0));
     try std.testing.expectEqualSlices(ElemId, &.{ ElemId.fromRaw(1), ElemId.fromRaw(3) }, children);
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(1)), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(3)));
 
     clearRenderNodeIndex(TestStream, &stream, ElemId.fromRaw(2), 1);
     try std.testing.expectEqual(@as(?usize, null), renderNodeIndex(TestStream, &stream, ElemId.fromRaw(2)));
@@ -5343,4 +5795,102 @@ test "render metadata helpers maintain child order and indexes" {
     refreshRenderIndexesFrom(TestStream, &stream, allocator, 2, &metrics);
     try std.testing.expectEqual(@as(?usize, 2), renderNodeIndex(TestStream, &stream, ElemId.fromRaw(2)));
     try std.testing.expectEqual(@as(u64, 2), metrics.render_indexes_refreshed);
+}
+
+test "sparse render sibling range move touches constant links at 10k" {
+    const allocator = std.testing.allocator;
+    var stream = TestStream{};
+    defer stream.deinit(allocator);
+
+    const parent = ElemId.fromRaw(0);
+    for (1..10_001) |raw| {
+        appendRenderChild(TestStream, &stream, allocator, parent, ElemId.fromRaw(@intCast(raw)));
+    }
+
+    const work = moveRenderSiblingRangeBefore(
+        TestStream,
+        &stream,
+        parent,
+        ElemId.fromRaw(5_000),
+        ElemId.fromRaw(5_001),
+        ElemId.fromRaw(2),
+    );
+    try std.testing.expectEqual(@as(u8, 6), work.links_touched);
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(1)), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(5_000)));
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(5_001)), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(2)));
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(4_999)), previousRenderSibling(TestStream, &stream, ElemId.fromRaw(5_002)));
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(2)), nextRenderSibling(TestStream, &stream, ElemId.fromRaw(5_001)));
+
+    const no_op = moveRenderSiblingRangeBefore(
+        TestStream,
+        &stream,
+        parent,
+        ElemId.fromRaw(5_000),
+        ElemId.fromRaw(5_001),
+        ElemId.fromRaw(2),
+    );
+    try std.testing.expectEqual(@as(u8, 0), no_op.links_touched);
+}
+
+test "sparse render membership retires and appends only exact ids" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var active = TestStream{};
+    defer active.deinit(allocator);
+    var replacement = TestStream{};
+    defer replacement.deinit(allocator);
+    var retired = TestStream{};
+    defer retired.deinit(allocator);
+
+    active.render_nodes.ensureTotalCapacity(allocator, 5) catch @panic("out of memory");
+    active.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, 6) catch @panic("out of memory");
+    retired.render_nodes.ensureTotalCapacity(allocator, 1) catch @panic("out of memory");
+    active.render_nodes.appendSliceAssumeCapacity(&.{
+        .{ .elem_id = ElemId.fromRaw(1), .kind = .element },
+        .{ .elem_id = ElemId.fromRaw(2), .kind = .element },
+        .{ .elem_id = ElemId.fromRaw(3), .kind = .element },
+    });
+    for (active.render_nodes.items, 0..) |node, index| {
+        active.elements.append(allocator, .{ .elem_id = node.elem_id.raw(), .parent_elem_id = 0, .scope_id = node.elem_id.raw(), .tag = "div" }) catch @panic("out of memory");
+        ensureTestElemDescriptorIndex(&active, allocator, node.elem_id.raw()).element = DescriptorIndex.init(index);
+        recordRenderNodeIndex(TestStream, &active, allocator, node.elem_id, index);
+        appendRenderChild(TestStream, &active, allocator, ElemId.fromRaw(0), node.elem_id);
+    }
+
+    replacement.render_nodes.appendSlice(allocator, &.{
+        .{ .elem_id = ElemId.fromRaw(4), .kind = .element },
+        .{ .elem_id = ElemId.fromRaw(5), .kind = .element },
+    }) catch @panic("out of memory");
+    replacement.elements.appendSlice(allocator, &.{
+        .{ .elem_id = 4, .parent_elem_id = 0, .scope_id = 4, .tag = "section" },
+        .{ .elem_id = 5, .parent_elem_id = 4, .scope_id = 4, .tag = "span" },
+    }) catch @panic("out of memory");
+    for (replacement.render_nodes.items, 0..) |node, index| {
+        ensureTestElemDescriptorIndex(&replacement, allocator, node.elem_id.raw()).element = DescriptorIndex.init(index);
+        recordRenderNodeIndex(TestStream, &replacement, allocator, node.elem_id, index);
+    }
+    appendRenderChild(TestStream, &replacement, allocator, ElemId.fromRaw(0), ElemId.fromRaw(4));
+    appendRenderChild(TestStream, &replacement, allocator, ElemId.fromRaw(4), ElemId.fromRaw(5));
+
+    fault.configure(1);
+    commitSparseRenderNodes(TestStream, &active, &replacement, &retired, &.{2});
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    fault.configure(null);
+    try std.testing.expectEqual(@as(usize, 4), active.render_nodes.items.len);
+    try std.testing.expectEqual(@as(?usize, null), renderNodeIndex(TestStream, &active, ElemId.fromRaw(2)));
+    try std.testing.expectEqual(@as(?usize, 1), renderNodeIndex(TestStream, &active, ElemId.fromRaw(3)));
+    try std.testing.expectEqual(@as(?usize, 2), renderNodeIndex(TestStream, &active, ElemId.fromRaw(4)));
+    try std.testing.expectEqual(@as(?usize, 3), renderNodeIndex(TestStream, &active, ElemId.fromRaw(5)));
+    try std.testing.expectEqual(ElemId.fromRaw(2), retired.render_nodes.items[0].elem_id);
+    try std.testing.expectEqual(@as(?ElemId, null), previousRenderSibling(TestStream, &active, ElemId.fromRaw(4)));
+    try std.testing.expectEqual(@as(?ElemId, ElemId.fromRaw(5)), firstRenderChild(TestStream, &active, ElemId.fromRaw(4)));
+
+    removeRenderChild(TestStream, &active, ElemId.fromRaw(0), ElemId.fromRaw(2));
+    insertRenderChildren(TestStream, &active, allocator, ElemId.fromRaw(0), 1, &.{ElemId.fromRaw(4)});
+    finishSparseRenderNodeRetirementImpl(TestStream, &active, &.{2});
+    const children = streamDirectChildren(TestStream, allocator, &active, ElemId.fromRaw(0));
+    defer allocator.free(children);
+    try std.testing.expectEqualSlices(ElemId, &.{ ElemId.fromRaw(1), ElemId.fromRaw(4), ElemId.fromRaw(3) }, children);
+    try std.testing.expect(!active.render_metadata_by_elem_id.contains(2));
 }

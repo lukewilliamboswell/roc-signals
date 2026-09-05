@@ -119,6 +119,43 @@ class SpecDriverTests(unittest.TestCase):
             self.assertEqual("protocol_error", invalid.status)
             self.assertEqual("invalid_json", invalid.failure["kind"])
 
+    def test_native_spec_workers_receive_the_deterministic_entropy_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec = root / "case.scm"
+            spec.write_text('(test "case" (steps (mark-metrics)))\n', encoding="utf-8")
+            worker = root / "worker"
+            worker.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env python3
+                    import json
+                    import sys
+                    seed_index = sys.argv.index("--entropy-seed")
+                    passed = sys.argv[seed_index + 1] == "0"
+                    print(json.dumps({{
+                        "protocol": {spec_driver.PROTOCOL!r},
+                        "id": "case.scm",
+                        "name": "case",
+                        "status": "passed" if passed else "failed",
+                        "duration_ns": 1,
+                        "failure": None if passed else {{"phase": "worker", "kind": "entropy", "message": "wrong seed"}},
+                    }}))
+                    raise SystemExit(0 if passed else 1)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            worker.chmod(worker.stat().st_mode | stat.S_IXUSR)
+
+            result = spec_driver.run_case(
+                worker,
+                spec_driver.SpecCase("case.scm", spec),
+                timeout_seconds=1,
+                verbose=False,
+            )
+            self.assertTrue(result.passed)
+
     def test_native_driver_skips_examples_without_filter_matches(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

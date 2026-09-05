@@ -3,6 +3,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 import Loan
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -72,7 +73,7 @@ render_row = |key, row|
 
 render_rows : Str, Str, Signal.Signal(Loan.Schedule) -> Elem
 render_rows = |id, name, sched| {
-	rows = sched.map(|value| row_views(id, value))
+	rows = sched.map(|value| Rows.from_list(row_views(id, value), |row| row.key) ?? crash "duplicate row key")
 	Html.section_c(
 		"${name} schedule",
 		"grid gap-2",
@@ -84,7 +85,7 @@ render_rows = |id, name, sched| {
 					Ui.when(
 						sched.map(|value| value.rows.is_empty()),
 						|| Html.paragraph_c("Nothing to amortise — this scenario borrows $0.00.", "empty-state border-0 bg-transparent"),
-						|| Ui.each(rows, |row| row.key, |each_row| render_row(each_row.key(), each_row.signal())),
+						|| Ui.each(rows, |each_row| render_row(each_row.key(), each_row.signal())),
 					),
 				],
 			),
@@ -158,7 +159,11 @@ marked_metric = |spec|
 ## The badge is hidden rather than emptied: an empty pill would still draw a
 ## border, and a "Lowest" caption on a losing column would be a lie.
 mark_class : Bool -> Str
-mark_class = |best| if best { "badge badge-ok" } else { "hidden" }
+mark_class = |best| if best {
+	"badge badge-ok"
+} else {
+	"hidden"
+}
 
 stat_class : Bool -> Str
 stat_class = |best|
@@ -180,6 +185,7 @@ input_badge_class = |validation|
 
 ## A draft whose boxes all parse gets the affirmative badge tone.
 expect input_badge_class(Valid) == "badge badge-ok"
+
 ## Any failing field flips the badge to the danger tone.
 expect input_badge_class(Invalid([Rate])) == "badge badge-danger"
 
@@ -189,7 +195,16 @@ best_by : List(Loan.Summary), (Loan.Summary -> U64) -> Try(Loan.Summary, [NotFou
 best_by = |summaries, field|
 	summaries
 		.first()
-		.map_ok(|head| summaries.fold(head, |current, item| if field(item) < field(current) { item } else { current }))
+		.map_ok(
+			|head| summaries.fold(
+				head,
+				|current, item| if field(item) < field(current) {
+					item
+				} else {
+					current
+				},
+			),
+		)
 		.map_err(|_| NotFound)
 
 is_best : List(Loan.Summary), (Loan.Summary -> U64), Str -> Bool
@@ -204,7 +219,7 @@ Scenario : {
 	draft : Ui.State(Loan.Draft),
 	parsed : Signal.Signal(Loan.Parsed),
 	sched : Signal.Signal(Loan.Schedule),
-	summaries : Signal.Signal(List(Loan.Summary)),
+	summaries : Signal.Signal(Rows.Rows(Loan.Summary)),
 }
 
 ## Every figure below is read from the SAME `sched` signal: the schedule is
@@ -214,8 +229,8 @@ scenario_panel : Scenario -> Elem
 scenario_panel = |scenario| {
 	{ id, name, draft, parsed, sched, summaries } = scenario
 	draft_signal = draft.signal()
-	best_payment = summaries.map(|list| is_best(list, |item| item.payment, id))
-	best_cost = summaries.map(|list| is_best(list, |item| item.total_paid, id))
+	best_payment = summaries.map(|rows| is_best(Rows.to_list(rows), |item| item.payment, id))
+	best_cost = summaries.map(|rows| is_best(Rows.to_list(rows), |item| item.total_paid, id))
 
 	Html.section_c(
 		name,
@@ -303,12 +318,20 @@ spread_text = |summaries|
 				low =
 					summaries.fold(
 						head.total_interest,
-						|current, item| if item.total_interest < current { item.total_interest } else { current },
+						|current, item| if item.total_interest < current {
+							item.total_interest
+						} else {
+							current
+						},
 					)
 				high =
 					summaries.fold(
 						head.total_interest,
-						|current, item| if item.total_interest > current { item.total_interest } else { current },
+						|current, item| if item.total_interest > current {
+							item.total_interest
+						} else {
+							current
+						},
 					)
 				Loan.money(high - low)
 			},
@@ -366,10 +389,13 @@ Pair := [AvsB, AvsC, BvsC].{
 
 ## The `<option>` value for A vs B parses back to the same pair.
 expect Pair.from_str(Pair.to_str(AvsB)).is_eq(AvsB)
+
 ## The `<option>` value for A vs C parses back to the same pair.
 expect Pair.from_str(Pair.to_str(AvsC)).is_eq(AvsC)
+
 ## The `<option>` value for B vs C parses back to the same pair.
 expect Pair.from_str(Pair.to_str(BvsC)).is_eq(BvsC)
+
 ## A pair names its two scenario columns by their position in the schedule list.
 expect Pair.indexes(AvsC) == { left: 0, right: 2 }
 
@@ -427,7 +453,7 @@ render_summary = |key, summary|
 		],
 	)
 
-comparison_panel : Ui.State(Str), Signal.Signal(List(Loan.Summary)), Signal.Signal(List(Loan.Schedule)) -> Elem
+comparison_panel : Ui.State(Str), Signal.Signal(Rows.Rows(Loan.Summary)), Signal.Signal(List(Loan.Schedule)) -> Elem
 comparison_panel = |pair, summaries, schedules| {
 	pair_signal = pair.signal()
 	break_even = Signal.map2(pair_signal.map(Pair.from_str), schedules, break_even_text)
@@ -449,8 +475,8 @@ comparison_panel = |pair, summaries, schedules| {
 			Html.div_c(
 				"stat-grid lg:grid-cols-3",
 				[
-					metric({ label: "Least interest", value: summaries.map(cheapest_text), test_id: "cheapest", size: "text-base" }),
-					metric({ label: "Interest spread", value: summaries.map(spread_text), test_id: "interest-spread", size: "text-base" }),
+					metric({ label: "Least interest", value: summaries.map(|rows| cheapest_text(Rows.to_list(rows))), test_id: "cheapest", size: "text-base" }),
+					metric({ label: "Interest spread", value: summaries.map(|rows| spread_text(Rows.to_list(rows))), test_id: "interest-spread", size: "text-base" }),
 					metric({ label: "Break-even", value: break_even, test_id: "break-even", size: "text-base" }),
 				],
 			),
@@ -475,7 +501,7 @@ comparison_panel = |pair, summaries, schedules| {
 			Html.section_c(
 				"Scenario summaries",
 				"grid gap-2",
-				[Ui.each(summaries, |summary| summary.id, |each_row| render_summary(each_row.key(), each_row.signal()))],
+				[Ui.each(summaries, |each_row| render_summary(each_row.key(), each_row.signal()))],
 			),
 		],
 	)
@@ -519,7 +545,8 @@ main = ||
 										Signal.map2(
 											Signal.map2(summary_a, summary_b, |a, b| [a, b]),
 											summary_c,
-											|pair_list, c| pair_list.append(c),
+											|pair_list, c|
+												Rows.from_list(pair_list.append(c), |summary| summary.id) ?? crash "duplicate row key",
 										)
 									schedules =
 										Signal.map2(

@@ -3,6 +3,7 @@ app [main] { pf: platform "../../../platform/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows exposing [Rows]
 import pf.Signal
 import pf.Ui
 
@@ -387,9 +388,9 @@ reversed_items = [
 	{ id: "row-000", label: "Row 000" },
 ]
 
-items_for_mode : I64 -> List(Item)
+items_for_mode : I64 -> Rows(Item)
 items_for_mode = |mode| {
-	if mode == 1 {
+	items = if mode == 1 {
 		updated_items
 	} else if mode == 2 {
 		appended_items
@@ -402,6 +403,7 @@ items_for_mode = |mode| {
 	} else {
 		initial_items
 	}
+	Rows.from_list(items, |item| item.id) ?? crash "generated fixture contains duplicate keys"
 }
 
 render_row : Str, Signal.Signal(Item) -> Elem
@@ -442,7 +444,7 @@ main = || {
 						"Large each rows",
 						[],
 						[
-							Ui.each(items, |item| item.id, |each_row| render_row(each_row.key(), each_row.signal())),
+							Ui.each(items, |each_row| render_row(each_row.key(), each_row.signal())),
 						],
 					),
 				],
