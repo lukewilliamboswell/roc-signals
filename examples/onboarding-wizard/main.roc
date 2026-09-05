@@ -971,7 +971,8 @@ progress_bar_class = |rows| {
 }
 
 ## One progress row. The jump button is backwards-only: `Next step` is the only
-## way forward, because it is the only thing that validates.
+## way forward, because it is the only thing that validates. Current and future
+## steps are visibly disabled rather than offering a button that does nothing.
 summary_row : Ui.State(Step), Str, Signal.Signal(StepSummary) -> Elem
 summary_row = |step, key, row| {
 	target = Step.from_slug(key)
@@ -985,8 +986,9 @@ summary_row = |step, key, row| {
 					Html.paragraph_s_attrs(row.map(summary_line), [Html.test_id("summary-${key}"), Html.class_attr("min-w-0 text-sm text-zinc-800")]),
 				],
 			),
-			Html.button_attrs(
-				"Go to ${Step.title(target)}",
+			Html.action_button_attrs(
+				Signal.const("Go to ${Step.title(target)}"),
+				step.signal().map(|current| Step.index(target) >= Step.index(current)),
 				[Html.attr("type", "button"), Html.class_attr("button button-sm shrink-0")],
 				step.on_unit(
 					|current| if Step.index(target) < Step.index(current) {
