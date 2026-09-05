@@ -81,4 +81,5 @@ jobs:
             .fuzz-out/*/out/*/crashes/
             .fuzz-out/*/out/*/queue/
             .fuzz-out/*/afl-*.log
-          if-no-files-found: ignore
+          include-hidden-files: true
+          if-no-files-found: error
