@@ -1,4 +1,4 @@
-app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.1/3eLQGNMDG9RuL9sn1A7ep1Rtq7QGmemE89y141WSv1XG.tar.zst" }
+app [main] { pf: platform "../../platform/main.roc" }
 
 import Recipes
 import pf.Elem exposing [Elem]

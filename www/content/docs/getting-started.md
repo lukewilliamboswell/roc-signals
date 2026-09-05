@@ -29,11 +29,12 @@ WebAssembly.
 
 ## Get the platform
 
-> **Use a clone, not the published bundle.** Roc app headers can point at a
-> released platform archive over HTTPS, and eventually that will be the normal
-> way to depend on Roc Signals. Right now the published `0.1` bundle predates
-> several breaking Roc syntax changes and **will not compile** with a current
-> compiler. Until a refreshed release lands, build against a clone.
+Roc app headers can reference a platform archive over HTTPS. Downloadable
+examples on this site point at the archive built with the site itself. For
+development against this checkout, use the clone workflow below and install the
+Roc nightly named in its `.roc-version`. Archives from `0.1` and `0.1.1` use older
+APIs; follow [Migrating from 0.1.1](@/docs/migrating.md) when updating an existing
+app.
 
 ```sh
 git clone https://github.com/lukewilliamboswell/roc-signals.git
@@ -277,8 +278,9 @@ That is Conduit's shape, described in
 Run `zig build build-test-hosts -Doptimize=ReleaseSmall`.
 
 **`EFFECTFUL FUNCTION NAME` errors pointing inside the platform**
-Your Roc compiler and the platform disagree. If you are building against the
-published `0.1` bundle URL, that is expected — use a clone instead.
+Your Roc compiler and the platform disagree. Check the compiler pin for your
+platform release, or `.roc-version` when working from a clone. Rebuild the app
+with the matching compiler and deploy its matching browser runtime.
 
 **`LITERAL DEFAULTED ... given the default type Dec`**
 A bare numeric literal with nothing to pin its type. Annotate the surrounding

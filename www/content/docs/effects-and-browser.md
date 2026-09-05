@@ -318,7 +318,7 @@ route = location.map(Route.from_location)
 title = route.map(Route.title)
 ```
 
-Render with nested `Ui.when` over the route, intercept link clicks with
+Render with `Ui.switch` over a route kind (or `Ui.when` for a boolean choice), intercept link clicks with
 `event_policy_prevent_default`, and emit history commands:
 
 ```roc

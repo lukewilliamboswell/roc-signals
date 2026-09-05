@@ -52,32 +52,25 @@ Wrap the smallest region whose existence genuinely changes.
 
 ### Multi-way branching
 
-There is no `Ui.match`. Multi-way routing is a chain of nested `Ui.when`:
+Use `Ui.switch` to select structure by a typed case:
 
 ```roc
-Ui.when(
-    is_kind("home"),
-    || home_page,
-    || Ui.when(
-        is_kind("login"),
-        || login_page,
-        || not_found_page,
-    ),
+Ui.switch(
+    page_kind,
+    |kind| match kind {
+        Home => home_page()
+        Login => login_page()
+        NotFound => not_found_page()
+    },
 )
 ```
 
-Conduit routes nine pages this way. It builds the chain as named bindings from
-the innermost outwards, which reads better than deep nesting:
-
-```roc
-profile_or_rest = Ui.when(is_kind("profile"), || profile_page, || not_found)
-article_or_rest = Ui.when(is_kind("article"), || article_page, || profile_or_rest)
-login_or_rest = Ui.when(is_kind("login"), || login_page, || article_or_rest)
-```
-
-Being honest: this is the clumsiest part of the API today. It works, it is
-efficient — only the matching arm is ever mounted — but it is more ceremony than
-a `match` on a route type would be.
+Only the live case's builder runs. An unequal case disposes the previous branch
+and mounts a new one. Select a page kind when changing route parameters should
+preserve the page's local state, and pass the parameters as signals to that page.
+Selecting the entire route instead intentionally resets the branch whenever any
+route field changes. Conduit's existing nested `Ui.when` chain remains an example
+of the boolean form, rather than a requirement for routing.
 
 ## Keyed lists
 
@@ -175,8 +168,10 @@ line_row = |sku, line|
     )
 ```
 
-Because identity is the key, this state **follows the row** through reordering
-and filtering. That is testable, not just claimed:
+This state follows a surviving key through reordering and removal of other rows.
+Filtering this row out disposes its state and effects; inserting its key again
+creates a new lifetime. State that must survive filtering belongs in an owner
+outside the rendered rows. Reordering preserves state, which a spec can assert:
 
 ```lisp
 (click (test-id "add-a1"))
