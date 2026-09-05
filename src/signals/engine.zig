@@ -13512,6 +13512,40 @@ pub fn Engine(comptime Ctx: type) type {
             return self.states.items[state_index].activePayloadConst().cell.cap;
         }
 
+        /// Evaluates one accepted reducer against independently owned reads of
+        /// the settled state. The event payload remains borrowed from ingress;
+        /// the returned value transfers to the caller's state transaction.
+        ///
+        /// No state is committed here. After a refused transaction the host may
+        /// retry this pure evaluation with the same payload. Both hosts use this
+        /// path so snapshot, capability, and read-release semantics stay shared.
+        pub fn evaluateEventReducer(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: HostActiveEventDesc, payload: HostValue) HostValue {
+            const state_cap = self.stateCapability(desc.target_node_id.raw()) catch @panic("event target state is not live");
+            const read_cap = self.stateCapability(desc.read_node_id.raw()) catch @panic("event read state is not live");
+            const current = Ctx.stateValueByNodeId(ctx, desc.target_node_id.raw());
+            defer {
+                debugPhase(ctx, .event_drop_state);
+                callHostValueToUnitWithCapability(ctx, roc_host, state_cap, hv.hostValueCapabilityDrop(state_cap), current);
+            }
+            const read = Ctx.stateValueByNodeId(ctx, desc.read_node_id.raw());
+            defer {
+                debugPhase(ctx, .event_drop_read);
+                callHostValueToUnitWithCapability(ctx, roc_host, read_cap, hv.hostValueCapabilityDrop(read_cap), read);
+            }
+            return retained_values.callHostValueHostValueHostValueToHostValueWithCapabilities(
+                Ctx,
+                ctx,
+                roc_host,
+                state_cap,
+                read_cap,
+                desc.payload_reducer.capability,
+                desc.payload_reducer.transform,
+                current,
+                read,
+                payload,
+            );
+        }
+
         /// Returns active event reducer by index from the maintained active-runtime indexes.
         pub fn activeEventReducerByIndex(self: *Self, event_index: usize) ActiveEventLookupError!HostEventReducer {
             if (event_index >= self.active_events.items.len) return ActiveEventLookupError.MissingActiveEvent;

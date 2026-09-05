@@ -2552,7 +2552,6 @@ const ErasedRocBoxUnaryArgs = erased_calls.ErasedRocBoxUnaryArgs;
 const callErasedHostValueToHostValue = erased_calls.callErasedHostValueToHostValue;
 
 const callErasedHostValueHostValueToHostValue = erased_calls.callErasedHostValueHostValueToHostValue;
-const callErasedHostValueHostValueHostValueToHostValue = erased_calls.callErasedHostValueHostValueHostValueToHostValue;
 
 const callErasedHostValueHostValueToElem = erased_calls.callErasedHostValueHostValueToElem;
 
@@ -2579,13 +2578,6 @@ fn callHostValueHostValueToHostValueWithCapabilities(host: *HostEnv, roc_host: *
     host.pushHostValueCapabilities(&caps);
     defer host.popHostValueCapabilities();
     return callErasedHostValueHostValueToHostValue(roc_host, callable, left, right);
-}
-
-fn callHostValueHostValueHostValueToHostValueWithCapabilities(host: *HostEnv, roc_host: *abi.RocHost, first_cap: HostValueCapability, second_cap: HostValueCapability, third_cap: HostValueCapability, callable: abi.RocErasedCallable, first: HostValue, second: HostValue, third: HostValue) HostValue {
-    const caps = [_]HostValueCapability{ first_cap, second_cap, third_cap };
-    host.pushHostValueCapabilities(&caps);
-    defer host.popHostValueCapabilities();
-    return callErasedHostValueHostValueHostValueToHostValue(roc_host, callable, first, second, third);
 }
 
 fn hostEventById(host: *HostEnv, event_id: ids.EventId) HostActiveEventDesc {
@@ -2740,25 +2732,14 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: i
     }
 
     const start_ns = benchmark.nowNs();
-    const current = host.stateValueByNodeId(desc.target_node_id);
     const state_cap = host.stateCapability(desc.target_node_id);
-    defer {
-        host.debug_phase = .event_drop_state;
-        callHostValueToUnitWithCapability(host, roc_host, state_cap, hv.hostValueCapabilityDrop(state_cap), current);
-    }
-    const read = host.stateValueByNodeId(desc.read_node_id);
-    const read_cap = host.stateCapability(desc.read_node_id);
-    defer {
-        host.debug_phase = .event_drop_read;
-        callHostValueToUnitWithCapability(host, roc_host, read_cap, hv.hostValueCapabilityDrop(read_cap), read);
-    }
-    const next = callHostValueHostValueHostValueToHostValueWithCapabilities(host, roc_host, state_cap, read_cap, payload_cap, desc.payload_reducer.transform, current, read, payload);
+    const next = host.engine.evaluateEventReducer(host, roc_host, desc, payload);
     if (stats) |s| s.dispatch_roc_ns += benchmark.nowNs() - start_ns;
 
     const apply_start_ns = benchmark.nowNs();
     const counts = host.engine.tryDispatchStateValue(host, roc_host, desc.target_node_id.raw(), next, state_cap) catch |err| retry: {
         if (err != error.OutOfMemory or !host.recoverSelectedOutOfMemory()) failPreparedStateDispatch(err);
-        const retry_next = callHostValueHostValueHostValueToHostValueWithCapabilities(host, roc_host, state_cap, read_cap, payload_cap, desc.payload_reducer.transform, current, read, payload);
+        const retry_next = host.engine.evaluateEventReducer(host, roc_host, desc, payload);
         break :retry host.engine.tryDispatchStateValue(host, roc_host, desc.target_node_id.raw(), retry_next, state_cap) catch |retry_err| failPreparedStateDispatch(retry_err);
     };
     if (stats) |s| {
@@ -4018,7 +3999,7 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
             const current = testHostValueI64(1);
             const payload = testHostValueUnit();
             host.configureAllocationFailure(1);
-            _ = callHostValueHostValueHostValueToHostValueWithCapabilities(&host, &roc_host, cap, cap, cap, reducer, current, current, payload);
+            _ = signals.retained_values.callHostValueHostValueHostValueToHostValueWithCapabilities(NativeCtx, &host, &roc_host, cap, cap, cap, reducer, current, current, payload);
         } else if (std.mem.eql(u8, mode, "task_callback")) {
             const cap = testHostValueCapability(&roc_host);
             const transform = writeTestErasedCallable(TestErasedI64Capture, &roc_host, &testStableStrHostValueCallable, &testErasedCallableOnDrop, .{ .amount = 0 });
@@ -10807,6 +10788,18 @@ test "signals host dispatches through active event records outside descriptor st
 
     host.engine.active_stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
     host.engine.active_stream = .{};
+
+    // Evaluation alone owns and releases its reads but publishes no state.
+    // Re-evaluating a refused occurrence must therefore propose the same next
+    // value, rather than accidentally applying the reducer twice.
+    const event = hostEventById(&host, ids.EventId.fromRaw(event_id));
+    for (0..2) |_| {
+        const payload = testHostValueUnit();
+        defer testDropHostValue(&roc_host, payload);
+        const proposal = host.engine.evaluateEventReducer(&host, &roc_host, event, payload);
+        try expectHostValueI64(proposal, 1);
+        try expectHostValueI64(host.stateValueByNodeId(state_id), 0);
+    }
 
     dispatchRocEvent(&host, &roc_host, ids.EventId.fromRaw(event_id), BoundaryPayloadDescriptor.init(.unit, .none), testHostValueUnit());
     try expectHostValueI64(host.stateValueByNodeId(state_id), 1);
