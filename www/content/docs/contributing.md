@@ -251,11 +251,13 @@ python3 scripts/fuzz.py run all --time 5m -j 4
 python3 scripts/fuzz.py status
 ```
 
-`run` rebuilds first, seeds an empty corpus, fuzzes, and then prints throughput,
+`run` rebuilds first, adds the committed regression inputs to the local seed
+corpus (using one minimal seed if there are no inputs), fuzzes, and then prints throughput,
 edge count, stability, and any saved crash inputs. It exits non-zero when a crash
 was saved. Corpora persist under `.fuzz-out/<target>/corpus`, because inputs
 AFL++ found interesting last time are the cheapest way back into deep engine
-states; `--resume` continues a previous session, and `clean` discards both.
+states. Local and CI campaigns use the same seeding path. `--resume` continues a
+previous session's queue rather than importing new seeds, and `clean` discards both.
 
 Watch `stability`, which should sit near 100%. A lower number means the target is
 not deterministic for a fixed input, which breaks the reference-model comparison

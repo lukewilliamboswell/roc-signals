@@ -27,7 +27,7 @@ jobs:
   campaign:
     name: Fuzz ${{ github.event.inputs.targets || 'all' }}
     runs-on: ubuntu-24.04
-    # Five targets at the default 20m each, plus builds, with room for the
+    # Six targets at the default 20m each, plus builds, with room for the
     # dispatch input to ask for longer without the job being killed mid-run.
     timeout-minutes: 180
     steps:
@@ -49,15 +49,6 @@ jobs:
       # handler is installed, neither of which is under our control on a runner.
       - name: Configure the system for AFL++
         run: sudo afl-system-config || true
-
-      - name: Seed the corpora from the committed regression inputs
-        run: |
-          for dir in test/fuzzing/corpus/*/; do
-            name=$(basename "$dir")
-            mkdir -p ".fuzz-out/$name/corpus"
-            cp "$dir"* ".fuzz-out/$name/corpus/" 2>/dev/null || true
-            rm -f ".fuzz-out/$name/corpus/README.md"
-          done
 
       - name: Fuzz
         run: |

@@ -294,6 +294,7 @@ def run_zig_suite() -> None:
 
 
 def run_fuzz_suite() -> None:
+    run([sys.executable, "-m", "unittest", "scripts/test_fuzz_driver.py"])
     run([sys.executable, "scripts/fuzz.py", "check"])
 
 
