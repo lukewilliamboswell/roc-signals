@@ -759,7 +759,10 @@ const HostEnv = struct {
 
     fn shouldFailHostAllocation(self: *HostEnv, return_address: usize) bool {
         const sweep = &self.allocation_sweep;
-        if (!sweep.tracking) return false;
+        // Roc allocator calls cannot report recoverable OOM. Their physical
+        // resize/remap attempts also vary with process memory layout, so they
+        // are not coordinates in the host-allocation campaign.
+        if (!sweep.tracking or sweep.origin == .roc) return false;
         sweep.attempts += 1;
         if (sweep.fail_on_allocation == null or sweep.attempts < sweep.fail_on_allocation.?) return false;
         if (sweep.selected_seen) return true;
@@ -779,7 +782,7 @@ const HostEnv = struct {
             => true,
             else => false,
         };
-        if (sweep.origin == .roc or self.active_capabilities.hasActiveFrame() or inside_roc_host_value_boundary) {
+        if (self.active_capabilities.hasActiveFrame() or inside_roc_host_value_boundary) {
             sweep.skipped_roc = true;
             sweep.fail_on_allocation = null;
             return false;
@@ -3978,6 +3981,99 @@ test "signals host allocation ledger tracks exact returned pointers" {
     try std.testing.expectEqual(@as(u64, 4), host.engine.pending_roc_metrics.deallocs_this_event);
 }
 
+test "native fault coordinates exclude Roc allocation and reallocation internals" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.allocation_sweep.tracking = false;
+        host.deinit();
+        std.testing.expectEqual(std.heap.Check.ok, host.gpa.deinit()) catch @panic("host leak");
+    }
+
+    host.allocation_sweep = .{ .tracking = true, .fail_on_allocation = 1 };
+    const first = rocAllocFn(&roc_host, 8, 8) orelse return error.OutOfMemory;
+    const grown = rocReallocFn(&roc_host, first, 8192, 8) orelse return error.OutOfMemory;
+    const shrunk = rocReallocFn(&roc_host, grown, 16, 8) orelse return error.OutOfMemory;
+    rocDeallocFn(&roc_host, shrunk, 8);
+    try std.testing.expectEqual(@as(usize, 0), host.allocation_sweep.attempts);
+    try std.testing.expect(!host.allocation_sweep.selected_seen);
+    try std.testing.expect(!host.allocation_sweep.skipped_roc);
+    try std.testing.expectEqual(AllocationOrigin.host, host.allocation_sweep.origin);
+    try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.allocations.items.len);
+
+    const before = host.host_alloc_count;
+    try std.testing.expectError(error.OutOfMemory, host.hostAllocator().alloc(u8, 32));
+    try std.testing.expectEqual(@as(usize, 1), host.allocation_sweep.attempts);
+    try std.testing.expectEqual(before, host.host_alloc_count);
+    try std.testing.expect(host.recoverSelectedOutOfMemory());
+    try std.testing.expect(!host.recoverSelectedOutOfMemory());
+    const retry = try host.hostAllocator().alloc(u8, 32);
+    host.hostAllocator().free(retry);
+    try std.testing.expectEqual(@as(usize, 2), host.allocation_sweep.attempts);
+}
+
+test "native fault resize and remap preserve memory and metrics until retry" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.allocation_sweep.tracking = false;
+        host.deinit();
+        std.testing.expectEqual(std.heap.Check.ok, host.gpa.deinit()) catch @panic("host leak");
+    }
+    const allocator = host.hostAllocator();
+    var memory = try allocator.alloc(u8, 64);
+    defer allocator.free(memory);
+    @memset(memory, 42);
+    host.allocation_sweep = .{ .tracking = true, .fail_on_allocation = 1 };
+    const allocated_before = host.host_alloc_bytes;
+    const freed_before = host.host_dealloc_bytes;
+    try std.testing.expect(!allocator.resize(memory, 48));
+    try std.testing.expectEqual(allocated_before, host.host_alloc_bytes);
+    try std.testing.expectEqual(freed_before, host.host_dealloc_bytes);
+    for (memory) |byte| try std.testing.expectEqual(@as(u8, 42), byte);
+    try std.testing.expect(host.recoverSelectedOutOfMemory());
+    try std.testing.expect(allocator.resize(memory, 48));
+    memory = memory[0..48];
+    try std.testing.expectEqual(freed_before + 16, host.host_dealloc_bytes);
+
+    host.allocation_sweep = .{ .tracking = true, .fail_on_allocation = 1 };
+    try std.testing.expectEqual(@as(?[]u8, null), allocator.remap(memory, 40));
+    try std.testing.expectEqual(freed_before + 16, host.host_dealloc_bytes);
+    for (memory) |byte| try std.testing.expectEqual(@as(u8, 42), byte);
+    try std.testing.expect(host.recoverSelectedOutOfMemory());
+    memory = allocator.remap(memory, 40) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(freed_before + 24, host.host_dealloc_bytes);
+    try std.testing.expectEqual(allocated_before, host.host_alloc_bytes);
+    for (memory) |byte| try std.testing.expectEqual(@as(u8, 42), byte);
+}
+
+test "native fault coordinates retain explicit skips at Roc value boundaries" {
+    const phases = [_]DebugPhase{
+        .host_value_clone, .host_value_get_with_split, .host_value_take_with_split,
+        .host_value_get,   .host_value_store,          .host_value_take,
+    };
+    for (phases) |phase| {
+        var host = HostEnv.init();
+        var roc_host = makeSignalsRocHost(&host);
+        host.engine.roc_host = &roc_host;
+        defer {
+            host.allocation_sweep.tracking = false;
+            host.deinit();
+            std.testing.expectEqual(std.heap.Check.ok, host.gpa.deinit()) catch @panic("host leak");
+        }
+        host.debug_phase = phase;
+        host.allocation_sweep = .{ .tracking = true, .fail_on_allocation = 1 };
+        const memory = try host.hostAllocator().alloc(u8, 32);
+        host.hostAllocator().free(memory);
+        try std.testing.expectEqual(@as(usize, 1), host.allocation_sweep.attempts);
+        try std.testing.expect(host.allocation_sweep.selected_seen);
+        try std.testing.expect(host.allocation_sweep.skipped_roc);
+        try std.testing.expect(!host.recoverSelectedOutOfMemory());
+    }
+}
+
 test "native host allocation injection remains recoverable outside Roc ABI calls" {
     var host = HostEnv.init();
     var roc_host = makeSignalsRocHost(&host);
@@ -4082,14 +4178,14 @@ test "native prepared render publication keeps DOM unchanged until armed apply" 
         .creations = 1,
         .children = 2,
         .child_links = 3,
-        .text_fields = 1,
-        .bool_fields = 1,
-        .fixed_events = 1,
+        .text_fields = 5,
+        .bool_fields = 2,
+        .fixed_events = 7,
         .custom_attrs = 1,
         .custom_attr_wire_edits = 1,
         .named_events = 1,
         .named_event_wire_edits = 1,
-        .wire_commands = 10,
+        .wire_commands = 21,
     });
     defer splice.deinit();
     try splice.addNodeReplacement(&host.engine.render_cache, ids.ElemId.fromRaw(1), "section", .subtree_root);
@@ -4097,9 +4193,20 @@ test "native prepared render publication keeps DOM unchanged until armed apply" 
     try splice.addChildren(&host.engine.render_cache, ids.ElemId.fromRaw(0), &.{ids.ElemId.fromRaw(1)});
     try splice.addChildren(&host.engine.render_cache, ids.ElemId.fromRaw(1), &.{ids.ElemId.fromRaw(3)});
     try splice.addTextField(&host.engine.render_cache, ids.ElemId.fromRaw(3), .text, "prepared");
+    inline for (.{ .role, .label, .test_id, .class }) |field| {
+        try splice.addTextField(&host.engine.render_cache, ids.ElemId.fromRaw(1), field, @tagName(field));
+    }
+    try splice.addBoolField(&host.engine.render_cache, ids.ElemId.fromRaw(1), .disabled, true);
     try splice.addBoolField(&host.engine.render_cache, ids.ElemId.fromRaw(1), .checked, true);
     const click_binding = render_sink.EventBinding{ .event_id = ids.EventId.fromRaw(17), .payload_descriptor = RenderEventKind.click.payloadDescriptor() };
     try splice.addFixedEvent(&host.engine.render_cache, ids.ElemId.fromRaw(1), .click, click_binding);
+    inline for (.{ .input, .check, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave }) |kind| {
+        const event_kind: RenderEventKind = kind;
+        try splice.addFixedEvent(&host.engine.render_cache, ids.ElemId.fromRaw(1), kind, .{
+            .event_id = ids.EventId.fromRaw(20 + @intFromEnum(event_kind)),
+            .payload_descriptor = event_kind.payloadDescriptor(),
+        });
+    }
     try splice.addCustomAttrs(&host.engine.render_cache, ids.ElemId.fromRaw(1), &.{.{ .name = "data-state", .value = "ready" }});
     try splice.addNamedEvents(&host.engine.render_cache, ids.ElemId.fromRaw(1), &.{.{
         .name = "submit",
@@ -4115,6 +4222,16 @@ test "native prepared render publication keeps DOM unchanged until armed apply" 
     try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
     try std.testing.expectEqualStrings("section", host.dom_elements.items[1].tag);
     try std.testing.expect(host.dom_elements.items[1].checked);
+    try std.testing.expect(host.dom_elements.items[1].disabled);
+    inline for (.{ "role", "label", "test_id", "class" }) |field| {
+        try std.testing.expectEqualStrings(field, @field(host.dom_elements.items[1], field).?);
+    }
+    inline for (.{ .input, .check, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave }) |kind| {
+        const event_kind: RenderEventKind = kind;
+        const binding = @field(host.dom_elements.items[1].event_bindings, @tagName(kind)).?;
+        try std.testing.expectEqual(@as(u64, 20 + @intFromEnum(event_kind)), binding.event_id.raw());
+        try std.testing.expectEqual(event_kind.payloadDescriptor(), binding.payload_descriptor);
+    }
     try std.testing.expectEqualStrings("ready", host.dom_elements.items[1].attrs.items[0].value);
     try std.testing.expectEqual(@as(?u64, 17), if (host.dom_elements.items[1].event_bindings.click) |binding| binding.event_id.raw() else null);
     try std.testing.expectEqualStrings("submit", host.dom_elements.items[1].named_events.items[0].name);
