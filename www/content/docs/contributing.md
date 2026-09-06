@@ -412,6 +412,15 @@ output, rebuild with `--app-opt size`; both modes write `dist/`.
 
 ## Releases
 
+Keep user-facing changes and migration instructions in `releases/unreleased.md`,
+reviewed alongside the implementation. Before publishing, rename it to
+`releases/<exact-release-tag>.md` (including a `v` prefix if the tag has one),
+replace the unreleased heading with that version, and name the explicit
+source → target version in the migration section. Create a fresh unreleased file
+when work on the next release begins. Published notes describe that upgrade;
+do not rewrite them to follow later APIs. The site guides document the supported
+API and link to releases rather than duplicating version-specific instructions.
+
 The `Release` GitHub Actions workflow is manually triggered. It installs the
 compiler pinned in `.roc-version` for both building and testing. Provide the exact
 release tag to publish, matching the URL you intend to put in
@@ -421,6 +430,10 @@ runners, then creates a GitHub release with the platform bundle and
 `signals-browser.zip` attached. The browser archive contains the executor and
 its relative imports, plus a compiler-pin and SHA-256 manifest. The workflow
 checks that the downloaded runtime imports successfully outside the checkout.
+The workflow requires a nonempty `releases/<exact-release-tag>.md` before
+building and uses that file verbatim as the GitHub Release body. There is no
+fallback to unreleased or automatically generated notes. Review and commit the
+finalized notes on the workflow's selected ref before triggering a release.
 
 ## Spec Language
 

@@ -1,18 +1,13 @@
-+++
-title = "Migrating from 0.1.1"
-description = "Update keyed lists, lazy branches, and deployment assets together."
-weight = 13
-template = "page.html"
-+++
+# Unreleased
 
-# Migrating from 0.1.1
+## Breaking changes and migration: 0.1.1 → unreleased
 
-The current API changes keyed collections and branch construction. Upgrade the
+This upgrade changes keyed collections and branch construction. Upgrade the
 Roc compiler, platform archive, and browser runtime together. Use the compiler
 pin recorded with your platform release; a recent but different nightly is not
 a compatibility guarantee.
 
-## Keyed lists
+### Keyed lists
 
 Replace `Ui.each_str(items, key_of, row)` with `Ui.each(rows, row)`. The collection
 now owns and validates its key function:
@@ -46,24 +41,24 @@ Use `Rows.replace_all` when a complete replacement is the input you have.
 Direct edits with `Rows.apply` carry the change description and avoid requiring
 the engine to inspect every item in a fresh snapshot.
 
-## Lazy branches
+### Lazy branches
 
 `Ui.when` retains its two builders and invokes only the selected one. Code in an
 inactive builder no longer runs eagerly. Use `Ui.switch(case_signal, build)` for
 more than two cases. A case change disposes the old branch, including its local
 state and tasks; own persistent drafts outside the branch.
 
-## Task constructors
+### Task constructors
 
 Use `Http` helpers for HTTP tasks and `Signal.fake_task` for deterministic task
 fixtures. Earlier reference pages listed `task_source` and
 `task_source_with_eq`; those are internal platform plumbing, not supported
 application extension points.
 
-## Browser deployment
+### Browser deployment
 
 Rebuild the app's Wasm and replace all runtime modules from the same compatible
-platform revision. New releases provide `signals-browser.zip`; extract its files
+platform revision. This release adds `signals-browser.zip`; extract its files
 alongside the app, preserving relative paths. Deploy the Wasm and runtime
 together so the browser's protocol check does not encounter mixed versions.
 
@@ -74,5 +69,6 @@ its freshly built archive and points downloadable sources at that same archive
 under the site's `platform/` directory unless a platform URL is explicitly
 overridden.
 
-See [Getting Started](@/docs/getting-started.md#mount-it-in-your-own-page) for the
-mount code and [Contributing](@/docs/contributing.md#bundles) for bundle testing.
+See [Getting Started](https://lukewilliamboswell.github.io/roc-signals/docs/getting-started/#mount-it-in-your-own-page)
+for the mount code and [Contributing](https://lukewilliamboswell.github.io/roc-signals/docs/contributing/#bundles)
+for bundle testing.

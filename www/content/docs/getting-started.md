@@ -32,9 +32,11 @@ WebAssembly.
 Roc app headers can reference a platform archive over HTTPS. Downloadable
 examples on this site point at the archive built with the site itself. For
 development against this checkout, use the clone workflow below and install the
-Roc nightly named in its `.roc-version`. Archives from `0.1` and `0.1.1` use older
-APIs; follow [Migrating from 0.1.1](@/docs/migrating.md) when updating an existing
-app.
+Roc nightly named in its `.roc-version`. When upgrading an existing app, follow
+the migration instructions in the target version's
+[release notes](https://github.com/lukewilliamboswell/roc-signals/releases).
+Changes not yet released are recorded in the repository's
+[release notes directory](https://github.com/lukewilliamboswell/roc-signals/tree/main/releases).
 
 ```sh
 git clone https://github.com/lukewilliamboswell/roc-signals.git
