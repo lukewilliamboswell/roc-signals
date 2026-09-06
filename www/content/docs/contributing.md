@@ -97,8 +97,10 @@ To replay a reported coordinate directly, copy the command printed after
 app --run-spec-json --fail-on-allocation 7 path/to/case.scm
 ```
 
-Fault placements inside a Roc callback are reported as skipped by the
-recoverable campaign because the erased callback ABI cannot return OOM or
+Roc allocator internals are excluded from host coordinates: their physical
+resize/remap attempts can vary with process memory layout and cannot report
+recoverable OOM. Host-origin fault placements inside a Roc callback are reported
+as skipped by the recoverable campaign because the erased callback ABI cannot return OOM or
 unwind ownership. Real allocation failure there is a fatal poison-and-trap
 boundary. Other selected host allocations must refuse and retry successfully
 without partial publication. Roc-allocator and fatal-boundary campaigns are
