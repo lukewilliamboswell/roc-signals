@@ -211,13 +211,11 @@ flush_item = |state|
 	if state.item_active {
 		{
 			..state,
-			pending_items: state.pending_items.append(
-				{
-					key: item_key(state.item_index),
-					text: state.item_text,
-					children: state.item_children,
-				},
-			),
+			pending_items: state.pending_items.append({
+				key: item_key(state.item_index),
+				text: state.item_text,
+				children: state.item_children,
+			}),
 			item_index: state.item_index + 1,
 			item_active: False,
 			item_text: "",
@@ -317,7 +315,7 @@ keyed_children = |texts|
 inline_view : Signal.Signal(Str) -> Elem
 inline_view = |source| {
 	segments = source.map(inline_segments)
-	Elem.Element({ tag: "span", attrs: [], children: [Ui.each(Signal.map(segments, |rows_items| Rows.from_list(rows_items, |segment| segment.key) ?? crash "duplicate row key"), |each_row| render_inline_segment(each_row.key(), each_row.signal()))] })
+	Elem.Element({ namespace: Html, tag: "span", attrs: [], children: [Ui.each(Signal.map(segments, |rows_items| Rows.from_list(rows_items, |segment| segment.key) ?? crash "duplicate row key"), |each_row| render_inline_segment(each_row.key(), each_row.signal()))] })
 }
 
 render_inline_segment : Str, Signal.Signal(InlineSegment) -> Elem
@@ -325,32 +323,30 @@ render_inline_segment = |key, segment| {
 	text = segment.map(|value| value.text)
 	href = segment.map(|value| value.href)
 	if key.ends_with(":strong") {
-		Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
+		Elem.Element({ namespace: Html, tag: "strong", attrs: [], children: [Html.text_s(text)] })
 	} else if key.ends_with(":code") {
-		Elem.Element({ tag: "code", attrs: [Html.class_attr("rounded bg-zinc-100 px-1 font-mono")], children: [Html.text_s(text)] })
+		Elem.Element({ namespace: Html, tag: "code", attrs: [Html.class_attr("rounded bg-zinc-100 px-1 font-mono")], children: [Html.text_s(text)] })
 	} else if key.ends_with(":image") {
-		Elem.Element(
-			{
-				tag: "img",
-				attrs: [
-					Html.attr_s("src", href),
-					Html.attr_s("alt", text),
-					Html.test_id(key),
-				],
-				children: [],
-			},
-		)
+		Elem.Element({
+			namespace: Html,
+			tag: "img",
+			attrs: [
+				Html.attr_s("src", href),
+				Html.attr_s("alt", text),
+				Html.test_id(key),
+			],
+			children: [],
+		})
 	} else if key.ends_with(":link") {
-		Elem.Element(
-			{
-				tag: "a",
-				attrs: [
-					Html.attr_s("href", href),
-					Html.test_id(key),
-				],
-				children: [Html.text_s(text)],
-			},
-		)
+		Elem.Element({
+			namespace: Html,
+			tag: "a",
+			attrs: [
+				Html.attr_s("href", href),
+				Html.test_id(key),
+			],
+			children: [Html.text_s(text)],
+		})
 	} else {
 		Html.text_s(text)
 	}
@@ -359,7 +355,7 @@ render_inline_segment = |key, segment| {
 render_child_item : Str, Signal.Signal({ key : Str, text : Str }) -> Elem
 render_child_item = |_, child| {
 	text = child.map(|value| value.text)
-	Elem.Element({ tag: "li", attrs: [], children: [inline_view(text)] })
+	Elem.Element({ namespace: Html, tag: "li", attrs: [], children: [inline_view(text)] })
 }
 
 render_list_item : Str, Signal.Signal(MarkdownListItem) -> Elem
@@ -373,20 +369,19 @@ render_list_item = |_, item| {
 	empty_children : Signal.Signal(Bool)
 	empty_children = item.map(|value| value.children.is_empty())
 
-	Elem.Element(
-		{
-			tag: "li",
-			attrs: [],
-			children: [
-				inline_view(text),
-				Ui.when(
-					empty_children,
-					|| Html.text(""),
-					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(Signal.map(children_signal, |rows_items| Rows.from_list(rows_items, |child| child.key) ?? crash "duplicate row key"), |each_row| render_child_item(each_row.key(), each_row.signal()))] }),
-				),
-			],
-		},
-	)
+	Elem.Element({
+		namespace: Html,
+		tag: "li",
+		attrs: [],
+		children: [
+			inline_view(text),
+			Ui.when(
+				empty_children,
+				|| Html.text(""),
+				|| Elem.Element({ namespace: Html, tag: "ul", attrs: [], children: [Ui.each(Signal.map(children_signal, |rows_items| Rows.from_list(rows_items, |child| child.key) ?? crash "duplicate row key"), |each_row| render_child_item(each_row.key(), each_row.signal()))] }),
+			),
+		],
+	})
 }
 
 render_markdown_block : Str, Signal.Signal(MarkdownBlock) -> Elem
@@ -395,24 +390,23 @@ render_markdown_block = |key, block| {
 	text = block.map(|value| value.text)
 
 	if key.ends_with(":heading") {
-		Elem.Element({ tag: "h3", attrs: [], children: [Html.text_s(text)] })
+		Elem.Element({ namespace: Html, tag: "h3", attrs: [], children: [Html.text_s(text)] })
 	} else if key.ends_with(":quote") {
-		Elem.Element({ tag: "blockquote", attrs: [], children: [inline_view(text)] })
+		Elem.Element({ namespace: Html, tag: "blockquote", attrs: [], children: [inline_view(text)] })
 	} else if key.ends_with(":codeblock") {
-		Elem.Element(
-			{
-				tag: "pre",
-				attrs: [Html.class_attr("rounded bg-zinc-100 p-2 font-mono"), Html.test_id(key)],
-				children: [Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })],
-			},
-		)
+		Elem.Element({
+			namespace: Html,
+			tag: "pre",
+			attrs: [Html.class_attr("rounded bg-zinc-100 p-2 font-mono"), Html.test_id(key)],
+			children: [Elem.Element({ namespace: Html, tag: "code", attrs: [], children: [Html.text_s(text)] })],
+		})
 	} else if key.ends_with(":list") {
 		items : Signal.Signal(List(MarkdownListItem))
 		items = block.map(|value| value.items)
 
-		Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(Signal.map(items, |rows_items| Rows.from_list(rows_items, |item| item.key) ?? crash "duplicate row key"), |each_row| render_list_item(each_row.key(), each_row.signal()))] })
+		Elem.Element({ namespace: Html, tag: "ul", attrs: [], children: [Ui.each(Signal.map(items, |rows_items| Rows.from_list(rows_items, |item| item.key) ?? crash "duplicate row key"), |each_row| render_list_item(each_row.key(), each_row.signal()))] })
 	} else {
-		Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
+		Elem.Element({ namespace: Html, tag: "p", attrs: [], children: [inline_view(text)] })
 	}
 }
 
@@ -425,11 +419,11 @@ markdown_view = |source| {
 render_static_segment : InlineSegment -> Elem
 render_static_segment = |segment| {
 	if segment.kind == "strong" {
-		Elem.Element({ tag: "strong", attrs: [], children: [Html.text(segment.text)] })
+		Elem.Element({ namespace: Html, tag: "strong", attrs: [], children: [Html.text(segment.text)] })
 	} else if segment.kind == "code" {
-		Elem.Element({ tag: "code", attrs: [Html.class_attr("rounded bg-zinc-100 px-1 font-mono")], children: [Html.text(segment.text)] })
+		Elem.Element({ namespace: Html, tag: "code", attrs: [Html.class_attr("rounded bg-zinc-100 px-1 font-mono")], children: [Html.text(segment.text)] })
 	} else if segment.kind == "image" {
-		Elem.Element({ tag: "img", attrs: [Html.attr("src", segment.href), Html.attr("alt", segment.text), Html.test_id("static-image")], children: [] })
+		Elem.Element({ namespace: Html, tag: "img", attrs: [Html.attr("src", segment.href), Html.attr("alt", segment.text), Html.test_id("static-image")], children: [] })
 	} else if segment.kind == "link" {
 		Html.link(segment.text, [Html.attr("href", segment.href), Html.test_id("allowed-link")])
 	} else {
@@ -441,7 +435,7 @@ static_inline_view : Str -> List(Elem)
 static_inline_view = |source| inline_segments(source).map(render_static_segment)
 
 render_static_child : Str -> Elem
-render_static_child = |text| Elem.Element({ tag: "li", attrs: [], children: static_inline_view(text) })
+render_static_child = |text| Elem.Element({ namespace: Html, tag: "li", attrs: [], children: static_inline_view(text) })
 
 render_static_item : MarkdownListItem -> Elem
 render_static_item = |item| {
@@ -450,9 +444,9 @@ render_static_item = |item| {
 		if item.children.is_empty() {
 			base
 		} else {
-			base.append(Elem.Element({ tag: "ul", attrs: [], children: item.children.map(render_static_child) }))
+			base.append(Elem.Element({ namespace: Html, tag: "ul", attrs: [], children: item.children.map(render_static_child) }))
 		}
-	Elem.Element({ tag: "li", attrs: [], children: children_elems })
+	Elem.Element({ namespace: Html, tag: "li", attrs: [], children: children_elems })
 }
 
 render_static_block : MarkdownBlock -> Elem
@@ -460,19 +454,18 @@ render_static_block = |block| {
 	if block.kind == "heading" {
 		Html.heading(block.text)
 	} else if block.kind == "quote" {
-		Elem.Element({ tag: "blockquote", attrs: [], children: static_inline_view(block.text) })
+		Elem.Element({ namespace: Html, tag: "blockquote", attrs: [], children: static_inline_view(block.text) })
 	} else if block.kind == "codeblock" {
-		Elem.Element(
-			{
-				tag: "pre",
-				attrs: [Html.class_attr("rounded bg-zinc-100 p-2 font-mono"), Html.test_id("static-code")],
-				children: [Elem.Element({ tag: "code", attrs: [], children: [Html.text(block.text)] })],
-			},
-		)
+		Elem.Element({
+			namespace: Html,
+			tag: "pre",
+			attrs: [Html.class_attr("rounded bg-zinc-100 p-2 font-mono"), Html.test_id("static-code")],
+			children: [Elem.Element({ namespace: Html, tag: "code", attrs: [], children: [Html.text(block.text)] })],
+		})
 	} else if block.kind == "list" {
-		Elem.Element({ tag: "ul", attrs: [], children: block.items.map(render_static_item) })
+		Elem.Element({ namespace: Html, tag: "ul", attrs: [], children: block.items.map(render_static_item) })
 	} else {
-		Elem.Element({ tag: "p", attrs: [], children: static_inline_view(block.text) })
+		Elem.Element({ namespace: Html, tag: "p", attrs: [], children: static_inline_view(block.text) })
 	}
 }
 

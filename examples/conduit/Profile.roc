@@ -127,14 +127,14 @@ Profile := {}.{
 								Ui.on_change(
 									follow_refetch,
 									|request|
-									match request.result {
-										FollowAccepted(_) => if request.username.is_empty() {
-											Signal.noop
-										} else {
-											Http.get_text(profile_task, Api.profile_uri(request.username))
-										}
-										_ => Signal.noop
-									},
+										match request.result {
+											FollowAccepted(_) => if request.username.is_empty() {
+												Signal.noop
+											} else {
+												Http.get_text(profile_task, Api.profile_uri(request.username))
+											}
+											_ => Signal.noop
+										},
 								),
 								Ui.when(
 									is_loading,
@@ -145,7 +145,7 @@ Profile := {}.{
 										|| Html.div(
 											[Html.attr("data-conduit", "profile"), Html.class_attr("mb-8 rounded-2xl border border-zinc-200 bg-white p-6 text-center shadow-sm sm:p-8")],
 											[
-												Elem.Element({ tag: "h2", attrs: [Html.class_attr("text-3xl font-semibold tracking-normal text-zinc-950")], children: [Html.text_s(name_text)] }),
+												Elem.Element({ namespace: Html, tag: "h2", attrs: [Html.class_attr("text-3xl font-semibold tracking-normal text-zinc-950")], children: [Html.text_s(name_text)] }),
 												Html.paragraph_s_c(bio_text, "mx-auto mt-2 max-w-2xl leading-7 text-zinc-600"),
 												Ui.when(
 													can_follow,
@@ -162,15 +162,14 @@ Profile := {}.{
 										),
 									),
 								),
-								Elem.Element(
-									{
-										tag: "nav",
-								attrs: [Html.attr("aria-label", "Profile tabs"), Html.class_attr("flex border-b border-zinc-200")],
-										children: [
-											Ui.each(Signal.map(tab_rows, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| tab_links(each_row.key(), favorites, intent)),
-										],
-									},
-								),
+								Elem.Element({
+									namespace: Html,
+									tag: "nav",
+									attrs: [Html.attr("aria-label", "Profile tabs"), Html.class_attr("flex border-b border-zinc-200")],
+									children: [
+										Ui.each(Signal.map(tab_rows, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| tab_links(each_row.key(), favorites, intent)),
+									],
+								}),
 								Feed.view(articles_state, session, intent),
 							],
 						)
@@ -271,9 +270,6 @@ Profile := {}.{
 			FollowRejected(message) => message
 			_ => ""
 		}
-
-
-
 
 	profile_name : Api.Remote(Api.Profile) -> Str
 	profile_name = |remote|

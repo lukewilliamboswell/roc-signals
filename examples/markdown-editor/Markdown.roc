@@ -363,7 +363,7 @@ Markdown := {}.{
 	inline_view : Signal.Signal(Str) -> Elem
 	inline_view = |source| {
 		segments = source.map(inline_segments)
-		Elem.Element({ tag: "span", attrs: [], children: [Ui.each(Signal.map(segments, |rows_items| Rows.from_list(rows_items, |segment| segment.key) ?? crash "duplicate row key"), |each_row| render_segment(each_row.key(), each_row.signal()))] })
+		Elem.Element({ namespace: Html, tag: "span", attrs: [], children: [Ui.each(Signal.map(segments, |rows_items| Rows.from_list(rows_items, |segment| segment.key) ?? crash "duplicate row key"), |each_row| render_segment(each_row.key(), each_row.signal()))] })
 	}
 
 	render_segment : Str, Signal.Signal(Markdown.Segment) -> Elem
@@ -373,10 +373,10 @@ Markdown := {}.{
 		Ui.switch(
 			segment.map(|value| value.kind),
 			|kind| match kind {
-				Strong => Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
-				Code => Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })
-				Image => Elem.Element({ tag: "img", attrs: [Html.attr_s("src", href), Html.attr_s("alt", text), Html.class_attr("max-w-full rounded-md")], children: [] })
-				Link => Elem.Element({ tag: "a", attrs: [Html.attr_s("href", href), Html.class_attr("font-medium text-emerald-700 underline underline-offset-2")], children: [Html.text_s(text)] })
+				Strong => Elem.Element({ namespace: Html, tag: "strong", attrs: [], children: [Html.text_s(text)] })
+				Code => Elem.Element({ namespace: Html, tag: "code", attrs: [], children: [Html.text_s(text)] })
+				Image => Elem.Element({ namespace: Html, tag: "img", attrs: [Html.attr_s("src", href), Html.attr_s("alt", text), Html.class_attr("max-w-full rounded-md")], children: [] })
+				Link => Elem.Element({ namespace: Html, tag: "a", attrs: [Html.attr_s("href", href), Html.class_attr("font-medium text-emerald-700 underline underline-offset-2")], children: [Html.text_s(text)] })
 				Plain => Html.text_s(text)
 			},
 		)
@@ -395,7 +395,7 @@ Markdown := {}.{
 	render_child : Str, Signal.Signal({ key : Str, text : Str }) -> Elem
 	render_child = |_, child| {
 		text = child.map(|value| value.text)
-		Elem.Element({ tag: "li", attrs: [], children: [inline_view(text)] })
+		Elem.Element({ namespace: Html, tag: "li", attrs: [], children: [inline_view(text)] })
 	}
 
 	render_item : Str, Signal.Signal(Markdown.ListItem) -> Elem
@@ -410,6 +410,7 @@ Markdown := {}.{
 		empty_children = item.map(|value| value.children.is_empty())
 
 		Elem.Element({
+			namespace: Html,
 			tag: "li",
 			attrs: [],
 			children: [
@@ -417,7 +418,7 @@ Markdown := {}.{
 				Ui.when(
 					empty_children,
 					|| Html.text(""),
-					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(Signal.map(children_signal, |rows_items| Rows.from_list(rows_items, |child| child.key) ?? crash "duplicate row key"), |each_row| render_child(each_row.key(), each_row.signal()))] }),
+					|| Elem.Element({ namespace: Html, tag: "ul", attrs: [], children: [Ui.each(Signal.map(children_signal, |rows_items| Rows.from_list(rows_items, |child| child.key) ?? crash "duplicate row key"), |each_row| render_child(each_row.key(), each_row.signal()))] }),
 				),
 			],
 		})
@@ -453,21 +454,22 @@ Markdown := {}.{
 			block.map(|value| value.kind),
 			|kind| match kind {
 				Heading(level) =>
-					Elem.Element({ tag: heading_tag(level), attrs: [Html.class_attr(heading_class(level))], children: [inline_view(text)] })
-				Quote => Elem.Element({ tag: "blockquote", attrs: [], children: [inline_view(text)] })
+					Elem.Element({ namespace: Html, tag: heading_tag(level), attrs: [Html.class_attr(heading_class(level))], children: [inline_view(text)] })
+				Quote => Elem.Element({ namespace: Html, tag: "blockquote", attrs: [], children: [inline_view(text)] })
 				CodeBlock =>
 					Elem.Element({
+						namespace: Html,
 						tag: "pre",
 						attrs: [],
-						children: [Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })],
+						children: [Elem.Element({ namespace: Html, tag: "code", attrs: [], children: [Html.text_s(text)] })],
 					})
 				ListBlock => {
 					items : Signal.Signal(List(Markdown.ListItem))
 					items = block.map(|value| value.items)
 
-					Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(Signal.map(items, |rows_items| Rows.from_list(rows_items, |item| item.key) ?? crash "duplicate row key"), |each_row| render_item(each_row.key(), each_row.signal()))] })
+					Elem.Element({ namespace: Html, tag: "ul", attrs: [], children: [Ui.each(Signal.map(items, |rows_items| Rows.from_list(rows_items, |item| item.key) ?? crash "duplicate row key"), |each_row| render_item(each_row.key(), each_row.signal()))] })
 				}
-				Paragraph => Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
+				Paragraph => Elem.Element({ namespace: Html, tag: "p", attrs: [], children: [inline_view(text)] })
 			},
 		)
 	}

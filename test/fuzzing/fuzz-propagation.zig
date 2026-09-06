@@ -425,9 +425,9 @@ const FuzzSink = struct {
     /// Stages a complete render-surface reset in the host command sink.
     pub fn reset(_: FuzzSink) void {}
     /// Emits the already-decided command that attaches a newly created render node.
-    pub fn appendNode(_: FuzzSink, _: signals.ids.ElemId, _: signals.ids.ElemId, _: []const u8) void {}
+    pub fn appendNode(_: FuzzSink, _: signals.ids.ElemId, _: signals.ids.ElemId, _: signals.render.NodeShape) void {}
     /// Ensures the host render surface contains the engine-selected node and tag.
-    pub fn ensureNode(_: FuzzSink, _: signals.ids.ElemId, _: []const u8) void {}
+    pub fn ensureNode(_: FuzzSink, _: signals.ids.ElemId, _: signals.render.NodeShape) void {}
     /// Emits removal of a node whose owning scope has already been disposed by the engine.
     pub fn removeNode(_: FuzzSink, _: signals.ids.ElemId) void {}
     /// Publishes the engine-selected child order for one parent.

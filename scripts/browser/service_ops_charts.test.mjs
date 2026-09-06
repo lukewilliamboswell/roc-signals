@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { serviceOpsBehaviors } from "../../www/static/service_ops_charts.mjs";
-import { ELEMENT_NODE, findAll, fireEvent, installDomDouble } from "./dom_double.mjs";
+import { ELEMENT_NODE, SVG_NAMESPACE, findAll, fireEvent, installDomDouble } from "./dom_double.mjs";
 
 test("service ops chart renders points and dispatches bubbling custom events", () => {
   const root = installDomDouble();
@@ -23,8 +23,8 @@ test("service ops chart renders points and dispatches bubbling custom events", (
   root.appendChild(shell);
 
   serviceOpsBehaviors["ops-chart"].attach(chart);
-  const svgs = findAll(root, (node) => node.nodeType === ELEMENT_NODE && node.tagName === "SVG");
-  const markers = findAll(root, (node) => node.nodeType === ELEMENT_NODE && node.tagName === "CIRCLE");
+  const svgs = findAll(root, (node) => node.nodeType === ELEMENT_NODE && node.localName === "svg" && node.namespaceURI === SVG_NAMESPACE);
+  const markers = findAll(root, (node) => node.nodeType === ELEMENT_NODE && node.localName === "circle" && node.namespaceURI === SVG_NAMESPACE);
 
   assert.equal(svgs.length, 1);
   assert.equal(markers.length, 3);

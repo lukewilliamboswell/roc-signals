@@ -52,6 +52,13 @@ three behaviours for free:
 - **No manual bookkeeping.** No `AbortController`, no "is this response still
   relevant?" checks, no cleanup functions returning cleanup functions.
 
+A request belongs to the scope of the action or lifecycle sink that starts it.
+Keeping its task-result signal in a longer-lived scope does not extend the
+request's lifetime. In particular, if the new `Loading` value removes the
+action's own `Ui.when` branch, that request is canceled in the same turn. Keep
+the request-starting action in a scope that survives Loading when the request
+must continue; disabling its button need not remove that scope.
+
 ### Deterministic tasks for tests
 
 `Signal.fake_task(name, on_done, on_failed)` creates a task the native test
@@ -248,21 +255,29 @@ Ui.on_change(
 
 ### Requests follow from state
 
-The idiomatic shape is: **derive a request description, and let a change to it
-trigger the fetch.**
+For data that should follow filters, pagination, or another value, derive a
+request description and let changes trigger the fetch:
 
 ```roc
 request = { page: page, tag: tag, token: token }.Signal
 Ui.on_change(request, |value| Http.start(task, feed_request(value)))
 ```
 
-You never write "when the user clicks, fetch". You write "the request is a
-function of these values", and the host fires when they change. Deduplication
-comes free from `is_eq` — an identical request does not re-fire.
+Here the request is a function of those values. Equality pruning means an
+identical request does not re-fire.
 
-The corollary: when the *same* action must fire twice (retry, submitting the
-same form again), include a serial number in the derived value so it actually
-changes. Conduit's mutation state carries a `favorite_serial` for exactly this.
+For explicit user intent—retry, submit, refresh, favorite—use an action instead:
+
+```roc
+Html.button(
+    "Refresh",
+    Ui.action(request, |value| Http.start(task, feed_request(value))),
+)
+```
+
+Every accepted click runs the command, even with identical reads. A response
+that changes one of the reads does not start another request. Conduit's article
+favorite button uses this pattern; it needs no serial counter or special equality.
 
 ## Timers
 

@@ -387,6 +387,7 @@ def build_example_wasm(
             build_dir / source.name,
         ]
     )
+    run(["node", ROOT / "scripts" / "browser" / "validate_wasm.mjs", wasm_path])
 
 
 def build_examples(

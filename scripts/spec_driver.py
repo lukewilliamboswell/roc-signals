@@ -190,7 +190,7 @@ def run_case(
         expected_allocation = int(worker_args[worker_args.index("--fail-on-allocation") + 1])
         if fault is None or fault.get("allocation") != expected_allocation:
             return synthetic_result(case, "protocol_error", started, "invalid_fault", "worker did not report the selected allocation coordinate", stdout=completed.stdout, stderr=completed.stderr)
-        if fault.get("outcome") not in {"continued", "refused_then_retried", "skipped_roc"}:
+        if fault.get("outcome") not in {"continued", "refused_then_retried", "skipped_roc", "skipped_fatal_command"}:
             return synthetic_result(case, "protocol_error", started, "invalid_fault", "worker reported an unknown allocation outcome", stdout=completed.stdout, stderr=completed.stderr)
     expected_exit = 0 if status == "passed" else 1 if status == "failed" else 2
     if completed.returncode != expected_exit:
@@ -405,6 +405,13 @@ def print_summary(results: tuple[SpecResult, ...]) -> None:
     passed = sum(result.passed for result in results)
     elapsed_ns = sum(result.duration_ns for result in results)
     print(f"\n{passed} passed, {len(results) - passed} failed, {len(results)} total ({elapsed_ns / 1_000_000_000:.2f}s worker time)")
+    outcomes: dict[str, int] = {}
+    for result in results:
+        if result.fault is not None:
+            outcome = str(result.fault.get("outcome", "unknown"))
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    if outcomes:
+        print("Fault outcomes: " + ", ".join(f"{name}={count}" for name, count in sorted(outcomes.items())))
 
 
 def parse_shard(value: str) -> tuple[int, int]:

@@ -34,7 +34,7 @@ URL_SCHEMES = {"http", "https"}
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 MUSL_NATIVE_SKIPS: dict[str, str] = {}
 LINUX_WASM_SKIPS: dict[str, str] = {}
-FAULT_CAMPAIGN_EXAMPLES = {"markdown-elem", "when-each-dispose"}
+FAULT_CAMPAIGN_EXAMPLES = {"markdown-elem", "when-each-dispose", "event-actions", "coordinated-writes", "svg"}
 
 
 @dataclass(frozen=True)
@@ -261,10 +261,10 @@ def command_path(value: str) -> str:
     if len(path.parts) == 1:
         found = shutil.which(value)
         if found is not None:
-            return found
+            return str(Path(found).resolve())
         raise SystemExit(f"missing Roc compiler: {value}")
     if path.exists() and os.access(path, os.X_OK):
-        return str(path)
+        return str(path.resolve())
     raise SystemExit(f"missing Roc compiler: {value}")
 
 
@@ -289,6 +289,7 @@ def run_zig_suite() -> None:
         "unittest",
         "scripts/test_spec_driver.py",
         "scripts/test_benchmark_manifest.py",
+        "scripts/test_driver_paths.py",
         "scripts/test_known_failures.py",
     ])
 
@@ -382,12 +383,51 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
                 mount_cmd.append("--exercise-location-canonical-branch")
             if example.slug == "storage-commands":
                 mount_cmd.append("--exercise-storage-commands")
+            if example.slug == "event-actions":
+                mount_cmd.append("--exercise-event-actions")
+            if example.slug == "coordinated-writes":
+                mount_cmd.append("--exercise-coordinated-writes")
+            if example.slug == "svg":
+                mount_cmd.append("--exercise-svg")
             try:
                 run(mount_cmd)
             except subprocess.CalledProcessError as exc:
                 ledger.record("wasm", example.slug, False, f"mount exited with {exc.returncode}")
                 continue
             ledger.record("wasm", example.slug, True)
+            if example.slug == "coordinated-writes":
+                run_coordinated_writes_wasm_faults(roc_bin)
+
+
+def add_wasm_fault_exports(source: str) -> str:
+    """Add test-only exports without depending on Roc formatter line breaks."""
+    marker = '"roc_ui_command_buffer_len"'
+    exports = ", ".join(f'"{name}"' for name in (
+        "roc_ui_debug_fail_allocation",
+        "roc_ui_debug_allocation_attempts",
+        "roc_ui_is_poisoned",
+    ))
+    if source.count(marker) != 1:
+        raise ValueError("fault platform could not locate one Wasm export anchor")
+    return source.replace(marker, exports + ", " + marker, 1)
+
+
+def run_coordinated_writes_wasm_faults(roc_bin: str) -> None:
+    """Link test-only allocator exports without adding them to release bundles."""
+    output = TEST_OUT / "coordinated-writes-faults"
+    diagnostic_platform = output / "platform"
+    shutil.copytree(ROOT / "platform", diagnostic_platform, dirs_exist_ok=True)
+    manifest = diagnostic_platform / "main.roc"
+    source = manifest.read_text(encoding="utf-8")
+    manifest.write_text(add_wasm_fault_exports(source), encoding="utf-8")
+    fixture = ROOT / "examples/_fixtures/coordinated-writes/main.roc"
+    app = output / "main.roc"
+    app.write_text(PLATFORM_HEADER_RE.sub(
+        f'platform "{manifest.resolve()}"', fixture.read_text(encoding="utf-8"), count=1,
+    ), encoding="utf-8")
+    wasm = output / "app.wasm"
+    run([roc_bin, "build", "--target=wasm32", "--opt=size", "--no-cache", f"--output={wasm}", app])
+    run(["node", "scripts/browser/coordinated_writes_faults.mjs", wasm])
 
 
 def should_run_hosted(mode: str) -> bool:
@@ -592,13 +632,13 @@ def prepare_wasm_benchmark_platform(destination: Path, host_object: Path, *, ins
         return
     manifest = destination / "main.roc"
     source = manifest.read_text(encoding="utf-8")
-    marker = '\t\t\t\t"roc_ui_command_buffer_len",\n'
+    marker = '"roc_ui_command_buffer_len"'
     exports = (
-        '\t\t\t\t"roc_ui_benchmark_metrics_checkpoint",\n'
-        '\t\t\t\t"roc_ui_benchmark_metrics_len",\n'
-        '\t\t\t\t"roc_ui_benchmark_metrics_ptr",\n'
-        '\t\t\t\t"roc_ui_benchmark_metrics_reset",\n'
-        '\t\t\t\t"roc_ui_benchmark_metrics_schema_version",\n'
+        '"roc_ui_benchmark_metrics_checkpoint", '
+        '"roc_ui_benchmark_metrics_len", '
+        '"roc_ui_benchmark_metrics_ptr", '
+        '"roc_ui_benchmark_metrics_reset", '
+        '"roc_ui_benchmark_metrics_schema_version", '
     )
     if source.count(marker) != 1:
         raise SystemExit("benchmark platform could not locate the Wasm export list")
@@ -773,9 +813,10 @@ def bundle_platform(roc_bin: str) -> Path:
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        check=True,
+        check=False,
     )
     print(result.stdout, end="")
+    result.check_returncode()
     for line in result.stdout.splitlines():
         if line.startswith("Created:"):
             return Path(line.split(":", 1)[1].strip())

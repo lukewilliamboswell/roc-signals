@@ -72,6 +72,7 @@ pub const ElementDesc = struct {
     parent_elem_id: ElemId,
     scope_id: ScopeId,
     tag: []const u8,
+    namespace: render.ElementNamespace = .html,
 };
 
 pub const TextNodeDesc = struct {
@@ -335,17 +336,89 @@ pub const EventBinding = union(enum) {
     named: NamedEventBinding,
 };
 
+/// The bound behavior of one event edge. A reducer owns its erased reducer;
+/// an action owns its declared read graph, payload capability, and callback.
+/// Descriptor publication transfers this owner to the active event table.
+pub const EventHandler = union(enum) {
+    reduce: struct {
+        binder_token: BinderToken,
+        target_node_id: NodeId,
+        read_binder_token: BinderToken,
+        read_node_id: NodeId,
+        payload_reducer: HostEventReducer,
+    },
+    action: struct {
+        scope_id: ScopeId,
+        reads: HostSignalBinding,
+        payload_cap: HostValueCapability,
+        to_cmd: roles.CommandBuilder,
+    },
+
+    /// Supplies the app-owned operations for the payload accepted at ingress.
+    /// The returned capability is borrowed for the lifetime of this handler.
+    pub fn payloadCapability(self: EventHandler) HostValueCapability {
+        return switch (self) {
+            .reduce => |handler| handler.payload_reducer.capability,
+            .action => |handler| handler.payload_cap,
+        };
+    }
+
+    /// Identifies the declared read root to retain in the shared graph. This
+    /// edge makes the snapshot available; it never schedules an action when
+    /// the signal changes. Reducers read their explicitly bound state cells.
+    pub fn signalRoot(self: EventHandler) ?*signal_records.Record {
+        return switch (self) {
+            .reduce => null,
+            .action => |handler| handler.reads.record,
+        };
+    }
+
+    /// Preflights the copied source-id storage before acquiring any retained
+    /// ownership. On refusal the original handler and retain counts are
+    /// unchanged; success returns an independent owner suitable for staging.
+    pub fn cloneOwned(self: EventHandler, allocator: std.mem.Allocator, metrics: anytype) std.mem.Allocator.Error!EventHandler {
+        return switch (self) {
+            .reduce => |handler| blk: {
+                var copy = handler;
+                copy.payload_reducer = retainHostEventReducer(handler.payload_reducer, metrics);
+                break :blk .{ .reduce = copy };
+            },
+            .action => |handler| blk: {
+                const sources = try allocator.dupe(u64, handler.reads.source_node_ids);
+                var copy = handler;
+                copy.reads = .{ .record = handler.reads.record.retain(), .source_node_ids = sources };
+                copy.payload_cap = retained.retainHostValueCapability(handler.payload_cap, metrics);
+                abi.increfErasedCallable(handler.to_cmd.toAbi(), 1);
+                metrics.bump(.closure_retains, 1);
+                break :blk .{ .action = copy };
+            },
+        };
+    }
+
+    /// Releases exactly one owned event edge, including the action's read
+    /// graph. Graph membership must already have released its separate owner
+    /// before this can drop the last reference to an active signal record.
+    pub fn deinit(self: *EventHandler, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        switch (self.*) {
+            .reduce => |handler| releaseHostEventReducer(handler.payload_reducer, roc_host, metrics),
+            .action => |*handler| {
+                handler.reads.deinit(allocator, ctx, roc_host, metrics);
+                retained.releaseHostValueCapability(handler.payload_cap, roc_host, metrics);
+                abi.decrefErasedCallable(handler.to_cmd.toAbi(), roc_host);
+                metrics.bump(.closure_releases, 1);
+            },
+        }
+        self.* = undefined;
+    }
+};
+
 pub const EventDesc = struct {
     elem_id: ElemId,
     binding: EventBinding,
     delivery_request: EventDeliveryRequest = .auto,
-    binder_token: BinderToken,
-    target_node_id: NodeId,
-    read_binder_token: BinderToken,
-    read_node_id: NodeId,
     payload_descriptor: BoundaryPayloadDescriptor,
-    payload_reducer: HostEventReducer,
-    owns_payload_reducer: bool = true,
+    handler: EventHandler,
+    owns_handler: bool = true,
 
     /// Maintains fixed kind within the indexed descriptor stream used by both hosts.
     pub fn fixedKind(self: EventDesc) ?EventKind {
@@ -364,9 +437,12 @@ pub const EventDesc = struct {
     }
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
-    pub fn deinit(self: EventDesc, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype) void {
+    pub fn deinit(self: EventDesc, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         if (self.named()) |binding| allocator.free(binding.name);
-        if (self.owns_payload_reducer) releaseHostEventReducer(self.payload_reducer, roc_host, metrics);
+        if (self.owns_handler) {
+            var handler = self.handler;
+            handler.deinit(allocator, ctx, roc_host, metrics);
+        }
     }
 };
 
@@ -541,7 +617,7 @@ pub fn customAttrRefs(comptime StreamType: type, stream: *const StreamType) Cust
 // Stream methods keep the public method names while delegating to the generic
 // helpers below; these aliases avoid method/helper name collisions.
 const appendCleanupImpl = appendCleanup;
-const appendElementImpl = appendElement;
+const appendElementImpl = appendElementInNamespace;
 const appendRenderChildImpl = appendRenderChild;
 const appendScopeSiteImpl = appendScopeSite;
 const appendScopeSiteAtImpl = appendScopeSiteAt;
@@ -1014,6 +1090,10 @@ pub const Stream = struct {
         }
         for (event_indexes) |index| {
             const removed = self.events.swapRemove(index);
+            if (removed.handler.signalRoot()) |root| {
+                self.forgetSignalRecordTree(root);
+                retired.rememberSignalRecordTreeAssumeCapacity(root);
+            }
             if (removed.fixedKind()) |kind| {
                 self.clearEventIndex(removed.elem_id.raw(), kind, index);
                 const retired_index = retired.events.items.len;
@@ -1123,6 +1203,7 @@ pub const Stream = struct {
         for (replacement.events.items, 0..) |desc, offset| {
             const index = event_base + offset;
             self.events.appendAssumeCapacity(desc);
+            if (desc.handler.signalRoot()) |root| self.rememberSignalRecordTreeAssumeCapacity(root);
             while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id.index()) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
             if (desc.fixedKind()) |kind| setFreshIndex(self.descriptor_indexes_by_elem_id.items[desc.elem_id.index()].events.slot(kind), index);
         }
@@ -1788,7 +1869,7 @@ pub const Stream = struct {
         self.cleanups.deinit(allocator);
 
         for (self.events.items) |desc| {
-            desc.deinit(allocator, roc_host, metrics);
+            desc.deinit(allocator, ctx, roc_host, metrics);
         }
         self.events.deinit(allocator);
         deinitNamedEventIndexLists(Stream, self, allocator);
@@ -1975,8 +2056,14 @@ pub const Stream = struct {
 
     /// Appends element using capacity that must already satisfy the caller's transaction contract.
     pub fn appendElement(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, tag: []const u8) ElemId {
+        return self.appendElementInNamespace(allocator, elem_id, parent_elem_id, scope_id, tag, .html);
+    }
+
+    /// Copies an element descriptor with its explicit namespace, retaining the
+    /// same identity and scope ownership regardless of the tag's spelling.
+    pub fn appendElementInNamespace(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, tag: []const u8, namespace: render.ElementNamespace) ElemId {
         self.reserveScopeDescriptorOwnership(allocator, scope_id, 1, 0) catch @panic("out of memory");
-        const result = appendElementImpl(Stream, self, allocator, elem_id, parent_elem_id, scope_id, tag);
+        const result = appendElementImpl(Stream, self, allocator, elem_id, parent_elem_id, scope_id, tag, namespace);
         self.recordScopeElemAssumeCapacity(scope_id, elem_id);
         return result;
     }
@@ -1989,7 +2076,7 @@ pub const Stream = struct {
     }
 
     pub const PreparedStaticNode = union(enum) {
-        const Payload = struct { elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, text: []u8 };
+        const Payload = struct { elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, text: []u8, namespace: render.ElementNamespace = .html };
         element: Payload,
         text: Payload,
 
@@ -2096,8 +2183,8 @@ pub const Stream = struct {
         desc: EventDesc,
 
         /// Drops provisional resources and restores the plan to an unpublished state.
-        pub fn abort(self: @This(), allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype) void {
-            self.desc.deinit(allocator, roc_host, metrics);
+        pub fn abort(self: @This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+            self.desc.deinit(allocator, ctx, roc_host, metrics);
         }
     };
 
@@ -2536,7 +2623,15 @@ pub const Stream = struct {
 
     /// Maintains prepare element within the indexed descriptor stream used by both hosts.
     pub fn prepareElement(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, tag: []const u8) ReserveError!PreparedStaticNode {
-        return self.prepareStaticNode(allocator, elem_id, parent_elem_id, scope_id, tag, .element);
+        return self.prepareElementInNamespace(allocator, elem_id, parent_elem_id, scope_id, tag, .html);
+    }
+
+    /// Prepares an owned tag and reserves descriptor publication while keeping
+    /// namespace selection explicit in the unpublished element payload.
+    pub fn prepareElementInNamespace(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, tag: []const u8, namespace: render.ElementNamespace) ReserveError!PreparedStaticNode {
+        var prepared = try self.prepareStaticNode(allocator, elem_id, parent_elem_id, scope_id, tag, .element);
+        prepared.element.namespace = namespace;
+        return prepared;
     }
 
     /// Maintains prepare text node within the indexed descriptor stream used by both hosts.
@@ -2561,7 +2656,7 @@ pub const Stream = struct {
         switch (prepared_node) {
             .element => {
                 const index = self.elements.items.len;
-                self.elements.appendAssumeCapacity(.{ .elem_id = prepared.elem_id, .parent_elem_id = prepared.parent_elem_id, .scope_id = prepared.scope_id, .tag = prepared.text });
+                self.elements.appendAssumeCapacity(.{ .elem_id = prepared.elem_id, .parent_elem_id = prepared.parent_elem_id, .scope_id = prepared.scope_id, .tag = prepared.text, .namespace = prepared.namespace });
                 setFreshIndex(&descriptor.element, index);
             },
             .text => {
@@ -3113,33 +3208,19 @@ pub const Stream = struct {
         self.recordLifecycleAssumeCapacity(scope_id, .{ .kind = .cleanup, .index = index });
     }
 
-    /// Appends event using capacity that must already satisfy the caller's transaction contract.
-    pub fn appendEvent(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, elem_id: ElemId, kind: EventKind, delivery_request: EventDeliveryRequest, binder_token: BinderToken, target_node_id: NodeId, read_binder_token: BinderToken, read_node_id: NodeId, payload_descriptor: BoundaryPayloadDescriptor, payload_reducer: HostEventReducer) void {
-        const retained_reducer = retainHostEventReducer(payload_reducer, metrics);
+    /// Copies an event edge into this stream. The caller keeps the borrowed
+    /// handler; the stream acquires its own read graph and callable ownership.
+    pub fn appendEvent(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: ElemId, kind: EventKind, delivery_request: EventDeliveryRequest, payload_descriptor: BoundaryPayloadDescriptor, handler: EventHandler) void {
+        var retained_handler = handler.cloneOwned(allocator, metrics) catch @panic("out of memory");
         const event_index = self.events.items.len;
         self.events.append(allocator, .{
             .elem_id = elem_id,
             .binding = .{ .fixed = kind },
             .delivery_request = delivery_request,
-            .binder_token = binder_token,
-            .target_node_id = target_node_id,
-            .read_binder_token = read_binder_token,
-            .read_node_id = read_node_id,
             .payload_descriptor = payload_descriptor,
-            .payload_reducer = retained_reducer,
+            .handler = retained_handler,
         }) catch {
-            const desc = EventDesc{
-                .elem_id = elem_id,
-                .binding = .{ .fixed = kind },
-                .delivery_request = delivery_request,
-                .binder_token = binder_token,
-                .target_node_id = target_node_id,
-                .read_binder_token = read_binder_token,
-                .read_node_id = read_node_id,
-                .payload_descriptor = payload_descriptor,
-                .payload_reducer = retained_reducer,
-            };
-            desc.deinit(allocator, roc_host, metrics);
+            retained_handler.deinit(allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
         self.recordEventIndex(allocator, elem_id, kind, event_index);
@@ -3156,14 +3237,15 @@ pub const Stream = struct {
         return false;
     }
 
-    /// Appends named event using capacity that must already satisfy the caller's transaction contract.
-    pub fn appendNamedEvent(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, elem_id: ElemId, name: []const u8, policy: EventPolicy, delivery_request: EventDeliveryRequest, binder_token: BinderToken, target_node_id: NodeId, read_binder_token: BinderToken, read_node_id: NodeId, payload_descriptor: BoundaryPayloadDescriptor, payload_reducer: HostEventReducer) void {
+    /// Copies a named event edge, retaining its handler and copying its name.
+    /// Duplicate names on one element are descriptor errors, not aliases.
+    pub fn appendNamedEvent(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: ElemId, name: []const u8, policy: EventPolicy, delivery_request: EventDeliveryRequest, payload_descriptor: BoundaryPayloadDescriptor, handler: EventHandler) void {
         if (name.len == 0) @panic("named event descriptor used an empty event name");
         if (self.namedEventDescriptorExists(elem_id, name)) @panic("element has duplicate named event descriptors");
 
-        const retained_reducer = retainHostEventReducer(payload_reducer, metrics);
+        var retained_handler = handler.cloneOwned(allocator, metrics) catch @panic("out of memory");
         const name_copy = allocator.dupe(u8, name) catch {
-            releaseHostEventReducer(retained_reducer, roc_host, metrics);
+            retained_handler.deinit(allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
         const event_index = self.events.items.len;
@@ -3175,29 +3257,11 @@ pub const Stream = struct {
                 .delivery_request = delivery_request,
             } },
             .delivery_request = delivery_request,
-            .binder_token = binder_token,
-            .target_node_id = target_node_id,
-            .read_binder_token = read_binder_token,
-            .read_node_id = read_node_id,
             .payload_descriptor = payload_descriptor,
-            .payload_reducer = retained_reducer,
+            .handler = retained_handler,
         }) catch {
-            const desc = EventDesc{
-                .elem_id = elem_id,
-                .binding = .{ .named = .{
-                    .name = name_copy,
-                    .policy = policy,
-                    .delivery_request = delivery_request,
-                } },
-                .delivery_request = delivery_request,
-                .binder_token = binder_token,
-                .target_node_id = target_node_id,
-                .read_binder_token = read_binder_token,
-                .read_node_id = read_node_id,
-                .payload_descriptor = payload_descriptor,
-                .payload_reducer = retained_reducer,
-            };
-            desc.deinit(allocator, roc_host, metrics);
+            allocator.free(name_copy);
+            retained_handler.deinit(allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
         self.recordNamedEventIndex(allocator, elem_id, event_index);
@@ -4047,6 +4111,12 @@ pub fn refreshRenderIndexesInRange(comptime StreamType: type, stream: *StreamTyp
 
 /// Appends element using capacity that must already satisfy the caller's transaction contract.
 pub fn appendElement(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, tag: []const u8) ElemId {
+    return appendElementInNamespace(StreamType, stream, allocator, elem_id, parent_elem_id, scope_id, tag, .html);
+}
+
+/// Appends one namespace-qualified element to a compatible indexed stream.
+/// The stream owns the copied tag; the namespace is an allocation-free value.
+pub fn appendElementInNamespace(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, tag: []const u8, namespace: render.ElementNamespace) ElemId {
     stream.next_elem_id += 1;
 
     const tag_copy = allocator.dupe(u8, tag) catch @panic("out of memory");
@@ -4061,6 +4131,7 @@ pub fn appendElement(comptime StreamType: type, stream: *StreamType, allocator: 
         .parent_elem_id = parent_elem_id,
         .scope_id = scope_id,
         .tag = tag_copy,
+        .namespace = namespace,
     }) catch {
         allocator.free(tag_copy);
         @panic("out of memory");
@@ -4392,7 +4463,19 @@ pub fn maxRenderElemId(comptime StreamType: type, stream: *const StreamType) u64
     return max_elem_id;
 }
 
-/// Returns tag for an already indexed render node.
+/// Reads explicit node kind, namespace, and local name through maintained
+/// descriptor indexes; text nodes never pass through a tag-name convention.
+pub fn renderNodeShape(comptime StreamType: type, stream: *const StreamType, node: StreamType.RenderNode) render.NodeShape {
+    return switch (node.kind) {
+        .element => blk: {
+            const element = findElementDesc(StreamType, stream, asElemId(node.elem_id)) orelse @panic("render node has no element descriptor");
+            break :blk .{ .element = .{ .tag = element.tag, .namespace = element.namespace } };
+        },
+        .text, .signal_text => .text,
+    };
+}
+
+/// Returns a diagnostic name, not a node-kind or namespace discriminator.
 pub fn renderNodeTag(comptime StreamType: type, stream: *const StreamType, node: StreamType.RenderNode) []const u8 {
     return switch (node.kind) {
         .element => (findElementDesc(StreamType, stream, asElemId(node.elem_id)) orelse @panic("renderNodeTag: render node has no matching descriptor")).tag,
@@ -4410,6 +4493,19 @@ pub fn streamElemTag(comptime StreamType: type, stream: *const StreamType, elem_
         return desc.tag;
     }
     if (descriptor_index.text_node != .none or descriptor_index.signal_text_node != .none) return "text";
+    @panic("elem id had no render descriptor");
+}
+
+/// Resolves a rendered node's immutable classification by exact descriptor id.
+pub fn streamElemShape(comptime StreamType: type, stream: *const StreamType, elem_id: ElemId) render.NodeShape {
+    const descriptor = stream.elemDescriptorIndex(elem_id) orelse @panic("elem id had no descriptor index");
+    if (descriptor.element.get()) |index| {
+        if (index >= stream.elements.items.len) @panic("element descriptor index exceeded descriptor table");
+        const element = stream.elements.items[index];
+        if (identityRaw(element.elem_id) != elem_id.raw()) @panic("element descriptor index pointed at the wrong elem id");
+        return .{ .element = .{ .namespace = element.namespace, .tag = element.tag } };
+    }
+    if (descriptor.text_node != .none or descriptor.signal_text_node != .none) return .text;
     @panic("elem id had no render descriptor");
 }
 
@@ -4622,6 +4718,127 @@ const TestMetrics = struct {
     }
 };
 
+const EventHandlerTestCtx = struct {
+    /// Scalar fixture values do not require nested ownership operations.
+    pub fn cloneHostValue(_: *@This(), value: retained.HostValue) retained.HostValue {
+        return value;
+    }
+
+    /// These ownership-only tests never invoke an app value operation.
+    pub fn pushHostValueCapabilities(_: *@This(), _: []const HostValueCapability) void {}
+
+    /// Balances the fixture's no-op capability frame.
+    pub fn popHostValueCapabilities(_: *@This()) void {}
+};
+
+const EventHandlerTestMetrics = struct {
+    closure_retains: u64 = 0,
+    closure_releases: u64 = 0,
+
+    /// Counts the independently owned callable edges of cloned handlers.
+    pub fn bump(self: *@This(), comptime field: anytype, count: u64) void {
+        if (field == .closure_retains) self.closure_retains += count;
+        if (field == .closure_releases) self.closure_releases += count;
+    }
+};
+
+fn eventHandlerTestCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
+
+test "event handler ownership remains balanced across clone refusal and retirement histories" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const allocator = std.testing.allocator;
+    var fault = FaultAllocator.init(allocator);
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var ctx: EventHandlerTestCtx = .{};
+    var metrics: EventHandlerTestMetrics = .{};
+    const callable = abi.rocErasedCallableAllocate(&roc_host, eventHandlerTestCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const cap = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+    var reads = HostSignalBinding{
+        .record = try signal_records.Record.tryInit(allocator, .{ .ref = 31 }),
+        .source_node_ids = try allocator.dupe(u64, &.{31}),
+    };
+    defer reads.deinit(allocator, &ctx, &roc_host, &metrics);
+    // This borrowed view owns neither the fixture's read edge nor its callable.
+    const borrowed = EventHandler{ .action = .{
+        .scope_id = ScopeId.fromRaw(9),
+        .reads = reads,
+        .payload_cap = cap,
+        .to_cmd = roles.CommandBuilder.fromAbi(callable),
+    } };
+    var owners: std.ArrayListUnmanaged(EventHandler) = .empty;
+    defer {
+        for (owners.items) |*owner| owner.deinit(allocator, &ctx, &roc_host, &metrics);
+        owners.deinit(allocator);
+    }
+    try owners.ensureTotalCapacity(allocator, 32);
+    var random = std.Random.DefaultPrng.init(0x6576656e745f6f77);
+    for (0..2048) |_| {
+        const operation = random.random().uintLessThan(u8, 3);
+        if (operation == 0) {
+            const refs_before = reads.record.ref_count;
+            const retains_before = metrics.closure_retains;
+            fault.configure(1);
+            try std.testing.expectError(error.OutOfMemory, borrowed.cloneOwned(fault.allocator(), &metrics));
+            try std.testing.expectEqual(refs_before, reads.record.ref_count);
+            try std.testing.expectEqual(retains_before, metrics.closure_retains);
+            try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+        } else if (operation == 1 and owners.items.len < 32) {
+            fault.configure(null);
+            const parent = if (owners.items.len == 0) borrowed else owners.items[random.random().uintLessThan(usize, owners.items.len)];
+            const copy = try parent.cloneOwned(fault.allocator(), &metrics);
+            try std.testing.expect(copy.action.reads.source_node_ids.ptr != parent.action.reads.source_node_ids.ptr);
+            try std.testing.expectEqualSlices(u64, &.{31}, copy.action.reads.source_node_ids);
+            try std.testing.expectEqual(ScopeId.fromRaw(9), copy.action.scope_id);
+            try std.testing.expectEqual(reads.record, copy.signalRoot().?);
+            try std.testing.expectEqual(callable, copy.payloadCapability().drop);
+            owners.appendAssumeCapacity(copy);
+        } else if (owners.items.len > 0) {
+            const index = random.random().uintLessThan(usize, owners.items.len);
+            var retired = owners.swapRemove(index);
+            retired.deinit(allocator, &ctx, &roc_host, &metrics);
+        }
+        try std.testing.expectEqual(1 + owners.items.len, reads.record.ref_count);
+        try std.testing.expectEqual(@as(u64, @intCast(4 * owners.items.len)), metrics.closure_retains - metrics.closure_releases);
+    }
+    while (owners.pop()) |owner| {
+        var retired = owner;
+        retired.deinit(allocator, &ctx, &roc_host, &metrics);
+    }
+    try std.testing.expectEqual(@as(usize, 1), reads.record.ref_count);
+    try std.testing.expectEqual(metrics.closure_retains, metrics.closure_releases);
+}
+
+test "event handler reducer clone preserves bound destinations without allocating" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var ctx: EventHandlerTestCtx = .{};
+    var metrics: EventHandlerTestMetrics = .{};
+    const callable = abi.rocErasedCallableAllocate(&roc_host, eventHandlerTestCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const cap = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+    const borrowed = EventHandler{ .reduce = .{
+        .binder_token = callable,
+        .target_node_id = NodeId.fromRaw(13),
+        .read_binder_token = callable,
+        .read_node_id = NodeId.fromRaw(17),
+        .payload_reducer = .{ .capability = cap, .read_capability = cap, .transform = callable },
+    } };
+    fault.configure(1);
+    var copy = try borrowed.cloneOwned(fault.allocator(), &metrics);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(NodeId.fromRaw(13), copy.reduce.target_node_id);
+    try std.testing.expectEqual(NodeId.fromRaw(17), copy.reduce.read_node_id);
+    try std.testing.expectEqual(callable, copy.payloadCapability().drop);
+    try std.testing.expectEqual(@as(?*signal_records.Record, null), copy.signalRoot());
+    try std.testing.expectEqual(@as(u64, 7), metrics.closure_retains);
+    copy.deinit(fault.allocator(), &ctx, &roc_host, &metrics);
+    try std.testing.expectEqual(metrics.closure_retains, metrics.closure_releases);
+}
+
 fn deinitStaticPreparedTestStream(stream: *Stream, allocator: std.mem.Allocator) void {
     for (stream.elements.items) |desc| allocator.free(desc.tag);
     for (stream.text_nodes.items) |desc| allocator.free(desc.value);
@@ -4725,6 +4942,26 @@ test "prepared static batch reserves cumulative allocation-free publication capa
     try std.testing.expectEqual(@as(usize, 1), stream.elements.items.len);
     try std.testing.expectEqual(@as(usize, 1), stream.text_nodes.items.len);
     try std.testing.expectEqualStrings("hello", stream.text_nodes.items[0].value);
+}
+
+test "prepared SVG text elements retain their namespace and remain distinct from text nodes" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var stream: Stream = .{};
+    defer deinitStaticPreparedTestStream(&stream, std.testing.allocator);
+    try stream.reservePreparedStaticNodes(fault.allocator(), 2, 2);
+    try stream.reserveScopeDescriptorOwnership(fault.allocator(), ScopeId.fromRaw(0), 2, 0);
+    const element = try stream.prepareElementInNamespace(fault.allocator(), ElemId.fromRaw(1), ElemId.fromRaw(0), ScopeId.fromRaw(0), "text", .svg);
+    const text = try stream.prepareTextNode(fault.allocator(), ElemId.fromRaw(2), ElemId.fromRaw(1), ScopeId.fromRaw(0), "graph label");
+    fault.configure(1);
+    stream.appendPreparedStaticNode(element);
+    stream.appendPreparedStaticNode(text);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(render.ElementNamespace.svg, stream.elements.items[0].namespace);
+    try std.testing.expectEqualStrings("text", stream.elements.items[0].tag);
+    try std.testing.expectEqual(RenderNodeKind.element, stream.render_nodes.items[0].kind);
+    try std.testing.expectEqual(RenderNodeKind.text, stream.render_nodes.items[1].kind);
+    try std.testing.expectEqualStrings("graph label", stream.text_nodes.items[0].value);
 }
 
 test "prepared signal attr reservation leaves logical stream empty" {
@@ -4929,19 +5166,23 @@ test "fixed event descriptors preserve Roc supplied payload descriptors" {
         .transform = null,
     };
 
+    var ctx: EventHandlerTestCtx = .{};
     stream.appendEvent(
         allocator,
+        &ctx,
         &roc_host,
         &metrics,
         ElemId.fromRaw(7),
         .pointer_down,
         .auto,
-        binder,
-        NodeId.fromRaw(42),
-        binder,
-        NodeId.fromRaw(42),
         payload_descriptor,
-        reducer,
+        .{ .reduce = .{
+            .binder_token = binder,
+            .target_node_id = NodeId.fromRaw(42),
+            .read_binder_token = binder,
+            .read_node_id = NodeId.fromRaw(42),
+            .payload_reducer = reducer,
+        } },
     );
 
     try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
@@ -4988,24 +5229,28 @@ test "prepared named event indexes publish allocation free for existing and new 
     const first = Stream.PreparedEventDescriptor{ .desc = .{
         .elem_id = ElemId.fromRaw(1),
         .binding = .{ .named = .{ .name = first_name, .policy = .none } },
-        .binder_token = @ptrFromInt(0x1000),
-        .target_node_id = NodeId.fromRaw(1),
-        .read_binder_token = @ptrFromInt(0x1000),
-        .read_node_id = NodeId.fromRaw(1),
         .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value),
-        .payload_reducer = reducer,
-        .owns_payload_reducer = false,
+        .handler = .{ .reduce = .{
+            .binder_token = @ptrFromInt(0x1000),
+            .target_node_id = NodeId.fromRaw(1),
+            .read_binder_token = @ptrFromInt(0x1000),
+            .read_node_id = NodeId.fromRaw(1),
+            .payload_reducer = reducer,
+        } },
+        .owns_handler = false,
     } };
     const second = Stream.PreparedEventDescriptor{ .desc = .{
         .elem_id = ElemId.fromRaw(3),
         .binding = .{ .named = .{ .name = second_name, .policy = .none } },
-        .binder_token = @ptrFromInt(0x1000),
-        .target_node_id = NodeId.fromRaw(3),
-        .read_binder_token = @ptrFromInt(0x1000),
-        .read_node_id = NodeId.fromRaw(3),
         .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value),
-        .payload_reducer = reducer,
-        .owns_payload_reducer = false,
+        .handler = .{ .reduce = .{
+            .binder_token = @ptrFromInt(0x1000),
+            .target_node_id = NodeId.fromRaw(3),
+            .read_binder_token = @ptrFromInt(0x1000),
+            .read_node_id = NodeId.fromRaw(3),
+            .payload_reducer = reducer,
+        } },
+        .owns_handler = false,
     } };
 
     fault.configure(1);
@@ -5264,10 +5509,12 @@ test "prepared fixed and named event replacement is allocation free" {
     const reducer = std.mem.zeroes(HostEventReducer);
     _ = active.appendElement(allocator, ElemId.fromRaw(1), ElemId.fromRaw(0), ScopeId.fromRaw(0), "old");
     _ = replacement.appendElement(allocator, ElemId.fromRaw(2), ElemId.fromRaw(0), ScopeId.fromRaw(0), "new");
-    active.appendEvent(allocator, &roc_host, &metrics, ElemId.fromRaw(1), .click, .auto, token, NodeId.fromRaw(7), token, NodeId.fromRaw(7), payload, reducer);
-    active.appendNamedEvent(allocator, &roc_host, &metrics, ElemId.fromRaw(1), "old", .{}, .auto, token, NodeId.fromRaw(7), token, NodeId.fromRaw(7), payload, reducer);
-    replacement.appendEvent(allocator, &roc_host, &metrics, ElemId.fromRaw(2), .click, .auto, token, NodeId.fromRaw(8), token, NodeId.fromRaw(8), payload, reducer);
-    replacement.appendNamedEvent(allocator, &roc_host, &metrics, ElemId.fromRaw(2), "new", .{}, .auto, token, NodeId.fromRaw(8), token, NodeId.fromRaw(8), payload, reducer);
+    const old_handler = EventHandler{ .reduce = .{ .binder_token = token, .target_node_id = NodeId.fromRaw(7), .read_binder_token = token, .read_node_id = NodeId.fromRaw(7), .payload_reducer = reducer } };
+    const new_handler = EventHandler{ .reduce = .{ .binder_token = token, .target_node_id = NodeId.fromRaw(8), .read_binder_token = token, .read_node_id = NodeId.fromRaw(8), .payload_reducer = reducer } };
+    active.appendEvent(allocator, &ctx, &roc_host, &metrics, ElemId.fromRaw(1), .click, .auto, payload, old_handler);
+    active.appendNamedEvent(allocator, &ctx, &roc_host, &metrics, ElemId.fromRaw(1), "old", .{}, .auto, payload, old_handler);
+    replacement.appendEvent(allocator, &ctx, &roc_host, &metrics, ElemId.fromRaw(2), .click, .auto, payload, new_handler);
+    replacement.appendNamedEvent(allocator, &ctx, &roc_host, &metrics, ElemId.fromRaw(2), "new", .{}, .auto, payload, new_handler);
 
     try active.reserveMovedStreamPublication(allocator, &replacement);
     try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 2, &.{1}, &active, &.{}, 0, 0, 0);

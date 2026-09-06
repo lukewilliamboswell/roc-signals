@@ -10,10 +10,27 @@ import Signal exposing [Signal]
 state_event_msg : Node.BinderRef, Node.BinderRef, Node.EventExtractionPlan, HostValue.EventReducerHandle -> Node.Msg
 state_event_msg = |binder, read_binder, event_extraction_plan, payload_reducer| {
 	{
-		binder,
-		read_binder,
 		event_extraction_plan,
-		payload_reducer,
+		handler: Node.EventHandler.Reduce({ binder, read_binder, payload_reducer }),
+	}
+}
+
+action_event_msg : Signal(a), Node.EventExtractionPlan, Capability(payload), (a, payload -> Node.Cmd) -> Node.Msg
+action_event_msg = |reads, event_extraction_plan, payload_cap, to_cmd| {
+	read_cap = reads.cap
+	wrapped : HostValue, HostValue -> Node.Cmd
+	wrapped = |read_value, payload_value| {
+		typed_reads = Box.unbox(Capability.get(read_value, read_cap))
+		typed_payload = Box.unbox(Capability.get(payload_value, payload_cap))
+		to_cmd(typed_reads, typed_payload)
+	}
+	{
+		event_extraction_plan,
+		handler: Node.EventHandler.Action({
+			reads: Signal.to_expr(reads),
+			payload_cap: Capability.handle(payload_cap),
+			to_cmd: Box.box(wrapped),
+		}),
 	}
 }
 
@@ -91,8 +108,12 @@ decode_key_payload = |bytes| {
 ## wherever it is mounted.
 Ui := [].{
 
-	## Keyboard event payload for `State.on_key`.
+	## Keyboard event payload for `State.on_key` and `Ui.action_key`.
 	KeyPayload : { key : Str, shift_key : Bool }
+
+	## An opaque destination-and-value recipe created by `State.write`.
+	## Collect these proposals with `Ui.update_states`; do not inspect them.
+	StateWrite : Node.StateWrite
 
 	## Stable keyed-row handle. A captured row remains valid for the lifetime of
 	## its row scope, including when a delayed structural builder first reads it.
@@ -322,11 +343,19 @@ Ui := [].{
 		## commands can be returned from `Ui.on_change`, `Ui.on_mount`, and other
 		## command-producing hooks.
 		set_cmd : State(a), a -> Node.Cmd
-		set_cmd = |st, next| {
-			Node.Cmd.UpdateState({
+		set_cmd = |st, next| Node.Cmd.UpdateState(st.write(next))
+
+		## Describe a replacement for `Ui.update_states`. The proposal captures
+		## a typed value and can be reused; it does not mutate the source itself.
+		write : State(a), a -> StateWrite
+		write = |st, next| {
+			cap = st.cap
+			initial : () -> HostValue
+			initial = || Capability.store(Box.box(next), cap)
+			{
 				binder: st.ref,
-				update: { capability: Capability.handle(st.cap), value: Capability.store(Box.box(next), st.cap) },
-			})
+				update: { capability: Capability.handle(cap), initial: Box.box(initial) },
+			}
 		}
 	}
 
@@ -353,11 +382,66 @@ Ui := [].{
 		})
 	}
 
+	## Replace several independent states in one propagation turn. Each
+	## destination must appear at most once, including unchanged proposals.
+	## Derived values and observers see only the complete settled result.
+	update_states : List(StateWrite) -> Node.Cmd
+	update_states = |writes| Node.Cmd.UpdateStates(writes)
+
 	## Introduce a reusable local scope. State/when/each ordinals inside the body
 	## are local to this component instance instead of consuming the caller's
 	## identity sequence.
 	component : (() -> Elem) -> Elem
 	component = |body| Elem.Component({ child: Box.box(body()) })
+
+	## Describe a command for each accepted unit event using the settled value
+	## of the declared reads. Equal clicks remain separate occurrences; changing
+	## the reads alone never runs the command. Combine independent reads with a
+	## named record of signals before passing them here.
+	action : Signal(a), (a -> Node.Cmd) -> Node.Msg
+	action = |reads, to_cmd| {
+		read_cap = reads.cap
+		payload_cap : Capability({})
+		payload_cap = Capability.new()
+		wrapped : HostValue, HostValue -> Node.Cmd
+		wrapped = |read_value, _payload| {
+			typed : a
+			typed = Box.unbox(Capability.get(read_value, read_cap))
+			to_cmd(typed)
+		}
+		{
+			event_extraction_plan: EventExtraction.unit,
+			handler: Node.EventHandler.Action({
+				reads: Signal.to_expr(reads),
+				payload_cap: Capability.handle(payload_cap),
+				to_cmd: Box.box(wrapped),
+			}),
+		}
+	}
+
+	## Describe a command for each accepted text-input event. The second
+	## argument is `event.target.value`; declared reads use the settled snapshot.
+	action_str : Signal(a), (a, Str -> Node.Cmd) -> Node.Msg
+	action_str = |reads, to_cmd|
+		action_event_msg(reads, EventExtraction.target_value, Capability.new(), to_cmd)
+
+	## Describe a command for each accepted checked-change event, receiving
+	## `event.target.checked` without storing an occurrence counter in state.
+	action_bool : Signal(a), (a, Bool -> Node.Cmd) -> Node.Msg
+	action_bool = |reads, to_cmd|
+		action_event_msg(reads, EventExtraction.target_checked, Capability.new(), to_cmd)
+
+	## Describe a command for each accepted custom event, receiving its detail
+	## serialized as text under the same contract as `State.on_detail`.
+	action_detail : Signal(a), (a, Str -> Node.Cmd) -> Node.Msg
+	action_detail = |reads, to_cmd|
+		action_event_msg(reads, EventExtraction.detail, Capability.new(), to_cmd)
+
+	## Describe a command for each accepted key event, receiving key text and
+	## shift state. Decoding uses the shared validated keyboard payload format.
+	action_key : Signal(a), (a, KeyPayload -> Node.Cmd) -> Node.Msg
+	action_key = |reads, to_cmd|
+		action_event_msg(reads, EventExtraction.key_shift, Capability.new(), |value, bytes| to_cmd(value, decode_key_payload(bytes)))
 
 	## Run a command whenever the signal publishes a changed value.
 	on_change : Signal(a), (a -> Node.Cmd) -> Elem

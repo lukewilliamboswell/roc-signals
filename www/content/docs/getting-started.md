@@ -319,12 +319,13 @@ This one is common enough that it has its own explanation in
 Your `signals.mjs` and your `.wasm` came from different platform versions. Copy
 `www/static/signals.mjs` from the same clone you built the app with.
 
-**A wasm build segfaults or hangs on Linux**
-Known Roc compiler issues, not platform bugs. This repository's own test driver
-skips two examples on Linux for exactly this reason — one segfaults building for
-`wasm32`, another hangs under `--opt=dev`. If you hit it, try the other
-optimization mode, or build on macOS. Check `LINUX_WASM_SKIPS` in
-`scripts/serve.py` for the current list.
+**A successfully compiled Wasm file fails browser validation**
+Use `--opt=size` with the pinned Roc compiler. Its dev backend can emit invalid
+Wasm for unit-valued state and event callbacks even when compilation succeeds.
+The site builder validates every artifact before copying it into a deployment.
+The maintained examples have no Linux Wasm skips. See
+`UPSTREAM_COMPILER_BUGS.md` in the repository for the reproducer and tested
+compiler version; do not assume every build failure has the same cause.
 
 ## Next
 

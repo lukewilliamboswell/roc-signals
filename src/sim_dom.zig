@@ -24,6 +24,7 @@ pub const FixedEventBindings = struct {
 pub const Element = struct {
     id: u64,
     tag: []const u8,
+    namespace: ?render.ElementNamespace = .html,
     role: ?[]const u8,
     label: ?[]const u8,
     test_id: ?[]const u8,
@@ -100,6 +101,7 @@ pub const Element = struct {
     pub fn cloneOwned(self: *const Element, allocator: std.mem.Allocator) std.mem.Allocator.Error!Element {
         const tag = try allocator.dupe(u8, self.tag);
         var cloned = Element.init(self.id, tag);
+        cloned.namespace = self.namespace;
         errdefer cloned.deinit(allocator);
         cloned.active = self.active;
         cloned.focused = self.focused;

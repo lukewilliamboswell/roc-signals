@@ -57,26 +57,24 @@ render_outline_row = |key, row| {
 	indent = row.map(|value| value.indent)
 	href = row.map(|value| value.href)
 
-	Elem.Element(
-		{
-			tag: "li",
-			attrs: [Html.class_attr_s(indent)],
-			children: [
-				Elem.Element(
-					{
-						tag: "a",
-						attrs: [
-							Html.test_id(key),
-							Html.attr_s("href", href),
-							Html.attr_s("data-level", level_text),
-							Html.class_attr("block rounded px-2 py-1 text-sm text-zinc-700 transition hover:bg-zinc-100 hover:text-emerald-700"),
-						],
-						children: [Html.text_s(label)],
-					},
-				),
-			],
-		},
-	)
+	Elem.Element({
+		namespace: Html,
+		tag: "li",
+		attrs: [Html.class_attr_s(indent)],
+		children: [
+			Elem.Element({
+				namespace: Html,
+				tag: "a",
+				attrs: [
+					Html.test_id(key),
+					Html.attr_s("href", href),
+					Html.attr_s("data-level", level_text),
+					Html.class_attr("block rounded px-2 py-1 text-sm text-zinc-700 transition hover:bg-zinc-100 hover:text-emerald-700"),
+				],
+				children: [Html.text_s(label)],
+			}),
+		],
+	})
 }
 
 ## A labelled group of document buttons. The editor has nine commands, which is
@@ -200,13 +198,12 @@ outline_panel = |rows, numbered, numbered_signal| {
 					Ui.when(
 						empty,
 						|| Html.paragraph_c("No headings yet: add a line that starts with a hash.", "empty-state"),
-						|| Elem.Element(
-							{
-								tag: "ul",
-								attrs: [Html.attr("data-panel", "outline-body"), Html.class_attr("grid gap-0.5")],
-								children: [Ui.each(Signal.map(rows, |rows_items| Rows.from_list(rows_items, |row| row.key) ?? crash "duplicate row key"), |each_row| render_outline_row(each_row.key(), each_row.signal()))],
-							},
-						),
+						|| Elem.Element({
+							namespace: Html,
+							tag: "ul",
+							attrs: [Html.attr("data-panel", "outline-body"), Html.class_attr("grid gap-0.5")],
+							children: [Ui.each(Signal.map(rows, |rows_items| Rows.from_list(rows_items, |row| row.key) ?? crash "duplicate row key"), |each_row| render_outline_row(each_row.key(), each_row.signal()))],
+						}),
 					),
 				],
 			),

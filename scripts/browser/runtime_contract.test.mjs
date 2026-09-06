@@ -1228,6 +1228,31 @@ test("command opcodes map to the expected DOM operations", () => {
   assert.equal(findTextNode(root, "before"), null);
 });
 
+test("element creation obeys explicit namespace and preserves SVG text and case", () => {
+  for (const tag of ["svg", "text", "foreignObject", "linearGradient"]) {
+    const { root, runtime } = mountWith([
+      { op: Op.resetDom },
+      { op: Op.createElement, a: 1, s: tag, d: 0 },
+      { op: Op.appendChild, a: 0, b: 1 },
+      { op: Op.createElement, a: 2, s: tag, d: 1 },
+      { op: Op.appendChild, a: 1, b: 2 },
+      { op: Op.setClass, a: 2, s: "diagram-label" },
+      { op: Op.createText, a: 3, s: "label" },
+      { op: Op.appendChild, a: 2, b: 3 },
+    ]);
+    const html = root.childNodes[0];
+    const svg = html.childNodes[0];
+    assert.equal(html.namespaceURI, "http://www.w3.org/1999/xhtml");
+    assert.equal(svg.namespaceURI, "http://www.w3.org/2000/svg");
+    assert.equal(svg.localName, tag);
+    assert.equal(svg.nodeType, ELEMENT_NODE);
+    assert.equal(svg.textContent, "label");
+    assert.equal(svg.getAttribute("class"), "diagram-label");
+    runtime.unmount();
+  }
+  assert.throws(() => mountWith([{ op: Op.createElement, a: 1, s: "svg", d: 2 }]), /Unknown element namespace/);
+});
+
 test("empty fixed metadata commands remove their attributes", () => {
   const { root } = mountWith([
     { op: Op.resetDom },

@@ -228,15 +228,14 @@ Auth := {}.{
 		)
 		Ui.when(
 			has_errors,
-			|| Elem.Element(
-				{
-					tag: "ul",
-					attrs: [Html.class_attr(Styles.error_list)],
-					children: [
-						Ui.each(Signal.map(keyed, |rows_items| Rows.from_list(rows_items, |item| item.key) ?? crash "duplicate row key"), |each_row| Elem.Element({ tag: "li", attrs: [], children: [Html.text_s(each_row.map(|value| value.text))] })),
-					],
-				},
-			),
+			|| Elem.Element({
+				namespace: Html,
+				tag: "ul",
+				attrs: [Html.class_attr(Styles.error_list)],
+				children: [
+					Ui.each(Signal.map(keyed, |rows_items| Rows.from_list(rows_items, |item| item.key) ?? crash "duplicate row key"), |each_row| Elem.Element({ namespace: Html, tag: "li", attrs: [], children: [Html.text_s(each_row.map(|value| value.text))] })),
+				],
+			}),
 			|| Html.text(""),
 		)
 	}

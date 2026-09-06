@@ -299,10 +299,8 @@ pub const SignalKind = active_graph.SignalKind;
 pub const HostEventDescriptor = active_graph.EventDescriptor;
 
 pub const HostActiveEventDesc = struct {
-    target_node_id: ids.NodeId,
-    read_node_id: ids.NodeId,
     payload_descriptor: BoundaryPayloadDescriptor,
-    payload_reducer: HostEventReducer,
+    handler: descriptor_stream.EventHandler,
 };
 
 pub const HostPendingTask = effects_runtime.PendingTask;
@@ -450,11 +448,15 @@ const CommitPhase = enum {
     }
 };
 
-const PreparedExternalState = struct {
+/// An independently owned proposed replacement for an active state source.
+/// Dispatch consumes the value on success or refusal through its capability;
+/// callers must not reuse a submitted value handle for a retry.
+pub const StateWrite = struct {
     state_id: u64,
     value: HostValue,
     cap: HostValueCapability,
 };
+const PreparedExternalState = StateWrite;
 
 pub const HostSignalDescriptor = active_graph.Descriptor;
 
@@ -1816,12 +1818,12 @@ pub fn Engine(comptime Ctx: type) type {
             cache_overlay: ?*signal_records.PreparedCacheUpdates = null,
             /// The state value this transaction publishes, staged into the
             /// replacement collection so new rows read it; see
-            /// `StagedCollectionCtx.stageExternalState`.
-            external_state: ?PreparedExternalState = null,
+            /// `StagedCollectionCtx.stageExternalStates`.
+            external_state: []const PreparedExternalState = &.{},
             prepared_len: usize = 0,
             phase: CommitPhase = .prepared,
 
-            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []const HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, state_update: ?PreparedExternalState) CollectionError!*@This() {
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []const HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, state_update: []const PreparedExternalState) CollectionError!*@This() {
                 if (changes.len < 2) return error.ResourceLimit;
                 const owner = try create(engine, ctx, roc_host, changes.len);
                 errdefer owner.deinit();
@@ -1896,7 +1898,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const owner = try PreparedReplacementOwner.create(self.engine, self.host_ctx, self.roc_host, limits, total, root_count);
                 errdefer owner.deinit();
                 owner.collection.cache_overlay = self.cache_overlay;
-                if (self.external_state) |update| try owner.collection.stageExternalState(self.roc_host, update);
+                try owner.collection.stageExternalStates(self.roc_host, self.external_state);
                 for (self.replacements[0..self.prepared_len], self.rows[0..self.prepared_len]) |replacement, rows| {
                     try owner.collection.indexCandidateGeneration(&rows.inputs);
                     try replacement.attachScopeIds(owner);
@@ -2133,12 +2135,12 @@ pub fn Engine(comptime Ctx: type) type {
                 return normalized;
             }
 
-            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: ?PreparedExternalState) CollectionError!*@This() {
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: []const PreparedExternalState) CollectionError!*@This() {
                 var all_eaches_subsumed = false;
                 return prepareWithSubsumedFlag(engine, ctx, roc_host, changes, overlay, limits, dirty_source_node_ids, state_update, &all_eaches_subsumed);
             }
 
-            fn prepareWithSubsumedFlag(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: ?PreparedExternalState, all_eaches_subsumed: *bool) CollectionError!*@This() {
+            fn prepareWithSubsumedFlag(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: []const PreparedExternalState, all_eaches_subsumed: *bool) CollectionError!*@This() {
                 all_eaches_subsumed.* = false;
                 const allocator = Ctx.allocator(ctx);
                 var when_count: usize = 0;
@@ -2326,7 +2328,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const replacement_owner = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, root_count);
                 errdefer replacement_owner.deinit();
                 replacement_owner.collection.cache_overlay = overlay;
-                if (state_update) |update| try replacement_owner.collection.stageExternalState(roc_host, update);
+                try replacement_owner.collection.stageExternalStates(roc_host, state_update);
                 for (rows.rows[0..rows.prepared_len]) |prepared_rows| try replacement_owner.collection.indexCandidateGeneration(&prepared_rows.inputs);
                 const branch_ranges = allocator.alloc(GlobalRange, normalized.selected_indexes.len) catch return error.OutOfMemory;
                 errdefer allocator.free(branch_ranges);
@@ -3031,12 +3033,17 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Appends render node using capacity that must already satisfy the caller's transaction contract.
         pub fn appendRenderNode(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, tag: []const u8) void {
-            self.render_cache.appendNode(ctx, elem_id, parent_elem_id, tag);
+            self.appendRenderNodeShape(ctx, elem_id, parent_elem_id, render.NodeShape.html(tag));
+        }
+
+        /// Attaches a node with its explicit immutable kind and namespace.
+        pub fn appendRenderNodeShape(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, shape: render.NodeShape) void {
+            self.render_cache.appendNodeShape(ctx, elem_id, parent_elem_id, shape);
         }
 
         /// Ensures render node capacity or state before publication can begin.
-        pub fn ensureRenderNode(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, tag: []const u8, counts: *render.Counts) void {
-            self.render_cache.ensureNode(ctx, elem_id, tag, counts);
+        pub fn ensureRenderNode(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, shape: render.NodeShape, counts: *render.Counts) void {
+            self.render_cache.ensureNodeShape(ctx, elem_id, shape, counts);
         }
 
         fn ensureRenderNodeCapacity(self: *Self, ctx: Ctx.Handle, capacity: usize) void {
@@ -3045,8 +3052,8 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         /// Returns active render node tag differs from the maintained active-runtime indexes.
-        pub fn activeRenderNodeTagDiffers(self: *const Self, elem_id: ids.ElemId, tag: []const u8) bool {
-            return self.render_cache.activeNodeTagDiffers(elem_id, tag);
+        pub fn activeRenderNodeShapeDiffers(self: *const Self, elem_id: ids.ElemId, shape: render.NodeShape) bool {
+            return self.render_cache.activeNodeShapeDiffers(elem_id, shape);
         }
 
         /// Removes node while preserving indexes for unaffected render nodes.
@@ -3131,8 +3138,8 @@ pub fn Engine(comptime Ctx: type) type {
                 if (index >= self.render_cache.nodes.items.len) @panic("descriptor stream referenced render cache node outside table");
                 const cached = &self.render_cache.nodes.items[index];
                 if (!cached.isActive()) @panic("descriptor stream referenced inactive render cache node");
-                if (!std.mem.eql(u8, cached.activeTag().?, descriptorStreamNodeTag(stream, node))) {
-                    @panic("descriptor stream tag disagreed with render cache");
+                if (!cached.activeShape().?.eql(descriptor_stream.renderNodeShape(HostNodeDescriptorStream, stream, node))) {
+                    @panic("descriptor stream node kind, namespace, or local name disagreed with render cache");
                 }
                 const parent_id = descriptorStreamNodeParent(stream, node);
                 if (cached.parent_id == null or cached.parent_id.?.raw() != parent_id) {
@@ -3232,19 +3239,21 @@ pub fn Engine(comptime Ctx: type) type {
             self.event_descriptors.items.len = 0;
         }
 
-        /// Performs deinit active event desc inside the shared engine while preserving transaction and changed-set invariants.
-        pub fn deinitActiveEventDesc(self: *Self, roc_host: *abi.RocHost, desc: ActiveEventDesc) void {
-            releaseHostEventReducer(desc.payload_reducer, roc_host, &self.pending_roc_metrics);
+        /// Releases the active table's event owner after its graph membership
+        /// has been detached. Descriptor copies only borrow this handler.
+        pub fn deinitActiveEventDesc(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: ActiveEventDesc) void {
+            var handler = desc.handler;
+            handler.deinit(Ctx.allocator(ctx), ctx, roc_host, &self.pending_roc_metrics);
         }
 
         /// Clears active events while retaining bounded storage where the type promises reuse.
-        pub fn clearActiveEvents(self: *Self) RocHostRequiredError!void {
+        pub fn clearActiveEvents(self: *Self, ctx: Ctx.Handle) RocHostRequiredError!void {
             const roc_host = self.roc_host orelse {
                 if (self.active_events.items.len != 0) return RocHostRequiredError.MissingRocHost;
                 return;
             };
             for (self.active_events.items) |desc| {
-                self.deinitActiveEventDesc(roc_host, desc);
+                self.deinitActiveEventDesc(ctx, roc_host, desc);
             }
             self.active_events.items.len = 0;
         }
@@ -3978,7 +3987,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
 
                     const record = try binding.init(.{ .task_source = .{
-                        .name = allocator.dupe(u8, payload.name.asSlice()) catch @panic("out of memory"),
+                        .name = try allocator.dupe(u8, payload.name.asSlice()),
                         .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
                         .initial = retainHostCallable(payload.initial, &self.pending_roc_metrics),
                         .done = retainHostCallable(payload.done, &self.pending_roc_metrics),
@@ -4181,7 +4190,7 @@ pub fn Engine(comptime Ctx: type) type {
                 switch (node.kind) {
                     .element => {
                         const desc = findElementDesc(previous, node.elem_id.raw()) orelse @panic("copyActiveScopeSubtreeDescriptors: render node has no matching descriptor");
-                        _ = stream.appendElement(allocator, desc.elem_id, desc.parent_elem_id, desc.scope_id, desc.tag);
+                        _ = stream.appendElementInNamespace(allocator, desc.elem_id, desc.parent_elem_id, desc.scope_id, desc.tag, desc.namespace);
                     },
                     .text => {
                         const desc = findTextNodeDesc(previous, node.elem_id.raw()) orelse @panic("copyActiveScopeSubtreeDescriptors: render node has no matching descriptor");
@@ -4258,10 +4267,10 @@ pub fn Engine(comptime Ctx: type) type {
             }
             for (previous.events.items, 0..) |desc, event_index| {
                 if (!u64SliceContains(copied_elem_ids.items, desc.elem_id.raw())) continue;
-                const payload_reducer = if (desc.owns_payload_reducer) desc.payload_reducer else self.activeEventReducerByIndex(event_index) catch @panic("active event table is missing a retained payload reducer");
+                const handler = if (desc.owns_handler) desc.handler else self.activeEventHandlerByIndex(event_index) catch @panic("active event table is missing its retained handler");
                 switch (desc.binding) {
-                    .fixed => |kind| stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, desc.elem_id, kind, desc.delivery_request, desc.binder_token, desc.target_node_id, desc.read_binder_token, desc.read_node_id, desc.payload_descriptor, payload_reducer),
-                    .named => |binding| stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, desc.elem_id, binding.name, binding.policy, binding.delivery_request, desc.binder_token, desc.target_node_id, desc.read_binder_token, desc.read_node_id, desc.payload_descriptor, payload_reducer),
+                    .fixed => |kind| stream.appendEvent(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, kind, desc.delivery_request, desc.payload_descriptor, handler),
+                    .named => |binding| stream.appendNamedEvent(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, binding.name, binding.policy, binding.delivery_request, desc.payload_descriptor, handler),
                 }
             }
 
@@ -4348,78 +4357,6 @@ pub fn Engine(comptime Ctx: type) type {
             const site_index = self.ensureEachRowSiteIndex(Ctx.allocator(ctx), parent_scope_id, site_ordinal);
             self.appendEachRowToSiteIndex(Ctx.allocator(ctx), site_index, result.scope_id.raw(), key_hash);
             return result.scope_id;
-        }
-
-        /// Collects node attr descriptor from the explicitly affected graph or scope set.
-        pub fn collectNodeAttrDescriptor(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem_id: ids.ElemId, attr: abi.NodeAttr, binder_stack: []const HostBinderBinding) void {
-            const allocator = Ctx.allocator(ctx);
-            switch (abi_view.NodeAttr.fromAbi(attr)) {
-                .static_text => |payload| {
-                    switch (payload.target) {
-                        .fixed => |field| stream.appendStaticTextAttr(allocator, elem_id, field, payload.value.asSlice()),
-                        .custom => |name| stream.appendStaticCustomTextAttr(allocator, elem_id, name.asSlice(), payload.value.asSlice()),
-                    }
-                },
-                .signal_text => |payload| {
-                    switch (payload.target) {
-                        .fixed => |field| {
-                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                            stream.appendSignalTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, field, signal, payload.read);
-                        },
-                        .custom => |name| {
-                            const name_slice = name.asSlice();
-                            if (stream.customTextAttrDescriptorExists(elem_id, name_slice)) @panic("element has duplicate custom text attr descriptors");
-                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                            stream.appendSignalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, name_slice, signal, payload.read);
-                        },
-                    }
-                },
-                .signal_optional_text => |payload| {
-                    switch (payload.target) {
-                        .fixed => @panic("optional text attr descriptors require a custom attr name"),
-                        .custom => |name| {
-                            const name_slice = name.asSlice();
-                            if (stream.customTextAttrDescriptorExists(elem_id, name_slice)) @panic("element has duplicate custom text attr descriptors");
-                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                            stream.appendSignalOptionalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, name_slice, signal, payload.present, payload.read);
-                        },
-                    }
-                },
-                .static_bool => |payload| {
-                    switch (payload.target) {
-                        .fixed => |field| stream.appendStaticBoolAttr(allocator, elem_id, field, payload.value),
-                        .custom => |name| stream.appendStaticCustomBoolAttr(allocator, elem_id, name.asSlice(), payload.value),
-                    }
-                },
-                .signal_bool => |payload| {
-                    switch (payload.target) {
-                        .fixed => |field| {
-                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                            stream.appendSignalBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, field, signal, payload.read);
-                        },
-                        .custom => |name| {
-                            const name_slice = name.asSlice();
-                            if (stream.customTextAttrDescriptorExists(elem_id, name_slice)) @panic("element has duplicate custom bool attr descriptors");
-                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                            stream.appendSignalCustomBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, name_slice, signal, payload.read);
-                        },
-                    }
-                },
-                .event => |payload| {
-                    const binder_token = payload.msg.binder.callable;
-                    const target_node_id = resolveNodeBinderRef(binder_stack, binder_token);
-                    const read_binder_token = payload.msg.read_binder.callable;
-                    const read_node_id = resolveNodeBinderRef(binder_stack, read_binder_token);
-                    stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.kind, payload.delivery_request, binder_token, ids.NodeId.fromRaw(target_node_id), read_binder_token, ids.NodeId.fromRaw(read_node_id), payload.msg.payload_descriptor, payload.msg.payload_reducer);
-                },
-                .named_event => |payload| {
-                    const binder_token = payload.msg.binder.callable;
-                    const target_node_id = resolveNodeBinderRef(binder_stack, binder_token);
-                    const read_binder_token = payload.msg.read_binder.callable;
-                    const read_node_id = resolveNodeBinderRef(binder_stack, read_binder_token);
-                    stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), payload.policy, payload.delivery_request, binder_token, ids.NodeId.fromRaw(target_node_id), read_binder_token, ids.NodeId.fromRaw(read_node_id), payload.msg.payload_descriptor, payload.msg.payload_reducer);
-                },
-            }
         }
 
         /// Every way a staged collection or publication can refuse, grouped by the
@@ -4939,7 +4876,7 @@ pub fn Engine(comptime Ctx: type) type {
                         index = self.prepared_events.items.len;
                         while (index != 0) {
                             index -= 1;
-                            self.prepared_events.items[index].abort(allocator, self.signal_roc_host orelse @panic("staged event lacked Roc host"), &self.engine.pending_roc_metrics);
+                            self.prepared_events.items[index].abort(allocator, self.host_ctx, self.signal_roc_host orelse @panic("staged event lacked Roc host"), &self.engine.pending_roc_metrics);
                         }
                         index = self.prepared_named_event_groups.items.len;
                         while (index != 0) {
@@ -5103,13 +5040,16 @@ pub fn Engine(comptime Ctx: type) type {
             /// the retired value. The clone is transaction-owned: `deinit`
             /// and `commit` both retire it, since the state update itself is
             /// published by the plan that owns the transaction.
-            fn stageExternalState(self: *@This(), roc_host: *abi.RocHost, update: PreparedExternalState) CollectionError!void {
+            fn stageExternalStates(self: *@This(), roc_host: *abi.RocHost, updates: []const PreparedExternalState) CollectionError!void {
+                if (updates.len == 0) return;
                 if (self.external_state_count != 0) return error.ResourceLimit;
                 self.signal_roc_host = roc_host;
-                try self.reserveCounts(.{ .external_states = 1 });
-                const cloned = Ctx.cloneHostValue(self.host_ctx, update.value);
-                self.prepared_state_cells.appendAssumeCapacity(HostState.initActive(update.state_id, HostValueCell.initRetained(cloned, update.cap, &self.engine.pending_roc_metrics), 0));
-                self.external_state_count = 1;
+                try self.reserveCounts(.{ .external_states = updates.len });
+                for (updates) |update| {
+                    const cloned = Ctx.cloneHostValue(self.host_ctx, update.value);
+                    self.prepared_state_cells.appendAssumeCapacity(HostState.initActive(update.state_id, HostValueCell.initRetained(cloned, update.cap, &self.engine.pending_roc_metrics), 0));
+                }
+                self.external_state_count = updates.len;
             }
 
             fn rootScope(self: *@This()) CollectionError!scope_tree.InternResult {
@@ -6009,12 +5949,12 @@ pub fn Engine(comptime Ctx: type) type {
                 for (row_render_ranges.items) |range| self.row_render_span_intents.appendAssumeCapacity(.{ .owner = .{ .nested = nested_sync_index }, .range = range });
             }
 
-            fn appendElement(self: *@This(), scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, dom_ordinal: *ids.SiteOrdinal, tag: []const u8) CollectionError!ids.ElemId {
+            fn appendElement(self: *@This(), scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, dom_ordinal: *ids.SiteOrdinal, tag: []const u8, namespace: render.ElementNamespace) CollectionError!ids.ElemId {
                 const descriptor_bytes = std.math.add(usize, @sizeOf(HostElementDesc), tag.len) catch return error.ResourceLimit;
                 try self.budget.charge(1, descriptor_bytes);
                 const elem_id = try self.reserveDomIdentity(scope_id, dom_ordinal.*);
                 try self.reserveScopeDescriptors(scope_id, 1, 0);
-                const prepared = try self.stream.prepareElement(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, tag);
+                const prepared = try self.stream.prepareElementInNamespace(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, tag, namespace);
                 self.prepared_nodes.appendAssumeCapacity(prepared);
                 self.prepared_render_order.appendAssumeCapacity(.{ .static = self.prepared_nodes.items.len - 1 });
                 dom_ordinal.* = ids.SiteOrdinal.fromRaw(dom_ordinal.*.raw() + 1);
@@ -6052,7 +5992,36 @@ pub fn Engine(comptime Ctx: type) type {
                 dom_ordinal.* = ids.SiteOrdinal.fromRaw(dom_ordinal.*.raw() + 1);
             }
 
-            fn appendAttr(self: *@This(), roc_host: *abi.RocHost, elem_id: ids.ElemId, attr: abi.NodeAttr, binder_stack: []const HostBinderBinding) CollectionError!void {
+            fn prepareEventHandler(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, msg: abi_view.EventMessage, binder_stack: []const HostBinderBinding) CollectionError!descriptor_stream.EventHandler {
+                self.signal_roc_host = roc_host;
+                return switch (msg.handler) {
+                    .reduce => |handler| .{ .reduce = .{
+                        .binder_token = handler.binder.callable,
+                        .target_node_id = ids.NodeId.fromRaw(resolveNodeBinderRef(binder_stack, handler.binder.callable)),
+                        .read_binder_token = handler.read_binder.callable,
+                        .read_node_id = ids.NodeId.fromRaw(resolveNodeBinderRef(binder_stack, handler.read_binder.callable)),
+                        .payload_reducer = retainHostEventReducer(handler.payload_reducer, &self.engine.pending_roc_metrics),
+                    } },
+                    .action => |handler| blk: {
+                        const reads = try self.bindSignalRoot(roc_host, handler.reads.*, binder_stack);
+                        // No fallible operation follows the journal transfer.
+                        self.signal_records.transferDescriptorRoot(reads.record);
+                        const journaled = self.signal_bindings.pop() orelse @panic("staged action read journal underflow");
+                        if (journaled.record != reads.record or journaled.source_node_ids.ptr != reads.source_node_ids.ptr or journaled.source_node_ids.len != reads.source_node_ids.len) @panic("staged action read journal transfer mismatch");
+                        const payload_cap = retained_values.retainHostValueCapability(handler.payload_cap, &self.engine.pending_roc_metrics);
+                        abi.increfErasedCallable(handler.to_cmd.toAbi(), 1);
+                        self.engine.pending_roc_metrics.bump(.closure_retains, 1);
+                        break :blk .{ .action = .{
+                            .scope_id = scope_id,
+                            .reads = reads,
+                            .payload_cap = payload_cap,
+                            .to_cmd = handler.to_cmd,
+                        } };
+                    },
+                };
+            }
+
+            fn appendAttr(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, elem_id: ids.ElemId, attr: abi.NodeAttr, binder_stack: []const HostBinderBinding) CollectionError!void {
                 const prepared = switch (abi_view.NodeAttr.fromAbi(attr)) {
                     .signal_text => |payload| switch (payload.target) {
                         .fixed => |field| {
@@ -6170,19 +6139,13 @@ pub fn Engine(comptime Ctx: type) type {
                     },
                     .event => |payload| {
                         try self.budget.charge(0, @sizeOf(HostNodeEventDesc));
-                        const binder_token = payload.msg.binder.callable;
-                        const read_binder_token = payload.msg.read_binder.callable;
-                        self.signal_roc_host = roc_host;
+                        const handler = try self.prepareEventHandler(roc_host, scope_id, payload.msg, binder_stack);
                         self.prepared_events.appendAssumeCapacity(.{ .desc = .{
                             .elem_id = elem_id,
                             .binding = .{ .fixed = payload.kind },
                             .delivery_request = payload.delivery_request,
-                            .binder_token = binder_token,
-                            .target_node_id = ids.NodeId.fromRaw(resolveNodeBinderRef(binder_stack, binder_token)),
-                            .read_binder_token = read_binder_token,
-                            .read_node_id = ids.NodeId.fromRaw(resolveNodeBinderRef(binder_stack, read_binder_token)),
                             .payload_descriptor = payload.msg.payload_descriptor,
-                            .payload_reducer = retainHostEventReducer(payload.msg.payload_reducer, &self.engine.pending_roc_metrics),
+                            .handler = handler,
                         } });
                         return;
                     },
@@ -6195,9 +6158,7 @@ pub fn Engine(comptime Ctx: type) type {
                         const allocator = Ctx.allocator(self.host_ctx);
                         const name_copy = allocator.dupe(u8, name) catch return error.OutOfMemory;
                         errdefer allocator.free(name_copy);
-                        const binder_token = payload.msg.binder.callable;
-                        const read_binder_token = payload.msg.read_binder.callable;
-                        self.signal_roc_host = roc_host;
+                        const handler = try self.prepareEventHandler(roc_host, scope_id, payload.msg, binder_stack);
                         const event_ordinal = self.prepared_events.items.len;
                         self.prepared_events.appendAssumeCapacity(.{ .desc = .{
                             .elem_id = elem_id,
@@ -6207,12 +6168,8 @@ pub fn Engine(comptime Ctx: type) type {
                                 .delivery_request = payload.delivery_request,
                             } },
                             .delivery_request = payload.delivery_request,
-                            .binder_token = binder_token,
-                            .target_node_id = ids.NodeId.fromRaw(resolveNodeBinderRef(binder_stack, binder_token)),
-                            .read_binder_token = read_binder_token,
-                            .read_node_id = ids.NodeId.fromRaw(resolveNodeBinderRef(binder_stack, read_binder_token)),
                             .payload_descriptor = payload.msg.payload_descriptor,
-                            .payload_reducer = retainHostEventReducer(payload.msg.payload_reducer, &self.engine.pending_roc_metrics),
+                            .handler = handler,
                         } });
                         self.prepared_named_event_groups.items[group_index].event_ordinals.appendAssumeCapacity(event_ordinal);
                         self.rememberPreparedNamedEvent(elem_id, name_copy);
@@ -6643,9 +6600,9 @@ pub fn Engine(comptime Ctx: type) type {
 
             switch (abi_view.Elem.fromAbi(elem)) {
                 .element => |payload| {
-                    const elem_id = try collection.appendElement(scope_id, parent_elem_id, dom_ordinal, payload.tag.asSlice());
+                    const elem_id = try collection.appendElement(scope_id, parent_elem_id, dom_ordinal, payload.tag.asSlice(), payload.namespace);
                     for (payload.attrs) |attr| {
-                        try collection.appendAttr(roc_host, elem_id, attr, binder_stack.items);
+                        try collection.appendAttr(roc_host, scope_id, elem_id, attr, binder_stack.items);
                     }
                     for (payload.children) |child| {
                         try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, child, scope_id, elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
@@ -6793,10 +6750,14 @@ pub fn Engine(comptime Ctx: type) type {
                             }
                             count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(signal.signal.*)) catch return error.ResourceLimit;
                         },
-                        .event => count.events += 1,
-                        .named_event => {
+                        .event => |event| {
+                            count.events += 1;
+                            if (event.msg.handler == .action) count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(event.msg.handler.action.reads.*)) catch return error.ResourceLimit;
+                        },
+                        .named_event => |event| {
                             count.events += 1;
                             count.named_events += 1;
+                            if (event.msg.handler == .action) count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(event.msg.handler.action.reads.*)) catch return error.ResourceLimit;
                         },
                     };
                     for (payload.children) |child| {
@@ -7644,7 +7605,7 @@ pub fn Engine(comptime Ctx: type) type {
             counts: StaticRootCounts = .{},
             phase: CommitPhase = .prepared,
 
-            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, prepared_rows: *PreparedActiveEachRows, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, cache_overlay: ?*const signal_records.PreparedCacheUpdates, state_update: ?PreparedExternalState) CollectionError!*@This() {
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, prepared_rows: *PreparedActiveEachRows, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, cache_overlay: ?*const signal_records.PreparedCacheUpdates, state_update: []const PreparedExternalState) CollectionError!*@This() {
                 const inputs = &prepared_rows.inputs;
                 const previous_bindings = engine.active_each_candidate_bindings;
                 const previous_inputs = engine.active_each_candidate_inputs;
@@ -7665,7 +7626,7 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, plan.counts, plan.row_elems.len);
                 plan.owns_replacement = true;
                 plan.replacement.collection.cache_overlay = cache_overlay;
-                if (state_update) |update| try plan.replacement.collection.stageExternalState(roc_host, update);
+                try plan.replacement.collection.stageExternalStates(roc_host, state_update);
                 try plan.collectInto(site, each, plan.replacement, dirty_source_node_ids);
                 plan.replacement.materialize();
                 try plan.finalizeRenderSpans(site);
@@ -8086,6 +8047,9 @@ pub fn Engine(comptime Ctx: type) type {
 
         fn collectRetiredGraphRootsForRemoval(engine: *Self, allocator: std.mem.Allocator, removal: *const structural_splice.PreparedRemoval, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
             const indexes = &removal.descriptor_indexes;
+            for (indexes.event_indexes.items) |index| if (engine.active_stream.events.items[index].handler.signalRoot()) |root| {
+                roots.append(allocator, root) catch return error.OutOfMemory;
+            };
             for (indexes.signal_text_node_indexes.items) |index| roots.append(allocator, engine.active_stream.signal_text_nodes.items[index].signal.record) catch return error.OutOfMemory;
             for (indexes.signal_text_attr_indexes.items) |index| roots.append(allocator, engine.active_stream.signal_text_attrs.items[index].signal.record) catch return error.OutOfMemory;
             for (indexes.signal_custom_text_attr_indexes.items) |index| roots.append(allocator, engine.active_stream.signal_custom_text_attrs.items[index].signal.record) catch return error.OutOfMemory;
@@ -8098,6 +8062,9 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         fn collectReplacementGraphRootsForStream(allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
+            for (stream.events.items) |desc| if (desc.handler.signalRoot()) |root| {
+                roots.append(allocator, root) catch return error.OutOfMemory;
+            };
             for (stream.signal_text_nodes.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
             for (stream.signal_text_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
             for (stream.signal_custom_text_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
@@ -8955,10 +8922,10 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, selections: []const AggregateBranchSelection, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
-                return prepareWithState(engine, ctx, roc_host, selections, limits, dirty_source_node_ids, null, null);
+                return prepareWithState(engine, ctx, roc_host, selections, limits, dirty_source_node_ids, &.{}, null);
             }
 
-            fn prepareWithState(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, selections: []const AggregateBranchSelection, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: ?PreparedExternalState, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
+            fn prepareWithState(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, selections: []const AggregateBranchSelection, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: []const PreparedExternalState, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 if (selections.len == 0) return error.ResourceLimit;
                 var total: StaticRootCounts = .{};
                 for (selections) |selection| try addCounts(&total, try countStaticRootNodes(selection.elem));
@@ -8972,7 +8939,7 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, selections.len);
                 errdefer if (!plan_owns_cleanup) plan.replacement.deinit();
                 plan.replacement.collection.cache_overlay = cache_overlay;
-                if (state_update) |update| try plan.replacement.collection.stageExternalState(roc_host, update);
+                try plan.replacement.collection.stageExternalStates(roc_host, state_update);
                 plan.replacement_scope_ids = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
                 errdefer if (!plan_owns_cleanup) allocator.free(plan.replacement_scope_ids);
                 const replacement_ranges = allocator.alloc(PreparedReplacementOwner.CollectedWhenSelection, selections.len) catch return error.OutOfMemory;
@@ -9676,14 +9643,12 @@ pub fn Engine(comptime Ctx: type) type {
                 const indexes = &removal.descriptor_indexes;
                 for (indexes.event_indexes.items) |index| self.retired_active_events.appendAssumeCapacity(self.engine.active_events.swapRemove(index));
                 for (self.replacement.stream.events.items) |*desc| {
-                    if (!desc.owns_payload_reducer) @panic("prepared replacement event did not own its active reducer");
+                    if (!desc.owns_handler) @panic("prepared replacement event did not own its active reducer");
                     self.engine.active_events.appendAssumeCapacity(.{
-                        .target_node_id = desc.target_node_id,
-                        .read_node_id = desc.read_node_id,
                         .payload_descriptor = desc.payload_descriptor,
-                        .payload_reducer = desc.payload_reducer,
+                        .handler = desc.handler,
                     });
-                    desc.owns_payload_reducer = false;
+                    desc.owns_handler = false;
                 }
                 if (self.render_layout_plan) |*plan| {
                     plan.apply(&self.engine.active_stream, &self.replacement.stream);
@@ -9820,7 +9785,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 self.retired_stable_generations.deinit(allocator);
                 if (self.effects_retirement) |*effects| effects.deinit(allocator, self.roc_host);
-                for (self.retired_active_events.items) |event| self.engine.deinitActiveEventDesc(self.roc_host, event);
+                for (self.retired_active_events.items) |event| self.engine.deinitActiveEventDesc(self.host_ctx, self.roc_host, event);
                 self.retired_active_events.deinit(allocator);
                 if (self.publication) |*publication| publication.deinit(allocator);
                 if (self.final_render_topology) |*topology| topology.deinit();
@@ -10233,7 +10198,7 @@ pub fn Engine(comptime Ctx: type) type {
             const HostSurvival = struct {
                 cache: *const render_cache_mod.Cache(Ctx),
                 retired: *const std.AutoHashMapUnmanaged(u64, void),
-                replacements: *const std.AutoHashMapUnmanaged(u64, []const u8),
+                replacements: *const std.AutoHashMapUnmanaged(u64, render.NodeShape),
                 memo: std.AutoHashMapUnmanaged(u64, bool) = .empty,
 
                 fn activeNode(self: *const @This(), elem_id: u64) ?*const render_cache_mod.ScalarNode {
@@ -10247,7 +10212,7 @@ pub fn Engine(comptime Ctx: type) type {
                     if (!self.retired.contains(elem_id)) return true;
                     if (self.memo.get(elem_id)) |known| return known;
                     var kept = false;
-                    if (self.replacements.get(elem_id)) |tag| if (self.activeNode(elem_id)) |node| if (std.mem.eql(u8, node.activeTag().?, tag)) {
+                    if (self.replacements.get(elem_id)) |shape| if (self.activeNode(elem_id)) |node| if (node.activeShape().?.eql(shape)) {
                         kept = if (node.parent_id) |parent| self.survives(parent.raw()) else true;
                     };
                     self.memo.putAssumeCapacity(elem_id, kept);
@@ -10270,13 +10235,13 @@ pub fn Engine(comptime Ctx: type) type {
                 const retired_count = std.math.cast(u32, self.removal.?.scan.removed_elem_ids.len) orelse return error.ResourceLimit;
                 retired.ensureUnusedCapacity(allocator, retired_count) catch return error.OutOfMemory;
                 for (self.removal.?.scan.removed_elem_ids) |elem_id| retired.putAssumeCapacity(elem_id, {});
-                var replacements: std.AutoHashMapUnmanaged(u64, []const u8) = .empty;
+                var replacements: std.AutoHashMapUnmanaged(u64, render.NodeShape) = .empty;
                 defer replacements.deinit(allocator);
                 replacements.ensureUnusedCapacity(allocator, std.math.cast(u32, self.replacement_stream.render_nodes.items.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 for (self.replacement_stream.render_nodes.items) |node| {
                     const result = replacements.getOrPutAssumeCapacity(node.elem_id.raw());
                     if (result.found_existing) return error.ResourceLimit;
-                    result.value_ptr.* = descriptor_stream.renderNodeTag(HostNodeDescriptorStream, &self.replacement_stream, node);
+                    result.value_ptr.* = descriptor_stream.renderNodeShape(HostNodeDescriptorStream, &self.replacement_stream, node);
                 }
                 var survival = HostSurvival{ .cache = &self.engine.render_cache, .retired = &retired, .replacements = &replacements };
                 defer survival.memo.deinit(allocator);
@@ -10432,15 +10397,15 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 for (self.removal.?.scan.removed_elem_ids) |elem_id| if (!replacements.contains(elem_id)) splice.addRemoval(&self.engine.render_cache, ids.ElemId.fromRaw(elem_id), survival.removalPublication(elem_id)) catch |err| return renderSpliceError(err);
                 for (self.replacement_stream.render_nodes.items) |node| {
-                    const tag = descriptor_stream.renderNodeTag(HostNodeDescriptorStream, &self.replacement_stream, node);
+                    const shape = descriptor_stream.renderNodeShape(HostNodeDescriptorStream, &self.replacement_stream, node);
                     const index = node.elem_id.index();
                     if (index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[index].isActive()) {
                         if (!retired.contains(node.elem_id.raw())) return error.InvalidRenderTopology;
                         if (survival.survives(node.elem_id.raw()))
-                            splice.addNodeReuse(&self.engine.render_cache, node.elem_id, tag) catch |err| return renderSpliceError(err)
+                            splice.addNodeReuseShape(&self.engine.render_cache, node.elem_id, shape) catch |err| return renderSpliceError(err)
                         else
-                            splice.addNodeReplacement(&self.engine.render_cache, node.elem_id, tag, survival.removalPublication(node.elem_id.raw())) catch |err| return renderSpliceError(err);
-                    } else splice.addCreation(&self.engine.render_cache, node.elem_id, tag) catch |err| return renderSpliceError(err);
+                            splice.addNodeReplacementShape(&self.engine.render_cache, node.elem_id, shape, survival.removalPublication(node.elem_id.raw())) catch |err| return renderSpliceError(err);
+                    } else splice.addCreationShape(&self.engine.render_cache, node.elem_id, shape) catch |err| return renderSpliceError(err);
                 }
                 iterator = touched.keyIterator();
                 while (iterator.next()) |parent_id| {
@@ -10561,6 +10526,13 @@ pub fn Engine(comptime Ctx: type) type {
                     splice.addNamedEvents(&self.engine.render_cache, ids.ElemId.fromRaw(elem_id.*), named.items) catch |err| return renderSpliceError(err);
                 }
                 splice.clearUnsetReusedFields(&self.engine.render_cache) catch |err| return renderSpliceError(err);
+                for (self.replacement_stream.events.items) |*desc| switch (desc.handler) {
+                    .reduce => {},
+                    .action => |*handler| {
+                        const evaluated = self.evalPreparedSignalBinding(&handler.reads);
+                        callHostValueToUnitWithCapability(self.host_ctx, self.roc_host, evaluated.cap, hv.hostValueCapabilityDrop(evaluated.cap), evaluated.value);
+                    },
+                };
                 for (self.replacement_stream.on_changes.items) |*desc| {
                     if (desc.cached_value != .absent) continue;
                     const evaluated = self.evalPreparedSignalBinding(&desc.signal);
@@ -11712,13 +11684,17 @@ pub fn Engine(comptime Ctx: type) type {
 
             const last_index = event_count - 1;
             const removed = self.active_stream.events.items[index];
-            if (removed.owns_payload_reducer) {
+            if (removed.owns_handler) {
                 @panic("active event descriptor retained ownership outside the active event table");
             }
             self.clearActiveEventDescriptorIndex(removed, index);
+            if (removed.handler.signalRoot()) |root| {
+                self.active_stream.forgetSignalRecordTree(root);
+                self.releaseActiveSignalRecord(ctx, root);
+            }
             if (removed.named()) |binding| allocator.free(binding.name);
             if (self.active_events.items.len != 0) {
-                self.deinitActiveEventDesc(roc_host, self.active_events.items[index]);
+                self.deinitActiveEventDesc(ctx, roc_host, self.active_events.items[index]);
             }
 
             if (index != last_index) {
@@ -11896,20 +11872,22 @@ pub fn Engine(comptime Ctx: type) type {
 
             const event_base = self.active_stream.events.items.len;
             for (replacement.events.items, 0..) |*desc, offset| {
-                if (!desc.owns_payload_reducer) {
+                if (!desc.owns_handler) {
                     @panic("replacement event descriptor did not own its retained payload");
+                }
+                if (desc.handler.signalRoot()) |root| {
+                    self.active_stream.rememberSignalRecordTree(allocator, root);
+                    self.retainActiveSignalRecord(ctx, root);
                 }
                 switch (desc.binding) {
                     .fixed => |kind| self.active_stream.recordEventIndex(allocator, desc.elem_id, kind, event_base + offset),
                     .named => self.active_stream.recordNamedEventIndex(allocator, desc.elem_id, event_base + offset),
                 }
                 self.active_events.insert(allocator, event_base + offset, .{
-                    .target_node_id = desc.target_node_id,
-                    .read_node_id = desc.read_node_id,
                     .payload_descriptor = desc.payload_descriptor,
-                    .payload_reducer = desc.payload_reducer,
+                    .handler = desc.handler,
                 }) catch @panic("out of memory");
-                desc.owns_payload_reducer = false;
+                desc.owns_handler = false;
             }
 
             self.active_stream.events.appendSlice(allocator, replacement.events.items) catch @panic("out of memory");
@@ -13520,14 +13498,15 @@ pub fn Engine(comptime Ctx: type) type {
         /// retry this pure evaluation with the same payload. Both hosts use this
         /// path so snapshot, capability, and read-release semantics stay shared.
         pub fn evaluateEventReducer(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: HostActiveEventDesc, payload: HostValue) HostValue {
-            const state_cap = self.stateCapability(desc.target_node_id.raw()) catch @panic("event target state is not live");
-            const read_cap = self.stateCapability(desc.read_node_id.raw()) catch @panic("event read state is not live");
-            const current = Ctx.stateValueByNodeId(ctx, desc.target_node_id.raw());
+            const handler = desc.handler.reduce;
+            const state_cap = self.stateCapability(handler.target_node_id.raw()) catch @panic("event target state is not live");
+            const read_cap = self.stateCapability(handler.read_node_id.raw()) catch @panic("event read state is not live");
+            const current = Ctx.stateValueByNodeId(ctx, handler.target_node_id.raw());
             defer {
                 debugPhase(ctx, .event_drop_state);
                 callHostValueToUnitWithCapability(ctx, roc_host, state_cap, hv.hostValueCapabilityDrop(state_cap), current);
             }
-            const read = Ctx.stateValueByNodeId(ctx, desc.read_node_id.raw());
+            const read = Ctx.stateValueByNodeId(ctx, handler.read_node_id.raw());
             defer {
                 debugPhase(ctx, .event_drop_read);
                 callHostValueToUnitWithCapability(ctx, roc_host, read_cap, hv.hostValueCapabilityDrop(read_cap), read);
@@ -13538,18 +13517,30 @@ pub fn Engine(comptime Ctx: type) type {
                 roc_host,
                 state_cap,
                 read_cap,
-                desc.payload_reducer.capability,
-                desc.payload_reducer.transform,
+                handler.payload_reducer.capability,
+                handler.payload_reducer.transform,
                 current,
                 read,
                 payload,
             );
         }
 
-        /// Returns active event reducer by index from the maintained active-runtime indexes.
-        pub fn activeEventReducerByIndex(self: *Self, event_index: usize) ActiveEventLookupError!HostEventReducer {
+        /// Builds one command for one accepted occurrence, borrowing the
+        /// settled declared reads. Re-evaluating equal events is intentional;
+        /// signal propagation itself never invokes this callback.
+        pub fn evaluateEventAction(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: HostActiveEventDesc, payload: HostValue) abi.NodeCmd {
+            var handler = desc.handler.action;
+            const cap = self.hostSignalBindingCapability(ctx, &handler.reads);
+            const snapshot = self.evalHostSignalBinding(ctx, roc_host, &handler.reads);
+            defer callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), snapshot);
+            return retained_values.callHostValueHostValueToCmdWithCapabilities(Ctx, ctx, roc_host, cap, handler.payload_cap, handler.to_cmd.toAbi(), snapshot, payload);
+        }
+
+        /// Borrows the handler retained by the active event table. Copying a
+        /// descriptor across streams must clone this owner, not its stale view.
+        pub fn activeEventHandlerByIndex(self: *Self, event_index: usize) ActiveEventLookupError!descriptor_stream.EventHandler {
             if (event_index >= self.active_events.items.len) return ActiveEventLookupError.MissingActiveEvent;
-            return self.active_events.items[event_index].payload_reducer;
+            return self.active_events.items[event_index].handler;
         }
 
         /// Returns active scope site by node id from the maintained active-runtime indexes.
@@ -14487,8 +14478,8 @@ pub fn Engine(comptime Ctx: type) type {
                 const parent_elem_id = renderNodeParentElemId(stream, node);
                 if (parent_elem_id >= child_table_len) @panic("render node referenced parent outside structural DOM patch table");
 
-                const tag = renderNodeTag(stream, node);
-                if (self.activeRenderNodeTagDiffers(node.elem_id.raw(), tag)) {
+                const tag = descriptor_stream.renderNodeShape(HostNodeDescriptorStream, stream, node);
+                if (self.activeRenderNodeShapeDiffers(node.elem_id.raw(), tag)) {
                     self.removeRenderNode(ctx, node.elem_id.raw(), &counts);
                 }
                 self.ensureRenderNode(ctx, node.elem_id.raw(), tag, &counts);
@@ -14621,13 +14612,13 @@ pub fn Engine(comptime Ctx: type) type {
                 switch (node.kind) {
                     .element => {
                         const desc = findElementDesc(stream, node.elem_id.raw()) orelse @panic("render node referenced missing element descriptor");
-                        self.appendRenderNode(ctx, desc.elem_id, desc.parent_elem_id, desc.tag);
+                        self.appendRenderNodeShape(ctx, desc.elem_id, desc.parent_elem_id, .{ .element = .{ .tag = desc.tag, .namespace = desc.namespace } });
                         counts.addCreateElement();
                         counts.addAppendChild();
                     },
                     .text => {
                         const desc = findTextNodeDesc(stream, node.elem_id.raw()) orelse @panic("render node referenced missing text descriptor");
-                        self.appendRenderNode(ctx, desc.elem_id, desc.parent_elem_id, "text");
+                        self.appendRenderNodeShape(ctx, desc.elem_id, desc.parent_elem_id, .text);
                         counts.addCreateElement();
                         counts.addAppendChild();
                         if (self.applyRenderTextField(ctx, desc.elem_id, .text, desc.value)) {
@@ -14636,7 +14627,7 @@ pub fn Engine(comptime Ctx: type) type {
                     },
                     .signal_text => {
                         const desc = findSignalTextNodeDescMutable(stream, node.elem_id.raw()) orelse @panic("render node referenced missing signal text descriptor");
-                        self.appendRenderNode(ctx, desc.elem_id, desc.parent_elem_id, "text");
+                        self.appendRenderNodeShape(ctx, desc.elem_id, desc.parent_elem_id, .text);
                         counts.addCreateElement();
                         counts.addAppendChild();
                         if (self.evalSignalTextField(ctx, roc_host, desc.elem_id.raw(), .text, &desc.signal, desc.read, &desc.cached_value)) {
@@ -14767,8 +14758,8 @@ pub fn Engine(comptime Ctx: type) type {
                     @panic("render node referenced unavailable parent in structural DOM splice");
                 }
 
-                const tag = streamElemTag(&self.active_stream, elem_id);
-                if (self.activeRenderNodeTagDiffers(elem_id, tag)) {
+                const tag = descriptor_stream.streamElemShape(HostNodeDescriptorStream, &self.active_stream, ids.ElemId.fromRaw(elem_id));
+                if (self.activeRenderNodeShapeDiffers(elem_id, tag)) {
                     self.removeRenderNode(ctx, elem_id, &counts);
                 }
                 self.ensureRenderNode(ctx, elem_id, tag, &counts);
@@ -14865,8 +14856,8 @@ pub fn Engine(comptime Ctx: type) type {
                 const parent_elem_id = renderNodeParentElemId(stream, node);
                 if (parent_elem_id >= child_table_len) @panic("render node referenced parent outside structural DOM patch table");
 
-                const tag = renderNodeTag(stream, node);
-                if (self.activeRenderNodeTagDiffers(node.elem_id, tag)) {
+                const tag = descriptor_stream.renderNodeShape(HostNodeDescriptorStream, stream, node);
+                if (self.activeRenderNodeShapeDiffers(node.elem_id, tag)) {
                     self.removeRenderNode(ctx, node.elem_id, &counts);
                 }
                 self.ensureRenderNode(ctx, node.elem_id, tag, &counts);
@@ -15006,7 +14997,7 @@ pub fn Engine(comptime Ctx: type) type {
             const allocator = Ctx.allocator(ctx);
             const rows = try PreparedActiveEachRows.prepare(self, ctx, roc_host, site, each_desc, allocator);
             defer rows.deinit();
-            const replacement = try PreparedEachRowReplacementCollection.prepare(self, ctx, roc_host, site, each_desc, rows, .{}, dirty_source_node_ids, null, null);
+            const replacement = try PreparedEachRowReplacementCollection.prepare(self, ctx, roc_host, site, each_desc, rows, .{}, dirty_source_node_ids, null, &.{});
             defer replacement.deinit();
             var layout = try PreparedEachRowRenderLayout.prepare(self, allocator, site, &rows.rows, replacement.replacement_rows, &replacement.replacement.collection);
             defer layout.deinit();
@@ -15221,17 +15212,15 @@ pub fn Engine(comptime Ctx: type) type {
         pub fn rebuildActiveEventsFromStream(self: *Self, ctx: Ctx.Handle, stream: *HostNodeDescriptorStream) void {
             if (!builtin.is_test) @compileError("rebuildActiveEventsFromStream is a pre-transactional engine path kept only for tests; production goes through prepared transactions");
             const allocator = Ctx.allocator(ctx);
-            self.clearActiveEvents() catch @panic("active event table cannot release retained payloads without a Roc host");
+            self.clearActiveEvents(ctx) catch @panic("active event table cannot release retained payloads without a Roc host");
 
             for (stream.events.items) |*desc| {
-                if (!desc.owns_payload_reducer) @panic("event descriptor payload reducer ownership was already transferred");
+                if (!desc.owns_handler) @panic("event descriptor payload reducer ownership was already transferred");
                 self.active_events.append(allocator, .{
-                    .target_node_id = desc.target_node_id,
-                    .read_node_id = desc.read_node_id,
                     .payload_descriptor = desc.payload_descriptor,
-                    .payload_reducer = desc.payload_reducer,
+                    .handler = desc.handler,
                 }) catch @panic("out of memory");
-                desc.owns_payload_reducer = false;
+                desc.owns_handler = false;
             }
         }
 
@@ -15349,6 +15338,17 @@ pub fn Engine(comptime Ctx: type) type {
             return transaction.commit();
         }
 
+        /// Consumes a complete set of independently owned state proposals.
+        /// Duplicate or inactive destinations are rejected before propagation;
+        /// all changed values then share one graph, structure, and observer
+        /// transaction. Refusal drops every proposal without changing state.
+        pub fn tryDispatchStateWrites(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, writes: []const StateWrite) CollectionError!render.Counts {
+            const transaction = try PreparedSourceTransaction.prepareStates(self, ctx, roc_host, writes) orelse return .{};
+            defer transaction.deinit();
+            self.pending_roc_metrics.bump(.dirty_source_roots, transaction.root_count);
+            return transaction.commit();
+        }
+
         /// Publishes an owned state value or terminates on unrecoverable host
         /// preparation failure at the infallible production boundary.
         pub fn dispatchStateValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, node_id: u64, value: HostValue, cap: HostValueCapability) render.Counts {
@@ -15414,13 +15414,6 @@ pub fn Engine(comptime Ctx: type) type {
                     };
                 }
 
-                fn provisionalCellConst(self: *const @This()) *const HostValueCell {
-                    return switch (self.ownership) {
-                        .provisional => |*cell| cell,
-                        .committed => @panic("committed state update has no provisional cell"),
-                    };
-                }
-
                 fn commit(self: *@This(), engine: *Self) void {
                     const next = switch (self.ownership) {
                         .provisional => |cell| cell,
@@ -15442,13 +15435,82 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                 }
             };
+            const PreparedStateWrites = struct {
+                allocator: std.mem.Allocator,
+                entries: std.ArrayListUnmanaged(PreparedStateUpdate) = .empty,
+                node_ids: std.ArrayListUnmanaged(u64) = .empty,
+                external: std.ArrayListUnmanaged(PreparedExternalState) = .empty,
+                by_state_id: std.AutoHashMapUnmanaged(u64, usize) = .empty,
+
+                fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, incoming: []const StateWrite) CollectionError!@This() {
+                    var consumed: usize = 0;
+                    defer for (incoming[consumed..]) |write| callHostValueToUnitWithCapability(ctx, roc_host, write.cap, hv.hostValueCapabilityDrop(write.cap), write.value);
+                    const allocator = Ctx.allocator(ctx);
+                    var writes = @This(){ .allocator = allocator };
+                    errdefer writes.deinit(ctx, roc_host, &engine.pending_roc_metrics);
+                    try writes.entries.ensureTotalCapacityPrecise(allocator, incoming.len);
+                    try writes.node_ids.ensureTotalCapacityPrecise(allocator, incoming.len);
+                    try writes.external.ensureTotalCapacityPrecise(allocator, incoming.len);
+                    try writes.by_state_id.ensureTotalCapacity(allocator, std.math.cast(u32, incoming.len) orelse return error.ResourceLimit);
+                    // Validate the whole destination set before comparing or
+                    // adopting values. Equal proposals do not excuse duplicate
+                    // destinations, and no ordering implies last-writer wins.
+                    for (incoming) |write| {
+                        const entry = writes.by_state_id.getOrPutAssumeCapacity(write.state_id);
+                        if (entry.found_existing) return error.InvalidDescriptor;
+                        entry.value_ptr.* = std.math.maxInt(usize);
+                        const state_index = engine.stateIndexByNodeId(write.state_id) orelse return error.InvalidDescriptor;
+                        const cell = engine.states.items[state_index].activePayload().cell;
+                        assertHostValueCapabilitiesMatch(cell.cap, write.cap, "prepared state write used the wrong value capability");
+                    }
+                    for (incoming) |write| {
+                        const state_index = engine.stateIndexByNodeId(write.state_id).?;
+                        const cell = &engine.states.items[state_index].activePayload().cell;
+                        if (cell.valueEqualsIncoming(ctx, roc_host, write.value, write.cap)) {
+                            callHostValueToUnitWithCapability(ctx, roc_host, write.cap, hv.hostValueCapabilityDrop(write.cap), write.value);
+                            consumed += 1;
+                            engine.recordSignalPrune();
+                            continue;
+                        }
+                        writes.by_state_id.getPtr(write.state_id).?.* = writes.entries.items.len;
+                        writes.entries.appendAssumeCapacity(.{
+                            .state_index = state_index,
+                            .state_id = write.state_id,
+                            .ownership = .{ .provisional = HostValueCell.initRetained(write.value, write.cap, &engine.pending_roc_metrics) },
+                        });
+                        consumed += 1;
+                        writes.node_ids.appendAssumeCapacity(write.state_id);
+                        writes.external.appendAssumeCapacity(write);
+                    }
+                    return writes;
+                }
+
+                fn provisionalCell(self: *@This(), state_id: u64) ?*HostValueCell {
+                    const index = self.by_state_id.get(state_id) orelse return null;
+                    if (index == std.math.maxInt(usize)) return null;
+                    return self.entries.items[index].provisionalCell();
+                }
+
+                fn commit(self: *@This(), engine: *Self) void {
+                    for (self.entries.items) |*entry| entry.commit(engine);
+                }
+
+                fn deinit(self: *@This(), ctx: Ctx.Handle, roc_host: *abi.RocHost, metrics: anytype) void {
+                    for (self.entries.items) |*entry| entry.deinit(ctx, roc_host, metrics);
+                    self.entries.deinit(self.allocator);
+                    self.node_ids.deinit(self.allocator);
+                    self.external.deinit(self.allocator);
+                    self.by_state_id.deinit(self.allocator);
+                    self.* = undefined;
+                }
+            };
             engine: *Self,
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
             generation: u64,
             root_count: u64,
             caches: signal_records.PreparedCacheUpdates,
-            state_update: ?PreparedStateUpdate = null,
+            state_update: ?PreparedStateWrites = null,
             pending_task_request_id: ?u64 = null,
             pending_task_token: ?HostSignalToken = null,
             changed_record_ids: []u64,
@@ -15481,7 +15543,7 @@ pub fn Engine(comptime Ctx: type) type {
                 return prepareMany(engine, ctx, roc_host, &owned);
             }
 
-            fn prepareWhenDownstream(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []const HostDirtyStructuralSignal, state_update: ?*const PreparedStateUpdate, cache_overlay: *signal_records.PreparedCacheUpdates) CollectionError!*PreparedStructuralDownstream {
+            fn prepareWhenDownstream(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []const HostDirtyStructuralSignal, state_update: ?*const PreparedStateWrites, cache_overlay: *signal_records.PreparedCacheUpdates) CollectionError!*PreparedStructuralDownstream {
                 const allocator = Ctx.allocator(ctx);
                 var normalized = try PreparedDirtyWhenSet.prepareWhenSubset(engine, allocator, changes);
                 defer normalized.deinit(allocator);
@@ -15521,11 +15583,11 @@ pub fn Engine(comptime Ctx: type) type {
                 return AggregateBranchCollection.prepareWithState(engine, ctx, roc_host, selections, .{}, &.{}, externalStateOf(state_update), cache_overlay);
             }
 
-            /// The value a state dispatch publishes, as the collection seams
-            /// stage it; null for transactions that publish no state.
-            fn externalStateOf(state_update: ?*const PreparedStateUpdate) ?PreparedExternalState {
-                const update = state_update orelse return null;
-                return .{ .state_id = update.state_id, .value = update.provisionalCellConst().value, .cap = update.provisionalCellConst().cap };
+            /// Borrows the complete proposed write set for structural
+            /// collection; empty for transactions that publish no state.
+            fn externalStateOf(state_update: ?*const PreparedStateWrites) []const PreparedExternalState {
+                const update = state_update orelse return &.{};
+                return update.external.items;
             }
 
             fn prepareMany(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owned: *signal_records.OwnedSourceUpdates) CollectionError!?*@This() {
@@ -15768,19 +15830,15 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareState(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, node_id: u64, incoming: HostValue, cap: HostValueCapability) CollectionError!?*@This() {
-                const state_index = engine.stateIndexByNodeId(node_id) orelse {
-                    callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), incoming);
-                    return error.ResourceLimit;
-                };
-                const live = &engine.states.items[state_index];
-                const payload = live.activePayload();
-                assertHostValueCapabilitiesMatch(payload.cell.cap, cap, "prepared state update used the wrong value capability");
-                if (payload.cell.valueEqualsIncoming(ctx, roc_host, incoming, cap)) {
-                    callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), incoming);
-                    engine.recordSignalPrune();
+                return prepareStates(engine, ctx, roc_host, &.{.{ .state_id = node_id, .value = incoming, .cap = cap }});
+            }
+
+            fn prepareStates(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, incoming: []const StateWrite) CollectionError!?*@This() {
+                var state_update = try PreparedStateWrites.prepare(engine, ctx, roc_host, incoming);
+                if (state_update.entries.items.len == 0) {
+                    state_update.deinit(ctx, roc_host, &engine.pending_roc_metrics);
                     return null;
                 }
-                var state_update = PreparedStateUpdate{ .state_index = state_index, .state_id = live.state_id, .ownership = .{ .provisional = HostValueCell.initRetained(incoming, cap, &engine.pending_roc_metrics) } };
                 errdefer state_update.deinit(ctx, roc_host, &engine.pending_roc_metrics);
                 var owned = signal_records.OwnedSourceUpdates.init(Ctx.allocator(ctx), 0) catch return error.OutOfMemory;
                 defer owned.deinit(ctx, roc_host, &engine.pending_roc_metrics);
@@ -15789,7 +15847,7 @@ pub fn Engine(comptime Ctx: type) type {
                 return plan;
             }
 
-            fn prepareRoots(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owned: *signal_records.OwnedSourceUpdates, state_update: ?*PreparedStateUpdate) CollectionError!?*@This() {
+            fn prepareRoots(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owned: *signal_records.OwnedSourceUpdates, state_update: ?*PreparedStateWrites) CollectionError!?*@This() {
                 const allocator = Ctx.allocator(ctx);
                 if (owned.entries.items.len == 0 and state_update == null) return null;
                 const generation = std.math.add(u64, engine.dirty_signal_generation, 1) catch return error.ResourceLimit;
@@ -15826,7 +15884,7 @@ pub fn Engine(comptime Ctx: type) type {
                     return null;
                 }
                 try engine.scratch.dirty_active_records.reserveForGraph(HostSignalRecord, allocator, engine.active_signal_graph.items);
-                const state_node_ids: []const u64 = if (state_update) |update| @as(*const [1]u64, @ptrCast(&update.state_id)) else &.{};
+                const state_node_ids: []const u64 = if (state_update) |update| update.node_ids.items else &.{};
                 const dirty_ids = if (state_update != null)
                     engine.scratchDirtyActiveSignalRecordIdsForSources(ctx, state_node_ids)
                 else
@@ -15835,9 +15893,9 @@ pub fn Engine(comptime Ctx: type) type {
                     for (dirty_ids) |record_id| {
                         const record = engine.active_signal_graph.items[@intCast(record_id)].record;
                         switch (record.payload) {
-                            .ref => |ref_node_id| if (ref_node_id == update.state_id) {
+                            .ref => |ref_node_id| if (update.provisionalCell(ref_node_id)) |cell| {
                                 const evaluation_key = signal_records.EvaluationKey.fromRecord(record);
-                                caches.bindProvisionalValueAssumeCapacity(evaluation_key, update.provisionalCell());
+                                caches.bindProvisionalValueAssumeCapacity(evaluation_key, cell);
                                 caches.rememberResultAssumeCapacity(evaluation_key, generation, true);
                             },
                             else => {},
@@ -15856,7 +15914,7 @@ pub fn Engine(comptime Ctx: type) type {
                     .host_ctx = ctx,
                     .roc_host = roc_host,
                     .generation = generation,
-                    .root_count = if (state_update != null) 1 else @intCast(root_record_ids.items.len),
+                    .root_count = if (state_update) |update| @intCast(update.entries.items.len) else @intCast(root_record_ids.items.len),
                     .caches = caches,
                     .state_update = null,
                     .changed_record_ids = changed,
@@ -16021,13 +16079,43 @@ pub fn Engine(comptime Ctx: type) type {
                 return plan;
             }
 
+            fn retirementDownstream(self: *const @This()) ?*PreparedStructuralDownstream {
+                if (self.composite_structural) |composite| return composite.downstream;
+                if (self.composite_rows) |composite| return composite.downstream;
+                return self.structural_downstream;
+            }
+
+            fn taskRetirementCount(self: *const @This()) usize {
+                const downstream = self.retirementDownstream() orelse return 0;
+                const effects = downstream.effects_retirement orelse return 0;
+                return effects.task_indexes_descending.len;
+            }
+
+            fn retiresScope(self: *const @This(), scope_id: ids.ScopeId) bool {
+                const downstream = self.retirementDownstream() orelse return false;
+                const targets = downstream.targets orelse return false;
+                const retirement = targets.scope_retirement orelse return false;
+                for (retirement.scope_ids) |retired| if (retired == scope_id) return true;
+                return false;
+            }
+
             fn commit(self: *@This()) render.Counts {
+                return self.commitWithPublication({}, struct {
+                    fn publish(_: void) void {}
+                }.publish);
+            }
+
+            // The joined publication is already fully prepared. Run it after
+            // structural retirement (whose task indexes must remain stable)
+            // and before observers or mount commands can start another turn.
+            fn commitWithPublication(self: *@This(), publication: anytype, comptime publish: fn (@TypeOf(publication)) void) render.Counts {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.composite_structural) |composite| {
                     const downstream = composite.downstream;
                     var total = if (downstream.render_splice) |*splice| splice.counts() else render.Counts{};
                     composite.commitRowsTransitionRemovalsEarly();
                     downstream.commitAssumeCapacityWithEarlyAndLate(self, commitSourceCaches, composite, PreparedCompositeStructural.commitLate);
+                    publish(publication);
                     total.addAll(self.engine.runActiveOnChangeInitialCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_on_change_indices));
                     total.addAll(self.engine.runActiveMountCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_mount_indices));
                     total.addAll(self.runPostCommitCommands());
@@ -16044,6 +16132,7 @@ pub fn Engine(comptime Ctx: type) type {
                         }
                     }.apply);
                     var total = counts;
+                    publish(publication);
                     total.addAll(self.engine.runActiveOnChangeInitialCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_on_change_indices));
                     total.addAll(self.engine.runActiveMountCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_mount_indices));
                     total.addAll(self.runPostCommitCommands());
@@ -16071,6 +16160,7 @@ pub fn Engine(comptime Ctx: type) type {
                         }.apply);
                     }
                     var total = counts;
+                    publish(publication);
                     total.addAll(self.engine.runActiveOnChangeInitialCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_on_change_indices));
                     total.addAll(self.engine.runActiveMountCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_mount_indices));
                     total.addAll(self.runPostCommitCommands());
@@ -16092,6 +16182,7 @@ pub fn Engine(comptime Ctx: type) type {
                         self.publication_phase.markHostPublished();
                     }
                     var counts = self.render_splice.?.counts();
+                    publish(publication);
                     counts.addAll(self.runPostCommitCommands());
                     if (comptime enable_runtime_metrics) self.engine.render_metrics.addCommandCounts(counts);
                     return counts;
@@ -16106,6 +16197,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.publication_phase.markHostPublished();
                 }
                 var counts = self.render_splice.?.counts();
+                publish(publication);
                 counts.addAll(self.runPostCommitCommands());
                 if (comptime enable_runtime_metrics) self.engine.render_metrics.addCommandCounts(counts);
                 return counts;
@@ -16311,6 +16403,14 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Performs start task command inside the shared engine while preserving transaction and changed-set invariants.
         pub fn startTaskCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, cmd: erased_calls.StartTaskCmd) render.Counts {
+            return self.tryStartTaskCommand(ctx, roc_host, owner_scope_id, cmd) catch @panic("failed to prepare task start");
+        }
+
+        /// Prepares the request, Loading propagation, and host publication
+        /// before changing live requests. Refusal preserves the prior request
+        /// and source value. A Loading transition that retires the owner emits
+        /// the accepted start and cancellation without leaving a live request.
+        pub fn tryStartTaskCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, cmd: erased_calls.StartTaskCmd) CollectionError!render.Counts {
             const task_token = retained_values.hostSignalTokenFromCallable(cmd.task_token);
             const record = self.activeTaskRecordByToken(task_token) orelse {
                 if (self.activeTaskRecordByName(cmd.task_name.asSlice()) != null) {
@@ -16331,29 +16431,109 @@ pub fn Engine(comptime Ctx: type) type {
             const request = callHostValueToStrWithCapability(ctx, roc_host, cmd.request_read.capability, cmd.request_read.read, request_value);
             defer request.decref(roc_host);
 
-            self.cancelPendingTasksByTaskToken(ctx, task_token);
-            _ = effects_runtime.appendAndStartPendingTask(Ctx, ctx, Ctx.allocator(ctx), &self.pending_tasks, &self.next_task_request_id, self.roc_host.?, owner_scope_id, task_token, cmd.task_name.asSlice(), request.asSlice());
-
-            if (task_payload.reset_on_start) {
+            var pending = try effects_runtime.PreparedPendingTask.prepare(Ctx.allocator(ctx), &self.pending_tasks, self.next_task_request_id, owner_scope_id, task_token, cmd.task_name.asSlice(), request.asSlice());
+            defer pending.deinit(Ctx.allocator(ctx), roc_host);
+            const loading_transaction = if (task_payload.reset_on_start) blk: {
                 const loading = erased_calls.callValueInitThunk(roc_host, task_payload.initial.toAbi());
-                return self.dispatchEffectSourceValue(ctx, roc_host, record, loading);
-            }
+                break :blk try PreparedSourceTransaction.prepare(self, ctx, roc_host, record, loading);
+            } else null;
+            defer if (loading_transaction) |transaction| transaction.deinit();
+            const owner_retired = if (loading_transaction) |transaction| transaction.retiresScope(owner_scope_id) else false;
+            var cancellation_count: usize = 0;
+            for (self.pending_tasks.items) |task| if (task.task_token == task_token) {
+                cancellation_count += 1;
+            };
+            if (loading_transaction) |transaction| cancellation_count = std.math.add(usize, cancellation_count, transaction.taskRetirementCount()) catch return error.ResourceLimit;
+            cancellation_count = std.math.add(usize, cancellation_count, @intFromBool(owner_retired)) catch return error.ResourceLimit;
+            var publication = if (comptime @hasDecl(Ctx, "TaskPublication")) try Ctx.prepareTaskPublication(ctx, pending.task.?.request_id, cmd.task_name.asSlice(), request.asSlice(), cancellation_count) else {};
+            defer if (comptime @hasDecl(Ctx, "TaskPublication")) publication.deinit();
+            const Commit = struct {
+                engine: *Self,
+                ctx: Ctx.Handle,
+                roc_host: *abi.RocHost,
+                pending: *effects_runtime.PreparedPendingTask,
+                publication: *@TypeOf(publication),
+                owner_retired: bool,
 
+                fn publish(state: *@This()) void {
+                    const task = state.pending.task.?;
+                    if (comptime @hasDecl(Ctx, "TaskPublication")) state.publication.beginCommit();
+                    state.engine.cancelPendingTasksByTaskToken(state.ctx, task.task_token);
+                    if (state.owner_retired) {
+                        var retired = state.pending.commitRetired(&state.engine.next_task_request_id);
+                        defer effects_runtime.deinitPendingTask(Ctx.allocator(state.ctx), state.roc_host, &retired);
+                        if (comptime @hasDecl(Ctx, "TaskPublication")) state.publication.commitRetired() else {
+                            Ctx.sink(state.ctx).startTask(retired.request_id, retired.task_name, retired.request);
+                            Ctx.sink(state.ctx).cancelTask(retired.request_id);
+                        }
+                    } else {
+                        const request_id = state.pending.commit(&state.engine.pending_tasks, &state.engine.next_task_request_id);
+                        if (comptime @hasDecl(Ctx, "TaskPublication")) state.publication.commit() else Ctx.sink(state.ctx).startTask(request_id, task.task_name, task.request);
+                    }
+                }
+            };
+            var commit = Commit{ .engine = self, .ctx = ctx, .roc_host = roc_host, .pending = &pending, .publication = &publication, .owner_retired = owner_retired };
+            if (loading_transaction) |transaction| {
+                self.pending_roc_metrics.bump(.dirty_source_roots, 1);
+                return transaction.commitWithPublication(&commit, Commit.publish);
+            }
+            Commit.publish(&commit);
             return .{};
         }
 
         /// Performs update state command inside the shared engine while preserving transaction and changed-set invariants.
         pub fn updateStateCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, cmd: erased_calls.UpdateStateCmd) render.Counts {
-            const binder_token = retained_values.hostSignalTokenFromCallable(cmd.binder);
-            const target_node_id = self.resolveStateCommandTarget(owner_scope_id, binder_token);
-            const state_cap = Ctx.stateCapability(ctx, target_node_id.raw());
-            assertHostValueCapabilitiesMatch(cmd.update.capability, state_cap, "state command value capability did not match its target state");
-
-            return self.dispatchStateValue(ctx, roc_host, target_node_id.raw(), HostValue.fromRaw(cmd.update.value), state_cap);
+            return self.tryUpdateStateCommand(ctx, roc_host, owner_scope_id, cmd) catch @panic("failed to prepare state command transaction");
         }
 
-        /// Runs command using the host semantics and measurement boundaries defined by this module.
+        /// Executes a reusable single-state recipe through the same write-set
+        /// transaction as coordinated updates. The command remains borrowed;
+        /// each attempt materializes a fresh independently owned proposal.
+        pub fn tryUpdateStateCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, cmd: erased_calls.UpdateStateCmd) CollectionError!render.Counts {
+            return self.tryUpdateStateCommands(ctx, roc_host, owner_scope_id, &.{cmd});
+        }
+
+        /// Resolves every destination in the command owner's live scope before
+        /// invoking any value recipe. Duplicate destinations are rejected even
+        /// if their proposals would compare equal. Materialized proposals are
+        /// consumed by one atomic transaction; the reusable commands stay owned
+        /// by the caller and are safe to retry after preparation refusal.
+        pub fn tryUpdateStateCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, commands: []const erased_calls.UpdateStateCmd) CollectionError!render.Counts {
+            const allocator = Ctx.allocator(ctx);
+            const writes = try allocator.alloc(StateWrite, commands.len);
+            defer allocator.free(writes);
+            var destinations: std.AutoHashMapUnmanaged(u64, void) = .empty;
+            defer destinations.deinit(allocator);
+            try destinations.ensureTotalCapacity(allocator, std.math.cast(u32, commands.len) orelse return error.ResourceLimit);
+            for (commands, writes) |cmd, *write| {
+                const binder_token = retained_values.hostSignalTokenFromCallable(cmd.binder);
+                const target_node_id = self.resolveStateCommandTarget(owner_scope_id, binder_token);
+                const state_cap = Ctx.stateCapability(ctx, target_node_id.raw());
+                assertHostValueCapabilitiesMatch(cmd.update.capability, state_cap, "state command value capability did not match its target state");
+                const destination = destinations.getOrPutAssumeCapacity(target_node_id.raw());
+                if (destination.found_existing) return error.InvalidDescriptor;
+                write.* = .{ .state_id = target_node_id.raw(), .cap = state_cap, .value = undefined };
+            }
+            for (commands, writes) |cmd, *write| write.value = erased_calls.callValueInitThunk(roc_host, cmd.update.initial);
+            return self.tryDispatchStateWrites(ctx, roc_host, writes);
+        }
+
+        /// Runs a command at a fatal boundary, including follow-on commands
+        /// after an earlier engine step committed. Unlike tryRunCommand, this
+        /// call cannot unwind a failed preparation to its caller. Native fault
+        /// instrumentation classifies this boundary separately from retryable
+        /// ingress; it does not change command execution or failure policy.
         pub fn runCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, cmd: erased_calls.Cmd) render.Counts {
+            if (comptime @hasDecl(Ctx, "enterFatalCommandBoundary")) Ctx.enterFatalCommandBoundary(ctx);
+            defer if (comptime @hasDecl(Ctx, "leaveFatalCommandBoundary")) Ctx.leaveFatalCommandBoundary(ctx);
+            return self.tryRunCommand(ctx, roc_host, owner_scope_id, cmd) catch @panic("failed to prepare command transaction");
+        }
+
+        /// Runs a command while exposing recoverable state and task-start
+        /// preparation refusal to ingress. Other command kinds retain their
+        /// host-boundary failure policy. Commands remain caller-owned and
+        /// reusable; state-value recipes materialize fresh proposals per attempt.
+        pub fn tryRunCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, cmd: erased_calls.Cmd) CollectionError!render.Counts {
             return switch (cmd.tag) {
                 .Noop => .{},
                 .PushState => blk: {
@@ -16366,9 +16546,10 @@ pub fn Engine(comptime Ctx: type) type {
                     break :blk self.navigateLocationCommand(ctx, roc_host, .replace, locationSnapshotFromCommandPayload(&payload));
                 },
                 .SetStorageText => self.setStorageTextCommand(ctx, roc_host, cmd.payload_set_storage_text()),
-                .StartTask => self.startTaskCommand(ctx, roc_host, owner_scope_id, cmd.payload_start_task()),
+                .StartTask => self.tryStartTaskCommand(ctx, roc_host, owner_scope_id, cmd.payload_start_task()),
                 .SetDocumentTitle => self.setDocumentTitleCommand(ctx, cmd.payload_set_document_title()),
-                .UpdateState => self.updateStateCommand(ctx, roc_host, owner_scope_id, cmd.payload_update_state()),
+                .UpdateState => self.tryUpdateStateCommand(ctx, roc_host, owner_scope_id, cmd.payload_update_state()),
+                .UpdateStates => self.tryUpdateStateCommands(ctx, roc_host, owner_scope_id, cmd.payload_update_states().items()),
             };
         }
 
@@ -16510,10 +16691,6 @@ pub fn Engine(comptime Ctx: type) type {
 
             for (pending_on_change_commands) |pending| {
                 if (pending.scope_id >= self.scopes.items.len or !self.scopes.items[@intCast(pending.scope_id)].lifecycle.isActive()) {
-                    if (pending.cmd.tag == .UpdateState) {
-                        const update = pending.cmd.payload_update_state().update;
-                        callHostValueToUnitWithCapability(ctx, roc_host, update.capability, hv.hostValueCapabilityDrop(update.capability), HostValue.fromRaw(update.value));
-                    }
                     continue;
                 }
                 switch (pending.cmd.tag) {
@@ -16624,13 +16801,15 @@ test "structural event validation rejects descriptors outside seen render stream
     try stream.events.append(allocator, .{
         .elem_id = ids.ElemId.fromRaw(5),
         .binding = .{ .fixed = .click },
-        .binder_token = binder,
-        .target_node_id = ids.NodeId.fromRaw(1),
-        .read_binder_token = binder,
-        .read_node_id = ids.NodeId.fromRaw(1),
         .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
-        .payload_reducer = undefined,
-        .owns_payload_reducer = false,
+        .handler = .{ .reduce = .{
+            .binder_token = binder,
+            .target_node_id = ids.NodeId.fromRaw(1),
+            .read_binder_token = binder,
+            .read_node_id = ids.NodeId.fromRaw(1),
+            .payload_reducer = undefined,
+        } },
+        .owns_handler = false,
     });
 
     const missing = [_]bool{ true, true, false, false, false, false };
@@ -16645,9 +16824,9 @@ const VerifySink = struct {
     /// Stages a complete render-surface reset in the host command sink.
     pub fn reset(_: VerifySink) void {}
     /// Emits the already-decided command that attaches a newly created render node.
-    pub fn appendNode(_: VerifySink, _: ids.ElemId, _: ids.ElemId, _: []const u8) void {}
+    pub fn appendNode(_: VerifySink, _: ids.ElemId, _: ids.ElemId, _: render.NodeShape) void {}
     /// Ensures the host render surface contains the engine-selected node and tag.
-    pub fn ensureNode(_: VerifySink, _: ids.ElemId, _: []const u8) void {}
+    pub fn ensureNode(_: VerifySink, _: ids.ElemId, _: render.NodeShape) void {}
     /// Emits removal of a node whose owning scope has already been disposed by the engine.
     pub fn removeNode(_: VerifySink, _: ids.ElemId) void {}
     /// Publishes the engine-selected child order for one parent.
@@ -16792,6 +16971,7 @@ fn borrowedVerifySignalExprList(items: []const abi.NodeSignalExpr) abi.RocList(a
 fn verifyStaticRoot(attrs: []const abi.NodeAttr, children: []const abi.Elem) abi.Elem {
     return .{
         .payload = .{ .element = .{
+            .namespace = .html,
             .attrs = borrowedVerifyAttrList(attrs),
             .children = borrowedVerifyElemList(children),
             .tag = abi.RocStr.fromSlice("div", undefined),
@@ -16807,6 +16987,7 @@ fn ownedVerifyStaticRoot(roc_host: *abi.RocHost, attrs: []const abi.NodeAttr, ch
     for (children) |child| child.incref(1);
     return .{
         .payload = .{ .element = .{
+            .namespace = .html,
             .attrs = abi.RocList(abi.NodeAttr).fromSlice(attrs, roc_host),
             .children = abi.RocList(abi.Elem).fromSlice(children, roc_host),
             .tag = abi.RocStr.fromSlice("div", roc_host),
@@ -17448,7 +17629,7 @@ test "staged custom attributes perform one indexed lookup per descriptor and rej
     var names: [attr_count][16]u8 = undefined;
     for (&names, 0..) |*name_buffer, index| {
         const name = try std.fmt.bufPrint(name_buffer, "data-{d}", .{index});
-        try collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), .{ .payload = .{ .static_text = .{
+        try collection.appendAttr(&roc_host, ids.ScopeId.fromRaw(0), ids.ElemId.fromRaw(1), .{ .payload = .{ .static_text = .{
             .field = .{ .id = abi_view.node_text_field_custom },
             .name = abi.RocStr.fromSlice(name, undefined),
             .value = abi.RocStr.fromSlice("value", undefined),
@@ -17458,7 +17639,7 @@ test "staged custom attributes perform one indexed lookup per descriptor and rej
     try std.testing.expectEqual(@as(u32, attr_count), collection.prepared_custom_attrs.count());
 
     var unused_signal = std.mem.zeroes(abi.NodeSignalExpr);
-    try std.testing.expectError(error.InvalidDescriptor, collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), .{ .payload = .{ .signal_bool = .{
+    try std.testing.expectError(error.InvalidDescriptor, collection.appendAttr(&roc_host, ids.ScopeId.fromRaw(0), ids.ElemId.fromRaw(1), .{ .payload = .{ .signal_bool = .{
         .field = .{ .id = abi_view.node_bool_field_custom },
         .name = abi.RocStr.fromSlice("data-42", undefined),
         .read = std.mem.zeroes(HostBoolRead),
@@ -18285,22 +18466,24 @@ test "staged fixed event publication is allocation free" {
     const attr = abi.NodeAttr{ .payload = .{ .on = .{
         .kind = .{ .id = @intFromEnum(RenderEventKind.pointer_down) },
         .msg = .{
-            .binder = binder,
-            .read_binder = binder,
             .event_extraction_plan = .{ .bytes = .{ .elements_ptr = @constCast(extraction_bytes.ptr), .length = extraction_bytes.len, .capacity_or_alloc_ptr = extraction_bytes.len << 1 } },
-            .payload_reducer = std.mem.zeroes(HostEventReducer),
+            .handler = .{ .payload = .{ .reduce = .{
+                .binder = binder,
+                .read_binder = binder,
+                .payload_reducer = std.mem.zeroes(HostEventReducer),
+            } }, .tag = .Reduce },
         },
         .name = abi.RocStr.empty(),
         .delivery = .{ .native = false },
         .policy = std.mem.zeroes(abi.NodeEventBindingPolicy),
     } }, .tag = .On };
-    try collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }});
+    try collection.appendAttr(&roc_host, ids.ScopeId.fromRaw(0), ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }});
     fault.configure(1);
     collection.commit();
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
     try std.testing.expectEqual(@as(?usize, 0), stream.elemDescriptorIndex(ids.ElemId.fromRaw(1)).?.events.get(.pointer_down));
-    try std.testing.expectEqual(@as(u64, 9), stream.events.items[0].target_node_id.raw());
+    try std.testing.expectEqual(@as(u64, 9), stream.events.items[0].handler.reduce.target_node_id.raw());
 }
 
 test "staged named event sweeps allocation failures and retries without visibility" {
@@ -18310,10 +18493,12 @@ test "staged named event sweeps allocation failures and retries without visibili
     const attr = abi.NodeAttr{ .payload = .{ .on = .{
         .kind = .{ .id = 0 },
         .msg = .{
-            .binder = binder,
-            .read_binder = binder,
             .event_extraction_plan = .{ .bytes = .{ .elements_ptr = @constCast(extraction_bytes.ptr), .length = extraction_bytes.len, .capacity_or_alloc_ptr = extraction_bytes.len << 1 } },
-            .payload_reducer = std.mem.zeroes(HostEventReducer),
+            .handler = .{ .payload = .{ .reduce = .{
+                .binder = binder,
+                .read_binder = binder,
+                .payload_reducer = std.mem.zeroes(HostEventReducer),
+            } }, .tag = .Reduce },
         },
         .name = abi.RocStr.fromSlice("keydown", undefined),
         .delivery = .{ .native = false },
@@ -18330,7 +18515,7 @@ test "staged named event sweeps allocation failures and retries without visibili
         var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&counter_engine, &counter_ctx, &counter_stream, .{}, .{ .nodes = 1, .attrs = 1, .events = 1, .named_events = 1 }, 1);
         defer collection.deinit();
         counter.configure(null);
-        try collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }});
+        try collection.appendAttr(&roc_host, ids.ScopeId.fromRaw(0), ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }});
     }
     const attempts = counter.attempts;
     counter_stream.deinit(counter_ctx.allocator, &counter_ctx, &roc_host, &counter_engine.pending_roc_metrics);
@@ -18350,19 +18535,19 @@ test "staged named event sweeps allocation failures and retries without visibili
         defer collection.deinit();
 
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }}));
+        try std.testing.expectError(error.OutOfMemory, collection.appendAttr(&roc_host, ids.ScopeId.fromRaw(0), ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }}));
         try std.testing.expectEqual(@as(usize, 0), stream.events.items.len);
         try std.testing.expectEqual(@as(usize, 0), stream.namedEventIndices(ids.ElemId.fromRaw(1)).len);
         try std.testing.expectEqual(engine.pending_roc_metrics.closure_retains, engine.pending_roc_metrics.closure_releases);
 
         fault.configure(null);
-        try collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }});
-        try std.testing.expectError(error.InvalidDescriptor, collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }}));
+        try collection.appendAttr(&roc_host, ids.ScopeId.fromRaw(0), ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }});
+        try std.testing.expectError(error.InvalidDescriptor, collection.appendAttr(&roc_host, ids.ScopeId.fromRaw(0), ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }}));
         collection.commit();
         try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
         try std.testing.expectEqualSlices(usize, &.{0}, stream.namedEventIndices(ids.ElemId.fromRaw(1)));
         try std.testing.expectEqualStrings("keydown", stream.events.items[0].named().?.name);
-        try std.testing.expectEqual(@as(u64, 9), stream.events.items[0].target_node_id.raw());
+        try std.testing.expectEqual(@as(u64, 9), stream.events.items[0].handler.reduce.target_node_id.raw());
     }
 }
 
@@ -18377,10 +18562,12 @@ test "transactional component and state root sweeps failures and publishes initi
     const named_attr = abi.NodeAttr{ .payload = .{ .on = .{
         .kind = .{ .id = 0 },
         .msg = .{
-            .binder = callable,
-            .read_binder = callable,
             .event_extraction_plan = .{ .bytes = .{ .elements_ptr = @constCast(extraction_bytes.ptr), .length = extraction_bytes.len, .capacity_or_alloc_ptr = extraction_bytes.len << 1 } },
-            .payload_reducer = std.mem.zeroes(HostEventReducer),
+            .handler = .{ .payload = .{ .reduce = .{
+                .binder = callable,
+                .read_binder = callable,
+                .payload_reducer = std.mem.zeroes(HostEventReducer),
+            } }, .tag = .Reduce },
         },
         .name = abi.RocStr.fromSlice("keydown", undefined),
         .delivery = .{ .native = false },
@@ -18458,10 +18645,12 @@ test "prepared root collection aborts every allocation point and retries on the 
     const named_attr = abi.NodeAttr{ .payload = .{ .on = .{
         .kind = .{ .id = 0 },
         .msg = .{
-            .binder = callable,
-            .read_binder = callable,
             .event_extraction_plan = .{ .bytes = .{ .elements_ptr = @constCast(extraction_bytes.ptr), .length = extraction_bytes.len, .capacity_or_alloc_ptr = extraction_bytes.len << 1 } },
-            .payload_reducer = std.mem.zeroes(HostEventReducer),
+            .handler = .{ .payload = .{ .reduce = .{
+                .binder = callable,
+                .read_binder = callable,
+                .payload_reducer = std.mem.zeroes(HostEventReducer),
+            } }, .tag = .Reduce },
         },
         .name = abi.RocStr.fromSlice("keydown", undefined),
         .delivery = .{ .native = false },
@@ -18546,10 +18735,12 @@ test "prepared initial root downstream sweeps failures and commits allocation fr
     const event = abi.NodeAttr{ .payload = .{ .on = .{
         .kind = .{ .id = 0 },
         .msg = .{
-            .binder = callable,
-            .read_binder = callable,
             .event_extraction_plan = .{ .bytes = .{ .elements_ptr = @constCast(extraction_bytes.ptr), .length = extraction_bytes.len, .capacity_or_alloc_ptr = extraction_bytes.len << 1 } },
-            .payload_reducer = std.mem.zeroes(HostEventReducer),
+            .handler = .{ .payload = .{ .reduce = .{
+                .binder = callable,
+                .read_binder = callable,
+                .payload_reducer = std.mem.zeroes(HostEventReducer),
+            } }, .tag = .Reduce },
         },
         .name = abi.RocStr.fromSlice("keydown", undefined),
         .delivery = .{ .native = false },
@@ -19066,8 +19257,8 @@ test "branch replacement preparation leaves the active branch unpublished" {
             engine.rebuildActiveSignalGraphFromStream(&ctx, &engine.active_stream);
             engine.resetRenderTree(&ctx);
             engine.appendRenderNode(&ctx, ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(0), "div");
-            engine.appendRenderNode(&ctx, ids.ElemId.fromRaw(2), ids.ElemId.fromRaw(1), "text");
-            engine.appendRenderNode(&ctx, ids.ElemId.fromRaw(3), ids.ElemId.fromRaw(1), "text");
+            engine.appendRenderNodeShape(&ctx, ids.ElemId.fromRaw(2), ids.ElemId.fromRaw(1), .text);
+            engine.appendRenderNodeShape(&ctx, ids.ElemId.fromRaw(3), ids.ElemId.fromRaw(1), .text);
             const retired_row_handle = try engine.row_handle_registry.insert(ctx.allocator, {});
             try engine.committed_row_bindings.entries.put(ctx.allocator, retired_row_handle, .{ .generation_id = each_generation.GenerationId.fromRaw(1), .item_slot = 1 });
             const retired_row_scope_id = engine.createEachRowScope(&ctx, ids.ScopeId.fromRaw(1), ids.SiteOrdinal.fromRaw(77), 55, retired_row_handle);

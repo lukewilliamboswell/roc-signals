@@ -200,6 +200,16 @@ pub fn callHostValueToCmdWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc
     return erased_calls.callErasedHostValueToCmd(roc_host, callable, value);
 }
 
+/// Evaluates a pure action builder inside the capabilities of its declared
+/// read snapshot and event payload. Both arguments remain borrowed; the
+/// returned command belongs to the caller and may be discarded before retry.
+pub fn callHostValueHostValueToCmdWithCapabilities(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, read_cap: HostValueCapability, payload_cap: HostValueCapability, callable: abi.RocErasedCallable, snapshot: HostValue, payload: HostValue) erased_calls.Cmd {
+    const caps = [_]HostValueCapability{ read_cap, payload_cap };
+    pushCapabilities(Ctx, ctx, &caps);
+    defer popCapabilities(Ctx, ctx);
+    return erased_calls.callErasedHostValueHostValueToCmd(roc_host, callable, snapshot, payload);
+}
+
 /// Invokes the app-compiled callable inside capability frames for every erased value argument.
 pub fn callHostValueToStrWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) abi.RocStr {
     const caps = [_]HostValueCapability{cap};

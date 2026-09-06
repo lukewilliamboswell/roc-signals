@@ -53,6 +53,81 @@ const RenderEventKind = render.EventKind;
 const CommandCounts = render.Counts;
 const HostScopeBranch = scope_tree.Branch;
 
+const NativeTaskPublication = struct {
+    host: *HostEnv,
+    record: ?NativeTaskRecord,
+
+    fn prepare(host: *HostEnv, request_id: ids.TaskRequestId, task_name: []const u8, cancellation_count: usize) std.mem.Allocator.Error!NativeTaskPublication {
+        const allocator = host.hostAllocator();
+        const name = try allocator.dupe(u8, task_name);
+        errdefer allocator.free(name);
+        try host.started_tasks.ensureUnusedCapacity(allocator, 1);
+        try host.canceled_tasks.ensureUnusedCapacity(allocator, cancellation_count);
+        return .{ .host = host, .record = .{ .request_id = request_id, .name = name } };
+    }
+
+    /// Publishes the prepared observation without allocating. The live task
+    /// table takes ownership of the copied name until resolution or teardown.
+    pub fn commit(self: *NativeTaskPublication) void {
+        self.host.started_tasks.appendAssumeCapacity(self.record orelse @panic("task publication committed twice"));
+        self.record = null;
+    }
+
+    /// Native observations have no wire seal to reopen; all storage remains
+    /// reserved while the shared engine commits the Loading transition.
+    pub fn beginCommit(_: *NativeTaskPublication) void {}
+
+    /// Records the accepted start and immediate cancellation selected when
+    /// the same prepared transition disposes the request's owning scope.
+    pub fn commitRetired(self: *NativeTaskPublication) void {
+        const request_id = (self.record orelse @panic("task publication already completed")).request_id;
+        self.commit();
+        self.host.recordCanceledTask(request_id);
+    }
+
+    /// Releases an unpublished name without recording a task start or cancel.
+    pub fn deinit(self: *NativeTaskPublication) void {
+        if (self.record) |record| self.host.hostAllocator().free(record.name);
+        self.record = null;
+    }
+};
+
+test "native task publication refuses without changing old requests and commits without allocation" {
+    // Name copy, started-table storage, and cancellation-table storage are
+    // independent refusal points when the observation tables are empty.
+    for (1..4) |failure_number| {
+        var host = HostEnv.init();
+        defer {
+            host.deinitTaskRecords();
+            std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("task publication leaked");
+        }
+        host.configureAllocationFailure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), "load", 1));
+        try std.testing.expectEqual(@as(usize, 1), host.allocation_fault.?.induced_failures);
+        try std.testing.expectEqual(@as(usize, 0), host.started_tasks.items.len);
+        try std.testing.expectEqual(@as(usize, 0), host.canceled_tasks.items.len);
+        host.configureAllocationFailure(null);
+        host.recordStartedTask(ids.TaskRequestId.fromRaw(10), "old");
+        var abandoned = try NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), "new", 1);
+        host.configureAllocationFailure(1);
+        abandoned.deinit();
+        try std.testing.expectEqualStrings("old", host.started_tasks.items[0].name);
+        try std.testing.expectEqual(@as(usize, 0), host.canceled_tasks.items.len);
+        try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
+        host.configureAllocationFailure(null);
+        var replacement = try NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), "new", 1);
+        defer replacement.deinit();
+        host.configureAllocationFailure(1);
+        host.recordCanceledTask(ids.TaskRequestId.fromRaw(10));
+        replacement.commit();
+        try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
+        try std.testing.expectEqual(@as(usize, 1), host.started_tasks.items.len);
+        try std.testing.expectEqualStrings("new", host.started_tasks.items[0].name);
+        try std.testing.expectEqual(@as(usize, 1), host.canceled_tasks.items.len);
+        try std.testing.expectEqualStrings("old", host.canceled_tasks.items[0].name);
+    }
+}
+
 const NativeRenderPublication = struct {
     /// `OutOfMemory`: the host allocator refused; `ResourceLimit`: a count exceeded its arithmetic bound;
     /// `InvalidRenderTopology`: the splice names a DOM node the simulated tree does not hold.
@@ -175,9 +250,13 @@ const NativeRenderPublication = struct {
         for (splice.removals.items) |entry| sim_dom.deactivateRemovedNode(allocator, dom.node(entry.elem_id.raw()) orelse return error.InvalidRenderTopology);
         for (splice.creations.items) |entry| {
             const node = dom.node(entry.elem_id.raw()) orelse return error.InvalidRenderTopology;
-            const tag = try allocator.dupe(u8, entry.tag);
+            const tag = try allocator.dupe(u8, entry.shape.displayName());
             node.deinit(allocator);
             node.* = sim_dom.Element.init(entry.elem_id.raw(), tag);
+            node.namespace = switch (entry.shape) {
+                .text => null,
+                .element => |element| element.namespace,
+            };
         }
         for (splice.children.items) |entry| {
             const parent = dom.node(entry.parent_elem_id.raw()) orelse return error.InvalidRenderTopology;
@@ -267,6 +346,28 @@ const NativeCtx = struct {
     pub const Metrics = RuntimeMetrics;
     pub const Sink = render_sink.DomSink(HostEnv);
     pub const RenderPublication = NativeRenderPublication;
+    pub const TaskPublication = NativeTaskPublication;
+
+    /// Marks an infallible command call for the recoverable-only native sweep.
+    /// Actual exhaustion still terminates the process. Linked-Wasm fault tests
+    /// independently inject these failures and verify fatal containment.
+    pub fn enterFatalCommandBoundary(ctx: Handle) void {
+        ctx.fatal_command_depth += 1;
+    }
+
+    /// Restores the enclosing allocation classification after a command returns.
+    /// Nesting keeps a follow-on command inside its outer fatal boundary.
+    pub fn leaveFatalCommandBoundary(ctx: Handle) void {
+        std.debug.assert(ctx.fatal_command_depth > 0);
+        ctx.fatal_command_depth -= 1;
+    }
+
+    /// Reserves task observations before the engine replaces live requests.
+    /// Cancellation reuses each old request's owned name; only the new start
+    /// needs a copy. No observation is appended during preparation.
+    pub fn prepareTaskPublication(ctx: Handle, request_id: ids.TaskRequestId, task_name: []const u8, _: []const u8, cancellation_count: usize) std.mem.Allocator.Error!TaskPublication {
+        return TaskPublication.prepare(ctx, request_id, task_name, cancellation_count);
+    }
 
     /// Creates the host's zeroed metric accumulator for a new engine operation.
     pub fn zeroMetrics() Metrics {
@@ -453,6 +554,7 @@ const AllocationSweep = struct {
     attempts: usize = 0,
     selected_seen: bool = false,
     skipped_roc: bool = false,
+    skipped_fatal_command: bool = false,
     refusal_observed: bool = false,
     origin: AllocationOrigin = .host,
 };
@@ -714,6 +816,7 @@ const HostEnv = struct {
     allocation_fault: ?FaultAllocator = null,
     engine_allocator_override: ?std.mem.Allocator = null,
     allocation_sweep: AllocationSweep = .{},
+    fatal_command_depth: usize = 0,
     engine: HostEngine = .{},
     test_state: TestState,
     roc_allocations: roc_alloc_ledger.Ledger = .{},
@@ -784,13 +887,18 @@ const HostEnv = struct {
             sweep.fail_on_allocation = null;
             return false;
         }
+        if (self.fatal_command_depth != 0) {
+            sweep.skipped_fatal_command = true;
+            sweep.fail_on_allocation = null;
+            return false;
+        }
         sweep.fail_on_allocation = null;
         return true;
     }
 
     fn recoverSelectedOutOfMemory(self: *HostEnv) bool {
         const sweep = &self.allocation_sweep;
-        if (!sweep.selected_seen or sweep.skipped_roc or sweep.refusal_observed) return false;
+        if (!sweep.selected_seen or sweep.skipped_roc or sweep.skipped_fatal_command or sweep.refusal_observed) return false;
         sweep.refusal_observed = true;
         sweep.fail_on_allocation = null;
         return true;
@@ -926,13 +1034,13 @@ const HostEnv = struct {
     }
 
     /// Adapts the shared engine's append node command to this host without re-deciding reactive meaning.
-    pub fn sinkAppendNode(self: *HostEnv, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, tag: []const u8) void {
-        appendDomNode(self, elem_id, parent_elem_id, tag);
+    pub fn sinkAppendNode(self: *HostEnv, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, shape: render.NodeShape) void {
+        appendDomNode(self, elem_id, parent_elem_id, shape);
     }
 
     /// Adapts the shared engine's ensure node command to this host without re-deciding reactive meaning.
-    pub fn sinkEnsureNode(self: *HostEnv, elem_id: ids.ElemId, tag: []const u8) void {
-        ensureDomNode(self, elem_id, tag);
+    pub fn sinkEnsureNode(self: *HostEnv, elem_id: ids.ElemId, shape: render.NodeShape) void {
+        ensureDomNode(self, elem_id, shape);
     }
 
     /// Adapts the shared engine's remove node command to this host without re-deciding reactive meaning.
@@ -1445,7 +1553,7 @@ const HostEnv = struct {
     }
 
     fn clearActiveEvents(self: *HostEnv) void {
-        self.engine.clearActiveEvents() catch |err| {
+        self.engine.clearActiveEvents(self) catch |err| {
             failRocHostRequiredError(err, "active event table cannot release retained payloads without a Roc host");
         };
     }
@@ -2329,16 +2437,20 @@ fn clearRenderBoolField(host: *HostEnv, elem_id: ids.ElemId, field: RenderBoolFi
     }
 }
 
-fn appendDetachedDomNode(host: *HostEnv, elem_id: ids.ElemId, tag: []const u8) void {
+fn appendDetachedDomNode(host: *HostEnv, elem_id: ids.ElemId, shape: render.NodeShape) void {
     if (elem_id.raw() < host.dom_elements.items.len and host.dom_elements.items[elem_id.index()].active) {
         failHost("descriptor stream attempted to reuse an active elem id");
     }
-    sim_dom.appendDetached(host.hostAllocator(), &host.dom_elements, elem_id.raw(), tag);
+    sim_dom.appendDetached(host.hostAllocator(), &host.dom_elements, elem_id.raw(), shape.displayName());
+    host.dom_elements.items[elem_id.index()].namespace = switch (shape) {
+        .text => null,
+        .element => |element| element.namespace,
+    };
     host.engine.next_elem_id = @max(host.engine.next_elem_id, elem_id.raw() + 1);
 }
 
-fn appendDomNode(host: *HostEnv, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, tag: []const u8) void {
-    appendDetachedDomNode(host, elem_id, tag);
+fn appendDomNode(host: *HostEnv, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, shape: render.NodeShape) void {
+    appendDetachedDomNode(host, elem_id, shape);
     const parent = domElementById(host, parent_elem_id);
     const child = domElementById(host, elem_id);
     sim_dom.appendChild(host.hostAllocator(), parent, child);
@@ -2348,9 +2460,9 @@ fn findDomChildIndex(elem: *const DomElement, child_id: u64) ?usize {
     return sim_dom.childIndex(elem, child_id);
 }
 
-fn ensureDomNode(host: *HostEnv, elem_id: ids.ElemId, tag: []const u8) void {
+fn ensureDomNode(host: *HostEnv, elem_id: ids.ElemId, shape: render.NodeShape) void {
     if (elem_id == ids.root_elem) failHost("render descriptor cannot claim the host DOM root id");
-    appendDetachedDomNode(host, elem_id, tag);
+    appendDetachedDomNode(host, elem_id, shape);
 }
 
 fn propagateDirtyActiveSignals(host: *HostEnv, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, dirty_generation: u64) []const u64 {
@@ -2372,6 +2484,15 @@ fn updateDirtySignalCache(host: *HostEnv, roc_host: *abi.RocHost, cache_slot: *H
 }
 
 fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
+    return tryResolvePendingTask(host, roc_host, name, payload_text, failed) catch |err| {
+        if (err != error.OutOfMemory or !host.recoverSelectedOutOfMemory()) failPreparedStateDispatch(err);
+        // The refused transaction consumed its proposal but retained the
+        // pending request. Re-decode the borrowed settlement for a fresh owner.
+        return tryResolvePendingTask(host, roc_host, name, payload_text, failed) catch |retry_err| failPreparedStateDispatch(retry_err);
+    };
+}
+
+fn tryResolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, payload_text: []const u8, failed: bool) HostEngine.CollectionError!CommandCounts {
     const pending_index = host.engine.pendingTaskIndexByName(name) orelse failHost("fake task result had no matching pending request");
     const pending = host.engine.pending_tasks.items[pending_index];
 
@@ -2391,7 +2512,7 @@ fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, 
     else
         callHostValueToHostValueWithCapability(host, roc_host, task_payload.payload_cap, task_payload.done.toAbi(), payload_value);
     host.assertHostValueTakenAfter(payload_value, payload_take_epoch);
-    return host.engine.dispatchTaskSourceValue(host, roc_host, pending.request_id, record, next);
+    return host.engine.tryDispatchTaskSourceValue(host, roc_host, pending.request_id, record, next);
 }
 
 fn resolveStalePendingTask(host: *HostEnv, name: []const u8, _: []const u8, _: bool) CommandCounts {
@@ -2724,7 +2845,8 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: i
 
     const desc = hostEventById(host, event_id);
     validateBoundaryPayloadDescriptor(desc, payload_descriptor);
-    const payload_cap = desc.payload_reducer.capability;
+    const payload_cap = signals.retained_values.retainHostValueCapability(desc.handler.payloadCapability(), &host.engine.pending_roc_metrics);
+    defer signals.retained_values.releaseHostValueCapability(payload_cap, roc_host, &host.engine.pending_roc_metrics);
     host.setHostValueCapability(payload, payload_cap);
     defer {
         host.debug_phase = .event_drop_payload;
@@ -2732,15 +2854,32 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: i
     }
 
     const start_ns = benchmark.nowNs();
-    const state_cap = host.stateCapability(desc.target_node_id);
+    if (desc.handler == .action) {
+        const cmd = host.engine.evaluateEventAction(host, roc_host, desc, payload);
+        defer cmd.decref(roc_host);
+        if (stats) |s| s.dispatch_roc_ns += benchmark.nowNs() - start_ns;
+        const apply_start_ns = benchmark.nowNs();
+        const counts = host.engine.tryRunCommand(host, roc_host, desc.handler.action.scope_id, cmd) catch |err| retry: {
+            if (err != error.OutOfMemory or !host.recoverSelectedOutOfMemory()) failPreparedStateDispatch(err);
+            break :retry host.engine.tryRunCommand(host, roc_host, desc.handler.action.scope_id, cmd) catch |retry_err| failPreparedStateDispatch(retry_err);
+        };
+        if (stats) |s| {
+            s.dispatch_apply_ns += benchmark.nowNs() - apply_start_ns;
+            s.commands.addAll(counts);
+            s.actions += 1;
+        }
+        return;
+    }
+    const target_node_id = desc.handler.reduce.target_node_id;
+    const state_cap = host.stateCapability(target_node_id);
     const next = host.engine.evaluateEventReducer(host, roc_host, desc, payload);
     if (stats) |s| s.dispatch_roc_ns += benchmark.nowNs() - start_ns;
 
     const apply_start_ns = benchmark.nowNs();
-    const counts = host.engine.tryDispatchStateValue(host, roc_host, desc.target_node_id.raw(), next, state_cap) catch |err| retry: {
+    const counts = host.engine.tryDispatchStateValue(host, roc_host, target_node_id.raw(), next, state_cap) catch |err| retry: {
         if (err != error.OutOfMemory or !host.recoverSelectedOutOfMemory()) failPreparedStateDispatch(err);
         const retry_next = host.engine.evaluateEventReducer(host, roc_host, desc, payload);
-        break :retry host.engine.tryDispatchStateValue(host, roc_host, desc.target_node_id.raw(), retry_next, state_cap) catch |retry_err| failPreparedStateDispatch(retry_err);
+        break :retry host.engine.tryDispatchStateValue(host, roc_host, target_node_id.raw(), retry_next, state_cap) catch |retry_err| failPreparedStateDispatch(retry_err);
     };
     if (stats) |s| {
         s.dispatch_apply_ns += benchmark.nowNs() - apply_start_ns;
@@ -3676,6 +3815,8 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
             .allocation = allocation,
             .outcome = if (host_env.allocation_sweep.skipped_roc)
                 "skipped_roc"
+            else if (host_env.allocation_sweep.skipped_fatal_command)
+                "skipped_fatal_command"
             else if (host_env.allocation_sweep.refusal_observed)
                 "refused_then_retried"
             else
@@ -3957,6 +4098,32 @@ test "signals host allocation ledger tracks exact returned pointers" {
     try std.testing.expectEqual(@as(u64, 4), host.dealloc_count);
     try std.testing.expectEqual(@as(u64, 4), host.engine.pending_roc_metrics.allocs_this_event);
     try std.testing.expectEqual(@as(u64, 4), host.engine.pending_roc_metrics.deallocs_this_event);
+}
+
+test "recoverable sweep distinguishes nested fatal commands without claiming a retry" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.allocation_sweep.tracking = false;
+        host.deinit();
+        std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("fault classification leaked");
+    }
+    host.allocation_sweep = .{ .tracking = true, .fail_on_allocation = 1 };
+    NativeCtx.enterFatalCommandBoundary(&host);
+    NativeCtx.enterFatalCommandBoundary(&host);
+    NativeCtx.leaveFatalCommandBoundary(&host);
+    try std.testing.expect(!host.shouldFailHostAllocation(@returnAddress()));
+    try std.testing.expect(host.allocation_sweep.skipped_fatal_command);
+    try std.testing.expect(!host.allocation_sweep.skipped_roc);
+    try std.testing.expect(!host.recoverSelectedOutOfMemory());
+    NativeCtx.leaveFatalCommandBoundary(&host);
+
+    host.allocation_sweep = .{ .tracking = true, .fail_on_allocation = 1 };
+    try std.testing.expect(host.shouldFailHostAllocation(@returnAddress()));
+    try std.testing.expect(!host.allocation_sweep.skipped_fatal_command);
+    try std.testing.expect(host.recoverSelectedOutOfMemory());
+    try std.testing.expect(!host.recoverSelectedOutOfMemory());
 }
 
 test "native host allocation injection remains recoverable outside Roc ABI calls" {
@@ -6449,6 +6616,163 @@ test "signals host evaluates map2 through bind and dirty propagation" {
 
     try std.testing.expectEqual(@as(u64, 1), right_counts.set_text);
     try std.testing.expectEqualStrings("32", host.dom_elements.items[1].text.?);
+}
+
+test "coordinated state writes share one pruned graph wave and sweep every refusal" {
+    const Runner = struct {
+        fn run(failure_number: ?usize, reverse: bool) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.engine_allocator_override = null;
+                host.deinit();
+                std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("coordinated write leaked");
+            }
+            const left_token = newTestBinderToken(&roc_host);
+            const right_token = newTestBinderToken(&roc_host);
+            const sum = testNodeMap2Expr(&roc_host, testNodeRefExpr(left_token), testNodeRefExpr(right_token));
+            const inner = testNodeStateWithTokenAndInitial(&roc_host, right_token, testHostValueI64(20), testNodeI64TextSignal(&roc_host, sum));
+            const root = testNodeStateWithTokenAndInitial(&roc_host, left_token, testHostValueI64(10), inner);
+            defer root.decref(&roc_host);
+            _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            const left = host.engine.active_stream.scope_sites.items[0].node_id;
+            const right = host.engine.active_stream.scope_sites.items[1].node_id;
+            const left_index = host.engine.stateIndexByNodeId(left.raw()).?;
+            const right_index = host.engine.stateIndexByNodeId(right.raw()).?;
+            const version = host.engine.states.items[left_index].activePayloadConst().version;
+            const right_version = host.engine.states.items[right_index].activePayloadConst().version;
+            const generation = host.engine.dirty_signal_generation;
+            var writes = [_]engine.StateWrite{
+                .{ .state_id = left.raw(), .value = testHostValueI64(11), .cap = host.stateCapability(left) },
+                .{ .state_id = right.raw(), .value = testHostValueI64(19), .cap = host.stateCapability(right) },
+            };
+            if (reverse) std.mem.swap(engine.StateWrite, &writes[0], &writes[1]);
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const allocations = host.roc_allocations.snapshot();
+            var derived_before = host.engine.pending_roc_metrics.derived_calls_into_roc;
+            var counts = host.engine.tryDispatchStateWrites(&host, &roc_host, &writes) catch |err| retry: {
+                try std.testing.expect(failure_number != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+                try std.testing.expectEqual(version, host.engine.states.items[left_index].activePayloadConst().version);
+                try std.testing.expectEqual(right_version, host.engine.states.items[right_index].activePayloadConst().version);
+                try std.testing.expectEqual(generation, host.engine.dirty_signal_generation);
+                try std.testing.expectEqualStrings("30", host.dom_elements.items[1].text.?);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations));
+                fault.configure(null);
+                derived_before = host.engine.pending_roc_metrics.derived_calls_into_roc;
+                // Construct independently owned proposals for retry rather
+                // than reusing the handles consumed by the refused attempt.
+                writes[0].value = testHostValueI64(if (reverse) 19 else 11);
+                writes[1].value = testHostValueI64(if (reverse) 11 else 19);
+                break :retry try host.engine.tryDispatchStateWrites(&host, &roc_host, &writes);
+            };
+            const attempts = fault.attempts;
+            try std.testing.expectEqual(version + 1, host.engine.states.items[left_index].activePayloadConst().version);
+            try std.testing.expectEqual(right_version + 1, host.engine.states.items[right_index].activePayloadConst().version);
+            try std.testing.expectEqual(generation + 1, host.engine.dirty_signal_generation);
+            try std.testing.expectEqual(derived_before + 1, host.engine.pending_roc_metrics.derived_calls_into_roc);
+            try std.testing.expectEqual(@as(u64, 0), counts.set_text);
+            try std.testing.expectEqualStrings("30", host.dom_elements.items[1].text.?);
+
+            // An unchanged member is pruned, but the other member still
+            // propagates. Duplicate destinations are invalid even when both
+            // proposed values equal the current value.
+            const left_write = engine.StateWrite{ .state_id = left.raw(), .value = testHostValueI64(11), .cap = host.stateCapability(left) };
+            counts = try host.engine.tryDispatchStateWrites(&host, &roc_host, &.{ left_write, .{ .state_id = right.raw(), .value = testHostValueI64(20), .cap = host.stateCapability(right) } });
+            try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+            try std.testing.expectEqualStrings("31", host.dom_elements.items[1].text.?);
+            try std.testing.expectEqual(version + 1, host.engine.states.items[left_index].activePayloadConst().version);
+            try std.testing.expectEqual(right_version + 2, host.engine.states.items[right_index].activePayloadConst().version);
+            try std.testing.expectError(error.InvalidDescriptor, host.engine.tryDispatchStateWrites(&host, &roc_host, &.{
+                .{ .state_id = left.raw(), .value = testHostValueI64(11), .cap = host.stateCapability(left) },
+                .{ .state_id = left.raw(), .value = testHostValueI64(11), .cap = host.stateCapability(left) },
+            }));
+            try std.testing.expectEqualStrings("31", host.dom_elements.items[1].text.?);
+            counts = try host.engine.tryDispatchStateWrites(&host, &roc_host, &.{});
+            try std.testing.expectEqual(@as(u64, 0), counts.total);
+            return attempts;
+        }
+    };
+    for ([_]bool{ false, true }) |reverse| {
+        const attempts = try Runner.run(null, reverse);
+        try std.testing.expect(attempts > 0);
+        for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number, reverse);
+    }
+}
+
+test "coordinated state writes give new branches the complete proposed snapshot" {
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.engine_allocator_override = null;
+                host.deinit();
+                std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("coordinated branch write leaked");
+            }
+            const visible_token = newTestBinderToken(&roc_host);
+            const value_token = newTestBinderToken(&roc_host);
+            const visible_cap = testHostValueCapability(&roc_host);
+            const value_cap = testHostValueCapability(&roc_host);
+            const text = abi.Elem{ .payload = .{ .text_signal = .{
+                .read = testI64TextReadHandle(&roc_host, value_cap),
+                .signal = boxTestNodeSignalExpr(&roc_host, testNodeRefExpr(value_token)),
+            } }, .tag = .TextSignal };
+            const branch = testNodeWhenReadingState(&roc_host, visible_token, visible_cap, text, testNodeText(&roc_host, "off"));
+            const inner = testNodeStateWithTokenAndInitialCapability(&roc_host, value_token, testHostValueI64(7), branch, value_cap);
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, visible_token, testHostValueBool(false), inner, visible_cap);
+            defer root.decref(&roc_host);
+            _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            const visible = host.engine.active_stream.scope_sites.items[0].node_id;
+            const value = host.engine.active_stream.scope_sites.items[1].node_id;
+            const generation = host.engine.dirty_signal_generation;
+            var writes = [_]engine.StateWrite{
+                .{ .state_id = visible.raw(), .value = testHostValueBool(true), .cap = host.stateCapability(visible) },
+                .{ .state_id = value.raw(), .value = testHostValueI64(42), .cap = host.stateCapability(value) },
+            };
+            const allocations = host.roc_allocations.snapshot();
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            _ = host.engine.tryDispatchStateWrites(&host, &roc_host, &writes) catch |err| retry: {
+                try std.testing.expect(failure_number != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+                try std.testing.expectEqual(generation, host.engine.dirty_signal_generation);
+                try std.testing.expect(activeTextElementId(&host, "off") != null);
+                try std.testing.expect(activeTextElementId(&host, "42") == null);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations));
+                fault.configure(null);
+                writes[0].value = testHostValueBool(true);
+                writes[1].value = testHostValueI64(42);
+                break :retry try host.engine.tryDispatchStateWrites(&host, &roc_host, &writes);
+            };
+            const attempts = fault.attempts;
+            try std.testing.expectEqual(generation + 1, host.engine.dirty_signal_generation);
+            try std.testing.expect(activeTextElementId(&host, "off") == null);
+            try std.testing.expect(activeTextElementId(&host, "42") != null);
+            // Retire and recreate the reader: neither collection may recover
+            // an old value from the formerly active Ref record or state cell.
+            _ = try host.engine.tryDispatchStateWrites(&host, &roc_host, &.{
+                .{ .state_id = value.raw(), .value = testHostValueI64(43), .cap = host.stateCapability(value) },
+                .{ .state_id = visible.raw(), .value = testHostValueBool(false), .cap = host.stateCapability(visible) },
+            });
+            _ = try host.engine.tryDispatchStateWrites(&host, &roc_host, &.{
+                .{ .state_id = visible.raw(), .value = testHostValueBool(true), .cap = host.stateCapability(visible) },
+                .{ .state_id = value.raw(), .value = testHostValueI64(44), .cap = host.stateCapability(value) },
+            });
+            try std.testing.expect(activeTextElementId(&host, "44") != null);
+            return attempts;
+        }
+    };
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts > 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "signals host marks dirty structural sources for structural patching" {
@@ -9956,14 +10280,16 @@ fn testNodeEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind, binder_token
             .on = .{
                 .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
-                    .binder = cloneTestBinderToken(binder_token),
-                    .read_binder = cloneTestBinderToken(binder_token),
                     .event_extraction_plan = testEventExtractionPlan(roc_host, extraction_plan),
-                    .payload_reducer = .{
-                        .capability = payload_cap,
-                        .read_capability = hv.retainHostValueCapability(payload_cap),
-                        .transform = transform,
-                    },
+                    .handler = .{ .payload = .{ .reduce = .{
+                        .binder = cloneTestBinderToken(binder_token),
+                        .read_binder = cloneTestBinderToken(binder_token),
+                        .payload_reducer = .{
+                            .capability = payload_cap,
+                            .read_capability = hv.retainHostValueCapability(payload_cap),
+                            .transform = transform,
+                        },
+                    } }, .tag = .Reduce },
                 },
                 .name = RocStr.empty(),
                 .delivery = testNodeEventDelivery(false),
@@ -9988,14 +10314,16 @@ fn testNodeUnitIncrementEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind,
             .on = .{
                 .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
-                    .binder = cloneTestBinderToken(binder_token),
-                    .read_binder = cloneTestBinderToken(binder_token),
                     .event_extraction_plan = testEventExtractionPlan(roc_host, .none),
-                    .payload_reducer = .{
-                        .capability = payload_cap,
-                        .read_capability = hv.retainHostValueCapability(payload_cap),
-                        .transform = transform,
-                    },
+                    .handler = .{ .payload = .{ .reduce = .{
+                        .binder = cloneTestBinderToken(binder_token),
+                        .read_binder = cloneTestBinderToken(binder_token),
+                        .payload_reducer = .{
+                            .capability = payload_cap,
+                            .read_capability = hv.retainHostValueCapability(payload_cap),
+                            .transform = transform,
+                        },
+                    } }, .tag = .Reduce },
                 },
                 .name = RocStr.empty(),
                 .delivery = testNodeEventDelivery(false),
@@ -10010,6 +10338,7 @@ fn testElementWith(roc_host: *abi.RocHost, tag: []const u8, attrs: []const abi.N
     return .{
         .payload = .{
             .element = .{
+                .namespace = .html,
                 .attrs = abi.RocList(abi.NodeAttr).fromSlice(attrs, roc_host),
                 .children = abi.RocList(abi.Elem).fromSlice(children, roc_host),
                 .tag = RocStr.fromSlice(tag, roc_host),
@@ -10487,8 +10816,8 @@ test "signals host collects Elem descriptor stream" {
 
     try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
     try std.testing.expectEqual(RenderEventKind.click, stream.events.items[0].fixedKind().?);
-    try std.testing.expectEqual(state_token, stream.events.items[0].binder_token);
-    try std.testing.expectEqual(stream.scope_sites.items[0].node_id, stream.events.items[0].target_node_id);
+    try std.testing.expectEqual(state_token, stream.events.items[0].handler.reduce.binder_token);
+    try std.testing.expectEqual(stream.scope_sites.items[0].node_id, stream.events.items[0].handler.reduce.target_node_id);
     try std.testing.expectEqual(BoundaryPayloadDescriptor.init(.unit, .none), stream.events.items[0].payload_descriptor);
 
     try std.testing.expectEqual(@as(usize, 3), stream.scope_sites.items.len);
@@ -10607,13 +10936,13 @@ test "signals host descriptors carry capability-owned extension records" {
     try std.testing.expect(hv.hostValueCapabilitiesMatch(each.ops.rows_capability, hostSignalBindingCapability(&host, &each.items)));
 
     try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
-    const event_reducer = stream.events.items[0].payload_reducer;
-    try std.testing.expect(stream.events.items[0].owns_payload_reducer);
+    const event_reducer = stream.events.items[0].handler.reduce.payload_reducer;
+    try std.testing.expect(stream.events.items[0].owns_handler);
     host.rebuildActiveEventsFromStream(&stream);
-    try std.testing.expect(!stream.events.items[0].owns_payload_reducer);
+    try std.testing.expect(!stream.events.items[0].owns_handler);
     try std.testing.expectEqual(@as(usize, 1), host.engine.active_events.items.len);
-    try std.testing.expect(hv.hostValueCapabilitiesMatch(host.engine.active_events.items[0].payload_reducer.capability, event_reducer.capability));
-    try std.testing.expectEqual(host.engine.active_events.items[0].payload_reducer.transform, event_reducer.transform);
+    try std.testing.expect(hv.hostValueCapabilitiesMatch(host.engine.active_events.items[0].handler.reduce.payload_reducer.capability, event_reducer.capability));
+    try std.testing.expectEqual(host.engine.active_events.items[0].handler.reduce.payload_reducer.transform, event_reducer.transform);
 }
 
 test "signals host preserves callable identity across cloned descriptors" {
@@ -10935,7 +11264,7 @@ test "native host teardown is allocation-free with populated real host state" {
     host.engine.roc_host = &roc_host;
 
     host.sinkReset();
-    host.sinkAppendNode(ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(0), "section");
+    host.sinkAppendNode(ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(0), render.NodeShape.html("section"));
     try host.location_history.append(host.hostAllocator(), NativeLocation.init(host.hostAllocator(), .{
         .path = "/teardown",
         .query = "fault=armed",

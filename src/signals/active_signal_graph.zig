@@ -2071,6 +2071,9 @@ pub fn retainStreamRecords(
     for (stream.on_changes.items) |*desc| {
         records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, desc.signal.record, hooks);
     }
+    for (stream.events.items) |desc| if (desc.handler.signalRoot()) |root| {
+        records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, root, hooks);
+    };
     for (stream.whens.items) |*desc| {
         records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, desc.condition.record, hooks);
     }
@@ -2397,6 +2400,17 @@ const LifecycleEachDesc = struct {
     items: LifecycleSignalBinding,
 };
 
+const LifecycleEventDesc = struct {
+    handler: struct {
+        record: ?*LifecycleTestRecord,
+
+        /// Exposes only the fixture's declared action-read root.
+        pub fn signalRoot(self: @This()) ?*LifecycleTestRecord {
+            return self.record;
+        }
+    },
+};
+
 const LifecycleStream = struct {
     signal_text_nodes: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
     signal_text_attrs: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
@@ -2407,6 +2421,7 @@ const LifecycleStream = struct {
     on_changes: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
     whens: std.ArrayListUnmanaged(LifecycleWhenDesc) = .empty,
     eaches: std.ArrayListUnmanaged(LifecycleEachDesc) = .empty,
+    events: std.ArrayListUnmanaged(LifecycleEventDesc) = .empty,
 
     fn deinit(self: *LifecycleStream, allocator: std.mem.Allocator) void {
         self.signal_text_nodes.deinit(allocator);
@@ -2418,6 +2433,7 @@ const LifecycleStream = struct {
         self.on_changes.deinit(allocator);
         self.whens.deinit(allocator);
         self.eaches.deinit(allocator);
+        self.events.deinit(allocator);
     }
 };
 
@@ -3311,6 +3327,7 @@ test "active graph stream rebuild retains records and rebuilds sink routes" {
     stream.on_changes.append(std.testing.allocator, .{ .signal = .{ .record = &mapped } }) catch @panic("out of memory");
     stream.whens.append(std.testing.allocator, .{ .condition = .{ .record = &source } }) catch @panic("out of memory");
     stream.eaches.append(std.testing.allocator, .{ .items = .{ .record = &mapped } }) catch @panic("out of memory");
+    stream.events.append(std.testing.allocator, .{ .handler = .{ .record = &mapped } }) catch @panic("out of memory");
 
     var nodes: std.ArrayListUnmanaged(Node(LifecycleTestRecord)) = .empty;
     defer nodes.deinit(std.testing.allocator);

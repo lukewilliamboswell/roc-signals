@@ -8,6 +8,8 @@
 
 export const ELEMENT_NODE = 1;
 export const TEXT_NODE = 3;
+export const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
+export const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 
 class FakeNode {
   constructor() {
@@ -96,10 +98,12 @@ class FakeNode {
 }
 
 export class FakeElement extends FakeNode {
-  constructor(tag) {
+  constructor(tag, namespace = HTML_NAMESPACE) {
     super();
     this.nodeType = ELEMENT_NODE;
-    this.tagName = String(tag).toUpperCase();
+    this.namespaceURI = namespace;
+    this.localName = namespace === HTML_NAMESPACE ? String(tag).toLowerCase() : String(tag);
+    this.tagName = namespace === HTML_NAMESPACE ? this.localName.toUpperCase() : this.localName;
     this.attributes = new Map();
     this.dataset = {};
     this.style = {};
@@ -110,6 +114,7 @@ export class FakeElement extends FakeNode {
   }
 
   set className(value) {
+    if (this.namespaceURI === SVG_NAMESPACE) throw new TypeError("SVG className is read-only; use the class attribute");
     this.setAttribute("class", value);
   }
 
@@ -177,7 +182,7 @@ export class FakeText extends FakeNode {
 export function createDocument() {
   return {
     createElement: (tag) => new FakeElement(tag),
-    createElementNS: (_namespace, tag) => new FakeElement(tag),
+    createElementNS: (namespace, tag) => new FakeElement(tag, namespace),
     createTextNode: (data) => new FakeText(data),
   };
 }

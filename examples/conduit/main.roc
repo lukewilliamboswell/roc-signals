@@ -35,44 +35,42 @@ header_view = |session, intent| {
 				Anonymous => []
 			},
 	)
-	Elem.Element(
-		{
-			tag: "header",
+	Elem.Element({
+		namespace: Html,
+		tag: "header",
 		attrs: [Html.class_attr(Styles.header)],
-			children: [
+		children: [
 			Nav.link("conduit", "text-2xl font-bold tracking-normal text-emerald-600 no-underline hover:no-underline", Route.home_location, intent),
-				Elem.Element(
-					{
-						tag: "nav",
-					attrs: [Html.attr("aria-label", "Site"), Html.class_attr("flex flex-wrap items-center text-sm font-medium")],
-						children: [
-							Nav.link("Home", "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline", Route.home_location, intent),
-							Ui.when(
-								signed_in,
+			Elem.Element({
+				namespace: Html,
+				tag: "nav",
+				attrs: [Html.attr("aria-label", "Site"), Html.class_attr("flex flex-wrap items-center text-sm font-medium")],
+				children: [
+					Nav.link("Home", "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline", Route.home_location, intent),
+					Ui.when(
+						signed_in,
 
-								|| Html.div_c(
-									"inline-flex",
-									[
-										Nav.link("New Article", "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline", { path: "/editor", query: "", hash: "" }, intent),
-										Nav.link("Settings", "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline", { path: "/settings", query: "", hash: "" }, intent),
-										Ui.each(Signal.map(username_rows, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| Nav.link(each_row.key(), "rounded-md px-3 py-2 text-emerald-700 no-underline hover:bg-emerald-50 hover:no-underline", Route.profile_location(each_row.key()), intent)),
-									],
-								),
+						|| Html.div_c(
+							"inline-flex",
+							[
+								Nav.link("New Article", "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline", { path: "/editor", query: "", hash: "" }, intent),
+								Nav.link("Settings", "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline", { path: "/settings", query: "", hash: "" }, intent),
+								Ui.each(Signal.map(username_rows, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| Nav.link(each_row.key(), "rounded-md px-3 py-2 text-emerald-700 no-underline hover:bg-emerald-50 hover:no-underline", Route.profile_location(each_row.key()), intent)),
+							],
+						),
 
-								|| Html.div_c(
-									"inline-flex",
-									[
-										Nav.link("Sign in", "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline", Route.login_location, intent),
-										Nav.link("Sign up", "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline", Route.register_location, intent),
-									],
-								),
-							),
-						],
-					},
-				),
-			],
-		},
-	)
+						|| Html.div_c(
+							"inline-flex",
+							[
+								Nav.link("Sign in", "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline", Route.login_location, intent),
+								Nav.link("Sign up", "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline", Route.register_location, intent),
+							],
+						),
+					),
+				],
+			}),
+		],
+	})
 }
 
 guard_target : Route, Session -> [Stay, Redirect(Browser.Location)]
@@ -102,16 +100,15 @@ guard_target = |route, session| {
 }
 
 footer_view : Elem
-footer_view = Elem.Element(
-	{
-		tag: "footer",
-		attrs: [Html.class_attr(Styles.footer)],
-		children: [
-			Elem.Element({ tag: "span", attrs: [Html.class_attr("font-semibold text-emerald-600")], children: [Html.text("conduit")] }),
-			Html.text(" - a RealWorld evidence app built on roc-signals."),
-		],
-	},
-)
+footer_view = Elem.Element({
+	namespace: Html,
+	tag: "footer",
+	attrs: [Html.class_attr(Styles.footer)],
+	children: [
+		Elem.Element({ namespace: Html, tag: "span", attrs: [Html.class_attr("font-semibold text-emerald-600")], children: [Html.text("conduit")] }),
+		Html.text(" - a RealWorld evidence app built on roc-signals."),
+	],
+})
 
 not_found_page : Ui.State(Nav.RouteIntent) -> Elem
 not_found_page = |intent| {
@@ -232,15 +229,15 @@ main = || {
 	Ui.state(
 		Nav.initial,
 		|route_intent| {
-				location = Browser.location()
+			location = Browser.location()
 			route = location.map(Route.from_location)
-				session = Session.current()
+			session = Session.current()
 			document_title = route.map(Route.title)
 			guard_inputs = { route: route, session: session }.Signal
 			guard = guard_inputs.map(|value| guard_target(value.route, value.session))
 
 			Html.div_c(
-			Styles.shell,
+				Styles.shell,
 				[
 					Ui.on_change(route_intent.signal(), |intent| Browser.push_state(Nav.location(intent))),
 					Ui.on_change_initial(
@@ -253,7 +250,7 @@ main = || {
 					),
 					Ui.on_change_initial(document_title, Browser.set_title),
 					header_view(session, route_intent),
-				Elem.Element({ tag: "main", attrs: [Html.class_attr(Styles.main)], children: [page_view(route, session, route_intent)] }),
+					Elem.Element({ namespace: Html, tag: "main", attrs: [Html.class_attr(Styles.main)], children: [page_view(route, session, route_intent)] }),
 					footer_view,
 				],
 			)

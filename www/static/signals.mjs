@@ -44,11 +44,10 @@ export const Op = Object.freeze({
   setDocumentTitle: 32,
 });
 
-// Version 12: `remove_node` releases the whole subtree under its target. The
-// engine publishes one removal per retired subtree root, and the runtime drops
-// every DOM id, listener, controlled input, and behaviour under that root.
+// Version 14: create_element.d selects HTML (0) or SVG (1) explicitly.
+// Namespace and text-node classification are engine decisions, not DOM inference.
 export const Protocol = Object.freeze({
-  version: 13,
+  version: 14,
 });
 
 export const ProtocolFeature = Object.freeze({
@@ -1570,9 +1569,14 @@ export class SignalsRuntime {
         this.clearDom();
         return;
 
-      case Op.createElement:
-        this.registerNode(record.a, document.createElement(this.readString(record.b, record.c)));
+      case Op.createElement: {
+        const tag = this.readString(record.b, record.c);
+        if (record.d !== 0 && record.d !== 1) throw new Error(`Unknown element namespace: ${record.d}`);
+        this.registerNode(record.a, record.d === 0
+          ? document.createElement(tag)
+          : document.createElementNS("http://www.w3.org/2000/svg", tag));
         return;
+      }
 
       case Op.createText:
         this.registerNode(record.a, document.createTextNode(this.readString(record.b, record.c)));
@@ -2603,7 +2607,7 @@ export class SignalsRuntime {
         return { op };
 
       case Op.createElement:
-        return { op, elemId: record.a, tag: this.readString(record.b, record.c) };
+        return { op, elemId: record.a, tag: this.readString(record.b, record.c), namespace: record.d === 0 ? "html" : "svg" };
 
       case Op.createText:
         return { op, nodeId: record.a, text: this.readString(record.b, record.c) };
@@ -3695,7 +3699,7 @@ function setClass(node, value) {
   if (value === "") {
     node.removeAttribute("class");
   } else {
-    node.className = value;
+    node.setAttribute("class", value);
   }
 }
 

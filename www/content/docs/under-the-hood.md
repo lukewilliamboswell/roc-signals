@@ -165,6 +165,13 @@ the wasm module. A mismatch fails immediately with
 `Signals wire protocol version mismatch` rather than misbehaving subtly. Ship
 `signals.mjs` and your `.wasm` from the same platform build.
 
+Protocol 14 adds explicit HTML/SVG namespace selection to element creation.
+`create_element.d` is `0` for HTML or `1` for SVG; other values are rejected.
+Text nodes still use `create_text`. Rebuild applications and deploy the matching
+runtime together when upgrading from protocol 13. Direct `Elem.Element`
+descriptors also now require a `namespace: Html` or `namespace: Svg` field;
+the `Html` and `Svg` helpers supply it.
+
 ## Payload sizes
 
 Measured with `--opt=size`. Every app also ships `signals.mjs`, the JavaScript

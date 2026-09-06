@@ -51,6 +51,13 @@ const WasmCtx = struct {
     pub const RegistryOps = hv.RegistryOps();
     pub const Metrics = if (build_options.wasm_benchmark) engine.RuntimeMetrics else engine.NoMetrics;
     pub const Sink = WasmSink;
+    pub const TaskPublication = render.TransactionalBatch.TaskPublication;
+
+    /// Reserves the engine-selected cancellation records and complete task
+    /// payload before the engine changes live request membership.
+    pub fn prepareTaskPublication(_: Handle, request_id: ids.TaskRequestId, task_name: []const u8, request: []const u8, cancellation_count: usize) render.PreflightError!TaskPublication {
+        return command_batch.prepareTaskStart(WasmCtx.allocator(.{}), request_id, task_name, request, cancellation_count);
+    }
 
     /// Creates the host's zeroed metric accumulator for a new engine operation.
     pub fn zeroMetrics() Metrics {
@@ -152,21 +159,19 @@ const WasmSink = struct {
     }
 
     /// Emits the already-decided command that attaches a newly created render node.
-    pub fn appendNode(_: WasmSink, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, tag: []const u8) void {
-        if (std.mem.eql(u8, tag, "text")) {
-            appendStringCommand(.create_text, toU32(elem_id.raw()), "");
-        } else {
-            appendStringCommand(.create_element, toU32(elem_id.raw()), tag);
-        }
+    pub fn appendNode(self: WasmSink, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, shape: render.NodeShape) void {
+        self.ensureNode(elem_id, shape);
         appendCommand(.append_child, toU32(parent_elem_id.raw()), toU32(elem_id.raw()), 0, 0, 0);
     }
 
     /// Ensures the host render surface contains the engine-selected node and tag.
-    pub fn ensureNode(_: WasmSink, elem_id: ids.ElemId, tag: []const u8) void {
-        if (std.mem.eql(u8, tag, "text")) {
-            appendStringCommand(.create_text, toU32(elem_id.raw()), "");
-        } else {
-            appendStringCommand(.create_element, toU32(elem_id.raw()), tag);
+    pub fn ensureNode(_: WasmSink, elem_id: ids.ElemId, shape: render.NodeShape) void {
+        switch (shape) {
+            .text => appendStringCommand(.create_text, toU32(elem_id.raw()), ""),
+            .element => |element| {
+                preflightCommandStorage(.{ .commands = 1, .strings = element.tag.len });
+                appendCommand(.create_element, toU32(elem_id.raw()), storeBytes(element.tag), toU32(element.tag.len), @intFromEnum(element.namespace), 0);
+            },
         }
     }
 
@@ -242,9 +247,10 @@ const WasmSink = struct {
 
     /// Starts bounded asynchronous host work for an engine-issued task request.
     pub fn startTask(_: WasmSink, request_id: ids.TaskRequestId, task_name: []const u8, request: []const u8) void {
-        const name_offset = storeBytes(task_name);
-        const request_offset = storeBytes(request);
-        appendCommand(.start_task, toU32(request_id.raw()), name_offset, toU32(task_name.len), request_offset, toU32(request.len));
+        command_batch.appendTaskStart(allocator(), request_id, task_name, request) catch |err| switch (err) {
+            error.OutOfMemory => failHostWith("out of memory while preparing task publication"),
+            error.ResourceLimit => failHostWith("task publication exceeded Wasm wire resource limit"),
+        };
     }
 
     /// Cancels host work for a task request retired by engine lifecycle policy.
@@ -1273,18 +1279,25 @@ fn hostEventById(event_id: u32) HostActiveEventDesc {
     return shared_engine.active_events.items[event_id - 1];
 }
 
-/// Route a DOM event into its source node's retained reducer thunk, then
-/// propagate in rank order and apply both scalar render sinks and any structural
-/// splice the change triggers. Mirrors the native host's `dispatchRocEventMeasured`.
+/// Passes one accepted DOM occurrence to its shared-engine handler. Reducers
+/// enter the state transaction; actions build commands from declared reads.
 fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     const ctx = WasmCtx{};
-    const payload_cap = desc.payload_reducer.capability;
+    const payload_cap = signals.retained_values.retainHostValueCapability(desc.handler.payloadCapability(), &shared_engine.pending_roc_metrics);
+    defer signals.retained_values.releaseHostValueCapability(payload_cap, &roc_host, &shared_engine.pending_roc_metrics);
     setHostValueCapability(payload, payload_cap);
     defer callHostValueToUnitWithCapability(payload_cap, hv.hostValueCapabilityDrop(payload_cap), payload);
 
-    const state_cap = shared_engine.stateCapability(desc.target_node_id.raw()) catch failHost();
+    if (desc.handler == .action) {
+        const cmd = shared_engine.evaluateEventAction(ctx, &roc_host, desc, payload);
+        defer cmd.decref(&roc_host);
+        _ = shared_engine.runCommand(ctx, &roc_host, desc.handler.action.scope_id, cmd);
+        return;
+    }
+    const target_node_id = desc.handler.reduce.target_node_id;
+    const state_cap = shared_engine.stateCapability(target_node_id.raw()) catch failHost();
     const next = shared_engine.evaluateEventReducer(ctx, &roc_host, desc, payload);
-    _ = shared_engine.dispatchStateValue(ctx, &roc_host, desc.target_node_id.raw(), next, state_cap);
+    _ = shared_engine.dispatchStateValue(ctx, &roc_host, target_node_id.raw(), next, state_cap);
 }
 
 fn resolveTask(request_id: ids.TaskRequestId, payload_text: []const u8, failed: bool) void {
@@ -1375,7 +1388,7 @@ fn clearActiveRuntime() void {
     shared_engine.active_stream.deinit(a, ctx, &roc_host, &shared_engine.pending_roc_metrics);
     shared_engine.active_stream = .{};
 
-    shared_engine.clearActiveEvents() catch failHost();
+    shared_engine.clearActiveEvents(ctx) catch failHost();
     shared_engine.active_events.deinit(a);
     shared_engine.active_events = .empty;
 
@@ -1736,6 +1749,7 @@ export fn roc_ui_debug_mount_fixture() callconv(.c) void {
     var root = abi.Elem{ .payload = undefined, .tag = .Element };
     const payload: *abi.ElemElement = @ptrCast(@alignCast(&root.payload));
     payload.* = .{
+        .namespace = .html,
         .attrs = abi.RocList(abi.NodeAttr).empty(),
         .children = abi.RocList(abi.Elem).empty(),
         .tag = abi.RocStr.fromSlice("div", undefined),

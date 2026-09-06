@@ -100,9 +100,20 @@ app --run-spec-json --fail-on-allocation 7 path/to/case.scm
 Fault placements inside a Roc callback are reported as skipped by the
 recoverable campaign because the erased callback ABI cannot return OOM or
 unwind ownership. Real allocation failure there is a fatal poison-and-trap
-boundary. Other selected host allocations must refuse and retry successfully
-without partial publication. Roc-allocator and fatal-boundary campaigns are
-tracked separately.
+boundary. Infallible command calls, including observer commands after an earlier
+step committed, likewise report `skipped_fatal_command`: the native recoverable
+sweep does not inject at these positions and does not claim they recovered.
+Other selected host allocations must refuse and retry successfully without
+partial publication.
+
+The Wasm suite separately builds the coordinated-writes fixture with test-only
+allocator exports and sweeps every allocation in a write-plus-observer host call.
+It verifies poison, a bounded diagnostic, empty publication buffers, unchanged
+browser DOM, no unpublished task execution, detached event listeners, and
+allocation-free idempotent containment. Recovery uses a fresh instance. This
+linked-app fatal campaign complements native refusal/retry tests; it does not
+turn arbitrary native crashes into accepted outcomes. Roc-allocator fatal
+boundaries also have focused linked-host tests.
 
 Use `--keep-output` when debugging generated artifacts under `.test-out/`.
 
@@ -158,6 +169,11 @@ runtime and host tests. It runs the existing `signals_shared` and
 `signals_host` Zig test roots under kcov, then merges their line coverage into
 one report. This keeps direct `src/signals/` unit coverage and host-driven
 coverage visible together.
+
+This workflow supports macOS and Linux arm64. Linux x86_64 is currently
+disabled because kcov cannot reliably read Zig DWARF on that target; run the
+coverage check on a supported runner rather than interpreting its refusal as
+a completed coverage pass.
 
 Run a fresh coverage pass from the repository root:
 
@@ -359,6 +375,11 @@ The helper builds ReleaseSmall host artifacts, generates
 example apps with `--target=wasm32 --opt=size` by default, and copies
 downloadable source files under `dist/examples/<slug>/source/`.
 
+Each generated Wasm artifact is validated with Node's WebAssembly compiler
+before the build proceeds. A successful Roc compilation alone does not prove
+that the browser can load the generated code; invalid artifacts fail the site
+build with the affected file and validation diagnostic.
+
 Example source files in `dist/` have their local platform header replaced with
 `SIGNALS_PLATFORM_URL` when set. Otherwise they point at
 `extra.release_platform_url` from `www/config.toml`, falling back to the
@@ -376,14 +397,18 @@ python3 scripts/serve.py --platform-url https://example.com/platform/release.tar
 python3 scripts/serve.py --no-server
 ```
 
-For public site content, documentation, or site config changes, use the browser
-host + public apps build gate in both Roc optimization modes without starting a
-server. Run these commands sequentially because both write `dist/`:
+For public site content, documentation, or site config changes, run the browser
+host and public apps production build without starting a server:
 
 ```sh
-python3 scripts/serve.py --no-server --app-opt dev
 python3 scripts/serve.py --no-server --app-opt size
 ```
+
+The pinned compiler's dev backend currently emits invalid Wasm for unit-valued
+capability callbacks (see `UPSTREAM_COMPILER_BUGS.md`, case 10). The optional
+`--app-opt dev` build is a compiler diagnostic, not a passing release gate or a
+deployable alternative. Keep artifact validation enabled. After checking dev
+output, rebuild with `--app-opt size`; both modes write `dist/`.
 
 ## Releases
 

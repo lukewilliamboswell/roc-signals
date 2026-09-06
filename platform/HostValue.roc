@@ -34,10 +34,11 @@ HostValue := [HostValue(U64)].{
 		transform : Box((HostValue, HostValue, HostValue -> HostValue)),
 	}
 
-	## Owned state value emitted by a command.
+	## Reusable state-value recipe. Each execution creates an independently
+	## owned host value; copying a Roc command never aliases a consumed handle.
 	StateValueHandle := {
 		capability : CapabilityHandle,
-		value : HostValue,
+		initial : Box((() -> HostValue)),
 	}
 
 	## Clone a host-owned value.

@@ -195,7 +195,7 @@ class SpecDriverTests(unittest.TestCase):
                         "host_allocation_attempts": 2,
                         "fault": None if allocation is None else {{
                             "allocation": allocation,
-                            "outcome": "refused_then_retried",
+                            "outcome": "refused_then_retried" if allocation == 1 else "skipped_fatal_command",
                         }},
                     }}))
                     """
@@ -207,6 +207,10 @@ class SpecDriverTests(unittest.TestCase):
             results = spec_driver.run_fault_suite(worker, specs, jobs=2)
             self.assertEqual(3, len(results))
             self.assertTrue(all(result.passed for result in results))
+            self.assertEqual("skipped_fatal_command", results[2].fault["outcome"])
+            with mock.patch("builtins.print") as output:
+                spec_driver.print_summary(results)
+            output.assert_any_call("Fault outcomes: refused_then_retried=1, skipped_fatal_command=1")
             self.assertEqual(
                 ["case.scm", "case.scm::allocation@1", "case.scm::allocation@2"],
                 [result.id for result in results],

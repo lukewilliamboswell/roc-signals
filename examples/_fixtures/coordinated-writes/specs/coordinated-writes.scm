@@ -1,0 +1,32 @@
+(test "Independent states commit together and cached commands remain reusable"
+  (steps
+    (expect-text (test-id "pair") "A:B")
+    (click (role button :name "Cached single"))
+    (click (role button :name "Cached single"))
+    (expect-pending-task "write-observer" 0)
+    (expect-pending-task "partial-write" 0)
+
+    (click (role button :name "Swap"))
+    (expect-text (test-id "pair") "B:A")
+    (expect-text (test-id "branch-value") "A")
+    (expect-pending-task "write-observer" 1)
+    (expect-canceled-task "write-observer" 0)
+    (expect-pending-task "partial-write" 0)
+
+    (click (role button :name "Swap reversed"))
+    (expect-text (test-id "pair") "A:B")
+    (expect-absent (test-id "branch-value"))
+    (expect-canceled-task "write-observer" 1)
+    (expect-pending-task "partial-write" 0)
+
+    (click (role button :name "Swap"))
+    (click (role button :name "Cached reset"))
+    (expect-text (test-id "pair") "A:B")
+    (expect-canceled-task "write-observer" 3)
+    (click (role button :name "Cached reset"))
+    (expect-text (test-id "pair") "A:B")
+    (expect-pending-task "write-observer" 1)
+    (expect-canceled-task "write-observer" 3)
+    (expect-pending-task "partial-write" 0)
+  )
+)

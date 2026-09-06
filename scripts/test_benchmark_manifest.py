@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import re
 import sys
 import tempfile
 import tomllib
@@ -150,7 +151,7 @@ class BenchmarkManifestTests(unittest.TestCase):
                 self.assertEqual(1, diagnostic_manifest.count(name))
             stripped = diagnostic_manifest
             for name in metric_exports:
-                stripped = stripped.replace(f'\t\t\t\t"{name}",\n', "")
+                stripped = re.sub(rf'"{re.escape(name)}",\s*', "", stripped)
             self.assertEqual(production_manifest, stripped)
             self.assertEqual(host.read_bytes(), (production / "targets" / "wasm32" / "host.wasm").read_bytes())
             self.assertEqual(host.read_bytes(), (diagnostic / "targets" / "wasm32" / "host.wasm").read_bytes())

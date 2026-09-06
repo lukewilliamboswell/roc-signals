@@ -17,6 +17,9 @@ let exerciseLocationSource = false;
 let exerciseLocationNavigation = false;
 let exerciseLocationCanonicalBranch = false;
 let exerciseStorageCommands = false;
+let exerciseEventActions = false;
+let exerciseCoordinatedWrites = false;
+let exerciseSvg = false;
 let rawName;
 
 while (args.length > 0) {
@@ -27,7 +30,7 @@ while (args.length > 0) {
     printTelemetrySummary = true;
   } else if (arg === "--exercise-click-first-link") {
     exerciseClickFirstLink = true;
-} else if (arg === "--exercise-location-source") {
+  } else if (arg === "--exercise-location-source") {
     exerciseLocationSource = true;
   } else if (arg === "--exercise-location-navigation") {
     exerciseLocationNavigation = true;
@@ -35,7 +38,13 @@ while (args.length > 0) {
     exerciseLocationCanonicalBranch = true;
   } else if (arg === "--exercise-storage-commands") {
     exerciseStorageCommands = true;
-} else if (arg.startsWith("--")) {
+  } else if (arg === "--exercise-event-actions") {
+    exerciseEventActions = true;
+  } else if (arg === "--exercise-coordinated-writes") {
+    exerciseCoordinatedWrites = true;
+  } else if (arg === "--exercise-svg") {
+    exerciseSvg = true;
+  } else if (arg.startsWith("--")) {
     console.error(`unknown argument: ${arg}`);
     process.exit(2);
   } else if (rawName === undefined) {
@@ -48,7 +57,7 @@ while (args.length > 0) {
 
 if (!wasmPath) {
   console.error(
-    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-location-source] [--exercise-location-navigation] [--exercise-location-canonical-branch] [--exercise-storage-commands]",
+    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-location-source] [--exercise-location-navigation] [--exercise-location-canonical-branch] [--exercise-storage-commands] [--exercise-event-actions] [--exercise-coordinated-writes] [--exercise-svg]",
   );
   process.exit(2);
 }
@@ -136,8 +145,15 @@ const locationDouble = {
     return browserHistory.href;
   },
 };
+const actionRequests = [];
 const runtime = new SignalsRuntime(instance.exports, root, {
-  taskHandler: publicExampleTaskHandler,
+  taskHandler: exerciseEventActions || exerciseCoordinatedWrites
+    ? (request) => {
+      const allowed = exerciseCoordinatedWrites ? ["write-observer", "partial-write"] : ["action-ping", "action-dispose"];
+      if (!allowed.includes(request.name)) throw new Error(`unexpected action task: ${request.name}`);
+      return new Promise((resolve) => actionRequests.push({ ...request, resolve }));
+    }
+    : publicExampleTaskHandler,
   behaviors: instrumentBehaviors(serviceOpsBehaviors, behaviorCounts),
   location: locationDouble,
   history: browserHistory,
@@ -219,6 +235,37 @@ if (exerciseLocationCanonicalBranch) {
 
 if (exerciseStorageCommands) {
   await exerciseStorageCommandsWorkflow(name, root, errors, localStorageDouble, sessionStorageDouble);
+}
+
+if (exerciseEventActions) {
+  await exerciseEventActionsWorkflow(name, root, errors, actionRequests);
+}
+if (exerciseCoordinatedWrites) {
+  await exerciseCoordinatedWritesWorkflow(name, root, errors, actionRequests);
+}
+if (exerciseSvg) {
+  const svgNamespace = "http://www.w3.org/2000/svg";
+  const byId = (id) => findNode(root, (node) => node.getAttribute?.("data-testid") === id);
+  const graph = byId("graph");
+  const label = byId("graph-label");
+  let switched = byId("namespace-switch");
+  if (switched?.namespaceURI !== "http://www.w3.org/1999/xhtml") fail("initial namespace-switch anchor was not HTML");
+  if (graph?.namespaceURI !== svgNamespace || graph.getAttribute("viewBox") !== "0 0 200 100" || graph.getAttribute("class") !== "diagram") fail("SVG viewport attributes or namespace were lost");
+  if (label?.namespaceURI !== svgNamespace || label.localName !== "text" || label.textContent !== "Initial") fail("SVG text element was confused with a text node");
+  if (byId("gradient")?.localName !== "linearGradient") fail("SVG local-name case was lost");
+  for (const changed of [true, false, true, false]) {
+    fireEvent(findByText(root, "button", "Change graph"), "click", { bubbles: true });
+    await new Promise((resolve) => setTimeout(resolve, settleMs));
+    failOnRuntimeErrors(name, errors, "updating SVG");
+    const next = byId("namespace-switch");
+    if (next === switched || next?.localName !== "a" || next?.namespaceURI !== (changed ? svgNamespace : "http://www.w3.org/1999/xhtml")) fail("same-name namespace change reused the wrong rendered node");
+    switched = next;
+    if (byId("graph-label") !== label || label.textContent !== (changed ? "Updated" : "Initial")) fail("SVG label update replaced its element or used a stale value");
+    if (changed) {
+      if (byId("foreign")?.namespaceURI !== svgNamespace || byId("foreign")?.localName !== "foreignObject") fail("dynamic SVG namespace or case was lost");
+      if (byId("html-child")?.namespaceURI !== "http://www.w3.org/1999/xhtml") fail("foreignObject child did not preserve its explicit HTML namespace");
+    } else if (byId("gradient")?.namespaceURI !== svgNamespace || byId("foreign")) fail("SVG scope replacement retained stale structure");
+  }
 }
 
 try {
@@ -365,6 +412,141 @@ async function exerciseLocationCanonicalBranchWorkflow(name, root, errors, brows
   if (root.textContent.includes("Detail branch")) {
     fail(`canonicalized ${name}, but the stale detail branch remained mounted`);
   }
+}
+
+async function exerciseCoordinatedWritesWorkflow(name, root, errors, requests) {
+  const read = (id) => findNode(root, (node) => node.getAttribute?.("data-testid") === id)?.textContent;
+  const click = async (label, pair, count, branch) => {
+    const button = findByText(root, "button", label);
+    if (!button) fail(`missing coordinated write button: ${label}`);
+    fireEvent(button, "click", { bubbles: true });
+    await new Promise((resolve) => setTimeout(resolve, settleMs));
+    failOnRuntimeErrors(name, errors, "coordinating state writes");
+    if (read("pair") !== pair || read("branch-value") !== branch) {
+      fail(`coordinated writes rendered an inconsistent snapshot after ${label}`);
+    }
+    if (requests.length !== count || requests.some((request) => request.name !== "write-observer")) {
+      fail(`coordinated writes exposed a partial snapshot or repeated an unchanged effect after ${label}`);
+    }
+    if (count && (requests[count - 1].request !== pair || requests[count - 1].signal.aborted)) {
+      fail(`coordinated write observer did not receive the final snapshot after ${label}`);
+    }
+    if (requests.slice(0, -1).some((request) => !request.signal.aborted)) {
+      fail("coordinated write observer left an obsolete request active");
+    }
+  };
+  await click("Cached single", "A:B", 0, undefined);
+  await click("Cached single", "A:B", 0, undefined);
+  await click("Swap", "B:A", 1, "A");
+  await click("Swap reversed", "A:B", 2, undefined);
+  await click("Swap", "B:A", 3, "A");
+  await click("Cached reset", "A:B", 4, undefined);
+  await click("Cached reset", "A:B", 4, undefined);
+}
+
+async function exerciseEventActionsWorkflow(name, root, errors, requests) {
+  const settle = async () => {
+    await new Promise((resolve) => setTimeout(resolve, settleMs));
+    failOnRuntimeErrors(name, errors, "dispatching event actions");
+  };
+  const click = (text) => {
+    const button = findByText(root, "button", text);
+    if (!button) fail(`missing action button: ${text}`);
+    fireEvent(button, "click", { bubbles: true });
+  };
+  const fill = async (value) => {
+    const input = findNode(root, (node) => node.tagName === "INPUT");
+    if (!input) fail("missing action source input");
+    input.value = value;
+    fireEvent(input, "input", { bubbles: true });
+    await settle();
+  };
+  const expectResult = (text) => {
+    const result = findNode(root, (node) => node.getAttribute?.("data-testid") === "result");
+    if (result?.textContent !== text) fail(`action result was ${result?.textContent}, expected ${text}`);
+  };
+
+  await fill("beta");
+  expectResult("waiting");
+  if (requests.length !== 0) fail("changing action reads started a task");
+  // Dispatch before yielding: lossless clicks must not coalesce in the browser queue.
+  click("Append snapshot");
+  click("Append snapshot");
+  await settle();
+  expectResult("waiting|beta|beta");
+  click("Ping");
+  click("Ping");
+  await settle();
+  if (requests.length !== 2 || requests.some((request) => request.request !== "beta")) {
+    fail("identical action clicks did not start two identical requests");
+  }
+  if (!requests[0].signal.aborted || requests[1].signal.aborted) {
+    fail("repeated action requests did not preserve latest-wins cancellation");
+  }
+  await fill("gamma");
+  if (requests.length !== 2) fail("updating action reads repeated a request");
+  click("Toggle actions");
+  await settle();
+  if (!requests[1].signal.aborted || findByText(root, "button", "Ping")) {
+    fail("disposing an action scope did not remove its handler and cancel its task");
+  }
+  // Late completions from canceled requests must not revive disposed work.
+  requests[0].resolve("stale first");
+  requests[1].resolve("stale second");
+  await settle();
+  const status = findNode(root, (node) => node.getAttribute?.("data-testid") === "status");
+  if (status?.textContent !== "idle") fail("canceled action completion changed task state");
+  click("Toggle actions");
+  await settle();
+  click("Append snapshot");
+  await settle();
+  expectResult("waiting|beta|beta|gamma");
+  click("Prime disposal");
+  await settle();
+  if (requests.length !== 3 || requests[2].name !== "action-dispose") fail("disposal primer did not start");
+  requests[2].resolve("ready");
+  await settle();
+  click("Dispose on loading");
+  await settle();
+  if (requests.length !== 4 || !requests[3].signal.aborted) fail("Loading did not cancel its own action's request");
+  if (findByText(root, "button", "Dispose on loading")) fail("Loading left its action scope rendered");
+  requests[3].resolve("ready");
+  await settle();
+  const disposeStatus = findNode(root, (node) => node.getAttribute?.("data-testid") === "dispose-status");
+  if (disposeStatus?.textContent !== "idle") fail("retired action completion resurrected its Loading scope");
+  const target = (id) => {
+    const node = findNode(root, (candidate) => candidate.getAttribute?.("data-testid") === id);
+    if (!node) fail(`missing typed action target: ${id}`);
+    return node;
+  };
+  const textInput = target("action-text");
+  textInput.value = "hello 🌱";
+  fireEvent(textInput, "input", { bubbles: true });
+  fireEvent(textInput, "input", { bubbles: true });
+  await settle();
+  let expected = "waiting|beta|beta|gamma|text:gamma:hello 🌱|text:gamma:hello 🌱";
+  expectResult(expected);
+  const checkbox = target("action-check");
+  checkbox.checked = true;
+  fireEvent(checkbox, "change", { bubbles: true });
+  await settle();
+  expected += "|checked:True";
+  expectResult(expected);
+  checkbox.checked = false;
+  fireEvent(checkbox, "change", { bubbles: true });
+  await settle();
+  expected += "|checked:False";
+  expectResult(expected);
+  fireEvent(target("action-key"), "keydown", { bubbles: true, key: "Enter", shiftKey: true });
+  await settle();
+  expected += "|key:Enter:True";
+  expectResult(expected);
+  fireEvent(target("action-detail"), "demo-detail", { bubbles: true, detail: "package ready" });
+  fireEvent(target("action-detail"), "demo-detail", { bubbles: true, detail: "package ready" });
+  await settle();
+  expected += "|detail:package ready|detail:package ready";
+  expectResult(expected);
+  console.log(`exercised repeated actions, snapshots, and scoped cancellation in ${name}`);
 }
 
 async function exerciseStorageCommandsWorkflow(name, root, errors, localStorageDouble, sessionStorageDouble) {

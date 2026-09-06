@@ -84,6 +84,7 @@ main = ||
                     Ui.on_change_initial(document_title, Browser.set_title),
                     header_view(session, route_intent),
                     Elem.Element({
+                        namespace: Html,
                         tag: "main",
                         attrs: [Html.class_attr(Styles.main)],
                         children: [page_view(route, session, route_intent)],

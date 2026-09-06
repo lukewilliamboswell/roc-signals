@@ -4,13 +4,14 @@ Roc compiler and builtin bugs this repo has hit, with the workaround each one
 forced on us. Every entry names the workaround site so the code can be
 un-worked-around once the upstream fix lands.
 
-Toolchain: the nightly pinned in `.roc-version` (currently
-`nightly-2026-08-25-cc03aa8`), which is what CI installs.
+Toolchain: the nightly pinned in `.roc-version`, which is what CI installs.
+Individual entries record the versions on which they were reproduced; older
+entries are historical evidence, not claims that every bug persists on the pin.
 `scripts/dev/check-example.sh` and `scripts/test.py` both read `ROC_BIN`, so
 point it at the pinned toolchain when reproducing:
 
 ```sh
-export ROC_BIN=/path/to/roc_nightly-linux_x86_64-2026-08-25-cc03aa8/roc
+export ROC_BIN=/path/to/pinned-roc/roc
 ```
 
 | # | Bug | Upstream | Repro | Worked around |
@@ -24,6 +25,7 @@ export ROC_BIN=/path/to/roc_nightly-linux_x86_64-2026-08-25-cc03aa8/roc
 | 7 | A record-destructured binding loses method dispatch when two different `.map`s are called on it | not filed | in-situ (below) | yes |
 | 8 | `List.sort_with` is a first-element-pivot quicksort, so it is O(n^2) on already-ordered input | not filed | `examples/data-grid` | yes |
 | 9 | *(withdrawn -- was a misdiagnosis; see below)* | n/a | n/a | n/a |
+| 10 | Unit-state capability callbacks produce invalid dev Wasm | not filed | `repro/unit-state-wasm-dev/` | no; size backend validates |
 
 For #1, camelCase field names longer than ten bytes are corrupted on wasm32 at
 byte four, while native is unaffected; `favoritesCount` exposed it. For #2, the
@@ -312,6 +314,19 @@ at the *current* `HEAD`, was not run; the passing control being compared against
 was from an earlier `HEAD` predating the host commit.
 
 **Lesson for this file: pin the control to the same commit as the experiment.**
+
+## 10. Unit-state capability callbacks produce invalid dev Wasm
+
+Reproduced on `nightly-2026-09-04-c125b82`: a `Ui.state({}, ...)` app
+compiles successfully with `--opt=dev`, but Node and Chromium reject the
+artifact with `expected 0 elements on the stack for fallthru, found 2`.
+Boolean state without an event handler and a string input validate; adding a
+unit event handler also reproduces the failure. The size backend validates
+the same unit-state app. The exact compiler cause remains unisolated.
+
+See `repro/unit-state-wasm-dev/README.md` for commands and controls. Site builds
+now validate the generated Wasm instead of treating compiler exit status as
+proof of a usable artifact. No platform semantic workaround has been applied.
 
 ## Not compiler bugs — missing builtins
 
