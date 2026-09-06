@@ -3,9 +3,14 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
+      nightly_validation:
+        description: "Validate a nightly candidate without publishing or deploying"
+        type: boolean
+        required: false
+        default: false
       release_tag:
         description: "Release tag to publish"
-        required: true
+        required: false
         type: string
 
 permissions:
@@ -25,8 +30,15 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Require a version for publication
+        if: github.event_name == 'workflow_dispatch' && !inputs.nightly_validation
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_tag }}
+        run: test -n "$RELEASE_VERSION" || { echo "A release version is required for publication" >&2; exit 1; }
+
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
@@ -34,10 +46,15 @@ jobs:
           version: 0.16.0
           use-cache: false
 
+      - name: Read pinned Roc nightly
+        shell: bash
+        run: printf 'ROC_NIGHTLY_TAG=%s\n' "$(sed -n '1p' .roc-version)" >> "$GITHUB_ENV"
+
       - name: Install Roc
         uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
         with:
           version: nightly-new-compiler
+          nightly-tag: ${{ env.ROC_NIGHTLY_TAG }}
 
       - name: Build ReleaseSmall host artifacts
         run: zig build build-test-hosts -Doptimize=ReleaseSmall
@@ -60,7 +77,7 @@ jobs:
           echo "bundle_filename=$bundle_filename" >> "$GITHUB_OUTPUT"
 
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: platform-bundle
           path: ${{ steps.bundle.outputs.bundle_path }}
@@ -81,7 +98,7 @@ jobs:
         shell: bash
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
@@ -89,13 +106,18 @@ jobs:
           version: 0.16.0
           use-cache: false
 
+      - name: Read pinned Roc nightly
+        shell: bash
+        run: printf 'ROC_NIGHTLY_TAG=%s\n' "$(sed -n '1p' .roc-version)" >> "$GITHUB_ENV"
+
       - name: Install Roc
         uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
         with:
           version: nightly-new-compiler
+          nightly-tag: ${{ env.ROC_NIGHTLY_TAG }}
 
       - name: Download bundle artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: platform-bundle
           path: platform-bundle
@@ -106,6 +128,7 @@ jobs:
           python3 scripts/test.py bundle --bundle always --bundle-ref "$bundle_file"
 
   create-release:
+    if: github.event_name == 'workflow_dispatch' && !inputs.nightly_validation
     name: Create GitHub Release
     needs:
       - build-and-bundle
@@ -115,10 +138,10 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Download bundle artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: platform-bundle
           path: platform-bundle
