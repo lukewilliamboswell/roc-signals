@@ -16,6 +16,7 @@ import socketserver
 import subprocess
 import threading
 import tomllib
+from toolchain import replace_platform
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -155,6 +156,10 @@ def config_base_url() -> str:
 
 
 def config_release_platform_url() -> str | None:
+    release_manifest = ROOT / "releases/current.json"
+    if release_manifest.is_file():
+        import json
+        return json.loads(release_manifest.read_text())["assets"]["platform"]["url"]
     extra = site_config().get("extra", {})
     if not isinstance(extra, dict):
         return None
@@ -300,11 +305,10 @@ class PortReservation:
 
 
 def rewrite_platform_headers(root: Path, platform_ref: str) -> None:
-    replacement = f'platform "{platform_ref}"'
     for source in sorted(root.rglob("*.roc")):
         text = source.read_text(encoding="utf-8")
-        updated, count = PLATFORM_HEADER_RE.subn(replacement, text, count=1)
-        if count != 0:
+        updated = replace_platform(text, platform_ref)
+        if updated != text:
             source.write_text(updated, encoding="utf-8")
 
 

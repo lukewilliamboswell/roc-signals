@@ -14,6 +14,10 @@ import test as test_driver  # noqa: E402
 
 
 class CompilerPathTests(unittest.TestCase):
+    def test_default_suite_is_all(self) -> None:
+        with patch.object(sys, "argv", ["test.py"]):
+            self.assertEqual(test_driver.parse_args().suites, ["all"])
+
     def test_relative_executable_survives_a_child_working_directory(self) -> None:
         relative = os.path.relpath(sys.executable)
         executable = test_driver.command_path(relative)

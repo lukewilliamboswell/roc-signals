@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 import known_failures
 import spec_driver
+from toolchain import replace_platform
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -126,10 +127,10 @@ def load_examples() -> tuple[Example, ...]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    suites = ("all", "published", "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "wasm-bench", "native", "fault", "bundle", "bench")
     parser.add_argument(
         "suites",
         nargs="*",
-        choices=("all", "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "wasm-bench", "native", "fault", "bundle", "bench"),
         default=["all"],
         help="Suites to run. Defaults to all.",
     )
@@ -201,7 +202,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bench-iterations", type=int, default=20, metavar="N", help="Fresh paired iterations per Wasm benchmark sample.")
     parser.add_argument("--bench-samples", type=int, default=7, metavar="N", help="Wasm benchmark samples per case.")
     parser.add_argument("--bench-app-opt", choices=("size", "speed"), default="size", help="Roc Wasm application optimization mode.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if any(suite not in suites for suite in args.suites):
+        parser.error("unknown suite; choose from " + ", ".join(suites))
+    return args
 
 
 def run(command: list[str | Path], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> None:
@@ -291,6 +295,7 @@ def run_zig_suite() -> None:
         "scripts/test_benchmark_manifest.py",
         "scripts/test_driver_paths.py",
         "scripts/test_known_failures.py",
+        "scripts/test_release.py",
     ])
 
 
@@ -710,11 +715,10 @@ def run_wasm_runtime_benchmarks(roc_bin: str, args: argparse.Namespace) -> None:
 
 
 def rewrite_platform_headers(root: Path, platform_ref: str) -> None:
-    replacement = f'platform "{platform_ref}"'
     for source in sorted(root.rglob("*.roc")):
         text = source.read_text(encoding="utf-8")
-        updated, count = PLATFORM_HEADER_RE.subn(replacement, text, count=1)
-        if count != 0:
+        updated = replace_platform(text, platform_ref)
+        if updated != text:
             source.write_text(updated, encoding="utf-8")
 
 
@@ -934,6 +938,12 @@ def main() -> int:
 
     validate_args_before_build(args, suites)
     roc_bin = command_path(args.roc_bin)
+    if "published" in suites:
+        if suites != {"published"}:
+            raise SystemExit("published runs independently of development suites")
+        from release import check_published
+        check_published(roc_bin)
+        return 0
     ensure_clean_output(args.keep_output)
 
     build_hosts()

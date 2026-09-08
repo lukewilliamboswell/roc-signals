@@ -29,11 +29,17 @@ CI uses the official `roc-lang/setup-roc` GitHub Action. The repository does not
 build Roc itself. The site build uses standalone command-line tools only; there
 is no npm dependency or package manifest.
 
-Pull requests run the normal Zig, browser, and Roc checks plus a Wasm build and
-mount smoke pass on one Linux runner. Pushes to `main` (and manual runs) run the
-complete test suite and native-host coverage on one macOS runner. The static
-site is built separately on Linux for deployment; it does not duplicate the
-test suite.
+Pull requests, pushes to `main`, and nightly validation run the source suite and
+native coverage, public examples against their committed release URLs, and the
+exact candidate archives. The required checks are `Platform source`, `Published
+examples`, and `Release archive`. The release workflow additionally validates
+archives on Linux x64/arm64 and Intel/Apple Silicon macOS. Pages deploys the
+supported release, not development builds from ordinary pushes.
+
+Compiler pins live in the platform and public application headers. Run
+`python3 scripts/toolchain.py --check --roc-bin /path/to/roc` to validate the
+selected roots and installed compiler. The nightly bot advances those pins while
+preserving release URLs and automatically merges only a passing pin-only PR.
 
 ## Test Driver
 
@@ -61,6 +67,7 @@ python3 scripts/test.py native --native always
 python3 scripts/test.py fault --native always
 python3 scripts/test.py bundle --bundle always
 python3 scripts/test.py bench --native always
+python3 scripts/test.py published
 ```
 
 `wasm-bench` is the manual Node/V8 performance workflow for the complete
@@ -416,26 +423,55 @@ output, rebuild with `--app-opt size`; both modes write `dist/`.
 
 Keep user-facing changes and migration instructions in `releases/unreleased.md`,
 reviewed alongside the implementation. Before publishing, rename it to
-`releases/<exact-release-tag>.md` (including a `v` prefix if the tag has one),
+`releases/<exact-release-tag>.md` (unprefixed SemVer, such as `0.2.0-rc1`),
 replace the unreleased heading with that version, and name the explicit
 source → target version in the migration section. Create a fresh unreleased file
 when work on the next release begins. Published notes describe that upgrade;
 do not rewrite them to follow later APIs. The site guides document the supported
 API and link to releases rather than duplicating version-specific instructions.
 
-The `Release` GitHub Actions workflow is manually triggered. It installs the
-compiler pinned in `.roc-version` for both building and testing. Provide the exact
-release tag to publish, matching the URL you intend to put in
-`www/config.toml`; the workflow builds ReleaseSmall host artifacts, creates the
-platform bundle, tests the downloaded bundle on Intel and Apple Silicon macOS
-runners, then creates a GitHub release with the platform bundle and
-`signals-browser.zip` attached. The browser archive contains the executor and
-its relative imports, plus a compiler-pin and SHA-256 manifest. The workflow
-checks that the downloaded runtime imports successfully outside the checkout.
-The workflow requires a nonempty `releases/<exact-release-tag>.md` before
-building and uses that file verbatim as the GitHub Release body. There is no
-fallback to unreleased or automatically generated notes. Review and commit the
-finalized notes on the workflow's selected ref before triggering a release.
+Dispatch `Release` on `main` with `release_tag` and `nightly_validation: false`.
+The release guard explicitly permits exact-nightly bootstrap; it does not claim
+a stable Roc compiler exists. Preparation records the final source SHA and builds
+ReleaseSmall hosts, the platform archive, `signals-browser.zip`, and complete
+`signals-starters.zip`. Tests run those exact artifacts before publication. The
+release body combines the committed versioned notes with compiler/source identity,
+named URLs, and SHA-256 digests in `signals-release.json`.
+
+To exercise preparation locally:
+
+```sh
+python3 scripts/release.py prepare --version 0.2.0-rc1
+python3 scripts/release.py check
+python3 scripts/release.py verify
+```
+
+Output defaults to ignored `.release-out/` and must be empty before preparation;
+retain an existing candidate when investigating or recovering a release. Published
+checks use isolated caches and committed URLs without rebinding. They do not build
+hosts or borrow the checkout's browser executor. Candidate checks rewrite only
+temporary starter copies to a loopback URL for the exact proposed archive.
+
+After upload, the workflow verifies actual downloads, deploys `signals-site.zip`,
+and opens a verified signed follow-up PR updating public URLs and
+`releases/current.json`. It explicitly dispatches and reports required checks on
+that PR's head; the release follow-up is manually merged. Compiler pins are
+preserved. A moved base or occupied follow-up branch is refused rather than
+overwritten. Nightly validation performs none of these writes.
+
+The site archive retains earlier `/versions/<version>/` pages and platform
+downloads, and serves the supported release at the existing landing URLs. The
+initial migration restores platform downloads from the actually deployed site's
+Actions artifact and refuses to proceed if it cannot recover that evidence.
+Rendered documentation stays in artifacts, not Git.
+
+Ordinary publication rejects any existing tag or release. After partial
+publication, inspect the tag SHA and every existing asset against the retained
+`signals-release.json` and original Actions artifacts. Preserve matching files;
+upload only missing original assets through a reviewed recovery operation, verify
+fresh downloads, then resume deployment/follow-up. Do not rerun preparation from
+a moving branch, overwrite assets, or move a tag. If the original artifacts cannot
+be recovered, prepare a new version rather than claiming the old identity.
 
 ## Spec Language
 
@@ -684,6 +720,6 @@ roc glue <path-to-roc>/src/glue/src/ZigGlue.roc src/signals platform/main.roc
 zig fmt src/signals/roc_platform_abi.zig
 ```
 
-Use the `ZigGlue.roc` from the same Roc commit named by `.roc-version`. The host
+Use the `ZigGlue.roc` from the same Roc commit named by the `roc` header in `platform/main.roc`. The host
 uses the generated types' public `incref` and `decref` methods; generated helper
 functions are implementation details and must not be made public by hand.

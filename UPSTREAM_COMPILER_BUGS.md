@@ -4,7 +4,7 @@ Roc compiler and builtin bugs this repo has hit, with the workaround each one
 forced on us. Every entry names the workaround site so the code can be
 un-worked-around once the upstream fix lands.
 
-Toolchain: the nightly pinned in `.roc-version`, which is what CI installs.
+Toolchain: the nightly pinned in the `roc` header in `platform/main.roc`, which is what CI installs.
 Individual entries record the versions on which they were reproduced; older
 entries are historical evidence, not claims that every bug persists on the pin.
 `scripts/dev/check-example.sh` and `scripts/test.py` both read `ROC_BIN`, so

@@ -2,13 +2,23 @@
 
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
-import { publicExampleTaskHandler } from "../../www/static/example_tasks.mjs";
-import { serviceOpsBehaviors } from "../../www/static/service_ops_charts.mjs";
-import { SignalsRuntime, instantiateSignalsBytes } from "../../www/static/signals.mjs";
 import { findByText, findNode, fireEvent, installDomDouble } from "./dom_double.mjs";
 
 const args = process.argv.slice(2);
+const runtimeIndex = args.indexOf("--runtime-dir");
+let runtimeBase = new URL("../../www/static/", import.meta.url);
+if (runtimeIndex !== -1) {
+  const directory = args[runtimeIndex + 1];
+  if (!directory || directory.startsWith("--")) throw new Error("--runtime-dir requires a directory");
+  runtimeBase = pathToFileURL(resolve(directory) + "/");
+  args.splice(runtimeIndex, 2);
+}
+const { publicExampleTaskHandler } = await import(new URL("example_tasks.mjs", runtimeBase));
+const { serviceOpsBehaviors } = await import(new URL("service_ops_charts.mjs", runtimeBase));
+const { SignalsRuntime, instantiateSignalsBytes } = await import(new URL("signals.mjs", runtimeBase));
 const wasmPath = args.shift();
 let expectError = "";
 let printTelemetrySummary = false;

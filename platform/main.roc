@@ -4,6 +4,7 @@ platform ""
 	}
 	exposes [Elem, Signal, Html, Svg, Ui, Http, Browser, Rows]
 	packages {
+		roc: "nightly-2026-09-04-c125b82",
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
 	}
 	provides { "roc_ui_init": ui_init }

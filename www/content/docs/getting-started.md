@@ -15,11 +15,11 @@ WebAssembly.
 
 **Required**
 
-- **[Roc](https://www.roc-lang.org/install)** — a recent nightly. Roc is pre-1.0
-  and its syntax still moves; if a code sample here fails to parse, your
-  compiler is probably older or newer than this platform expects.
-- **[Zig 0.16.0](https://ziglang.org/download/)** — builds the host artifacts
-  that Roc links your app against. You do not write any Zig.
+- **[Roc](https://www.roc-lang.org/install)** — install the exact nightly named
+  in your example's `roc` header. Nightly updates are tested against the pinned
+  released dependencies before their compiler pins advance.
+- **Zig 0.16.0** is needed only when developing the platform from source. Release
+  archives already contain the host binaries that Roc links your app against.
 
 **Only if you want to build the full site**
 
@@ -29,10 +29,14 @@ WebAssembly.
 
 ## Get the platform
 
-Roc app headers can reference a platform archive over HTTPS. Downloadable
-examples on this site point at the archive built with the site itself. For
-development against this checkout, use the clone workflow below and install the
-Roc nightly named in its `.roc-version`. When upgrading an existing app, follow
+Download `signals-starters.zip` from the supported platform release. It contains
+complete applications, native specs, the matching browser runtime, and a README
+with direct Roc build commands. Its application headers name immutable release
+URLs; no platform checkout, Zig build, or Python test wrapper is needed.
+
+For development against this checkout, use the clone workflow below and install
+the nightly named in the `roc` header in `platform/main.roc`.
+When upgrading an existing app, follow
 the migration instructions in the target version's
 [release notes](https://github.com/lukewilliamboswell/roc-signals/releases).
 Changes not yet released are recorded in the repository's
@@ -281,7 +285,7 @@ Run `zig build build-test-hosts -Doptimize=ReleaseSmall`.
 
 **`EFFECTFUL FUNCTION NAME` errors pointing inside the platform**
 Your Roc compiler and the platform disagree. Check the compiler pin for your
-platform release, or `.roc-version` when working from a clone. Rebuild the app
+platform release, or the `roc` header in `platform/main.roc` when working from a clone. Rebuild the app
 with the matching compiler and deploy its matching browser runtime.
 
 **`LITERAL DEFAULTED ... given the default type Dec`**

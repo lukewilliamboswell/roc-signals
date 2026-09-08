@@ -1,4 +1,4 @@
-app [main] { pf: platform "../../platform/main.roc" }
+app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform/main.roc" }
 
 ## Split the Bill — the gallery's teaching example for derived state.
 ##

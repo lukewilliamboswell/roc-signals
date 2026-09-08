@@ -38,7 +38,25 @@ this order:
 
 The platform architecture and host boundary notes live in [design.md](design.md).
 
-## Try It Locally
+## Use a release
+
+Download `signals-starters.zip` from the [supported release](https://github.com/lukewilliamboswell/roc-signals/releases).
+It contains the complete examples, native specs, browser runtime, and direct Roc
+build commands. Install the exact compiler named in the application's `roc`
+header. A platform archive already contains its host binaries; users need no
+Zig build or repository checkout.
+
+Public examples pin immutable platform/package release URLs. The nightly bot
+updates their compiler pins and the development platform pin together, tests both
+the released dependencies and current source, and automatically merges passing
+pin-only updates. Failed updates remain open for investigation. A repair may need
+a new release before the examples can accept that compiler.
+
+The first release candidate for the new API is `0.2.0-rc1`; compiler compatibility
+branches are not needed during this exact-nightly bootstrap. Package versions
+are independent of Roc versions. See [nightly maintenance](.github/ROC_NIGHTLY.md).
+
+## Develop locally
 
 Build and serve the static site with the examples:
 

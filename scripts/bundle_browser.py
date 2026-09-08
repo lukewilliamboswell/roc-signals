@@ -15,14 +15,16 @@ from pathlib import Path
 import re
 import zipfile
 
+from toolchain import development_pin
+
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "www" / "static"
 
 
-def runtime_files() -> dict[str, bytes]:
+def runtime_files(entries: tuple[str, ...] = ("signals.mjs",)) -> dict[str, bytes]:
     """Collect the entry module's static relative imports, rejecting escapes."""
-    pending = ["signals.mjs"]
+    pending = list(entries)
     files: dict[str, bytes] = {}
     while pending:
         name = pending.pop()
@@ -44,7 +46,7 @@ def bundle(output: Path) -> None:
     files = runtime_files()
     files["LICENSE"] = (ROOT / "LICENSE").read_bytes()
     manifest = {
-        "roc_version": (ROOT / ".roc-version").read_text().strip(),
+        "roc_version": development_pin(ROOT),
         "sha256": {name: hashlib.sha256(data).hexdigest() for name, data in sorted(files.items())},
     }
     files["signals-runtime.json"] = (json.dumps(manifest, indent=2) + "\n").encode()
