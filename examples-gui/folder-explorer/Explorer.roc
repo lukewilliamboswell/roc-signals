@@ -59,6 +59,39 @@ Explorer :: [].{
 		{ path: "release-notes.md", kind: File, bytes: 0 },
 	]
 
+	## A path's lexical parent; sample root is empty and filesystem root is "/".
+	parent_path : Str -> Str
+	parent_path = |path| {
+		var $path = path
+		while $path != "/" and $path.ends_with("/") {
+			$path = $path.drop_suffix("/")
+		}
+		parts = $path.split_on("/")
+		parent = Str.join_with(parts.take_first(parts.len() - 1), "/")
+		if parent.is_empty() and $path.starts_with("/") {
+			"/"
+		} else {
+			parent
+		}
+	}
+
+	file_name : Str -> Str
+	file_name = |path| path.split_on("/").fold(path, |_, part| part)
+
+	## The sample tree uses the same direct-child navigation as real directories.
+	sample_children : Str -> List(Entry)
+	sample_children = |path| sample_entries.keep_if(|entry| parent_path(entry.path) == path)
+
+	sample_text : Str -> Str
+	sample_text = |path| match path {
+		"README.md" => "# Fieldwork workspace\n\nA small sample project for exploring folders and previews.\n\nOpen docs for the launch checklist, src for Roc modules, or test for interaction specs.\nThese sample files stay inside this demonstration."
+		"docs/launch-checklist.md" => "# Launch checklist\n\n- Review the welcome screen\n- Confirm keyboard navigation\n- Run the editing and navigation specs\n- Update the release notes"
+		"docs/research-notes.md" => "# Research notes\n\nKeep the current directory visible during background work.\nLet people cancel a slow operation without losing their place."
+		"docs/日本語.md" => "# 日本語のメモ\n\nファイル名と本文の両方で Unicode を保持します。"
+		"release-notes.md" => ""
+		_ => "Sample preview for ${path}.\n\nChoose a folder on this computer to inspect real file contents."
+	}
+
 	## Shorten the visible label without changing the exact path used for identity,
 	## filtering, selection, or the inspector. Only a complete root prefix is removed.
 	relative_path : Str, Str -> Str
@@ -244,3 +277,7 @@ expect {
 				Explorer.relative_path("/tmp/project", "/tmp/project-copy/readme.md") == "/tmp/project-copy/readme.md" and
 					Explorer.relative_path("", "docs/readme.md") == "docs/readme.md"
 }
+
+expect Explorer.sample_children("").map(|entry| entry.path) == ["assets", "docs", "src", "test", "README.md", "release-notes.md"]
+expect Explorer.sample_children("docs").map(|entry| entry.path) == ["docs/launch-checklist.md", "docs/research-notes.md", "docs/日本語.md"]
+expect Explorer.parent_path("/tmp/project/") == "/tmp" and Explorer.parent_path("/tmp") == "/" and Explorer.parent_path("/") == "/" and Explorer.parent_path("docs/file.txt") == "docs"
