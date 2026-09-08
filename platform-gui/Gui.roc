@@ -32,6 +32,7 @@ Attribute := [
 	TestId(Str),
 	Selected(Signal(Bool)),
 	Enabled(Signal(Bool)),
+	Shortcut(Node.KeyChord, Node.Msg),
 ]
 
 native_style_field : Node.TextField
@@ -120,6 +121,14 @@ lower_attrs = |direction, defaults, attrs| {
 					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: { id: 2 } })
 					_ => crash "expected a signal bool descriptor"
 				}
+				Attribute.Shortcut(chord, msg) => Node.Attr.On({
+					kind: { id: 0 },
+					name: "keydown",
+					msg,
+					policy: { ..Html.event_policy_none, prevent_default: True, stop_propagation: True },
+					delivery: Html.event_delivery_native,
+					key_chord: Some(chord),
+				})
 			},
 		),
 	)
@@ -135,6 +144,14 @@ Gui := [].{
 	Overflow : Overflow
 	Msg : Node.Msg
 	Cmd : Node.Cmd
+	KeyChord : Node.KeyChord
+
+	## Bind an exact key and all modifiers within this focused region. The nearest
+	## matching ancestor receives one unit event and consumes the keystroke.
+	## Letters are lowercase a-z; digits and the documented named keys are valid.
+	## Duplicate chords and more than 32 shortcuts on one element are errors.
+	on_shortcut : KeyChord, Msg -> Attr
+	on_shortcut = |chord, message| Attribute.Shortcut(chord, message)
 
 	## Neutral column presentation. Zero font size and Default colors inherit.
 	## Dimensions, spacing and font size are logical pixels, bounded at 16384.
@@ -203,13 +220,15 @@ Gui := [].{
 		if props.row_height == 0 or props.row_height > 16384 {
 			crash "Gui virtual row height must be between 1 and 16384"
 		}
-		encoded = props.follow_tail.map(|follow| "1,${props.row_height.to_str()},${
-			if follow {
-				"1"
-			} else {
-				"0"
-			}
-		}")
+		encoded = props.follow_tail.map(
+			|follow| "1,${props.row_height.to_str()},${
+				if follow {
+					"1"
+				} else {
+					"0"
+				}
+			}",
+		)
 		viewport = match Html.attr_s("", encoded) {
 			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: { id: 9 } })
 			_ => crash "expected a signal text descriptor"

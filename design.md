@@ -974,8 +974,20 @@ EventBinding := {
                        # capture, passive, once, self, trusted
   delivery,            # requested/effective/reason
   payload_descriptor,
+  key_chord,           # optional exact native key + modifier filter
 }
 ```
+
+Native keyboard shortcuts bind a unit `keydown` event with an explicit key and
+all four modifiers. The binding key includes that optional filter, so multiple
+chords in one region remain distinct and duplicate chords are errors. A region
+owns at most 32 shortcuts. Their messages, reads, and disposal use the same
+scope-owned event table as other controls; the GUI adapter does not create a
+command registry or infer actions from displayed text. Focused native editing
+actions take precedence, followed by the nearest matching region on the focus
+path. Only an accepted matching binding consumes the keystroke. The browser
+host rejects this native-only filter before command publication until it has an
+explicit executor capability; it must not drop the filter and bind all keys.
 
 `EventDelivery` is derived by the host before render-cache storage. The public
 request is `auto` or `native`. The effective delivery is `native` whenever the

@@ -577,12 +577,21 @@ Supported action commands:
 - `(pointer-down <locator>)`, `(pointer-up <locator>)`
 - `(pointer-enter <locator>)`, `(pointer-leave <locator>)`
 - `(key-down <locator> "<key>" true|false)`
+- `(shortcut <locator> "<key>" <modifier-mask>)` (native GUI)
 - `(focus <locator>)`, `(blur <locator>)`
 - `(composition-start <locator>)`, `(composition-end <locator>)`
 - `(change <locator> "<value>")`, `(select-option <locator> "<value>")`
 - `(custom-event <locator> "<event-name>" "<detail>")`
 - `(submit <locator>)`, `(fill <locator> "<text>")`
 - `(check <locator>)` and `(uncheck <locator>)`
+
+`shortcut` dispatches the exact `Gui.on_shortcut` binding declared on the located
+region through the shared engine. Keys use the public canonical vocabulary;
+modifier bits are Control `1`, Shift `2`, Alt `4`, and Meta `8` (add them for a
+combination). For example, `(shortcut (test-id "editor") "s" 3)` invokes
+Control+Shift+S. Missing bindings, invalid keys, and masks outside `0..15` fail.
+This command checks application semantics and scope disposal. GPUI interaction
+tests cover focused routing, native editor precedence, and event propagation.
 
 Supported assertions:
 

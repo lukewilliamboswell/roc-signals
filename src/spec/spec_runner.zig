@@ -649,6 +649,30 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
+                    .shortcut => {
+                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                            writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
+                            return 1;
+                        };
+                        if (elem.disabled) {
+                            writeLocatorFailure(cmd.line_num, "target is disabled");
+                            return 1;
+                        }
+                        const chord = cmd.shortcut orelse {
+                            writeLocatorFailure(cmd.line_num, "shortcut command is missing its validated chord");
+                            return 1;
+                        };
+                        const event = Ctx.shortcutEvent(elem, chord) orelse {
+                            writeLocatorFailure(cmd.line_num, "target has no binding for this exact shortcut");
+                            return 1;
+                        };
+                        if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
+                            writeLocatorFailure(cmd.line_num, "shortcut binding does not use a unit payload descriptor");
+                            return 1;
+                        }
+                        Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host));
+                    },
+
                     .focus, .blur, .composition_start, .composition_end => {
                         const event_name = namedUnitEventNameForCommand(cmd.cmd_type) orelse {
                             writeLocatorFailure(cmd.line_num, "unsupported named unit event command");

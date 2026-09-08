@@ -4272,7 +4272,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const handler = if (desc.owns_handler) desc.handler else self.activeEventHandlerByIndex(event_index) catch @panic("active event table is missing its retained handler");
                 switch (desc.binding) {
                     .fixed => |kind| stream.appendEvent(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, kind, desc.delivery_request, desc.payload_descriptor, handler),
-                    .named => |binding| stream.appendNamedEvent(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, binding.name, binding.policy, binding.delivery_request, desc.payload_descriptor, handler),
+                    .named => |binding| stream.appendNamedEvent(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, binding.name, binding.policy, binding.delivery_request, binding.key_chord, desc.payload_descriptor, handler),
                 }
             }
 
@@ -4465,16 +4465,18 @@ pub fn Engine(comptime Ctx: type) type {
             const PreparedNamedEventKey = struct {
                 elem_id: u64,
                 name: []const u8,
+                key_chord: ?@import("key_chord.zig").Chord = null,
             };
             const PreparedNamedEventContext = struct {
                 /// Hashes an element identity and its exact event-name bytes.
                 pub fn hash(_: @This(), key: PreparedNamedEventKey) u64 {
-                    return std.hash.Wyhash.hash(key.elem_id, key.name);
+                    const filter: u64 = if (key.key_chord) |chord| (@as(u64, chord.key) << 32) | chord.modifiers else 0;
+                    return std.hash.Wyhash.hash(key.elem_id ^ filter, key.name);
                 }
 
                 /// Compares both the element identity and exact event-name bytes.
                 pub fn eql(_: @This(), left: PreparedNamedEventKey, right: PreparedNamedEventKey) bool {
-                    return left.elem_id == right.elem_id and std.mem.eql(u8, left.name, right.name);
+                    return left.elem_id == right.elem_id and std.mem.eql(u8, left.name, right.name) and @import("key_chord.zig").optionalEql(left.key_chord, right.key_chord);
                 }
             };
             const PreparedNamedEventIndex = std.HashMapUnmanaged(
@@ -6178,7 +6180,17 @@ pub fn Engine(comptime Ctx: type) type {
                     },
                     .named_event => |payload| {
                         const name = payload.name.asSlice();
-                        if (name.len == 0 or self.namedEventExists(elem_id, name)) return error.InvalidDescriptor;
+                        if (name.len == 0 or self.namedEventExists(elem_id, name, payload.key_chord)) return error.InvalidDescriptor;
+                        if (payload.key_chord != null) {
+                            if (comptime @hasDecl(Ctx, "supports_native_shortcuts")) {
+                                if (!Ctx.supports_native_shortcuts) return error.InvalidDescriptor;
+                            }
+                            if (!payload.msg.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) return error.InvalidDescriptor;
+                            const required_policy = render.EventPolicy{ .prevent_default = true, .stop_propagation = true };
+                            if (!payload.policy.eql(required_policy) or payload.delivery_request != .native) return error.InvalidDescriptor;
+                            const shortcut_count = if (self.prepared_named_event_group_by_elem.get(elem_id.raw())) |group| self.prepared_named_event_groups.items[group].shortcut_count else self.existingShortcutCount(elem_id);
+                            if (shortcut_count >= @import("key_chord.zig").max_per_element) return error.ResourceLimit;
+                        }
                         const bytes = std.math.add(usize, @sizeOf(HostNodeEventDesc), name.len) catch return error.ResourceLimit;
                         try self.budget.charge(0, bytes);
                         const group_index = try self.prepareNamedEventGroup(elem_id);
@@ -6193,13 +6205,15 @@ pub fn Engine(comptime Ctx: type) type {
                                 .name = name_copy,
                                 .policy = payload.policy,
                                 .delivery_request = payload.delivery_request,
+                                .key_chord = payload.key_chord,
                             } },
                             .delivery_request = payload.delivery_request,
                             .payload_descriptor = payload.msg.payload_descriptor,
                             .handler = handler,
                         } });
                         self.prepared_named_event_groups.items[group_index].event_ordinals.appendAssumeCapacity(event_ordinal);
-                        self.rememberPreparedNamedEvent(elem_id, name_copy);
+                        if (payload.key_chord != null) self.prepared_named_event_groups.items[group_index].shortcut_count += 1;
+                        self.rememberPreparedNamedEvent(elem_id, name_copy, payload.key_chord);
                         return;
                     },
                     .static_text => |payload| switch (payload.target) {
@@ -6279,15 +6293,25 @@ pub fn Engine(comptime Ctx: type) type {
                 if (result.found_existing) @panic("custom attribute was staged without duplicate validation");
             }
 
-            fn namedEventExists(self: *@This(), elem_id: ids.ElemId, name: []const u8) bool {
+            fn namedEventExists(self: *@This(), elem_id: ids.ElemId, name: []const u8, chord: ?@import("key_chord.zig").Chord) bool {
                 if (builtin.is_test) self.named_event_lookup_work += 1;
-                if (self.stream.namedEventDescriptorExists(elem_id, name)) return true;
-                return self.prepared_named_events.contains(.{ .elem_id = elem_id.raw(), .name = name });
+                if (self.stream.namedEventDescriptorExists(elem_id, name, chord)) return true;
+                return self.prepared_named_events.contains(.{ .elem_id = elem_id.raw(), .name = name, .key_chord = chord });
             }
 
-            fn rememberPreparedNamedEvent(self: *@This(), elem_id: ids.ElemId, name: []const u8) void {
-                const result = self.prepared_named_events.getOrPutAssumeCapacity(.{ .elem_id = elem_id.raw(), .name = name });
+            fn rememberPreparedNamedEvent(self: *@This(), elem_id: ids.ElemId, name: []const u8, chord: ?@import("key_chord.zig").Chord) void {
+                const result = self.prepared_named_events.getOrPutAssumeCapacity(.{ .elem_id = elem_id.raw(), .name = name, .key_chord = chord });
                 if (result.found_existing) @panic("named event was staged without duplicate validation");
+            }
+
+            fn existingShortcutCount(self: *@This(), elem_id: ids.ElemId) usize {
+                var count: usize = 0;
+                // Read this changed element's existing registrations once when
+                // opening its prepared group, then maintain the count in O(1).
+                for (self.stream.namedEventIndices(elem_id)) |index| {
+                    if (self.stream.events.items[index].named().?.key_chord != null) count += 1;
+                }
+                return count;
             }
 
             /// A group's ordinals are appended during preparation, one per
@@ -6306,6 +6330,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var group = HostNodeDescriptorStream.PreparedNamedEventIndexGroup{
                     .elem_id = elem_id,
                     .existed = self.stream.namedEventIndexSlotExists(elem_id.raw()),
+                    .shortcut_count = self.existingShortcutCount(elem_id),
                 };
                 errdefer group.abort(allocator);
                 group.event_ordinals.ensureTotalCapacity(allocator, 1) catch return error.OutOfMemory;
@@ -10513,6 +10538,7 @@ pub fn Engine(comptime Ctx: type) type {
                             .event_id = ids.EventId.fromRaw(std.math.add(u64, std.math.cast(u64, final_index) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit),
                             .policy = binding.policy,
                             .delivery = .{ .requested = binding.delivery_request },
+                            .key_chord = binding.key_chord,
                             .payload_descriptor = desc.payload_descriptor,
                         } });
                     }
@@ -10547,6 +10573,7 @@ pub fn Engine(comptime Ctx: type) type {
                             .event_id = ids.EventId.fromRaw(std.math.add(u64, std.math.cast(u64, final_index) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit),
                             .policy = binding.policy,
                             .delivery = .{ .requested = binding.delivery_request },
+                            .key_chord = binding.key_chord,
                             .payload_descriptor = desc.payload_descriptor,
                         } }) catch return error.OutOfMemory;
                     }
@@ -14214,15 +14241,20 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Performs named event binding for elem name inside the shared engine while preserving transaction and changed-set invariants.
         pub fn namedEventBindingForElemName(stream: *const HostNodeDescriptorStream, elem_id: ids.ElemId, name: []const u8) ?HostRequiredEventBinding {
+            return namedEventBindingForElemFilter(stream, elem_id, name, null);
+        }
+
+        fn namedEventBindingForElemFilter(stream: *const HostNodeDescriptorStream, elem_id: ids.ElemId, name: []const u8, chord: ?@import("key_chord.zig").Chord) ?HostRequiredEventBinding {
             for (stream.namedEventIndices(elem_id)) |index| {
                 if (index >= stream.events.items.len) @panic("named event index exceeded descriptor table");
                 const desc = stream.events.items[index];
                 const binding = desc.named() orelse @panic("named event index pointed at a fixed event descriptor");
-                if (desc.elem_id == elem_id and std.mem.eql(u8, binding.name, name)) {
+                if (desc.elem_id == elem_id and std.mem.eql(u8, binding.name, name) and @import("key_chord.zig").optionalEql(binding.key_chord, chord)) {
                     return .{
                         .event_id = ids.EventId.fromIndex(index + 1),
                         .policy = binding.policy,
                         .delivery = .{ .requested = binding.delivery_request },
+                        .key_chord = binding.key_chord,
                         .payload_descriptor = desc.payload_descriptor,
                     };
                 }
@@ -14233,9 +14265,9 @@ pub fn Engine(comptime Ctx: type) type {
         /// Applies structural named event bindings for elem after preparation has fixed semantics and reserved fallible growth.
         pub fn applyStructuralNamedEventBindingsForElem(self: *Self, ctx: Ctx.Handle, stream: *const HostNodeDescriptorStream, elem_id: ids.ElemId, counts: *render.Counts) void {
             var cache_index: usize = 0;
-            while (self.render_cache.namedEventNameAt(elem_id, cache_index)) |name| {
-                if (namedEventBindingForElemName(stream, elem_id, name) == null) {
-                    self.applyRenderNamedEventBinding(ctx, elem_id, name, null, counts);
+            while (self.render_cache.namedEventAt(elem_id, cache_index)) |event| {
+                if (namedEventBindingForElemFilter(stream, elem_id, event.name, event.binding.key_chord) == null) {
+                    self.render_cache.applyNamedEventBindingFiltered(ctx, elem_id, event.name, event.binding.key_chord, null, counts);
                     continue;
                 }
                 cache_index += 1;
@@ -14253,6 +14285,7 @@ pub fn Engine(comptime Ctx: type) type {
                     .event_id = event_id,
                     .policy = binding.policy,
                     .delivery = .{ .requested = binding.delivery_request },
+                    .key_chord = binding.key_chord,
                     .payload_descriptor = desc.payload_descriptor,
                 }, counts);
             }
@@ -14705,6 +14738,7 @@ pub fn Engine(comptime Ctx: type) type {
                         .event_id = event_id,
                         .policy = binding.policy,
                         .delivery = .{ .requested = binding.delivery_request },
+                        .key_chord = binding.key_chord,
                         .payload_descriptor = desc.payload_descriptor,
                     }, &counts),
                 }
@@ -17642,7 +17676,7 @@ test "nested collection reservations preserve outstanding custom attributes and 
         for (0..4 * batch_size) |index| {
             const elem_id = ids.ElemId.fromRaw(index + 1);
             collection.rememberPreparedCustomAttr(elem_id, "data-value");
-            collection.rememberPreparedNamedEvent(elem_id, "custom-event");
+            collection.rememberPreparedNamedEvent(elem_id, "custom-event", null);
         }
         try std.testing.expectEqual(@as(u32, @intCast(4 * batch_size)), collection.prepared_custom_attrs.count());
         try std.testing.expectEqual(@as(u32, @intCast(4 * batch_size)), collection.prepared_named_events.count());
@@ -17755,8 +17789,8 @@ test "staged named event duplicate lookup work scales linearly" {
             defer collection.deinit();
             for (names, 0..) |*name_buffer, index| {
                 const name = try std.fmt.bufPrint(name_buffer, "event-{d}", .{index});
-                try std.testing.expect(!collection.namedEventExists(ids.ElemId.fromRaw(1), name));
-                collection.rememberPreparedNamedEvent(ids.ElemId.fromRaw(1), name);
+                try std.testing.expect(!collection.namedEventExists(ids.ElemId.fromRaw(1), name, null));
+                collection.rememberPreparedNamedEvent(ids.ElemId.fromRaw(1), name, null);
             }
             try std.testing.expectEqual(@as(u32, @intCast(count)), collection.prepared_named_events.count());
             return collection.named_event_lookup_work;
@@ -18543,6 +18577,7 @@ test "staged fixed event publication is allocation free" {
         .name = abi.RocStr.empty(),
         .delivery = .{ .native = false },
         .policy = std.mem.zeroes(abi.NodeEventBindingPolicy),
+        .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
     } }, .tag = .On };
     try collection.appendAttr(&roc_host, ids.ScopeId.fromRaw(0), ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }});
     fault.configure(1);
@@ -18570,6 +18605,7 @@ test "staged named event sweeps allocation failures and retries without visibili
         .name = abi.RocStr.fromSlice("keydown", undefined),
         .delivery = .{ .native = false },
         .policy = std.mem.zeroes(abi.NodeEventBindingPolicy),
+        .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
     } }, .tag = .On };
 
     var counter = FaultAllocator.init(std.testing.allocator);
@@ -18639,6 +18675,7 @@ test "transactional component and state root sweeps failures and publishes initi
         .name = abi.RocStr.fromSlice("keydown", undefined),
         .delivery = .{ .native = false },
         .policy = std.mem.zeroes(abi.NodeEventBindingPolicy),
+        .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
     } }, .tag = .On };
     const custom_attr = abi.NodeAttr{ .payload = .{ .static_text = .{
         .field = .{ .id = abi_view.node_text_field_custom },
@@ -18722,6 +18759,7 @@ test "prepared root collection aborts every allocation point and retries on the 
         .name = abi.RocStr.fromSlice("keydown", undefined),
         .delivery = .{ .native = false },
         .policy = std.mem.zeroes(abi.NodeEventBindingPolicy),
+        .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
     } }, .tag = .On };
     var child = verifyStaticRoot(&.{named_attr}, &.{});
     var state_root = abi.Elem{ .payload = .{ .state = .{
@@ -18812,6 +18850,7 @@ test "prepared initial root downstream sweeps failures and commits allocation fr
         .name = abi.RocStr.fromSlice("keydown", undefined),
         .delivery = .{ .native = false },
         .policy = std.mem.zeroes(abi.NodeEventBindingPolicy),
+        .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
     } }, .tag = .On };
     const signal_attr = abi.NodeAttr{ .payload = .{ .signal_text = .{
         .field = .{ .id = @intFromEnum(RenderTextField.value) },
@@ -20130,4 +20169,83 @@ comptime {
     verifyCtx(VerifyCtx);
     std.debug.assert(@sizeOf(NoMetrics) == 0);
     _ = Engine(VerifyCtx);
+}
+
+fn testNativeShortcutAttr(key: []const u8, modifiers: u32, binder: HostBinderToken) abi.NodeAttr {
+    const extraction = EventExtractionPlanKind.none.bytes();
+    return .{ .payload = .{ .on = .{
+        .kind = .{ .id = 0 },
+        .name = abi.RocStr.fromSlice("keydown", undefined),
+        .delivery = .{ .native = true },
+        .policy = .{ .prevent_default = true, .stop_propagation = true, .stop_immediate = false, .capture = false, .passive = false, .once = false, .self = false, .trusted = false },
+        .key_chord = .{ .tag = .Some, .payload = .{ .some = .{
+            .key = abi.RocStr.fromSlice(key, undefined),
+            .control = modifiers & 1 != 0,
+            .shift = modifiers & 2 != 0,
+            .alt = modifiers & 4 != 0,
+            .meta = modifiers & 8 != 0,
+        } } },
+        .msg = .{
+            .event_extraction_plan = .{ .bytes = .{ .elements_ptr = @constCast(extraction.ptr), .length = extraction.len, .capacity_or_alloc_ptr = extraction.len << 1 } },
+            .handler = .{ .tag = .Reduce, .payload = .{ .reduce = .{
+                .binder = binder,
+                .read_binder = binder,
+                .payload_reducer = std.mem.zeroes(HostEventReducer),
+            } } },
+        },
+    } }, .tag = .On };
+}
+
+test "native shortcuts reject duplicate chords and reserve bounded owned bindings" {
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer deinitVerifyStaticEngine(&engine, &ctx);
+    var stream: HostNodeDescriptorStream = .{};
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    defer stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .nodes = 1, .attrs = 35, .events = 35, .named_events = 35 }, 1);
+    defer collection.deinit();
+    const binder: HostBinderToken = @ptrFromInt(0x8200);
+    const bindings = &[_]HostBinderBinding{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }};
+    const scope = ids.ScopeId.fromRaw(0);
+    const elem = ids.ElemId.fromRaw(1);
+    var unfiltered = testNativeShortcutAttr("s", 0, binder);
+    unfiltered.payload.on.key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord"));
+    try collection.appendAttr(&roc_host, scope, elem, unfiltered, bindings);
+    for (0..32) |index| {
+        const key = [_]u8{if (index < 26) @as(u8, @intCast(index)) + 'a' else @as(u8, @intCast(index - 26)) + '0'};
+        try collection.appendAttr(&roc_host, scope, elem, testNativeShortcutAttr(&key, 1, binder), bindings);
+    }
+    try std.testing.expectError(error.InvalidDescriptor, collection.appendAttr(&roc_host, scope, elem, testNativeShortcutAttr("s", 1, binder), bindings));
+    try std.testing.expectError(error.ResourceLimit, collection.appendAttr(&roc_host, scope, elem, testNativeShortcutAttr("s", 3, binder), bindings));
+    try std.testing.expectEqual(@as(usize, 0), stream.events.items.len);
+    try std.testing.expectEqual(@as(usize, 33), collection.prepared_events.items.len);
+    collection.commit();
+    try std.testing.expectEqual(@as(usize, 33), stream.events.items.len);
+    try std.testing.expectEqual(@as(u32, 's'), stream.events.items[19].named().?.key_chord.?.key);
+    try std.testing.expectEqual(@as(u32, 1), stream.events.items[19].named().?.key_chord.?.modifiers);
+}
+
+test "native shortcuts distinguish modifiers and reject conflicting event policy" {
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer deinitVerifyStaticEngine(&engine, &ctx);
+    var stream: HostNodeDescriptorStream = .{};
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    defer stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .nodes = 1, .attrs = 3, .events = 3, .named_events = 3 }, 1);
+    defer collection.deinit();
+    const binder: HostBinderToken = @ptrFromInt(0x8200);
+    const bindings = &[_]HostBinderBinding{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }};
+    const scope = ids.ScopeId.fromRaw(0);
+    const elem = ids.ElemId.fromRaw(1);
+    try collection.appendAttr(&roc_host, scope, elem, testNativeShortcutAttr("s", 1, binder), bindings);
+    try collection.appendAttr(&roc_host, scope, elem, testNativeShortcutAttr("s", 3, binder), bindings);
+    var invalid = testNativeShortcutAttr("n", 1, binder);
+    invalid.payload.on.policy.prevent_default = false;
+    try std.testing.expectError(error.InvalidDescriptor, collection.appendAttr(&roc_host, scope, elem, invalid, bindings));
+    try std.testing.expectEqual(@as(usize, 2), collection.prepared_events.items.len);
+    try std.testing.expectEqual(@as(usize, 0), stream.events.items.len);
 }

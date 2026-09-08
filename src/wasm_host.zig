@@ -47,6 +47,7 @@ const EventClearCommand = render_sink.EventClearCommand;
 const HostActiveEventDesc = SharedEngine.ActiveEventDesc;
 
 const WasmCtx = struct {
+    pub const supports_native_shortcuts = false;
     pub const Handle = WasmCtx;
     pub const RegistryOps = hv.RegistryOps();
     pub const Metrics = if (build_options.wasm_benchmark) engine.RuntimeMetrics else engine.NoMetrics;
@@ -229,6 +230,7 @@ const WasmSink = struct {
 
     /// Publishes a validated canonical event binding selected by the engine.
     pub fn bindEvent(_: WasmSink, elem_id: ids.ElemId, key: EventBindingKey, binding: EventBinding) void {
+        if (binding.key_chord != null) failHostWithFmt("native keyboard shortcuts are unsupported by the browser host", .{});
         appendEventBindCommand(.{ .elem_id = elem_id, .key = key, .binding = binding });
     }
 
@@ -772,6 +774,7 @@ fn appendEventBindCommand(command: EventBindCommand) void {
             }
         },
         .named => |name| appendDynamicBindEvent(elem_id, name, toU32(binding.event_id.raw()), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor),
+        .filtered => failHostWith("native keyboard shortcuts are unsupported by the browser host"),
     }
 }
 
@@ -780,6 +783,7 @@ fn appendEventClearCommand(command: EventClearCommand) void {
     switch (command.key) {
         .fixed => |kind| appendCommand(.clear_event, elem_id, toU32(@intFromEnum(kind)), 0, 0, 0),
         .named => |name| appendDynamicClearEvent(elem_id, name),
+        .filtered => failHostWith("native keyboard shortcuts are unsupported by the browser host"),
     }
 }
 

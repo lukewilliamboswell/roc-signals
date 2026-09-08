@@ -330,6 +330,7 @@ pub const NamedEventBinding = struct {
     name: []const u8,
     policy: EventPolicy,
     delivery_request: EventDeliveryRequest = .auto,
+    key_chord: ?@import("key_chord.zig").Chord = null,
 };
 
 pub const EventBinding = union(enum) {
@@ -2451,6 +2452,7 @@ pub const Stream = struct {
         elem_id: ElemId,
         existed: bool,
         event_ordinals: shared_buffer.List(usize) = .empty,
+        shortcut_count: usize = 0,
 
         /// Drops provisional resources and restores the plan to an unpublished state.
         pub fn abort(self: *@This(), allocator: std.mem.Allocator) void {
@@ -3488,21 +3490,21 @@ pub const Stream = struct {
     }
 
     /// Maintains named event descriptor exists within the indexed descriptor stream used by both hosts.
-    pub fn namedEventDescriptorExists(self: *const Stream, elem_id: ElemId, name: []const u8) bool {
+    pub fn namedEventDescriptorExists(self: *const Stream, elem_id: ElemId, name: []const u8, chord: ?@import("key_chord.zig").Chord) bool {
         for (self.namedEventIndices(elem_id)) |index| {
             if (index >= self.events.items.len) @panic("named event index exceeded descriptor table");
             const desc = self.events.items[index];
             const binding = desc.named() orelse @panic("named event index pointed at a fixed event descriptor");
-            if (desc.elem_id == elem_id and std.mem.eql(u8, binding.name, name)) return true;
+            if (desc.elem_id == elem_id and std.mem.eql(u8, binding.name, name) and @import("key_chord.zig").optionalEql(binding.key_chord, chord)) return true;
         }
         return false;
     }
 
     /// Copies a named event edge, retaining its handler and copying its name.
-    /// Duplicate names on one element are descriptor errors, not aliases.
-    pub fn appendNamedEvent(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: ElemId, name: []const u8, policy: EventPolicy, delivery_request: EventDeliveryRequest, payload_descriptor: BoundaryPayloadDescriptor, handler: EventHandler) void {
+    /// Duplicate names with the same key filter are descriptor errors, not aliases.
+    pub fn appendNamedEvent(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: ElemId, name: []const u8, policy: EventPolicy, delivery_request: EventDeliveryRequest, chord: ?@import("key_chord.zig").Chord, payload_descriptor: BoundaryPayloadDescriptor, handler: EventHandler) void {
         if (name.len == 0) @panic("named event descriptor used an empty event name");
-        if (self.namedEventDescriptorExists(elem_id, name)) @panic("element has duplicate named event descriptors");
+        if (self.namedEventDescriptorExists(elem_id, name, chord)) @panic("element has duplicate named event descriptors");
 
         var retained_handler = handler.cloneOwned(allocator, metrics) catch @panic("out of memory");
         const name_copy = allocator.dupe(u8, name) catch {
@@ -3516,6 +3518,7 @@ pub const Stream = struct {
                 .name = name_copy,
                 .policy = policy,
                 .delivery_request = delivery_request,
+                .key_chord = chord,
             } },
             .delivery_request = delivery_request,
             .payload_descriptor = payload_descriptor,
@@ -5789,9 +5792,9 @@ test "prepared fixed and named event replacement is allocation free" {
     const old_handler = EventHandler{ .reduce = .{ .binder_token = token, .target_node_id = NodeId.fromRaw(7), .read_binder_token = token, .read_node_id = NodeId.fromRaw(7), .payload_reducer = reducer } };
     const new_handler = EventHandler{ .reduce = .{ .binder_token = token, .target_node_id = NodeId.fromRaw(8), .read_binder_token = token, .read_node_id = NodeId.fromRaw(8), .payload_reducer = reducer } };
     active.appendEvent(allocator, &ctx, &roc_host, &metrics, ElemId.fromRaw(1), .click, .auto, payload, old_handler);
-    active.appendNamedEvent(allocator, &ctx, &roc_host, &metrics, ElemId.fromRaw(1), "old", .{}, .auto, payload, old_handler);
+    active.appendNamedEvent(allocator, &ctx, &roc_host, &metrics, ElemId.fromRaw(1), "old", .{}, .auto, null, payload, old_handler);
     replacement.appendEvent(allocator, &ctx, &roc_host, &metrics, ElemId.fromRaw(2), .click, .auto, payload, new_handler);
-    replacement.appendNamedEvent(allocator, &ctx, &roc_host, &metrics, ElemId.fromRaw(2), "new", .{}, .auto, payload, new_handler);
+    replacement.appendNamedEvent(allocator, &ctx, &roc_host, &metrics, ElemId.fromRaw(2), "new", .{}, .auto, null, payload, new_handler);
 
     try active.reserveMovedStreamPublication(allocator, &replacement);
     try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 2, &.{1}, &active, &.{}, 0, 0, 0);

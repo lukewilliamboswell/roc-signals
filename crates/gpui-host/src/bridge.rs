@@ -1,4 +1,5 @@
 //! Single-threaded owner of the experimental native ABI. No Roc layout enters Rust.
+use crate::shortcut::{MAX_PER_ELEMENT, Shortcut};
 use std::{marker::PhantomData, rc::Rc};
 
 #[derive(Clone, Debug, Default)]
@@ -21,6 +22,7 @@ pub struct Node {
     pub checked: bool,
     pub selected: bool,
     pub disabled: bool,
+    pub shortcuts: Vec<Shortcut>,
 }
 /// Validated native presentation v1, copied from the committed C boundary.
 #[repr(C)]
@@ -103,6 +105,7 @@ pub struct Engine {
     dispatch: unsafe extern "C" fn(u64, u32, *const u8, usize, u32),
     count: unsafe extern "C" fn() -> usize,
     read: unsafe extern "C" fn(usize, *mut RawNode),
+    read_shortcuts: unsafe extern "C" fn(u64, *mut Shortcut, usize) -> usize,
     metrics: unsafe extern "C" fn(*mut u64),
     tick: unsafe extern "C" fn(),
     child_at: unsafe extern "C" fn(u64, usize) -> u64,
@@ -116,6 +119,7 @@ impl Engine {
                 dispatch: signals_dispatch,
                 count: signals_changed_count,
                 read: signals_read_changed,
+                read_shortcuts: signals_read_shortcuts,
                 metrics: signals_metrics,
                 tick: signals_tick,
                 child_at: signals_child_at,
@@ -123,7 +127,7 @@ impl Engine {
             };
             assert_eq!(
                 signals_protocol_version(),
-                3,
+                4,
                 "native GUI protocol mismatch"
             );
             assert_eq!(
@@ -144,6 +148,16 @@ impl Engine {
                     let mut raw = std::mem::MaybeUninit::<RawNode>::uninit();
                     (self.read)(i, raw.as_mut_ptr());
                     let r = raw.assume_init();
+                    let mut shortcuts = [Shortcut::default(); MAX_PER_ELEMENT];
+                    let shortcut_count = if r.active != 0 {
+                        (self.read_shortcuts)(r.id, shortcuts.as_mut_ptr(), shortcuts.len())
+                    } else {
+                        0
+                    };
+                    assert!(
+                        shortcut_count <= MAX_PER_ELEMENT,
+                        "native shortcut count exceeded its bound"
+                    );
                     Node {
                         id: r.id,
                         active: r.active != 0,
@@ -163,6 +177,7 @@ impl Engine {
                         checked: r.checked != 0,
                         selected: r.selected != 0,
                         disabled: r.disabled != 0,
+                        shortcuts: shortcuts[..shortcut_count].to_vec(),
                     }
                 })
                 .collect()
@@ -204,6 +219,7 @@ unsafe extern "C" {
     fn signals_dispatch(event: u64, kind: u32, ptr: *const u8, len: usize, boolean: u32);
     fn signals_changed_count() -> usize;
     fn signals_read_changed(index: usize, node: *mut RawNode);
+    fn signals_read_shortcuts(id: u64, output: *mut Shortcut, capacity: usize) -> usize;
     fn signals_metrics(out: *mut u64);
     fn signals_tick();
     fn signals_child_at(parent: u64, rank: usize) -> u64;
@@ -228,6 +244,9 @@ impl Engine {
         unsafe extern "C" fn read(_: usize, _: *mut RawNode) {
             panic!("unexpected test node read")
         }
+        unsafe extern "C" fn read_shortcuts(_: u64, _: *mut Shortcut, _: usize) -> usize {
+            0
+        }
         unsafe extern "C" fn metrics(out: *mut u64) {
             unsafe { std::ptr::write_bytes(out, 0, 3) };
         }
@@ -249,6 +268,7 @@ impl Engine {
             dispatch,
             count,
             read,
+            read_shortcuts,
             metrics,
             tick: noop,
             child_at,

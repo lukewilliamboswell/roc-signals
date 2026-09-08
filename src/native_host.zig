@@ -403,6 +403,7 @@ const NativeRenderPublication = struct {
 };
 
 const NativeCtx = struct {
+    pub const supports_native_shortcuts = true;
     /// Native-only scalar fields publish through the typed prepared DOM view.
     pub const native_presentation = true;
     pub const Handle = *HostEnv;
@@ -3418,6 +3419,12 @@ const SpecRunnerCtx = struct {
         return nodeEventName(elem, name);
     }
 
+    /// Resolves one declared native shortcut without simulating focus or host key routing.
+    pub fn shortcutEvent(elem: *const DomElement, chord: signals.key_chord.Chord) ?DomNamedEvent {
+        const index = elem.namedEventIndexFiltered("keydown", chord) orelse return null;
+        return elem.named_events.items[index];
+    }
+
     /// Provides fixed event id for native semantic observation without duplicating engine behavior.
     pub fn fixedEventId(elem: *const DomElement, kind: RenderEventKind) ?ids.EventId {
         const raw = sim_dom.fixedEventId(elem, kind) orelse return null;
@@ -3618,6 +3625,7 @@ comptime {
             @export(&Gpui.count, .{ .name = "signals_changed_count" });
             @export(&Gpui.read, .{ .name = "signals_read_changed" });
             @export(&Gpui.childAt, .{ .name = "signals_child_at" });
+            @export(&Gpui.readShortcuts, .{ .name = "signals_read_shortcuts" });
             @export(&Gpui.metrics, .{ .name = "signals_metrics" });
             @export(&Gpui.tick, .{ .name = "signals_tick" });
         } else @export(&main, .{ .name = "main" });
@@ -12151,6 +12159,11 @@ const Gpui = struct {
             return .{ .ptr = value.ptr, .len = value.len };
         }
     };
+    const Shortcut = extern struct {
+        event: u64,
+        key: u32,
+        modifiers: u32,
+    };
     const Node = extern struct {
         id: u64,
         active: u64,
@@ -12194,7 +12207,7 @@ const Gpui = struct {
         }
     }
     fn protocolVersion() callconv(.c) u32 {
-        return 3;
+        return 4;
     }
     fn nodeSize() callconv(.c) usize {
         return @sizeOf(Node);
@@ -12252,6 +12265,25 @@ const Gpui = struct {
     }
     fn count() callconv(.c) usize {
         return changed_len;
+    }
+    // Copies one element's committed native filters into caller-owned storage.
+    // Capacity is checked before any output is written; there is no allocation
+    // or callback while the borrowed engine table is being read.
+    fn readShortcuts(elem_id: u64, output: [*]Shortcut, capacity: usize) callconv(.c) usize {
+        if (!live or elem_id >= host.dom_elements.items.len) failHost("invalid native shortcut element");
+        const elem = &host.dom_elements.items[@intCast(elem_id)];
+        if (!elem.active) return 0;
+        var needed: usize = 0;
+        for (elem.named_events.items) |event| if (event.binding.key_chord != null) {
+            needed += 1;
+        };
+        if (needed > signals.key_chord.max_per_element or capacity < needed) failHost("native shortcut copy exceeded its capacity");
+        var index: usize = 0;
+        for (elem.named_events.items) |event| if (event.binding.key_chord) |chord| {
+            output[index] = .{ .event = event.binding.event_id.raw(), .key = chord.key, .modifiers = chord.modifiers };
+            index += 1;
+        };
+        return needed;
     }
     // Every slice is borrowed until the next mount/dispatch/unmount call. Rust
     // copies it before another host call and never owns any Roc allocation.

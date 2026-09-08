@@ -1,9 +1,9 @@
 # Native GUI presentation boundary
 
-The statically linked GUI boundary uses protocol version **3**. Zig exports
+The statically linked GUI boundary uses protocol version **4**. Zig exports
 `signals_protocol_version` and `signals_node_size`; Rust checks both before
-mount. This version replaces copied child arrays with indexed child queries and
-adds virtual-list metadata. Both sides must be rebuilt together.
+mount. Version 4 adds the typed shortcut accessor to version 3's indexed child
+queries and virtual-list metadata. Both sides must be rebuilt together.
 The browser protocol and its version are unchanged.
 
 `Gui` lowers native presentation through the shared scalar descriptor machinery.
@@ -53,6 +53,37 @@ a zero boolean word. Each kind uses the shared
 engine's existing event extraction descriptor and capability-owned reducer path.
 Deferred callbacks validate both node identity and current binding, and cannot
 update disposed or rebound controls.
+
+`Gui.on_shortcut` adds a typed `key_chord` filter to the canonical shared event
+binding. It always uses a unit `keydown` route with native delivery and static
+prevent-default/stop-propagation policy. Filter identity is the complete key and
+modifier record; event identity still comes from construction within the owning
+scope. Duplicate chords are errors, and each element accepts at most 32. The
+browser rejects these filters during descriptor collection and again before wire
+staging. The native publication retains them without inventing browser opcodes.
+
+The public `Gui.KeyChord` record has `key: Str` and four boolean fields:
+`control`, `shift`, `alt`, and `meta`. Keys are lowercase `a`–`z`, digits `0`–`9`,
+or `Enter`, `Escape`, `Tab`, `Space`, `ArrowLeft`, `ArrowRight`, `ArrowUp`,
+`ArrowDown`, `Home`, `End`, `PageUp`, `PageDown`, `Backspace`, `Delete`, and
+`F1`–`F12`. Uppercase letters, key aliases, and chord strings such as `ctrl-s`
+are rejected. Modifiers match exactly; extra modifiers do not match.
+
+`signals_read_shortcuts(element, output, capacity)` copies committed registrations
+into caller-owned storage after checking capacity. Each record contains an event
+ID (`u64`), key code (`u32`), and modifier mask (`u32`). Letter/digit codes are
+ASCII; named keys use 256 upwards in the order listed above. Modifier bits are
+Control=1, Shift=2, Alt=4, Meta=8. The function allocates nothing and enters no Roc
+code; Rust retains a copy bounded at 32 records per element.
+
+GPUI first dispatches a focused control's editing bindings. Unhandled keys then
+bubble through the focused region and its ancestors; the nearest matching live
+shortcut dispatches one ordinary engine event and consumes the keystroke. Native
+selection, clipboard, movement, and newline keys keep their editing behavior.
+Clicking a shortcut region makes it focusable without stealing focus from a
+focused child. A listener whose element was disposed, disabled, or rebound does
+not dispatch or consume the keystroke. Removing a region releases its shortcuts
+through ordinary scope disposal and releases the corresponding retained view.
 
 Input labels are both visible captions and semantic metadata. Semantic roles,
 names, and test IDs support native specs and GPUI test selectors. They do not

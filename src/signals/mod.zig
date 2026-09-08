@@ -31,6 +31,7 @@ pub const identity_table = @import("identity_table.zig");
 pub const ids = @import("ids.zig");
 pub const native_child_order = @import("native_child_order.zig");
 pub const native_style = @import("native_style.zig");
+pub const key_chord = @import("key_chord.zig");
 pub const render = @import("render_commands.zig");
 pub const render_cache = @import("render_cache.zig");
 pub const render_sink = @import("render_sink.zig");
@@ -74,6 +75,7 @@ comptime {
     std.testing.refAllDecls(ids);
     std.testing.refAllDecls(native_style);
     std.testing.refAllDecls(native_child_order);
+    std.testing.refAllDecls(key_chord);
     std.testing.refAllDecls(render);
     std.testing.refAllDecls(render_cache);
     std.testing.refAllDecls(render_sink);

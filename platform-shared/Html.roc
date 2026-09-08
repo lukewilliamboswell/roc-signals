@@ -74,11 +74,11 @@ event_delivery_native_value : Node.EventDelivery
 event_delivery_native_value = { native: True }
 
 fixed_event_binding : Node.FixedEventKind, Node.Msg -> Node.EventBinding
-fixed_event_binding = |kind, msg| { kind, msg, policy: event_policy_none_value, delivery: event_delivery_auto_value, name: "" }
+fixed_event_binding = |kind, msg| { kind, msg, policy: event_policy_none_value, delivery: event_delivery_auto_value, name: "", key_chord: None }
 
 named_event_binding : Str, Node.EventPolicy, Node.Msg -> Node.EventBinding
 named_event_binding = |name, policy, msg| {
-	{ kind: { id: 0 }, msg, policy, delivery: event_delivery_auto_value, name }
+	{ kind: { id: 0 }, msg, policy, delivery: event_delivery_auto_value, name, key_chord: None }
 }
 
 event_attr : Node.EventBinding -> Node.Attr
@@ -267,7 +267,7 @@ Html := [].{
 
 	## Named event binding with explicit policy and delivery request.
 	on_event_delivery : Str, EventPolicy, EventDelivery, Node.Msg -> Node.Attr
-	on_event_delivery = |name, policy, delivery, msg| event_attr({ kind: { id: 0 }, msg, policy, delivery, name })
+	on_event_delivery = |name, policy, delivery, msg| event_attr({ kind: { id: 0 }, msg, policy, delivery, name, key_chord: None })
 
 	## Keydown event binding.
 	on_key_down : Node.Msg -> Node.Attr

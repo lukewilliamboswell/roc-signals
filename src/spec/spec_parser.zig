@@ -13,6 +13,7 @@ pub const SpecCommandType = enum {
     pointer_enter,
     pointer_leave,
     key_down,
+    shortcut,
     focus,
     blur,
     change,
@@ -99,6 +100,7 @@ pub const SpecCommand = struct {
     task_name: ?[]const u8 = null,
     expected_attr: ?[]const u8 = null,
     interval_ms: ?u64 = null,
+    shortcut: ?signals.key_chord.Chord = null,
     expected_text: ?[]const u8,
     expected_count: ?u64,
     expected_metric_delta: ?i64 = null,
@@ -379,6 +381,15 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             const key_copy = try dupeUnescapedQuoted(allocator, key_split.quoted);
             errdefer allocator.free(key_copy);
             try appendSpecCommand(&commands, allocator, .key_down, try parseLocator(allocator, key_split.head), key_copy, null, try parseBoolToken(shift_split.token), line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "shortcut ")) {
+            const modifier_split = try splitTrailingToken(trimmed["shortcut ".len..]);
+            const modifiers = std.fmt.parseInt(u32, modifier_split.token, 10) catch return ParseError.InvalidFormat;
+            const key_split = try splitTrailingQuoted(modifier_split.head);
+            const key = try dupeUnescapedQuoted(allocator, key_split.quoted);
+            defer allocator.free(key);
+            const chord = signals.key_chord.parse(key, modifiers) catch return ParseError.InvalidFormat;
+            try appendSpecCommand(&commands, allocator, .shortcut, try parseLocator(allocator, key_split.head), null, null, null, line_num);
+            commands.items[commands.items.len - 1].shortcut = chord;
         } else if (std.mem.startsWith(u8, trimmed, "focus ")) {
             try appendSpecCommand(&commands, allocator, .focus, try parseLocator(allocator, trimmed["focus ".len..]), null, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "blur ")) {
@@ -1159,4 +1170,38 @@ test "splitTrailingQuoted skips escaped quotes" {
     const unescaped = try dupeUnescapedQuoted(std.testing.allocator, split.quoted);
     defer std.testing.allocator.free(unescaped);
     try std.testing.expectEqualStrings("he said \"hi\"", unescaped);
+}
+
+test "spec parser validates exact native shortcut keys and modifiers" {
+    const commands = try parseTestSpec(std.testing.allocator,
+        \\shortcut test_id:"editor" "s" 1
+        \\shortcut test_id:"editor" "s" 3
+        \\shortcut test_id:"editor" "Escape" 0
+    );
+    defer freeSpecCommands(std.testing.allocator, commands);
+    try std.testing.expectEqual(@as(usize, 3), commands.len);
+    try std.testing.expectEqual(SpecCommandType.shortcut, commands[0].cmd_type);
+    try std.testing.expectEqualStrings("editor", commands[0].locator.test_id.?);
+    try std.testing.expect(commands[0].shortcut.?.eql(try signals.key_chord.parse("s", 1)));
+    try std.testing.expect(commands[1].shortcut.?.eql(try signals.key_chord.parse("s", 3)));
+    try std.testing.expect(commands[2].shortcut.?.eql(try signals.key_chord.parse("Escape", 0)));
+    for ([_][]const u8{
+        "shortcut test_id:\"editor\" \"S\" 1",
+        "shortcut test_id:\"editor\" \"ctrl-s\" 1",
+        "shortcut test_id:\"editor\" \"s\" 16",
+        "shortcut test_id:\"editor\" \"s\" -1",
+        "shortcut test_id:\"editor\" \"s\" true",
+    }) |invalid| {
+        try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, invalid));
+    }
+}
+
+test "S-expression spec parser decodes native shortcuts" {
+    const spec = try parseSExprTestSpec(std.testing.allocator,
+        \\(test "save" (steps (shortcut (test-id "editor") "s" 3)))
+    );
+    defer spec.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), spec.commands.len);
+    try std.testing.expectEqual(SpecCommandType.shortcut, spec.commands[0].cmd_type);
+    try std.testing.expect(spec.commands[0].shortcut.?.eql(try signals.key_chord.parse("s", 3)));
 }

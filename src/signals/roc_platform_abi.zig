@@ -1252,6 +1252,7 @@ comptime {
 /// Element type for Node.EventBinding
 pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     kind: NodeFixedEventKind,
+    key_chord: NoneOrSome,
     msg: NodeMsg,
     name: RocStr,
     delivery: NodeEventDelivery,
@@ -1260,6 +1261,7 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.kind.decref(roc_host);
+        value.key_chord.decref(roc_host);
         value.msg.decref(roc_host);
         value.name.decref(roc_host);
         value.delivery.decref(roc_host);
@@ -1270,6 +1272,7 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         value.kind.incref(amount);
+        value.key_chord.incref(amount);
         value.msg.incref(amount);
         value.name.incref(amount);
         value.delivery.incref(amount);
@@ -1277,6 +1280,7 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     }
 } else extern struct {
     kind: NodeFixedEventKind,
+    key_chord: NoneOrSome,
     msg: NodeMsg,
     name: RocStr,
     delivery: NodeEventDelivery,
@@ -1285,6 +1289,7 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.kind.decref(roc_host);
+        value.key_chord.decref(roc_host);
         value.msg.decref(roc_host);
         value.name.decref(roc_host);
         value.delivery.decref(roc_host);
@@ -1295,6 +1300,7 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         value.kind.incref(amount);
+        value.key_chord.incref(amount);
         value.msg.incref(amount);
         value.name.incref(amount);
         value.delivery.incref(amount);
@@ -1304,11 +1310,11 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeEventBinding) != 152) @compileError("NodeEventBinding size mismatch");
+        if (@sizeOf(NodeEventBinding) != 192) @compileError("NodeEventBinding size mismatch");
         if (@alignOf(NodeEventBinding) != 8) @compileError("NodeEventBinding alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeEventBinding) != 88) @compileError("NodeEventBinding size mismatch");
+        if (@sizeOf(NodeEventBinding) != 104) @compileError("NodeEventBinding size mismatch");
         if (@alignOf(NodeEventBinding) != 8) @compileError("NodeEventBinding alignment mismatch");
     }
 }
@@ -1354,6 +1360,54 @@ comptime {
     if (@sizeOf(usize) == 4) {
         if (@sizeOf(NodeEventDelivery) != 1) @compileError("NodeEventDelivery size mismatch");
         if (@alignOf(NodeEventDelivery) != 1) @compileError("NodeEventDelivery alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_4099dda3c41fcec7
+pub const __AnonStruct_4099dda3c41fcec7 = if (@sizeOf(usize) == 4) extern struct {
+    key: RocStr,
+    alt: bool,
+    control: bool,
+    meta: bool,
+    shift: bool,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.key.decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.key.incref(amount);
+    }
+} else extern struct {
+    key: RocStr,
+    alt: bool,
+    control: bool,
+    meta: bool,
+    shift: bool,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.key.decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.key.incref(amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_4099dda3c41fcec7) != 32) @compileError("__AnonStruct_4099dda3c41fcec7 size mismatch");
+        if (@alignOf(__AnonStruct_4099dda3c41fcec7) != 8) @compileError("__AnonStruct_4099dda3c41fcec7 alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_4099dda3c41fcec7) != 16) @compileError("__AnonStruct_4099dda3c41fcec7 size mismatch");
+        if (@alignOf(__AnonStruct_4099dda3c41fcec7) != 4) @compileError("__AnonStruct_4099dda3c41fcec7 alignment mismatch");
     }
 }
 
@@ -1496,7 +1550,7 @@ pub const __AnonStruct_1208acb69630e8 = if (@sizeOf(usize) == 4) extern struct {
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.payload_cap.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType119, roc_host);
+        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType123, roc_host);
         decrefErasedCallable(value.to_cmd, roc_host);
     }
 
@@ -1515,7 +1569,7 @@ pub const __AnonStruct_1208acb69630e8 = if (@sizeOf(usize) == 4) extern struct {
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.payload_cap.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType119, roc_host);
+        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType123, roc_host);
         decrefErasedCallable(value.to_cmd, roc_host);
     }
 
@@ -1917,6 +1971,58 @@ comptime {
     }
 }
 
+/// Element type for Node.StateTransform
+pub const NodeStateTransform = if (@sizeOf(usize) == 4) extern struct {
+    binder: RocErasedCallable,
+    capability: HostValueCapabilityHandle,
+    transform: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        decrefErasedCallable(value.binder, roc_host);
+        value.capability.decref(roc_host);
+        decrefErasedCallable(value.transform, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        increfErasedCallable(value.binder, amount);
+        value.capability.incref(amount);
+        increfErasedCallable(value.transform, amount);
+    }
+} else extern struct {
+    binder: RocErasedCallable,
+    capability: HostValueCapabilityHandle,
+    transform: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        decrefErasedCallable(value.binder, roc_host);
+        value.capability.decref(roc_host);
+        decrefErasedCallable(value.transform, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        increfErasedCallable(value.binder, amount);
+        value.capability.incref(amount);
+        increfErasedCallable(value.transform, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeStateTransform) != 40) @compileError("NodeStateTransform size mismatch");
+        if (@alignOf(NodeStateTransform) != 8) @compileError("NodeStateTransform alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeStateTransform) != 20) @compileError("NodeStateTransform size mismatch");
+        if (@alignOf(NodeStateTransform) != 4) @compileError("NodeStateTransform alignment mismatch");
+    }
+}
+
 /// Element type for __AnonStruct_f660464d15310d0c
 pub const __AnonStruct_f660464d15310d0c = if (@sizeOf(usize) == 4) extern struct {
     binder: RocErasedCallable,
@@ -2091,7 +2197,7 @@ pub const __AnonStruct_c4502953588f5545 = if (@sizeOf(usize) == 4) extern struct
         value.field.decref(roc_host);
         value.name.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType177, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2113,7 +2219,7 @@ pub const __AnonStruct_c4502953588f5545 = if (@sizeOf(usize) == 4) extern struct
         value.field.decref(roc_host);
         value.name.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType177, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2239,7 +2345,7 @@ pub const __AnonStruct_3919d24a90aa1c30 = if (@sizeOf(usize) == 4) extern struct
         value.field.decref(roc_host);
         value.name.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType177, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2261,7 +2367,7 @@ pub const __AnonStruct_3919d24a90aa1c30 = if (@sizeOf(usize) == 4) extern struct
         value.field.decref(roc_host);
         value.name.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType177, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2443,7 +2549,7 @@ pub const __AnonStruct_dce81af82680946c = if (@sizeOf(usize) == 4) extern struct
         value.name.decref(roc_host);
         value.present.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType177, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2468,7 +2574,7 @@ pub const __AnonStruct_dce81af82680946c = if (@sizeOf(usize) == 4) extern struct
         value.name.decref(roc_host);
         value.present.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType177, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -3433,7 +3539,7 @@ pub const NodeAttrPayload = extern union {
 
 /// Tag union: Node.Attr
 pub const NodeAttr = if (@sizeOf(usize) == 4) extern struct {
-    payload: [88]u8 align(8),
+    payload: [104]u8 align(8),
     tag: NodeAttrTag,
     pub fn payload_on(self: *const @This()) NodeEventBinding {
         const ptr: *const NodeEventBinding = @ptrCast(@alignCast(&self.payload));
@@ -3502,14 +3608,73 @@ pub const NodeAttr = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeAttr) != 160) @compileError("NodeAttr size mismatch");
+        if (@sizeOf(NodeAttr) != 200) @compileError("NodeAttr size mismatch");
         if (@alignOf(NodeAttr) != 8) @compileError("NodeAttr alignment mismatch");
-        if (@offsetOf(NodeAttr, "tag") != 152) @compileError("NodeAttr tag offset mismatch");
+        if (@offsetOf(NodeAttr, "tag") != 192) @compileError("NodeAttr tag offset mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeAttr) != 96) @compileError("NodeAttr size mismatch");
+        if (@sizeOf(NodeAttr) != 112) @compileError("NodeAttr size mismatch");
         if (@alignOf(NodeAttr) != 8) @compileError("NodeAttr alignment mismatch");
-        if (@offsetOf(NodeAttr, "tag") != 88) @compileError("NodeAttr tag offset mismatch");
+        if (@offsetOf(NodeAttr, "tag") != 104) @compileError("NodeAttr tag offset mismatch");
+    }
+}
+
+/// Tag discriminant for NoneOrSome.
+pub const NoneOrSomeTag = enum(u8) {
+    None = 0,
+    Some = 1,
+};
+
+/// Payload union for NoneOrSome.
+pub const NoneOrSomePayload = extern union {
+    none: [0]u8,
+    some: __AnonStruct_4099dda3c41fcec7,
+};
+
+/// Tag union: NoneOrSome
+pub const NoneOrSome = if (@sizeOf(usize) == 4) extern struct {
+    payload: [16]u8 align(4),
+    tag: NoneOrSomeTag,
+    pub fn payload_some(self: *const @This()) __AnonStruct_4099dda3c41fcec7 {
+        const ptr: *const __AnonStruct_4099dda3c41fcec7 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefNoneOrSome(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfNoneOrSome(self, amount);
+    }
+} else extern struct {
+    payload: NoneOrSomePayload,
+    tag: NoneOrSomeTag,
+    pub fn payload_some(self: *const @This()) __AnonStruct_4099dda3c41fcec7 {
+        return self.payload.some;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefNoneOrSome(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfNoneOrSome(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NoneOrSome) != 40) @compileError("NoneOrSome size mismatch");
+        if (@alignOf(NoneOrSome) != 8) @compileError("NoneOrSome alignment mismatch");
+        if (@offsetOf(NoneOrSome, "tag") != 32) @compileError("NoneOrSome tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NoneOrSome) != 20) @compileError("NoneOrSome size mismatch");
+        if (@alignOf(NoneOrSome) != 4) @compileError("NoneOrSome alignment mismatch");
+        if (@offsetOf(NoneOrSome, "tag") != 16) @compileError("NoneOrSome tag offset mismatch");
     }
 }
 
@@ -3593,32 +3758,6 @@ pub const NodeCmdTag = enum(u8) {
     UpdateTransform = 9,
 };
 
-/// App-compiled state transform, paired with its destination and value capability.
-pub const NodeStateTransform = extern struct {
-    binder: RocErasedCallable,
-    capability: HostValueCapabilityHandle,
-    transform: RocErasedCallable,
-
-    /// Releases the destination identity, owning capability, and transform closure.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        decrefErasedCallable(self.binder, roc_host);
-        self.capability.decref(roc_host);
-        decrefErasedCallable(self.transform, roc_host);
-    }
-
-    /// Retains every callable edge when the enclosing command is copied.
-    pub fn incref(self: @This(), amount: isize) void {
-        increfErasedCallable(self.binder, amount);
-        self.capability.incref(amount);
-        increfErasedCallable(self.transform, amount);
-    }
-};
-
-comptime {
-    if (@sizeOf(NodeStateTransform) != 5 * @sizeOf(usize)) @compileError("NodeStateTransform size mismatch");
-    if (@alignOf(NodeStateTransform) != @alignOf(usize)) @compileError("NodeStateTransform alignment mismatch");
-}
-
 /// Payload union for Node.Cmd.
 pub const NodeCmdPayload = extern union {
     noop: [0]u8,
@@ -3669,7 +3808,6 @@ pub const NodeCmd = if (@sizeOf(usize) == 4) extern struct {
         const ptr: *const RocList(NodeStateWrite) = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    /// Borrows the explicit destination, capability, and updater from this command.
     pub fn payload_update_transform(self: *const @This()) NodeStateTransform {
         const ptr: *const NodeStateTransform = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
@@ -3710,7 +3848,6 @@ pub const NodeCmd = if (@sizeOf(usize) == 4) extern struct {
     pub fn payload_update_states(self: *const @This()) RocList(NodeStateWrite) {
         return self.payload.update_states;
     }
-    /// Borrows the explicit destination, capability, and updater from this command.
     pub fn payload_update_transform(self: *const @This()) NodeStateTransform {
         return self.payload.update_transform;
     }
@@ -4077,6 +4214,7 @@ pub const NodeAttrSignalText = __AnonStruct_3919d24a90aa1c30;
 pub const NodeAttrStaticBool = __AnonStruct_ac223ceb3485be80;
 pub const NodeAttrStaticText = __AnonStruct_20a3f6b65fe503ef;
 pub const NodeAttrTextOptionalSignal = __AnonStruct_dce81af82680946c;
+pub const NoneOrSomeSome = __AnonStruct_4099dda3c41fcec7;
 pub const NodeEventHandlerAction = __AnonStruct_1208acb69630e8;
 pub const NodeEventHandlerReduce = __AnonStruct_f660464d15310d0c;
 pub const NodeEventHandlerActionReads = NodeSignalExpr;
@@ -4986,6 +5124,36 @@ pub const NodeEventDeliveryRelease = struct {
     }
 };
 
+fn decrefNoneOrSome(value: NoneOrSome, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .None => {},
+        .Some => {
+            value.payload_some().decref(roc_host);
+        },
+    }
+}
+
+fn increfNoneOrSome(value: NoneOrSome, amount: isize) void {
+    switch (value.tag) {
+        .None => {},
+        .Some => {
+            value.payload_some().incref(amount);
+        },
+    }
+}
+
+pub const NoneOrSomeRelease = struct {
+    pub fn release(value: NoneOrSome, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_4099dda3c41fcec7Release = struct {
+    pub fn release(value: __AnonStruct_4099dda3c41fcec7, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
 pub const NodeFixedEventKindRelease = struct {
     pub fn release(value: NodeFixedEventKind, roc_host: *RocHost) void {
         value.decref(roc_host);
@@ -5065,7 +5233,9 @@ fn decrefNodeCmd(value: NodeCmd, roc_host: *RocHost) void {
         .UpdateStates => {
             decrefListOfNodeStateWrite(value.payload_update_states(), roc_host);
         },
-        .UpdateTransform => value.payload_update_transform().decref(roc_host),
+        .UpdateTransform => {
+            value.payload_update_transform().decref(roc_host);
+        },
     }
 }
 
@@ -5096,7 +5266,9 @@ fn increfNodeCmd(value: NodeCmd, amount: isize) void {
         .UpdateStates => {
             value.payload_update_states().incref(amount);
         },
-        .UpdateTransform => value.payload_update_transform().incref(amount),
+        .UpdateTransform => {
+            value.payload_update_transform().incref(amount);
+        },
     }
 }
 
@@ -5150,6 +5322,12 @@ pub const NodeStateWriteRelease = struct {
 
 pub const HostValueStateValueHandleRelease = struct {
     pub fn release(value: HostValueStateValueHandle, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const NodeStateTransformRelease = struct {
+    pub fn release(value: NodeStateTransform, roc_host: *RocHost) void {
         value.decref(roc_host);
     }
 };
@@ -5298,12 +5476,12 @@ fn decrefBoxPayloadType71(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c
     payload.*.decref(roc_host);
 }
 
-fn decrefBoxPayloadType119(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
+fn decrefBoxPayloadType123(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
     const payload: *NodeSignalExpr = @ptrCast(@alignCast(data_ptr orelse return));
     payload.*.decref(roc_host);
 }
 
-fn decrefBoxPayloadType169(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
+fn decrefBoxPayloadType177(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
     const payload: *NodeSignalExpr = @ptrCast(@alignCast(data_ptr orelse return));
     payload.*.decref(roc_host);
 }
@@ -5329,6 +5507,8 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == RocList(NodeAttr)) return RocListRelease(RocList(NodeAttr), NodeAttrRelease);
     if (T == NodeAttr) return NodeAttrRelease;
     if (T == NodeEventBinding) return NodeEventBindingRelease;
+    if (T == NoneOrSome) return NoneOrSomeRelease;
+    if (T == __AnonStruct_4099dda3c41fcec7) return __AnonStruct_4099dda3c41fcec7Release;
     if (T == NodeMsg) return NodeMsgRelease;
     if (T == NodeEventExtractionPlan) return NodeEventExtractionPlanRelease;
     if (T == RocListWith(u8, false)) return RocListSpineRelease(RocListWith(u8, false));
@@ -5344,6 +5524,7 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == NodeStateWrite) return NodeStateWriteRelease;
     if (T == HostValueStateValueHandle) return HostValueStateValueHandleRelease;
     if (T == RocList(NodeStateWrite)) return RocListRelease(RocList(NodeStateWrite), NodeStateWriteRelease);
+    if (T == NodeStateTransform) return NodeStateTransformRelease;
     if (T == __AnonStruct_f660464d15310d0c) return __AnonStruct_f660464d15310d0cRelease;
     if (T == HostValueEventReducerHandle) return HostValueEventReducerHandleRelease;
     if (T == __AnonStruct_c4502953588f5545) return __AnonStruct_c4502953588f5545Release;

@@ -1,5 +1,6 @@
 mod bridge;
 mod input;
+mod shortcut;
 use bridge::{Engine, Node, Payload};
 use gpui::{div, prelude::*, px, rgb, *};
 use std::{cell::Cell, collections::HashMap, rc::Rc, time::Duration};
@@ -8,6 +9,7 @@ struct NodeView {
     node: Node,
     scroll: UniformListScrollHandle,
     input: Option<Entity<input::TextInput>>,
+    focus: FocusHandle,
     runtime: WeakEntity<Runtime>,
     renders: Rc<Cell<u64>>,
     child_visits: Rc<Cell<u64>>,
@@ -21,6 +23,30 @@ impl Render for NodeView {
             .flex_col()
             .gap_2()
             .debug_selector(|| self.node.test_id.clone());
+        if !self.node.shortcuts.is_empty() && !self.node.disabled {
+            let runtime = self.runtime.clone();
+            let node_id = self.node.id;
+            let view_id = cx.entity_id();
+            element =
+                shortcut::install(element, self.node.shortcuts.clone(), move |binding, cx| {
+                    runtime
+                        .update(cx, |runtime, cx| {
+                            runtime.shortcut_if_live(node_id, view_id, binding, cx)
+                        })
+                        .unwrap_or(false)
+                });
+            if self.input.is_none() {
+                let focus = self.focus.clone();
+                element = element.track_focus(&self.focus).on_mouse_down(
+                    MouseButton::Left,
+                    move |_, window, cx| {
+                        if !focus.contains_focused(window, cx) {
+                            focus.focus(window);
+                        }
+                    },
+                );
+            }
+        }
         if self.node.tag == "button" {
             element = element.px_3().py_1().rounded_md().bg(rgb(0x315469));
             if !self.node.disabled {
@@ -192,6 +218,26 @@ struct Runtime {
     _clock: Option<Task<()>>,
 }
 impl Runtime {
+    fn shortcut_if_live(
+        &mut self,
+        id: u64,
+        view_id: EntityId,
+        binding: shortcut::Shortcut,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(view) = self.nodes.get(&id) else {
+            return false;
+        };
+        if view.entity_id() != view_id {
+            return false;
+        }
+        let node = &view.read(cx).node;
+        if node.disabled || binding.event == 0 || !node.shortcuts.contains(&binding) {
+            return false;
+        }
+        self.event(binding.event, Payload::Unit, cx);
+        true
+    }
     fn new(clock: bool, cx: &mut Context<Self>) -> Self {
         let engine = Engine::open();
         let initial = engine.changes();
@@ -293,6 +339,7 @@ impl Runtime {
                         node: node.clone(),
                         scroll: UniformListScrollHandle::default(),
                         input,
+                        focus: cx.focus_handle(),
                         runtime: weak,
                         renders,
                         child_visits,
@@ -527,6 +574,42 @@ mod tests {
                 runtime.apply(vec![checkbox], cx);
                 runtime.event_if_live(1, 31, Payload::Bool(true), cx);
                 assert_eq!(Engine::take_test_event(), Some((31, 2, String::new(), 1)));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn shortcuts_refuse_stale_replaced_disabled_and_disposed_bindings(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                let first = super::shortcut::Shortcut {
+                    event: 31,
+                    key: u32::from(b's'),
+                    modifiers: 1,
+                };
+                let second = super::shortcut::Shortcut { event: 32, ..first };
+                let mut region = node(1, "div", &[]);
+                region.shortcuts = vec![first];
+                runtime.apply(vec![node(0, "root", &[1]), region.clone()], cx);
+                let view_id = runtime.nodes[&1].entity_id();
+                assert!(runtime.shortcut_if_live(1, view_id, first, cx));
+                assert_eq!(Engine::take_test_event(), Some((31, 0, String::new(), 0)));
+                region.shortcuts = vec![second];
+                runtime.apply(vec![region.clone()], cx);
+                assert!(!runtime.shortcut_if_live(1, view_id, first, cx));
+                region.disabled = true;
+                runtime.apply(vec![region.clone()], cx);
+                assert!(!runtime.shortcut_if_live(1, view_id, second, cx));
+                region.active = false;
+                runtime.apply(vec![node(0, "root", &[]), region.clone()], cx);
+                assert!(!runtime.shortcut_if_live(1, view_id, second, cx));
+                region.active = true;
+                region.disabled = false;
+                runtime.apply(vec![node(0, "root", &[1]), region], cx);
+                assert_ne!(runtime.nodes[&1].entity_id(), view_id);
+                assert!(!runtime.shortcut_if_live(1, view_id, second, cx));
+                assert!(Engine::take_test_event().is_none());
             });
         });
     }
