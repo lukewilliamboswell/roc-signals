@@ -6,7 +6,7 @@
 # Roc Signals
 
 Roc Signals is a Roc platform for building small reactive interfaces that can
-run in a browser or under the native test host.
+run in a browser, in a native GPUI window, or under the native test host.
 
 An app describes its UI with values, signals, and event handlers. The host keeps
 that description alive, owns retained state, runs tasks, and patches only the
@@ -33,6 +33,7 @@ this order:
 | [Structuring a Real App](www/content/docs/app-architecture.md) | How Conduit is organized |
 | [Testing](www/content/docs/testing.md) | Spec language, deterministic async, work budgets |
 | [Under the Hood](www/content/docs/under-the-hood.md) | Wire protocol, capabilities, performance model |
+| [Native GUI](www/content/docs/native-gui.md) | Native controls, keyboard regions, files, timers, and example apps |
 | [Reference](www/content/docs/reference.md) | Complete API surface |
 | [Contributing](www/content/docs/contributing.md) | Local setup, tests, host artifacts, bundles, releases |
 
@@ -72,6 +73,10 @@ python3 scripts/serve.py --port 8000
 
 The examples live under [examples-web/](examples-web/). Each public example has its own
 directory with `main.roc`, any supporting modules, and a native test spec.
+
+The [native example collection](examples-gui/) includes a task board, notes
+editor, folder explorer, and simulated activity monitor. Native setup and
+commands are in [contributing](www/content/docs/contributing.md#native-gui-platform-spike).
 
 To run the validation suite:
 
