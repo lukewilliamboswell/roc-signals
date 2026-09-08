@@ -156,10 +156,6 @@ def config_base_url() -> str:
 
 
 def config_release_platform_url() -> str | None:
-    release_manifest = ROOT / "releases/current.json"
-    if release_manifest.is_file():
-        import json
-        return json.loads(release_manifest.read_text())["assets"]["platform"]["url"]
     extra = site_config().get("extra", {})
     if not isinstance(extra, dict):
         return None

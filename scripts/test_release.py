@@ -14,11 +14,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release
 import release_followup
 import site_release
+import serve
 import toolchain
 from compiler_pins import replace_pin
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_development_preview_does_not_rebind_sources_to_supported_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "releases").mkdir()
+            (root / "releases/current.json").write_text('{"assets":{"platform":{"url":"https://example.com/old.tar.zst"}}}')
+            with patch.object(serve, "ROOT", root), patch.object(serve, "site_config", return_value={"extra": {}}):
+                self.assertIsNone(serve.config_release_platform_url())
+
     def test_release_source_identity_rejects_uncommitted_changes(self):
         with patch.object(release.subprocess, "check_output", return_value=" M platform/main.roc\n"), self.assertRaisesRegex(ValueError, "clean committed"):
             release.clean_source_sha()
