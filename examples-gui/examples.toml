@@ -1,0 +1,8 @@
+# Every maintained GUI app participates in the display-free GUI suite.
+schema_version = 1
+
+[[examples]]
+slug = "counter"
+
+[[examples]]
+slug = "keyed-rows"

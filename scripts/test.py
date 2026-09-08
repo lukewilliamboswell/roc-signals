@@ -127,7 +127,7 @@ def load_examples() -> tuple[Example, ...]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    suites = ("all", "published", "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "wasm-bench", "native", "fault", "bundle", "bench", "size")
+    suites = ("all", "published", "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "wasm-bench", "native", "gui", "fault", "bundle", "bench", "size")
     parser.add_argument(
         "suites",
         nargs="*",
@@ -197,6 +197,7 @@ def parse_args() -> argparse.Namespace:
         help="Delete entries from the known-failures file that passed in this run. Never adds entries.",
     )
     parser.add_argument("--spec-timeout", type=float, default=30.0, metavar="SECONDS")
+    parser.add_argument("--gui-build-jobs", type=int, default=2, metavar="N", help="Concurrent Cargo jobs for the GUI host (default: 2).")
     parser.add_argument("--bench-case", action="append", default=[], metavar="GLOB", help="Select Wasm benchmark cases. Repeatable.")
     parser.add_argument("--bench-warmups", type=int, default=1, metavar="N", help="Complete warm-up passes for wasm-bench.")
     parser.add_argument("--bench-iterations", type=int, default=20, metavar="N", help="Fresh paired iterations per Wasm benchmark sample.")
@@ -939,11 +940,15 @@ def validate_args_before_build(args: argparse.Namespace, suites: set[str]) -> No
 
 
 def main() -> int:
+    import gui_suite
+
     args = parse_args()
     examples = load_examples()
     suites = set(args.suites)
     if "all" in suites:
         suites = {"zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "native", "fault", "bundle", "bench"}
+        if gui_suite.supported_host():
+            suites.add("gui")
 
     validate_args_before_build(args, suites)
     roc_bin = command_path(args.roc_bin)
@@ -955,7 +960,11 @@ def main() -> int:
         return 0
     ensure_clean_output(args.keep_output)
 
-    build_hosts()
+    if suites != {"gui"}:
+        build_hosts()
+
+    if "gui" in suites:
+        gui_suite.run(roc_bin, args, TEST_OUT / "gui")
 
     if "zig" in suites:
         run_zig_suite()

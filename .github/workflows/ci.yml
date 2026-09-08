@@ -64,9 +64,30 @@ jobs:
           name: native-host-coverage
           path: kcov-output/native-host
 
+  gui:
+    name: Native GUI build and specs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-toolchain
+      - name: Install GUI host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-0
+          rustup toolchain install 1.95.0 --profile minimal
+      - name: Verify GUI discovery and applications
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_gui_suite.py'
+          python3 scripts/test.py gui --keep-output
+
   platform-source:
     name: Platform source
-    needs: [smoke, source]
+    needs: [smoke, source, gui]
     if: always()
     runs-on: ubuntu-24.04
     steps:

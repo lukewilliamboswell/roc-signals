@@ -10,11 +10,13 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 
-def build(debug=False):
+def build(debug=False, jobs=2):
     if platform.system() != 'Linux' or platform.machine() != 'x86_64':
         raise SystemExit('The GUI spike currently supports Linux x86_64 with glibc only.')
+    if jobs < 1:
+        raise SystemExit('GUI build jobs must be positive.')
     subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
-    subprocess.run(['cargo', 'build', '-p', 'signals-gpui-host', '-j', '6'] + ([] if debug else ['--release']), cwd=ROOT, check=True)
+    subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, check=True)
     dest = ROOT / 'platform-gui/targets/x64glibc'
     dest.mkdir(parents=True, exist_ok=True)
     # Merge object members, not archives-as-members: Roc consumes one host archive.
@@ -51,4 +53,6 @@ def build(debug=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--debug', action='store_true', help='Use the faster development Rust build')
-    build(parser.parse_args().debug)
+    parser.add_argument('--jobs', type=int, default=2, help='Concurrent Cargo build jobs (default: 2)')
+    args = parser.parse_args()
+    build(args.debug, args.jobs)
