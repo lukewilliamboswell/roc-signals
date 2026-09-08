@@ -6077,14 +6077,14 @@ test "signals host interval sources tick by period and runtime token" {
 
     try std.testing.expectEqual(@as(u64, 1), initial_counts.set_text);
     try std.testing.expectEqualStrings("1", host.dom_elements.items[1].text.?);
-    try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.items.len);
-    try std.testing.expectEqual(@as(u64, 100), host.engine.active_intervals.items[0].period_ms);
+    try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.entries.items.len);
+    try std.testing.expectEqual(@as(u64, 100), host.engine.active_intervals.entries.items[0].period_ms);
 
     const period_counts = tickIntervalSource(&host, &roc_host, 100);
     try std.testing.expectEqual(@as(u64, 1), period_counts.set_text);
     try std.testing.expectEqualStrings("2", host.dom_elements.items[1].text.?);
 
-    const runtime_token = host.engine.active_intervals.items[0].token;
+    const runtime_token = host.engine.active_intervals.entries.items[0].token;
     const runtime_counts = host.engine.tickIntervalSourceByRuntimeToken(&host, &roc_host, runtime_token.raw());
     try std.testing.expectEqual(@as(u64, 1), runtime_counts.set_text);
     try std.testing.expectEqualStrings("3", host.dom_elements.items[1].text.?);
@@ -6130,7 +6130,7 @@ test "state transaction mounting an interval branch registers the interval it la
             const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueBool(false), section, state_cap);
             defer root.decref(&roc_host);
             _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
-            try std.testing.expectEqual(@as(usize, 0), host.engine.active_intervals.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_intervals.entries.items.len);
             const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
             const allocations_before = host.roc_allocations.snapshot();
 
@@ -6141,23 +6141,23 @@ test "state transaction mounting an interval branch registers the interval it la
             const attempts = fault.attempts;
             if (failure_number != null) {
                 try std.testing.expectError(error.OutOfMemory, result);
-                try std.testing.expectEqual(@as(usize, 0), host.engine.active_intervals.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.active_intervals.entries.items.len);
                 try std.testing.expect(activeTextElementId(&host, "clock-off") != null);
                 try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
                 fault.configure(null);
                 _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueBool(true), state_cap);
             } else _ = try result;
 
-            try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.items.len);
-            try std.testing.expectEqual(@as(u64, 100), host.engine.active_intervals.items[0].period_ms);
+            try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.entries.items.len);
+            try std.testing.expectEqual(@as(u64, 100), host.engine.active_intervals.entries.items[0].period_ms);
             try std.testing.expect(activeTextElementId(&host, "clock-off") == null);
             const record = host.engine.activeIntervalRecordByPeriod(100).?;
-            try std.testing.expectEqual(record.token().?, host.engine.active_intervals.items[0].source_token);
-            const runtime_token = host.engine.active_intervals.items[0].token;
+            try std.testing.expectEqual(record.token().?, host.engine.active_intervals.entries.items[0].source_token);
+            const runtime_token = host.engine.active_intervals.entries.items[0].token;
             _ = host.engine.tickIntervalSourceByRuntimeToken(&host, &roc_host, runtime_token.raw());
 
             _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueBool(false), state_cap);
-            try std.testing.expectEqual(@as(usize, 0), host.engine.active_intervals.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_intervals.entries.items.len);
             try std.testing.expect(activeTextElementId(&host, "clock-off") != null);
             try std.testing.expect(host.engine.activeIntervalRecordByPeriod(100) == null);
             return attempts;
@@ -6206,7 +6206,7 @@ test "initial root reserves elem ids for siblings collected after an each site" 
             _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
             const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
             try std.testing.expectEqual(@as(usize, 1), intervalRecordCount(&host));
-            try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.items.len);
+            try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.entries.items.len);
             try std.testing.expect(activeTextElementId(&host, "row-1") != null);
             const allocations_before = host.roc_allocations.snapshot();
 
@@ -6219,7 +6219,7 @@ test "initial root reserves elem ids for siblings collected after an each site" 
             if (failure_number != null) {
                 try std.testing.expectError(error.OutOfMemory, result);
                 try std.testing.expectEqual(@as(usize, 1), intervalRecordCount(&host));
-                try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.items.len);
+                try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.entries.items.len);
                 try std.testing.expect(activeTextElementId(&host, "row-1") != null);
                 try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
                 fault.configure(null);
@@ -6233,13 +6233,13 @@ test "initial root reserves elem ids for siblings collected after an each site" 
             try std.testing.expect(activeTextElementId(&host, "row-1") == null);
             try std.testing.expect(activeTextElementId(&host, "row-2") != null);
             try std.testing.expectEqual(@as(usize, 1), intervalRecordCount(&host));
-            try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.items.len);
+            try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.entries.items.len);
             _ = tickIntervalSource(&host, &roc_host, 100);
             try std.testing.expect(activeTextElementId(&host, "3") != null);
 
             _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64ListWithCapability(&roc_host, &.{}, state_cap), state_cap);
             try std.testing.expectEqual(@as(usize, 0), intervalRecordCount(&host));
-            try std.testing.expectEqual(@as(usize, 0), host.engine.active_intervals.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_intervals.entries.items.len);
             return attempts;
         }
     };
@@ -11458,7 +11458,7 @@ const HostPlateauSnapshot = struct {
             .active_bool_signal_routes_len = current.engine.active_bool_signal_routes.items.len,
             .active_change_signal_routes_len = current.engine.active_change_signal_routes.items.len,
             .active_structural_signal_routes_len = current.engine.active_structural_signal_routes.items.len,
-            .active_intervals_len = current.engine.active_intervals.items.len,
+            .active_intervals_len = current.engine.active_intervals.entries.items.len,
             .pending_tasks_len = current.engine.pending_tasks.items.len,
             .dirty_queue_seen_capacity = dirty_queue.seen_generations.capacity,
             .dirty_queue_pending_capacity = dirty_queue.pending_record_ids.capacity,

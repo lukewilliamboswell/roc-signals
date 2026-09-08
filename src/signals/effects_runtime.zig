@@ -28,6 +28,53 @@ pub const ActiveInterval = struct {
     reconciliation: enum { pending, confirmed } = .confirmed,
 };
 
+/// Owns the dense interval lane and both identity indexes. Registration growth
+/// is reserved before publication; retirement updates a displaced slot in O(1).
+pub const IntervalRegistry = struct {
+    entries: shared_buffer.List(ActiveInterval) = .empty,
+    by_runtime: std.AutoHashMapUnmanaged(ids.IntervalToken, usize) = .empty,
+    by_source: std.AutoHashMapUnmanaged(HostSignalToken, usize) = .empty,
+    pub const empty: IntervalRegistry = .{};
+
+    /// Reserves lane and index growth without publishing a registration.
+    pub fn ensureUnusedCapacity(self: *IntervalRegistry, allocator: std.mem.Allocator, additional: usize) error{OutOfMemory}!void {
+        const count = std.math.cast(u32, additional) orelse return error.OutOfMemory;
+        try self.entries.ensureUnusedCapacity(allocator, additional);
+        try self.by_runtime.ensureUnusedCapacity(allocator, count);
+        try self.by_source.ensureUnusedCapacity(allocator, count);
+    }
+
+    /// Inserts an owned registration after all three stores were preflighted.
+    pub fn appendAssumeCapacity(self: *IntervalRegistry, value: ActiveInterval) void {
+        if (self.by_runtime.contains(value.token) or self.by_source.contains(value.source_token)) @panic("duplicate interval identity");
+        const index = self.entries.items.len;
+        self.entries.appendAssumeCapacity(value);
+        self.by_runtime.putAssumeCapacity(value.token, index);
+        self.by_source.putAssumeCapacity(value.source_token, index);
+    }
+
+    /// Reserves and transfers one registration; refusal leaves ownership with
+    /// the caller and does not expose a partially indexed interval.
+    pub fn append(self: *IntervalRegistry, allocator: std.mem.Allocator, value: ActiveInterval) error{OutOfMemory}!void {
+        try self.ensureUnusedCapacity(allocator, 1);
+        self.appendAssumeCapacity(value);
+    }
+
+    /// Clears indexes after the caller has canceled and released every token.
+    pub fn clearRetainingCapacity(self: *IntervalRegistry) void {
+        self.entries.clearRetainingCapacity();
+        self.by_runtime.clearRetainingCapacity();
+        self.by_source.clearRetainingCapacity();
+    }
+
+    /// Frees empty registry storage after interval ownership has been released.
+    pub fn deinit(self: *IntervalRegistry, allocator: std.mem.Allocator) void {
+        self.entries.deinit(allocator);
+        self.by_runtime.deinit(allocator);
+        self.by_source.deinit(allocator);
+    }
+};
+
 pub const CleanupEvents = shared_buffer.List([]const u8);
 
 /// Appends cleanup event using capacity that must already satisfy the caller's transaction contract.
@@ -79,7 +126,8 @@ pub fn activeTaskRecordByName(active_signal_graph: anytype, name: []const u8) ?*
     return found;
 }
 
-/// Returns active interval record count by period from the maintained active-runtime indexes.
+/// Counts matching interval declarations for native semantic-spec queries.
+/// Production timer delivery uses the runtime identity index.
 pub fn activeIntervalRecordCountByPeriod(active_signal_graph: anytype, period_ms: u64) u64 {
     var count: u64 = 0;
     for (active_signal_graph) |node| {
@@ -90,7 +138,8 @@ pub fn activeIntervalRecordCountByPeriod(active_signal_graph: anytype, period_ms
     return count;
 }
 
-/// Returns active interval record by token from the maintained active-runtime indexes.
+/// Searches a supplied graph snapshot for focused lifecycle tests.
+/// Live engine delivery uses the published descriptor token index.
 pub fn activeIntervalRecordByToken(active_signal_graph: anytype, source_token: HostSignalToken) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
@@ -102,7 +151,8 @@ pub fn activeIntervalRecordByToken(active_signal_graph: anytype, source_token: H
     return found;
 }
 
-/// Returns active interval record by period from the maintained active-runtime indexes.
+/// Resolves an unambiguous period for native semantic-spec tick commands.
+/// Runtime callbacks use token identity and never scan this graph.
 pub fn activeIntervalRecordByPeriod(active_signal_graph: anytype, period_ms: u64) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
@@ -325,37 +375,21 @@ pub fn cancelPendingTasksInScopeSubtree(comptime Ctx: type, ctx: Ctx.Handle, all
     tasks.items.len = write_index;
 }
 
-/// Returns active interval source token by runtime token from the maintained active-runtime indexes.
-pub fn activeIntervalSourceTokenByRuntimeToken(intervals: []const ActiveInterval, token: ids.IntervalToken) ?HostSignalToken {
-    var found: ?HostSignalToken = null;
-    for (intervals) |interval| {
-        if (interval.token != token) continue;
-        if (found != null) @panic("runtime interval token matched more than one active interval");
-        found = interval.source_token;
-    }
-    return found;
+/// Resolves a timer callback by its runtime identity without visiting other intervals.
+pub fn activeIntervalSourceTokenByRuntimeToken(intervals: *const IntervalRegistry, token: ids.IntervalToken) ?HostSignalToken {
+    const index = intervals.by_runtime.get(token) orelse return null;
+    return intervals.entries.items[index].source_token;
 }
 
-/// Returns active interval by source token from the maintained active-runtime indexes.
-pub fn activeIntervalBySourceToken(intervals: []ActiveInterval, source_token: HostSignalToken) ?*ActiveInterval {
-    var found: ?*ActiveInterval = null;
-    for (intervals) |*interval| {
-        if (interval.source_token != source_token) continue;
-        if (found != null) @panic("interval source token matched more than one runtime interval");
-        found = interval;
-    }
-    return found;
+/// Finds a live registration by the capability-owned source identity.
+pub fn activeIntervalBySourceToken(intervals: *IntervalRegistry, source_token: HostSignalToken) ?*ActiveInterval {
+    const index = intervals.by_source.get(source_token) orelse return null;
+    return &intervals.entries.items[index];
 }
 
-/// Returns active interval index by source token from the maintained active-runtime indexes.
-pub fn activeIntervalIndexBySourceToken(intervals: []const ActiveInterval, source_token: HostSignalToken) ?usize {
-    var found_index: ?usize = null;
-    for (intervals, 0..) |interval, index| {
-        if (interval.source_token != source_token) continue;
-        if (found_index != null) @panic("interval source token matched more than one runtime interval");
-        found_index = index;
-    }
-    return found_index;
+/// Locates the exact slot that scope retirement must remove.
+pub fn activeIntervalIndexBySourceToken(intervals: *const IntervalRegistry, source_token: HostSignalToken) ?usize {
+    return intervals.by_source.get(source_token);
 }
 
 /// Marks existing intervals unseen before reconciling declarations from the active graph.
@@ -365,26 +399,31 @@ pub fn markActiveIntervalsInactive(intervals: []ActiveInterval) void {
     }
 }
 
-/// Removes active interval at and releases the ownership attached to that live entry.
-pub fn removeActiveIntervalAt(intervals: *shared_buffer.List(ActiveInterval), index: usize) ActiveInterval {
-    if (index >= intervals.items.len) @panic("active interval index is out of bounds");
-    const interval = intervals.items[index];
-    const last_index = intervals.items.len - 1;
+/// Removes one indexed registration and returns its ownership to the caller.
+/// The caller must cancel its host timer and release the source token.
+pub fn removeActiveIntervalAt(intervals: *IntervalRegistry, index: usize) ActiveInterval {
+    if (index >= intervals.entries.items.len) @panic("active interval index is out of bounds");
+    const interval = intervals.entries.items[index];
+    const last_index = intervals.entries.items.len - 1;
+    if (!intervals.by_runtime.remove(interval.token) or !intervals.by_source.remove(interval.source_token)) @panic("interval identity index was missing during retirement");
     if (index != last_index) {
-        intervals.items[index] = intervals.items[last_index];
+        const moved = intervals.entries.items[last_index];
+        intervals.entries.items[index] = moved;
+        intervals.by_runtime.getPtr(moved.token).?.* = index;
+        intervals.by_source.getPtr(moved.source_token).?.* = index;
     }
-    intervals.items.len = last_index;
+    intervals.entries.items.len = last_index;
     return interval;
 }
 
 /// Clears active intervals while retaining bounded storage where the type promises reuse.
-pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *shared_buffer.List(ActiveInterval), roc_host: ?*abi.RocHost) void {
+pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *IntervalRegistry, roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
-        if (intervals.items.len != 0) @panic("active intervals cannot release tokens without a Roc host");
-        intervals.items.len = 0;
+        if (intervals.entries.items.len != 0) @panic("active intervals cannot release tokens without a Roc host");
+        intervals.entries.items.len = 0;
         return;
     };
-    for (intervals.items) |interval| {
+    for (intervals.entries.items) |interval| {
         Ctx.sink(ctx).cancelInterval(interval.token);
         retained_values.releaseHostSignalToken(interval.source_token, host);
     }
@@ -392,8 +431,8 @@ pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *sha
 }
 
 /// Ensures active interval capacity or state before publication can begin.
-pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, intervals: *shared_buffer.List(ActiveInterval), next_interval_token: *u64, roc_host: *abi.RocHost, source_token: HostSignalToken, period_ms: u64) void {
-    if (activeIntervalBySourceToken(intervals.items, source_token)) |interval| {
+pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, intervals: *IntervalRegistry, next_interval_token: *u64, roc_host: *abi.RocHost, source_token: HostSignalToken, period_ms: u64) void {
+    if (activeIntervalBySourceToken(intervals, source_token)) |interval| {
         if (interval.period_ms != period_ms) @panic("interval source token changed period");
         interval.reconciliation = .confirmed;
         return;
@@ -417,7 +456,7 @@ pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.
 /// Reserves registry room for `additional` interval registrations before a
 /// transaction publishes, so `ensureActiveIntervalAssumeCapacity` never grows
 /// the registry on the commit path.
-pub fn reserveActiveIntervals(allocator: std.mem.Allocator, intervals: *shared_buffer.List(ActiveInterval), additional: usize) error{OutOfMemory}!void {
+pub fn reserveActiveIntervals(allocator: std.mem.Allocator, intervals: *IntervalRegistry, additional: usize) error{OutOfMemory}!void {
     intervals.ensureUnusedCapacity(allocator, additional) catch return error.OutOfMemory;
 }
 
@@ -425,15 +464,15 @@ pub fn reserveActiveIntervals(allocator: std.mem.Allocator, intervals: *shared_b
 /// `reserveActiveIntervals` already secured. A source token that is already
 /// registered is confirmed rather than duplicated, exactly as
 /// `ensureActiveInterval` does on the preparation path.
-pub fn ensureActiveIntervalAssumeCapacity(comptime Ctx: type, ctx: Ctx.Handle, intervals: *shared_buffer.List(ActiveInterval), next_interval_token: *u64, source_token: HostSignalToken, period_ms: u64) void {
-    if (activeIntervalBySourceToken(intervals.items, source_token)) |interval| {
+pub fn ensureActiveIntervalAssumeCapacity(comptime Ctx: type, ctx: Ctx.Handle, intervals: *IntervalRegistry, next_interval_token: *u64, source_token: HostSignalToken, period_ms: u64) void {
+    if (activeIntervalBySourceToken(intervals, source_token)) |interval| {
         if (interval.period_ms != period_ms) @panic("interval source token changed period");
         interval.reconciliation = .confirmed;
         return;
     }
 
     if (next_interval_token.* == std.math.maxInt(u64)) @panic("host interval token overflowed");
-    if (intervals.items.len == intervals.capacity) @panic("interval registration exceeded its reserved capacity");
+    if (intervals.entries.items.len == intervals.entries.capacity) @panic("interval registration exceeded its reserved capacity");
     const token = next_interval_token.*;
     next_interval_token.* += 1;
     intervals.appendAssumeCapacity(.{
@@ -446,33 +485,30 @@ pub fn ensureActiveIntervalAssumeCapacity(comptime Ctx: type, ctx: Ctx.Handle, i
 }
 
 /// Removes active interval by source token and releases the ownership attached to that live entry.
-pub fn removeActiveIntervalBySourceToken(comptime Ctx: type, ctx: Ctx.Handle, intervals: *shared_buffer.List(ActiveInterval), roc_host: *abi.RocHost, source_token: HostSignalToken) void {
-    const index = activeIntervalIndexBySourceToken(intervals.items, source_token) orelse @panic("active interval removal missed its source token");
+pub fn removeActiveIntervalBySourceToken(comptime Ctx: type, ctx: Ctx.Handle, intervals: *IntervalRegistry, roc_host: *abi.RocHost, source_token: HostSignalToken) void {
+    const index = activeIntervalIndexBySourceToken(intervals, source_token) orelse @panic("active interval removal missed its source token");
     const interval = removeActiveIntervalAt(intervals, index);
     Ctx.sink(ctx).cancelInterval(interval.token);
     retained_values.releaseHostSignalToken(interval.source_token, roc_host);
 }
 
 /// Cancels intervals not rediscovered and commits the current bounded registration set.
-pub fn finishActiveIntervalSync(comptime Ctx: type, ctx: Ctx.Handle, intervals: *shared_buffer.List(ActiveInterval), roc_host: ?*abi.RocHost) void {
+pub fn finishActiveIntervalSync(comptime Ctx: type, ctx: Ctx.Handle, intervals: *IntervalRegistry, roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
-        for (intervals.items) |interval| {
+        for (intervals.entries.items) |interval| {
             if (interval.reconciliation == .pending) @panic("unconfirmed interval cannot release token without a Roc host");
         }
         return;
     };
 
-    var write_index: usize = 0;
-    for (intervals.items) |interval| {
-        if (interval.reconciliation == .pending) {
-            Ctx.sink(ctx).cancelInterval(interval.token);
-            retained_values.releaseHostSignalToken(interval.source_token, host);
-            continue;
-        }
-        intervals.items[write_index] = interval;
-        write_index += 1;
+    var index = intervals.entries.items.len;
+    while (index > 0) {
+        index -= 1;
+        if (intervals.entries.items[index].reconciliation != .pending) continue;
+        const interval = removeActiveIntervalAt(intervals, index);
+        Ctx.sink(ctx).cancelInterval(interval.token);
+        retained_values.releaseHostSignalToken(interval.source_token, host);
     }
-    intervals.items.len = write_index;
 }
 
 /// Reconciles interval registrations from active graph declarations after propagation.
@@ -480,13 +516,13 @@ pub fn syncActiveIntervalsFromGraph(
     comptime Ctx: type,
     ctx: Ctx.Handle,
     allocator: std.mem.Allocator,
-    intervals: *shared_buffer.List(ActiveInterval),
+    intervals: *IntervalRegistry,
     next_interval_token: *u64,
     roc_host: ?*abi.RocHost,
     active_signal_graph: anytype,
     metrics: anytype,
 ) void {
-    markActiveIntervalsInactive(intervals.items);
+    markActiveIntervalsInactive(intervals.entries.items);
     metrics.bump(.active_intervals_synced, @intCast(active_signal_graph.len));
 
     for (active_signal_graph) |node| {
@@ -621,7 +657,7 @@ test "pending tasks and active intervals retain callable tokens for their full l
     clearPendingTasks(TestIntervalCtx, &host, std.testing.allocator, &tasks, &roc_host);
     try std.testing.expectEqual(@as(u64, 1), test_signal_token_drop_count);
 
-    var intervals: shared_buffer.List(ActiveInterval) = .empty;
+    var intervals: IntervalRegistry = .empty;
     defer intervals.deinit(std.testing.allocator);
     var next_interval_token: u64 = 1;
     const interval_token = testSignalToken(&roc_host, 2);
@@ -867,7 +903,7 @@ test "effects runtime updates active interval table" {
     var second_token_storage = [_]u8{0};
     const first_token = first_token_storage[0..].ptr;
     const second_token = second_token_storage[0..].ptr;
-    var intervals: shared_buffer.List(ActiveInterval) = .empty;
+    var intervals: IntervalRegistry = .empty;
     defer intervals.deinit(std.testing.allocator);
 
     intervals.append(std.testing.allocator, .{
@@ -883,14 +919,14 @@ test "effects runtime updates active interval table" {
         .reconciliation = .confirmed,
     }) catch @panic("out of memory");
 
-    try std.testing.expectEqual(@as(?HostSignalToken, first_token), activeIntervalSourceTokenByRuntimeToken(intervals.items, ids.IntervalToken.fromRaw(10)));
-    markActiveIntervalsInactive(intervals.items);
-    try std.testing.expectEqual(.pending, intervals.items[0].reconciliation);
-    try std.testing.expectEqual(@as(?*ActiveInterval, &intervals.items[1]), activeIntervalBySourceToken(intervals.items, second_token));
+    try std.testing.expectEqual(@as(?HostSignalToken, first_token), activeIntervalSourceTokenByRuntimeToken(&intervals, ids.IntervalToken.fromRaw(10)));
+    markActiveIntervalsInactive(intervals.entries.items);
+    try std.testing.expectEqual(.pending, intervals.entries.items[0].reconciliation);
+    try std.testing.expectEqual(@as(?*ActiveInterval, &intervals.entries.items[1]), activeIntervalBySourceToken(&intervals, second_token));
     const removed = removeActiveIntervalAt(&intervals, 0);
     try std.testing.expectEqual(@as(u64, 10), removed.token.raw());
-    try std.testing.expectEqual(@as(usize, 1), intervals.items.len);
-    try std.testing.expectEqual(@as(u64, 11), intervals.items[0].token.raw());
+    try std.testing.expectEqual(@as(usize, 1), intervals.entries.items.len);
+    try std.testing.expectEqual(@as(u64, 11), intervals.entries.items[0].token.raw());
 }
 
 test "effects runtime manages interval lifecycle transitions" {
@@ -902,19 +938,19 @@ test "effects runtime manages interval lifecycle transitions" {
     defer retained_values.releaseHostSignalToken(second_token, &roc_host);
 
     var host = TestIntervalHost{};
-    var intervals: shared_buffer.List(ActiveInterval) = .empty;
+    var intervals: IntervalRegistry = .empty;
     defer intervals.deinit(std.testing.allocator);
     var next_interval_token: u64 = 10;
 
     ensureActiveInterval(TestIntervalCtx, &host, std.testing.allocator, &intervals, &next_interval_token, &roc_host, first_token, 250);
     ensureActiveInterval(TestIntervalCtx, &host, std.testing.allocator, &intervals, &next_interval_token, &roc_host, second_token, 500);
-    try std.testing.expectEqual(@as(usize, 2), intervals.items.len);
+    try std.testing.expectEqual(@as(usize, 2), intervals.entries.items.len);
     try std.testing.expectEqual(@as(u64, 12), next_interval_token);
     try std.testing.expectEqual(@as(u64, 2), host.start_interval_count);
-    try std.testing.expectEqual(@as(?usize, 1), activeIntervalIndexBySourceToken(intervals.items, second_token));
+    try std.testing.expectEqual(@as(?usize, 1), activeIntervalIndexBySourceToken(&intervals, second_token));
 
     clearActiveIntervals(TestIntervalCtx, &host, &intervals, &roc_host);
-    try std.testing.expectEqual(@as(usize, 0), intervals.items.len);
+    try std.testing.expectEqual(@as(usize, 0), intervals.entries.items.len);
     try std.testing.expectEqual(@as(u64, 2), host.cancel_interval_count);
 
     ensureActiveInterval(TestIntervalCtx, &host, std.testing.allocator, &intervals, &next_interval_token, &roc_host, first_token, 250);
@@ -922,12 +958,12 @@ test "effects runtime manages interval lifecycle transitions" {
     try std.testing.expectEqual(@as(u64, 4), host.start_interval_count);
 
     removeActiveIntervalBySourceToken(TestIntervalCtx, &host, &intervals, &roc_host, second_token);
-    try std.testing.expectEqual(@as(usize, 1), intervals.items.len);
+    try std.testing.expectEqual(@as(usize, 1), intervals.entries.items.len);
     try std.testing.expectEqual(@as(u64, 3), host.cancel_interval_count);
 
-    markActiveIntervalsInactive(intervals.items);
+    markActiveIntervalsInactive(intervals.entries.items);
     finishActiveIntervalSync(TestIntervalCtx, &host, &intervals, &roc_host);
-    try std.testing.expectEqual(@as(usize, 0), intervals.items.len);
+    try std.testing.expectEqual(@as(usize, 0), intervals.entries.items.len);
     try std.testing.expectEqual(@as(u64, 4), host.cancel_interval_count);
 
     const no_host_token = testSignalToken(&roc_host, 300);
@@ -938,7 +974,7 @@ test "effects runtime manages interval lifecycle transitions" {
         .reconciliation = .confirmed,
     }) catch @panic("out of memory");
     finishActiveIntervalSync(TestIntervalCtx, &host, &intervals, null);
-    try std.testing.expectEqual(@as(usize, 1), intervals.items.len);
+    try std.testing.expectEqual(@as(usize, 1), intervals.entries.items.len);
     var removed = removeActiveIntervalAt(&intervals, 0);
     retained_values.releaseHostSignalToken(removed.source_token, &roc_host);
     removed = undefined;
@@ -952,7 +988,7 @@ test "effects runtime syncs existing active intervals from graph" {
         .{ .record = &interval_record },
     };
 
-    var intervals: shared_buffer.List(ActiveInterval) = .empty;
+    var intervals: IntervalRegistry = .empty;
     defer intervals.deinit(std.testing.allocator);
     intervals.append(std.testing.allocator, .{
         .token = ids.IntervalToken.fromRaw(10),
@@ -968,11 +1004,54 @@ test "effects runtime syncs existing active intervals from graph" {
 
     syncActiveIntervalsFromGraph(TestIntervalCtx, &host, std.testing.allocator, &intervals, &next_interval_token, &roc_host, active_nodes[0..], &metrics);
 
-    try std.testing.expectEqual(@as(usize, 1), intervals.items.len);
-    try std.testing.expectEqual(.confirmed, intervals.items[0].reconciliation);
-    try std.testing.expectEqual(@as(u64, 10), intervals.items[0].token.raw());
+    try std.testing.expectEqual(@as(usize, 1), intervals.entries.items.len);
+    try std.testing.expectEqual(.confirmed, intervals.entries.items[0].reconciliation);
+    try std.testing.expectEqual(@as(u64, 10), intervals.entries.items[0].token.raw());
     try std.testing.expectEqual(@as(u64, 11), next_interval_token);
     try std.testing.expectEqual(@as(u64, 1), metrics.active_intervals_synced);
     try std.testing.expectEqual(@as(u64, 0), host.start_interval_count);
     try std.testing.expectEqual(@as(u64, 0), host.cancel_interval_count);
+}
+
+test "interval identity indexes survive wide-table retirement and source reuse without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var intervals: IntervalRegistry = .empty;
+    defer intervals.deinit(fault.allocator());
+    const tokens = try std.testing.allocator.alloc(u8, 10000);
+    defer std.testing.allocator.free(tokens);
+    try intervals.ensureUnusedCapacity(fault.allocator(), tokens.len);
+    fault.configure(1);
+    for (tokens, 0..) |_, index| intervals.appendAssumeCapacity(.{
+        .token = ids.IntervalToken.fromRaw(index + 1),
+        .source_token = tokens[index..].ptr,
+        .period_ms = 500,
+    });
+    const removed = removeActiveIntervalAt(&intervals, 0);
+    try std.testing.expectEqual(null, activeIntervalSourceTokenByRuntimeToken(&intervals, removed.token));
+    try std.testing.expectEqual(null, activeIntervalBySourceToken(&intervals, removed.source_token));
+    try std.testing.expectEqual(@as(?usize, 0), activeIntervalIndexBySourceToken(&intervals, tokens[9999..].ptr));
+    intervals.appendAssumeCapacity(.{ .token = ids.IntervalToken.fromRaw(10001), .source_token = removed.source_token, .period_ms = 250 });
+    try std.testing.expectEqual(@as(?HostSignalToken, removed.source_token), activeIntervalSourceTokenByRuntimeToken(&intervals, ids.IntervalToken.fromRaw(10001)));
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    intervals.clearRetainingCapacity();
+    try std.testing.expectEqual(@as(usize, 0), intervals.by_runtime.count());
+    try std.testing.expectEqual(@as(usize, 0), intervals.by_source.count());
+    fault.configure(null);
+}
+
+fn checkIntervalReservationRefusal(allocator: std.mem.Allocator) !void {
+    var intervals: IntervalRegistry = .empty;
+    defer intervals.deinit(allocator);
+    var token: [1]u8 = undefined;
+    try intervals.append(allocator, .{ .token = ids.IntervalToken.fromRaw(1), .source_token = &token, .period_ms = 500 });
+    intervals.ensureUnusedCapacity(allocator, 100) catch |err| {
+        try std.testing.expectEqual(@as(?HostSignalToken, &token), activeIntervalSourceTokenByRuntimeToken(&intervals, ids.IntervalToken.fromRaw(1)));
+        try std.testing.expectEqual(@as(?usize, 0), activeIntervalIndexBySourceToken(&intervals, &token));
+        return err;
+    };
+}
+
+test "interval registry preflight refusal preserves committed identity indexes" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkIntervalReservationRefusal, .{});
 }

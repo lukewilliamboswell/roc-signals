@@ -778,7 +778,7 @@ pub fn Engine(comptime Ctx: type) type {
         selectors: selector_runtime.Registry(HostSignalRecord) = .{},
         render_cache: render_cache_mod.Cache(Ctx) = .{},
         pending_tasks: shared_buffer.List(HostPendingTask) = .empty,
-        active_intervals: shared_buffer.List(HostActiveInterval) = .empty,
+        active_intervals: effects_runtime.IntervalRegistry = .empty,
         cleanup_events: HostCleanupEvents = .empty,
         next_task_request_id: u64 = 1,
         next_interval_token: u64 = 1,
@@ -3405,12 +3405,14 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Returns active interval record by token from the maintained active-runtime indexes.
         pub fn activeIntervalRecordByToken(self: *Self, source_token: HostSignalToken) ?*HostSignalRecord {
-            return effects_runtime.activeIntervalRecordByToken(self.active_signal_graph.items, source_token);
+            const record = self.active_stream.signalRecordByToken(source_token) orelse return null;
+            if (self.activeSignalRecordId(record) == null) return null;
+            return if (record.intervalSource() != null) record else null;
         }
 
         /// Returns active interval source token by runtime token from the maintained active-runtime indexes.
         pub fn activeIntervalSourceTokenByRuntimeToken(self: *Self, token: u64) ?HostSignalToken {
-            return effects_runtime.activeIntervalSourceTokenByRuntimeToken(self.active_intervals.items, ids.IntervalToken.fromRaw(token));
+            return effects_runtime.activeIntervalSourceTokenByRuntimeToken(&self.active_intervals, ids.IntervalToken.fromRaw(token));
         }
 
         /// Resolves pending task count by name from the bounded task registry without scanning unrelated work.
