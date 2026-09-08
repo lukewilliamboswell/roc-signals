@@ -13,6 +13,8 @@ class GuiDiscoveryTests(unittest.TestCase):
     def test_supported_hosts_match_platform_targets(self):
         for system, machine, expected in [('Linux', 'x86_64', 'x64glibc'),
                                           ('Darwin', 'arm64', 'arm64mac'),
+                                          ('Windows', 'AMD64', 'x64win'),
+                                          ('Windows', 'ARM64', None),
                                           ('Darwin', 'x86_64', None),
                                           ('Linux', 'aarch64', None)]:
             with self.subTest(system=system, machine=machine), \

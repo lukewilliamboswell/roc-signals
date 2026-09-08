@@ -11,7 +11,7 @@ The native platform runs the same Signals engine behind GPUI. Application state,
 commands, equality pruning, keyed rows, and scope disposal use the APIs described
 in [State, Events, and Forms](@/docs/state-and-events.md) and
 [Dynamic Structure](@/docs/dynamic-structure.md). Import `pf.Gui` for native
-controls. The current targets are Apple Silicon macOS and Linux x86_64 with glibc and a Wayland/GPU session;
+controls. The current targets are Apple Silicon macOS, Linux x86_64 with glibc and a Wayland/GPU session, and Windows x86_64;
 see [contributing](@/docs/contributing.md#native-gui-platform-spike) for the pinned
 compiler, host build, executable build, and test commands.
 

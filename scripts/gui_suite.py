@@ -9,7 +9,7 @@ import tomllib
 
 import spec_driver
 import toolchain
-from build_gui import build_environment, host_target
+from build_gui import build_environment, executable_name, host_target
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,7 +47,7 @@ def fixtures(root: Path = ROOT) -> tuple[Path, ...]:
 
 def run(roc: str, args, output: Path) -> None:
     if not supported_host():
-        raise SystemExit("GUI tests require Linux x86_64 with glibc or Apple Silicon macOS; no display is needed.")
+        raise SystemExit("GUI tests require Linux x86_64 with glibc, Apple Silicon macOS, or Windows x86_64; no display is needed.")
     apps = examples() + fixtures()
     toolchain.verify_compiler(roc, toolchain.read_pin(ROOT / "platform-gui/main.roc"))
     subprocess.run([sys.executable, ROOT / "scripts/prepare_platforms.py"], check=True)
@@ -78,7 +78,7 @@ def run(roc: str, args, output: Path) -> None:
         matched += len(cases)
         source = app / "main.roc"
         name = app.name if app.parent.name == "examples-gui" else "fixture-" + app.name
-        executable = output / name
+        executable = output / executable_name(name)
         try:
             for command in (
                 [roc, "check", source],

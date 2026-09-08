@@ -5,6 +5,12 @@
 //! substituted symlink cannot redirect an in-flight operation. Scans are bounded
 //! observations, not filesystem snapshots: concurrent removals/changes can fail
 //! the entire request. No Roc value, task registry, or GUI state belongs here.
+use super::{
+    CHUNK_BYTES, DirectoryListing, Entry, FileError, Kind, LogChange, LogChunk, LogCursor,
+    LogPosition, LogState, MAX_CHUNK_BYTES, MAX_PATH_BYTES, MAX_SCAN_DEPTH, MAX_SCAN_ENTRIES,
+    MAX_SCAN_PATH_BYTES, MAX_TEXT_BYTES, Opened, Preview, Scan, TEMP_SERIAL, TextFile, Written,
+    bounded_detail, canceled, read_chunk, utf8_prefix,
+};
 use std::{
     ffi::{CStr, CString, OsStr},
     fs::File,
@@ -14,129 +20,8 @@ use std::{
         unix::ffi::OsStrExt,
     },
     path::{Component, Path},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
-
-pub const MAX_PATH_BYTES: usize = 4096;
-pub const MAX_ERROR_DETAIL_BYTES: usize = 4096;
-pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
-pub const MAX_SCAN_ENTRIES: usize = 10_000;
-pub const MAX_SCAN_DEPTH: usize = 64;
-pub const MAX_SCAN_PATH_BYTES: usize = 4 * 1024 * 1024;
-pub const MAX_CHUNK_BYTES: usize = 64 * 1024;
-const CHUNK_BYTES: usize = MAX_CHUNK_BYTES;
-static TEMP_SERIAL: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct TextFile {
-    pub path: String,
-    pub text: String,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Written {
-    pub path: String,
-    pub bytes: u64,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Entry {
-    pub path: String,
-    pub kind: Kind,
-    pub bytes: u64,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Scan {
-    pub root: String,
-    pub entries: Vec<Entry>,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct DirectoryListing {
-    pub path: String,
-    pub entries: Vec<Entry>,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Preview {
-    pub path: String,
-    pub text: String,
-    pub truncated: bool,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Opened {
-    pub path: String,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LogCursor {
-    pub device: u64,
-    pub inode: u64,
-    pub offset: u64,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LogPosition {
-    Start,
-    End,
-    After(LogCursor),
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LogChange {
-    Initial,
-    Continued,
-    Rotated,
-    Truncated,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LogState {
-    More,
-    AtEnd,
-    PartialUtf8,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct LogChunk {
-    pub path: String,
-    pub text: String,
-    pub cursor: LogCursor,
-    pub change: LogChange,
-    pub state: LogState,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    File,
-    Directory,
-    SymbolicLink,
-    Other,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub enum FileError {
-    Canceled,
-    NotFound(String),
-    PermissionDenied(String),
-    InvalidUtf8(String),
-    InvalidPath(String),
-    ResourceLimit(String),
-    Io(String),
-    Unavailable(String),
-}
-
-fn canceled(cancel: &AtomicBool) -> Result<(), FileError> {
-    if cancel.load(Ordering::Acquire) {
-        Err(FileError::Canceled)
-    } else {
-        Ok(())
-    }
-}
-
-/// Bounds diagnostic text before native result framing, preserving UTF-8 and
-/// marking omitted detail. This never changes a task's error code or data result.
-pub(crate) fn bounded_detail(mut message: String) -> String {
-    const MARKER: &str = " [truncated]";
-    if message.len() > MAX_ERROR_DETAIL_BYTES {
-        let mut end = MAX_ERROR_DETAIL_BYTES - MARKER.len();
-        while !message.is_char_boundary(end) {
-            end -= 1;
-        }
-        message.truncate(end);
-        message.push_str(MARKER);
-    }
-    message
-}
 
 fn io_error(path: &str, error: io::Error) -> FileError {
     let message = bounded_detail(format!("{path}: {error}"));
@@ -638,49 +523,12 @@ pub fn list_directory(path: &str, cancel: &AtomicBool) -> Result<DirectoryListin
     })
 }
 
-// Retain at most the requested byte count. A read can end between UTF-8 code
-// points; callers decide whether an incomplete tail is a prefix or pending data.
-fn read_chunk(
-    file: &mut File,
-    path: &str,
-    cancel: &AtomicBool,
-    count: usize,
-) -> Result<Vec<u8>, FileError> {
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(count)
-        .map_err(|_| FileError::ResourceLimit(path.into()))?;
-    bytes.resize(count, 0);
-    let mut used = 0;
-    while used < count {
-        canceled(cancel)?;
-        let read = file
-            .read(&mut bytes[used..])
-            .map_err(|error| io_error(path, error))?;
-        if read == 0 {
-            break;
-        }
-        used += read;
-    }
-    canceled(cancel)?;
-    bytes.truncate(used);
-    Ok(bytes)
-}
-
-fn utf8_prefix(bytes: &[u8], path: &str) -> Result<usize, FileError> {
-    match std::str::from_utf8(bytes) {
-        Ok(_) => Ok(bytes.len()),
-        Err(error) if error.error_len().is_none() => Ok(error.valid_up_to()),
-        Err(_) => Err(FileError::InvalidUtf8(path.into())),
-    }
-}
-
 /// Reads a UTF-8 prefix of at most 64 KiB, reporting omitted bytes explicitly.
 /// A code point cut by the prefix bound is excluded; invalid UTF-8 inside the
 /// prefix or an incomplete terminal code point in a complete file is refused.
 pub fn read_preview(path: &str, cancel: &AtomicBool) -> Result<Preview, FileError> {
     let (mut file, _) = regular_file(path, cancel)?;
-    let mut bytes = read_chunk(&mut file, path, cancel, MAX_CHUNK_BYTES + 1)?;
+    let mut bytes = read_chunk(&mut file, path, cancel, MAX_CHUNK_BYTES + 1, io_error)?;
     let truncated = bytes.len() > MAX_CHUNK_BYTES;
     bytes.truncate(MAX_CHUNK_BYTES);
     let valid = utf8_prefix(&bytes, path)?;
@@ -741,7 +589,7 @@ pub fn read_log(
         // a code point. Four trailing bytes contain any complete UTF-8 endpoint.
         file.seek(SeekFrom::Start(size.saturating_sub(4)))
             .map_err(|error| io_error(path, error))?;
-        let tail = read_chunk(&mut file, path, cancel, size.min(4) as usize)?;
+        let tail = read_chunk(&mut file, path, cancel, size.min(4) as usize, io_error)?;
         if !tail.is_empty() {
             let mut start = tail.len() - 1;
             while start > 0 && tail[start] & 0xc0 == 0x80 {
@@ -760,7 +608,7 @@ pub fn read_log(
     }
     file.seek(SeekFrom::Start(cursor.offset))
         .map_err(|error| io_error(path, error))?;
-    let mut bytes = read_chunk(&mut file, path, cancel, MAX_CHUNK_BYTES + 1)?;
+    let mut bytes = read_chunk(&mut file, path, cancel, MAX_CHUNK_BYTES + 1, io_error)?;
     let more = bytes.len() > MAX_CHUNK_BYTES;
     bytes.truncate(MAX_CHUNK_BYTES);
     let valid = utf8_prefix(&bytes, path)?;

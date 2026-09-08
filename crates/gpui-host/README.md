@@ -86,9 +86,18 @@ only visible ranks. Ordinary containers still enumerate direct children when
 they render, so use the virtual-list API for wide collections. Reactive row
 scopes remain mounted until ordinary collection or scope disposal removes them.
 
-The supported hosts are Apple Silicon macOS and Linux x64/Wayland. Bundles
-contain the host targets built locally; they do not promise support for older
-operating systems than those used for validation.
+The supported hosts are Apple Silicon macOS, Linux x64/Wayland, and Windows
+x64. Bundles contain the host targets built locally; they do not promise
+support for older operating systems than those used for validation.
+On Windows the Rust host targets the MSVC ABI and binds Win32 through
+raw-dylib; Roc's `x64win` link supplies kernel32, ntdll, and the UCRT, and
+the remaining conventional imports (advapi32, from GPUI's `winsafe`
+dependency) come from import libraries generated with `zig dlltool` from the
+MinGW-w64 definitions Zig bundles. `signals.res` embeds the application
+manifest that activates Common Controls 6 (GPUI imports `TaskDialogIndirect`
+from it at load time) and declares per-monitor DPI awareness. `Files` uses
+handle-relative `NtCreateFile` without following reparse points, and its
+atomic replace needs Windows 10 version 1607 or later.
 Bundled ELF link inputs retain system runtime dependencies through SONAMEs;
 building a bundle on a newer glibc system sets a corresponding compatibility
 floor. Release distribution needs an intentional sysroot, dependency/license
@@ -101,6 +110,8 @@ not a desktop installer or a macOS `.app` directory.
 GPUI's test platform without a display. On Linux it needs the xkbcommon-X11 development
 link input (or `LIBRARY_PATH` pointing at the prepared GUI platform inputs).
 On macOS, use `TOOLCHAINS=Metal cargo test ...` to select Xcode's Metal component.
+On Windows the symbolic-link tests skip themselves when link creation is not
+permitted (no Developer Mode or privilege); the other no-follow checks still run.
 These tests cover actual GPUI row layout, retained identity on reorder, removal,
 checked-payload ingress, and disabled/stale dispatch. The focused Roc fixture in
 `test/gui/presentation` covers the same shared-engine control workflow.

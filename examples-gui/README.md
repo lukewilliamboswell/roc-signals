@@ -21,7 +21,7 @@ app's source and specs for the state transitions and error handling.
 The [native GUI guide](../www/content/docs/native-gui.md) describes public controls;
 [contributing](../www/content/docs/contributing.md#native-gui-platform-spike)
 covers the pinned compiler, host build, executable commands, and validation.
-The supported native targets are Apple Silicon macOS and Linux x86_64 with glibc and Wayland.
+The supported native targets are Apple Silicon macOS, Linux x86_64 with glibc and Wayland, and Windows x86_64.
 
 ## Adding another example
 
