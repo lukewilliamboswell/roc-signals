@@ -17,7 +17,7 @@ entry_view = |row, selected| {
 		[
 			Gui.button("Inspect ${key}", selected.on_unit(|_| key)),
 			Gui.text_s(row.signal().map(|entry| entry.severity.to_str())),
-			Gui.text_s(row.signal().map(|entry| "${entry.component}: ${entry.message}")),
+			Gui.text_s(row.signal().map(|entry| entry.component)),
 		],
 	)
 }
