@@ -817,6 +817,7 @@ portable release packaging needs a deliberate sysroot and license inventory.
 buttons, labeled inputs, and checkboxes. See the native presentation protocol in
 `docs/native-gui-protocol.md` for field compatibility and limits. Signals, keyed
 rows, scopes, and ownership remain in the shared engine.
-Parent child-list copying and GPUI child enumeration still have linear costs;
-this spike does not yet satisfy the full O(changed) rendering target. See
+Wide collections use `Gui.virtual_list` to bound child lookup and layout to the
+visible range; ordinary containers enumerate direct children when rendered.
+See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
 `crates/gpui-host/README.md` for the boundary limits.

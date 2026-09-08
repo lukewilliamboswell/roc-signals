@@ -12,6 +12,9 @@ For worked examples, follow the topic guides. The public modules under
 `platform-web/` provide signatures and module documentation; internal descriptor and
 host-value helpers are not application APIs.
 
+For native controls, layouts, virtual lists, and keyboard regions, see
+[Native GUI](@/docs/native-gui.md).
+
 The [browser limits](#deliberately-absent) describe capabilities without a
 built-in API and where a JavaScript behaviour can help.
 
