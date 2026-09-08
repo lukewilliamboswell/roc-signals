@@ -18,6 +18,8 @@ pub const Atom = union(enum) {
 
 pub const Expr = struct {
     span: Span,
+    /// Borrowed atom spelling used by strict numeric fixture decoders.
+    spelling: ?[]const u8 = null,
     value: union(enum) {
         atom: Atom,
         list: []Expr,
@@ -165,7 +167,7 @@ pub const Reader = struct {
             .{ .symbol = text }
         else
             .{ .symbol = text };
-        return .{ .span = self.spanFrom(start), .value = .{ .atom = atom } };
+        return .{ .span = self.spanFrom(start), .value = .{ .atom = atom }, .spelling = text };
     }
 
     fn skipTrivia(self: *Reader) void {

@@ -1283,3 +1283,55 @@ test "window close requests and assertions decode without locators" {
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "request_window_close extra"));
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "expect_window_closed yes"));
 }
+
+fn parseExtendedFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
+    var parsed = try parseSExprTestSpec(allocator,
+        \\(test "native content"
+        \\ (steps
+        \\  (resolve-file-log "tail" :path "/tmp/log" :text "λ\n" :device 18446744073709551615 :inode 13 :offset 3 :change rotated :state partial-utf8)
+        \\  (resolve-file-directory "folder" :path "/tmp" :entries ((file "/tmp/λ" 18446744073709551615) (directory "/tmp/child" 0) (symbolic-link "/tmp/link" 9)))
+        \\  (resolve-file-preview "preview" :path "/tmp/λ" :text "first\nsecond" :truncated true)
+        \\  (resolve-file-open "launch" :path "/tmp/λ")))
+    );
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqualStrings("6:files18:/tmp/log3:λ\n20:184467440737095516152:131:37:rotated12:partial-utf8", parsed.commands[0].expected_text.?);
+    try std.testing.expect(file_fixtures.admits(parsed.commands[0].expected_task_kinds, .read_log));
+    try std.testing.expect(!file_fixtures.admits(parsed.commands[0].expected_task_kinds, .read_text));
+    try std.testing.expect(file_fixtures.admits(parsed.commands[1].expected_task_kinds, .list_directory));
+    try std.testing.expect(!file_fixtures.admits(parsed.commands[1].expected_task_kinds, .scan_directory));
+    try std.testing.expectEqualStrings("6:files17:/tmp/λ12:first\nsecond4:true", parsed.commands[2].expected_text.?);
+    try std.testing.expectEqualStrings("6:files17:/tmp/λ", parsed.commands[3].expected_text.?);
+}
+
+test "extended file fixtures preserve full unsigned cursors under allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseExtendedFileFixtureAllocationCase, .{});
+}
+
+test "extended file fixtures reject noncanonical unsigned numbers and unknown tags" {
+    for ([_][]const u8{ "-1", "+1", "00", "01", "18446744073709551616", "\"123\"" }) |number| {
+        const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"bad cursor\" (steps (resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device {s} :inode 1 :offset 0 :change initial :state at-end)))", .{number});
+        defer std.testing.allocator.free(text);
+        try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
+    }
+    for ([_][]const u8{
+        "(resolve-file-preview \"preview\" :path \"/tmp/a\" :text \"x\" :truncated \"true\")",
+        "(resolve-file-directory \"folder\" :path \"/tmp\" :entries ((imaginary \"/tmp/a\" 1)))",
+        "(resolve-file-directory \"folder\" :path \"/tmp\" :entries ((file \"/tmp/a\" +1)))",
+        "(resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change replaced :state at-end)",
+        "(resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change initial :state finished)",
+        "(resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change initial :change at-end)",
+    }) |form| {
+        const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"bad native content\" (steps {s}))", .{form});
+        defer std.testing.allocator.free(text);
+        try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
+    }
+}
+
+test "extended file fixtures reject oversized preview text before settlement" {
+    const oversized = try std.testing.allocator.alloc(u8, 65537);
+    defer std.testing.allocator.free(oversized);
+    @memset(oversized, 'a');
+    const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"too large\" (steps (resolve-file-preview \"preview\" :path \"/tmp/a\" :text \"{s}\" :truncated false)))", .{oversized});
+    defer std.testing.allocator.free(text);
+    try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
+}
