@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "version": "0.2.0-rc1",
+  "source_sha": "65340f737687927372f905f6be372f7c3e101787",
+  "compiler_pin": "nightly-2026-09-04-c125b82",
+  "compiler_channel": "nightly-bootstrap",
+  "assets": {
+    "platform": {
+      "name": "2AkoWkbJFbvPCzryikfAUcwUs1hL8x6UzwhzPFoxuvN5.tar.zst",
+      "url": "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc1/2AkoWkbJFbvPCzryikfAUcwUs1hL8x6UzwhzPFoxuvN5.tar.zst",
+      "sha256": "6d78321f4c44f81740b656e812b2db3550e2a8ae38a5a1df6b1002c69dc668d2"
+    },
+    "browser": {
+      "name": "signals-browser.zip",
+      "url": "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc1/signals-browser.zip",
+      "sha256": "0b985e496962b2509f33c718c5a2b6d33029f7a827ce88024150b048bceea022"
+    },
+    "starters": {
+      "name": "signals-starters.zip",
+      "url": "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc1/signals-starters.zip",
+      "sha256": "570a89597ebc7f96d6efcc73b230a6cb9798ac446dfcd7bef62125a26c51d635"
+    }
+  },
+  "site": {
+    "name": "signals-site.zip",
+    "url": "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc1/signals-site.zip",
+    "sha256": "2bbdce2c51c66c4ba6bfec0743aa8e92994019256e1f36dde05de904baf0727c"
+  }
+}
