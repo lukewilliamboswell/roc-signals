@@ -1,6 +1,7 @@
 //! One-based registry for opaque Roc HostValue handles and their capabilities.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const abi = @import("roc_platform_abi.zig");
 const erased_calls = @import("erased_calls.zig");
 const CapabilitySplit = @import("callable_roles.zig").CapabilitySplit;
@@ -43,7 +44,7 @@ pub fn Registry(comptime Capability: type) type {
     return struct {
         const Self = @This();
 
-        slots: std.ArrayListUnmanaged(Slot) = .empty,
+        slots: shared_buffer.List(Slot) = .empty,
         first_vacant: ?usize = null,
         take_epoch: u64 = 0,
 

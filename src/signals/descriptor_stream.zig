@@ -1,6 +1,7 @@
 //! Decoder and owned snapshot model for Roc UI descriptor streams.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const abi = @import("roc_platform_abi.zig");
 const boundary = @import("boundary.zig");
 const render = @import("render_commands.zig");
@@ -282,8 +283,8 @@ pub const LifecycleDescriptorIndex = struct {
 /// state and structural ownership is reached through the node id. Lifecycle
 /// descriptors keep their existing specialized per-scope index.
 pub const ScopeDescriptorOwnership = struct {
-    elem_ids: std.ArrayListUnmanaged(ElemId) = .empty,
-    node_ids: std.ArrayListUnmanaged(NodeId) = .empty,
+    elem_ids: shared_buffer.List(ElemId) = .empty,
+    node_ids: shared_buffer.List(NodeId) = .empty,
 
     /// Releases the scope-local identity lists.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -700,40 +701,40 @@ pub const Stream = struct {
     pub const TextNodeDesc = StreamTextNodeDesc;
     pub const SignalTextNodeDesc = StreamSignalTextNodeDesc;
 
-    render_nodes: std.ArrayListUnmanaged(StreamRenderNode) = .empty,
-    elements: std.ArrayListUnmanaged(StreamElementDesc) = .empty,
-    text_nodes: std.ArrayListUnmanaged(StreamTextNodeDesc) = .empty,
-    signal_text_nodes: std.ArrayListUnmanaged(StreamSignalTextNodeDesc) = .empty,
-    static_text_attrs: std.ArrayListUnmanaged(StaticTextAttrDesc) = .empty,
-    signal_text_attrs: std.ArrayListUnmanaged(SignalTextAttrDesc) = .empty,
-    static_custom_text_attrs: std.ArrayListUnmanaged(StaticCustomTextAttrDesc) = .empty,
-    signal_custom_text_attrs: std.ArrayListUnmanaged(SignalCustomTextAttrDesc) = .empty,
-    signal_optional_custom_text_attrs: std.ArrayListUnmanaged(SignalOptionalCustomTextAttrDesc) = .empty,
-    static_custom_bool_attrs: std.ArrayListUnmanaged(StaticCustomBoolAttrDesc) = .empty,
-    signal_custom_bool_attrs: std.ArrayListUnmanaged(SignalCustomBoolAttrDesc) = .empty,
-    static_bool_attrs: std.ArrayListUnmanaged(StaticBoolAttrDesc) = .empty,
-    signal_bool_attrs: std.ArrayListUnmanaged(SignalBoolAttrDesc) = .empty,
-    on_changes: std.ArrayListUnmanaged(OnChangeDesc) = .empty,
-    mounts: std.ArrayListUnmanaged(MountDesc) = .empty,
-    cleanups: std.ArrayListUnmanaged(CleanupDesc) = .empty,
-    events: std.ArrayListUnmanaged(EventDesc) = .empty,
-    scope_sites: std.ArrayListUnmanaged(ScopeSiteDesc) = .empty,
-    states: std.ArrayListUnmanaged(StateDesc) = .empty,
-    whens: std.ArrayListUnmanaged(WhenDesc) = .empty,
-    eaches: std.ArrayListUnmanaged(EachDesc) = .empty,
+    render_nodes: shared_buffer.List(StreamRenderNode) = .empty,
+    elements: shared_buffer.List(StreamElementDesc) = .empty,
+    text_nodes: shared_buffer.List(StreamTextNodeDesc) = .empty,
+    signal_text_nodes: shared_buffer.List(StreamSignalTextNodeDesc) = .empty,
+    static_text_attrs: shared_buffer.List(StaticTextAttrDesc) = .empty,
+    signal_text_attrs: shared_buffer.List(SignalTextAttrDesc) = .empty,
+    static_custom_text_attrs: shared_buffer.List(StaticCustomTextAttrDesc) = .empty,
+    signal_custom_text_attrs: shared_buffer.List(SignalCustomTextAttrDesc) = .empty,
+    signal_optional_custom_text_attrs: shared_buffer.List(SignalOptionalCustomTextAttrDesc) = .empty,
+    static_custom_bool_attrs: shared_buffer.List(StaticCustomBoolAttrDesc) = .empty,
+    signal_custom_bool_attrs: shared_buffer.List(SignalCustomBoolAttrDesc) = .empty,
+    static_bool_attrs: shared_buffer.List(StaticBoolAttrDesc) = .empty,
+    signal_bool_attrs: shared_buffer.List(SignalBoolAttrDesc) = .empty,
+    on_changes: shared_buffer.List(OnChangeDesc) = .empty,
+    mounts: shared_buffer.List(MountDesc) = .empty,
+    cleanups: shared_buffer.List(CleanupDesc) = .empty,
+    events: shared_buffer.List(EventDesc) = .empty,
+    scope_sites: shared_buffer.List(ScopeSiteDesc) = .empty,
+    states: shared_buffer.List(StateDesc) = .empty,
+    whens: shared_buffer.List(WhenDesc) = .empty,
+    eaches: shared_buffer.List(EachDesc) = .empty,
     signal_records_by_token: std.AutoHashMapUnmanaged(HostSignalToken, *SignalRecord) = .{},
     signal_record_descriptor_uses_by_token: std.AutoHashMapUnmanaged(HostSignalToken, usize) = .{},
     keyed_select_records_by_identity: std.AutoHashMapUnmanaged(signal_records.KeyedSelectIdentity, *SignalRecord) = .{},
     keyed_select_descriptor_uses_by_identity: std.AutoHashMapUnmanaged(signal_records.KeyedSelectIdentity, usize) = .{},
     custom_attr_keys: CustomAttrKeySet = .empty,
-    custom_attr_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(CustomAttrDescriptorIndex)) = .empty,
-    lifecycle_indices_by_scope_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(LifecycleDescriptorIndex)) = .empty,
-    scope_descriptor_ownership: std.ArrayListUnmanaged(ScopeDescriptorOwnership) = .empty,
+    custom_attr_indices_by_elem_id: shared_buffer.List(shared_buffer.List(CustomAttrDescriptorIndex)) = .empty,
+    lifecycle_indices_by_scope_id: shared_buffer.List(shared_buffer.List(LifecycleDescriptorIndex)) = .empty,
+    scope_descriptor_ownership: shared_buffer.List(ScopeDescriptorOwnership) = .empty,
     custom_attr_index_active: bool = false,
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .{},
-    named_event_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)) = .empty,
-    descriptor_indexes_by_elem_id: std.ArrayListUnmanaged(ElemDescriptorIndex) = .empty,
-    descriptor_indexes_by_node_id: std.ArrayListUnmanaged(NodeDescriptorIndex) = .empty,
+    named_event_indices_by_elem_id: shared_buffer.List(shared_buffer.List(usize)) = .empty,
+    descriptor_indexes_by_elem_id: shared_buffer.List(ElemDescriptorIndex) = .empty,
+    descriptor_indexes_by_node_id: shared_buffer.List(NodeDescriptorIndex) = .empty,
     next_elem_id: u64 = 1,
 
     /// Reserves every outer destination touched when moving a materialized
@@ -1513,7 +1514,7 @@ pub const Stream = struct {
         const ChildInsert = struct {
             parent_elem_id: u64,
             insertion_index: usize,
-            elem_ids: std.ArrayListUnmanaged(u64) = .empty,
+            elem_ids: shared_buffer.List(u64) = .empty,
 
             fn deinit(insert: *@This(), alloc: std.mem.Allocator) void {
                 insert.elem_ids.deinit(alloc);
@@ -1521,7 +1522,7 @@ pub const Stream = struct {
             }
         };
 
-        var child_inserts: std.ArrayListUnmanaged(ChildInsert) = .empty;
+        var child_inserts: shared_buffer.List(ChildInsert) = .empty;
         defer {
             for (child_inserts.items) |*insert| {
                 insert.deinit(allocator);
@@ -2191,7 +2192,7 @@ pub const Stream = struct {
     pub const PreparedNamedEventIndexGroup = struct {
         elem_id: ElemId,
         existed: bool,
-        event_ordinals: std.ArrayListUnmanaged(usize) = .empty,
+        event_ordinals: shared_buffer.List(usize) = .empty,
 
         /// Drops provisional resources and restores the plan to an unpublished state.
         pub fn abort(self: *@This(), allocator: std.mem.Allocator) void {
@@ -2549,7 +2550,7 @@ pub const Stream = struct {
             try self.custom_attr_indices_by_elem_id.items[elem_index].ensureUnusedCapacity(allocator, additional);
             return;
         }
-        var prepared_indexes: std.ArrayListUnmanaged(CustomAttrDescriptorIndex) = .empty;
+        var prepared_indexes: shared_buffer.List(CustomAttrDescriptorIndex) = .empty;
         errdefer prepared_indexes.deinit(allocator);
         try prepared_indexes.ensureUnusedCapacity(allocator, additional);
         try self.custom_attr_indices_by_elem_id.ensureTotalCapacity(allocator, required);
@@ -2978,7 +2979,7 @@ pub const Stream = struct {
             return;
         }
         const required = std.math.add(usize, scope_index, 1) catch return error.ResourceLimit;
-        var prepared: std.ArrayListUnmanaged(LifecycleDescriptorIndex) = .empty;
+        var prepared: shared_buffer.List(LifecycleDescriptorIndex) = .empty;
         errdefer prepared.deinit(allocator);
         try prepared.ensureUnusedCapacity(allocator, additional);
         try self.lifecycle_indices_by_scope_id.ensureTotalCapacity(allocator, required);
@@ -3687,7 +3688,7 @@ pub fn clearEventIndex(comptime StreamType: type, stream: *StreamType, elem_id: 
 }
 
 /// Ensures named event index list capacity or state before publication can begin.
-pub fn ensureNamedEventIndexList(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: ElemId) *std.ArrayListUnmanaged(usize) {
+pub fn ensureNamedEventIndexList(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: ElemId) *shared_buffer.List(usize) {
     const index = elem_id.index();
     while (stream.named_event_indices_by_elem_id.items.len <= index) {
         stream.named_event_indices_by_elem_id.append(allocator, .empty) catch @panic("out of memory");
@@ -4223,7 +4224,7 @@ fn tryActivateCustomAttrIndex(comptime StreamType: type, stream: *StreamType, al
     errdefer keys.deinit(allocator);
     const key_capacity = std.math.add(usize, attr_count, 1) catch return error.ResourceLimit;
     try keys.ensureTotalCapacity(allocator, std.math.cast(u32, key_capacity) orelse return error.ResourceLimit);
-    var by_elem: std.ArrayListUnmanaged(std.ArrayListUnmanaged(CustomAttrDescriptorIndex)) = .empty;
+    var by_elem: shared_buffer.List(shared_buffer.List(CustomAttrDescriptorIndex)) = .empty;
     errdefer {
         for (by_elem.items) |*indexes| indexes.deinit(allocator);
         by_elem.deinit(allocator);
@@ -4543,7 +4544,7 @@ pub fn streamElemParentElemId(comptime StreamType: type, stream: *const StreamTy
 }
 
 /// Appends stream direct children using capacity that must already satisfy the caller's transaction contract.
-pub fn appendStreamDirectChildren(comptime StreamType: type, allocator: std.mem.Allocator, stream: *const StreamType, parent_elem_id: ElemId, children: *std.ArrayListUnmanaged(ElemId)) void {
+pub fn appendStreamDirectChildren(comptime StreamType: type, allocator: std.mem.Allocator, stream: *const StreamType, parent_elem_id: ElemId, children: *shared_buffer.List(ElemId)) void {
     var child = stream.firstRenderChild(parent_elem_id);
     while (child) |child_id| {
         children.append(allocator, child_id) catch @panic("out of memory");
@@ -4552,7 +4553,7 @@ pub fn appendStreamDirectChildren(comptime StreamType: type, allocator: std.mem.
 }
 
 /// Reads direct children into from the active descriptor stream using engine-owned identity.
-pub fn streamDirectChildrenInto(comptime StreamType: type, allocator: std.mem.Allocator, stream: *const StreamType, parent_elem_id: ElemId, children: *std.ArrayListUnmanaged(ElemId)) []const ElemId {
+pub fn streamDirectChildrenInto(comptime StreamType: type, allocator: std.mem.Allocator, stream: *const StreamType, parent_elem_id: ElemId, children: *shared_buffer.List(ElemId)) []const ElemId {
     children.clearRetainingCapacity();
     appendStreamDirectChildren(StreamType, allocator, stream, parent_elem_id, children);
     return children.items;
@@ -4560,7 +4561,7 @@ pub fn streamDirectChildrenInto(comptime StreamType: type, allocator: std.mem.Al
 
 /// Reads direct children from the active descriptor stream using engine-owned identity.
 pub fn streamDirectChildren(comptime StreamType: type, allocator: std.mem.Allocator, stream: *const StreamType, parent_elem_id: ElemId) []ElemId {
-    var children: std.ArrayListUnmanaged(ElemId) = .empty;
+    var children: shared_buffer.List(ElemId) = .empty;
     errdefer children.deinit(allocator);
 
     appendStreamDirectChildren(StreamType, allocator, stream, parent_elem_id, &children);
@@ -4647,20 +4648,20 @@ const TestStream = struct {
     pub const TextNodeDesc = TestTextNodeDesc;
     pub const SignalTextNodeDesc = TestTextNodeDesc;
 
-    render_nodes: std.ArrayListUnmanaged(TestRenderNode) = .empty,
-    elements: std.ArrayListUnmanaged(TestElementDesc) = .empty,
-    text_nodes: std.ArrayListUnmanaged(TestTextNodeDesc) = .empty,
-    signal_text_nodes: std.ArrayListUnmanaged(TestTextNodeDesc) = .empty,
-    static_text_attrs: std.ArrayListUnmanaged(TestStaticTextAttrDesc) = .empty,
-    signal_text_attrs: std.ArrayListUnmanaged(TestStaticTextAttrDesc) = .empty,
-    static_custom_text_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
-    signal_custom_text_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
-    signal_optional_custom_text_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
-    static_custom_bool_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
-    signal_custom_bool_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
-    static_bool_attrs: std.ArrayListUnmanaged(TestStaticBoolAttrDesc) = .empty,
-    signal_bool_attrs: std.ArrayListUnmanaged(TestStaticBoolAttrDesc) = .empty,
-    descriptor_indexes_by_elem_id: std.ArrayListUnmanaged(ElemDescriptorIndex) = .empty,
+    render_nodes: shared_buffer.List(TestRenderNode) = .empty,
+    elements: shared_buffer.List(TestElementDesc) = .empty,
+    text_nodes: shared_buffer.List(TestTextNodeDesc) = .empty,
+    signal_text_nodes: shared_buffer.List(TestTextNodeDesc) = .empty,
+    static_text_attrs: shared_buffer.List(TestStaticTextAttrDesc) = .empty,
+    signal_text_attrs: shared_buffer.List(TestStaticTextAttrDesc) = .empty,
+    static_custom_text_attrs: shared_buffer.List(TestCustomTextAttrDesc) = .empty,
+    signal_custom_text_attrs: shared_buffer.List(TestCustomTextAttrDesc) = .empty,
+    signal_optional_custom_text_attrs: shared_buffer.List(TestCustomTextAttrDesc) = .empty,
+    static_custom_bool_attrs: shared_buffer.List(TestCustomTextAttrDesc) = .empty,
+    signal_custom_bool_attrs: shared_buffer.List(TestCustomTextAttrDesc) = .empty,
+    static_bool_attrs: shared_buffer.List(TestStaticBoolAttrDesc) = .empty,
+    signal_bool_attrs: shared_buffer.List(TestStaticBoolAttrDesc) = .empty,
+    descriptor_indexes_by_elem_id: shared_buffer.List(ElemDescriptorIndex) = .empty,
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .empty,
 
     fn deinit(self: *TestStream, allocator: std.mem.Allocator) void {
@@ -4767,7 +4768,7 @@ test "event handler ownership remains balanced across clone refusal and retireme
         .payload_cap = cap,
         .to_cmd = roles.CommandBuilder.fromAbi(callable),
     } };
-    var owners: std.ArrayListUnmanaged(EventHandler) = .empty;
+    var owners: shared_buffer.List(EventHandler) = .empty;
     defer {
         for (owners.items) |*owner| owner.deinit(allocator, &ctx, &roc_host, &metrics);
         owners.deinit(allocator);

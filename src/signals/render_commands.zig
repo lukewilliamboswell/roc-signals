@@ -1,6 +1,7 @@
 //! Host-independent render command protocol and command-buffer encoders.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const boundary = @import("boundary.zig");
 const ids = @import("ids.zig");
 
@@ -247,7 +248,7 @@ comptime {
 }
 
 pub const Buffer = struct {
-    records: std.ArrayListUnmanaged(Record) = .empty,
+    records: shared_buffer.List(Record) = .empty,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *Buffer, allocator: std.mem.Allocator) void {
@@ -338,7 +339,7 @@ pub const DynamicSlice = struct {
 };
 
 pub const DynamicBuffer = struct {
-    bytes: std.ArrayListUnmanaged(u8) = .empty,
+    bytes: shared_buffer.List(u8) = .empty,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *DynamicBuffer, allocator: std.mem.Allocator) void {
@@ -537,7 +538,7 @@ pub const BatchLimits = struct {
 
 pub const BatchBuffers = struct {
     commands: Buffer = .{},
-    strings: std.ArrayListUnmanaged(u8) = .empty,
+    strings: shared_buffer.List(u8) = .empty,
     dynamic: DynamicBuffer = .{},
 
     fn deinit(self: *BatchBuffers, allocator: std.mem.Allocator) void {

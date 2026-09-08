@@ -5,6 +5,7 @@
 //! storage and action-specific capacity must be prepared before it begins.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const ids = @import("ids.zig");
 const scope_tree = @import("scope_tree.zig");
 
@@ -23,7 +24,7 @@ const TransactionPhase = enum {
 pub const IdentityOverlay = struct {
     provisional_by_key: std.AutoHashMapUnmanaged(IdentityKey, u64) = .{},
     reserved_ids: std.AutoHashMapUnmanaged(u64, void) = .{},
-    intents: std.ArrayListUnmanaged(IdentityIntent) = .empty,
+    intents: shared_buffer.List(IdentityIntent) = .empty,
     prepared_remaining: usize = 0,
     phase: TransactionPhase = .preparing,
 
@@ -125,7 +126,7 @@ pub const ScopeIntent = struct {
 pub const ScopeOverlay = struct {
     provisional_by_key: std.AutoHashMapUnmanaged(ScopeKey, ids.ScopeId) = .{},
     reserved_ids: std.AutoHashMapUnmanaged(ids.ScopeId, void) = .{},
-    intents: std.ArrayListUnmanaged(ScopeIntent) = .empty,
+    intents: shared_buffer.List(ScopeIntent) = .empty,
     prepared_remaining: usize = 0,
     phase: TransactionPhase = .preparing,
 
@@ -206,7 +207,7 @@ pub const ScopeOverlay = struct {
 pub fn OwnedValues(comptime Value: type) type {
     return struct {
         const Self = @This();
-        values: std.ArrayListUnmanaged(Value) = .empty,
+        values: shared_buffer.List(Value) = .empty,
         phase: TransactionPhase = .preparing,
 
         /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
@@ -259,7 +260,7 @@ pub fn RecordOverlay(comptime Token: type, comptime Record: type) type {
     return struct {
         const Self = @This();
         provisional_by_token: std.AutoHashMapUnmanaged(Token, *Record) = .{},
-        owned: std.ArrayListUnmanaged(*Record) = .empty,
+        owned: shared_buffer.List(*Record) = .empty,
         phase: TransactionPhase = .preparing,
 
         /// Preflights fallible growth so the later commit phase can remain allocation-free.
@@ -327,9 +328,9 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Composite: type, comptime
         };
         by_token: std.AutoHashMapUnmanaged(Token, *Record) = .{},
         by_composite: std.AutoHashMapUnmanaged(Composite, *Record) = .{},
-        token_intents: std.ArrayListUnmanaged(struct { token: Token, record: *Record }) = .empty,
-        composite_intents: std.ArrayListUnmanaged(struct { identity: Composite, record: *Record }) = .empty,
-        descriptor_roots: std.ArrayListUnmanaged(DescriptorRoot) = .empty,
+        token_intents: shared_buffer.List(struct { token: Token, record: *Record }) = .empty,
+        composite_intents: shared_buffer.List(struct { identity: Composite, record: *Record }) = .empty,
+        descriptor_roots: shared_buffer.List(DescriptorRoot) = .empty,
         phase: TransactionPhase = .preparing,
 
         /// Preflights fallible growth so the later commit phase can remain allocation-free.
@@ -573,7 +574,7 @@ pub fn Plan(comptime Action: type) type {
     return struct {
         const Self = @This();
 
-        actions: std.ArrayListUnmanaged(Action) = .empty,
+        actions: shared_buffer.List(Action) = .empty,
         phase: TransactionPhase = .preparing,
 
         /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
@@ -617,8 +618,8 @@ pub fn Plan(comptime Action: type) type {
 }
 
 const TestContext = struct {
-    applied: std.ArrayListUnmanaged(u8) = .empty,
-    aborted: std.ArrayListUnmanaged(u8) = .empty,
+    applied: shared_buffer.List(u8) = .empty,
+    aborted: shared_buffer.List(u8) = .empty,
 
     fn deinit(self: *@This()) void {
         self.applied.deinit(std.testing.allocator);

@@ -1,6 +1,7 @@
 //! Keyed-list reconciliation storage and diff helpers for `Ui.each`.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const ids = @import("ids.zig");
 
 pub const missing_row_index = std.math.maxInt(usize);
@@ -51,25 +52,25 @@ pub const PreparedRowRemovals = struct {
     }
 
     /// Removes every prepared row and repairs moved dense/hash indexes without allocation.
-    pub fn apply(self: *const @This(), allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, memberships: *std.ArrayListUnmanaged(?Membership), row_keys: anytype) void {
+    pub fn apply(self: *const @This(), allocator: std.mem.Allocator, sites: *shared_buffer.List(Site), site_indexes: *SiteIndexMap, memberships: *shared_buffer.List(?Membership), row_keys: anytype) void {
         self.applyRows(sites, memberships, row_keys);
         pruneEmptySites(allocator, sites, site_indexes, memberships, row_keys);
     }
 
     /// Unlinks prepared rows while preserving dense site indexes until other
     /// prepared reconciliations that captured those indexes have committed.
-    pub fn applyRows(self: *const @This(), sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), row_keys: anytype) void {
+    pub fn applyRows(self: *const @This(), sites: *shared_buffer.List(Site), memberships: *shared_buffer.List(?Membership), row_keys: anytype) void {
         for (self.rows) |row| removeRowFromSiteIndex(sites, memberships, row.scope_id, row.key_hash, row_keys);
     }
 
     /// Removes empty inactive sites after every reconciliation holding a dense
     /// site index has crossed its publication boundary.
-    pub fn pruneSites(_: *const @This(), allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, memberships: *std.ArrayListUnmanaged(?Membership), row_keys: anytype) void {
+    pub fn pruneSites(_: *const @This(), allocator: std.mem.Allocator, sites: *shared_buffer.List(Site), site_indexes: *SiteIndexMap, memberships: *shared_buffer.List(?Membership), row_keys: anytype) void {
         pruneEmptySites(allocator, sites, site_indexes, memberships, row_keys);
     }
 };
 
-fn pruneEmptySites(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, memberships: *std.ArrayListUnmanaged(?Membership), row_keys: anytype) void {
+fn pruneEmptySites(allocator: std.mem.Allocator, sites: *shared_buffer.List(Site), site_indexes: *SiteIndexMap, memberships: *shared_buffer.List(?Membership), row_keys: anytype) void {
     var index = sites.items.len;
     while (index != 0) {
         index -= 1;
@@ -106,9 +107,9 @@ pub fn prepareRowRemovals(allocator: std.mem.Allocator, sites: []const Site, mem
 
 pub const Site = struct {
     key: SiteKey,
-    scope_ids: std.ArrayListUnmanaged(ids.ScopeId) = .empty,
+    scope_ids: shared_buffer.List(ids.ScopeId) = .empty,
     hash_heads: std.AutoHashMapUnmanaged(u64, usize) = .empty,
-    hash_links: std.ArrayListUnmanaged(usize) = .empty,
+    hash_links: shared_buffer.List(usize) = .empty,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *Site, allocator: std.mem.Allocator) void {
@@ -161,7 +162,7 @@ pub const DuplicateKeyInfo = struct {
 };
 
 /// Clears sites while retaining bounded storage where the type promises reuse.
-pub fn clearSites(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, memberships: *std.ArrayListUnmanaged(?Membership)) void {
+pub fn clearSites(allocator: std.mem.Allocator, sites: *shared_buffer.List(Site), site_indexes: *SiteIndexMap, memberships: *shared_buffer.List(?Membership)) void {
     for (sites.items) |*site| {
         site.deinit(allocator);
     }
@@ -174,7 +175,7 @@ pub fn clearSites(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(S
 }
 
 /// Ensures membership slot capacity or state before publication can begin.
-pub fn ensureMembershipSlot(allocator: std.mem.Allocator, memberships: *std.ArrayListUnmanaged(?Membership), scope_id: ids.ScopeId) *?Membership {
+pub fn ensureMembershipSlot(allocator: std.mem.Allocator, memberships: *shared_buffer.List(?Membership), scope_id: ids.ScopeId) *?Membership {
     const index = scope_id.index();
     while (memberships.items.len <= index) {
         memberships.append(allocator, null) catch @panic("out of memory");
@@ -183,7 +184,7 @@ pub fn ensureMembershipSlot(allocator: std.mem.Allocator, memberships: *std.Arra
 }
 
 /// Ensures site index capacity or state before publication can begin.
-pub fn ensureSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal) usize {
+pub fn ensureSiteIndex(allocator: std.mem.Allocator, sites: *shared_buffer.List(Site), site_indexes: *SiteIndexMap, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal) usize {
     const key: SiteKey = .{
         .parent_scope_id = parent_scope_id,
         .site_ordinal = site_ordinal,
@@ -296,7 +297,7 @@ pub fn updateRenderRange(row_ranges: *std.AutoHashMapUnmanaged(ids.ScopeId, Rend
 }
 
 /// Appends row to site index using capacity that must already satisfy the caller's transaction contract.
-pub fn appendRowToSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, scope_id: ids.ScopeId, key_hash: u64) void {
+pub fn appendRowToSiteIndex(allocator: std.mem.Allocator, sites: *shared_buffer.List(Site), memberships: *shared_buffer.List(?Membership), site_index: usize, scope_id: ids.ScopeId, key_hash: u64) void {
     if (site_index >= sites.items.len) @panic("each row site index exceeded site table");
     const site = &sites.items[site_index];
     const row_index = site.scope_ids.items.len;
@@ -318,7 +319,7 @@ pub fn appendRowToSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListU
 }
 
 /// Removes row from site index and releases the ownership attached to that live entry.
-pub fn removeRowFromSiteIndex(sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), scope_id: ids.ScopeId, key_hash: u64, row_keys: anytype) void {
+pub fn removeRowFromSiteIndex(sites: *shared_buffer.List(Site), memberships: *shared_buffer.List(?Membership), scope_id: ids.ScopeId, key_hash: u64, row_keys: anytype) void {
     if (scope_id.index() >= memberships.items.len) @panic("each row scope was missing its row index");
     const membership = memberships.items[scope_id.index()] orelse @panic("each row scope was missing its row index");
     if (membership.site_index >= sites.items.len) @panic("each row membership pointed past site table");
@@ -351,7 +352,7 @@ pub fn removeRowFromSiteIndex(sites: *std.ArrayListUnmanaged(Site), memberships:
 }
 
 /// Replaces site rows while releasing displaced ownership exactly once.
-pub fn replaceSiteRows(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, scope_ids: []const ids.ScopeId, row_keys: anytype) void {
+pub fn replaceSiteRows(allocator: std.mem.Allocator, sites: *shared_buffer.List(Site), memberships: *shared_buffer.List(?Membership), site_index: usize, scope_ids: []const ids.ScopeId, row_keys: anytype) void {
     if (site_index >= sites.items.len) @panic("each row site index exceeded site table");
     const site = &sites.items[site_index];
 
@@ -423,7 +424,7 @@ pub const PreparedExistingRows = struct {
     phase: Phase = .prepared,
 
     /// Computes matching and reserves every site/index destination without mutation.
-    pub fn prepare(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, keys: anytype, items: anytype, hooks: anytype) (std.mem.Allocator.Error || error{ResourceLimit})!PreparedExistingRows {
+    pub fn prepare(allocator: std.mem.Allocator, sites: *shared_buffer.List(Site), memberships: *shared_buffer.List(?Membership), site_index: usize, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, keys: anytype, items: anytype, hooks: anytype) (std.mem.Allocator.Error || error{ResourceLimit})!PreparedExistingRows {
         if (keys.len != items.len or site_index >= sites.items.len) @panic("invalid prepared each reconciliation input");
         const site = &sites.items[site_index];
         const existing_len = site.scope_ids.items.len;
@@ -521,7 +522,7 @@ pub const PreparedExistingRows = struct {
     }
 
     /// Transfers provisional row values and publishes the prepared order without allocation.
-    pub fn commit(self: *PreparedExistingRows, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), keys: anytype, items: anytype, hooks: anytype) DiffResult {
+    pub fn commit(self: *PreparedExistingRows, sites: *shared_buffer.List(Site), memberships: *shared_buffer.List(?Membership), keys: anytype, items: anytype, hooks: anytype) DiffResult {
         if (self.phase.isCommitted()) @panic("prepared each rows committed twice");
         const site = &sites.items[self.site_index];
         var unchanged_count: u64 = 0;
@@ -615,8 +616,8 @@ pub const PreparedRowSync = PreparedExistingRows;
 /// Reconciles one keyed each site by exact key identity, preserving surviving row scopes and disposing removed rows.
 pub fn syncRows(
     allocator: std.mem.Allocator,
-    sites: *std.ArrayListUnmanaged(Site),
-    memberships: *std.ArrayListUnmanaged(?Membership),
+    sites: *shared_buffer.List(Site),
+    memberships: *shared_buffer.List(?Membership),
     site_index: usize,
     parent_scope_id: ids.ScopeId,
     site_ordinal: ids.SiteOrdinal,
@@ -658,7 +659,7 @@ pub fn syncRows(
     errdefer allocator.free(row_items_changed);
     var scope_created = allocator.alloc(bool, keys.len) catch @panic("out of memory");
     errdefer allocator.free(scope_created);
-    var removed_scope_ids: std.ArrayListUnmanaged(ids.ScopeId) = .empty;
+    var removed_scope_ids: shared_buffer.List(ids.ScopeId) = .empty;
     errdefer removed_scope_ids.deinit(allocator);
 
     var rows_reused: u64 = 0;
@@ -854,7 +855,7 @@ const TestSyncHooks = struct {
     items_by_scope: []u64,
     next_scope_id: ids.ScopeId,
     forced_hash: ?u64 = null,
-    disposed_scopes: std.ArrayListUnmanaged(ids.ScopeId) = .empty,
+    disposed_scopes: shared_buffer.List(ids.ScopeId) = .empty,
     sync_next_len: usize = 0,
     sync_existing_len: usize = 0,
     rows_reused: u64 = 0,
@@ -862,7 +863,7 @@ const TestSyncHooks = struct {
     rows_removed: u64 = 0,
     fault_attempts: ?*const usize = null,
     first_mutation_attempt: ?usize = null,
-    prepared_created: std.ArrayListUnmanaged(PreparedCreated) = .empty,
+    prepared_created: shared_buffer.List(PreparedCreated) = .empty,
     hash_calls: usize = 0,
     comparison_prepare_calls: usize = 0,
     comparison_calls: usize = 0,
@@ -1053,9 +1054,9 @@ test "each runtime detects duplicate next keys through typed equality" {
 }
 
 test "each runtime appends rows and tracks memberships" {
-    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var sites: shared_buffer.List(Site) = .empty;
     var indexes: SiteIndexMap = .empty;
-    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    var memberships: shared_buffer.List(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
 
     const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
@@ -1072,9 +1073,9 @@ test "each runtime appends rows and tracks memberships" {
 }
 
 test "each runtime sync reuses creates removes and rebuilds rows" {
-    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var sites: shared_buffer.List(Site) = .empty;
     var indexes: SiteIndexMap = .empty;
-    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    var memberships: shared_buffer.List(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
 
     const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
@@ -1125,9 +1126,9 @@ test "each sync characterization detects allocation attempts after mutation begi
     const CharacterizationFaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     var fault = CharacterizationFaultAllocator.init(std.testing.allocator);
     const allocator = fault.allocator();
-    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var sites: shared_buffer.List(Site) = .empty;
     var indexes: SiteIndexMap = .empty;
-    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    var memberships: shared_buffer.List(?Membership) = .empty;
     defer {
         fault.configure(null);
         clearSites(allocator, &sites, &indexes, &memberships);
@@ -1165,9 +1166,9 @@ test "prepared existing each rows sweep failures and commit without allocation" 
         fn run(failure_number: ?usize) !usize {
             var fault = PreparedFaultAllocator.init(std.testing.allocator);
             const allocator = fault.allocator();
-            var sites: std.ArrayListUnmanaged(Site) = .empty;
+            var sites: shared_buffer.List(Site) = .empty;
             var indexes: SiteIndexMap = .empty;
-            var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+            var memberships: shared_buffer.List(?Membership) = .empty;
             defer {
                 fault.configure(null);
                 clearSites(allocator, &sites, &indexes, &memberships);
@@ -1218,7 +1219,7 @@ test "prepared existing each rows sweep failures and commit without allocation" 
             return attempts;
         }
 
-        fn verify(site_index: usize, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), hooks: *TestSyncHooks, items_by_scope: []const u64) !void {
+        fn verify(site_index: usize, sites: *shared_buffer.List(Site), memberships: *shared_buffer.List(?Membership), hooks: *TestSyncHooks, items_by_scope: []const u64) !void {
             try std.testing.expectEqualSlices(ids.ScopeId, &.{ testScope(11), testScope(12) }, sites.items[site_index].scope_ids.items);
             try std.testing.expectEqual(@as(u64, 201), items_by_scope[11]);
             try std.testing.expectEqual(@as(u64, 3), hooks.keys_by_scope[12]);
@@ -1239,9 +1240,9 @@ test "prepared existing each rows hash every key once, during preparation" {
     // hashing it a second time. Hashing calls the Roc key function, which
     // publication must never do, and it inflated each_key_hashes by one per
     // updated row (large-each `Update middle row`: 9 hashes for 8 keys).
-    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var sites: shared_buffer.List(Site) = .empty;
     var indexes: SiteIndexMap = .empty;
-    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    var memberships: shared_buffer.List(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
     const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
     appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 1);
@@ -1273,9 +1274,9 @@ test "prepared existing each rows hash every key once, during preparation" {
 }
 
 test "prepared created-only each rows batch once and perform zero item comparisons" {
-    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var sites: shared_buffer.List(Site) = .empty;
     var indexes: SiteIndexMap = .empty;
-    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    var memberships: shared_buffer.List(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
     const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
     var keys_by_scope = [_]u64{0} ** 16;
@@ -1296,9 +1297,9 @@ test "prepared created-only each rows batch once and perform zero item compariso
 }
 
 test "each runtime sync resolves hash collisions with typed equality" {
-    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var sites: shared_buffer.List(Site) = .empty;
     var indexes: SiteIndexMap = .empty;
-    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    var memberships: shared_buffer.List(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
 
     const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
@@ -1340,9 +1341,9 @@ test "each runtime sync resolves hash collisions with typed equality" {
 }
 
 test "each runtime removes rows and rewrites moved memberships" {
-    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var sites: shared_buffer.List(Site) = .empty;
     var indexes: SiteIndexMap = .empty;
-    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    var memberships: shared_buffer.List(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
 
     const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
@@ -1363,9 +1364,9 @@ test "each runtime removes rows and rewrites moved memberships" {
 
 test "prepared row removals fail without mutation and apply without allocation" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var sites: shared_buffer.List(Site) = .empty;
     var indexes: SiteIndexMap = .empty;
-    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    var memberships: shared_buffer.List(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
     const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
     appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 5);
@@ -1392,9 +1393,9 @@ test "prepared row removals fail without mutation and apply without allocation" 
 }
 
 test "prepared row removals retire empty site and maintained index" {
-    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var sites: shared_buffer.List(Site) = .empty;
     var indexes: SiteIndexMap = .empty;
-    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    var memberships: shared_buffer.List(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
     const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
     appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 5);
@@ -1410,9 +1411,9 @@ test "prepared row removals retire empty site and maintained index" {
 
 test "prepared row removals retain empty site for an active descriptor without allocation" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var sites: shared_buffer.List(Site) = .empty;
     var indexes: SiteIndexMap = .empty;
-    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    var memberships: shared_buffer.List(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
     const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
     appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 5);
@@ -1441,9 +1442,9 @@ test "prepared row removals retain empty site for an active descriptor without a
 }
 
 test "each runtime replaces row order and rebuilds indexes" {
-    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var sites: shared_buffer.List(Site) = .empty;
     var indexes: SiteIndexMap = .empty;
-    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    var memberships: shared_buffer.List(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
 
     const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);

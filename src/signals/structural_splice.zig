@@ -1,6 +1,7 @@
 //! Structural patch planning for replacing disposed scopes or keyed rows.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const descriptor_stream = @import("descriptor_stream.zig");
 const ids = @import("ids.zig");
 const scope_runtime = @import("scope_runtime.zig");
@@ -90,13 +91,13 @@ pub const PreparedMultiRemoval = struct {
 };
 
 pub const NodeOwnedRemovalScratch = struct {
-    scope_site_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    state_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    when_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    each_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    on_change_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    mount_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    cleanup_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    scope_site_indexes: shared_buffer.List(usize) = .empty,
+    state_indexes: shared_buffer.List(usize) = .empty,
+    when_indexes: shared_buffer.List(usize) = .empty,
+    each_indexes: shared_buffer.List(usize) = .empty,
+    on_change_indexes: shared_buffer.List(usize) = .empty,
+    mount_indexes: shared_buffer.List(usize) = .empty,
+    cleanup_indexes: shared_buffer.List(usize) = .empty,
 
     /// Releases all prepared node-owned removal indexes.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -112,19 +113,19 @@ pub const NodeOwnedRemovalScratch = struct {
 };
 
 pub const ElemOwnedRemovalScratch = struct {
-    element_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    text_node_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    signal_text_node_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    static_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    signal_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    static_custom_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    signal_custom_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    signal_optional_custom_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    static_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    signal_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    static_custom_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    signal_custom_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    event_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    element_indexes: shared_buffer.List(usize) = .empty,
+    text_node_indexes: shared_buffer.List(usize) = .empty,
+    signal_text_node_indexes: shared_buffer.List(usize) = .empty,
+    static_text_attr_indexes: shared_buffer.List(usize) = .empty,
+    signal_text_attr_indexes: shared_buffer.List(usize) = .empty,
+    static_custom_text_attr_indexes: shared_buffer.List(usize) = .empty,
+    signal_custom_text_attr_indexes: shared_buffer.List(usize) = .empty,
+    signal_optional_custom_text_attr_indexes: shared_buffer.List(usize) = .empty,
+    static_bool_attr_indexes: shared_buffer.List(usize) = .empty,
+    signal_bool_attr_indexes: shared_buffer.List(usize) = .empty,
+    static_custom_bool_attr_indexes: shared_buffer.List(usize) = .empty,
+    signal_custom_bool_attr_indexes: shared_buffer.List(usize) = .empty,
+    event_indexes: shared_buffer.List(usize) = .empty,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -256,15 +257,15 @@ pub fn sortRemovalIndexesDescending(indexes: []usize) void {
 }
 
 /// Appends removal index using capacity that must already satisfy the caller's transaction contract.
-pub fn appendRemovalIndex(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), index: ?usize) void {
+pub fn appendRemovalIndex(allocator: std.mem.Allocator, indexes: *shared_buffer.List(usize), index: ?usize) void {
     indexes.append(allocator, index orelse return) catch @panic("out of memory");
 }
 
-fn appendRemovalIndexAssumeCapacity(indexes: *std.ArrayListUnmanaged(usize), index: ?usize) void {
+fn appendRemovalIndexAssumeCapacity(indexes: *shared_buffer.List(usize), index: ?usize) void {
     indexes.appendAssumeCapacity(index orelse return);
 }
 
-fn appendTextFieldRemovalIndexesAssumeCapacity(indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
+fn appendTextFieldRemovalIndexesAssumeCapacity(indexes: *shared_buffer.List(usize), fields: anytype) void {
     appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.text));
     appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.role));
     appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.label));
@@ -273,12 +274,12 @@ fn appendTextFieldRemovalIndexesAssumeCapacity(indexes: *std.ArrayListUnmanaged(
     appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.class));
 }
 
-fn appendBoolFieldRemovalIndexesAssumeCapacity(indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
+fn appendBoolFieldRemovalIndexesAssumeCapacity(indexes: *shared_buffer.List(usize), fields: anytype) void {
     appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.checked));
     appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.disabled));
 }
 
-fn appendEventRemovalIndexesAssumeCapacity(indexes: *std.ArrayListUnmanaged(usize), events: anytype) void {
+fn appendEventRemovalIndexesAssumeCapacity(indexes: *shared_buffer.List(usize), events: anytype) void {
     appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.click));
     appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.input));
     appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.check));
@@ -294,7 +295,7 @@ fn descriptorIndexValue(index: anytype) ?usize {
 }
 
 /// Appends text field removal indexes using capacity that must already satisfy the caller's transaction contract.
-pub fn appendTextFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
+pub fn appendTextFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *shared_buffer.List(usize), fields: anytype) void {
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.text));
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.role));
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.label));
@@ -304,13 +305,13 @@ pub fn appendTextFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *std
 }
 
 /// Appends bool field removal indexes using capacity that must already satisfy the caller's transaction contract.
-pub fn appendBoolFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
+pub fn appendBoolFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *shared_buffer.List(usize), fields: anytype) void {
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.checked));
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.disabled));
 }
 
 /// Appends event removal indexes using capacity that must already satisfy the caller's transaction contract.
-pub fn appendEventRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), events: anytype) void {
+pub fn appendEventRemovalIndexes(allocator: std.mem.Allocator, indexes: *shared_buffer.List(usize), events: anytype) void {
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.click));
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.input));
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.check));
@@ -321,7 +322,7 @@ pub fn appendEventRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.Arr
 }
 
 /// Builds target scope set from validated descriptors without introducing host-specific semantics.
-pub fn buildTargetScopeSet(comptime Scope: type, allocator: std.mem.Allocator, scratch: *std.ArrayListUnmanaged(bool), scopes: []const Scope, target: ReplacementTarget, lookup: anytype) []const bool {
+pub fn buildTargetScopeSet(comptime Scope: type, allocator: std.mem.Allocator, scratch: *shared_buffer.List(bool), scopes: []const Scope, target: ReplacementTarget, lookup: anytype) []const bool {
     if (scratch.items.len != 0) @panic("replacement target scope scratch was already active");
     scratch.resize(allocator, scopes.len) catch @panic("out of memory");
     const target_scopes = scratch.items;
@@ -336,11 +337,11 @@ pub fn buildTargetScopeSet(comptime Scope: type, allocator: std.mem.Allocator, s
 pub fn prepareRenderRemovalScan(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) std.mem.Allocator.Error!RenderRemovalScan {
     if (render_insert_index > stream.render_nodes.items.len) @panic("structural replacement render insertion point is outside the active stream");
 
-    var removed_elem_ids: std.ArrayListUnmanaged(u64) = .empty;
+    var removed_elem_ids: shared_buffer.List(u64) = .empty;
     errdefer removed_elem_ids.deinit(allocator);
     var removed_elem_set: std.AutoHashMapUnmanaged(u64, void) = .empty;
     defer removed_elem_set.deinit(allocator);
-    var touched_parent_ids: std.ArrayListUnmanaged(u64) = .empty;
+    var touched_parent_ids: shared_buffer.List(u64) = .empty;
     errdefer touched_parent_ids.deinit(allocator);
     var touched_parent_set: std.AutoHashMapUnmanaged(u64, void) = .empty;
     defer touched_parent_set.deinit(allocator);
@@ -517,7 +518,7 @@ pub fn prepareScopeOwnedRemoval(comptime Stream: type, allocator: std.mem.Alloca
         elem_cursor += 1;
     };
 
-    var parent_ids: std.ArrayListUnmanaged(u64) = .empty;
+    var parent_ids: shared_buffer.List(u64) = .empty;
     errdefer parent_ids.deinit(allocator);
     var parent_set: std.AutoHashMapUnmanaged(u64, void) = .empty;
     defer parent_set.deinit(allocator);
@@ -639,11 +640,11 @@ fn intervalDescending(_: void, lhs: RenderRemovalInterval, rhs: RenderRemovalInt
 /// when the transaction has a single site.
 pub fn prepareMultiRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_indexes: []const usize, target_scopes: []const bool, scan_scopes: ?[]const []const bool) (PrepareError || error{ InvalidDescriptor, OverlappingIntervals })!PreparedMultiRemoval {
     if (scan_scopes) |scopes| if (scopes.len != render_insert_indexes.len) return error.OverlappingIntervals;
-    var elem_ids = std.ArrayListUnmanaged(u64).empty;
+    var elem_ids = shared_buffer.List(u64).empty;
     errdefer elem_ids.deinit(allocator);
-    var parent_ids = std.ArrayListUnmanaged(u64).empty;
+    var parent_ids = shared_buffer.List(u64).empty;
     errdefer parent_ids.deinit(allocator);
-    var intervals = std.ArrayListUnmanaged(RenderRemovalInterval).empty;
+    var intervals = shared_buffer.List(RenderRemovalInterval).empty;
     errdefer intervals.deinit(allocator);
     var elem_set = std.AutoHashMapUnmanaged(u64, void).empty;
     defer elem_set.deinit(allocator);
@@ -856,7 +857,7 @@ test "prepared render range commit is allocation free" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     var fault = FaultAllocator.init(std.testing.allocator);
     const allocator = fault.allocator();
-    var nodes: std.ArrayListUnmanaged(u64) = .empty;
+    var nodes: shared_buffer.List(u64) = .empty;
     defer nodes.deinit(allocator);
     try nodes.appendSlice(allocator, &.{ 1, 2, 3, 4 });
     try prepareRenderRangeCapacity(allocator, &nodes, 2, 3);
@@ -878,7 +879,7 @@ test "structural splice collects removal indexes" {
         class: ?usize = null,
     };
 
-    var indexes: std.ArrayListUnmanaged(usize) = .empty;
+    var indexes: shared_buffer.List(usize) = .empty;
     defer indexes.deinit(std.testing.allocator);
 
     appendTextFieldRemovalIndexes(std.testing.allocator, &indexes, TextFields{});
@@ -966,7 +967,7 @@ test "structural splice builds target scope set through explicit lookup" {
         }
     };
 
-    var scratch: std.ArrayListUnmanaged(bool) = .empty;
+    var scratch: shared_buffer.List(bool) = .empty;
     defer scratch.deinit(std.testing.allocator);
     const scopes = [_]TestScope{ .{ .scope_id = 0 }, .{ .scope_id = 1 }, .{ .scope_id = 2 } };
 
@@ -980,14 +981,14 @@ const TestStream = struct {
     pub const TextNodeDesc = descriptor_stream.TextNodeDesc;
     pub const SignalTextNodeDesc = descriptor_stream.TextNodeDesc;
 
-    render_nodes: std.ArrayListUnmanaged(RenderNode) = .empty,
-    elements: std.ArrayListUnmanaged(ElementDesc) = .empty,
-    text_nodes: std.ArrayListUnmanaged(TextNodeDesc) = .empty,
-    signal_text_nodes: std.ArrayListUnmanaged(SignalTextNodeDesc) = .empty,
-    scope_sites: std.ArrayListUnmanaged(descriptor_stream.ScopeSiteDesc) = .empty,
-    states: std.ArrayListUnmanaged(descriptor_stream.StateDesc) = .empty,
-    whens: std.ArrayListUnmanaged(descriptor_stream.WhenDesc) = .empty,
-    eaches: std.ArrayListUnmanaged(descriptor_stream.EachDesc) = .empty,
+    render_nodes: shared_buffer.List(RenderNode) = .empty,
+    elements: shared_buffer.List(ElementDesc) = .empty,
+    text_nodes: shared_buffer.List(TextNodeDesc) = .empty,
+    signal_text_nodes: shared_buffer.List(SignalTextNodeDesc) = .empty,
+    scope_sites: shared_buffer.List(descriptor_stream.ScopeSiteDesc) = .empty,
+    states: shared_buffer.List(descriptor_stream.StateDesc) = .empty,
+    whens: shared_buffer.List(descriptor_stream.WhenDesc) = .empty,
+    eaches: shared_buffer.List(descriptor_stream.EachDesc) = .empty,
     owned_scope_id: ids.ScopeId = ids.ScopeId.fromRaw(0),
     owned_elem_ids: []const ids.ElemId = &.{},
 

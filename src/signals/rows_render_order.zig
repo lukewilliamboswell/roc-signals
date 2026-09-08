@@ -8,6 +8,7 @@
 //! writes the overlay into the committed table without allocating.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const RowId = @import("rows_ids.zig").RowId;
 
 /// Builds a site-local order index for a durable row span type. `Span` must
@@ -212,7 +213,7 @@ pub fn OrderIndex(comptime Span: type) type {
             defer prepared.deinit();
 
             try prepared.overlay.ensureUnusedCapacity(self.allocator, std.math.cast(u32, entries.len) orelse return error.ResourceLimit);
-            var stack: std.ArrayListUnmanaged(RowId) = .empty;
+            var stack: shared_buffer.List(RowId) = .empty;
             defer stack.deinit(self.allocator);
             try stack.ensureTotalCapacity(self.allocator, entries.len);
             var total_roots: usize = 0;

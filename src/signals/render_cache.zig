@@ -1,6 +1,7 @@
 //! Render-state cache that suppresses duplicate host commands for stable DOM nodes.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const builtin = @import("builtin");
 const boundary = @import("boundary.zig");
 const render = @import("render_commands.zig");
@@ -62,7 +63,7 @@ pub const ScalarNode = struct {
         active: render.NodeShape,
     } = .vacant,
     parent_id: ?ids.ElemId = null,
-    children: std.ArrayListUnmanaged(ids.ElemId) = .empty,
+    children: shared_buffer.List(ids.ElemId) = .empty,
     children_snapshot_valid: bool = true,
     first_child: ?ids.ElemId = null,
     last_child: ?ids.ElemId = null,
@@ -76,8 +77,8 @@ pub const ScalarNode = struct {
     test_id: ?[]const u8 = null,
     value: ?[]const u8 = null,
     class: ?[]const u8 = null,
-    custom_text_attrs: std.ArrayListUnmanaged(CustomTextAttr) = .empty,
-    named_events: std.ArrayListUnmanaged(NamedEvent) = .empty,
+    custom_text_attrs: shared_buffer.List(CustomTextAttr) = .empty,
+    named_events: shared_buffer.List(NamedEvent) = .empty,
     checked: ?bool = null,
     disabled: ?bool = null,
 
@@ -203,8 +204,8 @@ pub const PreparedSparseChildren = struct {
     last_child: ?ids.ElemId,
     child_count: usize,
     shadow_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
-    shadows: std.ArrayListUnmanaged(Shadow) = .empty,
-    wire_edits: std.ArrayListUnmanaged(WireEdit) = .empty,
+    shadows: shared_buffer.List(Shadow) = .empty,
+    wire_edits: shared_buffer.List(WireEdit) = .empty,
     phase: JournalPhase = .prepared,
     links_read: usize = 0,
 
@@ -477,7 +478,7 @@ pub const PreparedChildrenReplacement = struct {
     next: []ids.ElemId,
     wire_edit_offset: usize = 0,
     wire_edit_len: usize = 0,
-    retired: std.ArrayListUnmanaged(ids.ElemId) = .empty,
+    retired: shared_buffer.List(ids.ElemId) = .empty,
     phase: JournalPhase = .prepared,
 
     /// Copies the next child order without mutating the active cache.
@@ -722,7 +723,7 @@ pub const PreparedCustomTextAttrsReplacement = struct {
     next: []CustomTextAttr,
     wire_edit_offset: usize = 0,
     wire_edit_len: usize = 0,
-    retired: std.ArrayListUnmanaged(CustomTextAttr) = .empty,
+    retired: shared_buffer.List(CustomTextAttr) = .empty,
     phase: JournalPhase = .prepared,
 
     /// Copies final names and values without changing the active cache.
@@ -774,7 +775,7 @@ pub const PreparedNamedEventsReplacement = struct {
     next: []NamedEvent,
     wire_edit_offset: usize = 0,
     wire_edit_len: usize = 0,
-    retired: std.ArrayListUnmanaged(NamedEvent) = .empty,
+    retired: shared_buffer.List(NamedEvent) = .empty,
     phase: JournalPhase = .prepared,
 
     /// Copies final event names and canonicalizes bindings without cache mutation.
@@ -879,22 +880,22 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
 
         allocator: std.mem.Allocator,
         tags: PreparedTagOverlay,
-        removals: std.ArrayListUnmanaged(PreparedNodeRemoval) = .empty,
-        creations: std.ArrayListUnmanaged(PreparedNodeCreation) = .empty,
-        children: std.ArrayListUnmanaged(PreparedChildrenReplacement) = .empty,
-        sparse_children: std.ArrayListUnmanaged(PreparedSparseChildren) = .empty,
-        child_wire_edits: std.ArrayListUnmanaged(PreparedChildrenReplacement.WireEdit) = .empty,
-        text_fields: std.ArrayListUnmanaged(PreparedTextFieldUpdate) = .empty,
-        bool_fields: std.ArrayListUnmanaged(PreparedBoolFieldUpdate) = .empty,
-        fixed_events: std.ArrayListUnmanaged(PreparedFixedEventUpdate) = .empty,
-        custom_attrs: std.ArrayListUnmanaged(PreparedCustomTextAttrsReplacement) = .empty,
-        custom_attr_wire_edits: std.ArrayListUnmanaged(PreparedCustomTextAttrsReplacement.WireEdit) = .empty,
-        named_events: std.ArrayListUnmanaged(PreparedNamedEventsReplacement) = .empty,
-        named_event_wire_edits: std.ArrayListUnmanaged(PreparedNamedEventsReplacement.WireEdit) = .empty,
+        removals: shared_buffer.List(PreparedNodeRemoval) = .empty,
+        creations: shared_buffer.List(PreparedNodeCreation) = .empty,
+        children: shared_buffer.List(PreparedChildrenReplacement) = .empty,
+        sparse_children: shared_buffer.List(PreparedSparseChildren) = .empty,
+        child_wire_edits: shared_buffer.List(PreparedChildrenReplacement.WireEdit) = .empty,
+        text_fields: shared_buffer.List(PreparedTextFieldUpdate) = .empty,
+        bool_fields: shared_buffer.List(PreparedBoolFieldUpdate) = .empty,
+        fixed_events: shared_buffer.List(PreparedFixedEventUpdate) = .empty,
+        custom_attrs: shared_buffer.List(PreparedCustomTextAttrsReplacement) = .empty,
+        custom_attr_wire_edits: shared_buffer.List(PreparedCustomTextAttrsReplacement.WireEdit) = .empty,
+        named_events: shared_buffer.List(PreparedNamedEventsReplacement) = .empty,
+        named_event_wire_edits: shared_buffer.List(PreparedNamedEventsReplacement.WireEdit) = .empty,
         provisional_nodes: std.DynamicBitSetUnmanaged = .{},
         reused_nodes: std.AutoHashMapUnmanaged(u64, ReusedNodeFields) = .empty,
         parent_intent_indexes: []usize = &.{},
-        parent_intents: std.ArrayListUnmanaged(ParentIntent) = .empty,
+        parent_intents: shared_buffer.List(ParentIntent) = .empty,
         cache: *const Cache(Ctx),
         sink_command_count: usize = 0,
         reset_dom: bool = false,
@@ -1671,11 +1672,11 @@ pub fn Cache(comptime Ctx: type) type {
     return struct {
         const Self = @This();
 
-        nodes: std.ArrayListUnmanaged(ScalarNode) = .empty,
+        nodes: shared_buffer.List(ScalarNode) = .empty,
         interned_tags: std.StringHashMapUnmanaged([]const u8) = .empty,
         move_child_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
-        move_old_indexes: std.ArrayListUnmanaged(usize) = .empty,
-        move_stable_subsequence: std.ArrayListUnmanaged(usize) = .empty,
+        move_old_indexes: shared_buffer.List(usize) = .empty,
+        move_stable_subsequence: shared_buffer.List(usize) = .empty,
 
         /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
         pub fn deinit(self: *Self, ctx: Ctx.Handle) void {

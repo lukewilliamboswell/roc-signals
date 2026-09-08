@@ -1,6 +1,7 @@
 //! Runtime tables for pending tasks, intervals, and cleanup effects.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const abi = @import("roc_platform_abi.zig");
 const retained_values = @import("retained_values.zig");
 const signal_records = @import("signal_records.zig");
@@ -27,7 +28,7 @@ pub const ActiveInterval = struct {
     reconciliation: enum { pending, confirmed } = .confirmed,
 };
 
-pub const CleanupEvents = std.ArrayListUnmanaged([]const u8);
+pub const CleanupEvents = shared_buffer.List([]const u8);
 
 /// Appends cleanup event using capacity that must already satisfy the caller's transaction contract.
 pub fn appendCleanupEvent(allocator: std.mem.Allocator, events: *CleanupEvents, name: []const u8) void {
@@ -125,7 +126,7 @@ pub const PreparedPendingTask = struct {
     /// preparation owns independent buffers and one token reference.
     pub fn prepare(
         allocator: std.mem.Allocator,
-        tasks: *std.ArrayListUnmanaged(PendingTask),
+        tasks: *shared_buffer.List(PendingTask),
         next_task_request_id: u64,
         owner_scope_id: ids.ScopeId,
         task_token: HostSignalToken,
@@ -149,7 +150,7 @@ pub const PreparedPendingTask = struct {
 
     /// Transfers the complete registration into the reserved slot without
     /// allocation. No intervening task start may consume the prepared id.
-    pub fn commit(self: *PreparedPendingTask, tasks: *std.ArrayListUnmanaged(PendingTask), next_task_request_id: *u64) ids.TaskRequestId {
+    pub fn commit(self: *PreparedPendingTask, tasks: *shared_buffer.List(PendingTask), next_task_request_id: *u64) ids.TaskRequestId {
         const task = self.task orelse @panic("prepared task committed twice");
         if (task.request_id.raw() != next_task_request_id.*) @panic("prepared task request id changed before commit");
         tasks.appendAssumeCapacity(task);
@@ -182,7 +183,7 @@ pub const PreparedPendingTask = struct {
 /// registration unpublished until their other fallible preparation succeeds.
 pub fn appendPendingTask(
     allocator: std.mem.Allocator,
-    tasks: *std.ArrayListUnmanaged(PendingTask),
+    tasks: *shared_buffer.List(PendingTask),
     next_task_request_id: *u64,
     roc_host: *abi.RocHost,
     owner_scope_id: ids.ScopeId,
@@ -200,7 +201,7 @@ pub fn appendAndStartPendingTask(
     comptime Ctx: type,
     ctx: Ctx.Handle,
     allocator: std.mem.Allocator,
-    tasks: *std.ArrayListUnmanaged(PendingTask),
+    tasks: *shared_buffer.List(PendingTask),
     next_task_request_id: *u64,
     roc_host: *abi.RocHost,
     owner_scope_id: ids.ScopeId,
@@ -228,7 +229,7 @@ pub fn cancelPendingTask(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem
 }
 
 /// Clears pending tasks while retaining bounded storage where the type promises reuse.
-pub fn clearPendingTasks(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *std.ArrayListUnmanaged(PendingTask), roc_host: ?*abi.RocHost) void {
+pub fn clearPendingTasks(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *shared_buffer.List(PendingTask), roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
         if (tasks.items.len != 0) @panic("pending tasks cannot release tokens without a Roc host");
         return;
@@ -271,7 +272,7 @@ pub fn pendingTaskIndexByRequestId(tasks: []const PendingTask, request_id: ids.T
 }
 
 /// Removes pending task at and releases the ownership attached to that live entry.
-pub fn removePendingTaskAt(tasks: *std.ArrayListUnmanaged(PendingTask), index: usize) PendingTask {
+pub fn removePendingTaskAt(tasks: *shared_buffer.List(PendingTask), index: usize) PendingTask {
     if (index >= tasks.items.len) @panic("pending task index is out of bounds");
     const task = tasks.items[index];
     const last_index = tasks.items.len - 1;
@@ -283,7 +284,7 @@ pub fn removePendingTaskAt(tasks: *std.ArrayListUnmanaged(PendingTask), index: u
 }
 
 /// Cancels pending tasks by task token and releases its bounded host-retained work.
-pub fn cancelPendingTasksByTaskToken(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *std.ArrayListUnmanaged(PendingTask), roc_host: ?*abi.RocHost, task_token: HostSignalToken) void {
+pub fn cancelPendingTasksByTaskToken(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *shared_buffer.List(PendingTask), roc_host: ?*abi.RocHost, task_token: HostSignalToken) void {
     const host = roc_host orelse {
         for (tasks.items) |task| {
             if (task.task_token == task_token) @panic("pending task cannot release token without a Roc host");
@@ -304,7 +305,7 @@ pub fn cancelPendingTasksByTaskToken(comptime Ctx: type, ctx: Ctx.Handle, alloca
 }
 
 /// Cancels pending tasks in scope subtree and releases its bounded host-retained work.
-pub fn cancelPendingTasksInScopeSubtree(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *std.ArrayListUnmanaged(PendingTask), roc_host: ?*abi.RocHost, scope_id: ids.ScopeId, scope_lookup: anytype) void {
+pub fn cancelPendingTasksInScopeSubtree(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *shared_buffer.List(PendingTask), roc_host: ?*abi.RocHost, scope_id: ids.ScopeId, scope_lookup: anytype) void {
     const host = roc_host orelse {
         for (tasks.items) |task| {
             if (scope_lookup.descendantOrSelf(task.owner_scope_id, scope_id)) @panic("pending task cannot release token without a Roc host");
@@ -365,7 +366,7 @@ pub fn markActiveIntervalsInactive(intervals: []ActiveInterval) void {
 }
 
 /// Removes active interval at and releases the ownership attached to that live entry.
-pub fn removeActiveIntervalAt(intervals: *std.ArrayListUnmanaged(ActiveInterval), index: usize) ActiveInterval {
+pub fn removeActiveIntervalAt(intervals: *shared_buffer.List(ActiveInterval), index: usize) ActiveInterval {
     if (index >= intervals.items.len) @panic("active interval index is out of bounds");
     const interval = intervals.items[index];
     const last_index = intervals.items.len - 1;
@@ -377,7 +378,7 @@ pub fn removeActiveIntervalAt(intervals: *std.ArrayListUnmanaged(ActiveInterval)
 }
 
 /// Clears active intervals while retaining bounded storage where the type promises reuse.
-pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: ?*abi.RocHost) void {
+pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *shared_buffer.List(ActiveInterval), roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
         if (intervals.items.len != 0) @panic("active intervals cannot release tokens without a Roc host");
         intervals.items.len = 0;
@@ -391,7 +392,7 @@ pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std
 }
 
 /// Ensures active interval capacity or state before publication can begin.
-pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, intervals: *std.ArrayListUnmanaged(ActiveInterval), next_interval_token: *u64, roc_host: *abi.RocHost, source_token: HostSignalToken, period_ms: u64) void {
+pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, intervals: *shared_buffer.List(ActiveInterval), next_interval_token: *u64, roc_host: *abi.RocHost, source_token: HostSignalToken, period_ms: u64) void {
     if (activeIntervalBySourceToken(intervals.items, source_token)) |interval| {
         if (interval.period_ms != period_ms) @panic("interval source token changed period");
         interval.reconciliation = .confirmed;
@@ -416,7 +417,7 @@ pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.
 /// Reserves registry room for `additional` interval registrations before a
 /// transaction publishes, so `ensureActiveIntervalAssumeCapacity` never grows
 /// the registry on the commit path.
-pub fn reserveActiveIntervals(allocator: std.mem.Allocator, intervals: *std.ArrayListUnmanaged(ActiveInterval), additional: usize) error{OutOfMemory}!void {
+pub fn reserveActiveIntervals(allocator: std.mem.Allocator, intervals: *shared_buffer.List(ActiveInterval), additional: usize) error{OutOfMemory}!void {
     intervals.ensureUnusedCapacity(allocator, additional) catch return error.OutOfMemory;
 }
 
@@ -424,7 +425,7 @@ pub fn reserveActiveIntervals(allocator: std.mem.Allocator, intervals: *std.Arra
 /// `reserveActiveIntervals` already secured. A source token that is already
 /// registered is confirmed rather than duplicated, exactly as
 /// `ensureActiveInterval` does on the preparation path.
-pub fn ensureActiveIntervalAssumeCapacity(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), next_interval_token: *u64, source_token: HostSignalToken, period_ms: u64) void {
+pub fn ensureActiveIntervalAssumeCapacity(comptime Ctx: type, ctx: Ctx.Handle, intervals: *shared_buffer.List(ActiveInterval), next_interval_token: *u64, source_token: HostSignalToken, period_ms: u64) void {
     if (activeIntervalBySourceToken(intervals.items, source_token)) |interval| {
         if (interval.period_ms != period_ms) @panic("interval source token changed period");
         interval.reconciliation = .confirmed;
@@ -445,7 +446,7 @@ pub fn ensureActiveIntervalAssumeCapacity(comptime Ctx: type, ctx: Ctx.Handle, i
 }
 
 /// Removes active interval by source token and releases the ownership attached to that live entry.
-pub fn removeActiveIntervalBySourceToken(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: *abi.RocHost, source_token: HostSignalToken) void {
+pub fn removeActiveIntervalBySourceToken(comptime Ctx: type, ctx: Ctx.Handle, intervals: *shared_buffer.List(ActiveInterval), roc_host: *abi.RocHost, source_token: HostSignalToken) void {
     const index = activeIntervalIndexBySourceToken(intervals.items, source_token) orelse @panic("active interval removal missed its source token");
     const interval = removeActiveIntervalAt(intervals, index);
     Ctx.sink(ctx).cancelInterval(interval.token);
@@ -453,7 +454,7 @@ pub fn removeActiveIntervalBySourceToken(comptime Ctx: type, ctx: Ctx.Handle, in
 }
 
 /// Cancels intervals not rediscovered and commits the current bounded registration set.
-pub fn finishActiveIntervalSync(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: ?*abi.RocHost) void {
+pub fn finishActiveIntervalSync(comptime Ctx: type, ctx: Ctx.Handle, intervals: *shared_buffer.List(ActiveInterval), roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
         for (intervals.items) |interval| {
             if (interval.reconciliation == .pending) @panic("unconfirmed interval cannot release token without a Roc host");
@@ -479,7 +480,7 @@ pub fn syncActiveIntervalsFromGraph(
     comptime Ctx: type,
     ctx: Ctx.Handle,
     allocator: std.mem.Allocator,
-    intervals: *std.ArrayListUnmanaged(ActiveInterval),
+    intervals: *shared_buffer.List(ActiveInterval),
     next_interval_token: *u64,
     roc_host: ?*abi.RocHost,
     active_signal_graph: anytype,
@@ -610,7 +611,7 @@ test "pending tasks and active intervals retain callable tokens for their full l
     var roc_host = abi.makeRocHost(&env);
     var host = TestIntervalHost{};
 
-    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    var tasks: shared_buffer.List(PendingTask) = .empty;
     defer tasks.deinit(std.testing.allocator);
     var next_request_id: u64 = 1;
     const task_token = testSignalToken(&roc_host, 1);
@@ -620,7 +621,7 @@ test "pending tasks and active intervals retain callable tokens for their full l
     clearPendingTasks(TestIntervalCtx, &host, std.testing.allocator, &tasks, &roc_host);
     try std.testing.expectEqual(@as(u64, 1), test_signal_token_drop_count);
 
-    var intervals: std.ArrayListUnmanaged(ActiveInterval) = .empty;
+    var intervals: shared_buffer.List(ActiveInterval) = .empty;
     defer intervals.deinit(std.testing.allocator);
     var next_interval_token: u64 = 1;
     const interval_token = testSignalToken(&roc_host, 2);
@@ -636,7 +637,7 @@ test "effects runtime finds and removes pending tasks" {
     var second_token_storage = [_]u8{0};
     const first_token = first_token_storage[0..].ptr;
     const second_token = second_token_storage[0..].ptr;
-    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    var tasks: shared_buffer.List(PendingTask) = .empty;
     defer tasks.deinit(std.testing.allocator);
 
     tasks.append(std.testing.allocator, .{
@@ -708,7 +709,7 @@ test "pending task membership is the active lifecycle state" {
     var second_token_storage = [_]u8{0};
     const first_token = first_token_storage[0..].ptr;
     const second_token = second_token_storage[0..].ptr;
-    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    var tasks: shared_buffer.List(PendingTask) = .empty;
     defer tasks.deinit(std.testing.allocator);
 
     tasks.append(std.testing.allocator, .{
@@ -743,7 +744,7 @@ test "pending task preparation refusal preserves membership and request ids" {
     for (1..4) |failure_number| {
         var fault = FaultAllocator.init(std.testing.allocator);
         const allocator = fault.allocator();
-        var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+        var tasks: shared_buffer.List(PendingTask) = .empty;
         defer tasks.deinit(allocator);
         defer for (tasks.items) |*task| deinitPendingTask(allocator, &roc_host, task);
         var next_request_id: u64 = 100;
@@ -778,7 +779,7 @@ test "aborting a replacement task leaves the old request live" {
     const token = testSignalToken(&roc_host, 1);
     defer retained_values.releaseHostSignalToken(token, &roc_host);
     const allocator = std.testing.allocator;
-    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    var tasks: shared_buffer.List(PendingTask) = .empty;
     defer tasks.deinit(allocator);
     var next_request_id: u64 = 100;
     _ = appendPendingTask(allocator, &tasks, &next_request_id, &roc_host, ids.ScopeId.fromRaw(10), token, "load", "old");
@@ -804,7 +805,7 @@ test "effects runtime starts clears and cancels pending tasks by token" {
     defer retained_values.releaseHostSignalToken(missing_token, &roc_host);
 
     var host = TestIntervalHost{};
-    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    var tasks: shared_buffer.List(PendingTask) = .empty;
     defer tasks.deinit(std.testing.allocator);
     var next_request_id: u64 = 100;
 
@@ -840,7 +841,7 @@ test "effects runtime cancels pending tasks in a scope subtree" {
     defer retained_values.releaseHostSignalToken(outside_token, &roc_host);
 
     var host = TestIntervalHost{};
-    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    var tasks: shared_buffer.List(PendingTask) = .empty;
     defer tasks.deinit(std.testing.allocator);
     var next_request_id: u64 = 200;
 
@@ -866,7 +867,7 @@ test "effects runtime updates active interval table" {
     var second_token_storage = [_]u8{0};
     const first_token = first_token_storage[0..].ptr;
     const second_token = second_token_storage[0..].ptr;
-    var intervals: std.ArrayListUnmanaged(ActiveInterval) = .empty;
+    var intervals: shared_buffer.List(ActiveInterval) = .empty;
     defer intervals.deinit(std.testing.allocator);
 
     intervals.append(std.testing.allocator, .{
@@ -901,7 +902,7 @@ test "effects runtime manages interval lifecycle transitions" {
     defer retained_values.releaseHostSignalToken(second_token, &roc_host);
 
     var host = TestIntervalHost{};
-    var intervals: std.ArrayListUnmanaged(ActiveInterval) = .empty;
+    var intervals: shared_buffer.List(ActiveInterval) = .empty;
     defer intervals.deinit(std.testing.allocator);
     var next_interval_token: u64 = 10;
 
@@ -951,7 +952,7 @@ test "effects runtime syncs existing active intervals from graph" {
         .{ .record = &interval_record },
     };
 
-    var intervals: std.ArrayListUnmanaged(ActiveInterval) = .empty;
+    var intervals: shared_buffer.List(ActiveInterval) = .empty;
     defer intervals.deinit(std.testing.allocator);
     intervals.append(std.testing.allocator, .{
         .token = ids.IntervalToken.fromRaw(10),

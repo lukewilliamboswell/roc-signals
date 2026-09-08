@@ -1,6 +1,7 @@
 //! Scope forest primitives for component, branch, and keyed row lifetimes.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const semantic_ids = @import("ids.zig");
 
 pub const Generation = semantic_ids.Generation;
@@ -109,7 +110,7 @@ pub fn validate(comptime Row: type, scopes: []const Scope(Row), scope_id: ScopeI
 }
 
 /// Creates or reuses root scope identity beneath its explicit owner.
-pub fn internRoot(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row))) Error!InternResult {
+pub fn internRoot(comptime Row: type, allocator: std.mem.Allocator, scopes: *shared_buffer.List(Scope(Row))) Error!InternResult {
     if (scopes.items.len == 0) {
         scopes.append(allocator, .{
             .scope_id = semantic_ids.root_scope,
@@ -127,7 +128,7 @@ pub fn internRoot(comptime Row: type, allocator: std.mem.Allocator, scopes: *std
 }
 
 /// Creates or reuses component scope identity beneath its explicit owner.
-pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: ScopeId, site_ordinal: SiteOrdinal, reuse_barrier: Generation) Error!InternResult {
+pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes: *shared_buffer.List(Scope(Row)), parent_scope_id: ScopeId, site_ordinal: SiteOrdinal, reuse_barrier: Generation) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
 
     var child_scope_id = scopes.items[parent_scope_id.index()].first_child_scope_id;
@@ -171,7 +172,7 @@ pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes:
 }
 
 /// Creates or reuses when branch scope identity beneath its explicit owner.
-pub fn internWhenBranch(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: ScopeId, site_ordinal: SiteOrdinal, branch: Branch, reuse_barrier: Generation) Error!InternResult {
+pub fn internWhenBranch(comptime Row: type, allocator: std.mem.Allocator, scopes: *shared_buffer.List(Scope(Row)), parent_scope_id: ScopeId, site_ordinal: SiteOrdinal, branch: Branch, reuse_barrier: Generation) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
 
     var child_scope_id = scopes.items[parent_scope_id.index()].first_child_scope_id;
@@ -215,7 +216,7 @@ pub fn internWhenBranch(comptime Row: type, allocator: std.mem.Allocator, scopes
 }
 
 /// Appends each row using capacity that must already satisfy the caller's transaction contract.
-pub fn appendEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: ScopeId, row: Row, reuse_barrier: Generation) Error!InternResult {
+pub fn appendEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *shared_buffer.List(Scope(Row)), parent_scope_id: ScopeId, row: Row, reuse_barrier: Generation) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
 
     for (scopes.items) |*scope| {
@@ -234,7 +235,7 @@ pub fn appendEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *
 }
 
 /// Appends fresh each row using capacity that must already satisfy the caller's transaction contract.
-pub fn appendFreshEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: ScopeId, row: Row) Error!InternResult {
+pub fn appendFreshEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *shared_buffer.List(Scope(Row)), parent_scope_id: ScopeId, row: Row) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
     const scope_id = ScopeId.fromIndex(scopes.items.len);
     scopes.ensureUnusedCapacity(allocator, 1) catch return Error.OutOfMemory;
@@ -270,7 +271,7 @@ pub fn activeWhenBranch(comptime Row: type, scopes: []const Scope(Row), parent_s
 
 /// Returns active each rows from the maintained active-runtime indexes.
 pub fn activeEachRows(comptime Row: type, allocator: std.mem.Allocator, scopes: []const Scope(Row), parent_scope_id: ScopeId, site_ordinal: SiteOrdinal) Error![]ScopeId {
-    var scope_ids: std.ArrayListUnmanaged(ScopeId) = .empty;
+    var scope_ids: shared_buffer.List(ScopeId) = .empty;
     errdefer scope_ids.deinit(allocator);
 
     try validate(Row, scopes, parent_scope_id);
@@ -298,7 +299,7 @@ pub fn activeEachRows(comptime Row: type, allocator: std.mem.Allocator, scopes: 
 /// Publishes a prepared active scope and attaches it to its parent's intrusive
 /// child list without allocating. `original_scope_len` separates initialized
 /// reusable slots from the fresh suffix whose capacity the caller reserved.
-pub fn publishScopeAssumeCapacity(comptime Row: type, scopes: *std.ArrayListUnmanaged(Scope(Row)), original_scope_len: usize, prepared: Scope(Row)) void {
+pub fn publishScopeAssumeCapacity(comptime Row: type, scopes: *shared_buffer.List(Scope(Row)), original_scope_len: usize, prepared: Scope(Row)) void {
     const index = prepared.scope_id.index();
     if (index < original_scope_len) {
         const previous = &scopes.items[index];
@@ -402,7 +403,7 @@ const TestRow = struct {
 };
 
 test "scope tree interns root component and branch scopes" {
-    var scopes: std.ArrayListUnmanaged(Scope(TestRow)) = .empty;
+    var scopes: shared_buffer.List(Scope(TestRow)) = .empty;
     defer scopes.deinit(std.testing.allocator);
 
     const root = try internRoot(TestRow, std.testing.allocator, &scopes);
@@ -428,7 +429,7 @@ test "scope tree interns root component and branch scopes" {
 }
 
 test "scope tree finds each rows and ancestry" {
-    var scopes: std.ArrayListUnmanaged(Scope(TestRow)) = .empty;
+    var scopes: shared_buffer.List(Scope(TestRow)) = .empty;
     defer scopes.deinit(std.testing.allocator);
 
     const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
@@ -447,7 +448,7 @@ test "scope tree finds each rows and ancestry" {
 }
 
 test "scope tree reuses inactive each row slots" {
-    var scopes: std.ArrayListUnmanaged(Scope(TestRow)) = .empty;
+    var scopes: shared_buffer.List(Scope(TestRow)) = .empty;
     defer scopes.deinit(std.testing.allocator);
 
     const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
@@ -461,7 +462,7 @@ test "scope tree reuses inactive each row slots" {
 }
 
 test "scope tree appends a fresh each row without searching inactive slots" {
-    var scopes: std.ArrayListUnmanaged(Scope(TestRow)) = .empty;
+    var scopes: shared_buffer.List(Scope(TestRow)) = .empty;
     defer scopes.deinit(std.testing.allocator);
 
     const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
@@ -474,7 +475,7 @@ test "scope tree appends a fresh each row without searching inactive slots" {
 }
 
 test "scope tree reuses inactive component and branch slots" {
-    var scopes: std.ArrayListUnmanaged(Scope(TestRow)) = .empty;
+    var scopes: shared_buffer.List(Scope(TestRow)) = .empty;
     defer scopes.deinit(std.testing.allocator);
 
     const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
@@ -494,7 +495,7 @@ test "scope tree reuses inactive component and branch slots" {
 }
 
 test "scope ids retired in a dirty generation are not reused until the next one" {
-    var scopes: std.ArrayListUnmanaged(Scope(TestRow)) = .empty;
+    var scopes: shared_buffer.List(Scope(TestRow)) = .empty;
     defer scopes.deinit(std.testing.allocator);
 
     const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;

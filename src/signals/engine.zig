@@ -12,6 +12,7 @@
 //! delegated to a `ctx` the host supplies (`ctx.cloneHostValue`).
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const builtin = @import("builtin");
 const abi = @import("roc_platform_abi.zig");
 const abi_view = @import("abi_view.zig");
@@ -262,7 +263,7 @@ test "spliced structural parents may be active outside replacement range" {
 }
 
 /// Appends unique u64 using capacity that must already satisfy the caller's transaction contract.
-pub fn appendUniqueU64(allocator: std.mem.Allocator, values: *std.ArrayListUnmanaged(u64), value: u64) void {
+pub fn appendUniqueU64(allocator: std.mem.Allocator, values: *shared_buffer.List(u64), value: u64) void {
     if (u64SliceContains(values.items, value)) return;
     values.append(allocator, value) catch @panic("out of memory");
 }
@@ -609,8 +610,8 @@ pub fn streamDirectChildren(allocator: std.mem.Allocator, stream: *const HostNod
 }
 
 /// Reads direct children into from the active descriptor stream using engine-owned identity.
-pub fn streamDirectChildrenInto(allocator: std.mem.Allocator, stream: *const HostNodeDescriptorStream, parent_elem_id: u64, children: *std.ArrayListUnmanaged(u64)) []const u64 {
-    const nominal_children: *std.ArrayListUnmanaged(ids.ElemId) = @ptrCast(children);
+pub fn streamDirectChildrenInto(allocator: std.mem.Allocator, stream: *const HostNodeDescriptorStream, parent_elem_id: u64, children: *shared_buffer.List(u64)) []const u64 {
+    const nominal_children: *shared_buffer.List(ids.ElemId) = @ptrCast(children);
     return ids.elemSliceRaw(descriptor_stream.streamDirectChildrenInto(HostNodeDescriptorStream, allocator, stream, ids.ElemId.fromRaw(parent_elem_id), nominal_children));
 }
 
@@ -727,19 +728,19 @@ pub fn Engine(comptime Ctx: type) type {
         };
 
         host_values: HostValueRegistry = .{},
-        active_events: std.ArrayListUnmanaged(ActiveEventDesc) = .empty,
-        event_descriptors: std.ArrayListUnmanaged(HostEventDescriptor) = .empty,
-        signal_event_routes: std.ArrayListUnmanaged(HostSignalEventRoute) = .empty,
-        signal_descriptors: std.ArrayListUnmanaged(HostSignalDescriptor) = .empty,
-        signal_routes: std.ArrayListUnmanaged(HostSignalRoute) = .empty,
-        signal_dependents: std.ArrayListUnmanaged(HostSignalDependentsRoute) = .empty,
-        signal_cache: std.ArrayListUnmanaged(HostSignalCacheSlot) = .empty,
-        states: std.ArrayListUnmanaged(HostState) = .empty,
-        state_indexes_by_node_id: std.ArrayListUnmanaged(?usize) = .empty,
-        scopes: std.ArrayListUnmanaged(HostScope) = .empty,
+        active_events: shared_buffer.List(ActiveEventDesc) = .empty,
+        event_descriptors: shared_buffer.List(HostEventDescriptor) = .empty,
+        signal_event_routes: shared_buffer.List(HostSignalEventRoute) = .empty,
+        signal_descriptors: shared_buffer.List(HostSignalDescriptor) = .empty,
+        signal_routes: shared_buffer.List(HostSignalRoute) = .empty,
+        signal_dependents: shared_buffer.List(HostSignalDependentsRoute) = .empty,
+        signal_cache: shared_buffer.List(HostSignalCacheSlot) = .empty,
+        states: shared_buffer.List(HostState) = .empty,
+        state_indexes_by_node_id: shared_buffer.List(?usize) = .empty,
+        scopes: shared_buffer.List(HostScope) = .empty,
         each_row_site_indexes: HostEachRowSiteIndexMap = .empty,
-        each_row_sites: std.ArrayListUnmanaged(HostEachRowSite) = .empty,
-        each_row_memberships_by_scope_id: std.ArrayListUnmanaged(?HostEachRowMembership) = .empty,
+        each_row_sites: shared_buffer.List(HostEachRowSite) = .empty,
+        each_row_memberships_by_scope_id: shared_buffer.List(?HostEachRowMembership) = .empty,
         rows_store: ?rows_site_store.Store = null,
         rows_site_ids: std.HashMapUnmanaged(each_runtime.SiteKey, rows_site_store.SiteId, each_runtime.SiteKeyContext, std.hash_map.default_max_load_percentage) = .empty,
         each_generation_ids_by_rows_site: std.AutoHashMapUnmanaged(rows_site_store.SiteId, each_generation.GenerationId) = .empty,
@@ -748,15 +749,15 @@ pub fn Engine(comptime Ctx: type) type {
         committed_row_bindings: each_generation.BindingTable = .{},
         each_generation_clock: each_generation.GenerationClock = .{},
         each_generations: std.AutoHashMapUnmanaged(each_generation.GenerationId, *each_generation.Generation) = .{},
-        each_generation_ids_by_site_index: std.ArrayListUnmanaged(?each_generation.GenerationId) = .empty,
+        each_generation_ids_by_site_index: shared_buffer.List(?each_generation.GenerationId) = .empty,
         active_each_candidate_bindings: ?*const each_generation.CandidateBindings = null,
         active_each_candidate_inputs: ?*const PreparedEachInputs = null,
         active_each_candidate_generation: ?*each_generation.Generation = null,
         active_each_candidate_rows_site_id: ?rows_site_store.SiteId = null,
         active_each_prepared_bindings: ?*const std.AutoHashMapUnmanaged(row_handles.RowHandleId, each_generation.RowBinding) = null,
         active_each_prepared_generations: ?*const std.AutoHashMapUnmanaged(each_generation.GenerationId, *each_generation.Generation) = null,
-        node_identities: std.ArrayListUnmanaged(HostNodeIdentity) = .empty,
-        dom_identities: std.ArrayListUnmanaged(HostDomIdentity) = .empty,
+        node_identities: shared_buffer.List(HostNodeIdentity) = .empty,
+        dom_identities: shared_buffer.List(HostDomIdentity) = .empty,
         active_node_identity_ids: std.AutoHashMapUnmanaged(u128, u64) = .empty,
         active_dom_identity_ids: std.AutoHashMapUnmanaged(u128, u64) = .empty,
         has_inactive_scopes: bool = false,
@@ -766,7 +767,7 @@ pub fn Engine(comptime Ctx: type) type {
         // reused until the next one; see identity_table.internNode.
         identity_reuse_barrier: u64 = 0,
         active_stream: HostNodeDescriptorStream = .{},
-        active_signal_graph: std.ArrayListUnmanaged(HostActiveSignalGraphNode) = .empty,
+        active_signal_graph: shared_buffer.List(HostActiveSignalGraphNode) = .empty,
         active_source_signal_routes: active_graph.RouteTable(u64) = .empty,
         active_text_signal_routes: active_graph.RouteTable(HostActiveTextSignalSink) = .empty,
         active_bool_signal_routes: active_graph.RouteTable(HostActiveBoolSignalSink) = .empty,
@@ -775,8 +776,8 @@ pub fn Engine(comptime Ctx: type) type {
         active_row_sources: std.AutoHashMapUnmanaged(row_handles.RowHandleId, *HostSignalRecord) = .{},
         selectors: selector_runtime.Registry(HostSignalRecord) = .{},
         render_cache: render_cache_mod.Cache(Ctx) = .{},
-        pending_tasks: std.ArrayListUnmanaged(HostPendingTask) = .empty,
-        active_intervals: std.ArrayListUnmanaged(HostActiveInterval) = .empty,
+        pending_tasks: shared_buffer.List(HostPendingTask) = .empty,
+        active_intervals: shared_buffer.List(HostActiveInterval) = .empty,
         cleanup_events: HostCleanupEvents = .empty,
         next_task_request_id: u64 = 1,
         next_interval_token: u64 = 1,
@@ -1040,7 +1041,7 @@ pub fn Engine(comptime Ctx: type) type {
             /// collection call and stages its candidate generation binding.
             pub fn prepareItemComparisons(self: *@This(), allocator: std.mem.Allocator, scope_ids: []const ids.ScopeId, created: []const bool) (std.mem.Allocator.Error || error{ResourceLimit})!void {
                 const inputs = self.inputs orelse @panic("prepared each hooks had no generation inputs");
-                var pairs: std.ArrayListUnmanaged(u64) = .empty;
+                var pairs: shared_buffer.List(u64) = .empty;
                 defer pairs.deinit(allocator);
                 var reused_count: usize = 0;
                 for (created) |was_created| if (!was_created) {
@@ -1187,7 +1188,7 @@ pub fn Engine(comptime Ctx: type) type {
             // alignment instead of searching provisional or committed scopes.
             row_handles_by_index: []?row_handles.RowHandleId = &.{},
             candidate_bindings: each_generation.CandidateBindings,
-            created_handles: std.ArrayListUnmanaged(row_handles.RowHandleId) = .empty,
+            created_handles: shared_buffer.List(row_handles.RowHandleId) = .empty,
             rows_site_id: ?rows_site_store.SiteId = null,
             rows_site_key: ?each_runtime.SiteKey = null,
             rows_transition: ?rows_transition.PreparedTransition = null,
@@ -1978,15 +1979,15 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepareDownstream(self: *@This(), sites: []const HostNodeScopeSiteDesc) CollectionError!void {
                 if (self.downstream != null or self.final_render_topology == null or sites.len != self.prepared_len) return error.ResourceLimit;
-                var descriptor_roots: std.ArrayListUnmanaged(u64) = .empty;
+                var descriptor_roots: shared_buffer.List(u64) = .empty;
                 defer descriptor_roots.deinit(self.allocator);
-                var retired_roots: std.ArrayListUnmanaged(u64) = .empty;
+                var retired_roots: shared_buffer.List(u64) = .empty;
                 defer retired_roots.deinit(self.allocator);
-                var remove_starts: std.ArrayListUnmanaged(usize) = .empty;
+                var remove_starts: shared_buffer.List(usize) = .empty;
                 defer remove_starts.deinit(self.allocator);
-                var parents: std.ArrayListUnmanaged(u64) = .empty;
+                var parents: shared_buffer.List(u64) = .empty;
                 defer parents.deinit(self.allocator);
-                var scan_scopes: std.ArrayListUnmanaged([]const bool) = .empty;
+                var scan_scopes: shared_buffer.List([]const bool) = .empty;
                 defer scan_scopes.deinit(self.allocator);
                 for (self.rows[0..self.prepared_len], self.replacements[0..self.prepared_len], self.layouts, sites) |rows, replacement, *layout, site| {
                     for (rows.rows.removed_scope_ids) |scope_id| descriptor_roots.append(self.allocator, scope_id.raw()) catch return error.OutOfMemory;
@@ -2190,7 +2191,7 @@ pub fn Engine(comptime Ctx: type) type {
                     built_selection_count += 1;
                 }
 
-                var subsumed_each = std.ArrayListUnmanaged(usize).empty;
+                var subsumed_each = shared_buffer.List(usize).empty;
                 errdefer subsumed_each.deinit(allocator);
                 subsumed_each.ensureTotalCapacity(allocator, each_count) catch return error.OutOfMemory;
                 const each_order = allocator.alloc(usize, each_count) catch return error.OutOfMemory;
@@ -2235,7 +2236,7 @@ pub fn Engine(comptime Ctx: type) type {
                 defer allocator.free(eaches_storage);
                 const each_change_indexes_storage = allocator.alloc(usize, each_count) catch return error.OutOfMemory;
                 defer allocator.free(each_change_indexes_storage);
-                var removed_row_scopes = std.ArrayListUnmanaged(u64).empty;
+                var removed_row_scopes = shared_buffer.List(u64).empty;
                 defer removed_row_scopes.deinit(allocator);
                 var each_write: usize = 0;
                 for (each_order) |change_index| {
@@ -2384,9 +2385,9 @@ pub fn Engine(comptime Ctx: type) type {
                     layouts_prepared += 1;
                 }
 
-                var descriptor_roots_list = std.ArrayListUnmanaged(u64).empty;
+                var descriptor_roots_list = shared_buffer.List(u64).empty;
                 defer descriptor_roots_list.deinit(allocator);
-                var retired_roots_list = std.ArrayListUnmanaged(u64).empty;
+                var retired_roots_list = shared_buffer.List(u64).empty;
                 defer retired_roots_list.deinit(allocator);
                 for (selections) |selection| {
                     descriptor_roots_list.append(allocator, selection.retired_scope_id.raw()) catch return error.OutOfMemory;
@@ -2419,7 +2420,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var final_topology_owned = true;
                 errdefer if (final_topology_owned) final_render_topology.deinit();
 
-                var removal_starts = std.ArrayListUnmanaged(usize).empty;
+                var removal_starts = shared_buffer.List(usize).empty;
                 defer removal_starts.deinit(allocator);
                 var inside_target = false;
                 for (engine.active_stream.render_nodes.items, 0..) |node, index| {
@@ -2433,7 +2434,7 @@ pub fn Engine(comptime Ctx: type) type {
                 // `AggregateBranchCollection.prepareWithState`. The render
                 // parents of the live nested sites join them, since surviving
                 // rows and collected ones interleave under those.
-                var parents: std.ArrayListUnmanaged(u64) = .empty;
+                var parents: shared_buffer.List(u64) = .empty;
                 defer parents.deinit(allocator);
                 for (selections) |selection| try PreparedStructuralDownstream.appendUniqueParentElemId(allocator, &parents, selection.parent_elem_id.raw());
                 for (sites) |site| try PreparedStructuralDownstream.appendUniqueParentElemId(allocator, &parents, site.parent_elem_id.raw());
@@ -2768,7 +2769,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.selectors.deinit(Ctx.allocator(ctx));
         }
 
-        fn scratchBinderStack(self: *Self, allocator: std.mem.Allocator, base: []const HostBinderBinding) *std.ArrayListUnmanaged(HostBinderBinding) {
+        fn scratchBinderStack(self: *Self, allocator: std.mem.Allocator, base: []const HostBinderBinding) *shared_buffer.List(HostBinderBinding) {
             if (self.scratch.binder_stack.items.len != 0) {
                 @panic("engine binder scratch was already active");
             }
@@ -2905,7 +2906,7 @@ pub fn Engine(comptime Ctx: type) type {
         /// through `recordScopeDisposed`: the metric describes what the
         /// reconciler did, not which publication path did it. Allocation free;
         /// `retired_steps` must already hold capacity for every scope.
-        fn commitPreparedScopeRetirement(self: *Self, allocator: std.mem.Allocator, retirement: *const scope_runtime.PreparedSubtreeRetirement, retired_steps: *std.ArrayListUnmanaged(HostScopeStep)) void {
+        fn commitPreparedScopeRetirement(self: *Self, allocator: std.mem.Allocator, retirement: *const scope_runtime.PreparedSubtreeRetirement, retired_steps: *shared_buffer.List(HostScopeStep)) void {
             for (retirement.scope_ids) |scope_id| {
                 const scope = &self.scopes.items[scope_id.index()];
                 retired_steps.appendAssumeCapacity(scope.step);
@@ -4093,7 +4094,7 @@ pub fn Engine(comptime Ctx: type) type {
         /// Performs bind node signal inside the shared engine while preserving transaction and changed-set invariants.
         pub fn bindNodeSignal(self: *Self, allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) HostSignalBinding {
             const record = self.bindNodeSignalExpr(allocator, stream, expr, binder_stack);
-            var source_node_ids: std.ArrayListUnmanaged(u64) = .empty;
+            var source_node_ids: shared_buffer.List(u64) = .empty;
             appendSignalRecordSourceNodeIds(allocator, &source_node_ids, record);
             return .{
                 .record = record,
@@ -4179,7 +4180,7 @@ pub fn Engine(comptime Ctx: type) type {
             const previous = &self.active_stream;
             const previous_render_base = self.firstRenderIndexInScopeSubtree(previous, root_scope_id);
             const next_render_base = stream.render_nodes.items.len;
-            var copied_elem_ids: std.ArrayListUnmanaged(u64) = .empty;
+            var copied_elem_ids: shared_buffer.List(u64) = .empty;
             defer copied_elem_ids.deinit(allocator);
 
             for (previous.render_nodes.items) |node| {
@@ -4412,7 +4413,7 @@ pub fn Engine(comptime Ctx: type) type {
             return callHostValueToElemWithCapability(ctx, roc_host, ops.case_capability, ops.build, builder_value);
         }
 
-        fn collectActiveWhenElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, selected: WhenCollection, parent_elem_id: ids.ElemId, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), dirty_source_node_ids: []const u64) CollectionError!void {
+        fn collectActiveWhenElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, selected: WhenCollection, parent_elem_id: ids.ElemId, binder_stack: *shared_buffer.List(HostBinderBinding), dirty_source_node_ids: []const u64) CollectionError!void {
             Ctx.pushHostValueCapabilities(ctx, &.{selected.capability});
             defer Ctx.popHostValueCapabilities(ctx);
             var branch_ordinal = ids.SiteOrdinal.fromRaw(0);
@@ -4420,7 +4421,7 @@ pub fn Engine(comptime Ctx: type) type {
             try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, selected.elem, selected.scope.scope_id, parent_elem_id, &branch_ordinal, &branch_dom_ordinal, binder_stack, selected.scope.created, dirty_source_node_ids);
         }
 
-        fn collectActiveEachRowElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, each: HostNodeEachDesc, row_elem: abi.Elem, row_scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, dom_ordinal: *ids.SiteOrdinal, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), row_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
+        fn collectActiveEachRowElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, each: HostNodeEachDesc, row_elem: abi.Elem, row_scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, dom_ordinal: *ids.SiteOrdinal, binder_stack: *shared_buffer.List(HostBinderBinding), row_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
             Ctx.pushHostValueCapabilities(ctx, &.{each.ops.item_capability});
             defer Ctx.popHostValueCapabilities(ctx);
             try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, row_elem, row_scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
@@ -4510,44 +4511,44 @@ pub fn Engine(comptime Ctx: type) type {
             fresh_node_cursor: u64 = 0,
             reusable_dom_cursor: usize = 0,
             fresh_dom_cursor: u64 = 0,
-            prepared_nodes: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticNode) = .empty,
-            prepared_render_order: std.ArrayListUnmanaged(PreparedRenderNode) = .empty,
-            prepared_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
-            prepared_signal_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedSignalDescriptor) = .empty,
+            prepared_nodes: shared_buffer.List(HostNodeDescriptorStream.PreparedStaticNode) = .empty,
+            prepared_render_order: shared_buffer.List(PreparedRenderNode) = .empty,
+            prepared_attrs: shared_buffer.List(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
+            prepared_signal_attrs: shared_buffer.List(HostNodeDescriptorStream.PreparedSignalDescriptor) = .empty,
             /// Exact names already staged by this transaction. Keys borrow
             /// descriptor-owned name storage and therefore must be destroyed
             /// before prepared descriptors are aborted or moved.
             prepared_custom_attrs: PreparedCustomAttrIndex = .empty,
             custom_attr_lookup_work: if (builtin.is_test) usize else void = if (builtin.is_test) 0 else {},
-            prepared_events: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedEventDescriptor) = .empty,
+            prepared_events: shared_buffer.List(HostNodeDescriptorStream.PreparedEventDescriptor) = .empty,
             /// Exact named-event bindings already staged by this transaction.
             /// Keys borrow the corresponding prepared event's copied name.
             prepared_named_events: PreparedNamedEventIndex = .empty,
             named_event_lookup_work: if (builtin.is_test) usize else void = if (builtin.is_test) 0 else {},
-            prepared_lifecycle: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedLifecycleDescriptor) = .empty,
-            prepared_state_sites: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedScopeSite) = .empty,
-            prepared_states: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedState) = .empty,
-            prepared_state_cells: std.ArrayListUnmanaged(HostState) = .empty,
+            prepared_lifecycle: shared_buffer.List(HostNodeDescriptorStream.PreparedLifecycleDescriptor) = .empty,
+            prepared_state_sites: shared_buffer.List(HostNodeDescriptorStream.PreparedScopeSite) = .empty,
+            prepared_states: shared_buffer.List(HostNodeDescriptorStream.PreparedState) = .empty,
+            prepared_state_cells: shared_buffer.List(HostState) = .empty,
             external_state_count: usize = 0,
             /// The enclosing source transaction's prepared cache updates, when
             /// this collection mounts inside one; staged records read through it.
             cache_overlay: ?*const signal_records.PreparedCacheUpdates = null,
-            prepared_each_row_scopes: std.ArrayListUnmanaged(HostScope) = .empty,
-            prepared_whens: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedWhen) = .empty,
-            prepared_eaches: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedEach) = .empty,
-            prepared_each_sites: std.ArrayListUnmanaged(HostEachRowSite) = .empty,
-            prepared_initial_each_inputs: std.ArrayListUnmanaged(PreparedEachInputs) = .empty,
+            prepared_each_row_scopes: shared_buffer.List(HostScope) = .empty,
+            prepared_whens: shared_buffer.List(HostNodeDescriptorStream.PreparedWhen) = .empty,
+            prepared_eaches: shared_buffer.List(HostNodeDescriptorStream.PreparedEach) = .empty,
+            prepared_each_sites: shared_buffer.List(HostEachRowSite) = .empty,
+            prepared_initial_each_inputs: shared_buffer.List(PreparedEachInputs) = .empty,
             /// Generations displaced when a retiring structural site is
             /// re-collected under the same stable site identity.
-            retired_initial_generations: std.ArrayListUnmanaged(*each_generation.Generation) = .empty,
+            retired_initial_generations: shared_buffer.List(*each_generation.Generation) = .empty,
             /// Each sites a re-collected row brought back under a live site
             /// key, reconciled by key against the committed rows rather than
             /// mounted afresh. Preparation-owned; publication commits each
             /// reconciliation into the site it prepared against.
-            nested_row_syncs: std.ArrayListUnmanaged(PreparedNestedRowSync) = .empty,
+            nested_row_syncs: shared_buffer.List(PreparedNestedRowSync) = .empty,
             /// Created or re-collected row ranges whose stable render anchors
             /// are installed after the prepared descriptor order materializes.
-            row_render_span_intents: std.ArrayListUnmanaged(RowRenderSpanIntent) = .empty,
+            row_render_span_intents: shared_buffer.List(RowRenderSpanIntent) = .empty,
             /// Conservative sum of nested row-binding edits, used to reserve
             /// the one committed table for every staged reconciliation before publication.
             candidate_binding_edit_count: usize = 0,
@@ -4561,10 +4562,10 @@ pub fn Engine(comptime Ctx: type) type {
             prepared_row_bindings: std.AutoHashMapUnmanaged(row_handles.RowHandleId, each_generation.RowBinding) = .empty,
             prepared_generations: std.AutoHashMapUnmanaged(each_generation.GenerationId, *each_generation.Generation) = .empty,
             pending_scope_descriptor_counts: std.AutoHashMapUnmanaged(u64, ScopeDescriptorCounts) = .empty,
-            prepared_named_event_groups: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedNamedEventIndexGroup) = .empty,
+            prepared_named_event_groups: shared_buffer.List(HostNodeDescriptorStream.PreparedNamedEventIndexGroup) = .empty,
             prepared_named_event_group_by_elem: std.AutoHashMapUnmanaged(u64, usize) = .empty,
             signal_records: collection_plan.SignalRecordPlan(HostSignalToken, signal_records.KeyedSelectIdentity, HostSignalRecord) = .{},
-            signal_bindings: std.ArrayListUnmanaged(HostSignalBinding) = .empty,
+            signal_bindings: shared_buffer.List(HostSignalBinding) = .empty,
             signal_roc_host: ?*abi.RocHost = null,
             plan: CapacityPlan = .{},
             phase: CollectionPhase = .collecting,
@@ -5252,7 +5253,7 @@ pub fn Engine(comptime Ctx: type) type {
                 return ids.NodeId.fromRaw(node_id);
             }
 
-            fn beginState(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), state: abi_view.StateElem) CollectionError!HostBinderBinding {
+            fn beginState(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, binder_stack: *shared_buffer.List(HostBinderBinding), state: abi_view.StateElem) CollectionError!HostBinderBinding {
                 const allocator = Ctx.allocator(self.host_ctx);
                 const binder_bytes = std.math.mul(usize, binder_stack.items.len, @sizeOf(HostBinderBinding)) catch return error.ResourceLimit;
                 const descriptor_bytes = std.math.add(usize, @sizeOf(HostNodeScopeSiteDesc) + @sizeOf(HostNodeStateDesc), binder_bytes) catch return error.ResourceLimit;
@@ -5354,7 +5355,7 @@ pub fn Engine(comptime Ctx: type) type {
                 return .{ .scope = branch_scope, .branch = branch, .elem = branch_elem, .capability = prepared.desc.ops.case_capability };
             }
 
-            fn collectInitialEach(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), payload: abi_view.EachElem, dirty_source_node_ids: []const u64) CollectionError!void {
+            fn collectInitialEach(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, binder_stack: *shared_buffer.List(HostBinderBinding), payload: abi_view.EachElem, dirty_source_node_ids: []const u64) CollectionError!void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 const site_ordinal = ordinal.*;
                 const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
@@ -5522,7 +5523,7 @@ pub fn Engine(comptime Ctx: type) type {
             /// listed: surviving rows and collected ones interleave under
             /// such a parent, so its final child order must come from the
             /// render topology rather than the structural pass.
-            fn appendNestedSiteRenderParents(self: *const @This(), allocator: std.mem.Allocator, parents: *std.ArrayListUnmanaged(u64)) CollectionError!void {
+            fn appendNestedSiteRenderParents(self: *const @This(), allocator: std.mem.Allocator, parents: *shared_buffer.List(u64)) CollectionError!void {
                 for (self.nested_row_syncs.items) |*sync| {
                     const parent_id = sync.parent_elem_id.raw();
                     const listed = for (parents.items) |existing| {
@@ -5692,7 +5693,7 @@ pub fn Engine(comptime Ctx: type) type {
                 };
             }
 
-            fn collectNestedRowSync(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, site_ordinal: ids.SiteOrdinal, site_index: usize, each: *const HostNodeEachDesc, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), dirty_source_node_ids: []const u64) CollectionError!void {
+            fn collectNestedRowSync(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, site_ordinal: ids.SiteOrdinal, site_index: usize, each: *const HostNodeEachDesc, binder_stack: *shared_buffer.List(HostBinderBinding), dirty_source_node_ids: []const u64) CollectionError!void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 const engine_ptr = self.engine;
                 self.signal_roc_host = roc_host;
@@ -5782,7 +5783,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const row_count = rows.next_scope_ids.len;
                 const recollected = allocator.alloc(bool, row_count) catch return error.OutOfMemory;
                 errdefer allocator.free(recollected);
-                var row_render_ranges: std.ArrayListUnmanaged(RowRenderSpanRange) = .empty;
+                var row_render_ranges: shared_buffer.List(RowRenderSpanRange) = .empty;
                 defer row_render_ranges.deinit(allocator);
                 var collected_item_slots: std.AutoHashMapUnmanaged(u64, u64) = .empty;
                 defer collected_item_slots.deinit(allocator);
@@ -5868,7 +5869,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (sparse_row_elems.count() != 0) return error.InvalidDescriptor;
                 try self.reserveCounts(.{ .roots = total });
 
-                var segments: std.ArrayListUnmanaged(HostEachRowRenderSegment) = .empty;
+                var segments: shared_buffer.List(HostEachRowRenderSegment) = .empty;
                 defer segments.deinit(allocator);
                 const old_end = try engine_ptr.appendEachSiteRenderSegments(allocator, .{ .parent_scope_id = scope_id, .site_ordinal = site_ordinal }, old_site.render_insert_index, &segments);
                 const old_start = if (segments.items.len != 0) segments.items[0].start else old_site.render_insert_index;
@@ -6354,7 +6355,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const binding = StagedSignalRecordCtx{ .collection = self, .allocator = Ctx.allocator(self.host_ctx) };
                 const record = self.engine.bindSignalExprViewWith(StagedSignalRecordCtx, binding, abi_view.SignalExpr.fromAbi(expr), binder_stack) catch return error.OutOfMemory;
                 self.signal_records.ownDescriptorRootAssumeCapacity(record);
-                var source_node_ids: std.ArrayListUnmanaged(u64) = .empty;
+                var source_node_ids: shared_buffer.List(u64) = .empty;
                 appendSignalRecordSourceNodeIdsFallible(binding.allocator, &source_node_ids, record) catch {
                     source_node_ids.deinit(binding.allocator);
                     return error.OutOfMemory;
@@ -6595,7 +6596,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
-        fn collectActiveElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, dom_ordinal: *ids.SiteOrdinal, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
+        fn collectActiveElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, dom_ordinal: *ids.SiteOrdinal, binder_stack: *shared_buffer.List(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
             try collection.validateScope(scope_id);
 
             switch (abi_view.Elem.fromAbi(elem)) {
@@ -6856,7 +6857,7 @@ pub fn Engine(comptime Ctx: type) type {
             /// Batches equality for reused rows and stages their candidate bindings.
             pub fn prepareItemComparisons(self: *@This(), allocator: std.mem.Allocator, scope_ids: []const ids.ScopeId, created: []const bool) (std.mem.Allocator.Error || error{ResourceLimit})!void {
                 const inputs = self.inputs orelse @panic("staged each hooks had no generation inputs");
-                var pairs: std.ArrayListUnmanaged(u64) = .empty;
+                var pairs: shared_buffer.List(u64) = .empty;
                 defer pairs.deinit(allocator);
                 var reused_count: usize = 0;
                 for (created) |was_created| if (!was_created) {
@@ -7270,7 +7271,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var unique_nodes = std.AutoHashMapUnmanaged(u64, void).empty;
                 defer unique_nodes.deinit(allocator);
                 unique_nodes.ensureTotalCapacity(allocator, std.math.cast(u32, node_capacity) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                var node_list = std.ArrayListUnmanaged(u64).empty;
+                var node_list = shared_buffer.List(u64).empty;
                 errdefer node_list.deinit(allocator);
                 node_list.ensureTotalCapacity(allocator, node_capacity) catch return error.OutOfMemory;
                 for (retired_scope_ids) |scope_id| for (engine.active_stream.scopeOwnedNodeIds(scope_id)) |node_id| {
@@ -7348,11 +7349,11 @@ pub fn Engine(comptime Ctx: type) type {
                 return .{ .indexes_descending = indexes };
             }
 
-            fn reserveRetired(self: *const @This(), allocator: std.mem.Allocator, retired: *std.ArrayListUnmanaged(HostState)) CollectionError!void {
+            fn reserveRetired(self: *const @This(), allocator: std.mem.Allocator, retired: *shared_buffer.List(HostState)) CollectionError!void {
                 retired.ensureUnusedCapacity(allocator, self.indexes_descending.len) catch return error.OutOfMemory;
             }
 
-            fn apply(self: *const @This(), engine: *Self, retired: *std.ArrayListUnmanaged(HostState)) void {
+            fn apply(self: *const @This(), engine: *Self, retired: *shared_buffer.List(HostState)) void {
                 for (self.indexes_descending) |index| {
                     const removed = engine.states.swapRemove(index);
                     engine.clearStateCellIndex(removed.state_id, index);
@@ -7371,7 +7372,7 @@ pub fn Engine(comptime Ctx: type) type {
         };
 
         fn prepareRowRetirementForScopes(engine: *Self, allocator: std.mem.Allocator, scope_ids: anytype) CollectionError!each_runtime.PreparedRowRemovals {
-            var removals: std.ArrayListUnmanaged(each_runtime.RowRemoval) = .empty;
+            var removals: shared_buffer.List(each_runtime.RowRemoval) = .empty;
             defer removals.deinit(allocator);
             removals.ensureTotalCapacity(allocator, scope_ids.len) catch return error.OutOfMemory;
             for (scope_ids) |scope_id| {
@@ -7396,8 +7397,8 @@ pub fn Engine(comptime Ctx: type) type {
 
         const PreparedEffectRetirements = struct {
             task_indexes_descending: []usize = &.{},
-            retired_tasks: std.ArrayListUnmanaged(HostPendingTask) = .empty,
-            cleanup_names: std.ArrayListUnmanaged([]const u8) = .empty,
+            retired_tasks: shared_buffer.List(HostPendingTask) = .empty,
+            cleanup_names: shared_buffer.List([]const u8) = .empty,
 
             fn descending(_: void, left: usize, right: usize) bool {
                 return left > right;
@@ -7485,8 +7486,8 @@ pub fn Engine(comptime Ctx: type) type {
             states: ?PreparedStateRetirementIndexes = null,
             rows: ?each_runtime.PreparedRowRemovals = null,
             effects: ?PreparedEffectRetirements = null,
-            retired_states: std.ArrayListUnmanaged(HostState) = .empty,
-            retired_steps: std.ArrayListUnmanaged(HostScopeStep) = .empty,
+            retired_states: shared_buffer.List(HostState) = .empty,
+            retired_steps: shared_buffer.List(HostScopeStep) = .empty,
 
             fn prepare(engine: *Self, allocator: std.mem.Allocator, removed_root_scope_ids: []const u64) CollectionError!@This() {
                 return prepareWithTargets(engine, allocator, removed_root_scope_ids, removed_root_scope_ids);
@@ -7500,7 +7501,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const retirement_scope_ids = self.targets.?.scope_retirement.?.scope_ids;
                 self.identities = try PreparedIdentityRetirements.prepare(engine, allocator, target_scopes);
 
-                var state_indexes: std.ArrayListUnmanaged(usize) = .empty;
+                var state_indexes: shared_buffer.List(usize) = .empty;
                 defer state_indexes.deinit(allocator);
                 state_indexes.ensureTotalCapacity(allocator, engine.active_stream.states.items.len) catch return error.OutOfMemory;
                 for (engine.active_stream.states.items, 0..) |state, state_index| {
@@ -7515,7 +7516,7 @@ pub fn Engine(comptime Ctx: type) type {
                 try self.states.?.reserveRetired(allocator, &self.retired_states);
                 self.rows = try prepareRowRetirementForScopes(engine, allocator, retirement_scope_ids);
 
-                var cleanup_indexes: std.ArrayListUnmanaged(usize) = .empty;
+                var cleanup_indexes: shared_buffer.List(usize) = .empty;
                 defer cleanup_indexes.deinit(allocator);
                 for (target_scopes, 0..) |targeted, scope_id| if (targeted) {
                     for (engine.active_stream.lifecycleIndices(ids.ScopeId.fromIndex(scope_id))) |lifecycle| if (lifecycle.kind == .cleanup) {
@@ -7774,7 +7775,7 @@ pub fn Engine(comptime Ctx: type) type {
         /// Appends the render span of every committed row of `each_site`, in
         /// render order, one segment per row. Returns one past the last node
         /// any row owns, or `site_insert_index` when no row renders.
-        fn appendEachSiteRenderSegments(self: *Self, allocator: std.mem.Allocator, each_site: HostEachSite, site_insert_index: usize, segments: *std.ArrayListUnmanaged(HostEachRowRenderSegment)) CollectionError!usize {
+        fn appendEachSiteRenderSegments(self: *Self, allocator: std.mem.Allocator, each_site: HostEachSite, site_insert_index: usize, segments: *shared_buffer.List(HostEachRowRenderSegment)) CollectionError!usize {
             var render_index: usize = 0;
             var old_end: usize = site_insert_index;
             while (render_index < self.active_stream.render_nodes.items.len) {
@@ -7815,7 +7816,7 @@ pub fn Engine(comptime Ctx: type) type {
             old_end: usize,
 
             fn prepare(engine: *Self, allocator: std.mem.Allocator, site: HostNodeScopeSiteDesc, rows: *const each_runtime.PreparedRowSync, replacements: []const PreparedEachRowReplacementCollection.ReplacementRow, collection: ?*const StagedCollectionCtx) CollectionError!@This() {
-                var segments: std.ArrayListUnmanaged(HostEachRowRenderSegment) = .empty;
+                var segments: shared_buffer.List(HostEachRowRenderSegment) = .empty;
                 defer segments.deinit(allocator);
                 var by_scope: std.AutoHashMapUnmanaged(u64, usize) = .empty;
                 defer by_scope.deinit(allocator);
@@ -7827,11 +7828,11 @@ pub fn Engine(comptime Ctx: type) type {
                     entry.value_ptr.* = index;
                 }
 
-                var descriptor_roots: std.ArrayListUnmanaged(u64) = .empty;
+                var descriptor_roots: shared_buffer.List(u64) = .empty;
                 defer descriptor_roots.deinit(allocator);
                 descriptor_roots.ensureTotalCapacity(allocator, std.math.add(usize, rows.removed_scope_ids.len, replacements.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 for (rows.removed_scope_ids) |scope_id| descriptor_roots.appendAssumeCapacity(scope_id.raw());
-                var remove_starts_list: std.ArrayListUnmanaged(usize) = .empty;
+                var remove_starts_list: shared_buffer.List(usize) = .empty;
                 defer remove_starts_list.deinit(allocator);
                 remove_starts_list.ensureTotalCapacity(allocator, std.math.add(usize, rows.removed_scope_ids.len, replacements.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 for (rows.removed_scope_ids) |scope_id| {
@@ -7917,7 +7918,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             };
             allocator: std.mem.Allocator,
-            render_nodes: std.ArrayListUnmanaged(HostRenderNode) = .empty,
+            render_nodes: shared_buffer.List(HostRenderNode) = .empty,
             metadata: std.AutoHashMapUnmanaged(u64, HostRenderElemIndex) = .empty,
 
             fn preparePlaced(engine: *Self, allocator: std.mem.Allocator, replacement: *const PreparedReplacementOwner, target_scopes: []const bool, removed_render_count: usize, placements: []const Placement) CollectionError!@This() {
@@ -7994,7 +7995,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn apply(self: *@This(), stream: *HostNodeDescriptorStream) void {
-                std.mem.swap(std.ArrayListUnmanaged(HostRenderNode), &self.render_nodes, &stream.render_nodes);
+                std.mem.swap(shared_buffer.List(HostRenderNode), &self.render_nodes, &stream.render_nodes);
                 std.mem.swap(std.AutoHashMapUnmanaged(u64, HostRenderElemIndex), &self.metadata, &stream.render_metadata_by_elem_id);
             }
 
@@ -8045,7 +8046,7 @@ pub fn Engine(comptime Ctx: type) type {
             ) catch return error.OutOfMemory;
         }
 
-        fn collectRetiredGraphRootsForRemoval(engine: *Self, allocator: std.mem.Allocator, removal: *const structural_splice.PreparedRemoval, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
+        fn collectRetiredGraphRootsForRemoval(engine: *Self, allocator: std.mem.Allocator, removal: *const structural_splice.PreparedRemoval, roots: *shared_buffer.List(*HostSignalRecord)) CollectionError!void {
             const indexes = &removal.descriptor_indexes;
             for (indexes.event_indexes.items) |index| if (engine.active_stream.events.items[index].handler.signalRoot()) |root| {
                 roots.append(allocator, root) catch return error.OutOfMemory;
@@ -8061,7 +8062,7 @@ pub fn Engine(comptime Ctx: type) type {
             for (removal.node_indexes.each_indexes.items) |index| roots.append(allocator, engine.active_stream.eaches.items[index].items.record) catch return error.OutOfMemory;
         }
 
-        fn collectReplacementGraphRootsForStream(allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
+        fn collectReplacementGraphRootsForStream(allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, roots: *shared_buffer.List(*HostSignalRecord)) CollectionError!void {
             for (stream.events.items) |desc| if (desc.handler.signalRoot()) |root| {
                 roots.append(allocator, root) catch return error.OutOfMemory;
             };
@@ -8177,7 +8178,7 @@ pub fn Engine(comptime Ctx: type) type {
                     if (staged.scopes.reserved_ids.contains(scope.scope_id)) is_descriptor_root[scope.scope_id.index()] = true;
                 }
 
-                var retired_roots: std.ArrayListUnmanaged(ids.ScopeId) = .empty;
+                var retired_roots: shared_buffer.List(ids.ScopeId) = .empty;
                 defer retired_roots.deinit(allocator);
                 retired_roots.ensureTotalCapacity(allocator, retired_root_scope_ids.len) catch return error.OutOfMemory;
                 for (retired_root_scope_ids) |scope_id| retired_roots.appendAssumeCapacity(ids.ScopeId.fromRaw(scope_id));
@@ -8260,7 +8261,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const branch_scope = try self.collection.reserveWhenBranchScope(selection.parent_scope_id, selection.site_ordinal, selection.branch);
                 if (!branch_scope.created) return error.ResourceLimit;
                 const allocator = Ctx.allocator(self.host_ctx);
-                var binder_stack: std.ArrayListUnmanaged(HostBinderBinding) = .empty;
+                var binder_stack: shared_buffer.List(HostBinderBinding) = .empty;
                 defer binder_stack.deinit(allocator);
                 const counts = try countStaticRootNodes(selection.elem);
                 const binder_capacity = std.math.add(usize, selection.binder_bindings.len, counts.state_sites) catch return error.ResourceLimit;
@@ -8286,7 +8287,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn collectEachRow(self: *@This(), site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, elem: abi.Elem, row_scope_id: ids.ScopeId, scope_created: bool, dirty_source_node_ids: []const u64) CollectionError!struct { start: usize, len: usize, site_start: usize, site_len: usize } {
                 const allocator = Ctx.allocator(self.host_ctx);
-                var binder_stack: std.ArrayListUnmanaged(HostBinderBinding) = .empty;
+                var binder_stack: shared_buffer.List(HostBinderBinding) = .empty;
                 defer binder_stack.deinit(allocator);
                 const counts = try countStaticRootNodes(elem);
                 const binder_capacity = std.math.add(usize, site.binder_bindings.len, counts.state_sites) catch return error.ResourceLimit;
@@ -8458,10 +8459,10 @@ pub fn Engine(comptime Ctx: type) type {
             const Phase = enum { describing, resolved, finished };
 
             allocator: std.mem.Allocator,
-            regions: std.ArrayListUnmanaged(Region) = .empty,
-            rows: std.ArrayListUnmanaged(SurvivingRow) = .empty,
-            ranges: std.ArrayListUnmanaged(ReplacementRange) = .empty,
-            placements: std.ArrayListUnmanaged(PreparedFinalRenderTopology.Placement) = .empty,
+            regions: shared_buffer.List(Region) = .empty,
+            rows: shared_buffer.List(SurvivingRow) = .empty,
+            ranges: shared_buffer.List(ReplacementRange) = .empty,
+            placements: shared_buffer.List(PreparedFinalRenderTopology.Placement) = .empty,
             /// Per region: laid out already, either at the top level or as a
             /// region nested in a surviving row.
             consumed: []bool = &.{},
@@ -8882,9 +8883,9 @@ pub fn Engine(comptime Ctx: type) type {
             removal: ?structural_splice.PreparedMultiRemoval = null,
             identity_retirements: ?PreparedIdentityRetirements = null,
             state_retirement: ?PreparedStateRetirementIndexes = null,
-            retired_state_cells: std.ArrayListUnmanaged(HostState) = .empty,
+            retired_state_cells: shared_buffer.List(HostState) = .empty,
             row_retirement: ?each_runtime.PreparedRowRemovals = null,
-            retired_stable_generations: std.ArrayListUnmanaged(*each_generation.Generation) = .empty,
+            retired_stable_generations: shared_buffer.List(*each_generation.Generation) = .empty,
             effects_retirement: ?PreparedEffectRetirements = null,
             retired_stream: HostNodeDescriptorStream = .{},
             publication: ?structural_splice.PreparedPublicationDeltas = null,
@@ -8905,13 +8906,13 @@ pub fn Engine(comptime Ctx: type) type {
             render_batch_target: ?*render.TransactionalBatch = null,
             publication_phase: PublicationPhase = .unprepared,
             host_render_publication: ?HostRenderPublication = null,
-            retired_scope_steps: std.ArrayListUnmanaged(HostScopeStep) = .empty,
+            retired_scope_steps: shared_buffer.List(HostScopeStep) = .empty,
             /// Render parents whose final child order this plan publishes itself
             /// through `prepareFinalRenderTopology`, so the structural pass must
             /// not also register them. Borrowed from the caller for the duration
             /// of preparation only.
             suppressed_render_parent_ids: []const u64 = &.{},
-            retired_active_events: std.ArrayListUnmanaged(ActiveEventDesc) = .empty,
+            retired_active_events: shared_buffer.List(ActiveEventDesc) = .empty,
             initial_root: bool = false,
             sparse_render_membership: bool = false,
             sparse_each_site_node_id: ?ids.NodeId = null,
@@ -8983,7 +8984,7 @@ pub fn Engine(comptime Ctx: type) type {
                 // where the retired branch's children stood, which a branch
                 // that rendered nothing never had, so it must not register
                 // these parents itself.
-                var parents: std.ArrayListUnmanaged(u64) = .empty;
+                var parents: shared_buffer.List(u64) = .empty;
                 defer parents.deinit(allocator);
                 for (selections) |selection| try appendUniqueParentElemId(allocator, &parents, selection.parent_elem_id.raw());
                 plan.suppressed_render_parent_ids = parents.items;
@@ -9001,7 +9002,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             /// Records a render parent once for `prepareFinalRenderTopology`,
             /// which refuses a parent listed twice.
-            fn appendUniqueParentElemId(allocator: std.mem.Allocator, parents: *std.ArrayListUnmanaged(u64), parent_elem_id: u64) CollectionError!void {
+            fn appendUniqueParentElemId(allocator: std.mem.Allocator, parents: *shared_buffer.List(u64), parent_elem_id: u64) CollectionError!void {
                 for (parents.items) |existing| if (existing == parent_elem_id) return;
                 parents.append(allocator, parent_elem_id) catch return error.OutOfMemory;
             }
@@ -9080,7 +9081,7 @@ pub fn Engine(comptime Ctx: type) type {
                 try splice.reserveAdditionalChildren(parent_elem_ids.len, child_capacity);
                 for (parent_elem_ids, 0..) |parent_elem_id, parent_offset| {
                     for (parent_elem_ids[0..parent_offset]) |previous| if (previous == parent_elem_id) return error.ResourceLimit;
-                    var children: std.ArrayListUnmanaged(ids.ElemId) = .empty;
+                    var children: shared_buffer.List(ids.ElemId) = .empty;
                     defer children.deinit(allocator);
                     var child_id = if (self.final_render_topology.?.metadata.get(parent_elem_id)) |entry| entry.first_child else null;
                     while (child_id) |id| {
@@ -9150,11 +9151,11 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 // The site's parent and the parents of every live nested
                 // site take their final child order from the topology.
-                var render_parents: std.ArrayListUnmanaged(u64) = .empty;
+                var render_parents: shared_buffer.List(u64) = .empty;
                 defer render_parents.deinit(allocator);
                 render_parents.append(allocator, layout.site.parent_elem_id.raw()) catch return error.OutOfMemory;
                 try replacement.replacement.collection.appendNestedSiteRenderParents(allocator, &render_parents);
-                var descriptor_roots: std.ArrayListUnmanaged(u64) = .empty;
+                var descriptor_roots: shared_buffer.List(u64) = .empty;
                 defer descriptor_roots.deinit(allocator);
                 descriptor_roots.ensureTotalCapacity(allocator, std.math.add(usize, rows.removed_scope_ids.len, replacement.replacement_rows.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 for (rows.removed_scope_ids) |scope_id| descriptor_roots.appendAssumeCapacity(scope_id.raw());
@@ -9232,7 +9233,7 @@ pub fn Engine(comptime Ctx: type) type {
                 try plan.state_retirement.?.reserveRetired(allocator, &plan.retired_state_cells);
                 errdefer plan.retired_state_cells.deinit(allocator);
 
-                var nested_row_scopes: std.ArrayListUnmanaged(ids.ScopeId) = .empty;
+                var nested_row_scopes: shared_buffer.List(ids.ScopeId) = .empty;
                 defer nested_row_scopes.deinit(allocator);
                 nested_row_scopes.ensureTotalCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
                 for (retirement_scope_ids) |scope_id| {
@@ -9313,7 +9314,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.engine.render_cache.nextSibling(ids.ElemId.fromRaw(last_root))
                 else
                     null;
-                var roots: std.ArrayListUnmanaged(ids.ElemId) = .empty;
+                var roots: shared_buffer.List(ids.ElemId) = .empty;
                 defer roots.deinit(allocator);
                 roots.ensureTotalCapacity(allocator, wire_edits) catch return error.OutOfMemory;
 
@@ -9415,7 +9416,7 @@ pub fn Engine(comptime Ctx: type) type {
                 // committed node id keeps its cell: the descriptor is
                 // replaced, the value the site holds is not. Only the cells
                 // of sites the replacement does not re-declare retire.
-                var retired_state_indexes: std.ArrayListUnmanaged(usize) = .empty;
+                var retired_state_indexes: shared_buffer.List(usize) = .empty;
                 defer retired_state_indexes.deinit(allocator);
                 retired_state_indexes.ensureTotalCapacity(allocator, self.removal.?.removal.node_indexes.state_indexes.items.len) catch return error.OutOfMemory;
                 for (self.removal.?.removal.node_indexes.state_indexes.items) |state_index| {
@@ -9441,7 +9442,7 @@ pub fn Engine(comptime Ctx: type) type {
                     // journal even when there are none: applying the journal is
                     // what drops an emptied site whose descriptor is gone, and a
                     // nested site with no rows is exactly such a site.
-                    var nested: std.ArrayListUnmanaged(ids.ScopeId) = .empty;
+                    var nested: shared_buffer.List(ids.ScopeId) = .empty;
                     defer nested.deinit(allocator);
                     nested.ensureTotalCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
                     for (retirement_scope_ids) |scope_id| {
@@ -9485,13 +9486,13 @@ pub fn Engine(comptime Ctx: type) type {
                 // A bare `Ref` record carries no token, so the token index
                 // cannot stand in for "the replacement binds a signal": the
                 // graph roots the replacement stream binds are the honest test.
-                var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
+                var replacement_roots: shared_buffer.List(*HostSignalRecord) = .empty;
                 defer replacement_roots.deinit(allocator);
                 try collectReplacementGraphRootsForStream(allocator, &self.replacement.stream, &replacement_roots);
                 if (self.engine.active_signal_graph.items.len != 0 or replacement_roots.items.len != 0) {
                     self.sink_edits = try self.prepareSinkEdits(allocator);
                     errdefer if (self.sink_edits) |*edits| edits.deinit(allocator);
-                    var retired_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
+                    var retired_roots: shared_buffer.List(*HostSignalRecord) = .empty;
                     defer retired_roots.deinit(allocator);
                     try collectRetiredGraphRootsForRemoval(self.engine, allocator, &self.removal.?.removal, &retired_roots);
                     self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items, replacement_roots.items) catch |err| switch (err) {
@@ -9710,7 +9711,7 @@ pub fn Engine(comptime Ctx: type) type {
                     removal.node_indexes.cleanup_indexes.items,
                 );
                 if (self.initial_root) {
-                    std.mem.swap(std.ArrayListUnmanaged(HostRenderNode), &self.engine.active_stream.render_nodes, &self.replacement.stream.render_nodes);
+                    std.mem.swap(shared_buffer.List(HostRenderNode), &self.engine.active_stream.render_nodes, &self.replacement.stream.render_nodes);
                     std.mem.swap(std.AutoHashMapUnmanaged(u64, HostRenderElemIndex), &self.engine.active_stream.render_metadata_by_elem_id, &self.replacement.stream.render_metadata_by_elem_id);
                 } else if (!self.sparse_render_membership) if (self.final_render_topology) |*topology| topology.apply(&self.engine.active_stream);
                 self.engine.validateActiveRenderDescriptorIntegrity();
@@ -9805,13 +9806,13 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareSinkEdits(self: *@This(), allocator: std.mem.Allocator) CollectionError!active_graph.PreparedSinkRouteEdits {
-                var text: std.ArrayListUnmanaged(active_graph.TextSinkEdit) = .empty;
+                var text: shared_buffer.List(active_graph.TextSinkEdit) = .empty;
                 defer text.deinit(allocator);
-                var bools: std.ArrayListUnmanaged(active_graph.BoolSinkEdit) = .empty;
+                var bools: shared_buffer.List(active_graph.BoolSinkEdit) = .empty;
                 defer bools.deinit(allocator);
-                var structural: std.ArrayListUnmanaged(active_graph.StructuralSinkEdit) = .empty;
+                var structural: shared_buffer.List(active_graph.StructuralSinkEdit) = .empty;
                 defer structural.deinit(allocator);
-                var changes: std.ArrayListUnmanaged(active_graph.ChangeSinkEdit) = .empty;
+                var changes: shared_buffer.List(active_graph.ChangeSinkEdit) = .empty;
                 defer changes.deinit(allocator);
                 const removal = &self.removal.?.removal;
                 const indexes = &removal.descriptor_indexes;
@@ -9850,15 +9851,15 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer self.deinitGraphRoutes(allocator);
                 const graph_plan = &self.graph_append.?;
                 const graph_count = graph_plan.finalGraphCount();
-                var source: std.ArrayListUnmanaged(active_graph.RouteAppend(u64)) = .empty;
+                var source: shared_buffer.List(active_graph.RouteAppend(u64)) = .empty;
                 defer source.deinit(allocator);
-                var text: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.TextSink)) = .empty;
+                var text: shared_buffer.List(active_graph.RouteAppend(active_graph.TextSink)) = .empty;
                 defer text.deinit(allocator);
-                var bools: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.BoolSink)) = .empty;
+                var bools: shared_buffer.List(active_graph.RouteAppend(active_graph.BoolSink)) = .empty;
                 defer bools.deinit(allocator);
-                var changes: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.ChangeSink)) = .empty;
+                var changes: shared_buffer.List(active_graph.RouteAppend(active_graph.ChangeSink)) = .empty;
                 defer changes.deinit(allocator);
-                var structural: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.StructuralSink)) = .empty;
+                var structural: shared_buffer.List(active_graph.RouteAppend(active_graph.StructuralSink)) = .empty;
                 defer structural.deinit(allocator);
                 for (graph_plan.records, graph_plan.record_ids) |record, record_id| switch (record.payload) {
                     .ref => |source_node_id| source.append(allocator, .{ .route_index = source_node_id, .value = record_id }) catch return error.OutOfMemory,
@@ -9912,19 +9913,19 @@ pub fn Engine(comptime Ctx: type) type {
                 try self.source_route_appends.?.reserveOuter(allocator, &self.engine.active_source_signal_routes, source_count);
             }
 
-            fn appendTextRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.TextSink)), record: *HostSignalRecord, sink: active_graph.TextSink) CollectionError!void {
+            fn appendTextRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.TextSink)), record: *HostSignalRecord, sink: active_graph.TextSink) CollectionError!void {
                 const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
-            fn appendBoolRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.BoolSink)), record: *HostSignalRecord, sink: active_graph.BoolSink) CollectionError!void {
+            fn appendBoolRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.BoolSink)), record: *HostSignalRecord, sink: active_graph.BoolSink) CollectionError!void {
                 const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
-            fn appendChangeRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.ChangeSink)), record: *HostSignalRecord, sink: active_graph.ChangeSink) CollectionError!void {
+            fn appendChangeRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.ChangeSink)), record: *HostSignalRecord, sink: active_graph.ChangeSink) CollectionError!void {
                 const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
-            fn appendStructuralRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.StructuralSink)), record: *HostSignalRecord, sink: active_graph.StructuralSink) CollectionError!void {
+            fn appendStructuralRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.StructuralSink)), record: *HostSignalRecord, sink: active_graph.StructuralSink) CollectionError!void {
                 const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
@@ -10017,13 +10018,13 @@ pub fn Engine(comptime Ctx: type) type {
             removal: ?structural_splice.PreparedRemoval = null,
             publication: ?structural_splice.PreparedPublicationDeltas = null,
             scope_retirement: ?scope_runtime.PreparedSubtreeRetirement = null,
-            retired_state_cells: std.ArrayListUnmanaged(HostState) = .empty,
+            retired_state_cells: shared_buffer.List(HostState) = .empty,
             state_cell_indexes: []usize = &.{},
             retired_node_identity_ids: []u64 = &.{},
             retired_dom_identity_ids: []u64 = &.{},
             row_retirement: ?each_runtime.PreparedRowRemovals = null,
             effects_retirement: ?PreparedEffectRetirements = null,
-            retired_scope_steps: std.ArrayListUnmanaged(HostScopeStep) = .empty,
+            retired_scope_steps: shared_buffer.List(HostScopeStep) = .empty,
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
@@ -10081,7 +10082,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const branch_scope = try plan.collection.reserveWhenBranchScope(site.scope_id, site.ordinal, selected_branch);
                 if (!branch_scope.created) return error.ResourceLimit;
                 plan.replacement_scope_id = branch_scope.scope_id.raw();
-                var binder_stack: std.ArrayListUnmanaged(HostBinderBinding) = .empty;
+                var binder_stack: shared_buffer.List(HostBinderBinding) = .empty;
                 defer binder_stack.deinit(allocator);
                 const binder_capacity = std.math.add(usize, site.binder_bindings.len, expected.state_sites) catch return error.ResourceLimit;
                 binder_stack.ensureTotalCapacity(allocator, binder_capacity) catch return error.OutOfMemory;
@@ -10149,10 +10150,10 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 if (self.engine.active_signal_graph.items.len != 0) {
                     self.sink_edits = try self.prepareSinkEdits(allocator);
-                    var retired_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
+                    var retired_roots: shared_buffer.List(*HostSignalRecord) = .empty;
                     defer retired_roots.deinit(allocator);
                     try self.collectRetiredGraphRoots(allocator, &retired_roots);
-                    var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
+                    var replacement_roots: shared_buffer.List(*HostSignalRecord) = .empty;
                     defer replacement_roots.deinit(allocator);
                     try self.collectReplacementGraphRoots(allocator, &replacement_roots);
                     self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items, replacement_roots.items) catch |err| switch (err) {
@@ -10429,12 +10430,12 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.replacement_stream.signal_bool_attrs.items) |*desc| splice.addBoolField(&self.engine.render_cache, desc.elem_id, desc.field, self.evalPreparedSignalBool(&desc.signal, desc.read, &desc.cached_value)) catch |err| return renderSpliceError(err);
                 for (self.replacement_stream.render_nodes.items) |node| {
                     if (node.kind != .element) continue;
-                    var attrs: std.ArrayListUnmanaged(render_cache_mod.CustomTextAttr) = .empty;
+                    var attrs: shared_buffer.List(render_cache_mod.CustomTextAttr) = .empty;
                     defer attrs.deinit(allocator);
                     const custom_indexes = self.replacement_stream.customAttrIndices(node.elem_id);
                     const custom_count = custom_indexes.len;
                     attrs.ensureTotalCapacity(allocator, custom_count) catch return error.OutOfMemory;
-                    var owned_custom_text = std.ArrayListUnmanaged(abi.RocStr).empty;
+                    var owned_custom_text = shared_buffer.List(abi.RocStr).empty;
                     defer {
                         for (owned_custom_text.items) |*text| text.decref(self.roc_host);
                         owned_custom_text.deinit(allocator);
@@ -10475,7 +10476,7 @@ pub fn Engine(comptime Ctx: type) type {
                         },
                     };
                     splice.addCustomAttrs(&self.engine.render_cache, node.elem_id, attrs.items) catch |err| return renderSpliceError(err);
-                    var named: std.ArrayListUnmanaged(render_cache_mod.NamedEvent) = .empty;
+                    var named: shared_buffer.List(render_cache_mod.NamedEvent) = .empty;
                     defer named.deinit(allocator);
                     named.ensureTotalCapacity(allocator, self.replacement_stream.namedEventIndices(node.elem_id).len) catch return error.OutOfMemory;
                     for (self.replacement_stream.namedEventIndices(node.elem_id)) |event_index| {
@@ -10510,7 +10511,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 var moved_named_iterator = moved_named_elem_ids.keyIterator();
                 while (moved_named_iterator.next()) |elem_id| {
-                    var named: std.ArrayListUnmanaged(render_cache_mod.NamedEvent) = .empty;
+                    var named: shared_buffer.List(render_cache_mod.NamedEvent) = .empty;
                     defer named.deinit(allocator);
                     for (self.engine.active_stream.events.items, 0..) |desc, original_index| {
                         const final_index = final_event_indexes[original_index] orelse continue;
@@ -10631,15 +10632,15 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepareGraphRoutes(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
                 const graph_plan = &self.graph_append.?;
                 const graph_count = graph_plan.finalGraphCount();
-                var source: std.ArrayListUnmanaged(active_graph.RouteAppend(u64)) = .empty;
+                var source: shared_buffer.List(active_graph.RouteAppend(u64)) = .empty;
                 defer source.deinit(allocator);
-                var text: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.TextSink)) = .empty;
+                var text: shared_buffer.List(active_graph.RouteAppend(active_graph.TextSink)) = .empty;
                 defer text.deinit(allocator);
-                var bools: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.BoolSink)) = .empty;
+                var bools: shared_buffer.List(active_graph.RouteAppend(active_graph.BoolSink)) = .empty;
                 defer bools.deinit(allocator);
-                var changes: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.ChangeSink)) = .empty;
+                var changes: shared_buffer.List(active_graph.RouteAppend(active_graph.ChangeSink)) = .empty;
                 defer changes.deinit(allocator);
-                var structural: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.StructuralSink)) = .empty;
+                var structural: shared_buffer.List(active_graph.RouteAppend(active_graph.StructuralSink)) = .empty;
                 defer structural.deinit(allocator);
                 for (graph_plan.records, graph_plan.record_ids) |record, record_id| switch (record.payload) {
                     .ref => |source_node_id| source.append(allocator, .{ .route_index = source_node_id, .value = record_id }) catch return error.OutOfMemory,
@@ -10697,19 +10698,19 @@ pub fn Engine(comptime Ctx: type) type {
                 try self.source_route_appends.?.reserveOuter(allocator, &self.engine.active_source_signal_routes, source_count);
             }
 
-            fn appendTextRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.TextSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.TextSink) CollectionError!void {
+            fn appendTextRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.TextSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.TextSink) CollectionError!void {
                 const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
-            fn appendBoolRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.BoolSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.BoolSink) CollectionError!void {
+            fn appendBoolRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.BoolSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.BoolSink) CollectionError!void {
                 const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
-            fn appendChangeRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.ChangeSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.ChangeSink) CollectionError!void {
+            fn appendChangeRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.ChangeSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.ChangeSink) CollectionError!void {
                 const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
-            fn appendStructuralRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.StructuralSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.StructuralSink) CollectionError!void {
+            fn appendStructuralRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.StructuralSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.StructuralSink) CollectionError!void {
                 const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
@@ -10774,22 +10775,22 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
-            fn collectRetiredGraphRoots(self: *@This(), allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
+            fn collectRetiredGraphRoots(self: *@This(), allocator: std.mem.Allocator, roots: *shared_buffer.List(*HostSignalRecord)) CollectionError!void {
                 try collectRetiredGraphRootsForRemoval(self.engine, allocator, &self.removal.?, roots);
             }
 
-            fn collectReplacementGraphRoots(self: *@This(), allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
+            fn collectReplacementGraphRoots(self: *@This(), allocator: std.mem.Allocator, roots: *shared_buffer.List(*HostSignalRecord)) CollectionError!void {
                 try collectReplacementGraphRootsForStream(allocator, &self.replacement_stream, roots);
             }
 
             fn prepareSinkEdits(self: *@This(), allocator: std.mem.Allocator) CollectionError!active_graph.PreparedSinkRouteEdits {
-                var text: std.ArrayListUnmanaged(active_graph.TextSinkEdit) = .empty;
+                var text: shared_buffer.List(active_graph.TextSinkEdit) = .empty;
                 defer text.deinit(allocator);
-                var bools: std.ArrayListUnmanaged(active_graph.BoolSinkEdit) = .empty;
+                var bools: shared_buffer.List(active_graph.BoolSinkEdit) = .empty;
                 defer bools.deinit(allocator);
-                var structural: std.ArrayListUnmanaged(active_graph.StructuralSinkEdit) = .empty;
+                var structural: shared_buffer.List(active_graph.StructuralSinkEdit) = .empty;
                 defer structural.deinit(allocator);
-                var changes: std.ArrayListUnmanaged(active_graph.ChangeSinkEdit) = .empty;
+                var changes: shared_buffer.List(active_graph.ChangeSinkEdit) = .empty;
                 defer changes.deinit(allocator);
                 const indexes = &self.removal.?.descriptor_indexes;
                 var text_removals = std.math.add(usize, indexes.signal_text_node_indexes.items.len, indexes.signal_text_attr_indexes.items.len) catch return error.ResourceLimit;
@@ -10829,7 +10830,7 @@ pub fn Engine(comptime Ctx: type) type {
                 return map;
             }
 
-            fn appendTextSinkEdits(allocator: std.mem.Allocator, engine_ptr: *Self, edits: *std.ArrayListUnmanaged(active_graph.TextSinkEdit), descriptors: anytype, removal_indexes: []const usize, kind: active_graph.TextSinkKind) CollectionError!void {
+            fn appendTextSinkEdits(allocator: std.mem.Allocator, engine_ptr: *Self, edits: *shared_buffer.List(active_graph.TextSinkEdit), descriptors: anytype, removal_indexes: []const usize, kind: active_graph.TextSinkKind) CollectionError!void {
                 const map = try descriptorSwapMap(allocator, descriptors.len);
                 defer allocator.free(map);
                 var live_len = descriptors.len;
@@ -10845,7 +10846,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
-            fn appendBoolSinkEdits(allocator: std.mem.Allocator, engine_ptr: *Self, edits: *std.ArrayListUnmanaged(active_graph.BoolSinkEdit), descriptors: anytype, removal_indexes: []const usize, kind: active_graph.BoolSinkKind) CollectionError!void {
+            fn appendBoolSinkEdits(allocator: std.mem.Allocator, engine_ptr: *Self, edits: *shared_buffer.List(active_graph.BoolSinkEdit), descriptors: anytype, removal_indexes: []const usize, kind: active_graph.BoolSinkKind) CollectionError!void {
                 const map = try descriptorSwapMap(allocator, descriptors.len);
                 defer allocator.free(map);
                 var live_len = descriptors.len;
@@ -10861,7 +10862,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
-            fn appendChangeSinkEdits(allocator: std.mem.Allocator, engine_ptr: *Self, edits: *std.ArrayListUnmanaged(active_graph.ChangeSinkEdit), descriptors: anytype, removal_indexes: []const usize) CollectionError!void {
+            fn appendChangeSinkEdits(allocator: std.mem.Allocator, engine_ptr: *Self, edits: *shared_buffer.List(active_graph.ChangeSinkEdit), descriptors: anytype, removal_indexes: []const usize) CollectionError!void {
                 const map = try descriptorSwapMap(allocator, descriptors.len);
                 defer allocator.free(map);
                 var live_len = descriptors.len;
@@ -10877,7 +10878,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
-            fn appendStructuralSinkEdits(allocator: std.mem.Allocator, engine_ptr: *Self, edits: *std.ArrayListUnmanaged(active_graph.StructuralSinkEdit), descriptors: anytype, removal_indexes: []const usize, comptime kind: active_graph.StructuralKind) CollectionError!void {
+            fn appendStructuralSinkEdits(allocator: std.mem.Allocator, engine_ptr: *Self, edits: *shared_buffer.List(active_graph.StructuralSinkEdit), descriptors: anytype, removal_indexes: []const usize, comptime kind: active_graph.StructuralKind) CollectionError!void {
                 const map = try descriptorSwapMap(allocator, descriptors.len);
                 defer allocator.free(map);
                 var live_len = descriptors.len;
@@ -11133,27 +11134,27 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         /// Ensures active source signal route capacity or state before publication can begin.
-        pub fn ensureActiveSourceSignalRoute(self: *Self, ctx: Ctx.Handle, source_node_id: u64) *std.ArrayListUnmanaged(u64) {
+        pub fn ensureActiveSourceSignalRoute(self: *Self, ctx: Ctx.Handle, source_node_id: u64) *shared_buffer.List(u64) {
             return active_graph.ensureSourceRoute(Ctx.allocator(ctx), &self.active_source_signal_routes, self.node_identities.items.len, source_node_id);
         }
 
         /// Ensures active text signal route capacity or state before publication can begin.
-        pub fn ensureActiveTextSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64) *std.ArrayListUnmanaged(HostActiveTextSignalSink) {
+        pub fn ensureActiveTextSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64) *shared_buffer.List(HostActiveTextSignalSink) {
             return active_graph.ensureTextRoute(Ctx.allocator(ctx), &self.active_text_signal_routes, self.active_signal_graph.items.len, record_id);
         }
 
         /// Ensures active bool signal route capacity or state before publication can begin.
-        pub fn ensureActiveBoolSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64) *std.ArrayListUnmanaged(HostActiveBoolSignalSink) {
+        pub fn ensureActiveBoolSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64) *shared_buffer.List(HostActiveBoolSignalSink) {
             return active_graph.ensureBoolRoute(Ctx.allocator(ctx), &self.active_bool_signal_routes, self.active_signal_graph.items.len, record_id);
         }
 
         /// Ensures active change signal route capacity or state before publication can begin.
-        pub fn ensureActiveChangeSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64) *std.ArrayListUnmanaged(HostActiveChangeSignalSink) {
+        pub fn ensureActiveChangeSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64) *shared_buffer.List(HostActiveChangeSignalSink) {
             return active_graph.ensureChangeRoute(Ctx.allocator(ctx), &self.active_change_signal_routes, self.active_signal_graph.items.len, record_id);
         }
 
         /// Ensures active structural signal route capacity or state before publication can begin.
-        pub fn ensureActiveStructuralSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64) *std.ArrayListUnmanaged(HostActiveStructuralSignal) {
+        pub fn ensureActiveStructuralSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64) *shared_buffer.List(HostActiveStructuralSignal) {
             return active_graph.ensureStructuralRoute(Ctx.allocator(ctx), &self.active_structural_signal_routes, self.active_signal_graph.items.len, record_id);
         }
 
@@ -11378,7 +11379,7 @@ pub fn Engine(comptime Ctx: type) type {
             return structural_splice.scopeIsInTargetSet(target_scopes, site.scope_id);
         }
 
-        fn appendNamedEventRemovalIndexes(self: *Self, ctx: Ctx.Handle, indexes: *std.ArrayListUnmanaged(usize), elem_id: u64) void {
+        fn appendNamedEventRemovalIndexes(self: *Self, ctx: Ctx.Handle, indexes: *shared_buffer.List(usize), elem_id: u64) void {
             const named_event_indices = self.active_stream.namedEventIndices(elem_id);
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_remove_target, named_event_indices.len);
             for (named_event_indices) |index| {
@@ -11674,7 +11675,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        fn removeActiveEventDescriptorAt(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, index: usize, moved_event_elem_ids: *std.ArrayListUnmanaged(u64)) void {
+        fn removeActiveEventDescriptorAt(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, index: usize, moved_event_elem_ids: *shared_buffer.List(u64)) void {
             const allocator = Ctx.allocator(ctx);
             const event_count = self.active_stream.events.items.len;
             if (self.active_events.items.len != event_count) {
@@ -11727,7 +11728,7 @@ pub fn Engine(comptime Ctx: type) type {
             scratch.sortDescending();
         }
 
-        fn removeActiveElemOwnedDescriptorsForRemovedElems(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, removed_elem_ids: []const u64, moved_event_elem_ids: *std.ArrayListUnmanaged(u64)) void {
+        fn removeActiveElemOwnedDescriptorsForRemovedElems(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, removed_elem_ids: []const u64, moved_event_elem_ids: *shared_buffer.List(u64)) void {
             self.collectElemOwnedRemovalIndexes(ctx, removed_elem_ids);
             defer self.clearElemOwnedRemovalScratch();
 
@@ -11843,7 +11844,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.active_stream.eaches.items.len = write_index;
         }
 
-        fn removeActiveNonRenderDescriptorsInTarget(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, target_scopes: []const bool, removed_elem_ids: []const u64, moved_event_elem_ids: *std.ArrayListUnmanaged(u64)) void {
+        fn removeActiveNonRenderDescriptorsInTarget(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, target_scopes: []const bool, removed_elem_ids: []const u64, moved_event_elem_ids: *shared_buffer.List(u64)) void {
             self.removeActiveElemOwnedDescriptorsForRemovedElems(ctx, roc_host, removed_elem_ids, moved_event_elem_ids);
             self.removeActiveStaticCustomTextAttrDescriptorsForRemovedElems(ctx, removed_elem_ids);
             self.removeActiveSignalCustomTextAttrDescriptorsForRemovedElems(ctx, roc_host, removed_elem_ids);
@@ -12195,7 +12196,7 @@ pub fn Engine(comptime Ctx: type) type {
             defer removal_scan.deinit(allocator);
             if (removal_scan.removed_render_count == 0) return false;
 
-            var extra_descendants: std.ArrayListUnmanaged(u64) = .empty;
+            var extra_descendants: shared_buffer.List(u64) = .empty;
             defer extra_descendants.deinit(allocator);
 
             const contiguous_end = render_start + removal_scan.removed_render_count;
@@ -12225,7 +12226,7 @@ pub fn Engine(comptime Ctx: type) type {
             const mount_count = replacement.mounts.items.len;
             const replacement_elem_ids = structural_splice.renderElemIds(allocator, replacement.render_nodes.items);
             errdefer allocator.free(replacement_elem_ids);
-            var moved_event_elem_ids: std.ArrayListUnmanaged(u64) = .empty;
+            var moved_event_elem_ids: shared_buffer.List(u64) = .empty;
             errdefer moved_event_elem_ids.deinit(allocator);
 
             self.active_stream.replaceRenderRangeWithStreamOptions(allocator, render_start, removed_render_nodes, replacement, child_insert_hint, refresh_suffix_indexes, &self.pending_roc_metrics);
@@ -12494,7 +12495,7 @@ pub fn Engine(comptime Ctx: type) type {
                 },
                 .combine => |*payload| {
                     const allocator = Ctx.allocator(ctx);
-                    var values: std.ArrayListUnmanaged(HostValue) = .empty;
+                    var values: shared_buffer.List(HostValue) = .empty;
                     errdefer {
                         for (payload.children, values.items) |child, value| {
                             self.dropHostSignalRecordValue(ctx, roc_host, child, value);
@@ -12817,7 +12818,7 @@ pub fn Engine(comptime Ctx: type) type {
                 .combine => |*payload| {
                     const cache_was_absent = payload.cached_value == .absent;
                     const allocator = Ctx.allocator(ctx);
-                    var values: std.ArrayListUnmanaged(HostValue) = .empty;
+                    var values: shared_buffer.List(HostValue) = .empty;
                     errdefer {
                         for (payload.children[0..values.items.len], values.items) |child, value| {
                             self.dropHostSignalRecordValue(ctx, roc_host, child, value);
@@ -12969,7 +12970,7 @@ pub fn Engine(comptime Ctx: type) type {
                 },
                 .combine => |*payload| blk: {
                     const allocator = Ctx.allocator(ctx);
-                    var values = std.ArrayListUnmanaged(HostValue).empty;
+                    var values = shared_buffer.List(HostValue).empty;
                     errdefer {
                         for (payload.children[0..values.items.len], values.items) |child, value| self.dropHostSignalRecordValue(ctx, roc_host, child, value);
                         values.deinit(allocator);
@@ -13065,7 +13066,7 @@ pub fn Engine(comptime Ctx: type) type {
         /// commits or aborts.
         pub fn prepareChangedActiveSignalRecordIds(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates, dirty_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64) CollectionError![]u64 {
             const allocator = Ctx.allocator(ctx);
-            var changed = std.ArrayListUnmanaged(u64).empty;
+            var changed = shared_buffer.List(u64).empty;
             errdefer changed.deinit(allocator);
             changed.ensureTotalCapacity(allocator, self.active_signal_graph.items.len) catch return error.OutOfMemory;
             var changed_set = &self.scratch.dirty_changed_record_id_set;
@@ -13139,10 +13140,10 @@ pub fn Engine(comptime Ctx: type) type {
             descriptor_count = std.math.add(usize, descriptor_count, self.active_stream.signal_optional_custom_text_attrs.items.len) catch return error.ResourceLimit;
             descriptor_count = std.math.add(usize, descriptor_count, self.active_stream.static_custom_bool_attrs.items.len) catch return error.ResourceLimit;
             descriptor_count = std.math.add(usize, descriptor_count, self.active_stream.signal_custom_bool_attrs.items.len) catch return error.ResourceLimit;
-            var attrs = std.ArrayListUnmanaged(render_cache_mod.CustomTextAttr).empty;
+            var attrs = shared_buffer.List(render_cache_mod.CustomTextAttr).empty;
             defer attrs.deinit(allocator);
             attrs.ensureTotalCapacity(allocator, descriptor_count) catch return error.OutOfMemory;
-            var owned_text = std.ArrayListUnmanaged(abi.RocStr).empty;
+            var owned_text = shared_buffer.List(abi.RocStr).empty;
             defer {
                 for (owned_text.items) |*text| text.decref(roc_host);
                 owned_text.deinit(allocator);
@@ -13177,7 +13178,7 @@ pub fn Engine(comptime Ctx: type) type {
             var text_count: usize = 0;
             var bool_count: usize = 0;
             const allocator = Ctx.allocator(ctx);
-            var custom_elem_ids = std.ArrayListUnmanaged(u64).empty;
+            var custom_elem_ids = shared_buffer.List(u64).empty;
             defer custom_elem_ids.deinit(allocator);
             var custom_route_upper: usize = 0;
             for (changed_record_ids) |record_id| {
@@ -13312,7 +13313,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const index = std.math.cast(usize, record_id) orelse return error.ResourceLimit;
                 if (index < self.active_structural_signal_routes.items.len) route_count = std.math.add(usize, route_count, self.active_structural_signal_routes.items[index].len()) catch return error.ResourceLimit;
             }
-            var changes = std.ArrayListUnmanaged(HostDirtyStructuralSignal).empty;
+            var changes = shared_buffer.List(HostDirtyStructuralSignal).empty;
             errdefer changes.deinit(allocator);
             changes.ensureTotalCapacity(allocator, route_count) catch return error.OutOfMemory;
 
@@ -13369,7 +13370,7 @@ pub fn Engine(comptime Ctx: type) type {
             return changes.toOwnedSlice(allocator) catch return error.OutOfMemory;
         }
 
-        fn prepareOnChangeCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates, changed_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64, pending: *std.ArrayListUnmanaged(HostPendingOnChangeCommand)) CollectionError!void {
+        fn prepareOnChangeCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates, changed_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64, pending: *shared_buffer.List(HostPendingOnChangeCommand)) CollectionError!void {
             const allocator = Ctx.allocator(ctx);
             var expected: usize = 0;
             for (changed_record_ids) |record_id| {
@@ -13402,7 +13403,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Collects dirty structural signals from the explicitly affected graph or scope set.
         pub fn collectDirtyStructuralSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) []HostDirtyStructuralSignal {
-            var dirty_structural_signals: std.ArrayListUnmanaged(HostDirtyStructuralSignal) = .empty;
+            var dirty_structural_signals: shared_buffer.List(HostDirtyStructuralSignal) = .empty;
             errdefer {
                 for (dirty_structural_signals.items) |*change| change.abortPendingWhenCache(ctx, roc_host, &self.pending_roc_metrics);
                 dirty_structural_signals.deinit(allocator);
@@ -13827,7 +13828,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Returns active each row render segments in render order from the maintained active-runtime indexes.
         pub fn activeEachRowRenderSegmentsInRenderOrder(self: *Self, allocator: std.mem.Allocator, site: HostEachSite) []HostEachRowRenderSegment {
-            var segments: std.ArrayListUnmanaged(HostEachRowRenderSegment) = .empty;
+            var segments: shared_buffer.List(HostEachRowRenderSegment) = .empty;
             errdefer segments.deinit(allocator);
             var segment_indexes_by_scope: std.AutoHashMapUnmanaged(u64, usize) = .{};
             defer segment_indexes_by_scope.deinit(allocator);
@@ -13886,7 +13887,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             const allocator = Ctx.allocator(ctx);
             const each_site = HostEachSite{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
-            var segments: std.ArrayListUnmanaged(HostEachRowRenderSegment) = .empty;
+            var segments: shared_buffer.List(HostEachRowRenderSegment) = .empty;
             defer segments.deinit(allocator);
             var segment_indexes_by_scope: std.AutoHashMapUnmanaged(u64, usize) = .{};
             defer segment_indexes_by_scope.deinit(allocator);
@@ -13953,7 +13954,7 @@ pub fn Engine(comptime Ctx: type) type {
             if (write_index != total_len) @panic("pure each permutation wrote the wrong render-node count");
             @memcpy(self.active_stream.render_nodes.items[region_start..][0..total_len], reordered_nodes);
 
-            var reordered_region_children: std.ArrayListUnmanaged(u64) = .empty;
+            var reordered_region_children: shared_buffer.List(u64) = .empty;
             defer reordered_region_children.deinit(allocator);
             for (self.active_stream.render_nodes.items[region_start..][0..total_len]) |node| {
                 if (renderNodeParentElemId(&self.active_stream, node) == site.parent_elem_id) {
@@ -13961,7 +13962,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
-            var reordered_parent_children: std.ArrayListUnmanaged(u64) = .empty;
+            var reordered_parent_children: shared_buffer.List(u64) = .empty;
             defer reordered_parent_children.deinit(allocator);
             var inserted_region = false;
             const region_end = region_start + total_len;
@@ -14093,7 +14094,7 @@ pub fn Engine(comptime Ctx: type) type {
         /// Runs active on change initial command indices using the host semantics and measurement boundaries defined by this module.
         pub fn runActiveOnChangeInitialCommandIndices(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, indices: []const usize) render.Counts {
             const allocator = Ctx.allocator(ctx);
-            var pending_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            var pending_commands: shared_buffer.List(HostPendingOnChangeCommand) = .empty;
             defer {
                 for (pending_commands.items) |pending| pending.cmd.decref(roc_host);
                 pending_commands.deinit(allocator);
@@ -14112,7 +14113,7 @@ pub fn Engine(comptime Ctx: type) type {
         /// Runs active on change initial commands using the host semantics and measurement boundaries defined by this module.
         pub fn runActiveOnChangeInitialCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
             const allocator = Ctx.allocator(ctx);
-            var pending_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            var pending_commands: shared_buffer.List(HostPendingOnChangeCommand) = .empty;
             defer {
                 for (pending_commands.items) |pending| pending.cmd.decref(roc_host);
                 pending_commands.deinit(allocator);
@@ -14465,7 +14466,7 @@ pub fn Engine(comptime Ctx: type) type {
             defer allocator.free(seen);
             @memset(seen, false);
 
-            var touched_parents: std.ArrayListUnmanaged(u64) = .empty;
+            var touched_parents: shared_buffer.List(u64) = .empty;
             defer touched_parents.deinit(allocator);
 
             var counts: render.Counts = .{};
@@ -14734,7 +14735,7 @@ pub fn Engine(comptime Ctx: type) type {
             @memset(removed_members, false);
             for (splice.removed_elem_ids) |elem_id| removed_members[@intCast(elem_id)] = true;
 
-            var touched_parents: std.ArrayListUnmanaged(u64) = .empty;
+            var touched_parents: shared_buffer.List(u64) = .empty;
             defer touched_parents.deinit(allocator);
             var touched_parent_set: std.AutoHashMapUnmanaged(u64, void) = .empty;
             defer touched_parent_set.deinit(allocator);
@@ -14783,7 +14784,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.applyActiveStreamFieldsForElemOptions(ctx, roc_host, elem_id, &counts, dirty_source_node_ids, dirty_generation, false);
             }
             self.applyActiveStreamCustomAttrsForElemSet(ctx, roc_host, seen, &counts, dirty_source_node_ids, dirty_generation);
-            var event_binding_elem_ids: std.ArrayListUnmanaged(u64) = .empty;
+            var event_binding_elem_ids: shared_buffer.List(u64) = .empty;
             defer event_binding_elem_ids.deinit(allocator);
             var event_binding_elem_set: std.AutoHashMapUnmanaged(u64, void) = .empty;
             defer event_binding_elem_set.deinit(allocator);
@@ -14837,7 +14838,7 @@ pub fn Engine(comptime Ctx: type) type {
             defer allocator.free(seen);
             @memset(seen, false);
 
-            var next_children = allocator.alloc(std.ArrayListUnmanaged(ids.ElemId), child_table_len) catch @panic("out of memory");
+            var next_children = allocator.alloc(shared_buffer.List(ids.ElemId), child_table_len) catch @panic("out of memory");
             defer {
                 for (next_children) |*children| {
                     children.deinit(allocator);
@@ -15058,9 +15059,9 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 std.mem.sort(usize, ordered[0..ordered_len], Order{ .engine = engine, .changes = changes }, Order.lessThan);
 
-                var selected = std.ArrayListUnmanaged(usize).empty;
+                var selected = shared_buffer.List(usize).empty;
                 errdefer selected.deinit(allocator);
-                var subsumed = std.ArrayListUnmanaged(usize).empty;
+                var subsumed = shared_buffer.List(usize).empty;
                 errdefer subsumed.deinit(allocator);
                 selected.ensureTotalCapacity(allocator, changes.len) catch return error.OutOfMemory;
                 subsumed.ensureTotalCapacity(allocator, changes.len) catch return error.OutOfMemory;
@@ -15260,7 +15261,7 @@ pub fn Engine(comptime Ctx: type) type {
             const stable_changed_record_ids = allocator.dupe(u64, changed_record_ids) catch @panic("out of memory");
             defer allocator.free(stable_changed_record_ids);
 
-            var pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            var pending_on_change_commands: shared_buffer.List(HostPendingOnChangeCommand) = .empty;
             defer {
                 for (pending_on_change_commands.items) |pending| {
                     pending.cmd.decref(roc_host);
@@ -15268,7 +15269,7 @@ pub fn Engine(comptime Ctx: type) type {
                 pending_on_change_commands.deinit(allocator);
             }
 
-            var deferred_storage_effects: std.ArrayListUnmanaged(HostDeferredStorageEffect) = .empty;
+            var deferred_storage_effects: shared_buffer.List(HostDeferredStorageEffect) = .empty;
             defer {
                 for (deferred_storage_effects.items) |effect| allocator.free(effect.key);
                 deferred_storage_effects.deinit(allocator);
@@ -15437,9 +15438,9 @@ pub fn Engine(comptime Ctx: type) type {
             };
             const PreparedStateWrites = struct {
                 allocator: std.mem.Allocator,
-                entries: std.ArrayListUnmanaged(PreparedStateUpdate) = .empty,
-                node_ids: std.ArrayListUnmanaged(u64) = .empty,
-                external: std.ArrayListUnmanaged(PreparedExternalState) = .empty,
+                entries: shared_buffer.List(PreparedStateUpdate) = .empty,
+                node_ids: shared_buffer.List(u64) = .empty,
+                external: shared_buffer.List(PreparedExternalState) = .empty,
                 by_state_id: std.AutoHashMapUnmanaged(u64, usize) = .empty,
 
                 fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, incoming: []const StateWrite) CollectionError!@This() {
@@ -15524,7 +15525,7 @@ pub fn Engine(comptime Ctx: type) type {
             each_layout: ?PreparedEachRowRenderLayout = null,
             sparse_each_parent_elem_id: ?ids.ElemId = null,
             sparse_each_render_roots_moved: usize = 0,
-            pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty,
+            pending_on_change_commands: shared_buffer.List(HostPendingOnChangeCommand) = .empty,
             fallback_batch: render.TransactionalBatch = .{},
             batch_target: *render.TransactionalBatch,
             publication_phase: PublicationPhase = .unprepared,
@@ -15601,9 +15602,9 @@ pub fn Engine(comptime Ctx: type) type {
             /// equality pruning, render routing, and on-change routing.
             fn appendChangedRowPropagation(self: *@This(), rows: *PreparedActiveEachRows) CollectionError![]HostDirtyStructuralSignal {
                 const allocator = Ctx.allocator(self.host_ctx);
-                var handles = std.ArrayListUnmanaged(row_handles.RowHandleId).empty;
+                var handles = shared_buffer.List(row_handles.RowHandleId).empty;
                 defer handles.deinit(allocator);
-                var slots = std.ArrayListUnmanaged(u64).empty;
+                var slots = shared_buffer.List(u64).empty;
                 defer slots.deinit(allocator);
                 if (rows.inputs.delta != null and !rows.inputs.snapshot.complete) {
                     const candidates = rows.candidateRows();
@@ -15632,7 +15633,7 @@ pub fn Engine(comptime Ctx: type) type {
 
                 var owned = try self.engine.prepareChangedRowSourceUpdates(self.host_ctx, self.roc_host, rows.inputs.generation, handles.items, slots.items);
                 defer owned.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
-                var root_ids = std.ArrayListUnmanaged(u64).empty;
+                var root_ids = shared_buffer.List(u64).empty;
                 defer root_ids.deinit(allocator);
                 try root_ids.ensureTotalCapacityPrecise(allocator, owned.entries.items.len);
                 for (owned.entries.items) |entry| root_ids.appendAssumeCapacity(self.engine.requireActiveSignalRecordId(entry.record));
@@ -15861,7 +15862,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var caches = signal_records.PreparedCacheUpdates.init(allocator, expected) catch return error.OutOfMemory;
                 var caches_owned = true;
                 errdefer if (caches_owned) caches.deinit(ctx, roc_host, &engine.pending_roc_metrics);
-                var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
+                var root_record_ids: shared_buffer.List(u64) = .empty;
                 defer root_record_ids.deinit(allocator);
                 try root_record_ids.ensureTotalCapacityPrecise(allocator, owned.entries.items.len);
                 for (owned.entries.items, 0..) |*entry, index| {
@@ -16224,7 +16225,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn runPostCommitCommands(self: *@This()) render.Counts {
                 const allocator = Ctx.allocator(self.host_ctx);
                 var deferred_location = false;
-                var deferred_storage: std.ArrayListUnmanaged(HostDeferredStorageEffect) = .empty;
+                var deferred_storage: shared_buffer.List(HostDeferredStorageEffect) = .empty;
                 defer {
                     for (deferred_storage.items) |effect| allocator.free(effect.key);
                     deferred_storage.deinit(allocator);
@@ -16607,7 +16608,7 @@ pub fn Engine(comptime Ctx: type) type {
             dirty_source_node_ids: []const u64,
             changed_record_ids: []const u64,
             dirty_generation: u64,
-            pending_on_change_commands: *std.ArrayListUnmanaged(HostPendingOnChangeCommand),
+            pending_on_change_commands: *shared_buffer.List(HostPendingOnChangeCommand),
         ) render.Counts {
             var counts: render.Counts = .{};
             const allocator = Ctx.allocator(ctx);
@@ -16684,7 +16685,7 @@ pub fn Engine(comptime Ctx: type) type {
             roc_host: *abi.RocHost,
             pending_on_change_commands: []const HostPendingOnChangeCommand,
             deferred_location_effect: *bool,
-            deferred_storage_effects: *std.ArrayListUnmanaged(HostDeferredStorageEffect),
+            deferred_storage_effects: *shared_buffer.List(HostDeferredStorageEffect),
         ) render.Counts {
             var counts: render.Counts = .{};
             const allocator = Ctx.allocator(ctx);
@@ -16740,14 +16741,14 @@ pub fn Engine(comptime Ctx: type) type {
         /// Applies dirty render sinks after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtyRenderSinks(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) render.Counts {
             const allocator = Ctx.allocator(ctx);
-            var pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            var pending_on_change_commands: shared_buffer.List(HostPendingOnChangeCommand) = .empty;
             defer {
                 for (pending_on_change_commands.items) |pending| {
                     pending.cmd.decref(roc_host);
                 }
                 pending_on_change_commands.deinit(allocator);
             }
-            var deferred_storage_effects: std.ArrayListUnmanaged(HostDeferredStorageEffect) = .empty;
+            var deferred_storage_effects: shared_buffer.List(HostDeferredStorageEffect) = .empty;
             defer {
                 for (deferred_storage_effects.items) |effect| allocator.free(effect.key);
                 deferred_storage_effects.deinit(allocator);
@@ -18896,7 +18897,7 @@ test "structural targets mark ten thousand flat row roots with exact linear subt
     var engine = Engine(VerifyCtx).init();
     defer engine.scopes.deinit(std.testing.allocator);
     const root = try engine.internRootScope(std.testing.allocator);
-    var roots: std.ArrayListUnmanaged(u64) = .empty;
+    var roots: shared_buffer.List(u64) = .empty;
     defer roots.deinit(std.testing.allocator);
     try roots.ensureTotalCapacity(std.testing.allocator, 10_000);
     for (0..10_000) |index| {

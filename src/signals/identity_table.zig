@@ -1,6 +1,7 @@
 //! Active identity tables for stable scope-local node and DOM element ids.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const ids = @import("ids.zig");
 
 pub const NodeId = ids.NodeId;
@@ -48,21 +49,21 @@ pub const DomIdentity = struct {
 };
 
 /// Appends fresh node using capacity that must already satisfy the caller's transaction contract.
-pub fn appendFreshNode(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanaged(NodeIdentity), scope_id: ScopeId, ordinal: SiteOrdinal) Error!NodeId {
+pub fn appendFreshNode(allocator: std.mem.Allocator, identities: *shared_buffer.List(NodeIdentity), scope_id: ScopeId, ordinal: SiteOrdinal) Error!NodeId {
     const node_id = NodeId.fromIndex(identities.items.len);
     identities.append(allocator, .{ .node_id = node_id, .scope_id = scope_id, .ordinal = ordinal }) catch return Error.OutOfMemory;
     return node_id;
 }
 
 /// Appends fresh dom using capacity that must already satisfy the caller's transaction contract.
-pub fn appendFreshDom(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanaged(DomIdentity), scope_id: ScopeId, ordinal: SiteOrdinal) Error!ElemId {
+pub fn appendFreshDom(allocator: std.mem.Allocator, identities: *shared_buffer.List(DomIdentity), scope_id: ScopeId, ordinal: SiteOrdinal) Error!ElemId {
     const elem_id = ElemId.fromIndex(identities.items.len + 1);
     identities.append(allocator, .{ .elem_id = elem_id, .scope_id = scope_id, .ordinal = ordinal }) catch return Error.OutOfMemory;
     return elem_id;
 }
 
 /// Assigns or reuses a dense node id for explicit construction-site identity.
-pub fn internNode(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanaged(NodeIdentity), scope_id: ScopeId, ordinal: SiteOrdinal, reuse_barrier: Generation) Error!NodeId {
+pub fn internNode(allocator: std.mem.Allocator, identities: *shared_buffer.List(NodeIdentity), scope_id: ScopeId, ordinal: SiteOrdinal, reuse_barrier: Generation) Error!NodeId {
     for (identities.items) |identity| {
         if (!identity.lifecycle.isActive()) continue;
         if (identity.scope_id == scope_id and identity.ordinal == ordinal) {
@@ -106,7 +107,7 @@ pub const NoActiveDomIds = struct {
 };
 
 /// Assigns or reuses a dense DOM id for an engine-selected render node.
-pub fn internDom(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanaged(DomIdentity), scope_id: ScopeId, ordinal: SiteOrdinal, reuse_barrier: Generation, active_dom_ids: anytype) Error!ElemId {
+pub fn internDom(allocator: std.mem.Allocator, identities: *shared_buffer.List(DomIdentity), scope_id: ScopeId, ordinal: SiteOrdinal, reuse_barrier: Generation, active_dom_ids: anytype) Error!ElemId {
     for (identities.items) |identity| {
         if (!identity.lifecycle.isActive()) continue;
         if (identity.scope_id == scope_id and identity.ordinal == ordinal) {
@@ -139,7 +140,7 @@ pub fn internDom(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanag
 }
 
 /// Retires nodes in scope so disposed scope identity cannot be routed again.
-pub fn deactivateNodesInScope(identities: *std.ArrayListUnmanaged(NodeIdentity), scope_id: ScopeId, generation: Generation, hooks: anytype) void {
+pub fn deactivateNodesInScope(identities: *shared_buffer.List(NodeIdentity), scope_id: ScopeId, generation: Generation, hooks: anytype) void {
     for (identities.items) |*identity| {
         if (identity.lifecycle.isActive() and identity.scope_id == scope_id) {
             hooks.deactivateNode(identity.node_id);
@@ -149,7 +150,7 @@ pub fn deactivateNodesInScope(identities: *std.ArrayListUnmanaged(NodeIdentity),
 }
 
 /// Retires doms in scope so disposed scope identity cannot be routed again.
-pub fn deactivateDomsInScope(identities: *std.ArrayListUnmanaged(DomIdentity), scope_id: ScopeId, generation: Generation) void {
+pub fn deactivateDomsInScope(identities: *shared_buffer.List(DomIdentity), scope_id: ScopeId, generation: Generation) void {
     for (identities.items) |*identity| {
         if (identity.lifecycle.isActive() and identity.scope_id == scope_id) {
             identity.lifecycle = .{ .retired = generation };
@@ -158,7 +159,7 @@ pub fn deactivateDomsInScope(identities: *std.ArrayListUnmanaged(DomIdentity), s
 }
 
 test "node identities reuse active scope ordinal pairs" {
-    var identities: std.ArrayListUnmanaged(NodeIdentity) = .empty;
+    var identities: shared_buffer.List(NodeIdentity) = .empty;
     defer identities.deinit(std.testing.allocator);
 
     const first = try internNode(std.testing.allocator, &identities, ScopeId.fromRaw(7), SiteOrdinal.fromRaw(0), ids.initial_generation);
@@ -175,7 +176,7 @@ test "node identities reuse active scope ordinal pairs" {
 }
 
 test "node ids retired in a dirty generation are not reused until the next one" {
-    var identities: std.ArrayListUnmanaged(NodeIdentity) = .empty;
+    var identities: shared_buffer.List(NodeIdentity) = .empty;
     defer identities.deinit(std.testing.allocator);
 
     const first = try internNode(std.testing.allocator, &identities, ScopeId.fromRaw(7), SiteOrdinal.fromRaw(0), ids.initial_generation);
@@ -192,7 +193,7 @@ test "node ids retired in a dirty generation are not reused until the next one" 
 }
 
 test "dom identities are one-based and reuse active and inactive slots" {
-    var identities: std.ArrayListUnmanaged(DomIdentity) = .empty;
+    var identities: shared_buffer.List(DomIdentity) = .empty;
     defer identities.deinit(std.testing.allocator);
 
     const first = try internDom(std.testing.allocator, &identities, ScopeId.fromRaw(2), SiteOrdinal.fromRaw(0), ids.initial_generation, NoActiveDomIds{});
@@ -209,7 +210,7 @@ test "dom identities are one-based and reuse active and inactive slots" {
 }
 
 test "dom ids retired in a dirty generation are not reused until the next one" {
-    var identities: std.ArrayListUnmanaged(DomIdentity) = .empty;
+    var identities: shared_buffer.List(DomIdentity) = .empty;
     defer identities.deinit(std.testing.allocator);
 
     const first = try internDom(std.testing.allocator, &identities, ScopeId.fromRaw(7), SiteOrdinal.fromRaw(0), ids.initial_generation, NoActiveDomIds{});
@@ -232,7 +233,7 @@ const TestActiveDomIds = struct {
 };
 
 test "dom ids still present in the active descriptor stream are not reused" {
-    var identities: std.ArrayListUnmanaged(DomIdentity) = .empty;
+    var identities: shared_buffer.List(DomIdentity) = .empty;
     defer identities.deinit(std.testing.allocator);
 
     const first = try internDom(std.testing.allocator, &identities, ScopeId.fromRaw(7), SiteOrdinal.fromRaw(0), ids.initial_generation, NoActiveDomIds{});
@@ -247,7 +248,7 @@ test "dom ids still present in the active descriptor stream are not reused" {
 }
 
 const TestDeactivateHook = struct {
-    deactivated_nodes: std.ArrayListUnmanaged(NodeId) = .empty,
+    deactivated_nodes: shared_buffer.List(NodeId) = .empty,
 
     fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.deactivated_nodes.deinit(allocator);
@@ -260,9 +261,9 @@ const TestDeactivateHook = struct {
 };
 
 test "identities deactivate active entries in a disposed scope" {
-    var node_identities: std.ArrayListUnmanaged(NodeIdentity) = .empty;
+    var node_identities: shared_buffer.List(NodeIdentity) = .empty;
     defer node_identities.deinit(std.testing.allocator);
-    var dom_identities: std.ArrayListUnmanaged(DomIdentity) = .empty;
+    var dom_identities: shared_buffer.List(DomIdentity) = .empty;
     defer dom_identities.deinit(std.testing.allocator);
 
     const node_scope_a = try internNode(std.testing.allocator, &node_identities, ScopeId.fromRaw(3), SiteOrdinal.fromRaw(0), ids.initial_generation);

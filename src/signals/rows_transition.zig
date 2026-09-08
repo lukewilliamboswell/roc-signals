@@ -7,6 +7,7 @@
 //! storage and leaves the committed site byte-for-byte unchanged.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const rows_ids = @import("rows_ids.zig");
 const rows_store = @import("rows_site_store.zig");
 
@@ -237,11 +238,11 @@ pub const PreparedTransition = struct {
     tail: ?NodeRef,
     len: usize,
     shadows: std.AutoHashMapUnmanaged(NodeRef, Shadow) = .empty,
-    touched: std.ArrayListUnmanaged(NodeRef) = .empty,
+    touched: shared_buffer.List(NodeRef) = .empty,
     key_states: std.StringHashMapUnmanaged(KeyState) = .empty,
     slot_states: std.AutoHashMapUnmanaged(u64, KeyState) = .empty,
-    fresh: std.ArrayListUnmanaged(Fresh) = .empty,
-    order_edits: std.ArrayListUnmanaged(OrderEdit) = .empty,
+    fresh: shared_buffer.List(Fresh) = .empty,
+    order_edits: shared_buffer.List(OrderEdit) = .empty,
     render_order: rows_store.RenderOrder.PreparedEdits,
     render_spans: std.AutoHashMapUnmanaged(u64, rows_store.RowRenderSpan) = .empty,
     order_link_touches: usize = 0,
