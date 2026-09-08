@@ -85,6 +85,12 @@ focused child. A listener whose element was disposed, disabled, or rebound does
 not dispatch or consume the keystroke. Removing a region releases its shortcuts
 through ordinary scope disposal and releases the corresponding retained view.
 
+Native editors accept at most one MiB of UTF-8 text, matching the ingress and
+Files read limits. An oversized user insertion, paste, or IME replacement is
+refused in full before changing text, selection, or composition; it emits no
+engine event. Deleting or replacing a selection can make room for a later edit.
+Oversized authoritative application values remain contract errors.
+
 Input labels are both visible captions and semantic metadata. Semantic roles,
 names, and test IDs support native specs and GPUI test selectors. They do not
 establish Linux screen-reader support: the pinned GPUI dependency does not expose

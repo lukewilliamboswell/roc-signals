@@ -42,6 +42,8 @@ actions!(
     ]
 );
 
+const MAX_TEXT_BYTES: usize = 1024 * 1024;
+
 pub struct TextInput {
     on_change: std::rc::Rc<dyn Fn(String, &mut App)>,
     pending_edit: std::rc::Rc<std::cell::Cell<bool>>,
@@ -70,7 +72,7 @@ impl TextInput {
         on_change: std::rc::Rc<dyn Fn(String, &mut App)>,
         cx: &mut Context<Self>,
     ) -> Self {
-        assert!(value.len() <= 1024 * 1024, "GUI text limit exceeded");
+        assert!(value.len() <= MAX_TEXT_BYTES, "GUI text limit exceeded");
         Self {
             on_change,
             pending_edit: Default::default(),
@@ -119,7 +121,7 @@ impl TextInput {
     /// echoes preserve selection and composition; a changed engine value
     /// replaces the draft and ends preedit.
     pub fn set_value(&mut self, value: &str, cx: &mut Context<Self>) {
-        assert!(value.len() <= 1024 * 1024, "GUI text limit exceeded");
+        assert!(value.len() <= MAX_TEXT_BYTES, "GUI text limit exceeded");
         if self.engine_value.as_ref() == value {
             return;
         }
@@ -560,10 +562,11 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
-        assert!(
-            self.content.len() - range.len() + new_text.len() <= 1024 * 1024,
-            "GPUI spike text limit exceeded"
-        );
+        // Refuse the whole user edit before changing text, selection, or IME
+        // state. Authoritative engine values remain a strict boundary contract.
+        if new_text.len() > MAX_TEXT_BYTES - (self.content.len() - range.len()) {
+            return;
+        }
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -593,10 +596,11 @@ impl EntityInputHandler for TextInput {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
-        assert!(
-            self.content.len() - range.len() + new_text.len() <= 1024 * 1024,
-            "GPUI spike text limit exceeded"
-        );
+        // Refuse the whole user edit before changing text, selection, or IME
+        // state. Authoritative engine values remain a strict boundary contract.
+        if new_text.len() > MAX_TEXT_BYTES - (self.content.len() - range.len()) {
+            return;
+        }
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -1050,6 +1054,70 @@ mod tests {
         assert_eq!(line_ranges("é\n\n🙂\n", true), vec![0..2, 3..3, 4..8, 9..9]);
         assert_eq!(line_ranges("", true), vec![0..0]);
         assert_eq!(line_ranges("é\n🙂", false), vec![0..7]);
+    }
+
+    #[gpui::test]
+    fn oversized_edits_paste_and_ime_preserve_state_and_allow_recovery(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let edits = Rc::new(RefCell::new(Vec::new()));
+        let captured = edits.clone();
+        // Exercise the actual handler and GPUI clipboard with an unrendered
+        // entity so this bound test does not shape a million-glyph line.
+        let (_, cx) = cx.add_window_view(|_, cx| TextInput::new("".into(), Rc::new(|_, _| {}), cx));
+        let input = cx.update(|_, cx| {
+            cx.new(|cx| {
+                TextInput::new_multiline(
+                    "a".repeat(MAX_TEXT_BYTES - 4) + "🙂",
+                    Rc::new(move |text, _| captured.borrow_mut().push(text)),
+                    cx,
+                )
+            })
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.selected_range = MAX_TEXT_BYTES..MAX_TEXT_BYTES;
+                input.replace_text_in_range(None, "é", window, cx);
+                cx.write_to_clipboard(ClipboardItem::new_string("paste".into()));
+                input.paste(&Paste, window, cx);
+                input.replace_and_mark_text_in_range(None, "é", None, window, cx);
+                assert_eq!(input.content.len(), MAX_TEXT_BYTES);
+                assert!(input.content.ends_with("🙂"));
+                assert_eq!(input.selected_range, MAX_TEXT_BYTES..MAX_TEXT_BYTES);
+                assert!(input.marked_range.is_none());
+                input.selected_range = MAX_TEXT_BYTES - 4..MAX_TEXT_BYTES;
+                input.selection_reversed = true;
+                input.replace_text_in_range(None, "12345", window, cx);
+                assert_eq!(input.selected_range, MAX_TEXT_BYTES - 4..MAX_TEXT_BYTES);
+                assert!(input.selection_reversed);
+                input.replace_and_mark_text_in_range(None, "é", Some(0..1), window, cx);
+                let selection = input.selected_range.clone();
+                let marked = input.marked_range.clone();
+                input.replace_and_mark_text_in_range(None, "12345", None, window, cx);
+                input.replace_text_in_range(None, "12345", window, cx);
+                assert_eq!(input.content.len(), MAX_TEXT_BYTES - 2);
+                assert!(input.content.ends_with('é'));
+                assert_eq!(input.selected_range, selection);
+                assert_eq!(input.marked_range, marked);
+            })
+        });
+        assert!(edits.borrow().is_empty());
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "é", window, cx);
+                assert!(input.marked_range.is_none());
+            })
+        });
+        assert_eq!(edits.borrow().len(), 1);
+        assert_eq!(edits.borrow()[0].len(), MAX_TEXT_BYTES - 2);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "ok", window, cx);
+            })
+        });
+        assert_eq!(edits.borrow().len(), 2);
+        assert_eq!(edits.borrow()[1].len(), MAX_TEXT_BYTES);
+        assert!(edits.borrow()[1].ends_with("éok"));
     }
 
     #[test]
