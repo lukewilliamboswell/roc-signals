@@ -1,287 +1,261 @@
 +++
 title = "Under the Hood"
-description = "What crosses the WebAssembly boundary, why type mismatches are structurally impossible, and the performance model that follows."
+description = "Follow an update through the shared engine and browser runtime, and understand where work and failures occur."
 weight = 10
 template = "page.html"
 +++
 
 # Under the Hood
 
-You do not need this page to build apps. You need it to reason about
-performance, to debug something strange, or to decide whether to trust the
-thing.
+A Signals app describes its dependencies and UI in Roc. A shared Zig engine
+holds the current values, runs affected computations, and decides which render
+commands to emit. This page explains that path so you can investigate unexpected
+updates, understand scope lifetimes, and measure application cost.
 
 ## Three layers
 
 ```text
-        App (Roc)                pure. returns one Elem descriptor tree.
-            │                    no mutation, no reads of live state.
-            ▼
-        Engine (Zig)             node table, topological scheduler, dirty set,
-            │                    is_eq cutoff, scope forest, keyed-row diff.
-            │                    all reactive and structural logic lives here.
-      ┌─────┴─────┐
-      ▼           ▼
- Native host   Wasm host         thin boundaries only.
- simulated     command buffer    no reactive logic in either.
- DOM, specs    + JS runtime
+Roc application and platform
+    descriptor tree, typed values, retained callbacks
+                  |
+             Zig engine
+    dependency graph, scheduling, scopes, rendering decisions
+             /       \
+    Native host          Wasm host
+    simulated DOM        command buffers
+    specs and metrics         |
+                         JavaScript runtime
+                         browser DOM and APIs
 ```
 
-The engine is **host-agnostic** and shared. The two hosts differ only in where
-output goes: the native host writes into a simulated DOM and runs your spec; the
-wasm host serializes a command buffer into linear memory for JavaScript to
-apply.
+Both hosts use the same engine. Native specs can therefore check propagation,
+row identity, command semantics, and cleanup without a browser. JavaScript
+executes the Wasm host's commands and forwards browser inputs; it does not
+recompute the dependency graph or diff application state.
 
-This is why a native spec is meaningful evidence about browser behaviour. It is
-not a reimplementation — it is the same engine with a different sink.
+The hosts still have different boundaries. Native tests cannot establish actual
+layout, input composition, focus, accessibility, or network behavior. Those need
+browser tests.
 
 ## Startup
 
-1. The host calls `roc_ui_init` **once**. Your `main()` runs and returns a boxed
-   `Elem` tree.
-2. That tree contains markup, signal expressions, retained Roc closures
-   (transforms, reducers, equality checks, row builders, cleanup thunks), and
-   effect descriptors.
-3. The host walks the tree, minting node ids and scope ids by construction-order
-   position. This is where identity comes from.
-4. Browser environment sources — location, visibility, online, declared storage
-   keys — are seeded **before** the first render, so deep links and restored
-   sessions render correctly on the first frame.
-5. The engine evaluates the graph and emits an initial command batch.
+1. The host calls `roc_ui_init`, which runs the application's `main` once and
+   returns its element description.
+2. The engine ingests element and signal descriptors, retaining the callbacks
+   it needs for reducers, transforms, structure, and effects.
+3. It assigns runtime identities, records scope ownership, and builds the
+   dependency graph. Cloned signal descriptors refer to the same signal;
+   distinct construction sites and scoped list keys establish structural identity.
+4. The browser supplies declared environment values, including location and
+   storage, before the first render.
+5. The engine evaluates the initial graph and publishes render commands.
 
-Your app code never runs again as a whole. Only the retained closures do.
+Later events do not call `main` again. The engine calls retained reducers and
+transforms. When a branch becomes active or a new row appears, it calls the
+corresponding structure builder to obtain that subtree.
 
 ## An event, step by step
 
-A click on a button bound with `count.on_unit(|n| n + 1)`:
+For a button bound to `count.on_unit(|n| n + 1)`:
 
-1. JavaScript's delegated listener encodes the event and calls into wasm.
-2. The host looks up the binding, reads the current state cell, and calls the
-   retained reducer closure. Roc returns a new value.
-3. If the new value differs by `is_eq`, the source node is marked dirty.
-4. The scheduler walks dependents in topological rank order, calling each
-   retained transform. Any node whose recomputed value is `is_eq` to its
-   previous value **stops propagating** — its dependents are never woken.
-5. Sinks whose inputs changed emit patches.
-6. Structural changes (`Ui.when` flips, `Ui.each` diffs) splice the active
-   stream locally, disposing and mounting scopes, rather than rebuilding the
-   tree.
-7. The command buffer is written and JavaScript applies it.
+1. The browser runtime forwards the bound event ID and declared payload to Wasm.
+2. The engine calls the reducer with the current count.
+3. It compares the proposed count with the cached value using `is_eq`. An equal
+   result needs no downstream value update.
+4. For an unequal result, it schedules dependents in dependency order. Each
+   transform reads settled inputs. If its result compares equal, propagation
+   stops on that edge.
+5. Affected text and attribute sinks prepare patches. Structural sinks may
+   select a branch or reconcile rows, creating and disposing the relevant scopes.
+6. After preparation succeeds, the host publishes the complete command batch
+   for JavaScript to apply.
 
-There is no full-tree walk anywhere in that list. Work is a function of the
-dirty set.
+Dependency order matters for a diamond: if two values depend on the count and a
+third depends on both, the third runs after both inputs settle. It does not
+observe one updated input alongside one old input.
+
+An equality cutoff applies to an edge. A downstream node can still run if
+another input changed. Likewise, a small dirty set does not make an expensive
+Roc transform cheap: scanning a large list inside one callback still scans that
+list.
 
 ## How keyed collection generations cross the boundary
 
-The engine never asks Roc to return temporary lists of keys, items, or equality
-results. A `Ui.each` site retains the immutable `Rows(item)` generation as one
-opaque capability-owned value. `Rows` has already projected, validated, and
-cached each exact UTF-8 key. App-compiled adapter closures report its length,
-push cached keys and pair-comparison booleans into preallocated host sinks, and
-clone an item only when a new or changed row source needs one.
+`Ui.each` retains an immutable `Rows(item)` generation. Roc owns its typed items,
+key function, cached exact keys, and edit history from its immediate parent.
+The host accesses it through app-compiled operations and bounded output buffers;
+it does not inspect the Roc collection's memory layout.
 
-The current adapter presents each candidate as a complete keyed snapshot to the
-existing reconciliation engine. `Rows` already records stable slots, immediate
-generation lineage, and normalized snapshot-or-delta transitions; the target
-sparse adapter will consume those transitions directly so a small edit does not
-copy or rescan the unchanged collection. Until that engine path lands, the
-public ownership and identity semantics are in place but snapshot preparation
-still costs work proportional to the collection size.
+There are two reconciliation paths:
 
-The old and candidate generations coexist only during reconciliation. All key
-bytes, matches, item clones, row handles, structural changes, and commands live
-in a candidate overlay until validation and host allocation succeed; commit is
-allocation-free and publishes them atomically. A failed host allocation discards
-the candidate and leaves the prior DOM generation intact. Allocation failure
-inside a Roc callback is different: the erased callback ABI cannot return OOM
-or unwind owned values, so the instance is diagnosed, poisoned, and trapped.
+- If the candidate describes an edit from the site's current generation, the
+  engine consumes that delta and addresses affected rows through stable slots.
+- At initial mount, for an explicit snapshot, or when the candidate's parent
+  differs from the current generation, it consumes a full keyed snapshot.
 
-Rows are materialized lazily. A surviving key keeps its row scope and stable,
-generation-checked row source; the row builder runs only for a newly live key.
-`Ui.Row.map` is ordinary graph `Signal.map`, with the same dependency ordering
-and equality pruning as any other derived signal.
+The snapshot path examines the collection. Rebuilding `Rows` from a list on
+every update therefore has a different cost from applying a small edit to the
+current `Rows` value. Exact keys preserve surviving row scopes in either path;
+key equality and generation lineage serve different purposes.
+
+A same-key item update uses the row's ordinary graph source. `row.signal()` and
+`row.map(...)` observe that source, with the same dependency ordering and equality
+pruning as other signals. A surviving row does not need its builder called
+again. Removing a row disposes its scope; reinserting its key later starts a
+new lifetime.
+
+Preparation keeps candidate values, keys, item clones, structural changes, and
+commands provisional until validation and fallible host allocation succeed.
+Commit publishes the generation without allocating. Failure inside a Roc
+callback has a different containment boundary, described below.
 
 ## The wire protocol
 
-The only thing crossing the boundary is a versioned command buffer. It is
-small and boring, which is the point:
+The browser boundary carries command records, text and payload bytes, and
+integer IDs. Commands include element creation, text and attribute changes, row
+moves, removal, event bindings, and effect requests. JavaScript never decodes
+Roc records, lists, or tag unions to recover application meaning.
 
-```json
-{"name":"reading-list","commandBatches":2,"commands":61,
- "fixedRecordBytes":1464,"fixedStringBytes":120,"dynamicBytes":764,
- "opCounts":{"reset_dom":1,"create_element":10,"append_child":13,
-             "create_text":3,"set_text":5,"set_attr_text":19,
-             "set_value":1,"set_checked":3,"bind_event":1,
-             "bind_input":1,"bind_click":1,"bind_check":3}}
-```
+The runtime checks the protocol version and required features before mounting.
+Deploy the application Wasm and browser runtime from the same compatible
+platform release. See the [contributing guide](@/docs/contributing.md#bundles)
+for artifact validation and the release notes for version-specific migrations.
 
-That is the [tutorial](@/docs/tutorial.md) app's entire startup: 61 commands and
-about 2.3 KB. You can print this for any app:
+Wasm allocation may grow linear memory and invalidate JavaScript views. The
+runtime refreshes those views before reading host output. Commands become
+available as a complete published batch; reentrant browser inputs are deferred
+while the batch is being applied.
 
-```sh
-node scripts/browser/mount_wasm_example.mjs app.wasm my-app --telemetry-summary
-```
+Removing a subtree releases browser node registrations and listeners as well
+as detaching its root. A compact removal command does not mean disposal takes
+constant time: every resource owned by the retired subtree still needs cleanup.
 
-Commands cover creating, moving, and removing nodes; setting text, value, class,
-and attributes; setting `checked` and `disabled`; binding and clearing events;
-starting and cancelling tasks and intervals; and applying dynamic attributes.
-Removal is per subtree: the engine publishes one `remove_node` for the root of
-each retired subtree, and the runtime releases every node id, listener,
-controlled input, and behaviour under that root with it, so retiring a branch
-or a row costs one command rather than one per descendant.
+<span id="why-type-mismatches-are-impossible"></span>
 
-**JavaScript never reconstructs meaning.** It does not diff, does not hold
-reactive state, and does not decide what to patch. It executes an already-decided
-list. That constraint is what keeps the two hosts from diverging.
+## Typed values in a shared host
 
-## Why type mismatches are impossible
+An application can use `Signal(Article)` and `Signal(Str)` in the same tree.
+The host needs to retain both values without knowing either layout. Each
+retained value is paired with its owning *capability*: app-compiled operations
+for cloning, comparing, and dropping that exact type. Readers and reducers carry
+the capability that authorizes their typed access.
 
-The host stores Roc values but must not know their layouts. The usual solution
-is to erase to a tagged union and decode on read, which means a decode can
-disagree with the write and crash.
+This removes independent host-written decoders that could disagree with a
+writer. It does not remove the need to validate routing: the host checks that a
+value reaches its owning capability and that its handle is still live before
+calling typed code. These checks remain enabled in production.
 
-Roc Signals uses **capabilities** instead. Every edge carries a bundle of
-operations — clone, equality, drop, and typed read — generated at that edge's
-monomorphized type. The host holds an opaque cell and a capability; the only
-code that can read the cell is the code generated for the exact type that wrote
-it.
-
-So there is no host-authored read site that could disagree with a writer, and no
-runtime type tag to get wrong. A `Signal(Article)` cannot be read as a
-`Signal(Str)`, because no operation exists that could do it.
+A read produces an independently owned value while leaving an independently
+owned value in the source cell. Dropping either must not invalidate the other.
+Nested strings, lists, and closures are released through typed operations;
+the host does not copy their bytes or adjust their internal reference counts.
 
 ## Mount lifecycle
 
 One mount owns one WebAssembly instance. `mountSignalsApp` creates a fresh
-instance each time; the wasm host keeps engine state module-global inside it.
-For several independent roots on a page, instantiate once per root — do not
-share an instance.
+instance for its root. For several independent roots on one page, call it once
+per root; do not share an instance between active mounts.
 
-`runtime.unmount()` disposes every scope, cancels tasks and intervals, removes
-event listeners and behaviours, and releases DOM ids.
-
-At mount the runtime checks a **wire protocol version and feature set** against
-the wasm module. A mismatch fails immediately with
-`Signals wire protocol version mismatch` rather than misbehaving subtly. Ship
-`signals.mjs` and your `.wasm` from the same platform build.
-
-Protocol 14 adds explicit HTML/SVG namespace selection to element creation.
-`create_element.d` is `0` for HTML or `1` for SVG; other values are rejected.
-Text nodes still use `create_text`. Rebuild applications and deploy the matching
-runtime together when upgrading from protocol 13. Direct `Elem.Element`
-descriptors also now require a `namespace: Html` or `namespace: Svg` field;
-the `Html` and `Svg` helpers supply it.
+`runtime.unmount()` disposes scopes and releases their state, retained callbacks,
+tasks, intervals, event listeners, behaviors, and DOM registrations. Removing a
+branch or row performs the corresponding cleanup for that scope. State owned by
+an ancestor survives; passing its signal into a child does not transfer ownership.
 
 ## Payload sizes
 
-Measured with `--opt=size`. Every app also ships `signals.mjs`, the JavaScript
-runtime — 105 KB raw, **20 KB gzipped**, unminified — so the delivered total is
-the wasm plus that:
+Measure the artifacts you intend to deploy. The download includes application
+Wasm and the JavaScript runtime, and its size depends on the compiler, platform
+version, optimization mode, and application code. A source line count is not a
+reliable estimate of any of those costs.
 
-| App | Lines of Roc | wasm | gzipped | + runtime = delivered (gz) |
-| --- | --- | --- | --- | --- |
-| Hello world (counter) | 24 | 283 KB | 100 KB | ~120 KB |
-| Reading list (tutorial) | 125 | 317 KB | 110 KB | ~130 KB |
-| Conduit (full RealWorld) | 3,864 | 1.73 MB | 485 KB | ~505 KB |
-
-The floor is a few hundred KB — that is the Roc runtime and the host, paid once.
-Growth after that is roughly proportional to your code: a 160× increase in
-source produced a 4.8× increase in gzipped payload.
-
-This is a real trade-off and worth stating plainly. Roc Signals is not the right
-choice for a tiny widget on a marketing page where 120 KB of baseline matters.
-For a whole application it is more defensible — but we have not benchmarked
-Conduit against other RealWorld implementations, so treat any comparison to
-mainstream frameworks as unmeasured.
-
-`--opt=dev` roughly halves build time (Conduit: ~16 s versus ~32 s) at a large
-cost in size — Conduit's dev wasm is **10.3 MB**, 3.5 MB gzipped. Use it while
-iterating locally; never ship it.
+Use the production build described in
+[contributing](@/docs/contributing.md#static-site). Measure raw and compressed
+sizes together, and record the toolchain and build flags with the result. Avoid
+using development artifacts to estimate production cost.
 
 ## The performance model
 
-**What scales with change, not size:** derived recomputation, DOM patches, event
-dispatch, keyed-row updates. This is the guarantee the architecture exists to
-provide, and native specs let you assert it —
-[work budgets](@/docs/testing.md#work-budgets).
+Declared dependencies determine which computations may run. Equality determines
+where propagation can stop. Scope changes determine which structure must be
+created, moved, or released.
 
-**What does not:** the initial mount walks your whole tree once, and payload
-size scales with code size.
+This leads to a few practical checks:
 
-**The eager-edge caveat.** Declared edges are always live. A derived node with
-three inputs wakes when any of them changes, even if the transform ignores the
-one that changed. `is_eq` then suppresses the *output*, so no DOM work happens —
-but the transform ran.
+- Keep independently changing inputs separate until a consumer needs both.
+- Make `is_eq` account for every field downstream code can observe. Ignoring an
+  observed field can suppress a required update.
+- Use `Signal.select` for keyed selection so changing the selected key need not
+  recompute every member.
+- Use incremental `Rows` edits for local collection changes. Account for full
+  snapshot work when rebuilding or replacing a collection.
+- Measure transforms and equality functions as well as engine bookkeeping.
+  Filtering, sorting, and whole-collection aggregates have their own costs.
 
-The practical guidance that follows:
+Initial mount processes the initial graph and tree. Creating or removing a large
+subtree also costs work proportional to that subtree. Updates can be local
+without startup, bulk replacement, or disposal being cheap.
 
-- Keep transforms cheap. They can be woken by inputs they ignore.
-- Give custom types a meaningful `is_eq`. That is the brake.
-- Derive fine-grained signals rather than one giant view-model, so unrelated
-  panels stay quiet.
-- When dependency *structure* genuinely varies, use a scope (`Ui.when`,
-  `Ui.each`) rather than a wide always-live edge.
+Native [work budgets](@/docs/testing.md#work-budgets) let you pin row creation,
+removal, graph work, and derived callback counts. Browser measurements add
+command decoding, DOM work, layout, and painting. Use both when investigating a
+slow interaction.
 
-## Debugging, honestly
+<span id="debugging-honestly"></span>
 
-This is the weakest part of the platform today, and you should know its shape
-before you rely on it.
+## Debugging failures
 
-**Roc-level diagnostics do not reach the browser.** In the wasm host,
-`roc_dbg` and `roc_expect_failed` are empty functions, and `roc_crashed`
-discards its message. A `crash "cart total went negative"` in your Roc code
-surfaces as a generic host-failure string, not your message. `dbg` prints
-nothing.
+For a state or ordering bug, first reproduce the interaction in a native spec.
+The native executable supports ordinary debuggers and allocation diagnostics,
+and the spec gives you a repeatable event sequence. Browser-only failures need
+a browser reproduction as well.
 
-**Wasm builds carry no symbols.** There is no name section and no DWARF, so a
-trap gives you `wasm-function[8412]` and an offset.
+The Wasm host records `crash` messages as host diagnostics. The runtime reads
+those diagnostics after a host failure and a supplied `onError` callback can
+report fatal errors, including failures entered through events. `dbg` and
+`expect` reporting remain empty hooks in the Wasm host, so they are not a
+browser logging facility.
 
-**`onError` is narrow.** It fires for async task-resolution failures. The DOM
-event path does not route through it, and there is no error boundary or
-recovery — an app that traps mid-batch can leave the DOM partly patched.
+After a fatal host failure, the runtime marks the instance unusable, stops its
+listeners and asynchronous work, and rejects later calls. Staged host commands
+are not applied. Recovery requires a fresh mount; do not try to resume the
+failed instance.
 
-What actually works today:
-
-- **The native host is the debugger.** It is a real native binary, so `lldb`,
-  allocation tracing, and ordinary tooling work on it, and `crash` messages and
-  `dbg` behave normally. Reproduce the bug in a spec and debug it there. This is
-  genuinely good, and it is the intended workflow.
-- **Telemetry** (below) shows the command stream, task lifecycle, and work
-  counters in the browser.
-- **Work-budget assertions** catch performance regressions before they ship.
-
-If you need production error reporting from the browser today, you will have to
-add it. Weigh that before committing.
+Atomic command publication is not rollback of browser APIs. If an executor or
+integration fails after some DOM operations or external effects have run, those
+operations may already be visible. Error reporting should not assume the page
+can retry that batch or restore a previous browser state.
 
 ## Telemetry
 
-Pass `telemetry` to `mountSignalsApp` to observe the runtime live. It reports
-command batches with byte counts, decode counts, task lifecycle events
-(`start_task`, `task_resolution`, `cancel_task`,
-`ignored_task_resolution`, `unknown_task_resolution`), and interval activity.
+Pass a callback as the `telemetry` option to `mountSignalsApp` to inspect command
+batches, byte and decode counts, task events, and interval activity. For example:
 
-`ignored_task_resolution` is the useful one when debugging async: it means a
-result arrived for a request that had already been superseded, and the runtime
-correctly discarded it.
+```js
+const runtime = await mountSignalsApp({
+  wasmUrl: "./app.wasm",
+  root: document.getElementById("app"),
+  telemetry: (event) => console.log(event),
+  onError: (error) => console.error(error),
+});
+```
+
+Task telemetry distinguishes starting, resolving, cancelling, and ignoring a
+stale resolution. An `ignored_task_resolution` event can explain why a late
+response did not update the UI. `behavior_missing` identifies an element whose
+named JavaScript behavior was not registered with an `attach` function.
+
+For aggregate command traffic from a built app, use the mount helper in
+[contributing](@/docs/contributing.md#bundles). Keep measurements tied to a
+particular artifact and interaction sequence.
 
 ## Design constraints
 
-The rules the implementation holds itself to, which explain most of its shape:
-
-1. **No compiler changes.** Everything is ordinary Roc plus a Zig host.
-2. **No guessing.** The host never scans to rediscover identity, never infers
-   what changed, never reconstructs missing information. It consumes explicit
-   data.
-3. **Work scales with the changed set** — including the data structures.
-   Identity resolution and dependency maintenance are O(1) or O(changed), never
-   O(total).
-4. **Mutation lives only in the host.** Roc stays pure.
-5. **Type-mismatch crashes are structurally impossible.**
-6. **One engine, two thin hosts.** Reactive logic in a host file is a defect.
-
-Full detail is in
+The authoritative architecture is
 [`design.md`](https://github.com/lukewilliamboswell/roc-signals/blob/main/design.md).
+It describes both the invariants and the intended direction of the platform;
+its target API appendix is not a list of available functions. Use the
+[reference](@/docs/reference.md) and platform modules for the implemented API.
 
 ## Next
 
-[Reference](@/docs/reference.md) — the complete API surface.
+[Reference](@/docs/reference.md) lists the application-facing modules and helpers.
