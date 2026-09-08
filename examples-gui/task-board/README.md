@@ -73,5 +73,8 @@ saving intentionally visit the complete document. Returning via Undo to the
 exact saved generation clears the dirty indicator; manually typing equivalent
 content still represents a different edited generation.
 
-Window-close protection is integrated through the shared native close capability
-when available; document replacement confirmation is already part of this app.
+Closing the native window prompts for unsaved work. Keep editing cancels the
+close; Close without saving is explicit; Save and close waits for a successful
+write. Failed or canceled saves leave the window and board open for correction
+or retry. The decision belongs to the ordinary scoped GUI close registration;
+repeated native close requests do not bypass the pending decision.

@@ -33,6 +33,10 @@ Phase := [Idle, ConfirmOpen, ChoosingOpen, Reading(Str), ChoosingSave(Save), Wri
 	is_eq : _
 }
 
+Close := [KeepEditing, Confirm, Saving, Closing].{
+	is_eq : _
+}
+
 DocumentState : { path : [None, Some(Str)], baseline : [None, Some(BoardSnapshot)], phase : Phase, problem : Str }
 
 Tasks : { open : Signal.Task(Files.Choice, Files.Error), save : Signal.Task(Files.Choice, Files.Error), read : Signal.Task(Files.TextFile, Files.Error), write : Signal.Task(Files.Written, Files.Error) }
@@ -55,6 +59,7 @@ Handles : {
 	bytes : Ui.State(U64),
 	document : Ui.State(DocumentState),
 	tasks : Tasks,
+	close : Ui.State(Close),
 }
 
 initial_rows : Board.Column -> Rows.Rows(Board.Task)
@@ -379,25 +384,49 @@ board_view = |handles| {
 			""
 		},
 	)
-	Gui.column(
-		[Gui.style({ ..Gui.style_default, padding: 20, gap: 20, width: Fill })],
-		[
-			Gui.heading("Launch Board"),
-			document_toolbar(handles),
-			Gui.text("A small team's workspace for the next release."),
-			Gui.text("Drag onto a card to place a task before it, or into a column to move it to the end."),
-			Gui.row([], [history_button(handles, False), history_button(handles, True)]),
-			Gui.text("Undo keeps up to 50 changes within 4 MiB; older changes are retired."),
-			new_task_form(handles),
-			Gui.text_input({ label: "Filter tasks", value: handles.filter.signal() }, [], handles.filter.on_str(|_, text| text)),
-			Gui.row(
-				[Gui.style({ ..Gui.style_default, gap: 20, width: Fill })],
-				[
-					Gui.row([Gui.style({ ..Gui.style_default, gap: 16, grow: True, width: Fill })], Board.columns.map(|column| column_view(handles, column, selected))),
-					detail_view(handles),
-				],
+	Gui.window_lifecycle(
+		{
+			on_close_requested: Ui.action(
+				handles.context,
+				|context| handles.close.set_cmd(
+					if dirty(context) or context.document.phase != Phase.Idle {
+						Close.Confirm
+					} else {
+						Close.Closing
+					},
+				),
 			),
-		].concat(document_bindings(handles)),
+			decision: handles.close.signal().map(
+				|intent| match intent {
+					Close.KeepEditing => KeepOpen
+					Close.Confirm | Close.Saving => AwaitDecision
+					Close.Closing => Close
+				},
+			),
+		},
+		[
+			Gui.column(
+				[Gui.style({ ..Gui.style_default, padding: 20, gap: 20, width: Fill })],
+				[
+					Gui.heading("Launch Board"),
+					document_toolbar(handles),
+					close_dialog(handles),
+					Gui.text("A small team's workspace for the next release."),
+					Gui.text("Drag onto a card to place a task before it, or into a column to move it to the end."),
+					Gui.row([], [history_button(handles, False), history_button(handles, True)]),
+					Gui.text("Undo keeps up to 50 changes within 4 MiB; older changes are retired."),
+					new_task_form(handles),
+					Gui.text_input({ label: "Filter tasks", value: handles.filter.signal() }, [], handles.filter.on_str(|_, text| text)),
+					Gui.row(
+						[Gui.style({ ..Gui.style_default, gap: 20, width: Fill })],
+						[
+							Gui.row([Gui.style({ ..Gui.style_default, gap: 16, grow: True, width: Fill })], Board.columns.map(|column| column_view(handles, column, selected))),
+							detail_view(handles),
+						],
+					),
+				].concat(document_bindings(handles)),
+			),
+		],
 	)
 }
 
@@ -440,7 +469,7 @@ main = || Ui.state(
 																						|document| {
 																							context = { board: movement, history: history.signal(), document: document.signal() }.Signal
 																							tasks = { open: Files.choose_file_task("board-open"), save: Files.choose_save_path_task("board-save-path"), read: Files.read_text_task("board-read"), write: Files.write_text_task("board-write") }
-																							board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete, movement, context, history, bytes, document, tasks })
+																							Ui.state(Close.KeepEditing, |close| board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete, movement, context, history, bytes, document, tasks, close }))
 																						},
 																					)
 																				},
@@ -568,28 +597,7 @@ document_toolbar : Handles -> Elem
 document_toolbar = |handles| {
 	ready = handles.document.signal().map(|doc| doc.phase == Phase.Idle)
 	save_reads = { context: handles.context, next: handles.next_id.signal() }.Signal
-	save_message = |save_as| Ui.action(
-		save_reads,
-		|{ context, next }| {
-			if context.document.phase != Phase.Idle {
-				return Signal.noop
-			}
-			text = Codec.encode({ next, planned: Rows.to_list(context.board.planned), progress: Rows.to_list(context.board.progress), complete: Rows.to_list(context.board.complete) })
-			if text.to_utf8().len() > 1048576 {
-				return handles.document.set_cmd({ ..context.document, problem: "The encoded board exceeds one MiB. Shorten task notes before saving." })
-			}
-			match Codec.decode(text) {
-				Err(Codec.Error.Invalid(problem)) => return handles.document.set_cmd({ ..context.document, problem: "Cannot save: ${problem}. Your draft is retained." })
-				Ok(_) => {}
-			}
-			save = { text, snapshot: context.board }
-			phase = match context.document.path {
-				Some(path) if !save_as => Phase.Writing({ path, save })
-				_ => Phase.ChoosingSave(save)
-			}
-			handles.document.set_cmd({ ..context.document, phase, problem: "" })
-		},
-	)
+	save_message = |save_as| Ui.action(save_reads, |{ context, next }| save_document(handles, context, next, { save_as, close_after: False }))
 	open = Ui.action(
 		handles.context,
 		|context| if context.document.phase != Phase.Idle {
@@ -833,4 +841,85 @@ expect {
 	item : BoardSnapshot
 	item = { planned: initial_rows(Planned), progress: initial_rows(InProgress), complete: initial_rows(Complete), editor: { column: Planned, task: Board.new_task(1, "Example") }, editing: True, bytes: 1 }
 	{ small: trim_history(List.repeat(item, 70)).len(), oversized: trim_history([{ ..item, bytes: 4194305 }]).len() } == { small: 50, oversized: 0 }
+}
+
+## Save and Save-and-close share exact immutable snapshot ownership.
+save_document : Handles, Context, U64, { save_as : Bool, close_after : Bool } -> Gui.Cmd
+save_document = |handles, context, next, options| {
+	if context.document.phase != Phase.Idle {
+		return Signal.noop
+	}
+	text = Codec.encode({ next, planned: Rows.to_list(context.board.planned), progress: Rows.to_list(context.board.progress), complete: Rows.to_list(context.board.complete) })
+	if text.to_utf8().len() > 1048576 {
+		return handles.document.set_cmd({ ..context.document, problem: "The encoded board exceeds one MiB. Shorten task notes before saving." })
+	}
+	match Codec.decode(text) {
+		Err(Codec.Error.Invalid(problem)) => return handles.document.set_cmd({ ..context.document, problem: "Cannot save: ${problem}. Your draft is retained." })
+		Ok(_) => {}
+	}
+	save = { text, snapshot: context.board }
+	phase = match context.document.path {
+		Some(path) if !options.save_as => Phase.Writing({ path, save })
+		_ => Phase.ChoosingSave(save)
+	}
+	writes = [handles.document.write({ ..context.document, phase, problem: "" })]
+	Ui.update_states(
+		if options.close_after {
+			writes.append(handles.close.write(Close.Saving))
+		} else {
+			writes
+		},
+	)
+}
+
+close_dialog : Handles -> Elem
+close_dialog = |handles| {
+	keep = handles.close.on_unit(|_| Close.KeepEditing)
+	Ui.when(
+		handles.close.signal().map(|intent| intent == Close.Confirm),
+		|| Gui.dialog(
+			{ label: "Close this board?", on_dismiss: keep },
+			[Gui.test_id("board-close")],
+			[
+				Gui.heading("Save your board before closing?"),
+				Gui.text("Keep editing to return to your project, or save a board document before closing."),
+				Gui.text_s(handles.document.signal().map(|doc| doc.problem)),
+				Gui.row(
+					[],
+					[
+						Gui.button("Keep editing", keep),
+						Gui.button("Close without saving", handles.close.on_unit(|_| Close.Closing)),
+						Gui.action_button({ label: Signal.const("Save and close"), enabled: handles.document.signal().map(|doc| doc.phase == Phase.Idle) }, [], Ui.action({ context: handles.context, next: handles.next_id.signal() }.Signal, |{ context, next }| save_document(handles, context, next, { save_as: False, close_after: True }))),
+					],
+				),
+			],
+		),
+		|| Ui.when(
+			handles.close.signal().map(|intent| intent == Close.Saving),
+			|| Gui.dialog(
+				{ label: "Saving before closing", on_dismiss: keep },
+				[Gui.test_id("board-close-saving")],
+				[
+					Gui.heading("Saving your board…"),
+					Gui.text("The window stays open until the submitted board is saved."),
+					Gui.button("Keep window open", keep),
+					Ui.on_change(
+						handles.context,
+						|context| if context.document.phase == Phase.Idle {
+							handles.close.set_cmd(
+								if dirty(context) {
+									Close.Confirm
+								} else {
+									Close.Closing
+								},
+							)
+						} else {
+							Signal.noop
+						},
+					),
+				],
+			),
+			|| Gui.text(""),
+		),
+	)
 }
