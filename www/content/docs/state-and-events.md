@@ -1,11 +1,15 @@
 +++
 title = "State, Events, and Forms"
-description = "Local state, reducers, every input control, attributes, event policies, and the validation pattern."
+description = "Choosing state, handling events, binding form controls, and showing validation errors."
 weight = 5
 template = "page.html"
 +++
 
 # State, Events, and Forms
+
+Use state for values the user can change, derive the values you can calculate,
+and attach reducers or actions to events. The snippets below are fragments;
+[Getting Started](@/docs/getting-started.md) covers the application imports.
 
 ## Local state
 
@@ -39,88 +43,46 @@ a `Ui.component` for reusable widget state. See
 
 ### Type your state
 
-Annotate the state type and give it a named `initial`. This avoids numeric
-literals defaulting to `Dec` and makes error messages far more readable:
+Give related fields a record type and a named initial value:
 
 ```roc
-Model : { name : Str, seats : U64, accepted : Bool }
+Model : { name : Str, seats_draft : Str, seats : U64, accepted : Bool }
 
 initial : Model
-initial = { name: "", seats: 1, accepted: False }
+initial = { name: "", seats_draft: "1", seats: 1, accepted: False }
 ```
 
-A bare `0` with nothing to constrain it becomes a `Dec`, so `n.to_str()` renders
-`"0.0"` instead of `"0"`. The compiler *sometimes* warns (`LITERAL DEFAULTED`),
-but often does not — in the counter above it compiles clean and you only find
-out by looking at the rendered UI. Annotate the state type and this stops being
-possible.
+The numeric annotation makes the intended representation explicit. For a single
+counter, `Ui.state(0.I64, ...)` is another way to choose an integer type.
+
+Keep independent concerns in separate states when they should update
+independently. A projection from a record is recalculated whenever that record
+changes, even if the projected field is unchanged.
 
 ### Annotate the signal you map from
 
-This one is worth its own section, because the error message does not point at
-the fix.
-
-Calling `.map` twice on the same binding with **different result types** fails:
-
-```roc
-# Does NOT compile.
-state = model.signal()
-
-name = state.map(|value| value.name)     # wants Signal(Str)
-count = state.map(|value| value.count)   # wants Signal(U64)
-```
-
-```text
-TYPE MISMATCH ─ The `map` method on `Signal` has an incompatible type.
-```
-
-The fix is to annotate the binding you are mapping *from*:
+When receiver-style `.map` calls on one binding produce different result types,
+annotate that binding:
 
 ```roc
 state : Signal.Signal(Model)
 state = model.signal()
 
-name = state.map(|value| value.name)     # fine
-count = state.map(|value| value.count)   # fine
+name = state.map(|value| value.name)
+seats = state.map(|value| value.seats)
 ```
 
-Annotating the receiver generalizes it, so each `.map` call can be instantiated
-at its own result type. Derived bindings then infer fine on their own.
-
-Two related habits that prevent the same class of error:
-
-- **Function parameters are already concrete**, so a signal passed into a
-  function never needs this. That is why Conduit's page modules take
-  `Signal.Signal(Api.Remote(...))` parameters and map freely.
-- **Chained method calls need a concrete type somewhere in the chain.** Once
-  the receiver above is annotated, an inline chain like
-  `items.keep_if(...).len()` compiles fine. But if the type is still
-  unresolved at that point — typically because you skipped the receiver
-  annotation — you get a confusing secondary error:
-
-  ```text
-  MISSING METHOD ─ This is trying to dispatch a method named `to_str` on
-  an unresolved type variable, but unresolved type variables have no methods.
-  ```
-
-  Pulling the chain into an annotated helper sidesteps the problem entirely and
-  reads better:
-
-  ```roc
-  unread_count : List(Book) -> U64
-  unread_count = |books| books.keep_if(|book| !book.read).len()
-
-  summary = books.map(|items| "${unread_count(items).to_str()} left")
-  ```
-
-  The helper is also directly unit-testable, which the inline version is not.
+This avoids a compiler inference limitation that can otherwise report an
+incompatible `map` method. Explicit `Signal.map(state, ...)` calls are another
+option. For a complicated calculation, an annotated pure helper can make both
+the types and the application logic easier to follow.
 
 ## Reducers
 
 A reducer is a pure function from current state (plus an event payload) to next
 state. The handle method determines the payload:
 
-| Method | Signature | Fires on |
+| Method | Reducer signature | Payload |
 | --- | --- | --- |
 | `on_unit` | `a -> a` | clicks, submits, blur — payload ignored |
 | `on_str` | `a, Str -> a` | `input` / `change`, receives the field value |
@@ -128,9 +90,11 @@ state. The handle method determines the payload:
 | `on_key` | `a, KeyPayload -> a` | `keydown`, receives `{ key, shift_key }` |
 | `on_detail` | `a, Str -> a` | custom events, receives `event.detail` as text |
 
-Write reducers as annotated top-level functions whenever they are more than a
-line. They are ordinary pure functions, so they are easy to read and easy to
-test directly:
+The event attribute chooses when the reducer runs; the state method chooses
+which payload it receives. For example, `Html.on_blur(model.on_unit(...))`
+ignores the blur payload and updates `model`.
+
+An annotated helper is useful for a reducer with parsing or validation:
 
 ```roc
 commit_seats : Model -> Model
@@ -223,13 +187,10 @@ total_text : Signal.Signal(Str)
 total_text = totals.map(|v| "Total: ${(v.price * v.qty).to_str()}")
 ```
 
-Use this instead of looking for `map3` or `map4` — there deliberately isn't one.
-Named fields stay readable as the number of inputs grows, and the edges are
-declared just as explicitly.
+Named fields identify the inputs when the calculation needs several values.
 
-`Signal.map2` exists for two inputs, and `Signal.combine : List(Signal(a)) ->
-Signal(List(a))` for a homogeneous list. In practice the record builder covers
-nearly everything.
+`Signal.map2` combines two inputs. `Signal.combine` accepts a list of signals
+with the same value type and produces a signal of the corresponding list.
 
 When homogeneous inputs naturally produce a different collection or aggregate,
 `Signal.combine_map(signals, project)` applies `project` in that same combine
@@ -247,12 +208,13 @@ only the members for the old and new keys, independent of the list size. The
 selector itself runs no Roc transform; any `map` you place downstream still
 counts as ordinary derived work for the members that changed.
 
-Inside `Ui.each`, prefer the fused form when the row needs one of two stable
-values:
+When each row needs one of two stable values, construct the keyed selector once
+outside the row builder, then select from it inside each row:
 
 ```roc
 selection_class = selected_key.keyed("selected", "")
-row_class = row.select(selection_class)
+Ui.each(rows, |row|
+    Html.div([Html.class_attr_s(row.select(selection_class))], [Html.text(row.key())]))
 ```
 
 The fused form preserves the same exact-key index and O(old-plus-new-key)
@@ -260,8 +222,8 @@ dirtiness while sharing its typed capability and initializers across rows.
 
 ## Form controls
 
-Every control is **controlled**: its displayed value comes from a signal, and
-its events dispatch reducers. There is no uncontrolled mode.
+The form helpers bind a signal to the control's value or checked state. Their
+events send the edited value to a reducer or action.
 
 ### Text and textarea
 
@@ -272,8 +234,11 @@ Html.textarea("Bio", bio, model.on_str(|v, text| { ..v, bio: text }))
 
 Variants: `_c` adds a class string, `_attrs` adds a list of attributes.
 
-The runtime will not fight the user: it does not overwrite the value of a
-focused input mid-composition, so IME input and mid-word edits behave correctly.
+For text-like controls, an equal value write is a no-op. A differing write is
+deferred while the control is focused or composing and applied after blur unless
+a later input echo already matched it. Account for this when normalizing input: a
+state change may not immediately replace text being edited. Test selection and
+IME behavior in a browser for your particular interaction.
 
 ### Number input
 
@@ -290,8 +255,10 @@ Html.number_input_attrs(
 )
 ```
 
-Keeping `seats_draft : Str` and `seats : U64` as separate fields means a user
-typing `1` on the way to `12` never has their input rejected.
+Keeping `seats_draft : Str` and `seats : U64` separate lets editing proceed
+without committing every intermediate string. The `commit_seats` reducer above
+accepts a valid integer and restores the previous number for an invalid draft.
+A browser number input may itself restrict or normalize the text it exposes.
 
 ### Select
 
@@ -334,8 +301,7 @@ Html.button_s(label_signal, model.on_unit(save))                  # signal label
 Html.action_button(label_signal, disabled_signal, model.on_unit(save))
 ```
 
-`action_button` is the common case for async work: signal-backed label *and*
-signal-backed `disabled`.
+`action_button` binds both the label and `disabled` to signals.
 
 Inside a `<form>`, a button with no `type` acts as a submit button. Give
 independent buttons `Html.attr("type", "button")` so they do not also submit.
@@ -350,11 +316,14 @@ independent buttons `Html.attr("type", "button")` so they do not also submit.
 | Signal attribute | `Html.attr_s("data-state", signal)` |
 | Optional signal attribute | `Html.attr_maybe_s(name, signal_of_none_or_some)` |
 | Static boolean | `Html.bool_attr("hidden")`, `Html.required`, `Html.readonly` |
-| Conditional boolean | `Html.bool_attr_if("hidden", condition)` |
+| Conditional boolean attribute list | `Html.bool_attr_if("hidden", condition)` |
 | Signal boolean | `Html.bool_attr_s("hidden", signal)` |
 | Test hook | `Html.test_id("chart")` |
 
-`attr_maybe_s` is for attributes that must be genuinely **absent**, not empty.
+`bool_attr_if` returns a list containing zero or one attribute; concatenate it
+with the other attributes rather than placing it inside an attribute list.
+
+`attr_maybe_s` supports removing an attribute as well as setting its text.
 `None` removes the attribute; `Some(value)` sets it:
 
 ```roc
@@ -364,8 +333,8 @@ menu_target = state.map(|v| if v.picked.is_empty() { None } else { Some(v.picked
 Html.aria_activedescendant_s(menu_target)
 ```
 
-Prefer signal-backed classes over conditional structure. Changing a class is one
-patch; swapping a `Ui.when` branch tears down and rebuilds a subtree.
+Use a signal-backed class when the same elements should remain mounted.
+Changing a `Ui.when` branch gives its contents a new lifetime.
 
 ## Events
 
@@ -400,8 +369,8 @@ Html.div(
 
 ### Event policies
 
-`preventDefault`, `stopPropagation`, capture, and friends are **static data**
-attached to the binding, not something you call at runtime:
+Event policies describe browser behavior such as preventing the default action
+or stopping propagation. Attach a policy to the binding:
 
 ```roc
 Html.on_event("pointerdown", Html.event_policy_stop_propagation, model.on_unit(open_menu))
@@ -419,39 +388,40 @@ Html.on_event("click", self_capture, model.on_unit(select_self_only))
 The typical use is a nested control inside a draggable or clickable parent that
 must not trigger the parent's handler.
 
-Links that navigate within the app use the same mechanism — Conduit's `Nav.link`
-attaches `event_policy_prevent_default` to a real `<a href>`, so middle-click and
-"open in new tab" still work while normal clicks route in-app.
+A link can keep a real `href` and handle navigation with an event policy. Check
+modified clicks and keyboard activation in the browser: unconditional
+`prevent_default` is not a policy that distinguishes ordinary clicks from
+Ctrl-click or Command-click.
 
 ## Validation
 
-Validation is derived state. There is no validation API and no integration with
-browser constraint validation — you already have everything you need.
-
-Keep three things separate: **whether a submit has been attempted**, **whether
-the data is valid**, and **whether a request is in flight**.
+Keep validation rules in pure functions and derive error messages from state.
+For example, an invitation form can track whether a submission has been
+attempted separately from whether the values are valid:
 
 ```roc
-can_submit : Model -> Bool
-can_submit = |model| (!model.email.is_empty()) and model.accepted
+Invite : { email : Str, accepted : Bool, attempted : Bool }
 
-email_invalid : Signal.Signal(Bool)
-email_invalid = state.map(|v| v.attempted and v.email.is_empty())
+can_submit : Invite -> Bool
+can_submit = |value| (!value.email.is_empty()) and value.accepted
+```
 
-email_message : Signal.Signal(Str)
+This is only a presence check; use your application's actual email rules where
+appropriate. With `model : Ui.State(Invite)` in scope:
+
+```roc
+state : Signal.Signal(Invite)
+state = model.signal()
+
+email = state.map(|value| value.email)
+email_invalid = state.map(|value| value.attempted and value.email.is_empty())
 email_message = state.map(
-    |v|
-        if v.attempted and v.email.is_empty() {
-            "Enter an email address."
-        } else {
-            ""
-        },
+    |value| if value.attempted and value.email.is_empty() { "Enter an email address." } else { "" },
 )
 ```
 
-Wire the invalid flag to `aria-invalid`, point `aria-describedby` at a real
-element holding the message, and disable the submit button from a derived
-signal:
+Connect the message to the input using `aria-describedby` and give the message
+a stable test id:
 
 ```roc
 Html.text_input_attrs(
@@ -461,75 +431,81 @@ Html.text_input_attrs(
         Html.aria_describedby("invite-email-message"),
         Html.aria_invalid_s(email_invalid),
     ],
-    model.on_str(|v, text| { ..v, email: text }),
-),
-Html.div([Html.attr("id", "invite-email-message")], [Html.text_s(email_message)]),
-Html.action_button(Signal.const("Send invite"), submit_disabled, model.on_unit(submit_if_valid)),
+    model.on_str(|value, text| { ..value, email: text }),
+)
+
+Html.div(
+    [Html.attr("id", "invite-email-message"), Html.test_id("email-error")],
+    [Html.text_s(email_message)],
+)
 ```
 
-The submit reducer marks the attempt and, when valid, changes a *request* signal
-that a `Ui.on_change` turns into an actual request — see
-[Effects, HTTP, and the Browser](@/docs/effects-and-browser.md).
+Use an action to submit. In this fragment, `task` is a declared task accepting a
+string request, as described in [Effects, HTTP, and the Browser](@/docs/effects-and-browser.md):
 
 ```roc
-submit_if_valid : Model -> Model
-submit_if_valid = |model|
-    if can_submit(model) {
-        next = model.submit_count + 1
-        { ..model, attempted: True, submit_count: next, submit_request: "${model.email}#${next.to_str()}" }
-    } else {
-        { ..model, attempted: True }
-    }
+submit = Ui.action(
+    state,
+    |value|
+        if can_submit(value) {
+            Signal.start_str(task, value.email)
+        } else {
+            model.set_cmd({ ..value, attempted: True })
+        },
+)
 ```
 
-Including the counter in the request string matters: it makes two identical
-submissions produce two *different* values, so the change actually propagates.
-Without it, `is_eq` would correctly suppress the second one.
+A valid submission starts the request. An invalid one updates the state so the
+messages appear. Repeating a valid submission with the same email still runs
+the action; it needs no counter or suffix in the request value.
 
-**Attach the reducer to the form, not only the button.** A disabled button
-cannot be clicked, so if the submit button is disabled while the form is
-invalid, clicking it can never set `attempted` and the user never sees why. The
-form's `on_submit_prevent_default` handler is what reveals the errors:
+Bind this handler to the form with `Html.on_submit_prevent_default(submit)` so
+keyboard submission follows the same validation path. If a separate button also
+binds `submit`, give it `Html.attr("type", "button")` to avoid handling the click
+and the form's default submit as two requests. Alternatively, use a submit
+button and let the form own submission.
+
+Let users attempt an invalid form if that is how your UI reveals errors.
+Disabling its only submission control while invalid can prevent them from
+learning what needs attention. If requests must not overlap, derive a busy flag
+from task and application state, disable submission while busy, and check the
+same condition in the handler. A disabled button alone does not guard other
+submission paths.
+
+A native spec can assert that invalid input reveals the message and starts no
+work. Assuming the form is named `"Invite form"` and the task `"form-submit"`:
 
 ```lisp
-(expect-disabled (role button :name "Send invite") true)
 (submit (role form :name "Invite form"))
-(expect-text (text "Enter an email address.") "Enter an email address.")
+(expect-text (test-id "email-error") "Enter an email address.")
 (expect-attr (label "Invite email") aria-invalid "true")
 (expect-pending-task "form-submit" 0)
-
-(fill (label "Invite email") "ops@example.com")
-(check (label "Accept terms"))
-(expect-disabled (role button :name "Send invite") false)
-(click (role button :name "Send invite"))
-(expect-pending-task "form-submit" 1)
 ```
 
-Note `(expect-pending-task "form-submit" 0)` — the invalid submit marked the
-fields and started no request. That assertion is the whole point of the pattern.
+Also test the real browser path. Native specs do not implement the browser's
+full constraint-validation behavior for attributes such as `required` and
+`type="email"`.
 
-This is locked by the `form-validation-pattern` fixture and used by every form
-in Conduit.
+## Accessible controls
 
-## Naming is load-bearing
+Give controls names that explain their purpose. The helpers provide role and
+label metadata that native specs can locate, while `aria-describedby` connects
+extra instructions or error messages to controls. For repeated controls, make
+the context understandable and use stable test ids where a locator would
+otherwise be ambiguous.
 
-Roles and accessible names are not decoration. `Html.section`,
-`Html.form_label`, `Html.link`, `Html.heading`, and every input take a label,
-and the native test runner locates elements by exactly those roles and names.
-An unnamed control is an untestable one, which is useful pressure.
+Names and passing native specs do not establish keyboard or screen-reader
+usability. Test tab order, activation, error announcements, and focus after
+structural changes in a browser. The current public command API has no general
+focus command; account for that limitation when designing dialogs or workflows
+that require moving focus.
 
-Be clear about what that does *not* buy you, though: naming is one part of
-accessibility and the platform helps with almost none of the rest. There is no
-programmatic focus, so no focus trap, no focus restoration after a dialog, and
-no focus-on-first-error. There are no live-region helpers, no dialog semantics,
-and no roving-tabindex support. A perfectly named, completely
-keyboard-inaccessible app will pass every spec you write.
-
-Custom `role` attributes are also invisible to native specs — `Html.attr("role",
-"dialog")` sets a real attribute in the browser, but `role:` locators only
-resolve roles set by the built-in helpers. Use `test_id:` for anything else.
+Arbitrary attributes let you express additional semantics, but the native
+locator model is narrower than the browser accessibility tree. A custom
+`Html.attr("role", "dialog")` is a browser attribute rather than the built-in
+role metadata used by native role locators; use a test id for that native target.
 
 ## Next
 
-[Lists, Conditionals, and Components](@/docs/dynamic-structure.md) — dynamic
-structure and where identity comes from.
+[Lists, Conditionals, and Components](@/docs/dynamic-structure.md) covers dynamic
+structure and the lifetime of its state.

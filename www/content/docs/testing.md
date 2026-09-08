@@ -1,23 +1,26 @@
 +++
 title = "Testing"
-description = "Browser-style tests without a browser — semantic locators, deterministic async, history and storage control, and work budgets."
+description = "Test app behaviour, control tasks and timers, and check update work with native specs."
 weight = 9
 template = "page.html"
 +++
 
 # Testing
 
-Your app compiles to a **native binary** that runs behaviour specs against a
-simulated DOM. No browser, no WebDriver, no waiting. A 363-line suite covering a
-full RealWorld app runs in milliseconds and cannot flake, because there is no
-real clock, no real network, and no real event loop to race.
+Native specs run your app against a simulated DOM using the same reactive engine
+as the browser build. They let you check rendered values, state lifetime,
+requests, and update work. You control task results and timer ticks explicitly,
+so a test does not need a network connection or a delay to exercise those paths.
+
+For a checkout-based app, build for your machine and run its specs:
 
 ```sh
 roc build --target=arm64mac --output=/tmp/app examples/my-app/main.roc
 python3 scripts/spec_driver.py /tmp/app examples/my-app/specs
 ```
 
-Exit code `0` and no output means everything passed. Failures name the line:
+The driver prints a result for each case and a summary. Exit code `0` means
+every selected case passed. Failures include the assertion line:
 
 ```text
 TEST FAILED at line 4: locator did not resolve to one element
@@ -41,8 +44,9 @@ fail-fast scheduling.
 
 ## Locators are semantic
 
-Elements are found the way a user or screen reader finds them — never by CSS
-selector or DOM position:
+Locators identify elements by role, name, label, text, or an explicit test id.
+The native host models a subset of browser naming and roles; a matching locator
+is not an accessibility audit.
 
 | Locator | Example |
 | --- | --- |
@@ -52,12 +56,12 @@ selector or DOM position:
 | Test id | `(test-id "traffic-chart")` |
 
 A locator must resolve to exactly one element. Matching several is an error
-(*locator matched 2 elements*), which catches ambiguous labels early — a real
-accessibility problem, not just a test problem.
+(*locator matched 2 elements*). Repeated controls may legitimately share a name;
+use a unique test id when the role and name cannot distinguish the target.
 
-This is why `Html.section`, `Html.form_label`, `Html.link`, and every input take
-an accessible name. Naming things properly is not extra work for tests; it is
-the same work that makes the app usable.
+`Html.section`, `Html.form_label`, `Html.link`, and input helpers provide name
+metadata for these locators. Give controls useful names and check their browser
+accessibility separately.
 
 For repeated rows, derive a unique test id from the row key:
 
@@ -106,7 +110,7 @@ a checkbox with no click binding fails with *target has no click binding*.
 ```lisp
 (expect-visible (role heading :name "Team Checkout"))
 (expect-absent (role region :name "Queue Widget"))
-(expect-text (text "Submit status: sending") "Submit status: sending")
+(expect-text (test-id "submit-status") "Submit status: sending")
 (expect-value (label "Invite email") "ops@example.com")
 (expect-attr (label "Invite email") aria-invalid "true")
 (expect-no-attr (label "Invite email") aria-invalid)
@@ -119,7 +123,19 @@ a checkbox with no click binding fails with *target has no click binding*.
 across its text, value, checked, and disabled sinks — a direct way to prove that
 an unrelated change did *not* touch something.
 
-## Async, deterministically
+Give text that changes a stable locator so failures can show the actual value:
+
+```roc
+Html.paragraph_s_attrs(status, [Html.test_id("submit-status")])
+```
+
+`(expect-text (text "Done") "Done")` only proves that text exists. Use
+`expect-visible` for that intent, or `expect-text` with a stable test id to
+compare a changing value. For a container without its own text, `expect-text`
+compares concatenated descendant text. `expect-visible` checks presence in the
+native model; it does not evaluate CSS visibility.
+
+## Tasks and timers
 
 Tasks and timers are driven by the spec, not by a clock. There is no sleeping
 and no polling.
@@ -138,25 +154,32 @@ and no polling.
 (expect-cleanup "live search panel cleanup" 1)
 ```
 
-`resolve-stale-task` is the interesting one: it delivers a result for a request
-that has already been superseded. Pair it with an assertion that the UI did
-**not** change, and you have locked out an entire class of race condition:
+`resolve-stale-task` delivers a result for a canceled request. It requires a
+previous cancellation; without one the spec fails. For a search that starts a
+request on each changed input, check that the older result leaves the loading
+state intact:
 
 ```lisp
 (fill (label "Search") "ro")
 (fill (label "Search") "roc")
 (resolve-stale-task "lookup" "results for ro")
-(expect-text (text "Search status: loading") "Search status: loading")
+(expect-text (test-id "search-status") "Search status: loading")
 (resolve-task "lookup" "results for roc")
-(expect-text (text "Results: results for roc") "Results: results for roc")
+(expect-text (test-id "search-results") "Results: results for roc")
 ```
+
+`expect-pending-task` checks an absolute count, not a delta. To prove a second
+interaction did not start or replace a request, check both the pending count and
+`expect-canceled-task`.
 
 Task names come from `Signal.fake_task(name, ...)` or, for HTTP, from
 `Http.request_task(purpose)` — which registers as `http:send:<purpose>`.
 
 ## Browser environment
 
-Location, history, visibility, online status, and storage are all controllable:
+Use setup values to test startup with a saved draft, a deep link, or an offline
+environment. For example, an app that leaves the initial URL and storage intact
+can assert:
 
 ```lisp
 (test "restored navigation"
@@ -167,34 +190,27 @@ Location, history, visibility, online status, and storage are all controllable:
     (local-storage "conduit.jwt" "test-token")
     (session-storage "draft" "hello"))
   (steps
-    (navigate "/profile/alice")
-    (history-back)
-    (history-forward)
-    (set-visibility visible)
-    (set-online online)
-    (expect-current-location "/about")
-    (expect-document-title "About")
+    (expect-current-location "/article/keyed-lists")
     (expect-local-storage "conduit.jwt" "test-token")
-    (expect-no-local-storage "conduit.jwt")
-    (expect-session-storage "draft" "hello")
-    (expect-no-session-storage "draft")))
+    (expect-session-storage "draft" "hello")))
 ```
 
-The forms in `(setup ...)` run **before** the first render, which
-is how you test deep links and restored sessions — exactly the paths that are
-awkward to test in a real browser.
+The forms in `(setup ...)` run before the first render. Within `(steps ...)`,
+use `navigate`, `history-back`, `history-forward`, `set-visibility`, and
+`set-online` to change the environment. Storage assertions can check values or
+absence with `expect-no-local-storage` and `expect-no-session-storage`.
 
 A full navigation test:
 
 ```lisp
 (expect-document-title "Home")
-(expect-text (text "You are home") "You are home")
+(expect-visible (text "You are home"))
 (click (role link :name "Go to About"))
 (expect-current-location "/about")
 (expect-document-title "About")
 (history-back)
 (expect-current-location "/")
-(expect-text (text "You are home") "You are home")
+(expect-visible (text "You are home"))
 (history-forward)
 (expect-current-location "/about")
 (navigate "/nowhere")
@@ -203,8 +219,8 @@ A full navigation test:
 
 ## Work budgets
 
-This is the capability with no real equivalent elsewhere: **asserting how much
-work an interaction did.**
+Work metrics help catch regressions that leave the visible result unchanged,
+such as rebuilding rows during a reorder.
 
 Call `mark-metrics`, perform an action, then assert exact or maximum deltas:
 
@@ -214,13 +230,12 @@ Call `mark-metrics`, perform an action, then assert exact or maximum deltas:
 (expect-metric-delta rows_reused 4)
 (expect-metric-delta rows_created 0)
 (expect-metric-delta rows_removed 0)
-(expect-metric-delta-at-most stream_nodes_scanned 4096)
 (expect-metric-delta signal_record_table_rebuilt 0)
 ```
 
-That turns "reordering reuses rows instead of rebuilding them" from a claim into
-a regression test. If a refactor breaks the keyed-row path, the suite fails —
-rather than the app just quietly getting slower.
+This example assumes four live rows. It checks that reversing them preserves
+their scopes and does not rebuild the signal record table. Use the row count
+and work bounds appropriate to your fixture.
 
 Commonly useful metrics:
 
@@ -238,14 +253,21 @@ Commonly useful metrics:
 
 The authoritative list is in `src/spec/spec_runner.zig`.
 
-**A practical way to use these:** write the assertion loosely first, run it, read
-the actual number from the failure, then pin it. Ratchet it down when you
-improve something. `expect-metric-delta-at-most` is the right form for anything
-that legitimately varies.
+Assert structural outcomes exactly: rows created, removed, and reused, and
+scopes created or disposed. Bound incidental engine work with
+`expect-metric-delta-at-most`. Choose a bound from the work the interaction
+should require, then compare small and large fixtures when testing scaling.
+Copying an observed number into a test without that reasoning can preserve an
+existing regression.
 
-`propagation_prunes` is worth watching specifically — it counts how often
-`is_eq` stopped work. A zero where you expected pruning usually means a missing
-or wrong equality definition.
+`derived_calls_into_roc` counts derived evaluations, while `dirty_source_roots`
+counts changed sources. One source can wake many transforms. `propagation_prunes`
+records equality cutoffs; interpret it alongside the graph and visible result,
+since a low count alone does not establish an equality bug.
+
+Do not pin `patches_emitted` in semantic specs: it combines unrelated command
+kinds. Use row and scope counters for structural behaviour and benchmark
+telemetry to track overall command traffic.
 
 For a retained-allocation delta that should not be there, rerun the built native
 app with `--trace-allocations`:
@@ -276,28 +298,35 @@ equal the ledger's `roc_live` block count at every checkpoint; a mismatch means
 the instrumentation itself is observing an ownership boundary at the wrong
 time.
 
-In the browser, enabling the runtime's existing `telemetry` option also emits an
-`allocation_checkpoint` after each applied command batch. It includes total live
-Roc blocks and bytes plus phase-and-size cohorts, so a long-running browser repro
-can be captured without a native reproduction or a custom wasm build.
+In the browser, the runtime's `telemetry` option emits an
+`allocation_checkpoint` after each applied command batch when the allocation
+exports are available. Meaningful Roc allocation counts and phase-and-size
+cohorts require a host built with the allocation ledger enabled, such as Debug,
+ReleaseSafe, or the instrumented benchmark host. Ordinary ReleaseSmall and
+ReleaseFast hosts omit that ledger; zero debug counts from those builds are not
+evidence that no Roc allocations remain. See
+[Contributing](@/docs/contributing.md) for host builds and the instrumented
+benchmark workflow.
 
 Teardown is also a leak gate. Native specs fail if either the Roc ledger or the
-host debug allocator is non-empty after the runtime is dismantled. The wasm
-mount harness checks that both exported live-allocation gauges and the HostValue
-registry are zero after `unmount`.
+host debug allocator is non-empty after the runtime is dismantled. The Wasm
+mount harness checks that the HostValue registry is empty after `unmount` and
+also checks the exported Roc allocation count and byte total. Those latter
+checks establish ledger balance only when the host has the ledger enabled.
 
 ## What belongs where
 
 Native specs are the right home for **app semantics**: what the user sees, what
 the app requests, what state survives. They are not a browser.
 
-Keep in browser tests instead: exact IME event ordering, CSS layout, real
-network behaviour, and anything about actual rendering. This repository has
-JavaScript contract tests (`zig build run-test-browser`) and a Node mount
-harness for those.
+The JavaScript contract tests (`zig build run-test-browser`) and Node mount
+harness check the JS/Wasm protocol and runtime behaviour with a DOM double.
+They do not render a page in a real browser.
 
-The split is deliberate. Semantics get a fast deterministic suite; genuinely
-browser-shaped concerns get a slower one that runs less often.
+Use real-browser tests for CSS layout, focus and selection, IME interaction,
+keyboard navigation, network integration, and accessible names and relationships.
+Include manual accessibility checks where automation cannot establish usability.
+A native pass establishes behaviour within the native model only.
 
 ## Running suites
 

@@ -7,17 +7,18 @@ template = "page.html"
 
 # Lists, Conditionals, and Components
 
-Signals handle values that change. This page is about **structure** that
-changes — regions appearing and disappearing, lists growing and reordering,
-reusable pieces keeping their own state.
+Use dynamic structure when elements need to appear, disappear, or move. This
+page covers conditional regions, keyed lists, and reusable components with local
+state. The snippets assume the usual `Ui`, `Html`, `Signal`, and `Elem` imports;
+list examples also use `import pf.Rows`.
 
-All three mechanisms here create **scopes**. A scope owns the nodes, retained
-closures, DOM, timers, and in-flight requests created inside it. When a scope is
-disposed, all of that goes with it. That is the whole cleanup story.
+Each mechanism establishes a scope that owns its mounted state, signals, DOM,
+and active effects. Removing the scope releases those resources and cancels its
+active work. State owned by an ancestor can outlive the removed region.
 
 ## Conditionals
 
-`Ui.when` takes a `Signal(Bool)` and two zero-argument thunks:
+`Ui.when` takes a `Signal(Bool)` and two functions that take no arguments:
 
 ```roc
 Ui.when(
@@ -28,27 +29,23 @@ Ui.when(
 ```
 
 Each arm is its own scope. When the condition flips, the losing arm is disposed
-and the winning arm mounted. Only that subtree is patched — nothing above or
-beside it is touched.
+and the winning arm mounted. The structural replacement is limited to that
+branch; other bindings can still update if they also depend on the changed state.
 
 ### Prefer signal-backed attributes over structure
 
-Reach for `Ui.when` only when the *existence* of something changes. If only a
-value changes, use a signal-backed sink instead:
+If the same elements should remain mounted, bind their changing values directly:
 
 ```roc
-# Wasteful — rebuilds a subtree to change a word and a colour.
-Ui.when(
-    is_error,
-    || Html.paragraph_c("Failed", "text-red-700"),
-    || Html.paragraph_c("Ready", "text-zinc-600"),
-)
-
-# Better — one text patch and one class patch.
-Html.paragraph_s_c(message, "text-sm")
+message = is_error.map(|failed| if failed { "Failed" } else { "Ready" })
+classes = is_error.map(|failed| if failed { "text-red-700" } else { "text-zinc-600" })
+Html.div([Html.class_attr_s(classes)], [Html.text_s(message)])
 ```
 
-Wrap the smallest region whose existence genuinely changes.
+This changes the text and class without replacing the element. Use `Ui.when`
+when the contents need a different lifetime, such as a form that should reset
+when closed. Hiding an element with a class or `hidden` attribute keeps its
+state and effects active.
 
 ### Multi-way branching
 
@@ -68,17 +65,19 @@ Ui.switch(
 Only the live case's builder runs. An unequal case disposes the previous branch
 and mounts a new one. Select a page kind when changing route parameters should
 preserve the page's local state, and pass the parameters as signals to that page.
-Selecting the entire route instead intentionally resets the branch whenever any
-route field changes. Conduit's existing nested `Ui.when` chain remains an example
-of the boolean form, rather than a requirement for routing.
+Selecting the entire route instead resets the branch whenever any route field
+changes according to its equality comparison.
 
 ## Keyed lists
 
 `Ui.each` renders a keyed `Rows` collection:
 
 ```roc
-books = Rows.from_list(book_list, |book| book.id)?
-Ui.each(Signal.const(books), book_row)
+book_list_view : List(Book) -> Try(Elem, Rows.Error)
+book_list_view = |book_list| {
+    books = Rows.from_list(book_list, |book| book.id)?
+    Ok(Ui.each(Signal.const(books), book_row))
+}
 ```
 
 `Ui.each` has two arguments:
@@ -90,15 +89,18 @@ The `Rows` value owns the `item -> Str` key projection supplied to
 `Rows.from_list` or `Rows.empty`. It evaluates and validates that projection
 when a generation is constructed, so rendering does not recompute keys.
 
-The row renderer receives an opaque row. `row.key()` returns its stable key,
-`row.signal()` exposes the live item signal, and `row.map(...)` derives directly
-from that source. Rows are live: when one item changes, only that row's signals
-recompute.
+Handle the `Try` where the collection enters your UI. The example above assumes
+a `Book` record with `id : Str` and `title : Str`. A changing list uses a
+`Signal.Signal(Rows.Rows(Book))` in place of `Signal.const(books)`.
+
+The row renderer receives a live row rather than an item snapshot. When an
+item changes without changing its key, its row signal updates and the existing
+row scope remains mounted.
 
 ```roc
 book_row : Ui.Row(Book) -> Elem
 book_row = |row| {
-	title = row.map(|value| value.title)
+    title = row.map(|value| value.title)
     Html.div_c("flex gap-3", [Html.text_s(title)])
 }
 ```
@@ -108,13 +110,13 @@ book_row = |row| {
 The key is the row's identity. Get it from the data — a database id, slug, or
 client-generated id.
 
-**Never key by position.** With index keys, moving an item makes every row after
-it appear to have changed, so the host rebuilds them and any row-local state
-lands on the wrong row.
+Choose keys that stay with the item when its position changes. If you derive
+keys from list positions, state stays attached to those positions and can appear
+on a different item after insertion or sorting.
 
-Keys must also be unique within one list. Duplicates are a hard error at mount
-(`Rows.Error.DuplicateKey("...")`) when constructing or editing `Rows`, rather
-than a subtle rendering bug.
+Keys must be unique within one collection. Constructing or editing `Rows` with
+duplicate keys returns `Rows.Error.DuplicateKey(key)`. Handle that error where
+you build the collection; rendering does not merge the duplicate rows.
 
 ### Rows expose identity and a live source
 
@@ -124,29 +126,28 @@ the exact stable UTF-8 identity, `row.signal()` is the live item source, and
 row source is generation-checked and remains stable while its keyed scope is
 live, including across reorder and replacement collection generations.
 
-Two consequences worth knowing before you hit them:
-
-**Accessible names repeat.** Every row's checkbox labelled `"Read"` means
-`label:"Read"` matches many elements and tests fail with *locator matched 2
-elements*. Derive a unique test id from the key:
+Repeated controls also need a way to be distinguished. If every row has a
+checkbox named `"Read"`, a label locator matches several controls. Give the
+control a meaningful accessible name and use a stable key for a test id:
 
 ```roc
-Html.checkbox_attrs("Read", read, [Html.test_id("book-${id}")], msg)
+Html.checkbox_attrs("Read", read, [Html.test_id("book-${row.key()}")], msg)
 ```
 
-**Do not encode presentation data into identity.** Derive links, labels, and
-other changing values from `row.signal()` or `row.map(...)`. The key should
+Derive links, labels, and other changing values from `row.signal()` or `row.map(...)`. The key should
 contain only durable identity; changing it retires the old row scope and creates
 a new one by design.
 
 ## Row-local state
 
-Put `Ui.state` **inside** the row renderer and it belongs to that row, keyed by
-the row key:
+Declare `Ui.state` inside the row renderer when each row needs its own value.
+Here `Line` is a record with a `name : Str` field; each row starts with quantity 1:
 
 ```roc
-line_row : Str, Signal.Signal(Line) -> Elem
-line_row = |sku, line|
+line_row : Ui.Row(Line) -> Elem
+line_row = |row| {
+    sku = row.key()
+    line = row.signal()
     Ui.state(
         1.U64,
         |qty| {
@@ -160,12 +161,13 @@ line_row = |sku, line|
             Html.div_c(
                 "flex gap-2",
                 [
-                    Html.text_s(label),
+                    Html.paragraph_s_attrs(label, [Html.test_id("quantity-${sku}")]),
                     Html.button_attrs("Add one", [Html.test_id("add-${sku}")], qty.on_unit(|n| n + 1)),
                 ],
             )
         },
     )
+}
 ```
 
 This state follows a surviving key through reordering and removal of other rows.
@@ -176,11 +178,11 @@ outside the rendered rows. Reordering preserves state, which a spec can assert:
 ```lisp
 (click (test-id "add-a1"))
 (click (test-id "add-a1"))
-(expect-text (text "Keyboard x3") "Keyboard x3")
+(expect-text (test-id "quantity-a1") "Keyboard x3")
 
 (mark-metrics)
 (click (role button :name "Reverse"))
-(expect-text (text "Keyboard x3") "Keyboard x3")
+(expect-text (test-id "quantity-a1") "Keyboard x3")
 (expect-metric-delta rows_created 0)
 (expect-metric-delta rows_removed 0)
 ```
@@ -188,9 +190,8 @@ outside the rendered rows. Reordering preserves state, which a spec can assert:
 After reversing the list the quantity is still 3, and the host created and
 destroyed zero rows — it moved the existing DOM nodes.
 
-State declared **outside** `Ui.each` belongs to the surrounding scope and is
-shared by every row. Both are useful; choose deliberately. When a row needs to
-change the *list's* state — deleting an item, toggling a field on the shared
+State declared outside `Ui.each` belongs to the surrounding scope and can be
+shared by rows that reference it. When a row needs to change the list's state — deleting an item, toggling a field on the shared
 model — define the row renderer inside the outer `Ui.state` body so it closes
 over the outer handle, as the [tutorial](@/docs/tutorial.md#step-5-per-row-events)
 does.
@@ -221,75 +222,78 @@ counter = |label|
     )
 ```
 
-Now `counter("Left")` and `counter("Right")` are independent. Without
-`Ui.component`, both would consume ordinals from the *caller's* scope, so
-inserting one ahead of the other would shift identities underneath them.
+`counter("Left")` and `counter("Right")` have separate scopes. Construction
+order inside either component is local to it, so adding internal state does not
+shift the caller's other state declarations. The component itself still has a
+construction site in its caller; the wrapper does not give it a stable list key.
 
-**Rule of thumb:** any reusable helper that declares `Ui.state`, `Ui.when`, or
-`Ui.each` internally should be wrapped in `Ui.component`. Purely
-presentational helpers do not need it.
+Wrap reusable helpers that declare `Ui.state`, `Ui.when`, `Ui.switch`, or
+`Ui.each` in `Ui.component` to keep their internal sites in a local scope.
+Purely presentational helpers do not need the wrapper.
 
-Conduit wraps every page module this way, so navigating between routes gives
-each page a clean scope.
+A component wrapper establishes ownership. It does not, by itself, rebuild the
+component when an input changes. Use `Ui.when` or `Ui.switch` around a component
+when a change should end its lifetime and mount a fresh instance.
 
 ### Passing data across a component boundary
 
-Prefer **one signal of one props record** over many separate signal parameters:
+Choose inputs according to what changes together. For independent values, a
+named record of signals preserves separate dependencies:
 
 ```roc
-# Good — one edge across the boundary, fields derived at the leaves.
-article_card : Signal.Signal(CardProps) -> Elem
-
-# Noisy — the caller pre-explodes everything.
-article_card : Signal.Signal(Str), Signal.Signal(Str), Signal.Signal(Bool) -> Elem
+article_card : { title : Signal.Signal(Str), author : Signal.Signal(Str), saved : Signal.Signal(Bool) } -> Elem
 ```
 
-Derive the leaves inside the component with `.map`. Signal parameters are
-already concrete types, so they never need the
-[receiver annotation](@/docs/state-and-events.md#annotate-the-signal-you-map-from).
+Use `Signal.Signal(CardProps)` when the props form one coherent value. Mapping
+its fields inside the component still subscribes each projection to the whole
+record; moving the projections does not make the inputs independent.
+
+Components can also take static values, event handlers, and `List(Elem)`
+children. State declared inside a child description belongs to the scope where
+that child is mounted. References to a caller-owned signal keep the caller's
+ownership; passing a signal does not move its state into the component.
 
 ## Where identity comes from
 
-Roc is pure. There is no `this`, no object identity, no allocation address to
-key on. So how does the host know that the `Ui.state` it is looking at is the
-same one as last time?
+The runtime assigns structural identities by deterministic traversal of the
+returned description within each scope. A construction site is a declaration
+in that description, not a source line, DOM position, or component name.
+Conditional branches, switch cases, keyed rows, and components separate their
+internal declaration order from their siblings.
 
-**Construction-order position within the enclosing scope.** When the host walks
-your descriptor tree it numbers each identity-bearing node — `Ui.state`,
-`Ui.when`, `Ui.each`, `Ui.component` — in the order it encounters them.
-Scopes are created by the root, each `when` arm, each keyed row, and each
-component.
+Use `Ui.when`, `Ui.switch`, or `Ui.each` for changing structure. Varying the
+number of state declarations in an ordinary constructed child list can shift
+later sites. Moving state across a scope boundary also changes who owns it.
 
-This is why the ordering rule matters:
-
-> **Do not vary how many identity-bearing nodes you construct based on a runtime
-> value.** Doing so shifts the ordinals of everything after it.
-
-In practice you rarely trip on this, because varying structure is exactly what
-`Ui.when` and `Ui.each` are for — and both give the varying part its own
-scope. The risk shows up when refactoring: moving a `Ui.state` across a scope
-boundary changes its identity, and it will silently reset. In a large app,
-consistent page-module conventions are the mitigation.
+A key preserves identity only while it survives at the same list site. Removing
+and later reinserting it starts a new lifetime. Moving it between two different
+`Ui.each` sites also creates a new lifetime at the destination. Keep state in an
+ancestor, indexed by the domain key, if it must survive filtering, pagination,
+or movement between lists.
 
 ## Performance notes
 
-Most good performance falls out of picking the right primitive:
+Choose the primitive that describes the intended change:
 
-- **Value changed, structure did not?** Use a signal-backed sink: `text_s`,
-  `class_attr_s`, `attr_s`, `bool_attr_s`, a bound input value.
-- **Existence changed?** Use `Ui.when` around the smallest possible region.
-- **Collection changed?** Use `Ui.each` with keys from item identity.
-- **State belongs to a row?** Declare it inside the row renderer.
-- **Value can be computed?** Derive it; do not store it.
-- **Custom type used as a signal value?** Give it a meaningful `is_eq`; that is
-  the cutoff that keeps unrelated work from waking.
+- Bind changing text and attributes with `text_s`, `class_attr_s`, `attr_s`,
+  or `bool_attr_s` when the elements should remain mounted.
+- Use `Ui.when` or `Ui.switch` around the region whose lifetime should change.
+- Use `Ui.each` with stable item keys for a changing collection.
+- Declare row-local state inside the row renderer, and persistent state outside it.
+- Derive computed values and use equality that preserves every observable change.
 
-Avoid funnelling everything through one giant state record feeding one giant
-view-model. Independent panels deriving from independent sources stay quiet when
-unrelated things change.
+Keep independently changing panels on separate sources so unrelated updates
+do not recalculate their projections.
 
-And you can assert all of this: `(expect-metric-delta rows_created 0)` and
-friends turn a performance intention into a test. See
+`Rows.apply` can carry a small edit set to `Ui.each`. The engine uses that delta
+when the edit starts from the generation currently rendered at the site. A
+replacement snapshot, or an edit from a different generation, requires comparing
+the collection. Surviving keys still preserve their row scopes in either case.
+The cost of constructing, filtering, or sorting your collection also counts;
+preserving rows does not make those application calculations constant-time.
+
+Measure the behavior your application depends on with native specs. For example,
+`(expect-metric-delta rows_created 0)` checks that an interaction creates no rows. See
 [Testing](@/docs/testing.md#work-budgets).
 
 ## Next

@@ -1,21 +1,19 @@
 +++
 title = "Reference"
-description = "The complete API surface — signals, state, elements, effects, browser sources, and the spec language."
+description = "Look up signal, state, rendering, browser, and testing APIs."
 weight = 11
 template = "page.html"
 +++
 
 # Reference
 
-The complete public surface. For explanations, follow the links into the guide
-pages; this page is for looking things up.
+This page summarizes the application APIs and spec commands used in the guides.
+For worked examples, follow the topic guides. The public modules under
+`platform/` provide signatures and module documentation; internal descriptor and
+host-value helpers are not application APIs.
 
-Anything not listed here is not part of the supported surface. The platform is
-intentionally small:
-if you need something outside this surface, it is app code or a JavaScript
-[behaviour](@/docs/effects-and-browser.md#javascript-widgets). The
-[Deliberately absent](#deliberately-absent) section at the end lists the gaps
-people actually hit, so you can find them before you hit them.
+The [browser limits](#deliberately-absent) describe capabilities without a
+built-in API and where a JavaScript behaviour can help.
 
 ## Imports
 
@@ -25,6 +23,8 @@ import pf.Browser
 import pf.Html
 import pf.Http
 import pf.Signal
+import pf.Rows exposing [Rows]
+import pf.Svg
 import pf.Ui
 ```
 
@@ -42,14 +42,21 @@ receiver-style (`signal.map(f)`), which is the idiomatic form.
 
 | Function | Type | Notes |
 | --- | --- | --- |
-| `map` | `Signal(a), (a -> b) -> Signal(b)` | derived node; the edge |
+| `map` | `Signal(a), (a -> b) -> Signal(b)` | transform one current value |
 | `map2` | `Signal(a), Signal(b), (a, b -> c) -> Signal(c)` | two inputs |
 | `combine` | `List(Signal(a)) -> Signal(List(a))` | homogeneous list |
 | `combine_map` | `List(Signal(a)), (List(a) -> b) -> Signal(b)` | homogeneous inputs projected by one derived node |
 | `const` | `a -> Signal(a)` | never changes |
-| `interval` | `U64 -> Signal(U64)` | ticks from 0 while mounted |
+| `select` | `Signal(Str), Str -> Signal(Bool)` | membership in an exact selected key; updates the old and new key members |
+| `keyed` | `Signal(Str), value, value -> Signal.Keyed(value)` | shared selected/unselected values for `Ui.Row.select` |
+| `interval` | `U64 -> Signal(U64)` | period in milliseconds; tick count starts at 0 |
 | `noop` | `Cmd` | a command that does nothing |
 | `cleanup` | `Str -> Cleanup` | named cleanup for `Ui.on_cleanup` |
+
+Signal value constructors and transforms require equality for the values they
+cache. For example, `map` requires `b.is_eq`; `const` requires `a.is_eq`.
+Nominal application types can derive it with `is_eq : _`. See
+[State, Events, and Forms](@/docs/state-and-events.md).
 
 For three or more inputs use the record builder rather than nesting `map2`:
 
@@ -108,21 +115,6 @@ Build a shared keyed selector once with
 Each row remains an ordinary graph record, while the typed selector operations
 are retained once by the keyed construction site.
 
-## Rows
-
-`Rows(item)` is an immutable keyed collection. It owns the key projection,
-caches exact keys, and carries generation lineage plus stable row slots. Create
-one with `Rows.from_list(items, key_of)` or `Rows.empty(key_of)`, then produce a
-new generation with `Rows.apply(rows, edits)` or
-`Rows.replace_all(rows, items)`. Construction and edits return `Try` so duplicate
-keys, missing keys, and invalid ranges are handled before rendering.
-
-Common edits include `Rows.Edit.Append`, `Rows.Edit.InsertAt`,
-`Rows.Edit.RemoveKey`, `Rows.Edit.RemoveRange`, `Rows.Edit.SetKey`,
-`Rows.Edit.SetAt`, `Rows.Edit.MoveKeyBefore`, `Rows.Edit.MoveRange`, and
-`Rows.Edit.Clear`. A batch is applied in order; removing and reinserting a key
-within one unpublished batch preserves that row's stable slot.
-
 ### `Ui.State(a)`
 
 | Method | Type | Fires on |
@@ -157,6 +149,50 @@ Changing these reads does not run the action; each accepted event does, even
 when its reads equal those of the preceding event. Its command can use
 `state.set_cmd(value)` to write a state declared in an enclosing scope.
 
+## Rows
+
+`Rows(item)` is an immutable keyed collection. It owns the key projection,
+caches exact keys, and retains the transition from its immediate parent generation. Create
+one with `Rows.from_list(items, key_of)` or `Rows.empty(key_of)`, then produce a
+new generation with `Rows.apply(rows, edits)` or
+`Rows.replace_all(rows, items)`. Construction and edits return `Try` so duplicate
+keys, missing keys, and invalid ranges are handled before rendering.
+
+Common edits include `Rows.Edit.Append`, `Rows.Edit.InsertAt`,
+`Rows.Edit.RemoveKey`, `Rows.Edit.RemoveRange`, `Rows.Edit.SetKey`,
+`Rows.Edit.SetAt`, `Rows.Edit.MoveKeyBefore`, `Rows.Edit.MoveRange`, and
+`Rows.Edit.Clear`. A batch is applied in order; removing and reinserting a key
+within one unpublished batch preserves that row's stable slot.
+
+| Function | Type |
+| --- | --- |
+| `empty` | `(item -> Str) -> Rows(item)` |
+| `from_list` | `List(item), (item -> Str) -> Try(Rows(item), Rows.Error)` |
+| `replace_all` | `Rows(item), List(item) -> Try(Rows(item), Rows.Error)` |
+| `apply` | `Rows(item), List(Rows.Edit(item)) -> Try(Rows(item), Rows.Error)` |
+| `len` | `Rows(item) -> U64` |
+| `get` | `Rows(item), U64 -> Try(item, Rows.Error)` |
+| `get_key` | `Rows(item), Str -> Try(item, Rows.Error)` |
+| `iter` | `Rows(item) -> Iter(item)` |
+| `to_list` | `Rows(item) -> List(item)` |
+| `is_eq` | `Rows(item), Rows(item) -> Bool` |
+| `content_is_eq` | `Rows(item), Rows(item) -> Bool` |
+
+`apply` and `content_is_eq` require `item.is_eq`. `is_eq` compares generation
+identity: copies of one generation compare equal; independently constructed
+collections can compare unequal even with the same items. Use `content_is_eq`
+when you explicitly need content comparison.
+
+`Rows.Error` reports `DuplicateKey`, `IndexOutOfBounds`, `KeyNotFound`,
+`RangeOutOfBounds`, or `SlotExhausted`. An invalid edit batch returns an error
+without changing the input collection. `MoveRange.to` is an index after removal
+of the moved range. `MoveKeyBefore` uses `Rows.Before.Key(key)` or
+`Rows.Before.End`; `InsertBefore` is also available for inserting new items.
+
+Removing a row from a committed rendered collection disposes its local state.
+Adding the same key in a later update creates a new lifetime. See
+[dynamic structure](@/docs/dynamic-structure.md) for examples and ownership rules.
+
 ## Html
 
 Suffix conventions: `_c` static class, `_sc` signal class, `_s` signal text or
@@ -170,7 +206,7 @@ label, `_attrs` extra attribute list. They all lower to the same descriptors.
 ### Text
 
 `text`, `text_s`, `heading`, `heading_c`, `paragraph`, `paragraph_c`,
-`paragraph_attrs`, `paragraph_s`, `paragraph_s_c`, `pre_s_c`
+`paragraph_attrs`, `paragraph_s`, `paragraph_s_attrs`, `paragraph_s_c`, `pre_s_c`
 
 ### Controls
 
@@ -435,29 +471,29 @@ One WebAssembly instance per mount.
 
 ## Deliberately absent
 
-Things that do not exist today. Each is a real limit, not an oversight in this
-page — check here before designing around one.
+These capabilities have no dedicated Roc API in the current platform. A
+JavaScript behaviour can use browser APIs on its attached element and report
+events through the declared boundary; it must clean up any resources it starts.
 
 | Not available | Consequence | Workaround |
 | --- | --- | --- |
-| Programmatic focus | No focus trap, no autofocus, no focus-on-error, no focus restore after a modal | JS behaviour |
+| Programmatic focus | No Roc command for focus-on-error, focus traps, or restoring focus | JS behaviour |
 | Scroll control | No scroll-to-top on route change, no scroll restoration | JS behaviour |
-| Wall clock / date source | No "3 minutes ago", no "expires today". `Signal.interval` counts ticks, not time | Server timestamps, or a JS behaviour |
+| Wall clock / date source | `Signal.interval` counts ticks; it does not report elapsed or calendar time | Supply timestamps through server data or a JS behaviour |
 | Clipboard | No copy-to-clipboard | JS behaviour |
-| File input / reading file bytes | No uploads originating in Roc (`Http.with_body` can send bytes, nothing can produce them from disk) | JS behaviour or `taskHandler` |
+| File input / reading file bytes | No built-in file payload extraction; `Http.with_body` can send bytes already available to Roc | JS integration must own file selection and transfer |
 | Multi-select | Single-value `select` only | — |
 | Modifier keys beyond shift | `Ui.KeyPayload` is `{ key, shift_key }`. No ctrl, meta, or alt, so no Cmd+K | JS behaviour dispatching a `CustomEvent` |
-| SVG | The runtime uses `createElement`, not `createElementNS`; `tag: "svg"` yields an unknown element | JS behaviour |
 | Portals | Everything mounts inside the root; `document.body` is unreachable | CSS positioning in-tree |
 | Document- or window-level events | All event bindings attach to elements | JS behaviour |
-| WebSocket / SSE / streaming | Realtime is polling only | `taskHandler`, or poll |
+| WebSocket / SSE / streaming | No built-in subscription helper | Poll with HTTP, or manage a connection in a JS behaviour |
 | Raw HTML injection | By design — no `dangerouslySetInnerHTML` | Parse to `Elem` nodes ([Conduit's `Markdown.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples/conduit/Markdown.roc)) |
 | List virtualization | `Ui.each` materializes every row | — |
 | Table/list element helpers | Use `Elem.Element({ namespace: Html, tag: "table", ... })` directly | — |
 | Enter/exit animation hooks | No transition lifecycle | CSS transitions on signal-backed classes |
-| Generated unique ids | `aria-describedby` targets are hand-written, so repeated rows collide | Derive an id from the row key |
+| Generated unique ids | Applications must keep HTML ids unique across mounted instances | Combine a caller-supplied component prefix with a row key |
 
-Two subtleties worth knowing:
+### Native locators and timer lifetime
 
 **Custom `role` attributes are invisible to native specs.** `Html.attr("role", "dialog")`
 sets a real ARIA attribute in the browser, but the native spec runner only
@@ -466,7 +502,7 @@ resolves `role:` locators for roles set by the built-in helpers (`section`,
 `test_id:`.
 
 **An interval only runs while a live node depends on it.** Disposing the scope
-that consumes a `Signal.interval` genuinely cancels the timer. That is the
+that consumes a `Signal.interval` cancels the timer. That is the
 mechanism behind pause-when-hidden polling, and it is what
 `tick-interval-if-active` asserts.
 

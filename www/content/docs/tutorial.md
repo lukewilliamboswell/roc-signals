@@ -8,16 +8,24 @@ template = "page.html"
 # Tutorial: A Reading List
 
 We are going to build a small app that adds books to a list, marks them as read,
-filters to unread, and keeps a live count. It is about 120 lines, it touches
-every concept you need for real work, and it finishes with an automated test
-suite that runs in milliseconds.
+filters to unread, and keeps a live count. You will work with state, derived
+values, form events, and keyed rows, then write native specs for the completed
+app. Data stays in memory and resets when the app remounts.
 
 You should have finished [Getting Started](@/docs/getting-started.md) so that
-`zig build build-test-hosts` has been run and `roc check` works. Reading
-[Thinking in Signals](@/docs/thinking-in-signals.md) first will make the *why*
-of each step obvious.
+`zig build build-test-hosts` has been run and `roc check` works. [Thinking in
+Signals](@/docs/thinking-in-signals.md) explains the reactive model if you want
+more background.
 
-Create `examples/reading-list/main.roc` and follow along. After each step, run:
+Create a directory for the app and its specs:
+
+```sh
+mkdir -p examples/reading-list/specs
+```
+
+Save each complete example in `examples/reading-list/main.roc`. Later steps show
+additions to that file; the finished app below includes them all. After each
+step, run:
 
 ```sh
 roc check examples/reading-list/main.roc
@@ -51,7 +59,9 @@ class string; you will meet `_s` (signal-backed) and `_attrs` (extra attributes)
 shortly.
 
 The accessible names matter. They are how tests and screen readers find things,
-and getting them right now costs nothing.
+so use names that explain each control's purpose. The CSS classes here are
+Tailwind utilities used by the example site; on your own page, load a matching
+stylesheet or replace them with your own classes.
 
 ## Step 2 — Your first signal
 
@@ -98,16 +108,16 @@ Four new things:
 - **`Ui.state("", |draft| ...)`** introduces a source holding a `Str`, starting
   empty. The lambda receives a *handle* and returns the subtree that can use it.
 - **`draft.signal()`** reads the state as a signal you can derive from.
-- **`title.map(...)`** creates a derived node. The lambda runs whenever `title`
-  changes — never at startup-only.
+- **`title.map(...)`** creates a derived node. The lambda runs at mount
+  and again when `title` changes.
 - **`draft.on_str(|_current, value| value)`** builds a reducer. On each `input`
   event the host calls it with the current state and the field's text; whatever
   it returns becomes the new state. Here we discard the old value and keep the
   typed text.
 
 Note `Html.paragraph_s(echo)` — the `_s` suffix. `Html.paragraph` takes a fixed
-`Str`; `paragraph_s` takes a `Signal(Str)` and tracks it. Mixing these up is the
-single most common beginner mistake, and it fails loudly at the type level.
+`Str`; `paragraph_s` takes a `Signal(Str)` and tracks it. Use the signal-backed
+helper when the displayed text should change.
 
 ## Step 3 — Model the data
 
@@ -178,34 +188,33 @@ duplicates before the collection can reach the renderer.
 
 The key must come from the item's identity — a database id, slug, or generated
 id — **never the list index**. Rows are matched across updates by key, so a
-correct key means reordering, inserting, and filtering reuse existing DOM nodes
-and preserve any state a row owns. An index key throws that away.
+stable key lets surviving rows reuse their DOM nodes and local state during
+reordering or changes to other rows. Filtering a row out disposes its scope;
+showing that key again creates a new row. Keep data that must survive filtering
+in the parent model, as this app does with each book's `read` field.
 
 Notice `book_row` derives through `row.map(...)`, not a snapshot `Book`. Rows are
 live: when one book changes, only that row source dirties and its dependent
-signals update. The current compatibility adapter still scans the generation's
-cached keys during reconciliation; the sparse delta adapter is intended to
-remove that remaining whole-collection preparation work. Use `row.key()` for
-the stable key or `row.signal()` when a combinator requires the complete item
-signal.
+signals update. Use `row.key()` for the stable key or `row.signal()` when a
+combinator requires the complete item signal.
 
-### The annotation that saves you an hour
+### Annotate a signal used for different projections
 
 ```roc
 state : Signal.Signal(Model)
 state = model.signal()
 ```
 
-That annotation is not decoration. Without it, calling `.map` twice on `state`
-with *different* result types fails to compile with a confusing message about
-`map` having an incompatible type. Annotating the signal you map from fixes it.
+With the current compiler, calling `.map` twice on an unannotated `state`
+with different result types can fail with a message about `map` having an
+incompatible type. Annotating the source signal resolves that inference issue.
 Full explanation in
 [State, Events, and Forms](@/docs/state-and-events.md#annotate-the-signal-you-map-from).
 
 ## Step 4 — Adding books
 
 Reducers are pure `Model -> Model` functions. Write them as ordinary top-level
-functions and they become trivially testable.
+functions so you can test them independently of the UI.
 
 ```roc
 add_book : Model -> Model
@@ -239,31 +248,36 @@ Html.form_label(
     [Html.on_submit_prevent_default(model.on_unit(add_book))],
     [
         Html.text_input("Title", draft, model.on_str(|value, text| { ..value, draft: text })),
-        Html.button("Add book", model.on_unit(add_book)),
+        Html.button_attrs("Add book", [Html.attr("type", "button")], model.on_unit(add_book)),
     ],
 )
 ```
 
 `on_submit_prevent_default` handles Enter-in-the-field without navigating away;
 the button handles clicks. Both run the same reducer, so there is one code path
-for "add a book".
+for "add a book". The explicit `type="button"` prevents the click from also
+performing the button's default form submission.
 
 `model.on_unit` builds a reducer that ignores the event payload —
 `Model -> Model`. `model.on_str` receives the field's text as a second argument.
 
 The input is **controlled**: its displayed value comes from the `draft` signal,
 and typing dispatches a reducer that updates the state the signal reads from.
-Same contract as React's controlled inputs, without the re-render.
+When `add_book` clears `draft`, the input receives the new value. In the
+browser, a differing value is deferred while a text input is focused or
+composing and applied after blur; see [State, Events, and
+Forms](@/docs/state-and-events.md).
 
 ## Step 5 — Per-row events
 
-Each row gets a checkbox that toggles that book. The reducer needs the row's id:
+Each row gets a checkbox that sets whether that book has been read. The reducer
+needs the row's id:
 
 ```roc
-toggle_read : Model, Str -> Model
-toggle_read = |model, id| {
+set_read : Model, Str, Bool -> Model
+set_read = |model, id, checked| {
     book = Rows.get_key(model.books, id) ?? crash "the row key must still exist"
-    updated = { ..book, read: !book.read }
+    updated = { ..book, read: checked }
     { ..model, books: Rows.apply(model.books, [Rows.Edit.SetKey({ key: id, item: updated })]) ?? crash "the row key must still exist" }
 }
 ```
@@ -286,23 +300,23 @@ book_row = |row| {
             Html.checkbox_attrs(
                 "Read",
                 read,
-                [Html.test_id("book-${id}")],
-                model.on_bool(|value, _checked| toggle_read(value, id)),
+                [Html.test_id("book-${id}"), Html.aria_describedby("title-${id}")],
+                model.on_bool(|value, checked| set_read(value, id, checked)),
             ),
-            Html.text_s(title),
+            Html.paragraph_s_attrs(title, [Html.attr("id", "title-${id}")]),
         ],
     )
 }
 ```
 
-`model.on_bool` receives the checkbox's new checked state. We ignore it and
-toggle from the model instead, so the model stays the single source of truth.
+`model.on_bool` receives the checkbox's new checked state. Store that value in
+the model so the reducer describes the requested state directly.
 
 **Why `Html.test_id("book-${id}")`?** Every row's checkbox has the same
 accessible name, `"Read"`, so `label:"Read"` would match several elements and a
-test would fail with *locator matched 2 elements*. A row renderer only receives
-the static key, so give each row a unique test id derived from it. If your rows
-can carry genuinely distinct labels, prefer that — it helps real users too.
+test would fail with *locator matched 2 elements*. Give each row a unique test
+id derived from its key. `aria_describedby` links the checkbox to its book
+title so assistive technology can distinguish the repeated controls. The test id serves only the test runner.
 
 ## Step 6 — Filtering and empty states
 
@@ -342,11 +356,11 @@ unread_count : Rows(Book) -> U64
 unread_count = |books| Rows.to_list(books).keep_if(|book| !book.read).len()
 ```
 
-These are annotated top-level helpers on purpose. You *could* inline
-`items.keep_if(...).len()` inside the `.map` lambda and it would compile — but
-pulling it out keeps the reactive wiring readable, and makes `unread_count`
-directly unit-testable. It also avoids a class of confusing inference error if
-you ever forget the receiver annotation.
+The filter and count scan the collection. This is a simple implementation for a
+small reading list, not a constant-time update strategy. Because they derive
+from the whole model, they also run when the draft text changes. For larger
+collections, separate independently changing state and measure the work; see
+[Lists, Conditionals, and Components](@/docs/dynamic-structure.md).
 
 In the `Ui.state` body, `books` now derives through the filter, and three new
 signals join it:
@@ -367,7 +381,7 @@ Html.checkbox(
     unread_only,
     model.on_bool(|value, checked| { ..value, unread_only: checked }),
 ),
-Html.text_s(summary),
+Html.paragraph_s_attrs(summary, [Html.test_id("summary")]),
 Ui.when(
     empty,
     || Html.paragraph("Nothing to show."),
@@ -385,7 +399,8 @@ receives the selected typed value and runs only when that value changes, so it
 can express recursive structure without constructing unselected branches.
 
 Note that `summary` counts `value.books` (all books) while the list renders
-`visible_books`. Deriving both from one source keeps them consistent for free.
+`visible_books`. Deriving both from one source lets the engine compute both from
+the same updated model.
 
 ## The finished app
 
@@ -411,8 +426,8 @@ initial_books : Rows(Book)
 initial_books =
     Rows.from_list(
         [
-        { id: "b1", title: "Structure and Interpretation", read: True },
-        { id: "b2", title: "Thinking in Systems", read: False },
+            { id: "b1", title: "Structure and Interpretation", read: True },
+            { id: "b2", title: "Thinking in Systems", read: False },
         ],
         |book| book.id,
     ) ?? crash "initial book keys must be unique"
@@ -441,10 +456,10 @@ add_book = |model|
         }
     }
 
-toggle_read : Model, Str -> Model
-toggle_read = |model, id| {
+set_read : Model, Str, Bool -> Model
+set_read = |model, id, checked| {
     book = Rows.get_key(model.books, id) ?? crash "the row key must still exist"
-    updated = { ..book, read: !book.read }
+    updated = { ..book, read: checked }
     { ..model, books: Rows.apply(model.books, [Rows.Edit.SetKey({ key: id, item: updated })]) ?? crash "the row key must still exist" }
 }
 
@@ -486,10 +501,10 @@ main = ||
                         Html.checkbox_attrs(
                             "Read",
                             read,
-                            [Html.test_id("book-${id}")],
-                            model.on_bool(|value, _checked| toggle_read(value, id)),
+                            [Html.test_id("book-${id}"), Html.aria_describedby("title-${id}")],
+                            model.on_bool(|value, checked| set_read(value, id, checked)),
                         ),
-                        Html.text_s(title),
+                        Html.paragraph_s_attrs(title, [Html.attr("id", "title-${id}")]),
                     ],
                 )
             }
@@ -504,7 +519,7 @@ main = ||
                         [Html.on_submit_prevent_default(model.on_unit(add_book))],
                         [
                             Html.text_input("Title", draft, model.on_str(|value, text| { ..value, draft: text })),
-                            Html.button("Add book", model.on_unit(add_book)),
+                            Html.button_attrs("Add book", [Html.attr("type", "button")], model.on_unit(add_book)),
                         ],
                     ),
                     Html.checkbox(
@@ -512,7 +527,7 @@ main = ||
                         unread_only,
                         model.on_bool(|value, checked| { ..value, unread_only: checked }),
                     ),
-                    Html.text_s(summary),
+                    Html.paragraph_s_attrs(summary, [Html.test_id("summary")]),
                     Ui.when(
                         empty,
                         || Html.paragraph("Nothing to show."),
@@ -532,10 +547,10 @@ Write `examples/reading-list/specs/reading-list.scm`:
 (test "reading list workflow"
   (steps
     (expect-visible (role heading :name "Reading List"))
-    (expect-text (text "1 unread") "1 unread")
+    (expect-text (test-id "summary") "1 unread")
     (fill (label "Title") "Thinking in Bets")
     (click (role button :name "Add book"))
-    (expect-text (text "2 unread") "2 unread")
+    (expect-text (test-id "summary") "2 unread")
     (expect-value (label "Title") "")
     (check (label "Unread only"))
     (expect-absent (text "Structure and Interpretation"))
@@ -544,15 +559,16 @@ Write `examples/reading-list/specs/reading-list.scm`:
     (expect-visible (text "Structure and Interpretation"))))
 ```
 
-Build and run:
+Build and run using your machine's target (`x64musl` below is Linux x64;
+use `arm64musl`, `arm64mac`, or `x64mac` as appropriate):
 
 ```sh
-roc build --target=arm64mac --output=/tmp/reading-list examples/reading-list/main.roc
+roc build --target=x64musl --output=/tmp/reading-list examples/reading-list/main.roc
 python3 scripts/spec_driver.py /tmp/reading-list examples/reading-list/specs
 ```
 
-Exit code `0`, no output — everything passed. The whole run takes milliseconds
-and there is no browser involved.
+The driver prints per-spec results and a summary; exit code `0` means the
+assertions passed. Each spec file runs in a fresh app process.
 
 Now assert something stronger. Add `examples/reading-list/specs/toggle.scm`:
 
@@ -560,20 +576,20 @@ Now assert something stronger. Add `examples/reading-list/specs/toggle.scm`:
 (test "toggle reuses its row"
   (steps
     (expect-checked (test-id "book-b2") false)
-    (expect-text (text "1 unread") "1 unread")
+    (expect-text (test-id "summary") "1 unread")
     (mark-metrics)
     (check (test-id "book-b2"))
     (expect-checked (test-id "book-b2") true)
-    (expect-text (text "0 unread") "0 unread")
+    (expect-text (test-id "summary") "0 unread")
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)))
 ```
 
 The last two lines assert that toggling a checkbox created and destroyed **zero
 rows** — the host patched the existing row in place rather than rebuilding the
-list. That is the promise of the signals model, and here it is enforced by the
-test suite rather than assumed. If a future refactor accidentally makes the list
-rebuild, this fails.
+list. This checks row lifetime for this interaction. It does not establish that
+filtering or counting is constant-time, or that browser focus is preserved. If
+a refactor recreates rows on this path, the test fails.
 
 ```sh
 python3 scripts/spec_driver.py /tmp/reading-list examples/reading-list/specs
@@ -585,7 +601,8 @@ python3 scripts/spec_driver.py /tmp/reading-list examples/reading-list/specs
 roc build --target=wasm32 --opt=size --output=/tmp/reading-list.wasm examples/reading-list/main.roc
 ```
 
-Drop `/tmp/reading-list.wasm` on the [home page](@/_index.md), or register the
+Use the matching browser runtime as described in
+[Getting Started](@/docs/getting-started.md#mount-it-in-your-own-page), or register the
 app in `www/data/examples.toml` and run
 `python3 scripts/serve.py --example reading-list`.
 

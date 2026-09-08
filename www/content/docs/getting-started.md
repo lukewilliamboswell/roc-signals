@@ -1,6 +1,6 @@
 +++
 title = "Getting Started"
-description = "Install the toolchain, build your first app, test it natively in milliseconds, and run it in a browser."
+description = "Install the toolchain, build your first app, test it natively, and run it in a browser."
 weight = 3
 template = "page.html"
 +++
@@ -13,34 +13,38 @@ WebAssembly.
 
 ## What you need
 
-**Required**
+For the checkout workflow on this page:
 
 - **[Roc](https://www.roc-lang.org/install)** — install the exact nightly named
-  in your example's `roc` header. Nightly updates are tested against the pinned
-  released dependencies before their compiler pins advance.
-- **Zig 0.16.0** is needed only when developing the platform from source. Release
-  archives already contain the host binaries that Roc links your app against.
+  in `platform/main.roc` (the `roc` entry under `packages`).
+- **Zig 0.16.0** to build the platform hosts.
+- **Python 3** to run the native spec driver.
 
-**Only if you want to build the full site**
+Release starters need only their pinned Roc compiler; their platform archives
+include the host binaries.
 
-- Python 3, Node.js, [Zola](https://www.getzola.org/), and the
+**Only if you want to use the site builder**
+
+- Node.js, [Zola](https://www.getzola.org/), and the
   [Tailwind CSS standalone CLI](https://tailwindcss.com/blog/standalone-cli)
   version 3.4.17 (the site configuration is for Tailwind v3).
 
 ## Get the platform
 
-Download `signals-starters.zip` from the supported platform release. It contains
-complete applications, native specs, the matching browser runtime, and a README
-with direct Roc build commands. Its application headers name immutable release
-URLs; no platform checkout, Zig build, or Python test wrapper is needed.
+For an app outside this repository, download `signals-starters.zip` from the
+[platform releases](https://github.com/lukewilliamboswell/roc-signals/releases).
+It contains complete applications, native specs, the matching browser runtime,
+and a README with direct Roc build commands. Its application headers name
+immutable release URLs; no platform checkout, Zig build, or Python test wrapper
+is needed.
 
-For development against this checkout, use the clone workflow below and install
-the nightly named in the `roc` header in `platform/main.roc`.
-When upgrading an existing app, follow
-the migration instructions in the target version's
-[release notes](https://github.com/lukewilliamboswell/roc-signals/releases).
-Changes not yet released are recorded in the repository's
-[release notes directory](https://github.com/lukewilliamboswell/roc-signals/tree/main/releases).
+The rest of this page uses a checkout so you can edit and test a local example.
+Use the clone workflow below and install the nightly named in the `roc` header
+in `platform/main.roc`. When upgrading an existing app, follow the migration
+instructions in the target version's [release
+notes](https://github.com/lukewilliamboswell/roc-signals/releases). Changes not
+yet released are recorded in the repository's [release notes
+directory](https://github.com/lukewilliamboswell/roc-signals/tree/main/releases).
 
 ```sh
 git clone https://github.com/lukewilliamboswell/roc-signals.git
@@ -67,7 +71,11 @@ fail with `MISSING TARGET FILE`.
 
 ## Your first app
 
-Create `examples/hello/main.roc`:
+Create the directories, then save the code below as `examples/hello/main.roc`:
+
+```sh
+mkdir -p examples/hello/specs
+```
 
 ```roc
 app [main] { pf: platform "../../platform/main.roc" }
@@ -88,7 +96,7 @@ main = ||
                 "grid gap-3",
                 [
                     Html.heading_c("Hello from Roc", "text-2xl font-semibold"),
-                    Html.paragraph_s(label),
+                    Html.paragraph_s_attrs(label, [Html.test_id("count")]),
                     Html.button("Increment", count.on_unit(|n| n + 1)),
                 ],
             )
@@ -96,12 +104,12 @@ main = ||
     )
 ```
 
-Three things to notice, since they are unusual if you are new to Roc:
+A few details in this example:
 
 - `main : () -> Elem` takes no arguments and `||` is a zero-argument lambda.
   It runs **once**; see [Thinking in Signals](@/docs/thinking-in-signals.md).
 - `0.I64` pins the counter's numeric type. A bare `0` would default to `Dec`
-  and render as `"Count: 0.0"` — a real and easy mistake.
+  and change its text representation.
 - The platform path is relative to your app file. Two directories up from
   `examples/hello/` is the repository root.
 - `Html.section_c` takes an accessible label (`"Counter"`) as its first
@@ -114,14 +122,15 @@ Type-check it:
 roc check examples/hello/main.roc
 ```
 
-Expect `No errors found in ...`. This takes well under a second and is the loop
-you will live in.
+Resolve any reported errors before building the app. You can run `roc check`
+after each edit without rebuilding the host.
 
 ## Test it, without a browser
 
-This is the part most worth learning early. Your app compiles to a **native
-binary** that runs browser-style specs against a simulated DOM — no browser, no
-headless Chrome, no flakiness, and a full run in milliseconds.
+The native build runs specs against a simulated DOM using the same signal
+engine as the browser build. It can check state transitions and rendered values.
+You still need browser tests for layout, focus, input composition, and browser
+integration.
 
 Write `examples/hello/specs/increments.scm`:
 
@@ -129,20 +138,22 @@ Write `examples/hello/specs/increments.scm`:
 (test "increments"
   (steps
     (expect-visible (role heading :name "Hello from Roc"))
-    (expect-text (text "Count: 0") "Count: 0")
+    (expect-text (test-id "count") "Count: 0")
     (click (role button :name "Increment"))
-    (expect-text (text "Count: 1") "Count: 1")))
+    (expect-text (test-id "count") "Count: 1")))
 ```
 
 Build and run it. Use the target matching your machine — `arm64mac`, `x64mac`,
-`arm64musl`, or `x64musl`:
+`arm64musl`, or `x64musl`. The command below uses Linux x64; replace
+`x64musl` for your machine:
 
 ```sh
-roc build --target=arm64mac --output=/tmp/hello examples/hello/main.roc
+roc build --target=x64musl --output=/tmp/hello examples/hello/main.roc
 python3 scripts/spec_driver.py /tmp/hello examples/hello/specs
 ```
 
-Silence and exit code `0` mean every assertion passed. A failure names the line:
+The driver prints a result for each spec and a pass/fail summary. Exit code `0`
+means every assertion passed. A failure includes a diagnostic such as:
 
 ```text
 TEST FAILED at line 2: locator did not resolve to one element
@@ -163,38 +174,12 @@ Your app is the same source either way; only the target changes.
 roc build --target=wasm32 --opt=size --output=/tmp/hello.wasm examples/hello/main.roc
 ```
 
-A hello-world app lands around 270 KB uncompressed. You can sanity-check that it
-mounts, without a browser, using the repository's Node harness:
-
-```sh
-node scripts/browser/mount_wasm_example.mjs /tmp/hello.wasm hello --telemetry-summary
-```
-
-It prints the command stream the app produced at startup:
-
-```json
-{
-  "name": "hello",
-  "commandBatches": 2,
-  "commands": 19,
-  "fixedRecordBytes": 456,
-  "fixedStringBytes": 47,
-  "dynamicBytes": 216,
-  "opCounts": {
-    "reset_dom": 1, "create_element": 4, "append_child": 4,
-    "set_attr_text": 6, "set_text": 3, "bind_click": 1
-  }
-}
-```
-
-Nineteen commands and about 700 bytes to build the whole initial UI. That is the
-wire protocol between Roc and JavaScript, and it is all there is.
-
 ### Drop it on this site
 
-The [home page](@/_index.md) has a drop zone. Drag your `.wasm` file onto it and
-it mounts live in the page. This is the fastest way to see something running and
-requires no local site build.
+The [home page](@/_index.md) has a drop zone. Use it with Wasm built against
+the platform version that site serves. Drag your `.wasm` file onto it to mount
+the app without building the site locally. If you are working from a newer
+checkout, serve the matching runtime locally using the instructions below.
 
 ### Serve it locally
 
@@ -224,7 +209,8 @@ WebAssembly, and starts a static server. Open the URL it prints.
 
 ### Mount it in your own page
 
-The runtime is a plain ES module with no dependencies:
+Save this as `index.html` in a directory containing `hello.wasm` and the
+browser runtime files listed below:
 
 ```html
 <div id="app"></div>
@@ -247,6 +233,13 @@ Alternatively, run `python3 scripts/bundle_browser.py` and extract the resulting
 alongside the platform bundle. It contains the runtime's imported modules and a
 manifest recording the compiler pin and file digests.
 
+Serve these files over HTTP, for example with `python3 -m http.server 8000`
+from their directory, then open `http://localhost:8000`. Opening the HTML as a
+`file://` URL does not provide the HTTP environment needed to load the module.
+The utility classes in the example also need a stylesheet; Signals does not
+include CSS automatically. You can use your own styles or the site's generated
+`signals.css`.
+
 The runtime must come from the same compatible platform version as the app —
 it checks the wire protocol at mount and rejects a mismatch. Keep the files
 together when deploying under a GitHub Pages project path; the relative URLs
@@ -259,8 +252,9 @@ above work without assuming that your app lives at the domain root.
 ## Where to put your app
 
 Nothing requires your app to live in `examples/`. That directory is just where
-this repository keeps apps so its test driver can find them. An app is any
-directory with an `main.roc` whose header points at `platform/main.roc`.
+this repository keeps apps so its test driver can find them. An app can live in any
+directory; its `main.roc` header names a local platform path or a released
+platform archive.
 
 A typical larger app looks like:
 
@@ -276,17 +270,18 @@ my-app/
 ```
 
 That is Conduit's shape, described in
-[Structuring a Real App](@/docs/app-architecture.md).
+[Structuring an App](@/docs/app-architecture.md).
 
 ## Troubleshooting
 
 **`MISSING TARGET FILE ... host.wasm`**
 Run `zig build build-test-hosts -Doptimize=ReleaseSmall`.
 
-**`EFFECTFUL FUNCTION NAME` errors pointing inside the platform**
-Your Roc compiler and the platform disagree. Check the compiler pin for your
-platform release, or the `roc` header in `platform/main.roc` when working from a clone. Rebuild the app
-with the matching compiler and deploy its matching browser runtime.
+**`EFFECTFUL FUNCTION NAME` errors pointing inside the platform** Your Roc
+compiler and the platform disagree. Check the compiler pin for your platform
+release, or the `roc` header in `platform/main.roc` when working from a clone.
+Rebuild the app with the matching compiler and deploy its matching browser
+runtime.
 
 **`LITERAL DEFAULTED ... given the default type Dec`**
 A bare numeric literal with nothing to pin its type. Annotate the surrounding
@@ -321,9 +316,10 @@ state = model.signal()
 This one is common enough that it has its own explanation in
 [State, Events, and Forms](@/docs/state-and-events.md#annotate-the-signal-you-map-from).
 
-**`Signals wire protocol version mismatch` in the browser**
-Your `signals.mjs` and your `.wasm` came from different platform versions. Copy
-`www/static/signals.mjs` from the same clone you built the app with.
+**`Signals wire protocol version mismatch` in the browser** Your `signals.mjs`
+and your `.wasm` came from different platform versions. Deploy the matching
+browser archive, including all imported modules, from the same release or
+checkout used to build the app.
 
 **A successfully compiled Wasm file fails browser validation**
 Use `--opt=size` with the pinned Roc compiler. Its dev backend can emit invalid
