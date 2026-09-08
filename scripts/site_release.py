@@ -53,7 +53,7 @@ def previous_downloads(output: Path) -> dict[str, bytes]:
 def build(directory: Path, roc: str):
     manifest = release.read_manifest(directory)
     release.verify_compiler(roc, manifest["compiler_pin"])
-    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    sha = release.clean_source_sha()
     if sha != manifest["source_sha"]:
         raise ValueError("site source differs from tested release source")
     serve.build_css("tailwindcss", skip=False)

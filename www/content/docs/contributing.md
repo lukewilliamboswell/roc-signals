@@ -446,7 +446,8 @@ python3 scripts/release.py check
 python3 scripts/release.py verify
 ```
 
-Output defaults to ignored `.release-out/` and must be empty before preparation;
+Preparation requires a clean committed checkout so its source SHA identifies the
+actual inputs. Output defaults to ignored `.release-out/` and must be empty;
 retain an existing candidate when investigating or recovering a release. Published
 checks use isolated caches and committed URLs without rebinding. They do not build
 hosts or borrow the checkout's browser executor. Candidate checks rewrite only

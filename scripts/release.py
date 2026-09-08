@@ -18,7 +18,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-from urllib.parse import urlparse
 from urllib.request import urlopen
 import zipfile
 
@@ -36,6 +35,12 @@ VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def clean_source_sha() -> str:
+    if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=ROOT, text=True).strip():
+        raise ValueError("release preparation requires a clean committed checkout")
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
 
 
 def public_examples():
@@ -203,6 +208,7 @@ def check_downloads(directory: Path, roc: str) -> None:
 
 
 def prepare(version: str, directory: Path, roc: str) -> None:
+    source_sha = clean_source_sha()
     if not VERSION.fullmatch(version):
         raise ValueError("release version must be unprefixed SemVer without build metadata")
     if directory.exists() and any(directory.iterdir()):
@@ -242,12 +248,14 @@ def prepare(version: str, directory: Path, roc: str) -> None:
             starter.writestr(str(example.source.parent / "index.html"), page)
         starter.writestr("README.md", f"# Roc Signals {version}\n\nInstall `{pin}` from https://github.com/roc-lang/nightlies/releases/tag/{pin}.\nRun `roc version` to verify it. Each examples/<name>/ folder includes the complete app and native specs.\n\nBuild for the browser: `roc build --target=wasm32 --opt=size --output=examples/<name>/app.wasm examples/<name>/main.roc`.\nServe this directory over HTTP (for example `python3 -m http.server`) and open examples/<name>/index.html.\n\nFor native specs, build with `roc build --target=<target> --output=app examples/<name>/main.roc`, then run `./app examples/<name>/specs/<case>.scm`. Targets: x64musl, arm64musl, x64mac, arm64mac.\nNo Zig build or repository checkout is required.\n")
     manifest = {"schema_version": 1, "version": version,
-                "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+                "source_sha": source_sha,
                 "compiler_pin": pin, "compiler_channel": "nightly-bootstrap", "assets": {}}
     for kind, path in {"platform": platform, "browser": directory / "signals-browser.zip", "starters": directory / "signals-starters.zip"}.items():
         manifest["assets"][kind] = {"name": path.name, "url": f"{RELEASE_BASE}/{version}/{path.name}", "sha256": digest(path)}
     (directory / "signals-release.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (directory / "release-notes.md").write_text(notes.read_text() + "\n## Validated artifacts\n\n" + f"Source: `{manifest['source_sha']}`. Compiler: `{pin}` (nightly bootstrap).\n\n" + "\n".join(f"- {kind}: {asset['url']} — SHA-256 `{asset['sha256']}`" for kind, asset in manifest["assets"].items()) + "\n")
+    if clean_source_sha() != source_sha:
+        raise ValueError("source changed during release preparation")
 
 
 def main() -> None:

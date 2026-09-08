@@ -19,6 +19,12 @@ from compiler_pins import replace_pin
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_release_source_identity_rejects_uncommitted_changes(self):
+        with patch.object(release.subprocess, "check_output", return_value=" M platform/main.roc\n"), self.assertRaisesRegex(ValueError, "clean committed"):
+            release.clean_source_sha()
+        with patch.object(release.subprocess, "check_output", side_effect=["", "a" * 40 + "\n"]):
+            self.assertEqual(release.clean_source_sha(), "a" * 40)
+
     def test_starters_include_transitive_example_runtime_imports(self):
         files = release.bundle_browser.runtime_files(("example_tasks.mjs", "service_ops_charts.mjs"))
         self.assertIn("vendor/ops_chart.mjs", files)
