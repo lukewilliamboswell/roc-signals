@@ -1,7 +1,7 @@
 ## Pure presentation and dataset operations for the folder explorer. The native
 ## file service supplies metadata; filtering and ordering remain ordinary Roc.
 Explorer :: [].{
-	Kind := [File, Directory].{
+	Kind := [File, Directory, SymbolicLink, Other].{
 		is_eq : _
 
 		to_str : Kind -> Str
@@ -9,6 +9,8 @@ Explorer :: [].{
 			match kind {
 				File => "File"
 				Directory => "Folder"
+				SymbolicLink => "Symbolic link"
+				Other => "Other"
 			}
 	}
 
@@ -30,7 +32,7 @@ Explorer :: [].{
 		is_eq : _
 	}
 
-	Summary : { files : U64, folders : U64, bytes : U128 }
+	Summary : { files : U64, folders : U64, links : U64, other : U64, bytes : U128 }
 
 	sorts : List(Sort)
 	sorts = [NameAscending, NameDescending, LargestFirst]
@@ -83,8 +85,12 @@ Explorer :: [].{
 	compare : Entry, Entry, Sort -> [Before, Same, After]
 	compare = |left, right, order|
 		match (left.kind, right.kind) {
-			(Directory, File) => Before
-			(File, Directory) => After
+			(Directory, Directory) => match order {
+				NameDescending => compare_path(right.path, left.path)
+				_ => compare_path(left.path, right.path)
+			}
+			(Directory, _) => Before
+			(_, Directory) => After
 			_ => match order {
 				NameAscending => compare_path(left.path, right.path)
 				NameDescending => compare_path(right.path, left.path)
@@ -121,11 +127,13 @@ Explorer :: [].{
 	summary : List(Entry) -> Summary
 	summary = |entries|
 		entries.fold(
-			{ files: 0, folders: 0, bytes: 0 },
+			{ files: 0, folders: 0, links: 0, other: 0, bytes: 0 },
 			|total, entry|
 				match entry.kind {
 					Directory => { ..total, folders: total.folders + 1 }
-				File => { ..total, files: total.files + 1, bytes: total.bytes + entry.bytes.to_u128() }
+					SymbolicLink => { ..total, links: total.links + 1 }
+					Other => { ..total, other: total.other + 1 }
+					File => { ..total, files: total.files + 1, bytes: total.bytes + entry.bytes.to_u128() }
 				},
 		)
 
@@ -144,7 +152,7 @@ Explorer :: [].{
 	size_text : Entry -> Str
 	size_text = |entry|
 		match entry.kind {
-			Directory => "—"
+			Directory | SymbolicLink | Other => "—"
 			File => "${entry.bytes.to_str()} B"
 		}
 }
@@ -196,5 +204,14 @@ expect {
 		{ path: "empty.txt", kind: File, bytes: 0 },
 		{ path: "notes.md", kind: File, bytes: 12 },
 	]
-	Explorer.summary(entries) == { files: 2, folders: 1, bytes: 12 }
+	Explorer.summary(entries) == { files: 2, folders: 1, links: 0, other: 0, bytes: 12 }
+}
+
+## Symbolic links and special entries remain visible without inflating file totals.
+expect {
+	entries = [
+		{ path: "current", kind: SymbolicLink, bytes: 0 },
+		{ path: "events.pipe", kind: Other, bytes: 0 },
+	]
+	Explorer.summary(entries) == { files: 0, folders: 0, links: 1, other: 1, bytes: 0 }
 }
