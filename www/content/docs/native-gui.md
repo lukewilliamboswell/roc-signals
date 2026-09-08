@@ -44,6 +44,14 @@ Text controls are controlled: their value comes from a signal and committed
 edits enter the corresponding message handler. Native editors retain selection,
 clipboard behavior, and IME preedit locally. `textarea` preserves hard line
 breaks; soft wrapping is not implemented. Text input is bounded at 1 MiB.
+Control+Z undoes native edits; Control+Shift+Z or Control+Y redoes them.
+Contiguous typing groups until whitespace, cursor movement, or a one-second
+pause. Paste and composition form separate edit groups. Undo restores selection
+and sends the restored text through the ordinary input handler. Each editor
+retains at most 128 history boundaries and 8 MiB of text across undo and redo;
+oldest boundaries expire first. A different authoritative document value clears
+history, while equal input echoes preserve it. Disabled editors refuse undo and
+redo.
 An explicit textarea height (`Px` or `Fill`) includes its caption and padding and
 constrains the retained editing viewport. `Auto` keeps a 320-pixel editor. Use
 `Fill` inside a container with a defined height to grow and shrink with its space.

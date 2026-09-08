@@ -39,10 +39,98 @@ actions!(
         Cut,
         Copy,
         Quit,
+        Undo,
+        Redo,
     ]
 );
 
 const MAX_TEXT_BYTES: usize = 1024 * 1024;
+
+// Native editing history owns primitive text only. Restoring a snapshot enters
+// the same input callback as typing; it never changes Roc state independently.
+// Retain at most 128 boundaries and 8 MiB across undo and redo. Oldest undo
+// boundaries expire first. One document replacement clears the entire history.
+const MAX_HISTORY_BYTES: usize = 8 * MAX_TEXT_BYTES;
+const MAX_HISTORY_ENTRIES: usize = 128;
+
+#[derive(Clone)]
+struct EditSnapshot {
+    text: SharedString,
+    selection: Range<usize>,
+    reversed: bool,
+}
+
+#[derive(Default)]
+struct History {
+    undo: std::collections::VecDeque<EditSnapshot>,
+    redo: Vec<EditSnapshot>,
+    bytes: usize,
+    typing: Option<(usize, std::time::Instant)>,
+}
+
+impl History {
+    fn break_group(&mut self) {
+        self.typing = None;
+    }
+
+    fn record(&mut self, before: EditSnapshot, insertion: Option<(usize, usize)>) {
+        let now = std::time::Instant::now();
+        let grouped = insertion.is_some_and(|(start, _)| {
+            self.typing.is_some_and(|(end, at)| {
+                start == end && now.duration_since(at) <= std::time::Duration::from_secs(1)
+            })
+        });
+        self.bytes -= self
+            .redo
+            .iter()
+            .map(|entry| entry.text.len())
+            .sum::<usize>();
+        self.redo.clear();
+        if !grouped {
+            self.bytes += before.text.len();
+            self.undo.push_back(before);
+        }
+        self.typing = insertion.map(|(_, end)| (end, now));
+        self.trim();
+    }
+
+    fn trim(&mut self) {
+        while self.bytes > MAX_HISTORY_BYTES
+            || self.undo.len() + self.redo.len() > MAX_HISTORY_ENTRIES
+        {
+            let removed = self.undo.pop_front().or_else(|| {
+                if self.redo.is_empty() {
+                    None
+                } else {
+                    Some(self.redo.remove(0))
+                }
+            });
+            if let Some(entry) = removed {
+                self.bytes -= entry.text.len();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn undo(&mut self, current: EditSnapshot) -> Option<EditSnapshot> {
+        self.break_group();
+        let previous = self.undo.pop_back()?;
+        self.bytes = self.bytes - previous.text.len() + current.text.len();
+        self.redo.push(current);
+        self.trim();
+        Some(previous)
+    }
+
+    fn redo(&mut self, current: EditSnapshot) -> Option<EditSnapshot> {
+        self.break_group();
+        let next = self.redo.pop()?;
+        self.bytes = self.bytes - next.text.len() + current.text.len();
+        self.undo.push_back(current);
+        self.trim();
+        Some(next)
+    }
+}
 
 pub struct TextInput {
     on_change: std::rc::Rc<dyn Fn(String, &mut App)>,
@@ -63,6 +151,8 @@ pub struct TextInput {
     scroll: ScrollHandle,
     reveal_cursor: bool,
     preferred_x: Option<Pixels>,
+    history: History,
+    composition_start: Option<EditSnapshot>,
 }
 
 impl TextInput {
@@ -93,6 +183,8 @@ impl TextInput {
             scroll: ScrollHandle::new(),
             reveal_cursor: false,
             preferred_x: None,
+            history: History::default(),
+            composition_start: None,
         }
     }
     /// Creates an editor that preserves hard line breaks, including pasted text.
@@ -144,6 +236,8 @@ impl TextInput {
         }
         self.engine_value = value.to_owned().into();
         if self.content.as_ref() != value {
+            self.history = History::default();
+            self.composition_start = None;
             self.content = value.to_owned().into();
             self.selected_range = value.len()..value.len();
             self.selection_reversed = false;
@@ -167,6 +261,46 @@ impl TextInput {
             pending.set(false);
             callback(value, cx);
         });
+    }
+
+    fn snapshot(&self) -> EditSnapshot {
+        EditSnapshot {
+            text: self.content.clone(),
+            selection: self.selected_range.clone(),
+            reversed: self.selection_reversed,
+        }
+    }
+
+    fn restore(&mut self, snapshot: EditSnapshot, cx: &mut Context<Self>) {
+        self.content = snapshot.text;
+        self.selected_range = snapshot.selection;
+        self.selection_reversed = snapshot.reversed;
+        self.marked_range = None;
+        self.composition_start = None;
+        self.preferred_x = None;
+        self.reveal_cursor = true;
+        self.emit_change(cx);
+        cx.notify();
+    }
+
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled || self.marked_range.is_some() {
+            return;
+        }
+        let current = self.snapshot();
+        if let Some(previous) = self.history.undo(current) {
+            self.restore(previous, cx);
+        }
+    }
+
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled || self.marked_range.is_some() {
+            return;
+        }
+        let current = self.snapshot();
+        if let Some(next) = self.history.redo(current) {
+            self.restore(next, cx);
+        }
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -372,6 +506,7 @@ impl TextInput {
         if self.disabled {
             return;
         }
+        self.history.break_group();
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             if self.multiline {
                 self.replace_text_in_range(None, &text, window, cx);
@@ -379,6 +514,7 @@ impl TextInput {
                 self.replace_text_in_range(None, &text.replace(['\r', '\n'], " "), window, cx);
             }
         }
+        self.history.break_group();
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -401,6 +537,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.history.break_group();
         self.selected_range = offset..offset;
         self.selection_reversed = false;
         self.preferred_x = None;
@@ -442,6 +579,7 @@ impl TextInput {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.history.break_group();
         self.preferred_x = None;
         self.reveal_cursor = true;
         if self.selection_reversed {
@@ -499,6 +637,8 @@ impl TextInput {
     }
 
     fn reset(&mut self) {
+        self.history = History::default();
+        self.composition_start = None;
         self.content = "".into();
         self.engine_value = "".into();
         self.selected_range = 0..0;
@@ -558,6 +698,9 @@ impl EntityInputHandler for TextInput {
         // Wayland resets composition with unmark_text before mouse dispatch.
         // The displayed preedit becomes committed text before that next action.
         if self.marked_range.take().is_some() {
+            if let Some(before) = self.composition_start.take() {
+                self.history.record(before, None);
+            }
             self.emit_change(cx);
         }
         cx.notify();
@@ -583,6 +726,23 @@ impl EntityInputHandler for TextInput {
         // state. Authoritative engine values remain a strict boundary contract.
         if new_text.len() > MAX_TEXT_BYTES - (self.content.len() - range.len()) {
             return;
+        }
+        let before = self
+            .composition_start
+            .take()
+            .unwrap_or_else(|| self.snapshot());
+        let typing_end = if self.marked_range.is_none()
+            && new_text.graphemes(true).count() == 1
+            && !new_text.chars().any(char::is_whitespace)
+        {
+            Some((range.start, range.start + new_text.len()))
+        } else {
+            None
+        };
+        if before.text.as_ref()
+            != &(self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
+        {
+            self.history.record(before, typing_end);
         }
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
@@ -617,6 +777,9 @@ impl EntityInputHandler for TextInput {
         // state. Authoritative engine values remain a strict boundary contract.
         if new_text.len() > MAX_TEXT_BYTES - (self.content.len() - range.len()) {
             return;
+        }
+        if self.composition_start.is_none() {
+            self.composition_start = Some(self.snapshot());
         }
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
@@ -1016,6 +1179,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -1050,6 +1215,9 @@ pub fn bind_keys(cx: &mut App) {
             KeyBinding::new("ctrl-v", Paste, Some(context)),
             KeyBinding::new("ctrl-c", Copy, Some(context)),
             KeyBinding::new("ctrl-x", Cut, Some(context)),
+            KeyBinding::new("ctrl-z", Undo, Some(context)),
+            KeyBinding::new("ctrl-shift-z", Redo, Some(context)),
+            KeyBinding::new("ctrl-y", Redo, Some(context)),
             KeyBinding::new("home", Home, Some(context)),
             KeyBinding::new("end", End, Some(context)),
             KeyBinding::new("shift-home", SelectHome, Some(context)),
@@ -1071,6 +1239,94 @@ pub fn bind_keys(cx: &mut App) {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn history_bounds_total_retention_and_discards_redo_after_new_work() {
+        let snapshot = |text: String| EditSnapshot {
+            selection: text.len()..text.len(),
+            reversed: false,
+            text: text.into(),
+        };
+        let mut history = History::default();
+        for _ in 0..1000 {
+            history.record(snapshot("x".repeat(MAX_TEXT_BYTES)), None);
+        }
+        assert_eq!(history.bytes, MAX_HISTORY_BYTES);
+        assert_eq!(history.undo.len(), 8);
+        history.undo(snapshot("next".into())).unwrap();
+        assert_eq!(history.redo.len(), 1);
+        history.record(snapshot("changed".into()), None);
+        assert!(history.redo(snapshot("changed again".into())).is_none());
+        assert!(history.bytes <= MAX_HISTORY_BYTES);
+        let mut history = History::default();
+        for _ in 0..1000 {
+            history.record(snapshot(String::new()), None);
+        }
+        assert_eq!(history.undo.len(), MAX_HISTORY_ENTRIES);
+    }
+
+    #[gpui::test]
+    fn native_undo_groups_typing_and_restores_selection_through_normal_ingress(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(bind_keys);
+        let edits = Rc::new(RefCell::new(Vec::new()));
+        let captured = edits.clone();
+        let (input, cx) = cx.add_window_view(|window, cx| {
+            let input = TextInput::new_multiline(
+                "".into(),
+                Rc::new(move |text, _| captured.borrow_mut().push(text)),
+                cx,
+            );
+            input.focus_handle.focus(window);
+            input
+        });
+        cx.simulate_input("h");
+        cx.simulate_input("é");
+        cx.simulate_input("🙂");
+        cx.simulate_keystrokes("ctrl-z");
+        cx.update(|_, cx| assert_eq!(input.read(cx).content.as_ref(), ""));
+        cx.simulate_keystrokes("ctrl-shift-z");
+        cx.update(|_, cx| assert_eq!(input.read(cx).content.as_ref(), "hé🙂"));
+        cx.simulate_keystrokes("home shift-end");
+        cx.simulate_input("replacement");
+        cx.simulate_keystrokes("ctrl-z");
+        cx.update(|_, cx| {
+            let input = input.read(cx);
+            assert_eq!(input.content.as_ref(), "hé🙂");
+            assert_eq!(input.selected_range, 0..7);
+        });
+        assert_eq!(edits.borrow().last().map(String::as_str), Some("hé🙂"));
+        cx.update(|_, cx| input.update(cx, |input, cx| input.set_value("another document", cx)));
+        cx.simulate_keystrokes("ctrl-z");
+        cx.update(|_, cx| assert_eq!(input.read(cx).content.as_ref(), "another document"));
+    }
+
+    #[gpui::test]
+    fn composition_is_one_undo_boundary_and_disabled_undo_is_inert(cx: &mut gpui::TestAppContext) {
+        let (input, cx) = cx.add_window_view(|_, cx| {
+            TextInput::new_multiline("before".into(), Rc::new(|_, _| {}), cx)
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.move_to(6, cx);
+                input.replace_and_mark_text_in_range(None, "é", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "é🙂", None, window, cx);
+                input.replace_text_in_range(None, "é🙂", window, cx);
+            })
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_disabled(true, cx);
+                input.undo(&Undo, window, cx);
+                assert_eq!(input.content.as_ref(), "beforeé🙂");
+                input.set_disabled(false, cx);
+                input.undo(&Undo, window, cx);
+                assert_eq!(input.content.as_ref(), "before");
+                assert_eq!(input.selected_range, 6..6);
+            })
+        });
+    }
 
     #[test]
     fn hard_lines_keep_empty_final_rows_and_unicode_byte_positions() {
