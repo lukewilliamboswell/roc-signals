@@ -736,6 +736,9 @@ impl EntityInputHandler for TextInput {
         if before.text.as_ref()
             != &(self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
         {
+            if !range.is_empty() {
+                self.history.break_group();
+            }
             self.history.record(before, typing_end);
         }
         self.content =
@@ -1370,6 +1373,41 @@ mod tests {
         cx.update(|_, cx| input.update(cx, |input, cx| input.set_value("another document", cx)));
         cx.simulate_keystrokes("ctrl-z");
         cx.update(|_, cx| assert_eq!(input.read(cx).content.as_ref(), "another document"));
+    }
+
+    #[gpui::test]
+    fn replacing_selected_grapheme_starts_a_new_undo_group(cx: &mut gpui::TestAppContext) {
+        let (input, cx) =
+            cx.add_window_view(|_, cx| TextInput::new("".into(), Rc::new(|_, _| {}), cx));
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "a", window, cx)
+            })
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "b", window, cx)
+            })
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                // Platform input can supply a replacement range without preceding
+                // keyboard movement; it still defines a separate undo boundary.
+                input.replace_text_in_range(Some(1..2), "é", window, cx);
+            })
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.undo(&Undo, window, cx);
+                assert_eq!(input.content.as_ref(), "ab");
+            })
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.undo(&Undo, window, cx);
+                assert_eq!(input.content.as_ref(), "");
+            })
+        });
     }
 
     #[gpui::test]
