@@ -1,0 +1,17 @@
+(test "Selection and priority changes leave unrelated card scopes intact"
+  (steps
+    (mark-metrics)
+    (click (role button :name "Edit task-5"))
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta selector_members_dirtied 2)
+    (expect-value (label "Task title") "Test the import flow")
+    (click (role button :name "Low priority"))
+    (expect-visible (text "Priority: Low"))
+    (fill (label "Assignee") "Rae")
+    (expect-visible (text "Low priority · Rae"))
+    (click (role button :name "Edit task-1"))
+    (expect-value (label "Assignee") "Maya")
+    (click (role button :name "Edit task-5"))
+    (expect-value (label "Assignee") "Rae")
+    (expect-visible (text "Priority: Low"))))

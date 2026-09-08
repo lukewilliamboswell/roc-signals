@@ -12,3 +12,6 @@ slug = "notes-editor"
 
 [[examples]]
 slug = "activity-monitor"
+
+[[examples]]
+slug = "task-board"
