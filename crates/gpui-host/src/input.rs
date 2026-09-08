@@ -188,8 +188,8 @@ impl TextInput {
         }
     }
     /// Creates an editor that preserves hard line breaks, including pasted text.
-    /// Its scrollable viewport retains the same focus and selection identity as
-    /// the single-line editor; soft wrapping is not part of this control.
+    /// Its scrollable viewport wraps at the available width while retaining
+    /// byte-based document selection, focus, and composition identity.
     pub fn new_multiline(
         value: String,
         on_change: Rc<dyn Fn(String, &mut App)>,
@@ -350,45 +350,39 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Input can arrive faster than frames. Shape the two current logical
-        // lines instead of interpreting new text with the previous frame's map.
-        let ranges = line_ranges(&self.content, self.multiline);
-        let current = ranges
-            .partition_point(|range| range.start <= self.cursor_offset())
-            .saturating_sub(1);
-        let target = current
-            .saturating_add_signed(direction)
-            .min(ranges.len() - 1);
+        // Rebuild current visual boundaries because edits can arrive before a frame.
         let text_style = window.text_style();
-        let font = self
-            .last_layout
-            .as_ref()
-            .map_or_else(|| text_style.font(), |layout| layout.font.clone());
         let font_size = self
             .last_layout
             .as_ref()
             .map_or(px(18.), |layout| layout.font_size);
-        let shape = |range: &Range<usize>| {
-            let text: SharedString = self.content[range.clone()].to_owned().into();
-            let run = TextRun {
-                len: text.len(),
-                font: font.clone(),
-                color: text_style.color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            window
-                .text_system()
-                .shape_line(text, font_size, &[run], None)
-        };
-        let current_line = shape(&ranges[current]);
-        let target_line = shape(&ranges[target]);
+        let width = self
+            .last_bounds
+            .map(|bounds| (bounds.size.width - px(4.)).max(px(1.)));
+        let (layout, _) = shape_layout(
+            self,
+            width,
+            &text_style,
+            window.line_height(),
+            font_size,
+            window,
+        );
+        let current = layout.line_for_offset(self.cursor_offset());
+        let target = current
+            .saturating_add_signed(direction)
+            .min(layout.lines.len() - 1);
+        let current_line = &layout.lines[current];
+        let target_line = &layout.lines[target];
         let x = self.preferred_x.unwrap_or_else(|| {
-            current_line.x_for_index(self.cursor_offset() - ranges[current].start)
+            current_line
+                .shaped
+                .x_for_index(self.cursor_offset() - current_line.range.start)
         });
-        let offset =
-            ranges[target].start + target_line.closest_index_for_x(x).min(ranges[target].len());
+        let offset = target_line.range.start
+            + target_line
+                .shaped
+                .closest_index_for_x(x)
+                .min(target_line.range.len());
         if selecting {
             self.select_to(offset, cx)
         } else {
@@ -894,6 +888,115 @@ impl TextLayout {
     }
 }
 
+fn shape_layout(
+    input: &TextInput,
+    wrap_width: Option<Pixels>,
+    text_style: &gpui::TextStyle,
+    line_height: Pixels,
+    font_size: Pixels,
+    window: &mut Window,
+) -> (TextLayout, Pixels) {
+    let mut width = px(0.);
+    let mut lines = Vec::new();
+    for range in visual_ranges(input, wrap_width, font_size, &text_style, window) {
+        let placeholder = input.content.is_empty();
+        let text: SharedString = if placeholder {
+            input.placeholder.clone()
+        } else {
+            input.content[range.clone()].to_owned().into()
+        };
+        let run = TextRun {
+            len: text.len(),
+            font: text_style.font(),
+            color: if placeholder {
+                hsla(0., 0., 0., 0.4)
+            } else {
+                text_style.color
+            },
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let mut runs = Vec::new();
+        if let Some(marked) = input
+            .marked_range
+            .as_ref()
+            .filter(|marked| marked.start < range.end && marked.end > range.start)
+        {
+            let start = marked.start.max(range.start) - range.start;
+            let end = marked.end.min(range.end) - range.start;
+            if start > 0 {
+                runs.push(TextRun {
+                    len: start,
+                    ..run.clone()
+                });
+            }
+            runs.push(TextRun {
+                len: end - start,
+                underline: Some(UnderlineStyle {
+                    color: Some(run.color),
+                    thickness: px(1.),
+                    wavy: false,
+                }),
+                ..run.clone()
+            });
+            if end < text.len() {
+                runs.push(TextRun {
+                    len: text.len() - end,
+                    ..run
+                });
+            }
+        } else {
+            runs.push(run);
+        }
+        let shaped = window
+            .text_system()
+            .shape_line(text, font_size, &runs, None);
+        width = width.max(shaped.width);
+        lines.push(TextLine { range, shaped });
+    }
+    let layout = TextLayout {
+        lines,
+        line_height,
+        font: text_style.font(),
+        font_size,
+    };
+    (layout, width)
+}
+
+fn visual_ranges(
+    input: &TextInput,
+    wrap_width: Option<Pixels>,
+    font_size: Pixels,
+    style: &gpui::TextStyle,
+    window: &mut Window,
+) -> Vec<Range<usize>> {
+    let mut output = Vec::new();
+    for range in line_ranges(&input.content, input.multiline) {
+        if !input.multiline || wrap_width.is_none() || range.is_empty() {
+            output.push(range);
+            continue;
+        }
+        let text: SharedString = input.content[range.clone()].to_owned().into();
+        let run = style.to_run(text.len());
+        let shaped = window
+            .text_system()
+            .shape_text(text, font_size, &[run], wrap_width, None)
+            .expect("native text shaping failed");
+        let line = &shaped[0];
+        let mut start = range.start;
+        for boundary in &line.wrap_boundaries {
+            let end = range.start + line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index;
+            if end > start {
+                output.push(start..end);
+                start = end;
+            }
+        }
+        output.push(start..range.end);
+    }
+    output
+}
+
 struct TextElement {
     input: Entity<TextInput>,
 }
@@ -912,7 +1015,7 @@ impl IntoElement for TextElement {
 }
 
 impl Element for TextElement {
-    type RequestLayoutState = Option<TextLayout>;
+    type RequestLayoutState = Rc<std::cell::RefCell<Option<TextLayout>>>;
     type PrepaintState = PrepaintState;
 
     fn id(&self) -> Option<ElementId> {
@@ -930,112 +1033,46 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let input = self.input.read(cx);
         let text_style = window.text_style();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
-        let mut width = px(0.);
-        let mut lines = Vec::new();
-        for range in line_ranges(&input.content, input.multiline) {
-            let placeholder = input.content.is_empty();
-            let text: SharedString = if placeholder {
-                input.placeholder.clone()
-            } else {
-                input.content[range.clone()].to_owned().into()
-            };
-            let run = TextRun {
-                len: text.len(),
-                font: text_style.font(),
-                color: if placeholder {
-                    hsla(0., 0., 0., 0.4)
-                } else {
-                    text_style.color
-                },
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let mut runs = Vec::new();
-            if let Some(marked) = input
-                .marked_range
-                .as_ref()
-                .filter(|marked| marked.start < range.end && marked.end > range.start)
-            {
-                let start = marked.start.max(range.start) - range.start;
-                let end = marked.end.min(range.end) - range.start;
-                if start > 0 {
-                    runs.push(TextRun {
-                        len: start,
-                        ..run.clone()
-                    });
-                }
-                runs.push(TextRun {
-                    len: end - start,
-                    underline: Some(UnderlineStyle {
-                        color: Some(run.color),
-                        thickness: px(1.),
-                        wavy: false,
-                    }),
-                    ..run.clone()
-                });
-                if end < text.len() {
-                    runs.push(TextRun {
-                        len: text.len() - end,
-                        ..run
-                    });
-                }
-            } else {
-                runs.push(run);
-            }
-            let shaped = window
-                .text_system()
-                .shape_line(text, font_size, &runs, None);
-            width = width.max(shaped.width);
-            lines.push(TextLine { range, shaped });
-        }
-        let layout = TextLayout {
-            lines,
-            line_height,
-            font: text_style.font(),
-            font_size,
-        };
-        if input.reveal_cursor {
-            let row = layout.line_for_offset(input.cursor_offset());
-            let line = &layout.lines[row];
-            let x = line
-                .shaped
-                .x_for_index(input.cursor_offset() - line.range.start);
-            let y = line_height * row as f32;
-            let viewport = input.scroll.bounds().size;
-            let mut offset = input.scroll.offset();
-            if viewport.width > px(0.) {
-                if x + offset.x < px(0.) {
-                    offset.x = -x;
-                }
-                if x + px(4.) + offset.x > viewport.width {
-                    offset.x = viewport.width - x - px(4.);
-                }
-            }
-            if input.multiline && viewport.height > px(0.) {
-                if y + offset.y < px(0.) {
-                    offset.y = -y;
-                }
-                if y + line_height + offset.y > viewport.height {
-                    offset.y = viewport.height - y - line_height;
-                }
-            }
-            input
-                .scroll
-                .set_offset(point(offset.x.min(px(0.)), offset.y.min(px(0.))));
-        }
+        let state = Rc::new(std::cell::RefCell::new(None));
+        let measured = state.clone();
+        let input = self.input.clone();
         let mut style = Style::default();
-        style.size.width = (width + px(4.)).into();
         style.min_size.width = relative(1.).into();
-        style.size.height = (line_height * layout.lines.len() as f32).into();
         style.flex_shrink = 0.;
-        self.input
-            .update(cx, |input, _| input.reveal_cursor = false);
-        (window.request_layout(style, [], cx), Some(layout))
+        let id = window.request_measured_layout(style, move |known, available, window, cx| {
+            let width = known.width.or(match available.width {
+                gpui::AvailableSpace::Definite(width) => Some(width),
+                _ => None,
+            });
+            let input = input.read(cx);
+            let wrap_width = if input.multiline {
+                width.map(|width| (width - px(4.)).max(px(1.)))
+            } else {
+                None
+            };
+            let (layout, natural_width) = shape_layout(
+                input,
+                wrap_width,
+                &text_style,
+                line_height,
+                font_size,
+                window,
+            );
+            let result = size(
+                if input.multiline {
+                    width.unwrap_or(natural_width + px(4.))
+                } else {
+                    natural_width + px(4.)
+                },
+                line_height * layout.lines.len() as f32,
+            );
+            measured.borrow_mut().replace(layout);
+            result
+        });
+        (id, state)
     }
 
     fn prepaint(
@@ -1048,7 +1085,39 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
-        let layout = request_layout.as_ref().unwrap();
+        let borrowed = request_layout.borrow();
+        let layout = borrowed.as_ref().unwrap();
+        if input.reveal_cursor {
+            let row = layout.line_for_offset(input.cursor_offset());
+            let line = &layout.lines[row];
+            let x = line
+                .shaped
+                .x_for_index(input.cursor_offset() - line.range.start);
+            let y = layout.line_height * row as f32;
+            let viewport = input.scroll.bounds().size;
+            let mut offset = input.scroll.offset();
+            if input.multiline {
+                offset.x = px(0.);
+            } else if viewport.width > px(0.) {
+                if x + offset.x < px(0.) {
+                    offset.x = -x;
+                }
+                if x + px(4.) + offset.x > viewport.width {
+                    offset.x = viewport.width - x - px(4.);
+                }
+            }
+            if input.multiline && viewport.height > px(0.) {
+                if y + offset.y < px(0.) {
+                    offset.y = -y;
+                }
+                if y + layout.line_height + offset.y > viewport.height {
+                    offset.y = viewport.height - y - layout.line_height;
+                }
+            }
+            input
+                .scroll
+                .set_offset(point(offset.x.min(px(0.)), offset.y.min(px(0.))));
+        }
         let selected = &input.selected_range;
         let mut selections = Vec::new();
         let mut cursor = None;
@@ -1108,7 +1177,7 @@ impl Element for TextElement {
         for selection in prepaint.selections.drain(..) {
             window.paint_quad(selection)
         }
-        let layout = request_layout.take().unwrap();
+        let layout = request_layout.borrow_mut().take().unwrap();
         let mask = window.content_mask().bounds;
         for (row, line) in layout.lines.iter().enumerate() {
             let top = bounds.top() + layout.line_height * row as f32;
@@ -1126,6 +1195,7 @@ impl Element for TextElement {
         }
 
         self.input.update(cx, |input, _cx| {
+            input.reveal_cursor = false;
             input.last_layout = Some(layout);
             input.last_bounds = Some(bounds);
         });
@@ -1325,6 +1395,50 @@ mod tests {
                 assert_eq!(input.content.as_ref(), "before");
                 assert_eq!(input.selected_range, 6..6);
             })
+        });
+    }
+
+    #[gpui::test]
+    fn soft_wrap_preserves_document_offsets_selection_and_ime_bounds(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(bind_keys);
+        let text = "café 🙂 words that wrap across the available width ".repeat(20);
+        let (input, cx) = cx.add_window_view(|window, cx| {
+            let input = TextInput::new_multiline(text.clone(), Rc::new(|_, _| {}), cx);
+            input.focus_handle.focus(window);
+            input
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                let layout = input.last_layout.as_ref().unwrap();
+                assert!(layout.lines.len() > 1, "long paragraphs must wrap");
+                let boundary = layout.lines[1].range.start;
+                let line_height = layout.line_height;
+                assert!(text.is_char_boundary(boundary));
+                let bounds = input.last_bounds.unwrap();
+                let second = point(
+                    bounds.left() + px(1.),
+                    bounds.top() + layout.line_height + px(1.),
+                );
+                assert_eq!(input.index_for_mouse_position(second), boundary);
+                let utf16 = input.offset_to_utf16(boundary);
+                let caret = input
+                    .bounds_for_range(utf16..utf16, bounds, window, cx)
+                    .unwrap();
+                assert_eq!(caret.top(), bounds.top() + line_height);
+                input.move_to(boundary, cx);
+                input.select_to(boundary + 3, cx);
+                assert_eq!(input.content.as_ref(), text);
+            })
+        });
+        cx.simulate_keystrokes("ctrl-end up");
+        cx.update(|_, cx| {
+            let input = input.read(cx);
+            assert!(input.cursor_offset() < text.len());
+            assert!(text.is_char_boundary(input.cursor_offset()));
+            assert_eq!(input.content.as_ref(), text);
         });
     }
 

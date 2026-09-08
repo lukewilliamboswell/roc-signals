@@ -43,7 +43,9 @@ the host adds none.
 Text controls are controlled: their value comes from a signal and committed
 edits enter the corresponding message handler. Native editors retain selection,
 clipboard behavior, and IME preedit locally. `textarea` preserves hard line
-breaks; soft wrapping is not implemented. Text input is bounded at 1 MiB.
+breaks and wraps paragraphs to the available viewport width without changing
+the document text. Caret movement, pointer selection, and composition bounds use
+those visual rows. Text input is bounded at 1 MiB.
 Control+Z undoes native edits; Control+Shift+Z or Control+Y redoes them.
 Contiguous typing groups until whitespace, cursor movement, or a one-second
 pause. Paste and composition form separate edit groups. Undo restores selection

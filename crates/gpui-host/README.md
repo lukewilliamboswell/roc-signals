@@ -63,7 +63,9 @@ must not be mistaken for verified screen-reader integration.
 The editor is adapted from GPUI's Apache-2.0 `examples/input.rs`; its attribution
 and license are included. Composition preedit remains editor-local and committed
 text enters Roc. Multiline editing preserves hard line breaks, selection, clipboard operations,
-and a retained viewport; soft wrapping is not implemented. Native undo/redo
+and a retained viewport. Multiline paragraphs wrap at measured viewport width;
+visual row boundaries retain document byte offsets for pointer selection, caret
+movement, and composition positioning. Native undo/redo
 retains at most 128 boundaries and 8 MiB of primitive text per editor, restores
 selection, and emits ordinary engine input. Equal engine echoes preserve history;
 authoritative document replacements clear it. Focused GPUI tests
