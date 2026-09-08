@@ -61,6 +61,11 @@ pub const Error = Index.Error;
 pub const Positions = struct {
     allocator: std.mem.Allocator,
     parents: std.AutoHashMapUnmanaged(ids.ElemId, *Index) = .empty,
+    memberships: std.AutoHashMapUnmanaged(PositionId, Membership) = .empty,
+    scopes: std.AutoHashMapUnmanaged(ids.ScopeId, ScopeHead) = .empty,
+
+    const Membership = struct { entry: Entry, previous: ?PositionId = null, next: ?PositionId = null };
+    const ScopeHead = struct { first: ?PositionId = null, count: usize = 0 };
 
     /// Creates an empty engine-owned position registry.
     pub fn init(allocator: std.mem.Allocator) Positions {
@@ -75,6 +80,19 @@ pub const Positions = struct {
             self.allocator.destroy(index.*);
         }
         self.parents.deinit(self.allocator);
+        self.memberships.deinit(self.allocator);
+        self.scopes.deinit(self.allocator);
+    }
+
+    /// Counts the exact lexical units owned by one live scope, independently
+    /// of unrelated scopes and of the number of rendered descendants.
+    pub fn ownedCount(self: *const Positions, scope: ids.ScopeId) usize {
+        return if (self.scopes.get(scope)) |head| head.count else 0;
+    }
+
+    /// Resolves the owner and render parent of a retained nominal position.
+    pub fn entry(self: *const Positions, position: PositionId) ?Entry {
+        return if (self.memberships.get(position)) |membership| membership.entry else null;
     }
 
     /// Resolves the next visible root at a retained empty construction boundary.
@@ -105,6 +123,8 @@ pub const Prepared = struct {
     const Parent = struct { index: *Index, edits: Index.PreparedEdits, owned: bool };
     positions: *Positions,
     parents: std.AutoHashMapUnmanaged(ids.ElemId, Parent) = .empty,
+    memberships: std.AutoHashMapUnmanaged(PositionId, ?Positions.Membership) = .empty,
+    scopes: std.AutoHashMapUnmanaged(ids.ScopeId, Positions.ScopeHead) = .empty,
     ready: bool = false,
     committed: bool = false,
 
@@ -121,21 +141,82 @@ pub const Prepared = struct {
         return slot.value_ptr;
     }
 
+    fn membership(self: *const Prepared, position: PositionId) ?Positions.Membership {
+        if (self.memberships.getPtr(position)) |changed| return changed.*;
+        return self.positions.memberships.get(position);
+    }
+
+    fn scopeHead(self: *const Prepared, owner: ids.ScopeId) Positions.ScopeHead {
+        return self.scopes.get(owner) orelse self.positions.scopes.get(owner) orelse .{};
+    }
+
+    fn addOwnership(self: *Prepared, next_entry: Entry) Error!void {
+        var head = self.scopeHead(next_entry.owner);
+        const next_count = std.math.add(usize, head.count, 1) catch return error.ResourceLimit;
+        try self.memberships.ensureUnusedCapacity(self.positions.allocator, 2);
+        try self.scopes.ensureUnusedCapacity(self.positions.allocator, 1);
+        if (head.first) |first| {
+            var old = self.membership(first) orelse return error.InvalidRow;
+            old.previous = next_entry.position;
+            self.memberships.putAssumeCapacity(first, old);
+        }
+        self.memberships.putAssumeCapacity(next_entry.position, .{ .entry = next_entry, .next = head.first });
+        head.first = next_entry.position;
+        head.count = next_count;
+        self.scopes.putAssumeCapacity(next_entry.owner, head);
+    }
+
+    fn removeOwnership(self: *Prepared, old: Positions.Membership) Error!void {
+        var head = self.scopeHead(old.entry.owner);
+        if (head.count == 0) return error.InvalidRow;
+        try self.memberships.ensureUnusedCapacity(self.positions.allocator, 3);
+        try self.scopes.ensureUnusedCapacity(self.positions.allocator, 1);
+        if (old.previous) |previous| {
+            var neighbor = self.membership(previous) orelse return error.InvalidRow;
+            neighbor.next = old.next;
+            self.memberships.putAssumeCapacity(previous, neighbor);
+        } else head.first = old.next;
+        if (old.next) |next| {
+            var neighbor = self.membership(next) orelse return error.InvalidRow;
+            neighbor.previous = old.previous;
+            self.memberships.putAssumeCapacity(next, neighbor);
+        }
+        self.memberships.putAssumeCapacity(old.entry.position, null);
+        head.count -= 1;
+        self.scopes.putAssumeCapacity(old.entry.owner, head);
+    }
+
     /// Inserts or moves one explicitly collected unit before another retained
     /// position. Cross-parent moves must first remove their old membership.
     pub fn place(self: *Prepared, entry: Entry, before: ?PositionId) Error!void {
         const value = try self.parent(entry.parent);
-        if (value.edits.span(entry.position)) |_| {
+        if (self.membership(entry.position)) |existing| {
+            if (existing.entry.parent != entry.parent or existing.entry.owner != entry.owner) return error.InvalidRow;
             _ = try value.edits.moveRange(entry.position, 1, before);
-        } else |err| switch (err) {
-            error.InvalidRow => try value.edits.insertBefore(entry.position, before, entry.position.span()),
+        } else {
+            try value.edits.insertBefore(entry.position, before, entry.position.span());
+            try self.addOwnership(entry);
         }
     }
 
     /// Retires exactly one scope-owned unit. Missing identity is an error.
     pub fn remove(self: *Prepared, parent_id: ids.ElemId, position: PositionId) Error!void {
         const value = try self.parent(parent_id);
+        const old = self.membership(position) orelse return error.InvalidRow;
+        if (old.entry.parent != parent_id) return error.InvalidRow;
         _ = try value.edits.removeRange(position, 1);
+        try self.removeOwnership(old);
+    }
+
+    /// Removes only the units owned by this scope, including invisible site
+    /// and row markers. The caller supplies every retiring descendant scope.
+    /// On failure the candidate must be discarded; committed ownership and
+    /// lexical order remain unchanged.
+    pub fn retireScope(self: *Prepared, owner: ids.ScopeId) Error!void {
+        while (self.scopeHead(owner).first) |position| {
+            const old = self.membership(position) orelse return error.InvalidRow;
+            try self.remove(old.entry.parent, position);
+        }
     }
 
     /// Moves a complete lexical range, including empty nested site markers.
@@ -178,6 +259,8 @@ pub const Prepared = struct {
             if (value.owned and value.edits.len() != 0) fresh = std.math.add(u32, fresh, 1) catch return error.ResourceLimit;
         }
         try self.positions.parents.ensureUnusedCapacity(self.positions.allocator, fresh);
+        try self.positions.memberships.ensureUnusedCapacity(self.positions.allocator, self.memberships.count());
+        try self.positions.scopes.ensureUnusedCapacity(self.positions.allocator, self.scopes.count());
         self.ready = true;
     }
 
@@ -197,6 +280,20 @@ pub const Prepared = struct {
                 value.owned = false;
             }
         }
+        var memberships = self.memberships.iterator();
+        while (memberships.next()) |slot| {
+            if (slot.value_ptr.*) |value|
+                self.positions.memberships.putAssumeCapacity(slot.key_ptr.*, value)
+            else
+                _ = self.positions.memberships.remove(slot.key_ptr.*);
+        }
+        var scopes = self.scopes.iterator();
+        while (scopes.next()) |slot| {
+            if (slot.value_ptr.count != 0)
+                self.positions.scopes.putAssumeCapacity(slot.key_ptr.*, slot.value_ptr.*)
+            else
+                _ = self.positions.scopes.remove(slot.key_ptr.*);
+        }
         self.committed = true;
     }
 
@@ -211,6 +308,8 @@ pub const Prepared = struct {
             }
         }
         self.parents.deinit(self.positions.allocator);
+        self.memberships.deinit(self.positions.allocator);
+        self.scopes.deinit(self.positions.allocator);
     }
 };
 
@@ -261,6 +360,8 @@ test "structural anchors skip thousands of adjacent empty markers with bounded e
     try std.testing.expectEqual(ids.ElemId.fromRaw(2), (try edit.anchor(parent_id, first)).?);
     try std.testing.expectEqual(ids.ElemId.fromRaw(1), (try edit.anchor(parent_id, PositionId.marker(ids.NodeId.fromRaw(1), .when))).?);
     try std.testing.expect(edit.parents.get(parent_id).?.edits.stats().nodes_touched < 100);
+    try std.testing.expectEqual(@as(u32, 2), edit.memberships.count());
+    try std.testing.expectEqual(@as(u32, 1), edit.scopes.count());
 }
 
 fn seedRefusalPositions(positions: *Positions) !void {
@@ -301,6 +402,8 @@ test "structural position refusal leaves empty-site anchors retryable" {
         refused.deinit();
         const marker = PositionId.marker(ids.NodeId.fromRaw(1), .when);
         try std.testing.expectEqual(ids.ElemId.fromRaw(2), (try positions.anchor(ids.root_elem, marker)).?);
+        try std.testing.expectEqual(@as(usize, 2), positions.ownedCount(ids.ScopeId.fromRaw(0)));
+        try std.testing.expectEqual(@as(usize, 0), positions.ownedCount(ids.ScopeId.fromRaw(1)));
         fault.configure(null);
         var retry = positions.prepare();
         defer retry.deinit();
@@ -309,6 +412,9 @@ test "structural position refusal leaves empty-site anchors retryable" {
         retry.commit();
         try std.testing.expectEqual(@as(usize, 0), fault.attempts);
         try std.testing.expectEqual(null, try positions.anchor(ids.root_elem, marker));
+        try std.testing.expectEqual(@as(usize, 1), positions.ownedCount(ids.ScopeId.fromRaw(0)));
+        try std.testing.expectEqual(@as(usize, 1), positions.ownedCount(ids.ScopeId.fromRaw(1)));
+        try std.testing.expectEqual(null, positions.entry(PositionId.element(ids.ElemId.fromRaw(2))));
         fault.configure(null);
     }
 }
@@ -345,4 +451,64 @@ test "structural row range moves preserve empty nested sites and identity domain
     retire.commit();
     try std.testing.expectEqual(@as(usize, 0), positions.parents.count());
     try std.testing.expectError(error.InvalidRow, positions.anchor(parent_id, empty));
+}
+
+test "structural scope retirement releases only its owned lexical units" {
+    var positions = Positions.init(std.testing.allocator);
+    defer positions.deinit();
+    const parent_id = ids.root_elem;
+    const outer = ids.ScopeId.fromRaw(1);
+    const retiring = ids.ScopeId.fromRaw(2);
+    const sibling = ids.ScopeId.fromRaw(3);
+    const site = PositionId.marker(ids.NodeId.fromRaw(1), .when);
+    const nested = PositionId.marker(ids.NodeId.fromRaw(2), .when);
+    const other = PositionId.marker(ids.NodeId.fromRaw(3), .when);
+    const content = PositionId.element(ids.ElemId.fromRaw(4));
+    const tail = PositionId.element(ids.ElemId.fromRaw(5));
+    var initial = positions.prepare();
+    defer initial.deinit();
+    for ([_]Entry{
+        .{ .parent = parent_id, .position = site, .owner = outer },
+        .{ .parent = parent_id, .position = nested, .owner = retiring },
+        .{ .parent = parent_id, .position = content, .owner = retiring },
+        .{ .parent = parent_id, .position = other, .owner = sibling },
+        .{ .parent = parent_id, .position = tail, .owner = outer },
+    }) |unit| try initial.place(unit, null);
+    try initial.preflight();
+    initial.commit();
+    var removed = positions.prepare();
+    defer removed.deinit();
+    try removed.retireScope(retiring);
+    try std.testing.expectEqual(ids.ElemId.fromRaw(5), (try removed.anchor(parent_id, site)).?);
+    try std.testing.expectEqual(ids.ElemId.fromRaw(4), (try positions.anchor(parent_id, site)).?);
+    try std.testing.expectEqual(@as(u32, 2), removed.memberships.count());
+    try removed.preflight();
+    removed.commit();
+    try std.testing.expectEqual(@as(usize, 0), positions.ownedCount(retiring));
+    try std.testing.expectEqual(@as(usize, 2), positions.ownedCount(outer));
+    try std.testing.expectEqual(@as(usize, 1), positions.ownedCount(sibling));
+    try std.testing.expectEqual(null, positions.entry(nested));
+    try std.testing.expectEqual(other, (try positions.nextPosition(parent_id, site)).?);
+    var reused = positions.prepare();
+    defer reused.deinit();
+    try reused.place(.{ .parent = parent_id, .position = nested, .owner = retiring }, other);
+    try reused.preflight();
+    reused.commit();
+    try std.testing.expectEqual(@as(usize, 1), positions.ownedCount(retiring));
+    try std.testing.expectEqual(nested, (try positions.nextPosition(parent_id, site)).?);
+}
+
+test "structural ownership rejects scope stealing and cross-parent aliases" {
+    var positions = Positions.init(std.testing.allocator);
+    defer positions.deinit();
+    try seedRefusalPositions(&positions);
+    const existing = PositionId.element(ids.ElemId.fromRaw(2));
+    var wrong_owner = positions.prepare();
+    defer wrong_owner.deinit();
+    try std.testing.expectError(error.InvalidRow, wrong_owner.place(.{ .parent = ids.root_elem, .position = existing, .owner = ids.ScopeId.fromRaw(1) }, null));
+    var wrong_parent = positions.prepare();
+    defer wrong_parent.deinit();
+    try std.testing.expectError(error.InvalidRow, wrong_parent.place(.{ .parent = ids.ElemId.fromRaw(9), .position = existing, .owner = ids.ScopeId.fromRaw(0) }, null));
+    try std.testing.expectEqual(ids.root_elem, positions.entry(existing).?.parent);
+    try std.testing.expectEqual(@as(usize, 2), positions.ownedCount(ids.ScopeId.fromRaw(0)));
 }
