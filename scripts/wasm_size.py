@@ -423,7 +423,8 @@ def compare(before: dict, after: dict) -> None:
         percent = (delta / old * 100) if old else 0.0
         return f"{format_int(old)} | {format_int(new)} | {delta:+,} ({percent:+.2f}%)"
 
-    for name in before_by_name.keys() | after_by_name.keys():
+    names = list(before_by_name) + [name for name in after_by_name if name not in before_by_name]
+    for name in names:
         old, new = before_by_name.get(name), after_by_name.get(name)
         if old is None or new is None:
             print(f"| {name} | " + " | ".join("n/a | n/a | only in " + ("after" if old is None else "before") for _ in metrics) + " |")
