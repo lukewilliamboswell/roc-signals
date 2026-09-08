@@ -18,6 +18,7 @@ struct Registration {
 pub(crate) struct Lifecycle {
     registration: Option<Registration>,
     pending: Option<Registration>,
+    approved: bool,
     decision: u64,
     installed: bool,
 }
@@ -29,7 +30,13 @@ impl Lifecycle {
         }
         self.registration = registration;
         self.decision = decision;
-        if decision == 1 {
+        if decision == 3 && self.pending.is_some() && self.pending == registration {
+            // Admission validates the pending registration now. Once committed,
+            // closure belongs to the window, not a later descriptor lifetime;
+            // no subsequent graph update can erase that decided native effect.
+            self.approved = true;
+        }
+        if decision == 1 && !self.approved {
             self.pending = None;
         }
     }
@@ -44,8 +51,11 @@ impl Lifecycle {
         Request::Dispatch(registration.event)
     }
     fn take_close(&mut self) -> bool {
-        if self.decision == 3 && self.pending.is_some() && self.pending == self.registration {
+        if self.approved
+            || (self.decision == 3 && self.pending.is_some() && self.pending == self.registration)
+        {
             self.pending = None;
+            self.approved = false;
             true
         } else {
             false
@@ -94,12 +104,15 @@ impl Runtime {
             self.window_lifecycle
                 .update(Some(registration), node.close_policy);
         }
-        if self.window_lifecycle.pending.is_some() {
+        if self.window_lifecycle.pending.is_some() || self.window_lifecycle.approved {
             cx.notify();
         }
     }
 
     fn native_close_requested(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.window_lifecycle.take_close() {
+            return true;
+        }
         match self.window_lifecycle.request() {
             Request::Unmanaged => true,
             Request::Pending => false,
@@ -107,7 +120,7 @@ impl Runtime {
                 self.event(event, Payload::Unit, cx);
                 // Equal KeepOpen does not need a render patch. The request is
                 // canceled using the committed policy even when nothing changed.
-                if self.window_lifecycle.decision == 1 {
+                if self.window_lifecycle.decision == 1 && !self.window_lifecycle.approved {
                     self.window_lifecycle.pending = None;
                 }
                 self.window_lifecycle.take_close()
@@ -135,6 +148,39 @@ impl Runtime {
 mod tests {
     use super::*;
     use gpui::AppContext;
+    #[gpui::test]
+    fn committed_close_survives_later_policy_and_owner_retirement(cx: &mut gpui::TestAppContext) {
+        let view = cx.new(|_| ());
+        let owner = Registration {
+            node: 1,
+            lifetime: 1,
+            view: view.entity_id(),
+            event: 8,
+        };
+        let mut lifecycle = Lifecycle::default();
+        lifecycle.update(Some(owner), 2);
+        assert!(matches!(lifecycle.request(), Request::Dispatch(8)));
+        lifecycle.update(Some(owner), 3);
+        lifecycle.update(Some(owner), 1);
+        assert!(lifecycle.take_close());
+        assert!(!lifecycle.take_close());
+        lifecycle.update(Some(owner), 2);
+        assert!(matches!(lifecycle.request(), Request::Dispatch(8)));
+        lifecycle.update(Some(owner), 3);
+        lifecycle.update(
+            Some(Registration {
+                lifetime: 2,
+                ..owner
+            }),
+            3,
+        );
+        assert!(lifecycle.take_close());
+        assert!(matches!(lifecycle.request(), Request::Dispatch(8)));
+        lifecycle.update(lifecycle.registration, 3);
+        lifecycle.update(None, 0);
+        assert!(lifecycle.take_close());
+    }
+
     #[gpui::test]
     fn decisions_cancel_wait_complete_and_cannot_cross_owner_lifetimes(
         cx: &mut gpui::TestAppContext,

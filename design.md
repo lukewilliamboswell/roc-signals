@@ -994,7 +994,9 @@ close request enters the ordinary unit-event graph; the committed app decision
 cancels it, holds it pending, or permits closure. Async work completes through
 ordinary task settlement before the app may permit closure. The native adapter
 retains at most one pending request, owned by the exact rendered registration
-lifetime and binding; replacement, disposal, or rebinding cancels it. Repeated
+lifetime and binding; replacement, disposal, or rebinding cancels an undecided
+request. Once permission commits, closure is a decided effect owned by the window
+and cannot be revoked by later graph changes. Repeated
 OS requests while pending do not create additional occurrences. A close decision
 without a pending request has no effect. The host never infers unsaved state or
 owns an application-specific document lifecycle.

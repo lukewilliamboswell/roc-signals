@@ -75,9 +75,12 @@ A native close request dispatches that current event through ordinary engine
 propagation. KeepOpen cancels the request, AwaitDecision retains one pending
 request, and Close grants closure only for that pending registration. Repeated
 OS requests while awaiting a decision do not dispatch another event. An async
-save can publish Close later; rendering then removes the window. Close with no
+save can publish Close later; rendering then removes the window. Committed
+permission belongs to the window until the frame: later policy changes or
+registration retirement cannot revoke the decided effect. Close with no
 pending request is inert. Pending ownership includes element, view, lifetime,
-and event binding; disposal, replacement, or rebinding cancels it. Teardown
+and event binding; disposal, replacement, or rebinding cancels an undecided
+request. Once Close commits, closure is terminal. Teardown
 releases the registration with its runtime. An app without a registration uses
 the normal immediate-close behavior. No native code knows whether an app is dirty.
 

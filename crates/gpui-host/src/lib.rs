@@ -844,6 +844,38 @@ mod tests {
     }
 
     #[gpui::test]
+    fn committed_close_effect_survives_later_policy_or_retirement(cx: &mut TestAppContext) {
+        for retire in [false, true] {
+            let mut owner = node(1, "window", &[]);
+            owner.parent = Some(0);
+            owner.close_requested = 92;
+            owner.close_policy = 2;
+            let (runtime, window_cx) = cx.add_window_view(|_, cx| {
+                let mut runtime = runtime();
+                runtime.apply(vec![node(0, "root", &[1]), owner.clone()], cx);
+                runtime
+            });
+            window_cx.run_until_parked();
+            assert!(!window_cx.simulate_close());
+            window_cx.update(|_, cx| {
+                runtime.update(cx, |runtime, cx| {
+                    owner.close_policy = 3;
+                    runtime.apply(vec![owner.clone()], cx);
+                    owner.close_policy = 1;
+                    owner.active = !retire;
+                    let mut changes = vec![owner];
+                    if retire {
+                        changes.push(node(0, "root", &[]));
+                    }
+                    runtime.apply(changes, cx);
+                })
+            });
+            window_cx.run_until_parked();
+            assert!(window_cx.windows().is_empty());
+        }
+    }
+
+    #[gpui::test]
     fn committed_reorder_preserves_entities_and_removal_invalidates_callbacks(
         cx: &mut TestAppContext,
     ) {
