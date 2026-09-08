@@ -12738,7 +12738,7 @@ const Gpui = struct {
             .viewport = if (elem.native_viewport) |bytes| native_style.decodeViewport(bytes) catch unreachable else .{},
             .lifetime = lifetimes[elem.id],
             .drag_key = Slice.from(elem.native_drag_key orelse ""),
-            .drop = if (elem.native_drop_target) sim_dom.namedEvent(elem, "drop").?.binding.event_id.raw() else 0,
+            .drop = if (elem.active and elem.native_drop_target) sim_dom.namedEvent(elem, "drop").?.binding.event_id.raw() else 0,
             .close_requested = if (elem.active and elem.native_window_close != null) sim_dom.namedEvent(elem, "close-requested").?.binding.event_id.raw() else 0,
             .close_policy = if (elem.native_window_close) |policy| (if (std.mem.eql(u8, policy, "keep-open")) @as(u64, 1) else if (std.mem.eql(u8, policy, "await-decision")) @as(u64, 2) else @as(u64, 3)) else 0,
         };
@@ -12984,4 +12984,45 @@ test "native window registration rejects duplicates before publication" {
     try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.prepare(&host, &splice));
     try std.testing.expectEqual(@as(?u64, null), host.window_registration);
     try std.testing.expectEqual(@as(usize, 1), host.dom_elements.items.len);
+}
+
+test "native GUI tombstone reads do not dereference retired drop registrations" {
+    try std.testing.expect(!Gpui.live);
+    Gpui.host = HostEnv.init();
+    Gpui.roc_host = makeSignalsRocHost(&Gpui.host);
+    Gpui.host.engine.roc_host = &Gpui.roc_host;
+    const allocator = Gpui.host.hostAllocator();
+    Gpui.child_order = signals.native_child_order.Tree.init(allocator);
+    Gpui.live = true;
+    defer {
+        Gpui.live = false;
+        Gpui.clear();
+        Gpui.child_order.deinit();
+        Gpui.host.deinit();
+        _ = Gpui.host.gpa.deinit();
+    }
+    const tag = try allocator.dupe(u8, "div");
+    try Gpui.host.dom_elements.append(allocator, sim_dom.Element.init(0, tag));
+    const elem = &Gpui.host.dom_elements.items[0];
+    elem.native_drop_target = true;
+    try elem.named_events.append(allocator, .{ .name = try allocator.dupe(u8, "drop"), .binding = .{
+        .event_id = ids.EventId.fromRaw(7),
+        .delivery = .{ .requested = .native },
+        .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .detail),
+    } });
+    Gpui.touch(0);
+    var out: Gpui.Node = undefined;
+    Gpui.read(0, &out);
+    try std.testing.expectEqual(@as(u64, 7), out.drop);
+    // Retirement releases registrations before publishing the inactive slot.
+    allocator.free(elem.named_events.items[0].name);
+    elem.named_events.clearRetainingCapacity();
+    elem.active = false;
+    Gpui.read(0, &out);
+    try std.testing.expectEqual(@as(u64, 0), out.active);
+    try std.testing.expectEqual(@as(u64, 0), out.drop);
+    try std.testing.expectEqual(@as(u64, 0), out.close_requested);
+    try std.testing.expectEqual(@as(u64, 0), out.click);
+    try std.testing.expectEqual(@as(u64, 0), out.input);
+    try std.testing.expectEqual(@as(u64, 0), out.check);
 }
