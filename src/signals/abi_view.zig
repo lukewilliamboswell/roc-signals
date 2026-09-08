@@ -1235,6 +1235,7 @@ test "NodeAttr.fromAbi decodes static bool attrs and events" {
     const reducer = std.mem.zeroes(HostEventReducer);
     const event = abi.NodeAttr{
         .payload = .{ .on = .{
+            .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
             .kind = .{ .id = @intFromEnum(EventKind.pointer_down) },
             .msg = .{
                 .event_extraction_plan = testEventExtractionPlan(.record_key_shift),
@@ -1267,6 +1268,7 @@ test "NodeAttr.fromAbi decodes named events" {
     const reducer = std.mem.zeroes(HostEventReducer);
     const attr = abi.NodeAttr{
         .payload = .{ .on = .{
+            .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
             .kind = .{ .id = 0 },
             .msg = .{
                 .event_extraction_plan = testEventExtractionPlan(.none),

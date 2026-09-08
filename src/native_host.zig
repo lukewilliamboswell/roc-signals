@@ -2470,6 +2470,10 @@ fn setRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFiel
             _ = native_style.decode(value) catch failHost("invalid native presentation record");
             sim_dom.setOwnedString(host.hostAllocator(), &elem.native_style, value);
         },
+        .native_viewport => {
+            _ = native_style.decodeViewport(value) catch failHost("invalid native viewport record");
+            sim_dom.setOwnedString(host.hostAllocator(), &elem.native_viewport, value);
+        },
     }
 }
 
@@ -2496,6 +2500,7 @@ fn clearRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFi
         .value => clearElementValue(host, elem),
         .class => sim_dom.clearOwnedString(host.hostAllocator(), &elem.class),
         .native_style => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_style),
+        .native_viewport => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_viewport),
     }
 }
 
@@ -10530,6 +10535,7 @@ fn testNodeEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind, binder_token
     return .{
         .payload = .{
             .on = .{
+                .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
                 .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
                     .event_extraction_plan = testEventExtractionPlan(roc_host, extraction_plan),
@@ -10564,6 +10570,7 @@ fn testNodeUnitIncrementEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind,
     return .{
         .payload = .{
             .on = .{
+                .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
                 .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
                     .event_extraction_plan = testEventExtractionPlan(roc_host, .none),

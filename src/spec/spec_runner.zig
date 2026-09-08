@@ -1300,9 +1300,9 @@ test "spec runner real_click dispatch honors capture bubble and stop policies" {
             return elem;
         }
 
-        /// Returns the dense id of the selected fixed event binding for spec dispatch.
-        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
-            return sim_dom.fixedEventId(elem, kind);
+        /// Adapts the simulated DOM binding to the nominal engine event identity.
+        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?ids.EventId {
+            return if (sim_dom.fixedEventId(elem, kind)) |value| ids.EventId.fromRaw(value) else null;
         }
 
         /// Returns the canonical named-event binding used by the spec or simulated DOM.
@@ -1310,8 +1310,9 @@ test "spec runner real_click dispatch honors capture bubble and stop policies" {
             return sim_dom.namedEvent(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: anytype) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: anytype) void {
+            const event_id = binding_id.raw();
             _ = payload;
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 @panic("test expected a unit payload descriptor");
@@ -1354,7 +1355,7 @@ test "spec runner real_click dispatch honors capture bubble and stop policies" {
 
     host.dispatches.clearRetainingCapacity();
     sim_dom.bindEventKind(&host.elements.items[2], .click, .{
-        .event_id = 15,
+        .event_id = ids.EventId.fromRaw(15),
         .payload_descriptor = unit_descriptor,
     });
     sim_dom.bindEventName(allocator, &host.elements.items[2], "click", 20, render.EventPolicy.fromBits(render.listener_option_stop_propagation), unit_descriptor);
@@ -1433,9 +1434,9 @@ test "spec runner real_click applies form button default actions" {
             return elem;
         }
 
-        /// Returns the dense id of the selected fixed event binding for spec dispatch.
-        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
-            return sim_dom.fixedEventId(elem, kind);
+        /// Adapts the simulated DOM binding to the nominal engine event identity.
+        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?ids.EventId {
+            return if (sim_dom.fixedEventId(elem, kind)) |value| ids.EventId.fromRaw(value) else null;
         }
 
         /// Returns the canonical named-event binding used by the spec or simulated DOM.
@@ -1448,8 +1449,9 @@ test "spec runner real_click applies form button default actions" {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+            const event_id = binding_id.raw();
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 @panic("test expected a unit payload descriptor");
             }
@@ -1495,7 +1497,7 @@ test "spec runner real_click applies form button default actions" {
 
     const unit_descriptor = BoundaryPayloadDescriptor.init(.unit, .none);
     sim_dom.bindEventKind(&host.elements.items[2], .click, .{
-        .event_id = 10,
+        .event_id = ids.EventId.fromRaw(10),
         .payload_descriptor = unit_descriptor,
     });
     sim_dom.bindEventName(allocator, &host.elements.items[1], "submit", 20, render.EventPolicy.fromBits(render.listener_option_prevent_default), unit_descriptor);
@@ -1586,9 +1588,9 @@ test "spec runner real_click applies checkbox default action" {
             return elem;
         }
 
-        /// Returns the dense id of the selected fixed event binding for spec dispatch.
-        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
-            return sim_dom.fixedEventId(elem, kind);
+        /// Adapts the simulated DOM binding to the nominal engine event identity.
+        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?ids.EventId {
+            return if (sim_dom.fixedEventId(elem, kind)) |value| ids.EventId.fromRaw(value) else null;
         }
 
         /// Returns the canonical named-event binding used by the spec or simulated DOM.
@@ -1601,12 +1603,13 @@ test "spec runner real_click applies checkbox default action" {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+            const event_id = binding_id.raw();
             if (payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 switch (payload) {
                     .unit => {},
-                    .bool => @panic("test expected a unit payload"),
+                    .bool, .str => @panic("test expected a unit payload"),
                 }
                 host.unit_dispatches.append(host.allocator, event_id) catch @panic("test dispatch log allocation failed");
                 return;
@@ -1665,7 +1668,7 @@ test "spec runner real_click applies checkbox default action" {
 
     host.elements.items[1].checked = false;
     sim_dom.bindEventKind(&host.elements.items[1], .check, .{
-        .event_id = 40,
+        .event_id = ids.EventId.fromRaw(40),
         .payload_descriptor = bool_descriptor,
     });
     const bound_click = dispatchBubblingUnitEventById(TestCtx, &host, &roc_host, 1, .click, "click", 301);
@@ -1725,9 +1728,9 @@ test "spec runner real_click applies radio default action" {
             return elem;
         }
 
-        /// Returns the dense id of the selected fixed event binding for spec dispatch.
-        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
-            return sim_dom.fixedEventId(elem, kind);
+        /// Adapts the simulated DOM binding to the nominal engine event identity.
+        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?ids.EventId {
+            return if (sim_dom.fixedEventId(elem, kind)) |value| ids.EventId.fromRaw(value) else null;
         }
 
         /// Returns the canonical named-event binding used by the spec or simulated DOM.
@@ -1740,8 +1743,9 @@ test "spec runner real_click applies radio default action" {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+            const event_id = binding_id.raw();
             if (payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 switch (payload) {
                     .unit => {},
@@ -1869,8 +1873,9 @@ test "spec runner select_option applies select default action" {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+            const event_id = binding_id.raw();
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .target_value))) {
                 @panic("test expected a target-value payload descriptor");
             }
@@ -1968,8 +1973,9 @@ test "spec runner Enter key applies text-input submit default action" {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, _: void) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, _: void) void {
+            const event_id = binding_id.raw();
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 @panic("test expected a unit payload descriptor");
             }
@@ -2041,8 +2047,9 @@ test "spec runner submit dispatches enabled unit bindings" {
             return sim_dom.namedEvent(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, _: void) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, _: void) void {
+            const event_id = binding_id.raw();
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 @panic("test expected a unit payload descriptor");
             }

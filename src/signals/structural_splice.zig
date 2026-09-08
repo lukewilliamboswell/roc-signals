@@ -965,8 +965,14 @@ test "structural removal includes every scalar descriptor field without publicat
     try std.testing.expectEqual(std.enums.values(render.TextField).len, scratch.signal_text_attr_indexes.items.len);
     try std.testing.expectEqual(std.enums.values(render.BoolField).len, scratch.static_bool_attr_indexes.items.len);
     try std.testing.expectEqual(std.enums.values(render.BoolField).len, scratch.signal_bool_attr_indexes.items.len);
-    try std.testing.expectEqual(descriptor.static_text_attrs.native_style.get().?, scratch.static_text_attr_indexes.items[scratch.static_text_attr_indexes.items.len - 1]);
-    try std.testing.expectEqual(descriptor.signal_bool_attrs.selected.get().?, scratch.signal_bool_attr_indexes.items[scratch.signal_bool_attr_indexes.items.len - 1]);
+    for (0..std.enums.values(render.TextField).len) |index| {
+        try std.testing.expectEqual(index, scratch.static_text_attr_indexes.items[index]);
+        try std.testing.expectEqual(index, scratch.signal_text_attr_indexes.items[index]);
+    }
+    for (0..std.enums.values(render.BoolField).len) |index| {
+        try std.testing.expectEqual(index, scratch.static_bool_attr_indexes.items[index]);
+        try std.testing.expectEqual(index, scratch.signal_bool_attr_indexes.items[index]);
+    }
     scratch.clearRetainingCapacity();
     scratch.appendDescriptorIndexes(allocator, descriptor);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
