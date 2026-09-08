@@ -1,4 +1,6 @@
 mod bridge;
+mod controls;
+mod dialog;
 mod drag;
 mod effects;
 mod file_io;
@@ -16,12 +18,41 @@ struct NodeView {
     scroll: UniformListScrollHandle,
     input: Option<Entity<input::TextInput>>,
     focus: FocusHandle,
+    focus_subscription: Option<Subscription>,
     runtime: WeakEntity<Runtime>,
     renders: Rc<Cell<u64>>,
     child_visits: Rc<Cell<u64>>,
 }
+impl NodeView {
+    // A retained wrapper may represent a new engine lifetime in a later
+    // publication. Each editor callback owns that lifetime and binding snapshot.
+    fn make_input(
+        node: &Node,
+        runtime: WeakEntity<Runtime>,
+        cx: &mut App,
+    ) -> Option<Entity<input::TextInput>> {
+        if node.input == 0 {
+            return None;
+        }
+        let event = node.input;
+        let id = node.id;
+        let lifetime = node.lifetime;
+        Some(cx.new(|cx| {
+            let callback: Rc<dyn Fn(String, &mut App)> = Rc::new(move |value, cx| {
+                let _ = runtime.update(cx, |runtime, cx| {
+                    runtime.event_if_live(id, lifetime, event, Payload::Text(&value), cx)
+                });
+            });
+            if node.tag == "textarea" {
+                input::TextInput::new_multiline(node.value.clone(), callback, cx)
+            } else {
+                input::TextInput::new(node.value.clone(), callback, cx)
+            }
+        }))
+    }
+}
 impl Render for NodeView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders.set(self.renders.get() + 1);
         let mut element = div()
             .id(("node", self.node.id))
@@ -30,15 +61,57 @@ impl Render for NodeView {
             .gap_2()
             .debug_selector(|| self.node.test_id.clone());
         element = drag::install(element, &self.node, cx.entity_id(), self.runtime.clone());
+        if self.focus_subscription.is_none() && self.focus_target(cx).is_some() {
+            let focus = self.focus_target(cx).unwrap();
+            self.focus_subscription = Some(cx.on_focus(&focus, window, |view, window, cx| {
+                if let Some(focus) = view.focus_target(cx) {
+                    if focus.is_focused(window) {
+                        let owner = cx.entity().downgrade();
+                        let _ = view.runtime.update(cx, |runtime, _| {
+                            runtime.dialogs.focused = Some(dialog::SavedFocus {
+                                owner,
+                                lifetime: view.node.lifetime,
+                                handle: focus.downgrade(),
+                            });
+                        });
+                    }
+                }
+            }));
+        }
+        if self.node.tag == "button" || self.node.role == "checkbox" {
+            let runtime = self.runtime.clone();
+            let id = self.node.id;
+            let view_id = cx.entity_id();
+            let lifetime = self.node.lifetime;
+            let binding = if self.node.role == "checkbox" {
+                self.node.check
+            } else {
+                self.node.click
+            };
+            element = controls::install(
+                element,
+                &self.focus,
+                self.node.role == "checkbox",
+                self.node.disabled,
+                move |cx| {
+                    runtime
+                        .update(cx, |runtime, cx| {
+                            runtime.activate_if_live(id, view_id, lifetime, binding, cx)
+                        })
+                        .unwrap_or(false)
+                },
+            );
+        }
         if !self.node.shortcuts.is_empty() && !self.node.disabled {
             let runtime = self.runtime.clone();
             let node_id = self.node.id;
             let view_id = cx.entity_id();
+            let lifetime = self.node.lifetime;
             element =
                 shortcut::install(element, self.node.shortcuts.clone(), move |binding, cx| {
                     runtime
                         .update(cx, |runtime, cx| {
-                            runtime.shortcut_if_live(node_id, view_id, binding, cx)
+                            runtime.shortcut_if_live(node_id, view_id, lifetime, binding, cx)
                         })
                         .unwrap_or(false)
                 });
@@ -58,11 +131,17 @@ impl Render for NodeView {
             element = element.px_3().py_1().rounded_md().bg(rgb(0x315469));
             if !self.node.disabled {
                 let runtime = self.runtime.clone();
-                let event = self.node.click;
                 let node_id = self.node.id;
+                let view_id = cx.entity_id();
+                let lifetime = self.node.lifetime;
+                let binding = if self.node.role == "checkbox" {
+                    self.node.check
+                } else {
+                    self.node.click
+                };
                 element = element.cursor_pointer().on_click(move |_, _, cx| {
                     let _ = runtime.update(cx, |runtime, cx| {
-                        runtime.event_if_live(node_id, event, Payload::Unit, cx)
+                        runtime.activate_if_live(node_id, view_id, lifetime, binding, cx)
                     });
                 });
             }
@@ -75,12 +154,17 @@ impl Render for NodeView {
                 .child(self.node.label.clone());
             if !self.node.disabled {
                 let runtime = self.runtime.clone();
-                let event = self.node.check;
                 let node_id = self.node.id;
-                let checked = !self.node.checked;
+                let view_id = cx.entity_id();
+                let lifetime = self.node.lifetime;
+                let binding = if self.node.role == "checkbox" {
+                    self.node.check
+                } else {
+                    self.node.click
+                };
                 element = element.cursor_pointer().on_click(move |_, _, cx| {
                     let _ = runtime.update(cx, |runtime, cx| {
-                        runtime.event_if_live(node_id, event, Payload::Bool(checked), cx)
+                        runtime.activate_if_live(node_id, view_id, lifetime, binding, cx)
                     });
                 });
             }
@@ -134,12 +218,12 @@ impl Render for NodeView {
                             let mut style = StyleRefinement::default();
                             style.size.width = Some(relative(1.).into());
                             style.size.height = Some(height.into());
-                            div()
-                                .id(("row", id))
-                                .h(height)
-                                .w_full()
-                                .overflow_hidden()
-                                .child(AnyView::from(child).cached(style))
+                            let row = div().id(("row", id)).h(height).w_full().overflow_hidden();
+                            if child.read(cx).node.tag == "dialog" {
+                                row
+                            } else {
+                                row.child(AnyView::from(child).cached(style))
+                            }
                         })
                         .collect::<Vec<_>>()
                 },
@@ -153,15 +237,10 @@ impl Render for NodeView {
         let runtime = self.runtime.upgrade().expect("view outlived runtime");
         let runtime = runtime.read(cx);
         let children = (0..self.node.child_count)
-            .map(|rank| {
+            .filter_map(|rank| {
                 let id = runtime.engine.child_at(parent, rank);
-                AnyView::from(
-                    runtime
-                        .nodes
-                        .get(&id)
-                        .expect("missing child identity")
-                        .clone(),
-                )
+                let child = runtime.nodes.get(&id).expect("missing child identity");
+                (child.read(cx).node.tag != "dialog").then(|| AnyView::from(child.clone()))
             })
             .collect::<Vec<_>>();
         element.children(children).into_any_element()
@@ -219,6 +298,7 @@ fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div
 struct Runtime {
     engine: Engine,
     effects: effects::Manager,
+    dialogs: dialog::Dialogs,
     nodes: HashMap<u64, Entity<NodeView>>,
     roots: Vec<Entity<NodeView>>,
     renders: Rc<Cell<u64>>,
@@ -230,6 +310,7 @@ impl Runtime {
         &mut self,
         id: u64,
         view_id: EntityId,
+        lifetime: u64,
         binding: shortcut::Shortcut,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -240,7 +321,12 @@ impl Runtime {
             return false;
         }
         let node = &view.read(cx).node;
-        if node.disabled || binding.event == 0 || !node.shortcuts.contains(&binding) {
+        if node.disabled
+            || node.lifetime != lifetime
+            || binding.event == 0
+            || !node.shortcuts.contains(&binding)
+            || !self.dialog_allows(id, cx)
+        {
             return false;
         }
         self.event(binding.event, Payload::Unit, cx);
@@ -252,6 +338,7 @@ impl Runtime {
         let mut runtime = Self {
             engine,
             effects: crate::effects::Manager::default(),
+            dialogs: crate::dialog::Dialogs::default(),
             nodes: HashMap::new(),
             roots: vec![],
             renders: Rc::new(Cell::new(0)),
@@ -263,7 +350,12 @@ impl Runtime {
         runtime
     }
     fn valid_drop(&self, target: drag::Target, item: &drag::Item, cx: &App) -> bool {
-        if item.runtime != target.runtime || item.key.is_empty() || item.key.len() > 256 {
+        if item.runtime != target.runtime
+            || item.key.is_empty()
+            || item.key.len() > 256
+            || !self.dialog_allows(item.source, cx)
+            || !self.dialog_allows(target.node, cx)
+        {
             return false;
         }
         let Some(source) = self.nodes.get(&item.source) else {
@@ -299,14 +391,26 @@ impl Runtime {
         self.event(target.event, Payload::Text(&item.key), cx);
         true
     }
-    fn event_if_live(&mut self, id: u64, event: u64, payload: Payload<'_>, cx: &mut Context<Self>) {
+    fn event_if_live(
+        &mut self,
+        id: u64,
+        lifetime: u64,
+        event: u64,
+        payload: Payload<'_>,
+        cx: &mut Context<Self>,
+    ) {
         // A deferred editor callback may outlive disposal. Match both node and
         // binding identity so a reused slot cannot receive an old edit.
         let Some(view) = self.nodes.get(&id) else {
             return;
         };
         let node = &view.read(cx).node;
-        if node.disabled || event == 0 || node.event_for(payload) != event {
+        if node.disabled
+            || node.lifetime != lifetime
+            || event == 0
+            || node.event_for(payload) != event
+            || !self.dialog_allows(id, cx)
+        {
             return;
         }
         self.event(event, payload, cx);
@@ -354,7 +458,16 @@ impl Runtime {
             assert!(
                 matches!(
                     node.tag.as_str(),
-                    "root" | "div" | "h1" | "h2" | "p" | "button" | "input" | "textarea" | "text"
+                    "root"
+                        | "div"
+                        | "dialog"
+                        | "h1"
+                        | "h2"
+                        | "p"
+                        | "button"
+                        | "input"
+                        | "textarea"
+                        | "text"
                 ),
                 "unsupported spike element: {}",
                 node.tag
@@ -364,36 +477,13 @@ impl Runtime {
                 let renders = self.renders.clone();
                 let child_visits = self.child_visits.clone();
                 let view = cx.new(|cx| {
-                    let input = if node.input != 0 {
-                        let runtime = weak.clone();
-                        let event = node.input;
-                        let node_id = node.id;
-                        Some(cx.new(|cx| {
-                            let callback: Rc<dyn Fn(String, &mut App)> =
-                                Rc::new(move |value, cx| {
-                                    let _ = runtime.update(cx, |runtime, cx| {
-                                        runtime.event_if_live(
-                                            node_id,
-                                            event,
-                                            Payload::Text(&value),
-                                            cx,
-                                        )
-                                    });
-                                });
-                            if node.tag == "textarea" {
-                                input::TextInput::new_multiline(node.value.clone(), callback, cx)
-                            } else {
-                                input::TextInput::new(node.value.clone(), callback, cx)
-                            }
-                        }))
-                    } else {
-                        None
-                    };
+                    let input = NodeView::make_input(node, weak.clone(), cx);
                     NodeView {
                         node: node.clone(),
                         scroll: UniformListScrollHandle::default(),
                         input,
                         focus: cx.focus_handle(),
+                        focus_subscription: None,
                         runtime: weak,
                         renders,
                         child_visits,
@@ -410,6 +500,13 @@ impl Runtime {
                 roots_changed = true;
             }
             view.update(cx, |view, cx| {
+                if view.node.lifetime != node.lifetime
+                    || view.node.input != node.input
+                    || view.node.tag != node.tag
+                {
+                    view.input = NodeView::make_input(node, view.runtime.clone(), cx);
+                    view.focus_subscription = None;
+                }
                 if let Some(input) = &view.input {
                     input.update(cx, |input, cx| {
                         input.set_value(&node.value, cx);
@@ -431,7 +528,7 @@ impl Runtime {
                 roots_changed |= before != self.roots.len();
             }
         }
-        if roots_changed {
+        if self.sync_dialogs(&changes, cx) || roots_changed {
             cx.notify();
         }
     }
@@ -445,17 +542,50 @@ impl Drop for Runtime {
 }
 
 impl Render for Runtime {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.prepare_dialog_focus(window, cx);
+        let mut root = div()
             .id("signals-root")
             .size_full()
-            .overflow_y_scroll()
+            .relative()
             .bg(rgb(0x16252c))
             .text_color(rgb(0xeeeeea))
-            .p_6()
-            .children(self.roots.iter().map(|root| AnyView::from(root.clone())))
+            .child(
+                div()
+                    .id("signals-content")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .p_6()
+                    .children(self.roots.iter().map(|root| AnyView::from(root.clone()))),
+            );
+        for dialog in &self.dialogs.active {
+            let id = dialog.id;
+            root = root.child(
+                div()
+                    .id(("dialog-layer", id))
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgba(0x00000088))
+                    .occlude()
+                    .capture_key_down(cx.listener(
+                        move |runtime, event: &KeyDownEvent, window, cx| {
+                            if runtime.dialog_key(id, event, window, cx) {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
+                    .child(self.nodes[&id].clone()),
+            );
+        }
+        root
     }
 }
+
 unsafe extern "C" {
     fn signals_spec_main(argc: i32, argv: *const *const i8) -> i32;
 }
@@ -481,6 +611,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
         .map(|a| a[1].clone());
     Application::new().run(move |cx| {
         input::bind_keys(cx);
+        controls::bind_keys(cx);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -521,7 +652,13 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                                 .read(cx)
                                 .node
                                 .clone();
-                            runtime.event_if_live(node.id, node.click, Payload::Unit, cx);
+                            runtime.event_if_live(
+                                node.id,
+                                node.lifetime,
+                                node.click,
+                                Payload::Unit,
+                                cx,
+                            );
                         }
                     })
                     .unwrap();
@@ -563,6 +700,7 @@ mod tests {
         Runtime {
             engine: Engine::test_boundary(),
             effects: crate::effects::Manager::default(),
+            dialogs: crate::dialog::Dialogs::default(),
             nodes: HashMap::new(),
             roots: vec![],
             renders: Rc::new(Cell::new(0)),
@@ -602,7 +740,7 @@ mod tests {
                     runtime.nodes[&runtime.engine.child_at(0, 1)].entity_id(),
                     original
                 );
-                runtime.event_if_live(1, 20, Payload::Unit, cx);
+                runtime.event_if_live(1, 0, 20, Payload::Unit, cx);
                 assert!(Engine::take_test_event().is_none());
                 runtime.apply(
                     vec![
@@ -616,7 +754,7 @@ mod tests {
                     cx,
                 );
                 assert!(!runtime.nodes.contains_key(&1));
-                runtime.event_if_live(1, 21, Payload::Unit, cx);
+                runtime.event_if_live(1, 0, 21, Payload::Unit, cx);
                 assert!(Engine::take_test_event().is_none());
             });
         });
@@ -632,11 +770,11 @@ mod tests {
                 checkbox.check = 31;
                 checkbox.disabled = true;
                 runtime.apply(vec![node(0, "root", &[1]), checkbox.clone()], cx);
-                runtime.event_if_live(1, 31, Payload::Bool(true), cx);
+                runtime.event_if_live(1, 0, 31, Payload::Bool(true), cx);
                 assert!(Engine::take_test_event().is_none());
                 checkbox.disabled = false;
                 runtime.apply(vec![checkbox], cx);
-                runtime.event_if_live(1, 31, Payload::Bool(true), cx);
+                runtime.event_if_live(1, 0, 31, Payload::Bool(true), cx);
                 assert_eq!(Engine::take_test_event(), Some((31, 2, String::new(), 1)));
             });
         });
@@ -657,22 +795,22 @@ mod tests {
                 region.shortcuts = vec![first];
                 runtime.apply(vec![node(0, "root", &[1]), region.clone()], cx);
                 let view_id = runtime.nodes[&1].entity_id();
-                assert!(runtime.shortcut_if_live(1, view_id, first, cx));
+                assert!(runtime.shortcut_if_live(1, view_id, 0, first, cx));
                 assert_eq!(Engine::take_test_event(), Some((31, 0, String::new(), 0)));
                 region.shortcuts = vec![second];
                 runtime.apply(vec![region.clone()], cx);
-                assert!(!runtime.shortcut_if_live(1, view_id, first, cx));
+                assert!(!runtime.shortcut_if_live(1, view_id, 0, first, cx));
                 region.disabled = true;
                 runtime.apply(vec![region.clone()], cx);
-                assert!(!runtime.shortcut_if_live(1, view_id, second, cx));
+                assert!(!runtime.shortcut_if_live(1, view_id, 0, second, cx));
                 region.active = false;
                 runtime.apply(vec![node(0, "root", &[]), region.clone()], cx);
-                assert!(!runtime.shortcut_if_live(1, view_id, second, cx));
+                assert!(!runtime.shortcut_if_live(1, view_id, 0, second, cx));
                 region.active = true;
                 region.disabled = false;
                 runtime.apply(vec![node(0, "root", &[1]), region], cx);
                 assert_ne!(runtime.nodes[&1].entity_id(), view_id);
-                assert!(!runtime.shortcut_if_live(1, view_id, second, cx));
+                assert!(!runtime.shortcut_if_live(1, view_id, 0, second, cx));
                 assert!(Engine::take_test_event().is_none());
             });
         });
@@ -807,7 +945,7 @@ mod tests {
                         .entity_id(),
                     original
                 );
-                runtime.event_if_live(1, 42, Payload::Text("changed"), cx);
+                runtime.event_if_live(1, 0, 42, Payload::Text("changed"), cx);
                 assert!(Engine::take_test_event().is_none());
                 editor.disabled = false;
                 runtime.apply(vec![editor], cx);
@@ -940,6 +1078,48 @@ mod tests {
                 assert!(runtime.renders.get() < 24);
                 assert!(runtime.child_visits.get() < 24);
             });
+        }
+    }
+
+    #[gpui::test]
+    fn editor_replacement_refuses_old_callbacks_and_accepts_the_new_lifetime_and_binding(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui::EntityInputHandler;
+        let (view, cx) = cx.add_window_view(|_, cx| {
+            let mut runtime = runtime();
+            let mut editor = node(1, "textarea", &[]);
+            editor.input = 42;
+            runtime.apply(vec![node(0, "root", &[1]), editor], cx);
+            runtime
+        });
+        for (lifetime, event) in [(1, 42), (1, 43)] {
+            let previous =
+                cx.update(|_, cx| view.read(cx).nodes[&1].read(cx).input.clone().unwrap());
+            cx.update(|_, cx| {
+                view.update(cx, |runtime, cx| {
+                    let mut changed = runtime.nodes[&1].read(cx).node.clone();
+                    changed.lifetime = lifetime;
+                    changed.input = event;
+                    changed.value = String::new();
+                    runtime.apply(vec![changed], cx);
+                })
+            });
+            let current =
+                cx.update(|_, cx| view.read(cx).nodes[&1].read(cx).input.clone().unwrap());
+            assert_ne!(previous.entity_id(), current.entity_id());
+            cx.update(|window, cx| {
+                previous.update(cx, |input, cx| {
+                    input.replace_text_in_range(None, "old", window, cx)
+                })
+            });
+            assert!(Engine::take_test_event().is_none());
+            cx.update(|window, cx| {
+                current.update(cx, |input, cx| {
+                    input.replace_text_in_range(None, "new", window, cx)
+                })
+            });
+            assert_eq!(Engine::take_test_event(), Some((event, 1, "new".into(), 0)));
         }
     }
 }

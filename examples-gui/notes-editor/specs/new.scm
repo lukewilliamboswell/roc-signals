@@ -3,7 +3,7 @@
     (fill (label "Note text") "A draft")
     (shortcut (test-id "notes-editor") "n" 1)
     (expect-visible (test-id "discard-confirmation"))
-    (shortcut (test-id "notes-editor") "Escape" 0)
+    (shortcut (role dialog :name "Discard your changes?") "Escape" 0)
     (expect-absent (test-id "discard-confirmation"))
     (expect-value (label "Note text") "A draft")
     (shortcut (test-id "notes-editor") "n" 1)

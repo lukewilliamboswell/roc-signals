@@ -76,7 +76,7 @@ impl TextInput {
         Self {
             on_change,
             pending_edit: Default::default(),
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             content: value.clone().into(),
             engine_value: value.into(),
             placeholder: "Type a draft…".into(),
@@ -113,6 +113,7 @@ impl TextInput {
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
         if self.disabled != disabled {
             self.disabled = disabled;
+            self.focus_handle = self.focus_handle.clone().tab_stop(!disabled);
             cx.notify();
         }
     }

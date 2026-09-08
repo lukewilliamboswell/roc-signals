@@ -48,6 +48,34 @@ control's identity.
 Use `Gui.test_id` for stable spec locators and `Gui.label` for semantic names.
 Labels do not establish native screen-reader support, which is not implemented.
 
+## Modal dialogs
+
+Use `Gui.dialog({ label, on_dismiss }, attrs, children)` inside `Ui.when` so
+mounting and disposal explicitly own the modal lifetime. `label` supplies the
+semantic dialog name; `on_dismiss` is a normal unit message bound to Escape.
+Closing the dialog is the application's state transition, never hidden host
+state. Native file choosers are separate `Files` tasks.
+
+The host focuses the first enabled button, checkbox, or text control when a
+dialog opens. Tab and Shift-Tab wrap through its current child order. Buttons
+activate with Enter or Space and checkboxes with Space; native editing actions
+keep precedence over region shortcuts. Disabled controls remain mounted but
+cannot activate. The innermost dialog blocks pointer and keyboard events from
+the background, and disposal restores the prior control when it is still live
+and enabled. An empty dialog retains focus itself; if a saved focus owner was
+disposed or disabled, the parent dialog receives focus, or focus clears when no
+modal remains.
+
+Concurrent dialogs must form one nested chain, limited to eight dialogs. Each
+modal admits at most 1,024 nodes and 256 enabled focus targets. Exceeding these
+programmer limits, or 1,024 parent links during an ancestry check, terminates
+the native host. The host checks
+current child order when opening or navigating the modal, without scanning the
+application during reactive updates. Native semantic specs can locate
+`(role dialog :name "Discard your changes?")`; GPUI tests verify actual focus
+and pointer behavior. This capability is native only and does not add browser
+modal behavior or a window-close guard.
+
 ## Wide lists
 
 `Gui.virtual_list({ row_height, follow_tail }, attrs, children)` lays out only
@@ -66,9 +94,9 @@ list for a wide collection.
 
 `Gui.on_shortcut(chord, message)` binds a unit message within a focused region.
 A chord is `{ key, control, shift, alt, meta }`, with every modifier explicit.
-Use lowercase letters, digits, or named keys: `enter`, `escape`, `tab`, `space`,
-`left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `backspace`,
-`delete`, and `f1` through `f12`. Matching is exact. The nearest matching ancestor
+Use lowercase letters, digits, or named keys: `Enter`, `Escape`, `Tab`, `Space`,
+`ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`, `Home`, `End`, `PageUp`,
+`PageDown`, `Backspace`, `Delete`, and `F1` through `F12`. Matching is exact. The nearest matching ancestor
 receives the event; native text-editing actions take precedence.
 
 A region accepts at most 32 shortcuts. Duplicate chords are errors. Registrations

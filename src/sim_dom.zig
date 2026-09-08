@@ -268,6 +268,7 @@ pub const PreparedPublication = struct {
 pub fn implicitRole(elem: *const Element) ?[]const u8 {
     if (elem.role) |role| return role;
     if (std.mem.eql(u8, elem.tag, "button")) return "button";
+    if (std.mem.eql(u8, elem.tag, "dialog")) return "dialog";
     if (std.mem.eql(u8, elem.tag, "a")) return "link";
     if (std.mem.eql(u8, elem.tag, "h1") or
         std.mem.eql(u8, elem.tag, "h2") or
@@ -935,6 +936,16 @@ test "simulated DOM locator helpers cover implicit roles and name fallbacks" {
 
     try std.testing.expect(implicitRole(&input) == null);
     try std.testing.expectEqualStrings("draft", accessibleName(&input));
+
+    const dialog_tag = try allocator.dupe(u8, "dialog");
+    var dialog = Element.init(8, dialog_tag);
+    defer dialog.deinit(allocator);
+    dialog.label = try allocator.dupe(u8, "Confirm changes");
+    try std.testing.expect(matchesLocator(&dialog, .{
+        .kind = .role_name,
+        .role = "dialog",
+        .name = "Confirm changes",
+    }));
 
     const div_tag = try allocator.dupe(u8, "div");
     var empty = Element.init(7, div_tag);

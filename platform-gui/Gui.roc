@@ -249,6 +249,25 @@ Gui := [].{
 	panel : List(Attr), List(Elem) -> Elem
 	panel = |attrs, children| Html.div(lower_attrs(1, { ..style_default, padding: 16, border_width: 1, radius: 8, border_color: Rgb(4743275) }, attrs), children)
 
+	## Present a modal owned by this element's explicit Ui.when scope. The host
+	## moves focus inside, traps Tab, routes Escape to on_dismiss, and restores
+	## a still-live enabled control after disposal. Concurrent dialogs form one
+	## chain of at most eight, each bounded to 1024 nodes and 256 enabled controls.
+	dialog : { label : Str, on_dismiss : Msg }, List(Attr), List(Elem) -> Elem
+	dialog = |props, attrs, children| Elem.Element({
+		namespace: Html,
+		tag: "dialog",
+		attrs: lower_attrs(
+			1,
+			{ ..style_default, padding: 24, gap: 16, width: Px(520), background: Rgb(2174263), foreground: Rgb(15658730), border_width: 1, border_color: Rgb(4743275), radius: 8 },
+			[
+				Attribute.Label(props.label),
+				Attribute.Shortcut({ key: "Escape", control: False, shift: False, alt: False, meta: False }, props.on_dismiss),
+			].concat(attrs),
+		),
+		children,
+	})
+
 	## Presents direct child rows at a fixed logical height, creating GPUI layout
 	## only for the visible range. Child scopes remain owned by ordinary Ui.each.
 	## With follow_tail enabled, new history keeps the final row in view.

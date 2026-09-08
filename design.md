@@ -989,6 +989,25 @@ path. Only an accepted matching binding consumes the keystroke. The browser
 host rejects this native-only filter before command publication until it has an
 explicit executor capability; it must not drop the filter and bind all keys.
 
+Native modal presentation belongs to the lifetime of an explicit rendered
+`dialog` element under a dynamic scope. It changes focus and pointer admission,
+not graph ownership: the element keeps its engine parent, and its Escape action
+is an ordinary scoped keyboard binding. The GUI host presents active nested
+dialogs above their logical parents, admits input only within the innermost
+modal, and restores a still-live enabled focus owner when its dialog disappears.
+Saved focus validates retained view identity, so a recycled render slot cannot
+receive focus intended for its previous occupant. Focused buttons activate with
+Enter or Space and checkboxes with Space before region shortcuts.
+
+This native capability permits one chain of at most eight nested dialogs.
+Opening a dialog or explicit focus navigation may inspect its current subtree,
+bounded to 1,024 nodes and 256 enabled controls, with ancestry checks bounded
+to 1,024 parent links; ordinary reactive updates change
+only the affected views and the bounded modal registrations. Tab and Shift-Tab
+wrap through current child order, skipping disabled controls. An empty modal
+retains focus itself. These are host presentation limits, not another reactive
+scheduler or a reason to scan the application tree on each update.
+
 `EventDelivery` is derived by the host before render-cache storage. The public
 request is `auto` or `native`. The effective delivery is `native` whenever the
 policy requires a per-element listener (capture, stop-propagation,

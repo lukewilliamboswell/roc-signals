@@ -75,7 +75,7 @@ main = || Ui.state(
 						{ label: "Note text", value: body.signal() },
 						[
 							Gui.disabled_s(phase.map(|value| !Session.can_edit(value))),
-							Gui.style({ ..Gui.style_default, width: Fill, grow: True, padding: 12, border_width: 1, border_color: Rgb(4213592), radius: 6 }),
+							Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True, padding: 12, border_width: 1, border_color: Rgb(4213592), radius: 6 }),
 						],
 						body.on_str(|_, value| value),
 					),
@@ -116,7 +116,8 @@ main = || Ui.state(
 								_ => False
 							},
 						),
-						|| Gui.panel(
+						|| Gui.dialog(
+							{ label: "Discard your changes?", on_dismiss: session.on_unit(Session.cancel) },
 							[
 								Gui.test_id("discard-confirmation"),
 								Gui.style({ ..Gui.style_default, padding: 16, gap: 8, background: Rgb(3354153), radius: 6 }),

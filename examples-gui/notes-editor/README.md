@@ -33,8 +33,10 @@ a save cannot undo a rename that has already committed. See the
 handling. Text files are limited to one MiB; oversized editor replacements are
 refused as complete operations. Files and filenames must be valid UTF-8.
 
-The discard confirmation is currently an inline panel. Closing the application
-still discards unsaved changes; there is no window-close confirmation yet.
+The discard dialog focuses Keep editing, contains Tab/Shift-Tab navigation,
+and restores the prior live control when dismissed. Enter/Space activate
+focused buttons; Escape keeps the current draft. Closing the application still
+discards unsaved changes; there is no window-close confirmation yet.
 Character counts measure Unicode scalar values, and words are runs separated
 by ASCII whitespace, including tabs and line breaks.
 

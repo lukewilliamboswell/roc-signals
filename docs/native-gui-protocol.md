@@ -100,12 +100,44 @@ is reused in that transaction. Disposed, replaced, rebound, disabled, or foreign
 sources and targets cannot deliver a stale drop. Accepted drops enter ordinary
 engine propagation as string detail. The key is application data, never an
 identity derived from content. External drags are not supported.
+`Gui.dialog` lowers the explicit `dialog` tag, semantic label, native style,
+and an ordinary Escape shortcut. It needs no additional ABI field. Rust copies
+the existing committed parent ID so modal membership follows engine topology.
+Presentation relocates the dialog view into an occluding overlay without
+changing its parent or mounting a second reactive scope. Simultaneous dialogs
+must form one chain of at most eight nested elements.
+
+Focus ownership uses weak retained-view identity, the engine lifetime stamp,
+and weak GPUI focus handles.
+Opening a modal focuses its first enabled button, checkbox, or input; an empty
+modal focuses itself. Exact Tab/Shift-Tab wrap through current child order,
+and exact Escape dispatches the current dialog's normal scoped message.
+Enter/Space activate focused buttons; Space activates checkboxes using their
+current checked state. Disabled controls retain focus identity and reject
+activation. Background pointer, editor, control, and region callbacks cannot
+enter the engine while another modal owns input. Disposing a dialog restores
+its prior live enabled control, otherwise its parent dialog, otherwise clears
+focus. A recycled render slot cannot substitute for its former focus owner.
+
+Modal registration updates touch the changed batch and at most eight active
+registrations. Opening, restoring, or explicit Tab navigation may traverse only
+the relevant modal, bounded to 1,024 nodes and 256 enabled controls. Ancestry
+checks are likewise bounded to 1,024 parent links. These limits
+are programmer contracts checked by the GUI adapter after engine publication,
+before a target list is used. Violations terminate the host; they are not
+retriable capacity refusals and cannot continue with a partial modal or focus
+state. There is no whole-application focus scan on a reactive update. Native semantic specs exercise
+ordinary dialog scopes and Escape bindings, while GPUI adapter tests own focus,
+keyboard precedence, pointer occlusion, nesting, and retained-identity checks.
 
 Native editors accept at most one MiB of UTF-8 text, matching the ingress and
 Files read limits. An oversized user insertion, paste, or IME replacement is
 refused in full before changing text, selection, or composition; it emits no
 engine event. Deleting or replacing a selection can make room for a later edit.
-Oversized authoritative application values remain contract errors.
+Oversized authoritative application values remain contract errors. Ordinary
+value or availability updates retain the editor entity; a changed engine
+lifetime, input binding, or editor kind creates a fresh editor callback. Old
+callbacks must match both the captured lifetime and current event binding.
 
 Input labels are both visible captions and semantic metadata. Semantic roles,
 names, and test IDs support native specs and GPUI test selectors. They do not
