@@ -135,10 +135,18 @@ editable draft so a completed save cannot incorrectly mark later edits as saved.
 
 The collection in `examples-gui/` exercises platform features through ordinary
 application workflows. `counter` is the minimal starting point; `keyed-rows`
-shows retained row drafts and scoped structure. `notes-editor` exercises native
-multiline editing, and `activity-monitor` uses bounded deterministic replay,
-filtering, selection, and a virtual list. Its events are simulated operations,
-not measurements of your machine.
+shows retained row drafts and scoped structure.
+
+| App | Main workflow |
+| --- | --- |
+| `task-board` | Create, edit, filter, drag, reorder, and transfer keyed tasks; confirm deletion |
+| `notes-editor` | Edit multiline documents, open and save real files, confirm unsaved changes |
+| `folder-explorer` | Browse sample metadata or scan a chosen directory, cancel, filter, sort, and inspect |
+| `activity-monitor` | Start and pause deterministic replay, filter bounded history, inspect events, and follow the latest row |
+
+Activity Monitor's events are simulated operations, not measurements of your
+machine. Folder Explorer labels its sample workspace and offers an explicit
+chooser for real scans.
 
 Every registered app has native semantic specs. The GUI suite also runs GPUI
 adapter tests with simulated input and layout. A Wayland smoke run checks the
