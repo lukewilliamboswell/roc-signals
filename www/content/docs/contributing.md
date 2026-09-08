@@ -354,7 +354,9 @@ Archives and `bundles.json` default to `.test-out/bundles`, with separate `web/`
 and `gui/` directories. `BUNDLE_OUT_DIR` or `--output-dir` changes that root.
 `--package web` and `--package gui` select one platform and put its archive
 directly in the output directory. `--no-build` reuses prepared hosts;
-`--debug-gui` selects a faster development Rust build. Existing web test, site,
+`--debug-gui` selects a faster development Rust build. Use the default optimized
+GUI build for distributable archives: development archives can exceed the pinned
+compiler's default 100 MiB transitive package budget. Existing web test, site,
 and release commands explicitly select the web package.
 
 For the separate browser JavaScript artifact, run `python3 scripts/bundle_browser.py`.
