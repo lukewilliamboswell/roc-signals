@@ -1,5 +1,9 @@
 # Folder Explorer
 
+Rows show paths relative to the chosen folder, while semantic labels, selection,
+filtering, and the details panel retain the full path. The 64-pixel virtual rows
+leave room for the field padding and selection border.
+
 Browse a deterministic sample workspace, or choose a real local folder for a
 bounded background metadata scan. Filter paths, sort by name or file size, and
 select a row to inspect its metadata. The result list renders a visible range

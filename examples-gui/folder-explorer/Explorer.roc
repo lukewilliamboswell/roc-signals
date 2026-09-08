@@ -59,6 +59,26 @@ Explorer :: [].{
 		{ path: "release-notes.md", kind: File, bytes: 0 },
 	]
 
+	## Shorten the visible label without changing the exact path used for identity,
+	## filtering, selection, or the inspector. Only a complete root prefix is removed.
+	relative_path : Str, Str -> Str
+	relative_path = |root, path| {
+		if root.is_empty() {
+			path
+		} else {
+			var $root = root
+			while $root != "/" and $root.ends_with("/") {
+				$root = $root.drop_suffix("/")
+			}
+			prefix = if $root == "/" {
+				"/"
+			} else {
+				"${$root}/"
+			}
+			path.drop_prefix(prefix)
+		}
+	}
+
 	filter : List(Entry), Str -> List(Entry)
 	filter = |entries, query| {
 		needle = search_text(query.trim())
@@ -214,4 +234,13 @@ expect {
 		{ path: "events.pipe", kind: Other, bytes: 0 },
 	]
 	Explorer.summary(entries) == { files: 0, folders: 0, links: 1, other: 1, bytes: 0 }
+}
+
+## Visible paths remove only the selected folder, including trailing root slashes.
+expect {
+	Explorer.relative_path("/tmp/project", "/tmp/project/docs/日本語.md") == "docs/日本語.md" and
+		Explorer.relative_path("/tmp/project///", "/tmp/project/readme.md") == "readme.md" and
+			Explorer.relative_path("/", "/tmp/readme.md") == "tmp/readme.md" and
+				Explorer.relative_path("/tmp/project", "/tmp/project-copy/readme.md") == "/tmp/project-copy/readme.md" and
+					Explorer.relative_path("", "docs/readme.md") == "docs/readme.md"
 }

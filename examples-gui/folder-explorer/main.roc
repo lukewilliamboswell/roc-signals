@@ -23,8 +23,8 @@ visible_entries = |entries, query, order| {
 	Rows.replace_all(entries, Explorer.sort(filtered, order)) ?? crash "Filtering and sorting must preserve unique paths"
 }
 
-entry_row : Ui.Row(Explorer.Entry), Handles, Signal.Signal(Str) -> Elem
-entry_row = |row, handles, selected| {
+entry_row : Ui.Row(Explorer.Entry), Handles, Signal.Signal(Str), Signal.Signal(Str) -> Elem
+entry_row = |row, handles, selected, root| {
 	key = row.key()
 	Gui.row(
 		[
@@ -34,8 +34,8 @@ entry_row = |row, handles, selected| {
 		],
 		[
 			Gui.action_button(
-				{ label: row.map(|entry| entry.path), enabled: Signal.const(True) },
-				[Gui.style({ ..Gui.style_default, grow: True, width: Fill, padding: 6 })],
+				{ label: Signal.map2(root, row.signal(), |base, entry| Explorer.relative_path(base, entry.path)), enabled: Signal.const(True) },
+				[Gui.label(key), Gui.style({ ..Gui.style_default, grow: True, width: Fill, padding: 6 })],
 				Ui.action(row.signal(), |entry| handles.model.update_cmd(|state| { ..state, selection: Selected(entry) })),
 			),
 			Gui.text_s(row.map(|entry| entry.kind.to_str())),
@@ -85,6 +85,10 @@ explorer_view = |handles| {
 	dataset_rows = model.map(|state| state.rows)
 	selection = model.map(|state| state.selection)
 	phase = model.map(|state| state.phase)
+	display_root = model.map(|state| match state.source {
+		Sample => ""
+		Folder(path) => path
+	})
 	busy = phase.map(|value| value != Idle)
 	can_rescan = model.map(|state| state.phase == Idle and state.source != Sample)
 	views = { entries: dataset_rows, query: handles.query.signal(), order: handles.order.signal() }.Signal
@@ -195,7 +199,7 @@ explorer_view = |handles| {
 						[Gui.test_id("file-list"), Gui.style({ ..Gui.style_default, grow: True, width: Fill, gap: 4 })],
 						[
 							Ui.when(visible.map(|entries| Rows.len(entries) == 0), || Gui.text("No matching paths. Try a different filter."), || Gui.text("")),
-							Gui.virtual_list({ row_height: 52, follow_tail: Signal.const(False) }, [Gui.test_id("file-viewport"), Gui.style({ ..Gui.style_default, height: Fill, width: Fill, grow: True })], [Ui.each(visible, |row| entry_row(row, handles, selected))]),
+							Gui.virtual_list({ row_height: 64, follow_tail: Signal.const(False) }, [Gui.test_id("file-viewport"), Gui.style({ ..Gui.style_default, height: Fill, width: Fill, grow: True })], [Ui.each(visible, |row| entry_row(row, handles, selected, display_root))]),
 						],
 					),
 					selection_view(selection),
