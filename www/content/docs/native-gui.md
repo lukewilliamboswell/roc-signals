@@ -104,7 +104,7 @@ changes when enabled.
 
 Virtualization bounds native child lookup and layout work. Reactive row scopes
 remain mounted, so the application still owns its data retention policy. The
-Activity Monitor example caps its simulated history at 1,000 entries. Ordinary
+Activity Monitor example caps replay and file history at 1,000 entries and 4 MiB of text. Ordinary
 containers enumerate their direct children when rendered; choose the virtual
 list for a wide collection.
 
@@ -139,7 +139,7 @@ other external desktop drag payloads.
 is live. Every tick enters the shared engine; scope disposal cancels the native
 job and rejects any stale callback. Native transactions reserve at most 256 live
 or newly declared timers. Activity Monitor uses a 500 ms interval whose scope is
-present only while replay is running.
+present only while replay is running or a followed log is waiting for more data.
 
 `pf.Files` provides native file/directory choosers, UTF-8 reads, atomic text
 writes, recursive scans, direct-child directory listings, bounded previews,
@@ -161,10 +161,10 @@ shows retained row drafts and scoped structure.
 | `task-board` | Create, edit, filter, drag, reorder, and transfer keyed tasks; confirm deletion |
 | `notes-editor` | Edit multiline documents, open and save real files, confirm unsaved changes |
 | `folder-explorer` | Browse sample metadata or scan a chosen directory, cancel, filter, sort, and inspect |
-| `activity-monitor` | Start and pause deterministic replay, filter bounded history, inspect events, and follow the latest row |
+| `activity-monitor` | Follow a real UTF-8 log or run explicit replay; pause, retry, filter bounded history, and inspect complete records |
 
-Activity Monitor's events are simulated operations, not measurements of your
-machine. Folder Explorer labels its sample workspace and offers an explicit
+Activity Monitor explicitly separates simulated replay from chosen plain-text
+log files. Folder Explorer labels its sample workspace and offers an explicit
 chooser for real scans.
 
 Every registered app has native semantic specs. The GUI suite also runs GPUI

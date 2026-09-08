@@ -10,9 +10,9 @@ public API; it is not a catalog of every GPUI capability.
 | [Task Board](task-board/) | Organize, edit, filter, reorder, and transfer tasks | Keyed rows, selection, cross-list commands, drag/drop, confirmation |
 | [Notes Editor](notes-editor/) | Edit documents, open files, save snapshots, confirm unsaved changes | Multiline input, clipboard, shortcuts, modal focus, native file tasks |
 | [Folder Explorer](folder-explorer/) | Browse sample metadata or scan a chosen directory, sort, filter, inspect | Choosers, cancellable background work, typed failures, virtual lists |
-| [Activity Monitor](activity-monitor/) | Start, pause, filter, and inspect a deterministic event replay | Scoped timers, bounded history, virtual lists, follow-tail |
+| [Activity Monitor](activity-monitor/) | Follow a real log or run explicit replay, pause, retry, filter, and inspect | Incremental file tasks, scoped timers, bounded history, virtual lists |
 
-Activity Monitor shows simulated operations, not measurements of the host.
+Activity Monitor separates simulated replay from explicitly chosen real log files.
 Folder Explorer starts with sample metadata and explicitly offers a real directory
 scan. Notes Editor reads and writes real files through native tasks. See each
 app's source and specs for the state transitions and error handling.

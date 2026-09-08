@@ -2,7 +2,7 @@ import pf.Rows
 
 ## Bounded event history shared by explicit replay and plain-text log sources.
 Feed :: [].{
-	Severity := [Info, Warning, Error].{
+	Severity := [Info, Warning, Error, Text].{
 		is_eq : _
 
 		to_str : Severity -> Str
@@ -10,6 +10,7 @@ Feed :: [].{
 			Info => "INFO"
 			Warning => "WARN"
 			Error => "ERROR"
+			Text => "TEXT"
 		}
 	}
 
@@ -68,7 +69,7 @@ Feed :: [].{
 		for line in lines.drop_first(skipped) {
 			id = history.next_id + skipped + $index
 			$index = $index + 1
-			$entries = $entries.append({ id, severity: Info, component: "Log", message: line })
+			$entries = $entries.append({ id, severity: Text, component: "Log", message: line })
 		}
 		append_entries(history, $entries, count)
 	}
