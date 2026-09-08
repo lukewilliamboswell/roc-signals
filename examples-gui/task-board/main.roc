@@ -14,6 +14,13 @@ Editor : { column : Board.Column, task : Board.Task }
 
 TextField : { label : Str, value : Signal.Signal(Str) }, List(Gui.Attr), Gui.Msg -> Elem
 
+BoardSnapshot : {
+	planned : Rows.Rows(Board.Task),
+	progress : Rows.Rows(Board.Task),
+	complete : Rows.Rows(Board.Task),
+	editor : Editor,
+}
+
 Handles : {
 	planned : Ui.State(Rows.Rows(Board.Task)),
 	progress : Ui.State(Rows.Rows(Board.Task)),
@@ -24,6 +31,7 @@ Handles : {
 	draft : Ui.State(Str),
 	next_id : Ui.State(U64),
 	confirm_delete : Ui.State(Bool),
+	movement : Signal.Signal(BoardSnapshot),
 }
 
 initial_rows : Board.Column -> Rows.Rows(Board.Task)
@@ -36,6 +44,69 @@ column_state = |handles, column|
 		InProgress => handles.progress
 		Complete => handles.complete
 	}
+
+column_rows : BoardSnapshot, Board.Column -> Rows.Rows(Board.Task)
+column_rows = |snapshot, column|
+	match column {
+		Planned => snapshot.planned
+		InProgress => snapshot.progress
+		Complete => snapshot.complete
+	}
+
+find_task : BoardSnapshot, Str -> Try(Editor, [MissingTask])
+find_task = |snapshot, key|
+	match Rows.get_key(snapshot.planned, key) {
+		Ok(task) => Ok({ column: Planned, task })
+		Err(_) =>
+			match Rows.get_key(snapshot.progress, key) {
+				Ok(task) => Ok({ column: InProgress, task })
+				Err(_) =>
+					match Rows.get_key(snapshot.complete, key) {
+						Ok(task) => Ok({ column: Complete, task })
+						Err(_) => Err(MissingTask)
+					}
+				}
+		}
+
+## Pointer drops and explicit controls share the same domain move. The native
+## host authenticates the drag lifetime; the reducer resolves current task data
+## by its key and preserves the independently owned detail editor.
+move_task : Handles, BoardSnapshot, Str, Board.Column, Rows.Before -> Gui.Cmd
+move_task = |handles, current, key, destination_column, before|
+	match find_task(current, key) {
+		Err(_) => Ui.update_states([])
+		Ok(found) => {
+			source = column_state(handles, found.column)
+			destination = column_state(handles, destination_column)
+			drop_on_self = match before {
+				End => False
+				Key(target) => target == key
+			}
+			if drop_on_self and found.column == destination_column {
+				Ui.update_states([])
+			} else if found.column == destination_column {
+				next = Rows.apply(column_rows(current, found.column), [MoveKeyBefore({ key, before })]) ?? crash "The target card must belong to its column"
+				source.set_cmd(next)
+			} else {
+				remaining = Rows.apply(column_rows(current, found.column), [RemoveKey(key)]) ?? crash "The moved task must exist"
+				insertion = match before {
+					End => Append([found.task])
+					Key(target) => InsertBefore({ before: target, items: [found.task] })
+				}
+				moved = Rows.apply(column_rows(current, destination_column), [insertion]) ?? crash "Task keys must be unique across columns"
+				writes = [source.write(remaining), destination.write(moved)]
+				if current.editor.task.key == key {
+					Ui.update_states(writes.append(handles.editor.write({ column: destination_column, task: found.task })))
+				} else {
+					Ui.update_states(writes)
+				}
+			}
+		}
+	}
+
+drop_message : Handles, Board.Column, Rows.Before -> Gui.Msg
+drop_message = |handles, column, before|
+	Ui.action_detail(handles.movement, |current, key| move_task(handles, current, key, column, before))
 
 ## The unfiltered view forwards its Rows generation unchanged, preserving sparse
 ## updates. An active text search explicitly examines that column's tasks.
@@ -54,6 +125,8 @@ task_card = |row, column, handles, selected| {
 		|| Gui.panel(
 			[
 				Gui.test_id(key),
+				Gui.drag_source(key),
+				Gui.drop_target(drop_message(handles, column, Key(key))),
 				Gui.selected_s(Signal.select(selected, key)),
 				Gui.style({ ..Gui.style_default, padding: 12, gap: 8, border_width: 1, radius: 8, background: Rgb(0x24323E), border_color: Rgb(0x465565) }),
 			],
@@ -81,7 +154,7 @@ column_view = |handles, column, selected| {
 	rows = column_state(handles, column).signal()
 	visible = Signal.map2(rows, handles.filter.signal(), visible_rows)
 	Gui.column(
-		[Gui.test_id("column-${column.to_str()}"), Gui.style({ ..Gui.style_default, width: Fill, grow: True, gap: 12 })],
+		[Gui.test_id("column-${column.to_str()}"), Gui.drop_target(drop_message(handles, column, End)), Gui.style({ ..Gui.style_default, width: Fill, grow: True, gap: 12 })],
 		[
 			Gui.heading(column.to_str()),
 			Gui.text_s(rows.map(|items| "${Rows.len(items).to_str()} tasks")),
@@ -93,13 +166,13 @@ column_view = |handles, column, selected| {
 
 ## Field reducers share one atomic edit operation. The UI owns the text draft;
 ## the corresponding keyed task receives the identical value in the same turn.
-edit_field : TextField, Handles, Board.Column, Str, (Board.Task, Str -> Board.Task), (Board.Task -> Str) -> Elem
-edit_field = |field, handles, column, label, update, read| {
+edit_field : TextField, Handles, Board.Column, Str, List(Gui.Attr), (Board.Task, Str -> Board.Task), (Board.Task -> Str) -> Elem
+edit_field = |field, handles, column, label, attrs, update, read| {
 	owner = column_state(handles, column)
 	reads = { rows: owner.signal(), editor: handles.editor.signal() }.Signal
 	field(
 		{ label, value: handles.editor.signal().map(|editor| read(editor.task)) },
-		[],
+		attrs,
 		Ui.action_str(
 			reads,
 			|current, text| {
@@ -115,8 +188,9 @@ priority_button : Handles, Board.Column, Board.Priority -> Elem
 priority_button = |handles, column, priority| {
 	owner = column_state(handles, column)
 	reads = { rows: owner.signal(), editor: handles.editor.signal() }.Signal
-	Gui.button(
-		"${priority.to_str()} priority",
+	Gui.action_button(
+		{ label: Signal.const(priority.to_str()), enabled: Signal.const(True) },
+		[Gui.label("${priority.to_str()} priority")],
 		Ui.action(
 			reads,
 			|current| {
@@ -128,60 +202,28 @@ priority_button = |handles, column, priority| {
 	)
 }
 
-move_button : Handles, Board.Column, Board.Column -> Elem
-move_button = |handles, from, to| {
-	source = column_state(handles, from)
-	destination = column_state(handles, to)
-	reads = { source: source.signal(), destination: destination.signal(), editor: handles.editor.signal() }.Signal
-	Gui.button(
-		"Move to ${to.to_str()}",
-		Ui.action(
-			reads,
-			|current| {
-				task = current.editor.task
-				remaining = Rows.apply(current.source, [RemoveKey(task.key)]) ?? crash "The task must belong to its source column"
-				moved = Rows.apply(current.destination, [Append([task])]) ?? crash "Task keys must be unique across columns"
-				Ui.update_states([
-					source.write(remaining),
-					destination.write(moved),
-					handles.editor.write({ column: to, task }),
-				])
-			},
-		),
-	)
-}
+move_button : Handles, Board.Column -> Elem
+move_button = |handles, to|
+	Gui.button("Move to ${to.to_str()}", Ui.action(handles.movement, |current| move_task(handles, current, current.editor.task.key, to, End)))
 
 reorder_buttons : Handles, Board.Column -> Elem
-reorder_buttons = |handles, column| {
-	owner = column_state(handles, column)
-	reads = { rows: owner.signal(), editor: handles.editor.signal() }.Signal
+reorder_buttons = |handles, column|
 	Gui.row(
-		[],
+		[Gui.style({ ..Gui.style_default, gap: 8 })],
 		[
 			Gui.button(
 				"Move to top",
 				Ui.action(
-					reads,
+					handles.movement,
 					|current| {
-						first = Rows.get(current.rows, 0) ?? crash "The selected task's column cannot be empty"
-						rows = Rows.apply(current.rows, [MoveKeyBefore({ key: current.editor.task.key, before: Key(first.key) })]) ?? crash "The selected task must belong to its column"
-						owner.set_cmd(rows)
+						first = Rows.get(column_rows(current, column), 0) ?? crash "The selected task's column cannot be empty"
+						move_task(handles, current, current.editor.task.key, column, Key(first.key))
 					},
 				),
 			),
-			Gui.button(
-				"Move to bottom",
-				Ui.action(
-					reads,
-					|current| {
-						rows = Rows.apply(current.rows, [MoveKeyBefore({ key: current.editor.task.key, before: End })]) ?? crash "The selected task must belong to its column"
-						owner.set_cmd(rows)
-					},
-				),
-			),
+			Gui.button("Move to bottom", Ui.action(handles.movement, |current| move_task(handles, current, current.editor.task.key, column, End))),
 		],
 	)
-}
 
 delete_confirmation : Handles, Board.Column -> Elem
 delete_confirmation = |handles, column| {
@@ -189,7 +231,8 @@ delete_confirmation = |handles, column| {
 	reads = { rows: owner.signal(), editor: handles.editor.signal() }.Signal
 	Ui.when(
 		handles.confirm_delete.signal(),
-		|| Gui.panel(
+		|| Gui.dialog(
+			{ label: "Delete task", on_dismiss: handles.confirm_delete.on_unit(|_| False) },
 			[Gui.test_id("delete-confirmation")],
 			[
 				Gui.text("Delete this task? This removes it from the board."),
@@ -230,14 +273,14 @@ detail_view = |handles|
 							[],
 							[
 								Gui.text_s(handles.editor.signal().map(|editor| "${editor.task.key} · ${editor.column.to_str()}")),
-								edit_field(Gui.text_input, handles, column, "Task title", |task, title| { ..task, title }, |task| task.title),
-								edit_field(Gui.text_input, handles, column, "Assignee", |task, assignee| { ..task, assignee }, |task| task.assignee),
-								edit_field(Gui.textarea, handles, column, "Task notes", |task, notes| { ..task, notes }, |task| task.notes),
+								edit_field(Gui.text_input, handles, column, "Task title", [], |task, title| { ..task, title }, |task| task.title),
+								edit_field(Gui.text_input, handles, column, "Assignee", [], |task, assignee| { ..task, assignee }, |task| task.assignee),
+								edit_field(Gui.textarea, handles, column, "Task notes", [Gui.style({ ..Gui.style_default, height: Px(150) })], |task, notes| { ..task, notes }, |task| task.notes),
 								Gui.text_s(handles.editor.signal().map(|editor| "Priority: ${editor.task.priority.to_str()}")),
-								Gui.row([], Board.priorities.map(|priority| priority_button(handles, column, priority))),
+								Gui.row([Gui.style({ ..Gui.style_default, gap: 8 })], Board.priorities.map(|priority| priority_button(handles, column, priority))),
 								Gui.text("Changes appear on the board immediately."),
 								reorder_buttons(handles, column),
-								Gui.column([], Board.columns.keep_if(|other| other != column).map(|other| move_button(handles, column, other))),
+								Gui.column([], Board.columns.keep_if(|other| other != column).map(|other| move_button(handles, other))),
 								delete_confirmation(handles, column),
 							],
 						),
@@ -294,6 +337,7 @@ board_view = |handles| {
 		[
 			Gui.heading("Launch Board"),
 			Gui.text("A small team's workspace for the next release."),
+			Gui.text("Drag onto a card to place a task before it, or into a column to move it to the end."),
 			new_task_form(handles),
 			Gui.text_input({ label: "Filter tasks", value: handles.filter.signal() }, [], handles.filter.on_str(|_, text| text)),
 			Gui.row(
@@ -332,7 +376,13 @@ main = || Ui.state(
 														Ui.state(
 															7.U64,
 															|next_id| {
-																Ui.state(False, |confirm_delete| board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete }))
+																Ui.state(
+																	False,
+																	|confirm_delete| {
+																		movement = { planned: planned.signal(), progress: progress.signal(), complete: complete.signal(), editor: editor.signal() }.Signal
+																		board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete, movement })
+																	},
+																)
 															},
 														)
 													},
