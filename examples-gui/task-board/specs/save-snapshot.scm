@@ -1,0 +1,17 @@
+(test "Saving retains an exact board snapshot while later edits remain dirty"
+ (steps
+  (click (role button :name "Save"))
+  (expect-pending-task "board-save-path" 1)
+  (fill (label "Task title") "Edited after save began")
+  (resolve-task "board-save-path" "6:files16:chosen23:/tmp/project.board.json")
+  (expect-pending-task "board-write" 1)
+  (resolve-task "board-write" "6:files123:/tmp/project.board.json1:1")
+  (expect-text (test-id "board-status") "Unsaved changes")
+  (expect-text (test-id "board-path") "/tmp/project.board.json")
+  (click (role button :name "Undo"))
+  (expect-value (label "Task title") "Sketch the welcome screen")
+  (expect-text (test-id "board-status") "Saved")
+  (click (role button :name "Redo"))
+  (expect-value (label "Task title") "Edited after save began")
+  (expect-text (test-id "board-status") "Unsaved changes")
+ ))
