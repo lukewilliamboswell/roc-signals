@@ -68,3 +68,23 @@ test "native style refuses unknown versions malformed records and invalid values
         "1,1,8,0,0,0,0,0,0,16777217,16777216,16777216,0,0,0,0,0", "1,1,8,16385,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0", "1,1,8,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0,0",
     }) |bytes| try std.testing.expectError(error.InvalidNativeStyle, decode(bytes));
 }
+
+/// Fixed-height virtual rows. This independent v1 field leaves ordinary style
+/// replacement independent of viewport behavior and follow-tail updates.
+pub const Viewport = extern struct { row_height: u32 = 0, follow_tail: u32 = 0 };
+
+/// Validates the entire virtual-list record before native publication. A zero
+/// row height is reserved for absent viewport metadata in the C node view.
+pub fn decodeViewport(bytes: []const u8) DecodeError!Viewport {
+    if (bytes.len > 32) return error.InvalidNativeStyle;
+    var fields = std.mem.splitScalar(u8, bytes, ',');
+    if (try number(fields.next()) != 1) return error.InvalidNativeStyle;
+    const value = Viewport{ .row_height = try number(fields.next()), .follow_tail = try number(fields.next()) };
+    if (fields.next() != null or value.row_height == 0 or value.row_height > max_dimension or value.follow_tail > 1) return error.InvalidNativeStyle;
+    return value;
+}
+
+test "native viewport rejects malformed size and follow-tail contracts" {
+    try std.testing.expectEqualDeep(Viewport{ .row_height = 48, .follow_tail = 1 }, try decodeViewport("1,48,1"));
+    for ([_][]const u8{ "1,0,0", "1,16385,0", "1,48,2", "2,48,1", "1,048,1", "1,48,1,0" }) |bytes| try std.testing.expectError(error.InvalidNativeStyle, decodeViewport(bytes));
+}

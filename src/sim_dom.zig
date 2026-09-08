@@ -30,6 +30,7 @@ pub const Element = struct {
     test_id: ?[]const u8,
     class: ?[]const u8,
     native_style: ?[]const u8,
+    native_viewport: ?[]const u8,
     text: ?[]const u8,
     value: ?[]const u8,
     pending_value: ?[]const u8,
@@ -59,6 +60,7 @@ pub const Element = struct {
             .test_id = null,
             .class = null,
             .native_style = null,
+            .native_viewport = null,
             .text = null,
             .value = null,
             .pending_value = null,
@@ -88,6 +90,7 @@ pub const Element = struct {
         if (self.test_id) |test_id| allocator.free(test_id);
         if (self.class) |class| allocator.free(class);
         if (self.native_style) |style| allocator.free(style);
+        if (self.native_viewport) |viewport| allocator.free(viewport);
         if (self.text) |text| allocator.free(text);
         if (self.value) |value| allocator.free(value);
         if (self.pending_value) |pending_value| allocator.free(pending_value);
@@ -120,7 +123,7 @@ pub const Element = struct {
         cloned.value_update_count = self.value_update_count;
         cloned.checked_update_count = self.checked_update_count;
         cloned.disabled_update_count = self.disabled_update_count;
-        inline for (.{ "role", "label", "test_id", "class", "native_style", "text", "value", "pending_value" }) |field_name| {
+        inline for (.{ "role", "label", "test_id", "class", "native_style", "native_viewport", "text", "value", "pending_value" }) |field_name| {
             if (@field(self, field_name)) |value| @field(cloned, field_name) = try allocator.dupe(u8, value);
         }
         try cloned.children.appendSlice(allocator, self.children.items);

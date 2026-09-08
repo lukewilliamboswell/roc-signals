@@ -1326,6 +1326,7 @@ pub const TextField = enum(u64) {
     class = 6,
     /// Versioned native presentation record; never encoded on the browser wire.
     native_style = 8,
+    native_viewport = 9,
 
     /// Returns the browser opcode for a web scalar. Native presentation has no
     /// browser encoding and must be rejected before wire preparation.
@@ -1337,7 +1338,7 @@ pub const TextField = enum(u64) {
             .test_id => .set_test_id,
             .value => .set_value,
             .class => .set_class,
-            .native_style => @panic("native style has no browser opcode"),
+            .native_style, .native_viewport => @panic("native style has no browser opcode"),
         };
     }
 };
@@ -1471,7 +1472,7 @@ pub const Counts = struct {
     /// Counts one changed scalar. Native presentation contributes a metadata
     /// operation without claiming it has a browser opcode.
     pub fn addTextField(self: *Counts, field: TextField) void {
-        if (field == .native_style) self.addOp(.extended) else self.addOp(field.setOp());
+        if (field == .native_style or field == .native_viewport) self.addOp(.extended) else self.addOp(field.setOp());
     }
 
     /// Appends text attr to the prepared, unpublished command batch.

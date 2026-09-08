@@ -4,8 +4,11 @@ import Node
 import Signal exposing [Signal]
 
 Length : [Auto, Fill, Px(U32)]
+
 Color : [Default, Rgb(U32)]
+
 Overflow : [Visible, Clip, Scroll]
+
 Presentation : {
 	gap : U32,
 	padding : U32,
@@ -21,6 +24,7 @@ Presentation : {
 	overflow_x : Overflow,
 	overflow_y : Overflow,
 }
+
 Attribute := [
 	Presentation(Presentation),
 	PresentationSignal(Signal(Presentation)),
@@ -32,6 +36,7 @@ Attribute := [
 
 native_style_field : Node.TextField
 native_style_field = { id: 8 }
+
 selected_field : Node.BoolField
 selected_field = { id: 4 }
 
@@ -45,7 +50,11 @@ dimension = |length| match length {
 color_number : Color -> U32
 color_number = |color| match color {
 	Default => 16777216
-	Rgb(value) => if value <= 16777215 { value } else { crash "Gui color must be a 24-bit RGB value" }
+	Rgb(value) => if value <= 16777215 {
+		value
+	} else {
+		crash "Gui color must be a 24-bit RGB value"
+	}
 }
 
 overflow_number : Overflow -> U32
@@ -61,7 +70,11 @@ encode_style : U32, Presentation -> Str
 encode_style = |direction, style| {
 	width = dimension(style.width)
 	height = dimension(style.height)
-	grow = if style.grow { 1.U32 } else { 0.U32 }
+	grow = if style.grow {
+		1.U32
+	} else {
+		0.U32
+	}
 	"1,${direction.to_str()},${style.gap.to_str()},${style.padding.to_str()},${width.kind.to_str()},${width.value.to_str()},${height.kind.to_str()},${height.value.to_str()},${grow.to_str()},${color_number(style.background).to_str()},${color_number(style.foreground).to_str()},${color_number(style.border_color).to_str()},${style.border_width.to_str()},${style.radius.to_str()},${style.font_size.to_str()},${overflow_number(style.overflow_x).to_str()},${overflow_number(style.overflow_y).to_str()}"
 }
 
@@ -70,34 +83,46 @@ style_attr = |direction, style| Node.Attr.StaticText({ field: native_style_field
 
 lower_attrs : U32, Presentation, List(Attribute) -> List(Node.Attr)
 lower_attrs = |direction, defaults, attrs| {
-	styles = attrs.keep_if(|attr| match attr {
-		Attribute.Presentation(_) => True
-		Attribute.PresentationSignal(_) => True
-		_ => False
-	})
-	if styles.len() > 1 { crash "Gui element accepts one style attribute" }
-	initial = if styles.is_empty() { [style_attr(direction, defaults)] } else { [] }
-	initial.concat(attrs.map(|attr| match attr {
-		Attribute.Presentation(value) => style_attr(direction, value)
-		Attribute.PresentationSignal(value) => {
-			text = value.map(|style| encode_style(direction, style))
-			# Html provides the same capability-owned text sink construction.
-			match Html.attr_s("", text) {
-				Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: native_style_field })
-				_ => crash "expected a signal text descriptor"
-			}
-		}
-		Attribute.Label(value) => Html.aria_label(value)
-		Attribute.TestId(value) => Html.test_id(value)
-		Attribute.Selected(value) => match Html.bool_attr_s("", value) {
-			Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: selected_field })
-			_ => crash "expected a signal bool descriptor"
-		}
-		Attribute.Enabled(value) => match Html.bool_attr_s("", value.map(|enabled| !enabled)) {
-			Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: { id: 2 } })
-			_ => crash "expected a signal bool descriptor"
-		}
-	}))
+	styles = attrs.keep_if(
+		|attr| match attr {
+			Attribute.Presentation(_) => True
+			Attribute.PresentationSignal(_) => True
+			_ => False
+		},
+	)
+	if styles.len() > 1 {
+		crash "Gui element accepts one style attribute"
+	}
+	initial = if styles.is_empty() {
+		[style_attr(direction, defaults)]
+	} else {
+		[]
+	}
+	initial.concat(
+		attrs.map(
+			|attr| match attr {
+				Attribute.Presentation(value) => style_attr(direction, value)
+				Attribute.PresentationSignal(value) => {
+					text = value.map(|style| encode_style(direction, style))
+					# Html provides the same capability-owned text sink construction.
+					match Html.attr_s("", text) {
+						Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: native_style_field })
+						_ => crash "expected a signal text descriptor"
+					}
+				}
+				Attribute.Label(value) => Html.aria_label(value)
+				Attribute.TestId(value) => Html.test_id(value)
+				Attribute.Selected(value) => match Html.bool_attr_s("", value) {
+					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: selected_field })
+					_ => crash "expected a signal bool descriptor"
+				}
+				Attribute.Enabled(value) => match Html.bool_attr_s("", value.map(|enabled| !enabled)) {
+					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: { id: 2 } })
+					_ => crash "expected a signal bool descriptor"
+				}
+			},
+		),
+	)
 }
 
 ## Native controls and presentation over the shared Signals engine.
@@ -115,9 +140,19 @@ Gui := [].{
 	## Dimensions, spacing and font size are logical pixels, bounded at 16384.
 	style_default : Style
 	style_default = {
-		gap: 8, padding: 0, width: Auto, height: Auto, grow: False,
-		background: Default, foreground: Default, border_color: Default,
-		border_width: 0, radius: 0, font_size: 0, overflow_x: Visible, overflow_y: Visible,
+		gap: 8,
+		padding: 0,
+		width: Auto,
+		height: Auto,
+		grow: False,
+		background: Default,
+		foreground: Default,
+		border_color: Default,
+		border_width: 0,
+		radius: 0,
+		font_size: 0,
+		overflow_x: Visible,
+		overflow_y: Visible,
 	}
 
 	## Apply a complete presentation record. Each element accepts one style.
@@ -159,6 +194,28 @@ Gui := [].{
 	## Group content in a padded, bordered vertical panel. A style replaces defaults.
 	panel : List(Attr), List(Elem) -> Elem
 	panel = |attrs, children| Html.div(lower_attrs(1, { ..style_default, padding: 16, border_width: 1, radius: 8, border_color: Rgb(4743275) }, attrs), children)
+
+	## Presents direct child rows at a fixed logical height, creating GPUI layout
+	## only for the visible range. Child scopes remain owned by ordinary Ui.each.
+	## With follow_tail enabled, new history keeps the final row in view.
+	virtual_list : { row_height : U32, follow_tail : Signal(Bool) }, List(Attr), List(Elem) -> Elem
+	virtual_list = |props, attrs, children| {
+		if props.row_height == 0 or props.row_height > 16384 {
+			crash "Gui virtual row height must be between 1 and 16384"
+		}
+		encoded = props.follow_tail.map(|follow| "1,${props.row_height.to_str()},${
+			if follow {
+				"1"
+			} else {
+				"0"
+			}
+		}")
+		viewport = match Html.attr_s("", encoded) {
+			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: { id: 9 } })
+			_ => crash "expected a signal text descriptor"
+		}
+		Html.div(lower_attrs(1, { ..style_default, width: Fill, height: Px(480), grow: True }, attrs).append(viewport), children)
+	}
 
 	## Render a prominent heading.
 	heading : Str -> Elem

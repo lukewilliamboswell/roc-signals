@@ -12,7 +12,9 @@ pub struct Node {
     pub role: String,
     pub test_id: String,
     pub style: Option<Style>,
-    pub children: Vec<u64>,
+    pub child_count: usize,
+    pub row_height: u32,
+    pub follow_tail: bool,
     pub click: u64,
     pub input: u64,
     pub check: u64,
@@ -85,7 +87,6 @@ struct RawNode {
     role: Slice,
     test_id: Slice,
     class: Slice,
-    children: *const u64,
     child_count: usize,
     click: u64,
     input: u64,
@@ -95,6 +96,7 @@ struct RawNode {
     selected: u64,
     style_present: u64,
     style: Style,
+    viewport: [u32; 2],
 }
 pub struct Engine {
     unmount: unsafe extern "C" fn(),
@@ -103,6 +105,7 @@ pub struct Engine {
     read: unsafe extern "C" fn(usize, *mut RawNode),
     metrics: unsafe extern "C" fn(*mut u64),
     tick: unsafe extern "C" fn(),
+    child_at: unsafe extern "C" fn(u64, usize) -> u64,
     _main_thread: PhantomData<Rc<()>>,
 }
 impl Engine {
@@ -115,11 +118,12 @@ impl Engine {
                 read: signals_read_changed,
                 metrics: signals_metrics,
                 tick: signals_tick,
+                child_at: signals_child_at,
                 _main_thread: PhantomData,
             };
             assert_eq!(
                 signals_protocol_version(),
-                2,
+                3,
                 "native GUI protocol mismatch"
             );
             assert_eq!(
@@ -150,11 +154,9 @@ impl Engine {
                         role: r.role.copy(),
                         test_id: r.test_id.copy(),
                         style: (r.style_present != 0).then_some(r.style),
-                        children: if r.child_count == 0 {
-                            vec![]
-                        } else {
-                            std::slice::from_raw_parts(r.children, r.child_count).to_vec()
-                        },
+                        child_count: r.child_count,
+                        row_height: r.viewport[0],
+                        follow_tail: r.viewport[1] != 0,
                         click: r.click,
                         input: r.input,
                         check: r.check,
@@ -179,6 +181,9 @@ impl Engine {
         unsafe { (self.tick)() };
         self.changes()
     }
+    pub fn child_at(&self, parent: u64, rank: usize) -> u64 {
+        unsafe { (self.child_at)(parent, rank) }
+    }
     pub fn metrics(&self) -> [u64; 3] {
         let mut result = [0; 3];
         unsafe { (self.metrics)(result.as_mut_ptr()) };
@@ -201,10 +206,12 @@ unsafe extern "C" {
     fn signals_read_changed(index: usize, node: *mut RawNode);
     fn signals_metrics(out: *mut u64);
     fn signals_tick();
+    fn signals_child_at(parent: u64, rank: usize) -> u64;
 }
 
 #[cfg(test)]
 thread_local! {
+    static TEST_CHILDREN: std::cell::RefCell<std::collections::HashMap<u64, Vec<u64>>> = std::cell::RefCell::new(std::collections::HashMap::new());
     static TEST_EVENT: std::cell::RefCell<Option<(u64, u32, String, u32)>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -212,6 +219,9 @@ thread_local! {
 impl Engine {
     pub fn test_boundary() -> Self {
         unsafe extern "C" fn noop() {}
+        unsafe extern "C" fn child_at(parent: u64, rank: usize) -> u64 {
+            TEST_CHILDREN.with(|children| children.borrow()[&parent][rank])
+        }
         unsafe extern "C" fn count() -> usize {
             0
         }
@@ -241,8 +251,15 @@ impl Engine {
             read,
             metrics,
             tick: noop,
+            child_at,
             _main_thread: PhantomData,
         }
+    }
+
+    pub fn set_test_children(parent: u64, children: Vec<u64>) {
+        TEST_CHILDREN.with(|table| {
+            table.borrow_mut().insert(parent, children);
+        });
     }
 
     pub fn take_test_event() -> Option<(u64, u32, String, u32)> {

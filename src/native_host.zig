@@ -147,6 +147,7 @@ const NativeRenderPublication = struct {
     pub const PrepareError = std.mem.Allocator.Error || error{ ResourceLimit, InvalidRenderTopology };
 
     dom: sim_dom.PreparedPublication,
+    gui_order: ?signals.native_child_order.Prepared = null,
 
     fn prepareTextField(allocator: std.mem.Allocator, node: *sim_dom.Element, field: RenderTextField, next: ?[]const u8) std.mem.Allocator.Error!void {
         const slot: *?[]const u8 = switch (field) {
@@ -157,6 +158,10 @@ const NativeRenderPublication = struct {
             .value => &node.value,
             .class => &node.class,
             .native_style => &node.native_style,
+            .native_viewport => &node.native_viewport,
+        };
+        if (field == .native_viewport) if (next) |bytes| {
+            _ = native_style.decodeViewport(bytes) catch failHost("invalid native viewport record");
         };
         if (field == .native_style) if (next) |bytes| {
             _ = native_style.decode(bytes) catch failHost("invalid native presentation record");
@@ -221,6 +226,30 @@ const NativeRenderPublication = struct {
 
     fn prepare(host: *HostEnv, splice: anytype) PrepareError!NativeRenderPublication {
         const allocator = host.hostAllocator();
+        var gui_order: ?signals.native_child_order.Prepared = if (gpui_spike and Gpui.live) Gpui.child_order.prepare() else null;
+        errdefer if (gui_order) |*candidate| candidate.deinit();
+        if (gui_order) |*candidate| {
+            // These are executor edits already decided by the engine. Keeping
+            // an indexed projection avoids cloning a wide DOM child snapshot.
+            for (splice.removals.items) |entry| candidate.replace(entry.elem_id, &.{}) catch |err| return nativeOrderError(err);
+            for (splice.children.items) |entry| candidate.replace(entry.parent_elem_id, entry.next) catch |err| return nativeOrderError(err);
+            for (splice.sparse_children.items) |journal| {
+                for (journal.shadows.items) |shadow| {
+                    const index = shadow.elem_id.index();
+                    if (index < host.engine.render_cache.nodes.items.len) {
+                        const old = host.engine.render_cache.nodes.items[index];
+                        if (old.isActive() and old.parent_id == journal.parent_elem_id and shadow.parent_id != journal.parent_elem_id) {
+                            candidate.detach(journal.parent_elem_id, shadow.elem_id) catch |err| return nativeOrderError(err);
+                        }
+                    }
+                }
+                for (journal.wireEdits()) |edit| switch (edit) {
+                    .append => |child| candidate.place(journal.parent_elem_id, child, null) catch |err| return nativeOrderError(err),
+                    .move_before => |move| candidate.place(journal.parent_elem_id, move.child, move.before) catch |err| return nativeOrderError(err),
+                };
+            }
+            candidate.preflight() catch |err| return nativeOrderError(err);
+        }
         var touched: std.AutoHashMapUnmanaged(u64, void) = .empty;
         defer touched.deinit(allocator);
         var count: usize = 0;
@@ -276,14 +305,14 @@ const NativeRenderPublication = struct {
                 .element => |element| element.namespace,
             };
         }
-        for (splice.children.items) |entry| {
+        if (gui_order == null) for (splice.children.items) |entry| {
             const parent = dom.node(entry.parent_elem_id.raw()) orelse return error.InvalidRenderTopology;
             parent.children.deinit(allocator);
             parent.children = .empty;
             try parent.children.ensureTotalCapacity(allocator, entry.next.len);
             for (entry.next) |child_id| parent.children.appendAssumeCapacity(child_id.raw());
-        }
-        for (splice.sparse_children.items) |entry| {
+        };
+        if (gui_order == null) for (splice.sparse_children.items) |entry| {
             const parent = dom.node(entry.parent_elem_id.raw()) orelse return error.InvalidRenderTopology;
             var appended: usize = 0;
             for (entry.wireEdits()) |edit| switch (edit) {
@@ -292,7 +321,7 @@ const NativeRenderPublication = struct {
             };
             try parent.children.ensureUnusedCapacity(allocator, appended);
             for (entry.wireEdits()) |edit| try prepareSparseChildEdit(parent, edit);
-        }
+        };
         for (splice.parent_intents.items) |intent| (dom.node(intent.child_id.raw()) orelse return error.InvalidRenderTopology).parent_id = if (intent.next) |parent_id| parent_id.raw() else null;
         for (splice.text_fields.items) |entry| {
             const node = dom.node(entry.elem_id.raw()) orelse return error.InvalidRenderTopology;
@@ -346,11 +375,12 @@ const NativeRenderPublication = struct {
                 .binding = event.binding,
             });
         }
-        return .{ .dom = dom };
+        return .{ .dom = dom, .gui_order = gui_order };
     }
 
     fn apply(self: *NativeRenderPublication, host: *HostEnv) void {
         self.dom.apply(&host.dom_elements);
+        if (self.gui_order) |*candidate| candidate.commit();
         if (gpui_spike) {
             for (self.dom.existing_ids.items) |id| Gpui.touch(id);
             for (self.dom.original_len..host.dom_elements.items.len) |id| Gpui.touch(id);
@@ -360,6 +390,15 @@ const NativeRenderPublication = struct {
     /// Releases provisional DOM slots on abort or displaced slots after publication.
     pub fn deinit(self: *NativeRenderPublication) void {
         self.dom.deinit();
+        if (self.gui_order) |*candidate| candidate.deinit();
+    }
+
+    fn nativeOrderError(err: signals.native_child_order.Error) PrepareError {
+        return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.ResourceLimit => error.ResourceLimit,
+            else => error.InvalidRenderTopology,
+        };
     }
 };
 
@@ -3578,6 +3617,7 @@ comptime {
             @export(&Gpui.dispatch, .{ .name = "signals_dispatch" });
             @export(&Gpui.count, .{ .name = "signals_changed_count" });
             @export(&Gpui.read, .{ .name = "signals_read_changed" });
+            @export(&Gpui.childAt, .{ .name = "signals_child_at" });
             @export(&Gpui.metrics, .{ .name = "signals_metrics" });
             @export(&Gpui.tick, .{ .name = "signals_tick" });
         } else @export(&main, .{ .name = "main" });
@@ -12122,7 +12162,6 @@ const Gpui = struct {
         role: Slice,
         test_id: Slice,
         class: Slice,
-        children: [*]const u64,
         child_count: usize,
         click: u64,
         input: u64,
@@ -12132,10 +12171,12 @@ const Gpui = struct {
         selected: u64,
         style_present: u64,
         style: native_style.Style,
+        viewport: native_style.Viewport,
     };
     var host: HostEnv = undefined;
     var roc_host: abi.RocHost = undefined;
     var live = false;
+    var child_order: signals.native_child_order.Tree = undefined;
     var changed: [limit]u64 = undefined;
     var seen: [limit]bool = @splat(false);
     var changed_len: usize = 0;
@@ -12153,7 +12194,7 @@ const Gpui = struct {
         }
     }
     fn protocolVersion() callconv(.c) u32 {
-        return 2;
+        return 3;
     }
     fn nodeSize() callconv(.c) usize {
         return @sizeOf(Node);
@@ -12162,6 +12203,7 @@ const Gpui = struct {
         if (live) failHost("GPUI spike already mounted");
         clear();
         host = HostEnv.init();
+        child_order = signals.native_child_order.Tree.init(host.hostAllocator());
         roc_host = makeSignalsRocHost(&host);
         host.engine.roc_host = &roc_host;
         current_host = &host;
@@ -12171,6 +12213,7 @@ const Gpui = struct {
     }
     fn unmount() callconv(.c) void {
         if (!live) return;
+        child_order.deinit();
         host.deinit();
         if (host.gpa.deinit() == .leak) failHost("GPUI spike leaked host allocations");
         current_host = null;
@@ -12226,8 +12269,7 @@ const Gpui = struct {
             .role = Slice.from(elem.role orelse ""),
             .test_id = Slice.from(elem.test_id orelse ""),
             .class = Slice.from(elem.class orelse ""),
-            .children = elem.children.items.ptr,
-            .child_count = elem.children.items.len,
+            .child_count = child_order.count(ids.ElemId.fromRaw(elem.id)),
             .click = if (elem.event_bindings.click) |binding| binding.event_id.raw() else 0,
             .input = if (elem.event_bindings.input) |binding| binding.event_id.raw() else 0,
             .check = if (elem.event_bindings.check) |binding| binding.event_id.raw() else 0,
@@ -12236,7 +12278,12 @@ const Gpui = struct {
             .selected = @intFromBool(elem.selected),
             .style_present = @intFromBool(elem.native_style != null),
             .style = if (elem.native_style) |bytes| native_style.decode(bytes) catch unreachable else .{},
+            .viewport = if (elem.native_viewport) |bytes| native_style.decodeViewport(bytes) catch unreachable else .{},
         };
+    }
+    fn childAt(parent: u64, rank: usize) callconv(.c) u64 {
+        if (!live) failHost("GPUI child query before mount");
+        return (child_order.childAt(ids.ElemId.fromRaw(parent), rank) catch failHost("invalid GPUI child rank")).raw();
     }
     fn tick() callconv(.c) void {
         if (!live) failHost("GPUI tick before mount");

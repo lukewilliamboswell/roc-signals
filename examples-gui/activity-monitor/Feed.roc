@@ -40,7 +40,9 @@ Feed :: [].{
 
 	append : History -> History
 	append = |history| {
-		if history.next_id == 18446744073709551615 { crash "Activity sequence exhausted" }
+		if history.next_id == 18446744073709551615 {
+			crash "Activity sequence exhausted"
+		}
 		changes = if history.rows.len() == capacity {
 			[RemoveRange({ at: 0, count: 1 }), Append([event(history.next_id)])]
 		} else {
@@ -57,9 +59,11 @@ Feed :: [].{
 		if query.is_empty() and !errors_only {
 			history.rows
 		} else {
-			items = history.rows.to_list().keep_if(|entry|
-				(!errors_only or entry.severity == Error) and
-				(entry.component.contains(query) or entry.message.contains(query) or entry.severity.to_str().contains(query)))
+			items = history.rows.to_list().keep_if(
+				|entry|
+					(!errors_only or entry.severity == Error) and
+						(entry.component.contains(query) or entry.message.contains(query) or entry.severity.to_str().contains(query)),
+			)
 			Rows.replace_all(history.rows, items) ?? crash "Filtered activity has duplicate keys"
 		}
 	}
@@ -75,13 +79,17 @@ expect {
 ## The replay retains exactly the newest thousand events.
 expect {
 	var $history = Feed.empty
-	for _ in List.repeat({}, 1005) { $history = Feed.append($history) }
+	for _ in List.repeat({}, 1005) {
+		$history = Feed.append($history)
+	}
 	$history.rows.len() == Feed.capacity and $history.rows.get(0)?.id == 6 and $history.rows.get(999)?.id == 1005
 }
 
 ## Error filtering matches the explicit severity and preserves stable identities.
 expect {
 	var $history = Feed.empty
-	for _ in List.repeat({}, 12) { $history = Feed.append($history) }
+	for _ in List.repeat({}, 12) {
+		$history = Feed.append($history)
+	}
 	Feed.visible($history, "Indexer", True).to_list().map(Feed.key) == ["6", "12"]
 }

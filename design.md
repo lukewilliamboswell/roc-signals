@@ -244,6 +244,11 @@ reactive behaviour:
   input widgets, and retained GPUI entities. Events enter the same Zig engine;
   GPUI consumes its committed rendering decisions. GPUI notifications invalidate
   rendering, not a second signal graph. Roc values remain opaque to Rust.
+  Native fixed-height viewport presentation queries an indexed projection of engine-decided child order.
+  It bounds native layout to the visible range without changing reactive row
+  scope lifetime. Sparse child updates remain proportional to changed index
+  paths; ordinary full snapshot replacement retains its explicit broad cost.
+  Follow-tail is a declared native presentation policy, not a signal producer.
 
 `platform-web` exposes the browser vocabulary; `platform-gui` exposes a native
 `Gui` vocabulary over the shared signal and scope model. Platform packages can

@@ -78,6 +78,7 @@ pub const ScalarNode = struct {
     value: ?[]const u8 = null,
     class: ?[]const u8 = null,
     native_style: ?[]const u8 = null,
+    native_viewport: ?[]const u8 = null,
     custom_text_attrs: shared_buffer.List(CustomTextAttr) = .empty,
     named_events: shared_buffer.List(NamedEvent) = .empty,
     checked: ?bool = null,
@@ -92,6 +93,7 @@ pub const ScalarNode = struct {
         if (self.value) |value| allocator.free(value);
         if (self.class) |class| allocator.free(class);
         if (self.native_style) |style| allocator.free(style);
+        if (self.native_viewport) |viewport| allocator.free(viewport);
         for (self.custom_text_attrs.items) |attr| {
             attr.deinit(allocator);
         }
@@ -142,6 +144,7 @@ pub const ScalarNode = struct {
             .value => &self.value,
             .class => &self.class,
             .native_style => &self.native_style,
+            .native_viewport => &self.native_viewport,
         };
     }
 
@@ -1456,7 +1459,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (self.children.items) |children| for (self.childWireEdits(children)) |_| try result.addFixed(0);
             for (self.sparse_children.items) |children| for (children.wireEdits()) |_| try result.addFixed(0);
             for (self.text_fields.items) |field| {
-                if (field.field == .native_style and comptime publishes_native_fields) continue;
+                if ((field.field == .native_style or field.field == .native_viewport) and comptime publishes_native_fields) continue;
                 try result.addFixed(if (field.next) |bytes| bytes.len else 0);
             }
             for (self.bool_fields.items) |field| {
@@ -1515,7 +1518,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         }
 
         fn validateBrowserFields(self: *const Self) error{UnsupportedNativePresentation}!void {
-            for (self.text_fields.items) |field| if (field.field == .native_style) return error.UnsupportedNativePresentation;
+            for (self.text_fields.items) |field| if (field.field == .native_style or field.field == .native_viewport) return error.UnsupportedNativePresentation;
             for (self.bool_fields.items) |field| if (field.field == .selected) return error.UnsupportedNativePresentation;
         }
 
@@ -1565,7 +1568,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 .move_before => |move| try batch.staged.commands.appendRaw(allocator, .move_before, wireElem(children.parent_elem_id).raw(), wireElem(move.child).raw(), if (move.before) |before| wireElem(before).raw() else 0, 0, 0),
             };
             for (self.text_fields.items) |field| {
-                if (field.field == .native_style and comptime publishes_native_fields) continue;
+                if ((field.field == .native_style or field.field == .native_viewport) and comptime publishes_native_fields) continue;
                 try appendText(batch, allocator, field.field.setOp(), field.elem_id, field.next orelse "");
             }
             for (self.bool_fields.items) |field| {
@@ -3678,6 +3681,24 @@ test "browser presentation preparation rejects native fields before staging" {
     try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
     plan.bool_fields.items.len = 0;
     try plan.addTextField(&cache, ids.root_elem, .native_style, "1,1,8,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0");
+    try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
+}
+
+test "browser refuses native viewport metadata before staging" {
+    var host = TestHost{};
+    var cache: Cache(TestCtx) = .{};
+    defer cache.deinit(&host);
+    var plan = try PreparedRenderSplice(TestCtx).init(std.testing.allocator, &cache, .{
+        .node_capacity = 1,
+        .new_tags = 1,
+        .creations = 1,
+        .text_fields = 1,
+        .wire_commands = 2,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.root_elem, "div");
+    try plan.addTextField(&cache, ids.root_elem, .native_viewport, "1,44,1");
     try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
     try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
 }

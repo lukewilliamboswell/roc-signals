@@ -16,5 +16,5 @@ incremental filter. Selection remains valid when a filter hides its row. If the
 selected event is cleared or evicted, the inspector explains that it is gone.
 
 Run the native semantic specs with `scripts/test.py gui` using the pinned Roc
-compiler, as described in the contributor guide. The current list uses native
-scrolling; viewport virtualization and follow-tail are pending platform work.
+compiler, as described in the contributor guide. The list lays out only visible fixed-height native rows. “Follow latest” keeps
+the newest matching event visible; turn it off to browse earlier events.

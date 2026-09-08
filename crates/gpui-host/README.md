@@ -22,9 +22,9 @@ The `Gpui` bridge in `native_host.zig` records exactly the touched
 slots of each successfully committed `NativeRenderPublication`. IDs are
 coalesced within one host call using a fixed bounded table. Rust copies the final
 committed slots after the call returns, creates new GPUI identities first, and
-then applies the engine-selected child lists and fields without another engine
+then applies the engine-selected fields and queries indexed child ranges without another engine
 turn interleaving. It does not diff app state or rediscover graph dependencies.
-A removal drops the Rust registry's entity; updated parent lists detach it.
+A removal drops the Rust registry's entity; committed parent orders detach it.
 
 There is one mount on the UI thread. The bridge limits render IDs to 65,536,
 preflights that limit before native publication, and reserves its entire ID
@@ -67,11 +67,12 @@ cover Unicode and IME range handling, and the browser's guarded external
 
 ## Remaining work
 
-The full O(changed) rendering contract is not yet satisfied: parent child-list
-copying on reorder and GPUI parent child enumeration are linear. Earlier keyed
-row measurements found 13 settled edit renders but 1,035 child handles visited
-with 1,024 rows. Those measurements came from the original spike harness, not
-the generic Counter smoke check. First focus can invalidate the whole tree.
+Wide scrolling lists use `Gui.virtual_list` with an explicit fixed row height.
+The live GUI boundary maintains a prepared indexed projection of child edits;
+scalar updates no longer copy parent child lists, and viewport rendering queries
+only visible ranks. Ordinary containers still enumerate direct children when
+they render, so use the virtual-list API for wide collections. Reactive row
+scopes remain mounted until ordinary collection or scope disposal removes them.
 
 This Linux x64/Wayland prototype has no cross-platform distribution guarantee.
 Bundled ELF link inputs retain system runtime dependencies through SONAMEs;

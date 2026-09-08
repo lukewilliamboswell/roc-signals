@@ -1,19 +1,20 @@
 # Native GUI presentation boundary
 
-The statically linked GUI boundary uses protocol version **2**. Zig exports
+The statically linked GUI boundary uses protocol version **3**. Zig exports
 `signals_protocol_version` and `signals_node_size`; Rust checks both before
-mount. This version adds checked-event ingress, semantic role/test identifiers,
-selection, and typed native presentation. Both sides must be rebuilt together.
+mount. This version replaces copied child arrays with indexed child queries and
+adds virtual-list metadata. Both sides must be rebuilt together.
 The browser protocol and its version are unchanged.
 
 `Gui` lowers native presentation through the shared scalar descriptor machinery.
-Text field **8** is `native_style`; boolean field **4** is `selected`. The unused
+Text field **8** is `native_style`, field **9** is `native_viewport`, and boolean
+field **4** is `selected`. The unused
 IDs 7 and 3 remain the existing custom text/bool field markers. Native fields
 are explicit protocol fields, not CSS, class names, test identifiers, or custom
 attribute conventions. The browser rejects them before reserving or staging a
 command batch. Native specs retain them through the ordinary render publication.
 The native context also prepares a browser-shaped journal for shared structural
-bookkeeping; these two native fields publish only through its typed native
+bookkeeping; these native fields publish only through its typed native
 publication and never acquire invented browser opcodes.
 
 The style field contains a canonical ASCII decimal record separated by commas:
@@ -58,7 +59,32 @@ names, and test IDs support native specs and GPUI test selectors. They do not
 establish Linux screen-reader support: the pinned GPUI dependency does not expose
 an operating-system accessibility tree.
 
-The host still copies complete child lists for touched parents and enumerates
-children during GPUI rendering. Native presentation does not establish the full
-O(changed) rendering target; list topology and viewport rendering remain separate
-capabilities with their own work budgets.
+`Gui.virtual_list({row_height, follow_tail}, attrs, children)` presents direct
+children at a fixed logical height. `Ui.each` retains its ordinary key and scope
+semantics; scrolling changes GPUI layout work, not which reactive scopes exist.
+The `native_viewport` field is a separate canonical record
+`1,row_height,follow_tail`: height is 1–16384 and follow-tail is 0 or 1. The record
+is bounded at 32 bytes. Rust receives two validated `u32` fields, both zero when
+the viewport field is absent. An ordinary style update does not remove viewport
+metadata.
+
+The live GUI executor applies already-decided child edits to a prepared indexed
+order, sharing the engine's order-index implementation while keeping element
+and row identities distinct. Sparse edits copy changed index paths; full
+snapshot replacement explicitly visits the replaced child set. Failure during
+preparation leaves the prior order intact. Publication allocates nothing, and
+empty or removed parent indexes are retired. The native semantic spec runner
+continues to retain its observed DOM representation.
+
+`signals_read_changed` exports a child count rather than a child pointer.
+`signals_child_at(parent, rank)` returns one committed child in logarithmic
+expected time; invalid ranks and calls outside the mount lifetime are contract
+errors. The UI thread cannot interleave propagation while consuming a render
+range. No viewport request scans preceding siblings, copies a full child list,
+or changes application state. Rust retains node entities and renders only the
+requested viewport range; ordinary containers enumerate their direct children
+when they render. Fixed-height row caches preserve retained subtree identity.
+
+Follow-tail positions the final matching row at the bottom when the list is
+updated while enabled. Turning it off leaves scrolling under user control.
+This is presentation policy, not a second timer, observer, or reactive graph.

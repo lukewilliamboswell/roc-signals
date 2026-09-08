@@ -6,17 +6,15 @@ use std::{cell::Cell, collections::HashMap, rc::Rc, time::Duration};
 
 struct NodeView {
     node: Node,
-    children: Vec<Entity<NodeView>>,
+    scroll: UniformListScrollHandle,
     input: Option<Entity<input::TextInput>>,
     runtime: WeakEntity<Runtime>,
     renders: Rc<Cell<u64>>,
     child_visits: Rc<Cell<u64>>,
 }
 impl Render for NodeView {
-    fn render(&mut self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders.set(self.renders.get() + 1);
-        self.child_visits
-            .set(self.child_visits.get() + self.children.len() as u64);
         let mut element = div()
             .id(("node", self.node.id))
             .flex()
@@ -80,13 +78,60 @@ impl Render for NodeView {
                     .child(input.clone()),
             );
         }
-        element
-            .children(
-                self.children
-                    .iter()
-                    .map(|child| AnyView::from(child.clone())),
+        let parent = self.node.id;
+        if self.node.row_height != 0 {
+            let runtime = self.runtime.clone();
+            let height = px(self.node.row_height as f32);
+            let visits = self.child_visits.clone();
+            let list = uniform_list(
+                ("viewport", parent),
+                self.node.child_count,
+                move |range, _, cx| {
+                    visits.set(visits.get() + range.len() as u64);
+                    let runtime = runtime.upgrade().expect("viewport outlived runtime");
+                    let runtime = runtime.read(cx);
+                    range
+                        .map(|rank| {
+                            let id = runtime.engine.child_at(parent, rank);
+                            let child = runtime
+                                .nodes
+                                .get(&id)
+                                .expect("missing viewport child identity")
+                                .clone();
+                            let mut style = StyleRefinement::default();
+                            style.size.width = Some(relative(1.).into());
+                            style.size.height = Some(height.into());
+                            div()
+                                .id(("row", id))
+                                .h(height)
+                                .w_full()
+                                .overflow_hidden()
+                                .child(AnyView::from(child).cached(style))
+                        })
+                        .collect::<Vec<_>>()
+                },
             )
-            .into_any_element()
+            .track_scroll(self.scroll.clone())
+            .size_full();
+            return element.child(list).into_any_element();
+        }
+        self.child_visits
+            .set(self.child_visits.get() + self.node.child_count as u64);
+        let runtime = self.runtime.upgrade().expect("view outlived runtime");
+        let runtime = runtime.read(cx);
+        let children = (0..self.node.child_count)
+            .map(|rank| {
+                let id = runtime.engine.child_at(parent, rank);
+                AnyView::from(
+                    runtime
+                        .nodes
+                        .get(&id)
+                        .expect("missing child identity")
+                        .clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        element.children(children).into_any_element()
     }
 }
 fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div> {
@@ -246,7 +291,7 @@ impl Runtime {
                     };
                     NodeView {
                         node: node.clone(),
-                        children: vec![],
+                        scroll: UniformListScrollHandle::default(),
                         input,
                         runtime: weak,
                         renders,
@@ -258,11 +303,6 @@ impl Runtime {
         }
         let mut roots_changed = false;
         for node in changes.iter().filter(|n| n.active) {
-            let children: Vec<_> = node
-                .children
-                .iter()
-                .map(|id| self.nodes.get(id).expect("missing child identity").clone())
-                .collect();
             let view = self.nodes[&node.id].clone();
             if node.tag == "root" && !self.roots.iter().any(|r| r.entity_id() == view.entity_id()) {
                 self.roots.push(view.clone());
@@ -276,7 +316,10 @@ impl Runtime {
                     });
                 }
                 view.node = node.clone();
-                view.children = children;
+                if node.follow_tail && node.child_count != 0 {
+                    view.scroll
+                        .scroll_to_item_strict(node.child_count - 1, ScrollStrategy::Bottom);
+                }
                 cx.notify();
             });
         }
@@ -359,8 +402,9 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                                     let n = &v.read(cx).node;
                                     n.tag == "button"
                                         && (n.text == label
-                                            || n.children.iter().any(|id| {
-                                                runtime.nodes[id].read(cx).node.text == label
+                                            || (0..n.child_count).any(|rank| {
+                                                let id = runtime.engine.child_at(n.id, rank);
+                                                runtime.nodes[&id].read(cx).node.text == label
                                             }))
                                 })
                                 .expect("smoke button missing")
@@ -417,11 +461,12 @@ mod tests {
     }
 
     fn node(id: u64, tag: &str, children: &[u64]) -> Node {
+        Engine::set_test_children(id, children.into());
         Node {
             id,
             tag: tag.into(),
             active: true,
-            children: children.into(),
+            child_count: children.len(),
             ..Default::default()
         }
     }
@@ -442,7 +487,10 @@ mod tests {
                 let original = runtime.nodes[&1].entity_id();
                 runtime.apply(vec![node(0, "root", &[2, 1])], cx);
                 assert_eq!(runtime.nodes[&1].entity_id(), original);
-                assert_eq!(runtime.nodes[&0].read(cx).children[1].entity_id(), original);
+                assert_eq!(
+                    runtime.nodes[&runtime.engine.child_at(0, 1)].entity_id(),
+                    original
+                );
                 runtime.event_if_live(1, 20, Payload::Unit, cx);
                 assert!(Engine::take_test_event().is_none());
                 runtime.apply(
@@ -562,5 +610,86 @@ mod tests {
         let second = cx.debug_bounds("second").expect("second child rendered");
         assert_eq!(first.origin.y, second.origin.y);
         assert!(second.origin.x > first.origin.x);
+    }
+
+    #[gpui::test]
+    fn viewport_work_is_bounded_and_follow_tail_reveals_the_final_identity(
+        cx: &mut TestAppContext,
+    ) {
+        for count in [100, 10_000] {
+            let cx = cx.add_empty_window();
+            let runtime = cx.new(|cx| {
+                let mut runtime = runtime();
+                let children: Vec<_> = (2..count + 2).collect();
+                let mut rows: Vec<_> = children
+                    .iter()
+                    .map(|id| {
+                        let mut value = node(*id, "text", &[]);
+                        value.text = format!("Event {id}");
+                        value.test_id = format!("event-{id}");
+                        value
+                    })
+                    .collect();
+                let mut viewport = node(1, "div", &children);
+                viewport.row_height = 24;
+                viewport.style = Some(bridge::Style {
+                    height_kind: 2,
+                    height: 120,
+                    width_kind: 2,
+                    width: 300,
+                    ..Default::default()
+                });
+                rows.push(viewport);
+                rows.push(node(0, "root", &[1]));
+                runtime.apply(rows, cx);
+                runtime
+            });
+            cx.draw(point(px(0.), px(0.)), size(px(400.), px(240.)), |_, _| {
+                runtime.clone()
+            });
+            runtime.read_with(cx, |runtime, _| {
+                assert!(
+                    runtime.renders.get() < 24,
+                    "rendered {} views for {count} rows",
+                    runtime.renders.get()
+                );
+                assert!(
+                    runtime.child_visits.get() < 24,
+                    "visited {} children for {count} rows",
+                    runtime.child_visits.get()
+                );
+            });
+            assert!(cx.debug_bounds("event-2").is_some());
+            assert!(
+                cx.debug_bounds(if count == 100 {
+                    "event-101"
+                } else {
+                    "event-10001"
+                })
+                .is_none()
+            );
+            runtime.update(cx, |runtime, cx| {
+                let mut viewport = runtime.nodes[&1].read(cx).node.clone();
+                viewport.follow_tail = true;
+                runtime.apply(vec![viewport], cx);
+                runtime.renders.set(0);
+                runtime.child_visits.set(0);
+            });
+            cx.draw(point(px(0.), px(0.)), size(px(400.), px(240.)), |_, _| {
+                runtime.clone()
+            });
+            assert!(
+                cx.debug_bounds(if count == 100 {
+                    "event-101"
+                } else {
+                    "event-10001"
+                })
+                .is_some()
+            );
+            runtime.read_with(cx, |runtime, _| {
+                assert!(runtime.renders.get() < 24);
+                assert!(runtime.child_visits.get() < 24);
+            });
+        }
     }
 }

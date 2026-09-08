@@ -197,7 +197,7 @@ const WasmSink = struct {
 
     /// Applies an engine-decided text field value to one render node.
     pub fn applyTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField, value: []const u8) void {
-        if (field == .native_style) failHostWithFmt("native presentation is unsupported by the browser host", .{});
+        if (field == .native_style or field == .native_viewport) failHostWithFmt("native presentation is unsupported by the browser host", .{});
         appendStringCommand(field.setOp(), toU32(elem_id.raw()), value);
     }
 
@@ -213,7 +213,7 @@ const WasmSink = struct {
 
     /// Clears an engine-decided text field from one render node.
     pub fn clearTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField) void {
-        if (field == .native_style) failHostWithFmt("native presentation is unsupported by the browser host", .{});
+        if (field == .native_style or field == .native_viewport) failHostWithFmt("native presentation is unsupported by the browser host", .{});
         appendStringCommand(field.setOp(), toU32(elem_id.raw()), "");
     }
 
