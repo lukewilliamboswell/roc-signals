@@ -18,7 +18,10 @@ roc test examples-gui/notes-editor/main.roc
 Control+N creates a document, Control+O opens one, Control+S saves, and
 Control+Shift+S chooses a new destination. Escape cancels an operation or closes
 the discard confirmation. Native editor selection, movement, and clipboard
-bindings retain their usual behavior.
+bindings retain their usual behavior. Paragraphs wrap to the viewport; Control+Z
+undoes typing and Control+Shift+Z or Control+Y redoes it. The editor owns bounded
+history (128 boundaries and 8 MiB), cleared on a new document lifetime even when
+its text equals the preceding document.
 
 Try opening a UTF-8 file, editing several lines, saving it, and using Revert
 changes after another edit. Revert restores the last accepted file snapshot.
@@ -35,8 +38,11 @@ refused as complete operations. Files and filenames must be valid UTF-8.
 
 The discard dialog focuses Keep editing, contains Tab/Shift-Tab navigation,
 and restores the prior live control when dismissed. Enter/Space activate
-focused buttons; Escape keeps the current draft. Closing the application still
-discards unsaved changes; there is no window-close confirmation yet.
+focused buttons; Escape keeps the current draft. Closing an edited document
+asks whether to Save and close, Discard and close, or Keep editing. A closing
+save freezes editing and waits for successful completion; cancellation or failure
+keeps the window and draft open. Closing during another file operation asks the
+user to finish or cancel it first.
 Character counts measure Unicode scalar values, and words are runs separated
 by ASCII whitespace, including tabs and line breaks.
 

@@ -1,4 +1,5 @@
 import Document
+import pf.Gui
 
 ## A document operation owns its submitted snapshot until its task settles.
 ## Editing the live body while a write runs never changes what that write saves.
@@ -21,7 +22,13 @@ Session := [].{
 		is_eq : _
 	}
 
+	CloseState := [NoClose, ConfirmClose, SaveClose, AllowClose].{
+		is_eq : _
+	}
+
 	State : {
+		document_generation : U64,
+		close : CloseState,
 		path : [None, Some(Str)],
 		baseline : Document.Snapshot,
 		phase : Phase,
@@ -29,11 +36,46 @@ Session := [].{
 	}
 
 	initial : State
-	initial = { path: None, baseline: Document.blank, phase: Idle, problem: None }
+	initial = { document_generation: 0, close: NoClose, path: None, baseline: Document.blank, phase: Idle, problem: None }
+
+	## New document lifetimes reset native editing history independently of text.
+	new_document : State -> State
+	new_document = |state| { ..initial, document_generation: next_generation(state) }
+
+	## Never reuse an editor lifetime after generation exhaustion.
+	next_generation : State -> U64
+	next_generation = |state| if state.document_generation == 18446744073709551615 {
+		crash "Notes document lifetime exhausted"
+	} else {
+		state.document_generation + 1
+	}
+
+	## Window closure remains an ordinary app transition, including async saving.
+	close_decision : State -> Gui.CloseDecision
+	close_decision = |state| match state.close {
+		NoClose => KeepOpen
+		ConfirmClose | SaveClose => AwaitDecision
+		AllowClose => Close
+	}
+
+	request_close : State, Str -> State
+	request_close = |state, body| if state.phase != Idle {
+		{ ..state, problem: Some("Finish or cancel the current file operation before closing.") }
+	} else if Document.is_dirty({ draft: draft(state, body), baseline: state.baseline }) {
+		{ ..state, close: ConfirmClose, problem: None }
+	} else {
+		{ ..state, close: AllowClose }
+	}
+
+	save_and_close : State, Str -> State
+	save_and_close = |state, body| {
+		next = begin_save({ state: { ..state, close: NoClose }, draft: draft(state, body), save_as: False })
+		{ ..next, close: SaveClose }
+	}
 
 	## Only one file operation may be started for this document at a time.
 	can_start : State -> Bool
-	can_start = |state| state.phase == Idle
+	can_start = |state| state.phase == Idle and state.close == NoClose
 
 	## Writes keep the editor available; document replacement waits for its result.
 	can_edit : Phase -> Bool
@@ -87,6 +129,8 @@ Session := [].{
 	## the same file value for its body source in one coordinated state write.
 	from_file : { path : Str, text : Str } -> State
 	from_file = |file| {
+		document_generation: 0,
+		close: NoClose,
 		path: Some(file.path),
 		baseline: { title: file_name(file.path), body: file.text },
 		phase: Idle,
@@ -97,7 +141,7 @@ Session := [].{
 	loaded : State, { path : Str, text : Str } -> State
 	loaded = |state, file|
 		match state.phase {
-			Reading(_) => from_file(file)
+			Reading(_) => { ..from_file(file), document_generation: next_generation(state) }
 			_ => crash "A file read arrived without its owning Notes operation"
 		}
 
@@ -127,6 +171,12 @@ Session := [].{
 	written = |state, path|
 		match state.phase {
 			Writing(write) => {
+				..state,
+				close: if state.close == SaveClose {
+					AllowClose
+				} else {
+					NoClose
+				},
 				path: Some(path),
 				baseline: { title: file_name(path), body: write.document.body },
 				phase: Idle,
@@ -137,11 +187,11 @@ Session := [].{
 
 	## Cancellation ends only the operation, preserving the accepted document.
 	cancel : State -> State
-	cancel = |state| { ..state, phase: Idle, problem: None }
+	cancel = |state| { ..state, phase: Idle, close: NoClose, problem: None }
 
 	## Failed native work keeps the baseline and current file location intact.
 	failed : State, Str -> State
-	failed = |state, problem| { ..state, phase: Idle, problem: Some(problem) }
+	failed = |state, problem| { ..state, phase: Idle, close: NoClose, problem: Some(problem) }
 }
 
 ## A save retains its submitted text even when a newer draft exists on completion.
@@ -209,4 +259,36 @@ expect {
 	requested = { ..Session.initial, phase: Reading("/tmp/新しい note.txt") }
 	loaded = Session.loaded(requested, { path: "/tmp/新しい note.txt", text: "Heading\n\nBody\n" })
 	loaded.baseline == { title: "新しい note.txt", body: "Heading\n\nBody\n" }
+}
+
+## Saving before closing closes only after its owned write has succeeded.
+expect {
+	requested = Session.request_close(Session.initial, "Keep this")
+	saving = Session.save_and_close(requested, "Keep this")
+	writing = Session.choose_path(saving, "/tmp/Close.txt")
+	done = Session.written(writing, "/tmp/Close.txt")
+	actual =
+		\\requested: ${Str.inspect(Session.close_decision(requested))}
+		\\saving: ${Str.inspect(Session.close_decision(writing))}
+		\\done: ${Str.inspect(Session.close_decision(done))}
+		\\saved: ${done.baseline.body}
+	actual ==
+		\\requested: AwaitDecision
+		\\saving: AwaitDecision
+		\\done: Close
+		\\saved: Keep this
+}
+
+## Failed or canceled saves abandon closure while preserving the current draft owner.
+expect {
+	saving = Session.save_and_close(Session.request_close(Session.initial, "Draft"), "Draft")
+	Session.close_decision(Session.failed(saving, "Permission denied")) == KeepOpen and Session.close_decision(Session.cancel(saving)) == KeepOpen
+}
+
+## Equal text still belongs to a new document lifetime when opened or reset.
+expect {
+	reading = { ..Session.initial, phase: Session.Phase.Reading("/tmp/Empty.txt") }
+	loaded = Session.loaded(reading, { path: "/tmp/Empty.txt", text: "" })
+	next = Session.new_document(loaded)
+	loaded.document_generation == 1 and next.document_generation == 2
 }

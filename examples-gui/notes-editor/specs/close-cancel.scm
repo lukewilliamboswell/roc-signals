@@ -1,0 +1,17 @@
+(test "Canceling close keeps the draft and a later discard completes a fresh request"
+  (steps
+    (fill (label "Note text") "Keep this note")
+    (request-window-close)
+    (click (role button :name "Keep editing"))
+    (expect-window-closed false)
+    (expect-value (label "Note text") "Keep this note")
+    (expect-disabled (label "Note text") false)
+    (request-window-close)
+    (click (role button :name "Save and close"))
+    (click (role button :name "Cancel operation"))
+    (expect-window-closed false)
+    (expect-value (label "Note text") "Keep this note")
+    (expect-pending-task "notes-save-path" 0)
+    (request-window-close)
+    (click (role button :name "Discard and close"))
+    (expect-window-closed true)))
