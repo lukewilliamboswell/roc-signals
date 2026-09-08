@@ -96,7 +96,9 @@ pub const Reader = struct {
                 self.advance();
                 break;
             }
-            try items.append(self.allocator, try self.readExpr());
+            // Reserve before taking ownership of a child expression.
+            try items.ensureUnusedCapacity(self.allocator, 1);
+            items.appendAssumeCapacity(try self.readExpr());
         }
 
         return .{
@@ -211,4 +213,19 @@ fn isDelimiter(byte: u8) bool {
         ' ', '\t', '\r', '\n', '(', ')', '"', ';' => true,
         else => false,
     };
+}
+
+fn readOwnedListAllocationCase(allocator: std.mem.Allocator) !void {
+    var reader = Reader.init(allocator, "(\"first\" (\"nested\") \"third\" \"fourth\" \"fifth\" \"sixth\" \"seventh\" \"eighth\" \"ninth\")");
+    const result = try reader.readOne();
+    defer result.deinit(allocator);
+}
+
+test "owned S-expression children are released when parent growth fails" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, readOwnedListAllocationCase, .{});
+}
+
+test "trailing S-expressions release the first owned expression" {
+    var reader = Reader.init(std.testing.allocator, "(\"first\") (\"extra\")");
+    try std.testing.expectError(error.InvalidSyntax, reader.readOne());
 }
