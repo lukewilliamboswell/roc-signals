@@ -221,7 +221,7 @@ def prepare(version: str, directory: Path, roc: str) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     driver.run(["zig", "build", "build-test-hosts", "-Doptimize=ReleaseSmall"])
     environment = dict(os.environ, ROC_BIN=roc, BUNDLE_OUT_DIR=str(directory))
-    subprocess.run([str(ROOT / "scripts/bundle.sh")], env=environment, cwd=ROOT, check=True)
+    subprocess.run([str(ROOT / "scripts/bundle.sh"), "--package", "web", "--no-build"], env=environment, cwd=ROOT, check=True)
     archives = list(directory.glob("*.tar.zst"))
     if len(archives) != 1:
         raise ValueError("expected exactly one platform archive")
@@ -246,7 +246,7 @@ def prepare(version: str, directory: Path, roc: str) -> None:
                 starter.writestr(path.relative_to(ROOT).as_posix(), data)
             page = '<!doctype html><meta charset="utf-8"><div id="app"></div><script type="module">\nimport { mountSignalsApp } from "../../browser/signals.mjs";\nimport { createPublicExampleTaskHandler } from "../../browser/example_tasks.mjs";\nimport { serviceOpsBehaviors } from "../../browser/service_ops_charts.mjs";\nawait mountSignalsApp({ root: document.getElementById("app"), wasmUrl: "./app.wasm", taskHandler: createPublicExampleTaskHandler(), behaviors: serviceOpsBehaviors });\n</script>\n'
             starter.writestr(str(example.source.parent / "index.html"), page)
-        starter.writestr("README.md", f"# Roc Signals {version}\n\nInstall `{pin}` from https://github.com/roc-lang/nightlies/releases/tag/{pin}.\nRun `roc version` to verify it. Each examples/<name>/ folder includes the complete app and native specs.\n\nBuild for the browser: `roc build --target=wasm32 --opt=size --output=examples/<name>/app.wasm examples/<name>/main.roc`.\nServe this directory over HTTP (for example `python3 -m http.server`) and open examples/<name>/index.html.\n\nFor native specs, build with `roc build --target=<target> --output=app examples/<name>/main.roc`, then run `./app examples/<name>/specs/<case>.scm`. Targets: x64musl, arm64musl, x64mac, arm64mac.\nNo Zig build or repository checkout is required.\n")
+        starter.writestr("README.md", f"# Roc Signals {version}\n\nInstall `{pin}` from https://github.com/roc-lang/nightlies/releases/tag/{pin}.\nRun `roc version` to verify it. Each examples-web/<name>/ folder includes the complete app and native specs.\n\nBuild for the browser: `roc build --target=wasm32 --opt=size --output=examples-web/<name>/app.wasm examples-web/<name>/main.roc`.\nServe this directory over HTTP (for example `python3 -m http.server`) and open examples-web/<name>/index.html.\n\nFor native specs, build with `roc build --target=<target> --output=app examples-web/<name>/main.roc`, then run `./app examples-web/<name>/specs/<case>.scm`. Targets: x64musl, arm64musl, x64mac, arm64mac.\nNo Zig build or repository checkout is required.\n")
     manifest = {"schema_version": 1, "version": version,
                 "source_sha": source_sha,
                 "compiler_pin": pin, "compiler_channel": "nightly-bootstrap", "assets": {}}

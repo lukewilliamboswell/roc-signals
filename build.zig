@@ -64,6 +64,10 @@ pub fn build(b: *std.Build) void {
     fuzz_build_options.addOption(bool, "wasm_allocation_ledger", true);
     const fuzz_build_options_module = fuzz_build_options.createModule();
 
+    const check_platform_sources = b.addSystemCommand(&.{ "python3", "scripts/prepare_platforms.py", "--check" });
+    const check_platform_sources_step = b.step("run-check-platform-sources", "Verify shared platform copies by content hash");
+    check_platform_sources_step.dependOn(&check_platform_sources.step);
+    const prepare_platforms = b.addSystemCommand(&.{ "python3", "scripts/prepare_platforms.py" });
     const build_hosts_step = b.step("build-test-hosts", "Build platform host artifacts");
     const build_wasm_host_step = b.step("build-wasm-host", "Build the wasm32 browser host artifact");
     const build_wasm_benchmark_host_step = b.step("build-wasm-benchmark-host", "Build the instrumented ReleaseFast wasm32 benchmark host artifact");
@@ -79,6 +83,20 @@ pub fn build(b: *std.Build) void {
     const run_coverage_native_host_step = b.step("run-coverage-native-host", "Run native host and signals tests with kcov coverage");
     const test_step = b.step("test", "Run Zig-only checks and tests");
     const build_fuzz_step = b.step("build-fuzz", "Build every fuzz target and its repro executable");
+
+    // Experimental native shared-library boundary; never included in release hosts.
+    const gpui_options = b.addOptions();
+    gpui_options.addOption(bool, "metrics", true);
+    gpui_options.addOption(bool, "fuzz_fixtures", false);
+    gpui_options.addOption(bool, "gpui_spike", true);
+    const gpui_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu });
+    const gpui_host = buildNativeHostLib(b, gpui_target, .ReleaseSafe, gpui_options.createModule(), true);
+    const gpui_install = b.addInstallFile(gpui_host.getEmittedBin(), "gui/libengine.a");
+    b.step("build-gui-engine", "Build the experimental GPUI native bridge").dependOn(&gpui_install.step);
+
+    build_hosts_step.dependOn(&prepare_platforms.step);
+    build_wasm_host_step.dependOn(&prepare_platforms.step);
+    gpui_install.step.dependOn(&prepare_platforms.step);
 
     const install_step = b.getInstallStep();
     install_step.dependOn(build_hosts_step);
@@ -240,6 +258,7 @@ pub fn build(b: *std.Build) void {
     const run_test_wiring = b.addRunArtifact(test_wiring);
     run_check_test_wiring_step.dependOn(&run_test_wiring.step);
 
+    test_step.dependOn(check_platform_sources_step);
     test_step.dependOn(run_check_zig_format_step);
     test_step.dependOn(run_check_zig_lints_step);
     test_step.dependOn(run_check_tidy_step);
@@ -537,7 +556,7 @@ fn buildAndCopyNativeHostLib(
     const copy = b.addUpdateSourceFiles();
     copy.addCopyFileToSource(
         host_lib.getEmittedBin(),
-        b.pathJoin(&.{ "platform", "targets", roc_target.targetDir(), "libhost.a" }),
+        b.pathJoin(&.{ "platform-web", "targets", roc_target.targetDir(), "libhost.a" }),
     );
     return &copy.step;
 }
@@ -555,7 +574,7 @@ fn buildAndCopyWasmHostObject(
     if (strip) |explicit| obj.root_module.strip = explicit;
 
     const copy = b.addUpdateSourceFiles();
-    copy.addCopyFileToSource(obj.getEmittedBin(), "platform/targets/wasm32/host.wasm");
+    copy.addCopyFileToSource(obj.getEmittedBin(), "platform-web/targets/wasm32/host.wasm");
     return &copy.step;
 }
 

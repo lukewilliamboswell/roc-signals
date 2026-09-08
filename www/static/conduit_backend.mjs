@@ -1,4 +1,4 @@
-// Deterministic in-page RealWorld (Conduit) API backend for examples/conduit.
+// Deterministic in-page RealWorld (Conduit) API backend for examples-web/conduit.
 //
 // Response shapes follow the RealWorld API spec
 // (https://docs.realworld.show/specifications/backend/): user/profile/article/

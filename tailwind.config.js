@@ -2,7 +2,7 @@ module.exports = {
   content: {
     relative: true,
     files: [
-      "./examples/**/*.roc",
+      "./examples-web/**/*.roc",
       "./www/**/*.html",
       "./www/**/*.md",
       "./www/static/**/*.mjs",

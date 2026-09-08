@@ -11,7 +11,7 @@
 - Preserve the non-negotiable constraints in `design.md`: no Roc compiler
   changes, no guessing or recovery that changes meaning, work proportional to
   the changed set rather than total graph or tree size, mutation confined to
-  the host, structurally safe erased values, and one shared engine behind two
+  the host, structurally safe erased values, and one shared engine behind
   thin hosts.
 - If requested work conflicts with the design, identify the conflict explicitly.
   Do not conceal it in compatibility glue, a special case, duplicated host
@@ -90,7 +90,7 @@
 ## Complete changes across affected layers
 
 - Trace boundary and public API changes through the Roc platform modules, Zig
-  ABI and typed views, shared engine, both hosts, browser runtime, specs,
+  ABI and typed views, shared engine, all affected hosts, browser runtime, specs,
   examples, generated/bundled artifacts, and maintained documentation wherever
   each layer is affected.
 - Read `style.md` before editing Roc. Follow the conventions there for types,
@@ -129,7 +129,7 @@
 
 ## Keep documentation truthful and durable
 
-- Keep public behavior consistent across `platform/`, maintained docs under
+- Keep public behavior consistent across `platform-web/`, `platform-gui/`, `platform-shared/`, maintained docs under
   `www/content/docs/`, examples, and tests. Documentation examples are part of
   the product surface, not disposable illustrations.
 - Put stable architecture and rationale in `design.md`, current contributor

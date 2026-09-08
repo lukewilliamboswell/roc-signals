@@ -9,7 +9,7 @@ template = "page.html"
 
 This page summarizes the application APIs and spec commands used in the guides.
 For worked examples, follow the topic guides. The public modules under
-`platform/` provide signatures and module documentation; internal descriptor and
+`platform-web/` provide signatures and module documentation; internal descriptor and
 host-value helpers are not application APIs.
 
 The [browser limits](#deliberately-absent) describe capabilities without a
@@ -487,7 +487,7 @@ events through the declared boundary; it must clean up any resources it starts.
 | Portals | Everything mounts inside the root; `document.body` is unreachable | CSS positioning in-tree |
 | Document- or window-level events | All event bindings attach to elements | JS behaviour |
 | WebSocket / SSE / streaming | No built-in subscription helper | Poll with HTTP, or manage a connection in a JS behaviour |
-| Raw HTML injection | By design — no `dangerouslySetInnerHTML` | Parse to `Elem` nodes ([Conduit's `Markdown.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples/conduit/Markdown.roc)) |
+| Raw HTML injection | By design — no `dangerouslySetInnerHTML` | Parse to `Elem` nodes ([Conduit's `Markdown.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples-web/conduit/Markdown.roc)) |
 | List virtualization | `Ui.each` materializes every row | — |
 | Table/list element helpers | Use `Elem.Element({ namespace: Html, tag: "table", ... })` directly | — |
 | Enter/exit animation hooks | No transition lifecycle | CSS transitions on signal-backed classes |
@@ -513,14 +513,14 @@ mechanism behind pause-when-hidden polling, and it is what
 zig build build-test-hosts -Doptimize=ReleaseSmall
 
 # Type-check
-roc check examples/my-app/main.roc
+roc check examples-web/my-app/main.roc
 
 # Native test binary
-roc build --target=arm64mac --output=/tmp/app examples/my-app/main.roc
-python3 scripts/spec_driver.py /tmp/app examples/my-app/specs
+roc build --target=arm64mac --output=/tmp/app examples-web/my-app/main.roc
+python3 scripts/spec_driver.py /tmp/app examples-web/my-app/specs
 
 # Browser build
-roc build --target=wasm32 --opt=size --output=/tmp/app.wasm examples/my-app/main.roc
+roc build --target=wasm32 --opt=size --output=/tmp/app.wasm examples-web/my-app/main.roc
 
 # Inspect the startup command stream
 node scripts/browser/mount_wasm_example.mjs /tmp/app.wasm my-app --telemetry-summary

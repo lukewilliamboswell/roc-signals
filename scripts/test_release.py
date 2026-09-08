@@ -29,7 +29,7 @@ class ReleaseTests(unittest.TestCase):
                 self.assertIsNone(serve.config_release_platform_url())
 
     def test_release_source_identity_rejects_uncommitted_changes(self):
-        with patch.object(release.subprocess, "check_output", return_value=" M platform/main.roc\n"), self.assertRaisesRegex(ValueError, "clean committed"):
+        with patch.object(release.subprocess, "check_output", return_value=" M platform-web/main.roc\n"), self.assertRaisesRegex(ValueError, "clean committed"):
             release.clean_source_sha()
         with patch.object(release.subprocess, "check_output", side_effect=["", "a" * 40 + "\n"]):
             self.assertEqual(release.clean_source_sha(), "a" * 40)
@@ -52,7 +52,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(replace_pin(source, "nightly-2026-09-07-14d9829"), source.replace("nightly-2026-09-04-c125b82", "nightly-2026-09-07-14d9829"))
 
     def test_published_urls_reject_local_floating_and_unrelated_downloads(self):
-        for url in ["../../platform/main.roc", "http://127.0.0.1/a.tar.zst", release.RELEASE_BASE + "/latest/a.tar.zst",
+        for url in ["../../platform-web/main.roc", "http://127.0.0.1/a.tar.zst", release.RELEASE_BASE + "/latest/a.tar.zst",
                     release.RELEASE_BASE + "/0.2.0-rc1/../a.tar.zst", "https://example.com/0.2.0/a.tar.zst"]:
             with self.subTest(url=url), self.assertRaises(ValueError):
                 release.release_base(url)
@@ -62,7 +62,7 @@ class ReleaseTests(unittest.TestCase):
     def test_unpublished_examples_cannot_fall_back_to_local_bundle(self):
         with patch.object(release.driver, "bundle_platform") as bundle, patch.object(release, "verify_compiler"), self.assertRaises(ValueError):
             # This remains a local URL even after the repository publishes its baseline.
-            with patch.object(release, "platform_url", return_value="../../platform/main.roc"):
+            with patch.object(release, "platform_url", return_value="../../platform-web/main.roc"):
                 release.check_published("roc")
         bundle.assert_not_called()
 

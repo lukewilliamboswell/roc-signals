@@ -14,7 +14,7 @@ Universal Permissive License, Version 1.0. See
 
 ## musl libc
 
-Files: `platform/targets/*/libc.a`, `platform/targets/*/crt1.o`
+Files: `platform-web/targets/*/libc.a`, `platform-web/targets/*/crt1.o`
 
 musl libc is licensed under the MIT License.
 

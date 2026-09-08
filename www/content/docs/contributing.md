@@ -168,15 +168,15 @@ zig build run-test-zig -Dtest-filter="signals host"
 `zig build build-test-hosts` copies host artifacts into Roc's platform target
 layout:
 
-- `platform/targets/x64mac/libhost.a`
-- `platform/targets/arm64mac/libhost.a`
-- `platform/targets/x64musl/libhost.a`
-- `platform/targets/x64musl/crt1.o`
-- `platform/targets/x64musl/libc.a`
-- `platform/targets/arm64musl/libhost.a`
-- `platform/targets/arm64musl/crt1.o`
-- `platform/targets/arm64musl/libc.a`
-- `platform/targets/wasm32/host.wasm`
+- `platform-web/targets/x64mac/libhost.a`
+- `platform-web/targets/arm64mac/libhost.a`
+- `platform-web/targets/x64musl/libhost.a`
+- `platform-web/targets/x64musl/crt1.o`
+- `platform-web/targets/x64musl/libc.a`
+- `platform-web/targets/arm64musl/libhost.a`
+- `platform-web/targets/arm64musl/crt1.o`
+- `platform-web/targets/arm64musl/libc.a`
+- `platform-web/targets/wasm32/host.wasm`
 
 Roc app executables built during tests are written under `.test-out/` by
 `scripts/test.py`.
@@ -340,18 +340,23 @@ only finished once the invariant it violated is asserted somewhere permanent.
 
 ## Bundles
 
-Build host artifacts first, then create a platform bundle:
+Build both app-independent hosts and create both platform bundles:
 
 ```sh
-zig build build-test-hosts -Doptimize=ReleaseSmall
 scripts/bundle.sh
-python3 scripts/bundle_browser.py
+# Build and serve web/ and gui/ bundles plus a URL-bound Counter.roc:
+scripts/bundle.sh --serve --port 8000
 ```
 
-The bundle script uses `ROC_BIN`, `ROC`, or `roc` from `PATH`. By default it
-writes the archive to the repository root. Set `BUNDLE_OUT_DIR` to choose a
-different output directory. The Python bundle test writes archives under
-`.test-out/bundles`.
+The script uses `ROC_BIN`, `ROC`, or `roc` from `PATH`; use the pinned compiler.
+Archives and `bundles.json` default to `.test-out/bundles`, with separate `web/`
+and `gui/` directories. `BUNDLE_OUT_DIR` or `--output-dir` changes that root.
+`--package web` and `--package gui` select one platform and put its archive
+directly in the output directory. `--no-build` reuses prepared hosts;
+`--debug-gui` selects a faster development Rust build. Existing web test, site,
+and release commands explicitly select the web package.
+
+For the separate browser JavaScript artifact, run `python3 scripts/bundle_browser.py`.
 
 To test an existing bundle archive instead of rebuilding one:
 
@@ -531,7 +536,7 @@ value mismatch. Prefer a `test-id` locator with the value as the expectation.
 every interaction no matter how deep the graph. Use `derived_calls_into_roc`
 (one per `map`/`map2`/`combine` evaluation) as the fine-grained budget, and
 `propagation_prunes` to show an equality cutoff fired. See
-`examples/_fixtures/metric-semantics/`.
+`examples-web/_fixtures/metric-semantics/`.
 
 **Assert structural metrics exactly; bound engine-internal ones.** `rows_created`,
 `rows_reused`, `rows_removed`, `scopes_created` and `scopes_disposed` are
@@ -649,7 +654,7 @@ hosts; use `python3 scripts/test.py bench --native always` to force the focused
 bench gate. A built app binary also accepts benchmark flags directly:
 
 ```sh
-.test-out/bench-bin/signals-data-grid-bench --bench-app --bench-name signals-data-grid --bench-iterations 100 --bench-samples 3 examples/data-grid/specs/initial-mount.scm
+.test-out/bench-bin/signals-data-grid-bench --bench-app --bench-name signals-data-grid --bench-iterations 100 --bench-samples 3 examples-web/data-grid/specs/initial-mount.scm
 ```
 
 The host initializes a fresh app per iteration, applies the initial command
@@ -727,10 +732,59 @@ from full snapshot reconciliation when testing update costs.
 Regenerate glue after changing exposed platform types or provided entrypoints:
 
 ```sh
-roc glue <path-to-roc>/src/glue/src/ZigGlue.roc src/signals platform/main.roc
+roc glue <path-to-roc>/src/glue/src/ZigGlue.roc src/signals platform-web/main.roc
 zig fmt src/signals/roc_platform_abi.zig
 ```
 
-Use the `ZigGlue.roc` from the same Roc commit named by the `roc` header in `platform/main.roc`. The host
+Use the `ZigGlue.roc` from the same Roc commit named by the `roc` header in `platform-web/main.roc`. The host
 uses the generated types' public `incref` and `decref` methods; generated helper
 functions are implementation details and must not be made public by hand.
+
+## Native GUI platform spike
+
+`platform-shared/` owns common signal, scope, descriptor, ownership, and render
+construction modules. `scripts/prepare_platforms.py` copies its Roc files into
+`platform-web/` and `platform-gui/`. These flat generated copies are individually
+gitignored. The fixed repository layout needs no per-platform source configuration.
+
+Run `python3 scripts/prepare_platforms.py --check` or
+`zig build run-check-platform-sources` to compare SHA-256 hashes without changing
+any files. Missing, modified, and stale shared-module entries fail the check.
+The check runs with `zig build test`, and CI exercises deliberate drift detection.
+Refresh copies after editing canonical sources with
+`python3 scripts/prepare_platforms.py`. Bundle staging always reads the canonical
+shared sources, even when local generated copies are stale.
+
+The flat layout is intentional: nested `shared/` imports and hosted declarations
+currently fail with the pinned compiler, including when compiled from bundles.
+See `UPSTREAM_COMPILER_BUGS.md` for the observed limitations.
+
+The current GUI target is Linux x86_64 with glibc and a Wayland/GPU session.
+Host development needs Rust (tested with 1.95), Zig 0.16, a C toolchain/CRT,
+FreeType and xkbcommon development packages, and the xkbcommon-X11 runtime.
+The workspace pins GPUI 0.2.2. Other native targets are not implemented.
+
+```sh
+python3 scripts/build_gui.py --debug
+roc build examples-gui/counter/main.roc --output=.test-out/Counter
+.test-out/Counter
+# Same executable, display-free semantic check:
+.test-out/Counter --run-spec-json examples-gui/counter/specs/counting.scm
+# Brief rendering/adapter integration check:
+.test-out/Counter --smoke --smoke-click Increment --smoke-expect 'Count: 1'
+```
+
+After `scripts/bundle.sh --serve`, download `http://127.0.0.1:8000/Counter.roc`
+and run `roc build Counter.roc`. Alternatively, `roc run Counter.roc --opt=speed`
+compiles and opens the window directly. Plain `roc run` currently encounters the
+required-`main` shim collision documented in `UPSTREAM_COMPILER_BUGS.md`, case 12. The app author needs the pinned Roc compiler
+and runtime GUI libraries; Rust, Zig, and a C compiler are used only when
+preparing the platform bundle. This produces a native executable, not a desktop
+installer. The prebuilt host depends on the build machine's glibc/library ABI;
+portable release packaging needs a deliberate sysroot and license inventory.
+
+`Gui` currently offers columns, headings, text, buttons, inputs, and fixed-height
+cards. Signals, rows, scopes, and ownership remain in the shared engine.
+Parent child-list copying and GPUI child enumeration still have linear costs;
+this spike does not yet satisfy the full O(changed) rendering target. See
+`crates/gpui-host/README.md` for the boundary limits.

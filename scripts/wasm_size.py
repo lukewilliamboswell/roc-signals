@@ -45,7 +45,7 @@ FIXTURES_MANIFEST = SIZE_DIR / "fixtures.toml"
 BUDGETS_PATH = SIZE_DIR / "budgets.toml"
 OUTPUT_ROOT = ROOT / ".test-out" / "size"
 COMPRESS_SCRIPT = ROOT / "scripts" / "browser" / "compress_sizes.mjs"
-HOST_OBJECT = ROOT / "platform" / "targets" / "wasm32" / "host.wasm"
+HOST_OBJECT = ROOT / "platform-web" / "targets" / "wasm32" / "host.wasm"
 HOST_BUILD = ["zig", "build", "build-wasm-host", "-Doptimize=ReleaseSmall"]
 APP_FLAGS = ["--target=wasm32", "--opt=size", "--no-cache"]
 BUDGET_HEADROOM_PERCENT = 1.0
@@ -190,7 +190,7 @@ def build_host(*, named: bool) -> None:
 
 
 def prepare_platform(destination: Path, host_object: Path | None = None) -> Path:
-    shutil.copytree(ROOT / "platform", destination, dirs_exist_ok=True)
+    shutil.copytree(ROOT / "platform-web", destination, dirs_exist_ok=True)
     if host_object is not None:
         shutil.copy2(host_object, destination / "targets" / "wasm32" / "host.wasm")
     return destination / "main.roc"
@@ -441,7 +441,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--roc-bin", default=os.environ.get("ROC_BIN") or os.environ.get("ROC") or "roc")
     parser.add_argument("--label", default="baseline", help="Output directory name under .test-out/size/.")
     parser.add_argument("--symbols", action="store_true", help="Also build a named host companion for attribution.")
-    parser.add_argument("--skip-host-build", action="store_true", help="Reuse platform/targets/wasm32/host.wasm as built.")
+    parser.add_argument("--skip-host-build", action="store_true", help="Reuse platform-web/targets/wasm32/host.wasm as built.")
     parser.add_argument("--check", action="store_true", help="Fail when a fixture exceeds test/size/budgets.toml.")
     parser.add_argument("--write-budgets", metavar="REPORT", help="Regenerate budgets.toml from REPORT and exit.")
     parser.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"), help="Compare two report.json files and exit.")

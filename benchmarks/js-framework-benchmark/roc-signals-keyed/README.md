@@ -34,7 +34,7 @@ yet a standalone upstream submission: producing a self-contained upstream
 folder requires a pinned Roc Signals release artifact and toolchain policy.
 
 The benchmark UI and rows are rendered by
-`examples/_fixtures/js-framework-benchmark/main.roc`. Its stable string keys
+`examples-web/_fixtures/js-framework-benchmark/main.roc`. Its stable string keys
 back `Rows`, so replacement creates new row nodes, removal detaches the
 identified node, and swaps move the existing keyed nodes.
 

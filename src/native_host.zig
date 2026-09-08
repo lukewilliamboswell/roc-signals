@@ -30,6 +30,8 @@ const sim_dom = @import("sim_dom.zig");
 const roc_alloc_ledger = @import("roc_alloc_ledger.zig");
 const crash_handlers = @import("crash_handlers.zig");
 
+const gpui_spike = @hasDecl(build_options, "gpui_spike") and build_options.gpui_spike;
+
 const enable_runtime_metrics = host_fixtures or build_options.metrics;
 const default_native_entropy_seed: u32 = 0x726f6353;
 /// Test-only host machinery (value-kind tracking, the current-host binding,
@@ -236,6 +238,7 @@ const NativeRenderPublication = struct {
             touched.putAssumeCapacity(entry.elem_id.raw(), {});
             max_elem_id = @max(max_elem_id, entry.elem_id.raw());
         };
+        if (gpui_spike and max_elem_id >= Gpui.limit) return error.ResourceLimit;
         const touched_ids = try allocator.alloc(u64, touched.count());
         defer allocator.free(touched_ids);
         var iterator = touched.keyIterator();
@@ -332,6 +335,10 @@ const NativeRenderPublication = struct {
 
     fn apply(self: *NativeRenderPublication, host: *HostEnv) void {
         self.dom.apply(&host.dom_elements);
+        if (gpui_spike) {
+            for (self.dom.existing_ids.items) |id| Gpui.touch(id);
+            for (self.dom.original_len..host.dom_elements.items.len) |id| Gpui.touch(id);
+        }
     }
 
     /// Releases provisional DOM slots on abort or displaced slots after publication.
@@ -3537,7 +3544,17 @@ comptime {
         @export(&hostValueTakeWithCapability, .{ .name = "roc_host_value_take_with_capability", .visibility = .hidden });
         @export(&hostValueTakeWithSplit, .{ .name = "roc_host_value_take_with_split", .visibility = .hidden });
 
-        @export(&main, .{ .name = "main" });
+        if (gpui_spike) {
+            @export(&main, .{ .name = "signals_spec_main" });
+            @export(&Gpui.mount, .{ .name = "signals_mount" });
+            @export(&Gpui.nodeSize, .{ .name = "signals_node_size" });
+            @export(&Gpui.unmount, .{ .name = "signals_unmount" });
+            @export(&Gpui.dispatch, .{ .name = "signals_dispatch" });
+            @export(&Gpui.count, .{ .name = "signals_changed_count" });
+            @export(&Gpui.read, .{ .name = "signals_read_changed" });
+            @export(&Gpui.metrics, .{ .name = "signals_metrics" });
+            @export(&Gpui.tick, .{ .name = "signals_tick" });
+        } else @export(&main, .{ .name = "main" });
         if (@import("builtin").os.tag == .windows) {
             @export(&__main, .{ .name = "__main" });
         }
@@ -12011,4 +12028,126 @@ pub const fuzz_fixtures = struct {
     pub const eachRowKeyI64 = testEachRowKeyI64;
     pub const readI64 = testReadHostValueI64;
     pub const writeResult = writeTestErasedResult;
+};
+
+// Worktree-only GPUI experiment. The ABI publishes committed, touched native
+// render slots, not Roc layouts. No Rust callback runs inside a transaction.
+const Gpui = struct {
+    const limit = 65536;
+    const Slice = extern struct {
+        ptr: [*]const u8,
+        len: usize,
+        fn from(value: []const u8) Slice {
+            return .{ .ptr = value.ptr, .len = value.len };
+        }
+    };
+    const Node = extern struct {
+        id: u64,
+        active: u64,
+        parent: u64,
+        tag: Slice,
+        text: Slice,
+        value: Slice,
+        label: Slice,
+        test_id: Slice,
+        class: Slice,
+        children: [*]const u64,
+        child_count: usize,
+        click: u64,
+        input: u64,
+        checked: u64,
+        disabled: u64,
+    };
+    var host: HostEnv = undefined;
+    var roc_host: abi.RocHost = undefined;
+    var live = false;
+    var changed: [limit]u64 = undefined;
+    var seen: [limit]bool = @splat(false);
+    var changed_len: usize = 0;
+
+    fn clear() void {
+        for (changed[0..changed_len]) |id| seen[id] = false;
+        changed_len = 0;
+    }
+    fn touch(id: u64) void {
+        if (id >= limit) failHost("GPUI spike node limit exceeded");
+        if (!seen[id]) {
+            changed[changed_len] = id;
+            changed_len += 1;
+            seen[id] = true;
+        }
+    }
+    fn nodeSize() callconv(.c) usize {
+        return @sizeOf(Node);
+    }
+    fn mount() callconv(.c) void {
+        if (live) failHost("GPUI spike already mounted");
+        clear();
+        host = HostEnv.init();
+        roc_host = makeSignalsRocHost(&host);
+        host.engine.roc_host = &roc_host;
+        current_host = &host;
+        current_roc_host = &roc_host;
+        live = true;
+        acceptInitElem(&host, &roc_host, abi.roc_ui_init());
+    }
+    fn unmount() callconv(.c) void {
+        if (!live) return;
+        host.deinit();
+        if (host.gpa.deinit() == .leak) failHost("GPUI spike leaked host allocations");
+        current_host = null;
+        current_roc_host = null;
+        live = false;
+        clear();
+    }
+    // Only the spike's unit clicks and UTF-8 text input are supported. Event
+    // identity is validated by the same engine route used by native specs.
+    fn dispatch(event: u64, kind: u32, ptr: [*]const u8, len: usize) callconv(.c) void {
+        if (!live or len > 1024 * 1024) failHost("invalid GPUI spike input");
+        clear();
+        const payload = switch (kind) {
+            0 => hostValueUnit(&host, &roc_host),
+            1 => hostValueStr(&host, &roc_host, ptr[0..len]),
+            else => failHost("unsupported GPUI spike event kind"),
+        };
+        dispatchRocEvent(&host, &roc_host, ids.EventId.fromRaw(event), if (kind == 0) RenderEventKind.click.payloadDescriptor() else RenderEventKind.input.payloadDescriptor(), payload);
+    }
+    fn count() callconv(.c) usize {
+        return changed_len;
+    }
+    // Every slice is borrowed until the next mount/dispatch/unmount call. Rust
+    // copies it before another host call and never owns any Roc allocation.
+    fn read(index: usize, out: *Node) callconv(.c) void {
+        if (!live or index >= changed_len) failHost("invalid GPUI spike change index");
+        const elem = &host.dom_elements.items[changed[index]];
+        out.* = .{
+            .id = elem.id,
+            .active = @intFromBool(elem.active),
+            .parent = elem.parent_id orelse 0,
+            .tag = Slice.from(elem.tag),
+            .text = Slice.from(elem.text orelse ""),
+            .value = Slice.from(elem.value orelse ""),
+            .label = Slice.from(elem.label orelse ""),
+            .test_id = Slice.from(elem.test_id orelse ""),
+            .class = Slice.from(elem.class orelse ""),
+            .children = elem.children.items.ptr,
+            .child_count = elem.children.items.len,
+            .click = if (elem.event_bindings.click) |binding| binding.event_id.raw() else 0,
+            .input = if (elem.event_bindings.input) |binding| binding.event_id.raw() else 0,
+            .checked = @intFromBool(elem.checked),
+            .disabled = @intFromBool(elem.disabled),
+        };
+    }
+    fn tick() callconv(.c) void {
+        if (!live) failHost("GPUI tick before mount");
+        clear();
+        if (host.engine.activeIntervalRecordCountByPeriod(1000) != 0) {
+            _ = tickIntervalSource(&host, &roc_host, 1000);
+        }
+    }
+    fn metrics(out: [*]u64) callconv(.c) void {
+        out[0] = host.engine.last_runtime_metrics.derived_calls_into_roc;
+        out[1] = host.engine.last_runtime_metrics.scopes_created;
+        out[2] = host.engine.last_runtime_metrics.scopes_disposed;
+    }
 };

@@ -130,7 +130,7 @@ failed. Tiers 2 and 3 are the externally visible outcomes the engine exists
 to deliver.
 
 **Tier 1 — Engine invariants.** The properties listed under *Measures of
-Effectiveness* below (one engine, two thin hosts; same apps in both
+Effectiveness* below (one engine, thin hosts; same apps in both
 environments; native semantic evidence; work scales with change;
 deterministic reclamation with no leaks; determinism; incompatible erased-value
 routing is rejected), with production checks and bounded transaction failure.
@@ -213,7 +213,7 @@ proposed design change that serves no goal is out of scope, however elegant;
 a goal with no section, spec, or app serving it is a gap to close, not a
 sentence to delete.
 
-## Purpose and Dual-Host Architecture
+## Purpose and Host Architecture
 
 The thesis and product goals above are the requirements; the engine described
 from here on is the means. The product is built on a **host-agnostic reactive engine**: a mutable node table,
@@ -222,7 +222,7 @@ keyed-row diff, identity tables, and structural splice/collect/apply. The engine
 owns all reactive and structural logic. It is the single source of truth for how
 a Signals app behaves.
 
-The engine is driven by **two thin hosts** that implement one contract — a
+The engine is driven by **thin hosts** that implement one contract — a
 `Ctx` (host capabilities the engine calls) plus a `sink()` (where the engine
 writes render commands). The hosts differ only in their boundary, never in their
 reactive behaviour:
@@ -240,7 +240,22 @@ reactive behaviour:
   timer/`fetch` bridges. Its job is **the JS↔WASM contract only**. It contains
   no reactive or structural logic; that all lives in the engine.
 
-The same Roc apps compile against both hosts. The native spec runner asserts
+- **GPUI host** — the native GUI boundary. A Rust static library owns windows,
+  input widgets, and retained GPUI entities. Events enter the same Zig engine;
+  GPUI consumes its committed rendering decisions. GPUI notifications invalidate
+  rendering, not a second signal graph. Roc values remain opaque to Rust.
+
+`platform-web` exposes the browser vocabulary; `platform-gui` exposes a native
+`Gui` vocabulary over the shared signal and scope model. Platform packages can
+have different public rendering APIs without duplicating reactive semantics.
+The GUI host is prebuilt independently of application code; `roc build` links
+it, the shared engine, and the application into a native executable. Each
+platform must declare its supported effects explicitly rather than silently
+substitute browser services on native systems. The GUI boundary has the same
+ownership, atomic publication, disposal, and O(changed) obligations as the web
+boundary; these are requirements, not claims about the completeness of a spike.
+
+The same web Roc apps compile against the native spec and Wasm hosts. The native spec runner asserts
 semantics and work budgets; the browser runs the apps for real. The JS runtime
 is a thin executor of the engine's already-computed command stream — it never
 reconstructs meaning, holds reactive state, or re-decides patches.
@@ -300,10 +315,10 @@ document is meant to preserve. Every part of this design must respect them.
    monomorphized types. There is no host-authored read site that can disagree
    with the writer, and no host-side knowledge of the value's layout. See
    *Confined Erasure*.
-6. **One engine, two thin hosts.** All reactive and structural logic lives in the
+6. **One engine, thin hosts.** All reactive and structural logic lives in the
    shared engine. A host file contains only its boundary (sink, marshalling,
    spec runner / JS bridge) and its `Ctx` implementation. Reactive or structural
-   logic appearing in a host file is a defect: it lets the two hosts diverge,
+   logic appearing in a host file is a defect: it lets the hosts diverge,
    which this architecture exists to prevent.
 
 ## First Principles, Not Imitation
@@ -1170,7 +1185,7 @@ and drives every event in-process, calling retained Roc closures directly. There
 is deliberately no per-event Roc entrypoint and no `ui_recompute` round-trip.
 
 ```roc
-# platform/main.roc
+# platform-web/main.roc
 roc_ui_init : () -> Box(Elem)
 ```
 
@@ -2124,7 +2139,7 @@ goals. Each is a property we can observe and that should hold for the life of th
 platform; each is backed by a spec, host test, or measurement that fails if the
 property regresses.
 
-1. **One engine, two thin hosts.** All reactive and structural logic lives in the
+1. **One engine, thin hosts.** All reactive and structural logic lives in the
    shared engine. Neither host file contains reactive or structural logic; each
    is a `Ctx` + `sink()` implementation plus its boundary. *We know this holds
    when:* the hosts cannot drift apart, because there is only one implementation

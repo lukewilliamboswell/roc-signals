@@ -1,0 +1,12 @@
+[package]
+name = "signals-gpui-host"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui = { version = "=0.2.2", default-features = false, features = ["wayland"] }
+unicode-segmentation = "1"
+
+[lib]
+name = "signals_gpui_host"
+crate-type = ["staticlib"]

@@ -58,13 +58,13 @@ def replace_platform(source: str, reference: str) -> str:
 
 
 def development_pin(root: Path = ROOT) -> str:
-    return read_pin(root / "platform/main.roc")
+    return read_pin(root / "platform-web/main.roc")
 
 
 def validate_roots(root: Path = ROOT) -> str:
     config = json.loads((root / ".github/roc-nightly.json").read_text())
     examples = tomllib.loads((root / "www/data/examples.toml").read_text())["examples"]
-    expected = {"platform/main.roc"} | {e["source"] for e in examples if e.get("public", True)}
+    expected = {"platform-web/main.roc"} | {e["source"] for e in examples if e.get("public", True)}
     if set(config["compiler_roots"]) != expected:
         raise ValueError("compiler_roots must select the platform and every public application")
     if (root / ".roc-version").exists():

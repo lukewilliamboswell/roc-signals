@@ -148,7 +148,7 @@ parse = Json.parser_camel()
 
 `Json.parser_camel()` maps `camelCase` JSON fields to `snake_case` Roc fields.
 `Json.to_str(value)` encodes. See
-[Conduit's `Api.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples/conduit/Api.roc)
+[Conduit's `Api.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples-web/conduit/Api.roc)
 for endpoint-specific decoding. That example still contains `shield_escapes`
 and `restore_text`, a workaround for an upstream JSON escape limitation. It is
 not a general JSON decoder: it does not cover all legal escaped input. Before
@@ -327,7 +327,7 @@ Ui.on_change_initial(
 ```
 
 See Conduit's
-[`Route.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples/conduit/Route.roc)
+[`Route.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples-web/conduit/Route.roc)
 and `Nav.roc` for parsing, link construction, and hash-route handling.
 
 > **Static hosting note.** Conduit uses hash-style routes (`#/article/slug`)

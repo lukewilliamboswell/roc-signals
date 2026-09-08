@@ -45,7 +45,7 @@ jobs:
         uses: lukewilliamboswell/roc-automation/actions/check-release@31e10eca5b0f7e4cacbf7864d51dfa8d224ae30f
         with:
           version: ${{ inputs.release_tag }}
-          compiler-root: platform/main.roc
+          compiler-root: platform-web/main.roc
           allow-default-branch: 'true'
           allow-nightly-bootstrap: 'true'
       - uses: ./.github/actions/setup-toolchain

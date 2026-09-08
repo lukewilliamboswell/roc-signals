@@ -32,10 +32,10 @@ the [Roc tutorial](https://www.roc-lang.org/tutorial) covers the language itself
 
 ## A small example
 
-Inside a checkout of this repository, save this as `examples/hello/main.roc`:
+Inside a checkout of this repository, save this as `examples-web/hello/main.roc`:
 
 ```roc
-app [main] { pf: platform "../../platform/main.roc" }
+app [main] { pf: platform "../../platform-web/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html

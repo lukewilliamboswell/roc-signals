@@ -421,11 +421,11 @@ def run_coordinated_writes_wasm_faults(roc_bin: str) -> None:
     """Link test-only allocator exports without adding them to release bundles."""
     output = TEST_OUT / "coordinated-writes-faults"
     diagnostic_platform = output / "platform"
-    shutil.copytree(ROOT / "platform", diagnostic_platform, dirs_exist_ok=True)
+    shutil.copytree(ROOT / "platform-web", diagnostic_platform, dirs_exist_ok=True)
     manifest = diagnostic_platform / "main.roc"
     source = manifest.read_text(encoding="utf-8")
     manifest.write_text(add_wasm_fault_exports(source), encoding="utf-8")
-    fixture = ROOT / "examples/_fixtures/coordinated-writes/main.roc"
+    fixture = ROOT / "examples-web/_fixtures/coordinated-writes/main.roc"
     app = output / "main.roc"
     app.write_text(PLATFORM_HEADER_RE.sub(
         f'platform "{manifest.resolve()}"', fixture.read_text(encoding="utf-8"), count=1,
@@ -631,7 +631,7 @@ def benchmark_run(command: list[str | Path], *, cwd: Path = ROOT) -> None:
 
 
 def prepare_wasm_benchmark_platform(destination: Path, host_object: Path, *, instrumented: bool) -> None:
-    shutil.copytree(ROOT / "platform", destination, dirs_exist_ok=True)
+    shutil.copytree(ROOT / "platform-web", destination, dirs_exist_ok=True)
     shutil.copy2(host_object, destination / "targets" / "wasm32" / "host.wasm")
     if not instrumented:
         return
@@ -654,7 +654,7 @@ def run_size_budgets(roc_bin: str) -> None:
     """Build the size fixture set with the ReleaseSmall host and gate it.
 
     Runs last because it leaves a ReleaseSmall browser host under
-    `platform/targets/wasm32/`, whereas `build_hosts` installs the default mode.
+    `platform-web/targets/wasm32/`, whereas `build_hosts` installs the default mode.
     """
     run([sys.executable, ROOT / "scripts" / "wasm_size.py", "--check", "--roc-bin", roc_bin, "--label", "check"])
 
@@ -734,8 +734,8 @@ def rewrite_platform_headers(root: Path, platform_ref: str) -> None:
 def rewrite_examples_for_platform(platform_ref: str, dest_root: Path) -> None:
     if dest_root.exists():
         shutil.rmtree(dest_root)
-    examples_dest = dest_root / "examples"
-    shutil.copytree(ROOT / "examples", examples_dest, dirs_exist_ok=True)
+    examples_dest = dest_root / "examples-web"
+    shutil.copytree(ROOT / "examples-web", examples_dest, dirs_exist_ok=True)
     rewrite_platform_headers(examples_dest, platform_ref)
 
 
@@ -752,7 +752,7 @@ def run_local_native_specs(
     fault_campaign: bool = False,
 ) -> None:
     source_root = TEST_OUT / "native-source"
-    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    rewrite_examples_for_platform(str((ROOT / "platform-web" / "main.roc").resolve()), source_root)
     run_native_specs(
         roc_bin,
         examples,
@@ -769,13 +769,13 @@ def run_local_native_specs(
 
 def run_local_roc_checks(roc_bin: str, examples: tuple[Example, ...]) -> None:
     source_root = TEST_OUT / "roc-check-source"
-    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    rewrite_examples_for_platform(str((ROOT / "platform-web" / "main.roc").resolve()), source_root)
     run_roc_checks(roc_bin, examples, source_root=source_root)
 
 
 def run_local_roc_tests(roc_bin: str, examples: tuple[Example, ...]) -> None:
     source_root = TEST_OUT / "roc-test-source"
-    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    rewrite_examples_for_platform(str((ROOT / "platform-web" / "main.roc").resolve()), source_root)
     run_roc_tests(roc_bin, examples, source_root=source_root)
 
 
@@ -785,7 +785,7 @@ def run_local_benchmarks(roc_bin: str, examples: tuple[Example, ...]) -> None:
     # timings measure validation machinery rather than production behavior.
     run(["zig", "build", "build-test-hosts", "-Doptimize=ReleaseFast"])
     source_root = TEST_OUT / "bench-source"
-    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    rewrite_examples_for_platform(str((ROOT / "platform-web" / "main.roc").resolve()), source_root)
     run_benchmarks(roc_bin, examples, source_root=source_root)
 
 
@@ -820,7 +820,7 @@ def bundle_platform(roc_bin: str) -> Path:
     bundle_out.mkdir(parents=True, exist_ok=True)
     env["BUNDLE_OUT_DIR"] = str(bundle_out)
     result = subprocess.run(
-        [str(ROOT / "scripts" / "bundle.sh")],
+        [str(ROOT / "scripts" / "bundle.sh"), "--package", "web", "--no-build"],
         cwd=ROOT,
         env=env,
         text=True,

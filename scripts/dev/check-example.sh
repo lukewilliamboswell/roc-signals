@@ -1,7 +1,7 @@
 #!/bin/bash
 # Type-check one example against the LOCAL platform, in a private scratch dir.
 #
-# `roc check examples/<slug>/main.roc` resolves the *released* platform from the
+# `roc check examples-web/<slug>/main.roc` resolves the *released* platform from the
 # roc cache, so it reports errors that do not exist locally. `scripts/test.py
 # roc-check` rewrites the header first but shares one `.test-out/` directory,
 # so parallel runs clobber each other. This does the same rewrite into a dir
@@ -16,7 +16,7 @@ OUT="$ROOT/.test-out/check-$SLUG"
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
-cp -r "$ROOT/examples/$SLUG" "$OUT/$SLUG"
-PLATFORM="$ROOT/platform/main.roc"
+cp -r "$ROOT/examples-web/$SLUG" "$OUT/$SLUG"
+PLATFORM="$ROOT/platform-web/main.roc"
 find "$OUT/$SLUG" -name '*.roc' -print0 | xargs -0 -r sed -i -E "s|platform \"[^\"]+\"|platform \"$PLATFORM\"|"
 "$ROC" check "$OUT/$SLUG/main.roc"

@@ -75,7 +75,7 @@ test("JavaScript metrics schema exactly follows authoritative shared RuntimeMetr
 });
 
 test("Node scenarios exactly cover the authoritative benchmark manifest operations", async () => {
-  const source = await readFile("examples/_fixtures/js-framework-benchmark/benchmarks.toml", "utf8");
+  const source = await readFile("examples-web/_fixtures/js-framework-benchmark/benchmarks.toml", "utf8");
   const operationBlock = source.split("[[memory_scenarios]]", 1)[0];
   const authoritative = [...operationBlock.matchAll(/^id\s*=\s*"([^"]+)"/gm)].map((match) => match[1]);
   assert.deepEqual(CASES.map((entry) => entry.id), authoritative);
@@ -94,7 +94,7 @@ test("Node setup and marked actions exactly follow each authoritative semantic s
     throw new Error(`semantic spec introduced unknown benchmark action ${label}`);
   };
   for (const scenario of CASES) {
-    const source = await readFile(`examples/_fixtures/js-framework-benchmark/specs/${scenario.id}.scm`, "utf8");
+    const source = await readFile(`examples-web/_fixtures/js-framework-benchmark/specs/${scenario.id}.scm`, "utf8");
     const labels = [...source.matchAll(/\(click \(role (?:button|link) :name "([^"]+)"\)\)/g)].map((match) => match[1]);
     const actions = labels.map(actionForLabel);
     assert.deepEqual(actions, [...(scenario.setup ?? []), scenario.marked], scenario.id);

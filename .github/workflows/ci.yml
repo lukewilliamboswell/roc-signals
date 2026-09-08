@@ -22,6 +22,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Verify shared platform sources
+        run: |
+          python3 scripts/prepare_platforms.py
+          python3 scripts/prepare_platforms.py --check
+          python3 -m unittest discover -s scripts -p 'test_prepare_platforms.py'
       - uses: ./.github/actions/setup-toolchain
       - run: python3 scripts/test.py zig browser roc-check roc-test wasm size --native never --bundle never
       - run: python3 scripts/fuzz.py check
@@ -34,6 +39,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Verify shared platform sources
+        run: |
+          python3 scripts/prepare_platforms.py
+          python3 scripts/prepare_platforms.py --check
+          python3 -m unittest discover -s scripts -p 'test_prepare_platforms.py'
       - uses: ./.github/actions/setup-toolchain
       - run: brew install dwarfutils
       - run: python3 scripts/test.py
@@ -73,6 +83,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Verify shared platform sources
+        run: |
+          python3 scripts/prepare_platforms.py
+          python3 scripts/prepare_platforms.py --check
+          python3 -m unittest discover -s scripts -p 'test_prepare_platforms.py'
       - uses: ./.github/actions/setup-toolchain
       - run: python3 scripts/test.py published
 
@@ -84,6 +99,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Verify shared platform sources
+        run: |
+          python3 scripts/prepare_platforms.py
+          python3 scripts/prepare_platforms.py --check
+          python3 -m unittest discover -s scripts -p 'test_prepare_platforms.py'
       - uses: ./.github/actions/setup-toolchain
       - run: python3 scripts/release.py prepare --version 0.2.0-rc1 --directory "$RUNNER_TEMP/candidate"
       - run: python3 scripts/release.py check --directory "$RUNNER_TEMP/candidate"

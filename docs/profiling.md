@@ -6,7 +6,7 @@ that the cost and wall time both improved without changing behavior.
 
 ## Start with a ReleaseFast native host
 
-Roc links the platform host that is already present under `platform/targets/`
+Roc links the platform host that is already present under `platform-web/targets/`
 into a native app. Rebuild that host before measuring:
 
 ```sh
@@ -25,7 +25,7 @@ python3 scripts/test.py bench --roc-bin /path/to/roc
 ```
 
 The keyed-table fixture has a machine-readable coverage contract at
-`examples/_fixtures/js-framework-benchmark/benchmarks.toml`. The benchmark
+`examples-web/_fixtures/js-framework-benchmark/benchmarks.toml`. The benchmark
 driver consumes its sample counts and warmup policy. Warmup runs replay the
 complete spec in a fresh mounted host and discard all measurements; they do not
 mutate the measured sample or get mixed into its allocation counters. This pins
@@ -86,7 +86,7 @@ roc build \
   --opt=speed \
   --no-cache \
   --output=.test-out/profile/js-framework-benchmark \
-  examples/_fixtures/js-framework-benchmark/main.roc
+  examples-web/_fixtures/js-framework-benchmark/main.roc
 
 .test-out/profile/js-framework-benchmark \
   --bench-app \
@@ -94,7 +94,7 @@ roc build \
   --bench-warmup 5 \
   --bench-iterations 1 \
   --bench-samples 7 \
-  examples/_fixtures/js-framework-benchmark/specs/replace_1k.scm
+  examples-web/_fixtures/js-framework-benchmark/specs/replace_1k.scm
 ```
 
 Use the Roc target for the current machine on other platforms. Keep the host,
@@ -269,7 +269,7 @@ when comparing:
   `scripts/browser/compress_sizes.mjs`; Python's zlib produces different
   streams at the same level, so never mix implementations across a comparison.
 - **Isolated platform copies.** Every Roc application links the host present
-  in its platform directory. The script copies `platform/` under
+  in its platform directory. The script copies `platform-web/` under
   `.test-out/size/<label>/` and rebinds each fixture there, so concurrent
   builds cannot overwrite each other's measurement input.
 
@@ -355,7 +355,7 @@ roc build \
   --opt=speed \
   --no-cache \
   --output=.test-out/profile/js-framework-benchmark \
-  examples/_fixtures/js-framework-benchmark/main.roc
+  examples-web/_fixtures/js-framework-benchmark/main.roc
 ```
 
 Start with hardware counters:
@@ -368,7 +368,7 @@ perf stat -r 7 \
   --bench-name create_10k \
   --bench-iterations 1 \
   --bench-samples 1 \
-  examples/_fixtures/js-framework-benchmark/specs/create_10k.scm
+  examples-web/_fixtures/js-framework-benchmark/specs/create_10k.scm
 ```
 
 Then collect a sampling profile:
@@ -380,7 +380,7 @@ perf record -g -o .test-out/profile/perf.data -- \
   --bench-name create_10k \
   --bench-iterations 1 \
   --bench-samples 1 \
-  examples/_fixtures/js-framework-benchmark/specs/create_10k.scm
+  examples-web/_fixtures/js-framework-benchmark/specs/create_10k.scm
 
 perf report -i .test-out/profile/perf.data
 perf report -i .test-out/profile/perf.data --no-children
@@ -451,7 +451,7 @@ zig build test -Doptimize=ReleaseFast
 
 python3 scripts/spec_driver.py \
   .test-out/profile/js-framework-benchmark \
-  examples/_fixtures/js-framework-benchmark/specs \
+  examples-web/_fixtures/js-framework-benchmark/specs \
   --jobs 1 \
   --timeout 120
 ```

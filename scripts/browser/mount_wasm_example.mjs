@@ -30,6 +30,7 @@ let exerciseStorageCommands = false;
 let exerciseEventActions = false;
 let exerciseCoordinatedWrites = false;
 let exerciseSvg = false;
+let exerciseCounter = false;
 let rawName;
 
 while (args.length > 0) {
@@ -52,6 +53,8 @@ while (args.length > 0) {
     exerciseEventActions = true;
   } else if (arg === "--exercise-coordinated-writes") {
     exerciseCoordinatedWrites = true;
+  } else if (arg === "--exercise-counter") {
+    exerciseCounter = true;
   } else if (arg === "--exercise-svg") {
     exerciseSvg = true;
   } else if (arg.startsWith("--")) {
@@ -67,7 +70,7 @@ while (args.length > 0) {
 
 if (!wasmPath) {
   console.error(
-    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-location-source] [--exercise-location-navigation] [--exercise-location-canonical-branch] [--exercise-storage-commands] [--exercise-event-actions] [--exercise-coordinated-writes] [--exercise-svg]",
+    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-location-source] [--exercise-location-navigation] [--exercise-location-canonical-branch] [--exercise-storage-commands] [--exercise-event-actions] [--exercise-coordinated-writes] [--exercise-svg] [--exercise-counter]",
   );
   process.exit(2);
 }
@@ -215,6 +218,19 @@ if (missingBehaviors.length !== 0) {
 
 if (root.textContent.trim() === "") {
   fail(`mounted ${name}, but no DOM text was rendered`);
+}
+
+if (exerciseCounter) {
+  if (!root.textContent.includes("Count: 0")) fail("counter did not mount at zero");
+  for (const [label, expected] of [["Increment", 1], ["Increment", 2], ["Decrement", 1]]) {
+    const button = findByText(root, "button", label);
+    if (!button) fail(`counter button missing: ${label}`);
+    fireEvent(button, "click", { bubbles: true });
+    await new Promise((resolve) => setTimeout(resolve, settleMs));
+    failOnRuntimeErrors(name, errors, label);
+    if (!root.textContent.includes(`Count: ${expected}`)) fail(`counter did not reach ${expected}`);
+  }
+  console.log(`counter events passed for ${name}`);
 }
 
 if (exerciseClickFirstLink) {
