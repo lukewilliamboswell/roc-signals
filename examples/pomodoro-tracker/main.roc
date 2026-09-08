@@ -354,8 +354,6 @@ board = |b, extras| {
 	ledger = b.ledger
 	ticks = b.ticks
 	attach = b.ctx.attach
-	# Field access, not `{ attach, run, attached } = b.ctx`: destructuring the
-	# record breaks method dispatch downstream. See UPSTREAM_COMPILER_BUGS.md #7.
 	run = b.ctx.run
 	attached = b.ctx.attached
 	run_signal = run.signal()

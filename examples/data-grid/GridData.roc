@@ -277,12 +277,6 @@ GridData :: [].{
 		$out.concat($l).concat($r)
 	}
 
-	## A merge sort, deliberately, rather than `List.sort_with`. That builtin is
-	## a quicksort that takes the first element as its pivot and partitions with
-	## two `keep_if` passes, so it degrades to O(n^2) on input that is already
-	## ordered -- which is exactly this grid, whose 1200 rows are generated in id
-	## order and default to sorting by id. Going through `sort_with` here took
-	## over a minute per spec. See UPSTREAM_COMPILER_BUGS.md #8.
 	sort_rows : List(Row), Sort -> List(Row)
 	sort_rows = |rows, sort| {
 		len = rows.len()
