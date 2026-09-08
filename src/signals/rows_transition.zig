@@ -77,14 +77,15 @@ pub const StableEdit = union(enum) {
     clear,
 };
 
-/// Render-order portion of one validated stable-slot edit. The prepared
-/// transition owns this journal so downstream structure never retains raw
-/// callback scratch from `Rows.copy_delta`.
+/// Structural order of one validated stable-slot edit. Scope boundaries are
+/// captured at the edit, including empty rows and rows removed by later edits.
+/// The owned journal lets downstream publication preserve lexical markers
+/// without retaining callback scratch or consulting the final row snapshot.
 pub const OrderEdit = union(enum) {
-    insert: struct { slot: u64, before_slot: u64, before_root: ?u64 = null },
-    remove: struct { first_slot: u64, count: u64, first_root: ?u64 = null, last_root: ?u64 = null, root_count: usize = 0 },
-    move: struct { first_slot: u64, count: u64, before_slot: u64, first_root: ?u64 = null, last_root: ?u64 = null, root_count: usize = 0, before_root: ?u64 = null },
-    clear: struct { count: usize, first_root: ?u64 = null, last_root: ?u64 = null, root_count: usize = 0 },
+    insert: struct { slot: u64, before_slot: u64, scope_id: u64 = 0, before_scope_id: u64 = 0, before_root: ?u64 = null },
+    remove: struct { first_slot: u64, count: u64, first_scope_id: u64 = 0, last_scope_id: u64 = 0, first_root: ?u64 = null, last_root: ?u64 = null, root_count: usize = 0 },
+    move: struct { first_slot: u64, count: u64, before_slot: u64, first_scope_id: u64 = 0, last_scope_id: u64 = 0, before_scope_id: u64 = 0, first_root: ?u64 = null, last_root: ?u64 = null, root_count: usize = 0, before_root: ?u64 = null },
+    clear: struct { count: usize, first_scope_id: u64 = 0, last_scope_id: u64 = 0, first_root: ?u64 = null, last_root: ?u64 = null, root_count: usize = 0 },
 };
 
 /// Provisional row identity available to a row builder before publication.
@@ -242,6 +243,7 @@ pub const PreparedTransition = struct {
     key_states: std.StringHashMapUnmanaged(KeyState) = .empty,
     slot_states: std.AutoHashMapUnmanaged(u64, KeyState) = .empty,
     fresh: shared_buffer.List(Fresh) = .empty,
+    fresh_by_row_id: std.AutoHashMapUnmanaged(RowId, usize) = .empty,
     order_edits: shared_buffer.List(OrderEdit) = .empty,
     render_order: rows_store.RenderOrder.PreparedEdits,
     render_spans: std.AutoHashMapUnmanaged(u64, rows_store.RowRenderSpan) = .empty,
@@ -513,6 +515,7 @@ pub const PreparedTransition = struct {
         self.key_states.deinit(self.allocator);
         self.slot_states.deinit(self.allocator);
         self.fresh.deinit(self.allocator);
+        self.fresh_by_row_id.deinit(self.allocator);
         self.order_edits.deinit(self.allocator);
         self.render_order.deinit();
         self.render_spans.deinit(self.allocator);
@@ -546,6 +549,7 @@ pub const PreparedTransition = struct {
                 removed_index += 1;
             }
         }
+        try self.fresh_by_row_id.ensureUnusedCapacity(self.allocator, std.math.cast(u32, created_count) orelse return error.ResourceLimit);
         self.store.prepareRowClaims(self.site_id, self.removed_rows, claims) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             error.ResourceLimit => error.ResourceLimit,
@@ -557,6 +561,7 @@ pub const PreparedTransition = struct {
             const shadow = self.shadows.get(freshRef(index)).?;
             if (!shadow.live) continue;
             fresh.claim = claims[created_index];
+            self.fresh_by_row_id.putAssumeCapacity(claims[created_index], index);
             self.created_rows[created_index] = .{
                 .row_id = claims[created_index],
                 .key = fresh.key,
@@ -580,6 +585,8 @@ pub const PreparedTransition = struct {
             .insert => |*value| {
                 const row_id = try self.resolveOrderSlot(value.slot);
                 const before = if (value.before_slot == 0) null else try self.resolveOrderSlot(value.before_slot);
+                value.scope_id = try self.scopeForRow(row_id);
+                value.before_scope_id = if (before) |anchor| try self.scopeForRow(anchor) else 0;
                 value.before_root = if (before) |anchor| if (self.render_order.firstRootAtOrAfter(anchor) catch |err| return renderOrderError(err)) |root| root.root_id else null else null;
                 const span = try self.renderSpanForSlot(value.slot);
                 self.render_order.insertBefore(row_id, before, span) catch |err| return renderOrderError(err);
@@ -587,6 +594,8 @@ pub const PreparedTransition = struct {
             .remove => |*value| {
                 const row_id = try self.resolveOrderSlot(value.first_slot);
                 const roots = self.render_order.rootsInRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit) catch |err| return renderOrderError(err);
+                value.first_scope_id = try self.scopeForRow(row_id);
+                value.last_scope_id = try self.lastScopeInRange(row_id, value.count);
                 value.first_root = roots.first;
                 value.last_root = roots.last;
                 value.root_count = roots.count;
@@ -596,9 +605,12 @@ pub const PreparedTransition = struct {
                 const row_id = try self.resolveOrderSlot(value.first_slot);
                 const before = if (value.before_slot == 0) null else try self.resolveOrderSlot(value.before_slot);
                 const roots = self.render_order.rootsInRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit) catch |err| return renderOrderError(err);
+                value.first_scope_id = try self.scopeForRow(row_id);
+                value.last_scope_id = try self.lastScopeInRange(row_id, value.count);
                 value.first_root = roots.first;
                 value.last_root = roots.last;
                 value.root_count = roots.count;
+                value.before_scope_id = if (before) |anchor| try self.scopeForRow(anchor) else 0;
                 value.before_root = if (before) |anchor| if (self.render_order.firstRootAtOrAfter(anchor) catch |err| return renderOrderError(err)) |root| root.root_id else null else null;
                 _ = self.render_order.moveRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit, before) catch |err| return renderOrderError(err);
             },
@@ -607,6 +619,8 @@ pub const PreparedTransition = struct {
                 if (value.count != 0) {
                     const first = self.render_order.rowAt(0) catch return error.InvalidOwnerToken;
                     const roots = self.render_order.rootsInRange(first, value.count) catch |err| return renderOrderError(err);
+                    value.first_scope_id = try self.scopeForRow(first);
+                    value.last_scope_id = try self.lastScopeInRange(first, value.count);
                     value.first_root = roots.first;
                     value.last_root = roots.last;
                     value.root_count = roots.count;
@@ -616,6 +630,22 @@ pub const PreparedTransition = struct {
         };
         if (self.render_order.len() != self.len) return error.InvalidOwnerToken;
         self.render_order.preflightCommit() catch |err| return renderOrderError(err);
+    }
+
+    // Scope boundaries are captured against each sequential edit, including
+    // rows removed later in the batch. Final candidate lookup cannot supply
+    // those identities, and rendered roots omit rows whose content is empty.
+    fn scopeForRow(self: *const PreparedTransition, row_id: RowId) Error!u64 {
+        if (self.fresh_by_row_id.get(row_id)) |index| return (self.shadows.get(freshRef(index)) orelse return error.InvalidSite).metadata.scope_id;
+        return (self.store.getRowConst(self.site_id, row_id) catch return error.InvalidSite).metadata.scope_id;
+    }
+
+    fn lastScopeInRange(self: *const PreparedTransition, first: RowId, count: usize) Error!u64 {
+        if (count == 0) return error.MissingSlot;
+        const rank = self.render_order.rank(first) catch |err| return renderOrderError(err);
+        const last_rank = std.math.add(usize, rank, count - 1) catch return error.ResourceLimit;
+        const last = self.render_order.rowAt(last_rank) catch |err| return renderOrderError(err);
+        return self.scopeForRow(last);
     }
 
     fn resolveOrderSlot(self: *const PreparedTransition, slot: u64) Error!RowId {
@@ -1124,7 +1154,7 @@ test "stable transition journals only effective order edits and exact touched li
     });
     defer moved.deinit();
     try std.testing.expectEqual(@as(usize, 1), moved.orderEdits().len);
-    try std.testing.expectEqual(OrderEdit{ .move = .{ .first_slot = 2, .count = 1, .before_slot = 4 } }, moved.orderEdits()[0]);
+    try std.testing.expectEqual(OrderEdit{ .move = .{ .first_slot = 2, .count = 1, .before_slot = 4, .first_scope_id = 2, .last_scope_id = 2, .before_scope_id = 4 } }, moved.orderEdits()[0]);
     try std.testing.expectEqual(@as(usize, 4), moved.orderLinksTouched());
     moved.commit();
     try expectOrder(&store, site, &.{ "a", "c", "b", "d" });
@@ -1275,4 +1305,36 @@ test "Rows preparation fault sweep preserves the committed generation" {
         try std.testing.expectEqual(owner, (try store.getSiteConst(site)).owner_token);
         try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
     }
+}
+
+test "stable transition retains lexical scope boundaries for later-removed empty rows" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+    const site = try store.createSite(try OwnerToken.fromRaw(1));
+    var seed = try PreparedTransition.prepareInitial(std.testing.allocator, &store, site, try OwnerToken.fromRaw(1), &.{
+        .{ .insert = .{ .slot = 1, .before_slot = 0, .key = "a", .metadata = .{ .item_slot = 1, .scope_id = 11 } } },
+        .{ .insert = .{ .slot = 2, .before_slot = 0, .key = "b", .metadata = .{ .item_slot = 2, .scope_id = 22 } } },
+        .{ .insert = .{ .slot = 3, .before_slot = 0, .key = "c", .metadata = .{ .item_slot = 3, .scope_id = 33 } } },
+        .{ .insert = .{ .slot = 4, .before_slot = 0, .key = "d", .metadata = .{ .item_slot = 4, .scope_id = 44 } } },
+    });
+    defer seed.deinit();
+    seed.commit();
+    var next = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, try OwnerToken.fromRaw(1), try OwnerToken.fromRaw(2), &.{
+        .{ .move = .{ .first_slot = 2, .count = 2, .before_slot = 1 } },
+        .{ .remove = .{ .first_slot = 2, .count = 2 } },
+        .{ .insert = .{ .slot = 5, .before_slot = 4, .key = "e", .metadata = .{ .item_slot = 5, .scope_id = 55 } } },
+    });
+    defer next.deinit();
+    try std.testing.expectEqual(null, next.candidateBySlot(2));
+    const move = next.orderEdits()[0].move;
+    try std.testing.expectEqual(@as(u64, 22), move.first_scope_id);
+    try std.testing.expectEqual(@as(u64, 33), move.last_scope_id);
+    try std.testing.expectEqual(@as(u64, 11), move.before_scope_id);
+    try std.testing.expectEqual(@as(usize, 0), move.root_count);
+    const removal = next.orderEdits()[1].remove;
+    try std.testing.expectEqual(@as(u64, 22), removal.first_scope_id);
+    try std.testing.expectEqual(@as(u64, 33), removal.last_scope_id);
+    const insertion = next.orderEdits()[2].insert;
+    try std.testing.expectEqual(@as(u64, 55), insertion.scope_id);
+    try std.testing.expectEqual(@as(u64, 44), insertion.before_scope_id);
 }
