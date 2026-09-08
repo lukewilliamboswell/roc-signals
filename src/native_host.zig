@@ -31,6 +31,16 @@ const native_style = signals.native_style;
 const roc_alloc_ledger = @import("roc_alloc_ledger.zig");
 const crash_handlers = @import("crash_handlers.zig");
 
+// Keep host-module tests discoverable when no matching root-host test uses
+// their functions. refAllDecls is a no-op in non-test builds.
+comptime {
+    std.testing.refAllDecls(spec_parser);
+    std.testing.refAllDecls(spec_runner);
+    std.testing.refAllDecls(benchmark);
+    std.testing.refAllDecls(sim_dom);
+    std.testing.refAllDecls(roc_alloc_ledger);
+}
+
 const gpui_spike = @hasDecl(build_options, "gpui_spike") and build_options.gpui_spike;
 
 const enable_runtime_metrics = host_fixtures or build_options.metrics;

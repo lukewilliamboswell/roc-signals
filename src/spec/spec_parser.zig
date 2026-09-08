@@ -875,22 +875,23 @@ test "S-expression spec parser rejects executable setup and empty steps" {
 
 test "all checked-in S-expression specs parse" {
     const io = std.Io.Threaded.global_single_threaded.io();
-    const examples = try std.Io.Dir.cwd().openDir(io, "examples", .{ .iterate = true });
-    defer examples.close(io);
-    var walker = try examples.walk(std.testing.allocator);
-    defer walker.deinit();
-
     var count: usize = 0;
-    while (try walker.next(io)) |entry| {
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".scm")) continue;
-        const path = try std.fs.path.join(std.testing.allocator, &.{ "examples", entry.path });
-        defer std.testing.allocator.free(path);
-        var parsed = parseTestSpecFile(std.testing.allocator, path) catch |err| {
-            std.debug.print("failed to parse {s}: {s}\n", .{ path, @errorName(err) });
-            return err;
-        };
-        parsed.deinit(std.testing.allocator);
-        count += 1;
+    for ([_][]const u8{ "examples-web", "examples-gui", "test/gui" }) |directory| {
+        const examples = try std.Io.Dir.cwd().openDir(io, directory, .{ .iterate = true });
+        defer examples.close(io);
+        var walker = try examples.walk(std.testing.allocator);
+        defer walker.deinit();
+        while (try walker.next(io)) |entry| {
+            if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".scm")) continue;
+            const path = try std.fs.path.join(std.testing.allocator, &.{ directory, entry.path });
+            defer std.testing.allocator.free(path);
+            var parsed = parseTestSpecFile(std.testing.allocator, path) catch |err| {
+                std.debug.print("failed to parse {s}: {s}\n", .{ path, @errorName(err) });
+                return err;
+            };
+            parsed.deinit(std.testing.allocator);
+            count += 1;
+        }
     }
     try std.testing.expect(count > 100);
 }

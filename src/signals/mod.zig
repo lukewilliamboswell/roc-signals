@@ -48,7 +48,8 @@ pub const selector_runtime = @import("selector_runtime.zig");
 pub const shared_buffer = @import("shared_buffer.zig");
 pub const structural_splice = @import("structural_splice.zig");
 
-test {
+// Discover imported tests even when the command filters out namespace tests.
+comptime {
     std.testing.refAllDecls(abi_view);
     std.testing.refAllDecls(active_signal_graph);
     std.testing.refAllDecls(boundary);
