@@ -10,3 +10,6 @@ unicode-segmentation = "1"
 [lib]
 name = "signals_gpui_host"
 crate-type = ["staticlib"]
+
+[dev-dependencies]
+gpui = { version = "=0.2.2", default-features = false, features = ["wayland", "test-support"] }

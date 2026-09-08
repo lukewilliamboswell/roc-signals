@@ -238,6 +238,7 @@ unsafe extern "C" {
 
 /// Starts the GUI, or runs the shared native semantic-spec host without a display.
 /// The process entry owns the runtime until all windows have closed.
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
     let args: Vec<String> = std::env::args().collect();
