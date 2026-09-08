@@ -127,7 +127,7 @@ def load_examples() -> tuple[Example, ...]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    suites = ("all", "published", "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "wasm-bench", "native", "fault", "bundle", "bench")
+    suites = ("all", "published", "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "wasm-bench", "native", "fault", "bundle", "bench", "size")
     parser.add_argument(
         "suites",
         nargs="*",
@@ -650,6 +650,15 @@ def prepare_wasm_benchmark_platform(destination: Path, host_object: Path, *, ins
     manifest.write_text(source.replace(marker, exports + marker), encoding="utf-8")
 
 
+def run_size_budgets(roc_bin: str) -> None:
+    """Build the size fixture set with the ReleaseSmall host and gate it.
+
+    Runs last because it leaves a ReleaseSmall browser host under
+    `platform/targets/wasm32/`, whereas `build_hosts` installs the default mode.
+    """
+    run([sys.executable, ROOT / "scripts" / "wasm_size.py", "--check", "--roc-bin", roc_bin, "--label", "check"])
+
+
 def run_wasm_runtime_benchmarks(roc_bin: str, args: argparse.Namespace) -> None:
     output = TEST_OUT / "wasm-benchmark"
     output.mkdir(parents=True, exist_ok=True)
@@ -1022,6 +1031,9 @@ def main() -> int:
             run_local_benchmarks(roc_bin, examples)
         else:
             print("\nSkipping benchmarks: platform manifest exposes macOS and Linux musl native targets only.")
+
+    if "size" in suites:
+        run_size_budgets(roc_bin)
 
     if not args.keep_output and TEST_OUT.exists():
         shutil.rmtree(TEST_OUT)

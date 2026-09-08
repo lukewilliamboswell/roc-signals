@@ -23,7 +23,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
-      - run: python3 scripts/test.py zig browser roc-check roc-test wasm --native never --bundle never
+      - run: python3 scripts/test.py zig browser roc-check roc-test wasm size --native never --bundle never
       - run: python3 scripts/fuzz.py check
 
   source:
