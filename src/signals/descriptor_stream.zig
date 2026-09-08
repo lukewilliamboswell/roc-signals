@@ -3631,6 +3631,7 @@ pub const TextFieldDescriptorIndexes = struct {
     test_id: DescriptorIndex = .none,
     value: DescriptorIndex = .none,
     class: DescriptorIndex = .none,
+    native_style: DescriptorIndex = .none,
 
     /// Returns the stored value without changing its identity or ownership policy.
     pub fn get(self: TextFieldDescriptorIndexes, field: TextField) ?usize {
@@ -3641,6 +3642,7 @@ pub const TextFieldDescriptorIndexes = struct {
             .test_id => self.test_id.get(),
             .value => self.value.get(),
             .class => self.class.get(),
+            .native_style => self.native_style.get(),
         };
     }
 
@@ -3653,6 +3655,7 @@ pub const TextFieldDescriptorIndexes = struct {
             .test_id => &self.test_id,
             .value => &self.value,
             .class => &self.class,
+            .native_style => &self.native_style,
         };
     }
 };
@@ -3660,12 +3663,14 @@ pub const TextFieldDescriptorIndexes = struct {
 pub const BoolFieldDescriptorIndexes = struct {
     checked: DescriptorIndex = .none,
     disabled: DescriptorIndex = .none,
+    selected: DescriptorIndex = .none,
 
     /// Returns the stored value without changing its identity or ownership policy.
     pub fn get(self: BoolFieldDescriptorIndexes, field: BoolField) ?usize {
         return switch (field) {
             .checked => self.checked.get(),
             .disabled => self.disabled.get(),
+            .selected => self.selected.get(),
         };
     }
 
@@ -3674,6 +3679,7 @@ pub const BoolFieldDescriptorIndexes = struct {
         return switch (field) {
             .checked => &self.checked,
             .disabled => &self.disabled,
+            .selected => &self.selected,
         };
     }
 };
@@ -5841,7 +5847,7 @@ test "descriptor index mutation helpers preserve explicit slots" {
 
 test "descriptor indexes retain a cache-dense layout" {
     try std.testing.expectEqual(@as(usize, 4), @sizeOf(DescriptorIndex));
-    try std.testing.expectEqual(@as(usize, 104), @sizeOf(ElemDescriptorIndex));
+    try std.testing.expectEqual(@as(usize, 120), @sizeOf(ElemDescriptorIndex));
     try std.testing.expectEqual(@as(usize, 28), @sizeOf(NodeDescriptorIndex));
 }
 

@@ -29,6 +29,7 @@ pub const Element = struct {
     label: ?[]const u8,
     test_id: ?[]const u8,
     class: ?[]const u8,
+    native_style: ?[]const u8,
     text: ?[]const u8,
     value: ?[]const u8,
     pending_value: ?[]const u8,
@@ -36,6 +37,7 @@ pub const Element = struct {
     composing: bool,
     checked: bool,
     disabled: bool,
+    selected: bool,
     parent_id: ?u64,
     children: std.ArrayListUnmanaged(u64),
     event_bindings: FixedEventBindings,
@@ -56,6 +58,7 @@ pub const Element = struct {
             .label = null,
             .test_id = null,
             .class = null,
+            .native_style = null,
             .text = null,
             .value = null,
             .pending_value = null,
@@ -63,6 +66,7 @@ pub const Element = struct {
             .composing = false,
             .checked = false,
             .disabled = false,
+            .selected = false,
             .parent_id = null,
             .children = .empty,
             .event_bindings = .{},
@@ -83,6 +87,7 @@ pub const Element = struct {
         if (self.label) |label| allocator.free(label);
         if (self.test_id) |test_id| allocator.free(test_id);
         if (self.class) |class| allocator.free(class);
+        if (self.native_style) |style| allocator.free(style);
         if (self.text) |text| allocator.free(text);
         if (self.value) |value| allocator.free(value);
         if (self.pending_value) |pending_value| allocator.free(pending_value);
@@ -108,13 +113,14 @@ pub const Element = struct {
         cloned.composing = self.composing;
         cloned.checked = self.checked;
         cloned.disabled = self.disabled;
+        cloned.selected = self.selected;
         cloned.parent_id = self.parent_id;
         cloned.event_bindings = self.event_bindings;
         cloned.text_update_count = self.text_update_count;
         cloned.value_update_count = self.value_update_count;
         cloned.checked_update_count = self.checked_update_count;
         cloned.disabled_update_count = self.disabled_update_count;
-        inline for (.{ "role", "label", "test_id", "class", "text", "value", "pending_value" }) |field_name| {
+        inline for (.{ "role", "label", "test_id", "class", "native_style", "text", "value", "pending_value" }) |field_name| {
             if (@field(self, field_name)) |value| @field(cloned, field_name) = try allocator.dupe(u8, value);
         }
         try cloned.children.appendSlice(allocator, self.children.items);

@@ -77,10 +77,12 @@ pub const ScalarNode = struct {
     test_id: ?[]const u8 = null,
     value: ?[]const u8 = null,
     class: ?[]const u8 = null,
+    native_style: ?[]const u8 = null,
     custom_text_attrs: shared_buffer.List(CustomTextAttr) = .empty,
     named_events: shared_buffer.List(NamedEvent) = .empty,
     checked: ?bool = null,
     disabled: ?bool = null,
+    selected: ?bool = null,
 
     fn deinit(self: *ScalarNode, allocator: std.mem.Allocator) void {
         if (self.text) |text| allocator.free(text);
@@ -89,6 +91,7 @@ pub const ScalarNode = struct {
         if (self.test_id) |test_id| allocator.free(test_id);
         if (self.value) |value| allocator.free(value);
         if (self.class) |class| allocator.free(class);
+        if (self.native_style) |style| allocator.free(style);
         for (self.custom_text_attrs.items) |attr| {
             attr.deinit(allocator);
         }
@@ -138,6 +141,7 @@ pub const ScalarNode = struct {
             .test_id => &self.test_id,
             .value => &self.value,
             .class => &self.class,
+            .native_style => &self.native_style,
         };
     }
 
@@ -145,6 +149,7 @@ pub const ScalarNode = struct {
         return switch (field) {
             .checked => &self.checked,
             .disabled => &self.disabled,
+            .selected => &self.selected,
         };
     }
 
@@ -852,12 +857,12 @@ pub const PreparedRenderCounts = struct {
 /// `clearUnsetReusedFields` can retire every field the old subtree carried
 /// and the new one no longer declares.
 const ReusedNodeFields = struct {
-    text: u8 = 0,
+    text: u16 = 0,
     bools: u8 = 0,
     events: u8 = 0,
 
-    fn textBit(field: TextField) u8 {
-        return @as(u8, 1) << @intCast(@intFromEnum(field));
+    fn textBit(field: TextField) u16 {
+        return @as(u16, 1) << @intCast(@intFromEnum(field));
     }
 
     fn boolBit(field: BoolField) u8 {
@@ -877,6 +882,7 @@ pub const reused_node_max_clears: usize = std.enums.values(TextField).len + std.
 pub fn PreparedRenderSplice(comptime Ctx: type) type {
     return struct {
         const Self = @This();
+        const publishes_native_fields = @hasDecl(Ctx, "native_presentation") and Ctx.native_presentation;
 
         allocator: std.mem.Allocator,
         tags: PreparedTagOverlay,
@@ -1449,8 +1455,14 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             }
             for (self.children.items) |children| for (self.childWireEdits(children)) |_| try result.addFixed(0);
             for (self.sparse_children.items) |children| for (children.wireEdits()) |_| try result.addFixed(0);
-            for (self.text_fields.items) |field| try result.addFixed(if (field.next) |bytes| bytes.len else 0);
-            for (self.bool_fields.items) |_| try result.addFixed(0);
+            for (self.text_fields.items) |field| {
+                if (field.field == .native_style and comptime publishes_native_fields) continue;
+                try result.addFixed(if (field.next) |bytes| bytes.len else 0);
+            }
+            for (self.bool_fields.items) |field| {
+                if (field.field == .selected and comptime publishes_native_fields) continue;
+                try result.addFixed(0);
+            }
             for (self.fixed_events.items) |event| if (event.next) |binding| {
                 if (binding.canUseFixedOpcode(event.kind)) try result.addFixed(0) else try result.addBindEvent(event.kind.domEventName().len, binding.payload_descriptor.extractionBytes().len);
             } else try result.addFixed(0);
@@ -1502,10 +1514,19 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             self.sink_command_count = std.math.add(usize, self.sink_command_count, count) catch return error.ResourceLimit;
         }
 
-        /// Reserves the unpublished destination batch from exact canonical requirements.
+        fn validateBrowserFields(self: *const Self) error{UnsupportedNativePresentation}!void {
+            for (self.text_fields.items) |field| if (field.field == .native_style) return error.UnsupportedNativePresentation;
+            for (self.bool_fields.items) |field| if (field.field == .selected) return error.UnsupportedNativePresentation;
+        }
+
+        /// Reserves exact canonical wire storage. Browser contexts reject native
+        /// fields; native contexts publish them through their typed preparation.
         pub fn preflight(self: *const Self, batch: *render.TransactionalBatch, allocator: std.mem.Allocator) render.PreflightError!void {
             if (!batch.isPublishedDrained()) return error.ResourceLimit;
             errdefer batch.abort();
+            if (comptime !publishes_native_fields) {
+                self.validateBrowserFields() catch @panic("native presentation is unsupported by the browser host");
+            }
             try batch.preflight(allocator, try self.capacity());
         }
 
@@ -1518,6 +1539,9 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
 
         /// Encodes canonical journals into the already-reserved transaction buffers.
         pub fn stageAssumeCapacity(self: *const Self, batch: *render.TransactionalBatch, allocator: std.mem.Allocator) render.PreflightError!void {
+            if (comptime !publishes_native_fields) {
+                self.validateBrowserFields() catch @panic("native presentation is unsupported by the browser host");
+            }
             if (self.reset_dom) try batch.staged.commands.appendRaw(allocator, .reset_dom, 0, 0, 0, 0, 0);
             for (self.removals.items) |removal| if (removal.publication == .subtree_root) try batch.staged.commands.appendRaw(allocator, .remove_node, wireElem(removal.elem_id).raw(), 0, 0, 0, 0);
             for (self.creations.items) |creation| {
@@ -1540,8 +1564,14 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 .append => |child| try batch.staged.commands.appendRaw(allocator, .append_child, wireElem(children.parent_elem_id).raw(), wireElem(child).raw(), 0, 0, 0),
                 .move_before => |move| try batch.staged.commands.appendRaw(allocator, .move_before, wireElem(children.parent_elem_id).raw(), wireElem(move.child).raw(), if (move.before) |before| wireElem(before).raw() else 0, 0, 0),
             };
-            for (self.text_fields.items) |field| try appendText(batch, allocator, field.field.setOp(), field.elem_id, field.next orelse "");
-            for (self.bool_fields.items) |field| try batch.staged.commands.appendRaw(allocator, field.field.setOp(), wireElem(field.elem_id).raw(), @intFromBool(field.next orelse false), 0, 0, 0);
+            for (self.text_fields.items) |field| {
+                if (field.field == .native_style and comptime publishes_native_fields) continue;
+                try appendText(batch, allocator, field.field.setOp(), field.elem_id, field.next orelse "");
+            }
+            for (self.bool_fields.items) |field| {
+                if (field.field == .selected and comptime publishes_native_fields) continue;
+                try batch.staged.commands.appendRaw(allocator, field.field.setOp(), wireElem(field.elem_id).raw(), @intFromBool(field.next orelse false), 0, 0, 0);
+            }
             for (self.fixed_events.items) |event| if (event.next) |binding| {
                 if (binding.canUseFixedOpcode(event.kind)) try batch.staged.commands.appendRaw(allocator, event.kind.bindOp(), wireElem(event.elem_id).raw(), (render.WireEventId.fromEngine(binding.event_id) catch unreachable).raw(), 0, 0, 0) else {
                     const slice = try batch.staged.dynamic.appendBindEvent(allocator, wireElem(event.elem_id), render.WireEventId.fromEngine(binding.event_id) catch unreachable, event.kind.domEventName(), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor);
@@ -3626,4 +3656,28 @@ test "named event replacement and clear are idempotent" {
     cache.applyNamedEventBinding(&host, ids.ElemId.fromRaw(1), "submit", null, &counts);
     try std.testing.expectEqual(@as(u64, 1), host.clear_named_event_count);
     try std.testing.expectEqual(@as(u64, 3), counts.bind_event);
+}
+
+test "browser presentation preparation rejects native fields before staging" {
+    const allocator = std.testing.allocator;
+    var host = TestHost{};
+    var cache: Cache(TestCtx) = .{};
+    defer cache.deinit(&host);
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 1,
+        .new_tags = 1,
+        .creations = 1,
+        .text_fields = 1,
+        .bool_fields = 1,
+        .wire_commands = 3,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.root_elem, "div");
+    try plan.validateBrowserFields();
+    try plan.addBoolField(&cache, ids.root_elem, .selected, true);
+    try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
+    plan.bool_fields.items.len = 0;
+    try plan.addTextField(&cache, ids.root_elem, .native_style, "1,1,8,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0");
+    try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
 }

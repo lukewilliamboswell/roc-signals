@@ -27,6 +27,7 @@ const spec_parser = @import("spec/spec_parser.zig");
 const spec_runner = @import("spec/spec_runner.zig");
 const benchmark = @import("bench/benchmark.zig");
 const sim_dom = @import("sim_dom.zig");
+const native_style = signals.native_style;
 const roc_alloc_ledger = @import("roc_alloc_ledger.zig");
 const crash_handlers = @import("crash_handlers.zig");
 
@@ -145,6 +146,10 @@ const NativeRenderPublication = struct {
             .test_id => &node.test_id,
             .value => &node.value,
             .class => &node.class,
+            .native_style => &node.native_style,
+        };
+        if (field == .native_style) if (next) |bytes| {
+            _ = native_style.decode(bytes) catch failHost("invalid native presentation record");
         };
         if (field == .value) value: {
             if (next == null) {
@@ -290,6 +295,7 @@ const NativeRenderPublication = struct {
                     node.checked = entry.next orelse false;
                     node.checked_update_count += 1;
                 },
+                .selected => node.selected = entry.next orelse false,
                 .disabled => {
                     node.disabled = entry.next orelse false;
                     node.disabled_update_count += 1;
@@ -348,6 +354,8 @@ const NativeRenderPublication = struct {
 };
 
 const NativeCtx = struct {
+    /// Native-only scalar fields publish through the typed prepared DOM view.
+    pub const native_presentation = true;
     pub const Handle = *HostEnv;
     pub const RegistryOps = hv.RegistryOps();
     pub const Metrics = RuntimeMetrics;
@@ -2408,6 +2416,10 @@ fn setRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFiel
         .test_id => sim_dom.setOwnedString(host.hostAllocator(), &elem.test_id, value),
         .value => setElementValue(host, elem, value),
         .class => sim_dom.setOwnedString(host.hostAllocator(), &elem.class, value),
+        .native_style => {
+            _ = native_style.decode(value) catch failHost("invalid native presentation record");
+            sim_dom.setOwnedString(host.hostAllocator(), &elem.native_style, value);
+        },
     }
 }
 
@@ -2420,6 +2432,7 @@ fn setRenderBoolField(host: *HostEnv, elem_id: ids.ElemId, field: RenderBoolFiel
     switch (field) {
         .checked => setElementChecked(elem, value),
         .disabled => setElementDisabled(elem, value),
+        .selected => elem.selected = value,
     }
 }
 
@@ -2432,6 +2445,7 @@ fn clearRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFi
         .test_id => sim_dom.clearOwnedString(host.hostAllocator(), &elem.test_id),
         .value => clearElementValue(host, elem),
         .class => sim_dom.clearOwnedString(host.hostAllocator(), &elem.class),
+        .native_style => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_style),
     }
 }
 
@@ -2444,6 +2458,7 @@ fn clearRenderBoolField(host: *HostEnv, elem_id: ids.ElemId, field: RenderBoolFi
     switch (field) {
         .checked => setElementChecked(elem, false),
         .disabled => setElementDisabled(elem, false),
+        .selected => elem.selected = false,
     }
 }
 
@@ -3548,6 +3563,7 @@ comptime {
             @export(&main, .{ .name = "signals_spec_main" });
             @export(&Gpui.mount, .{ .name = "signals_mount" });
             @export(&Gpui.nodeSize, .{ .name = "signals_node_size" });
+            @export(&Gpui.protocolVersion, .{ .name = "signals_protocol_version" });
             @export(&Gpui.unmount, .{ .name = "signals_unmount" });
             @export(&Gpui.dispatch, .{ .name = "signals_dispatch" });
             @export(&Gpui.count, .{ .name = "signals_changed_count" });
@@ -12093,14 +12109,19 @@ const Gpui = struct {
         text: Slice,
         value: Slice,
         label: Slice,
+        role: Slice,
         test_id: Slice,
         class: Slice,
         children: [*]const u64,
         child_count: usize,
         click: u64,
         input: u64,
+        check: u64,
         checked: u64,
         disabled: u64,
+        selected: u64,
+        style_present: u64,
+        style: native_style.Style,
     };
     var host: HostEnv = undefined;
     var roc_host: abi.RocHost = undefined;
@@ -12120,6 +12141,9 @@ const Gpui = struct {
             changed_len += 1;
             seen[id] = true;
         }
+    }
+    fn protocolVersion() callconv(.c) u32 {
+        return 2;
     }
     fn nodeSize() callconv(.c) usize {
         return @sizeOf(Node);
@@ -12144,17 +12168,34 @@ const Gpui = struct {
         live = false;
         clear();
     }
-    // Only the spike's unit clicks and UTF-8 text input are supported. Event
-    // identity is validated by the same engine route used by native specs.
-    fn dispatch(event: u64, kind: u32, ptr: [*]const u8, len: usize) callconv(.c) void {
+    // Unit, controlled text, and checked payloads share the event identity and
+    // capability validation route used by native specs.
+    fn validatePayload(kind: u32, bytes: []const u8, boolean: u32) error{InvalidGuiPayload}!void {
+        if (bytes.len > 1024 * 1024) return error.InvalidGuiPayload;
+        switch (kind) {
+            0 => if (bytes.len != 0 or boolean != 0) return error.InvalidGuiPayload,
+            1 => if (boolean != 0 or !std.unicode.utf8ValidateSlice(bytes)) return error.InvalidGuiPayload,
+            2 => if (bytes.len != 0 or boolean > 1) return error.InvalidGuiPayload,
+            else => return error.InvalidGuiPayload,
+        }
+    }
+    fn dispatch(event: u64, kind: u32, ptr: [*]const u8, len: usize, boolean: u32) callconv(.c) void {
         if (!live or len > 1024 * 1024) failHost("invalid GPUI spike input");
+        validatePayload(kind, ptr[0..len], boolean) catch failHost("invalid GUI event payload");
         clear();
         const payload = switch (kind) {
             0 => hostValueUnit(&host, &roc_host),
             1 => hostValueStr(&host, &roc_host, ptr[0..len]),
+            2 => if (boolean <= 1 and len == 0) hostValueBool(&host, &roc_host, boolean == 1) else failHost("invalid GUI boolean payload"),
             else => failHost("unsupported GPUI spike event kind"),
         };
-        dispatchRocEvent(&host, &roc_host, ids.EventId.fromRaw(event), if (kind == 0) RenderEventKind.click.payloadDescriptor() else RenderEventKind.input.payloadDescriptor(), payload);
+        const descriptor = switch (kind) {
+            0 => RenderEventKind.click.payloadDescriptor(),
+            1 => RenderEventKind.input.payloadDescriptor(),
+            2 => RenderEventKind.check.payloadDescriptor(),
+            else => unreachable,
+        };
+        dispatchRocEvent(&host, &roc_host, ids.EventId.fromRaw(event), descriptor, payload);
     }
     fn count() callconv(.c) usize {
         return changed_len;
@@ -12172,14 +12213,19 @@ const Gpui = struct {
             .text = Slice.from(elem.text orelse ""),
             .value = Slice.from(elem.value orelse ""),
             .label = Slice.from(elem.label orelse ""),
+            .role = Slice.from(elem.role orelse ""),
             .test_id = Slice.from(elem.test_id orelse ""),
             .class = Slice.from(elem.class orelse ""),
             .children = elem.children.items.ptr,
             .child_count = elem.children.items.len,
             .click = if (elem.event_bindings.click) |binding| binding.event_id.raw() else 0,
             .input = if (elem.event_bindings.input) |binding| binding.event_id.raw() else 0,
+            .check = if (elem.event_bindings.check) |binding| binding.event_id.raw() else 0,
             .checked = @intFromBool(elem.checked),
             .disabled = @intFromBool(elem.disabled),
+            .selected = @intFromBool(elem.selected),
+            .style_present = @intFromBool(elem.native_style != null),
+            .style = if (elem.native_style) |bytes| native_style.decode(bytes) catch unreachable else .{},
         };
     }
     fn tick() callconv(.c) void {
@@ -12195,3 +12241,47 @@ const Gpui = struct {
         out[2] = host.engine.last_runtime_metrics.scopes_disposed;
     }
 };
+
+test "native presentation and selection publish together after validation" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+    host.engine.resetRenderTree(&host);
+    const allocator = host.hostAllocator();
+    var splice = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{
+        .node_capacity = 1,
+        .text_fields = 1,
+        .bool_fields = 1,
+        .wire_commands = 2,
+    });
+    defer splice.deinit();
+    const encoded = "1,0,12,16,1,0,2,120,1,1193046,16777215,0,1,8,18,0,2";
+    try splice.addTextField(&host.engine.render_cache, ids.root_elem, .native_style, encoded);
+    try splice.addBoolField(&host.engine.render_cache, ids.root_elem, .selected, true);
+    var publication = try NativeRenderPublication.prepare(&host, &splice);
+    defer publication.deinit();
+    try std.testing.expect(host.dom_elements.items[0].native_style == null);
+    try std.testing.expect(!host.dom_elements.items[0].selected);
+    host.configureAllocationFailure(1);
+    publication.apply(&host);
+    try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
+    try std.testing.expectEqualStrings(encoded, host.dom_elements.items[0].native_style.?);
+    try std.testing.expect(host.dom_elements.items[0].selected);
+    try std.testing.expectEqual(@as(u32, 12), (try native_style.decode(host.dom_elements.items[0].native_style.?)).gap);
+}
+
+test "native GUI payload contract rejects unused fields and invalid UTF-8" {
+    try Gpui.validatePayload(0, "", 0);
+    try Gpui.validatePayload(1, "hello λ", 0);
+    try Gpui.validatePayload(2, "", 1);
+    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(0, "extra", 0));
+    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(0, "", 1));
+    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(1, "\xff", 0));
+    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(1, "text", 1));
+    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(2, "", 2));
+    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(3, "", 0));
+}

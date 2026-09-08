@@ -804,8 +804,10 @@ preparing the platform bundle. This produces a native executable, not a desktop
 installer. The prebuilt host depends on the build machine's glibc/library ABI;
 portable release packaging needs a deliberate sysroot and license inventory.
 
-`Gui` currently offers columns, headings, text, buttons, inputs, and fixed-height
-cards. Signals, rows, scopes, and ownership remain in the shared engine.
+`Gui` offers typed rows, columns, panels, native styles, headings/text, enabled
+buttons, labeled inputs, and checkboxes. See the native presentation protocol in
+`docs/native-gui-protocol.md` for field compatibility and limits. Signals, keyed
+rows, scopes, and ownership remain in the shared engine.
 Parent child-list copying and GPUI child enumeration still have linear costs;
 this spike does not yet satisfy the full O(changed) rendering target. See
 `crates/gpui-host/README.md` for the boundary limits.

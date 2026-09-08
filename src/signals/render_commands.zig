@@ -1324,8 +1324,11 @@ pub const TextField = enum(u64) {
     test_id = 4,
     value = 5,
     class = 6,
+    /// Versioned native presentation record; never encoded on the browser wire.
+    native_style = 8,
 
-    /// Sets op at the narrow host or engine boundary that owns the mutation.
+    /// Returns the browser opcode for a web scalar. Native presentation has no
+    /// browser encoding and must be rejected before wire preparation.
     pub fn setOp(self: TextField) Op {
         return switch (self) {
             .text => .set_text,
@@ -1334,6 +1337,7 @@ pub const TextField = enum(u64) {
             .test_id => .set_test_id,
             .value => .set_value,
             .class => .set_class,
+            .native_style => @panic("native style has no browser opcode"),
         };
     }
 };
@@ -1341,12 +1345,16 @@ pub const TextField = enum(u64) {
 pub const BoolField = enum(u64) {
     checked = 1,
     disabled = 2,
+    /// Native selected presentation, independent of checkbox state.
+    selected = 4,
 
-    /// Sets op at the narrow host or engine boundary that owns the mutation.
+    /// Returns the browser opcode for a web boolean. Native selection is kept
+    /// in the native publication and may never enter a browser command batch.
     pub fn setOp(self: BoolField) Op {
         return switch (self) {
             .checked => .set_checked,
             .disabled => .set_disabled,
+            .selected => @panic("native selection has no browser opcode"),
         };
     }
 };
@@ -1460,9 +1468,10 @@ pub const Counts = struct {
         self.addOp(.move_before);
     }
 
-    /// Appends text field to the prepared, unpublished command batch.
+    /// Counts one changed scalar. Native presentation contributes a metadata
+    /// operation without claiming it has a browser opcode.
     pub fn addTextField(self: *Counts, field: TextField) void {
-        self.addOp(field.setOp());
+        if (field == .native_style) self.addOp(.extended) else self.addOp(field.setOp());
     }
 
     /// Appends text attr to the prepared, unpublished command batch.
@@ -1470,9 +1479,9 @@ pub const Counts = struct {
         self.addOp(.extended);
     }
 
-    /// Appends bool field to the prepared, unpublished command batch.
+    /// Counts one changed boolean, including native selection as metadata.
     pub fn addBoolField(self: *Counts, field: BoolField) void {
-        self.addOp(field.setOp());
+        if (field == .selected) self.addOp(.extended) else self.addOp(field.setOp());
     }
 
     /// Appends event binding to the prepared, unpublished command batch.

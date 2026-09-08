@@ -29,6 +29,7 @@ pub const host_value_registry = @import("host_value_registry.zig");
 pub const host_values = @import("host_values.zig");
 pub const identity_table = @import("identity_table.zig");
 pub const ids = @import("ids.zig");
+pub const native_style = @import("native_style.zig");
 pub const render = @import("render_commands.zig");
 pub const render_cache = @import("render_cache.zig");
 pub const render_sink = @import("render_sink.zig");
@@ -67,6 +68,7 @@ test {
     std.testing.refAllDecls(host_value_registry);
     std.testing.refAllDecls(identity_table);
     std.testing.refAllDecls(ids);
+    std.testing.refAllDecls(native_style);
     std.testing.refAllDecls(render);
     std.testing.refAllDecls(render_cache);
     std.testing.refAllDecls(render_sink);

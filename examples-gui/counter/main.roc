@@ -6,7 +6,7 @@ import pf.Ui
 
 main : () -> Elem
 main = || Ui.state(0.I64, |count| {
-    Gui.column([
+    Gui.column([], [
         Gui.heading("Counter"),
         Gui.text_s(count.signal().map(|value| "Count: ${value.to_str()}")),
         Gui.button("Increment", count.on_unit(|value| value + 1)),

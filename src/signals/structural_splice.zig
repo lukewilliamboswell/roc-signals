@@ -4,6 +4,7 @@ const std = @import("std");
 const shared_buffer = @import("shared_buffer.zig");
 const descriptor_stream = @import("descriptor_stream.zig");
 const ids = @import("ids.zig");
+const render = @import("render_commands.zig");
 const scope_runtime = @import("scope_runtime.zig");
 
 pub const EachSite = scope_runtime.EachSite;
@@ -185,8 +186,8 @@ pub const ElemOwnedRemovalScratch = struct {
     /// Reserves the worst-case descriptor-index footprint for `additional`
     /// elements without changing any logical scratch length.
     pub fn prepare(self: *@This(), allocator: std.mem.Allocator, additional: usize) PrepareError!void {
-        const text_fields = std.math.mul(usize, additional, 6) catch return error.ResourceLimit;
-        const bool_fields = std.math.mul(usize, additional, 2) catch return error.ResourceLimit;
+        const text_fields = std.math.mul(usize, additional, std.enums.values(render.TextField).len) catch return error.ResourceLimit;
+        const bool_fields = std.math.mul(usize, additional, std.enums.values(render.BoolField).len) catch return error.ResourceLimit;
         const events = std.math.mul(usize, additional, 7) catch return error.ResourceLimit;
         try self.element_indexes.ensureUnusedCapacity(allocator, additional);
         try self.text_node_indexes.ensureUnusedCapacity(allocator, additional);

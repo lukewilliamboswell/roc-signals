@@ -1,6 +1,6 @@
 mod bridge;
 mod input;
-use bridge::{Engine, Node};
+use bridge::{Engine, Node, Payload};
 use gpui::{div, prelude::*, px, rgb, *};
 use std::{cell::Cell, collections::HashMap, rc::Rc, time::Duration};
 
@@ -13,25 +13,43 @@ struct NodeView {
     child_visits: Rc<Cell<u64>>,
 }
 impl Render for NodeView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.renders.set(self.renders.get() + 1);
         self.child_visits
             .set(self.child_visits.get() + self.children.len() as u64);
-        let mut element = div().id(("node", self.node.id)).flex().flex_col().gap_2();
+        let mut element = div()
+            .id(("node", self.node.id))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .debug_selector(|| self.node.test_id.clone());
         if self.node.tag == "button" {
-            element = element
-                .px_3()
-                .py_1()
-                .rounded_md()
-                .bg(rgb(0x315469))
-                .cursor_pointer();
+            element = element.px_3().py_1().rounded_md().bg(rgb(0x315469));
             if !self.node.disabled {
                 let runtime = self.runtime.clone();
                 let event = self.node.click;
                 let node_id = self.node.id;
-                element = element.on_click(move |_, _, cx| {
+                element = element.cursor_pointer().on_click(move |_, _, cx| {
                     let _ = runtime.update(cx, |runtime, cx| {
-                        runtime.event_if_live(node_id, event, None, cx)
+                        runtime.event_if_live(node_id, event, Payload::Unit, cx)
+                    });
+                });
+            }
+        }
+        if self.node.role == "checkbox" {
+            element = element
+                .flex_row()
+                .items_center()
+                .child(if self.node.checked { "☑" } else { "☐" })
+                .child(self.node.label.clone());
+            if !self.node.disabled {
+                let runtime = self.runtime.clone();
+                let event = self.node.check;
+                let node_id = self.node.id;
+                let checked = !self.node.checked;
+                element = element.cursor_pointer().on_click(move |_, _, cx| {
+                    let _ = runtime.update(cx, |runtime, cx| {
+                        runtime.event_if_live(node_id, event, Payload::Bool(checked), cx)
                     });
                 });
             }
@@ -39,17 +57,21 @@ impl Render for NodeView {
         if matches!(self.node.tag.as_str(), "h1" | "h2") {
             element = element.text_2xl();
         }
-        if self.node.class == "gpui-row" {
-            element = element
-                .p_3()
-                .border_1()
-                .border_color(rgb(0x48606b))
-                .rounded_md();
+        if let Some(style) = self.node.style {
+            element = apply_style(element, style);
         }
+        if self.node.selected {
+            element = element.border_2().border_color(rgb(0x70c5e8));
+        }
+        if self.node.disabled {
+            element = element.opacity(0.45);
+        }
+
         if !self.node.text.is_empty() {
             element = element.child(self.node.text.clone());
         }
         if let Some(input) = &self.input {
+            element = element.child(self.node.label.clone());
             element = element.child(
                 div()
                     .bg(rgb(0xf4f4f0))
@@ -58,19 +80,64 @@ impl Render for NodeView {
                     .child(input.clone()),
             );
         }
-        element.children(self.children.iter().map(|child| {
-            let view = AnyView::from(child.clone());
-            if child.read(cx).node.class == "gpui-row" {
-                let mut style = StyleRefinement::default();
-                style.size.width = Some(relative(1.).into());
-                style.size.height = Some(px(170.).into());
-                view.cached(style)
-            } else {
-                view
-            }
-        }))
+        element
+            .children(
+                self.children
+                    .iter()
+                    .map(|child| AnyView::from(child.clone())),
+            )
+            .into_any_element()
     }
 }
+fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div> {
+    element = if style.direction == 0 {
+        element.flex_row()
+    } else {
+        element.flex_col()
+    };
+    element = element
+        .gap(px(style.gap as f32))
+        .p(px(style.padding as f32));
+    element = match style.width_kind {
+        1 => element.w_full(),
+        2 => element.w(px(style.width as f32)),
+        _ => element,
+    };
+    element = match style.height_kind {
+        1 => element.h_full(),
+        2 => element.h(px(style.height as f32)),
+        _ => element,
+    };
+    if style.grow != 0 {
+        element = element.flex_grow();
+    }
+    if style.background <= 0xffffff {
+        element = element.bg(rgb(style.background));
+    }
+    if style.foreground <= 0xffffff {
+        element = element.text_color(rgb(style.foreground));
+    }
+    if style.border_color <= 0xffffff {
+        element = element.border_color(rgb(style.border_color));
+    }
+    element = element
+        .border(px(style.border_width as f32))
+        .rounded(px(style.radius as f32));
+    if style.font_size != 0 {
+        element = element.text_size(px(style.font_size as f32));
+    }
+    element = match style.overflow_x {
+        1 => element.overflow_x_hidden(),
+        2 => element.overflow_x_scroll(),
+        _ => element,
+    };
+    match style.overflow_y {
+        1 => element.overflow_y_hidden(),
+        2 => element.overflow_y_scroll(),
+        _ => element,
+    }
+}
+
 struct Runtime {
     engine: Engine,
     nodes: HashMap<u64, Entity<NodeView>>,
@@ -110,25 +177,20 @@ impl Runtime {
         }
         runtime
     }
-    fn event_if_live(&mut self, id: u64, event: u64, text: Option<&str>, cx: &mut Context<Self>) {
+    fn event_if_live(&mut self, id: u64, event: u64, payload: Payload<'_>, cx: &mut Context<Self>) {
         // A deferred editor callback may outlive disposal. Match both node and
         // binding identity so a reused slot cannot receive an old edit.
         let Some(view) = self.nodes.get(&id) else {
             return;
         };
         let node = &view.read(cx).node;
-        if (if text.is_some() {
-            node.input
-        } else {
-            node.click
-        }) != event
-        {
+        if node.disabled || event == 0 || node.event_for(payload) != event {
             return;
         }
-        self.event(event, text, cx);
+        self.event(event, payload, cx);
     }
-    fn event(&mut self, event: u64, text: Option<&str>, cx: &mut Context<Self>) {
-        let changes = self.engine.event(event, text);
+    fn event(&mut self, event: u64, payload: Payload<'_>, cx: &mut Context<Self>) {
+        let changes = self.engine.event(event, payload);
         eprintln!(
             "engine turn: {} touched render slots; metrics {:?}",
             changes.len(),
@@ -147,7 +209,7 @@ impl Runtime {
             assert!(
                 matches!(
                     node.tag.as_str(),
-                    "root" | "div" | "h1" | "h2" | "p" | "button" | "input" | "text"
+                    "root" | "div" | "h1" | "h2" | "p" | "button" | "input" | "textarea" | "text"
                 ),
                 "unsupported spike element: {}",
                 node.tag
@@ -162,15 +224,22 @@ impl Runtime {
                         let event = node.input;
                         let node_id = node.id;
                         Some(cx.new(|cx| {
-                            input::TextInput::new(
-                                node.value.clone(),
+                            let callback: Rc<dyn Fn(String, &mut App)> =
                                 Rc::new(move |value, cx| {
                                     let _ = runtime.update(cx, |runtime, cx| {
-                                        runtime.event_if_live(node_id, event, Some(&value), cx)
+                                        runtime.event_if_live(
+                                            node_id,
+                                            event,
+                                            Payload::Text(&value),
+                                            cx,
+                                        )
                                     });
-                                }),
-                                cx,
-                            )
+                                });
+                            if node.tag == "textarea" {
+                                input::TextInput::new_multiline(node.value.clone(), callback, cx)
+                            } else {
+                                input::TextInput::new(node.value.clone(), callback, cx)
+                            }
                         }))
                     } else {
                         None
@@ -201,7 +270,10 @@ impl Runtime {
             }
             view.update(cx, |view, cx| {
                 if let Some(input) = &view.input {
-                    input.update(cx, |input, cx| input.set_value(&node.value, cx));
+                    input.update(cx, |input, cx| {
+                        input.set_value(&node.value, cx);
+                        input.set_disabled(node.disabled, cx);
+                    });
                 }
                 view.node = node.clone();
                 view.children = children;
@@ -295,7 +367,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                                 .read(cx)
                                 .node
                                 .clone();
-                            runtime.event_if_live(node.id, node.click, None, cx);
+                            runtime.event_if_live(node.id, node.click, Payload::Unit, cx);
                         }
                     })
                     .unwrap();
@@ -325,4 +397,170 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
         }
     });
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Engine, Node, Payload, Runtime, bridge};
+    use gpui::{AppContext, TestAppContext, point, px, size};
+    use std::{cell::Cell, collections::HashMap, rc::Rc};
+
+    fn runtime() -> Runtime {
+        Runtime {
+            engine: Engine::test_boundary(),
+            nodes: HashMap::new(),
+            roots: vec![],
+            renders: Rc::new(Cell::new(0)),
+            child_visits: Rc::new(Cell::new(0)),
+            _clock: None,
+        }
+    }
+
+    fn node(id: u64, tag: &str, children: &[u64]) -> Node {
+        Node {
+            id,
+            tag: tag.into(),
+            active: true,
+            children: children.into(),
+            ..Default::default()
+        }
+    }
+
+    #[gpui::test]
+    fn committed_reorder_preserves_entities_and_removal_invalidates_callbacks(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                let mut button = node(1, "button", &[]);
+                button.click = 21;
+                runtime.apply(
+                    vec![button, node(2, "text", &[]), node(0, "root", &[1, 2])],
+                    cx,
+                );
+                let original = runtime.nodes[&1].entity_id();
+                runtime.apply(vec![node(0, "root", &[2, 1])], cx);
+                assert_eq!(runtime.nodes[&1].entity_id(), original);
+                assert_eq!(runtime.nodes[&0].read(cx).children[1].entity_id(), original);
+                runtime.event_if_live(1, 20, Payload::Unit, cx);
+                assert!(Engine::take_test_event().is_none());
+                runtime.apply(
+                    vec![
+                        node(0, "root", &[2]),
+                        Node {
+                            id: 1,
+                            active: false,
+                            ..Default::default()
+                        },
+                    ],
+                    cx,
+                );
+                assert!(!runtime.nodes.contains_key(&1));
+                runtime.event_if_live(1, 21, Payload::Unit, cx);
+                assert!(Engine::take_test_event().is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn checked_ingress_is_typed_and_disabled_controls_refuse_dispatch(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                let mut checkbox = node(1, "input", &[]);
+                checkbox.role = "checkbox".into();
+                checkbox.check = 31;
+                checkbox.disabled = true;
+                runtime.apply(vec![node(0, "root", &[1]), checkbox.clone()], cx);
+                runtime.event_if_live(1, 31, Payload::Bool(true), cx);
+                assert!(Engine::take_test_event().is_none());
+                checkbox.disabled = false;
+                runtime.apply(vec![checkbox], cx);
+                runtime.event_if_live(1, 31, Payload::Bool(true), cx);
+                assert_eq!(Engine::take_test_event(), Some((31, 2, String::new(), 1)));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn disabling_multiline_editor_retains_its_entity(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                let mut editor = node(1, "textarea", &[]);
+                editor.input = 42;
+                editor.value = "first\nsecond".into();
+                runtime.apply(vec![node(0, "root", &[1]), editor.clone()], cx);
+                let original = runtime.nodes[&1]
+                    .read(cx)
+                    .input
+                    .as_ref()
+                    .unwrap()
+                    .entity_id();
+                editor.disabled = true;
+                runtime.apply(vec![editor.clone()], cx);
+                assert_eq!(
+                    runtime.nodes[&1]
+                        .read(cx)
+                        .input
+                        .as_ref()
+                        .unwrap()
+                        .entity_id(),
+                    original
+                );
+                runtime.event_if_live(1, 42, Payload::Text("changed"), cx);
+                assert!(Engine::take_test_event().is_none());
+                editor.disabled = false;
+                runtime.apply(vec![editor], cx);
+                assert_eq!(
+                    runtime.nodes[&1]
+                        .read(cx)
+                        .input
+                        .as_ref()
+                        .unwrap()
+                        .entity_id(),
+                    original
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn native_row_style_changes_real_gpui_layout(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.draw(point(px(0.), px(0.)), size(px(320.), px(120.)), |_, cx| {
+            cx.new(|cx| {
+                let mut runtime = runtime();
+                let style = bridge::Style {
+                    width_kind: 2,
+                    width: 40,
+                    height_kind: 2,
+                    height: 20,
+                    background: 0x1000000,
+                    foreground: 0x1000000,
+                    border_color: 0x1000000,
+                    ..Default::default()
+                };
+                let mut first = node(1, "div", &[]);
+                first.test_id = "first".into();
+                first.style = Some(style);
+                let mut second = node(2, "div", &[]);
+                second.test_id = "second".into();
+                second.style = Some(style);
+                let mut root = node(0, "root", &[1, 2]);
+                root.style = Some(bridge::Style {
+                    direction: 0,
+                    gap: 12,
+                    ..style
+                });
+                runtime.apply(vec![root, first, second], cx);
+                runtime
+            })
+        });
+        let first = cx.debug_bounds("first").expect("first child rendered");
+        let second = cx.debug_bounds("second").expect("second child rendered");
+        assert_eq!(first.origin.y, second.origin.y);
+        assert!(second.origin.x > first.origin.x);
+    }
 }
