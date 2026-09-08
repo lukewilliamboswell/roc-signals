@@ -37,8 +37,8 @@ pub fn admits(kinds: u64, kind: boundary.TaskKind) bool {
 
 fn fileKinds() u64 {
     var kinds: u64 = 0;
-    inline for (.{ "choose_file", "choose_directory", "choose_save_path", "read_text", "write_text", "scan_directory", "list_directory", "open_path", "read_preview", "read_log" }) |name| {
-        if (@hasField(boundary.TaskKind, name)) kinds |= bit(@field(boundary.TaskKind, name));
+    for ([_]boundary.TaskKind{ .choose_file, .choose_directory, .choose_save_path, .read_text, .write_text, .scan_directory, .list_directory, .open_path, .read_preview, .read_log }) |kind| {
+        kinds |= bit(kind);
     }
     return kinds;
 }
