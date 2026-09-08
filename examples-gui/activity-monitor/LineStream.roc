@@ -23,15 +23,25 @@ LineStream := [].{
 		zero = 0
 		var $index = zero
 		for segment in segments {
-			if segment.to_utf8().len() > max_line_bytes {
-				return Err(LineTooLong)
-			}
+			bytes = segment.to_utf8()
+			terminal_cr = bytes.last() == Ok(13)
 			if $index + 1 == segments.len() {
+				# One extra terminal CR may still become part of a CRLF separator.
+				if bytes.len() > max_line_bytes and !(terminal_cr and bytes.len() == max_line_bytes + 1) {
+					return Err(LineTooLong)
+				}
 				$partial = segment
 			} else {
 				# CRLF is a line separator; other carriage returns remain text.
-				bytes = segment.to_utf8()
-				line = if bytes.last() == Ok(13) {
+				content_bytes = if terminal_cr {
+					bytes.len() - 1
+				} else {
+					bytes.len()
+				}
+				if content_bytes > max_line_bytes {
+					return Err(LineTooLong)
+				}
+				line = if terminal_cr {
 					Str.from_utf8(bytes.take_first(bytes.len() - 1)) ?? crash "Removing ASCII CR preserves UTF-8"
 				} else {
 					segment
@@ -63,4 +73,21 @@ expect {
 	prefix = Str.join_with(List.repeat("x", 16384), "")
 	first = LineStream.accept(LineStream.empty, prefix)?
 	LineStream.accept(first.state, "x\n") == Err(LineStream.Error.LineTooLong)
+}
+
+## LF and CRLF permit the same maximum logical line length, even across reads.
+expect {
+	line = Str.join_with(List.repeat("x", 16384), "")
+	lf = LineStream.accept(LineStream.empty, "${line}\n")?
+	crlf = LineStream.accept(LineStream.empty, "${line}\r\n")?
+	partial = LineStream.accept(LineStream.empty, "${line}\r")?
+	split = LineStream.accept(partial.state, "\n")?
+	lf.lines == [line] and crlf.lines == lf.lines and split.lines == lf.lines
+}
+
+## A pending CR beyond the limit is refused if it turns out to be content.
+expect {
+	line = Str.join_with(List.repeat("x", 16384), "")
+	partial = LineStream.accept(LineStream.empty, "${line}\r")?
+	LineStream.accept(partial.state, "x\n") == Err(LineStream.Error.LineTooLong)
 }

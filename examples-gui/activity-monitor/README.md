@@ -12,7 +12,9 @@ Errors only control applies to the replay's explicitly typed severities.
 CRLF is accepted, and incomplete final lines appear separately in the inspector
 until their newline arrives. An incomplete UTF-8 character remains unread
 until its remaining bytes arrive. Invalid UTF-8 or a line larger than 16 KiB
-pauses reading with a visible error and an explicit retry action.
+pauses reading with a visible error and an explicit retry action. The line
+bound excludes the line separator; the partial buffer may retain one extra
+terminal CR while waiting to determine whether it belongs to CRLF.
 
 History retains at most the newest 1,000 events and 4 MiB of message/component
 text, evicting the oldest records first and showing the eviction count.

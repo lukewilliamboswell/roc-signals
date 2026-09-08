@@ -11,6 +11,7 @@
     (expect-pending-task "activity-read" 1)
     (resolve-file-log "activity-read" :path "/tmp/events.log" :text "tial\n" :device 1 :inode 2 :offset 14 :change continued :state at-end)
     (expect-visible (test-id "event-3"))
+    (expect-absent (text "Replay paused"))
     (expect-interval 500 1)
     (expect-pending-task "activity-read" 0)
     (click (role button :name "Inspect 3"))

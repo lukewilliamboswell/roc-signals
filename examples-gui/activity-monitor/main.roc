@@ -157,7 +157,19 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 					Gui.checkbox({ label: "Follow latest", checked: follow_tail.signal() }, [], follow_tail.on_bool(|_, value| value)),
 				],
 			),
-			Ui.when({ running: running.signal(), replay }.Signal.map(|value| value.running and value.replay), || Ui.on_change(Signal.interval(500), |_| append), || Gui.text("Replay paused")),
+			Ui.when(
+				{ running: running.signal(), replay }.Signal.map(|value| value.running and value.replay),
+				|| Ui.on_change(Signal.interval(500), |_| append),
+				|| Gui.text_s(
+					replay.map(
+						|is_replay| if is_replay {
+							"Replay paused"
+						} else {
+							""
+						},
+					),
+				),
+			),
 			Gui.row(
 				[Gui.style({ ..Gui.style_default, grow: True, width: Fill })],
 				[
