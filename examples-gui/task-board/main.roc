@@ -60,6 +60,8 @@ Handles : {
 	document : Ui.State(DocumentState),
 	tasks : Tasks,
 	close : Ui.State(Close),
+	editable : Signal.Signal(Bool),
+	edit_disabled : Signal.Signal(Bool),
 }
 
 initial_rows : Board.Column -> Rows.Rows(Board.Task)
@@ -160,6 +162,7 @@ task_card = |row, column, handles, selected| {
 			[
 				Gui.test_id(key),
 				Gui.drag_source(key),
+				Gui.disabled_s(handles.edit_disabled),
 				Gui.drop_target(drop_message(handles, column, Key(key))),
 				Gui.selected_s(Signal.select(selected, key)),
 				Gui.style({ ..Gui.style_default, padding: 12, gap: 8, border_width: 1, radius: 8, background: Rgb(0x24323E), border_color: Rgb(0x465565) }),
@@ -188,7 +191,7 @@ column_view = |handles, column, selected| {
 	rows = column_state(handles, column).signal()
 	visible = Signal.map2(rows, handles.filter.signal(), visible_rows)
 	Gui.column(
-		[Gui.test_id("column-${column.to_str()}"), Gui.drop_target(drop_message(handles, column, End)), Gui.style({ ..Gui.style_default, width: Fill, grow: True, gap: 12 })],
+		[Gui.disabled_s(handles.edit_disabled), Gui.test_id("column-${column.to_str()}"), Gui.drop_target(drop_message(handles, column, End)), Gui.style({ ..Gui.style_default, width: Fill, grow: True, gap: 12 })],
 		[
 			Gui.heading(column.to_str()),
 			Gui.text_s(rows.map(|items| "${Rows.len(items).to_str()} tasks")),
@@ -206,7 +209,7 @@ edit_field = |field, handles, column, label, attrs, update, read| {
 	reads = handles.context
 	field(
 		{ label, value: handles.editor.signal().map(|editor| read(editor.task)) },
-		attrs,
+		attrs.append(Gui.disabled_s(handles.edit_disabled)),
 		Ui.action_str(
 			reads,
 			|context, text| {
@@ -227,7 +230,7 @@ priority_button = |handles, column, priority| {
 	owner = column_state(handles, column)
 	reads = handles.context
 	Gui.action_button(
-		{ label: Signal.const(priority.to_str()), enabled: Signal.const(True) },
+		{ label: Signal.const(priority.to_str()), enabled: handles.editable },
 		[Gui.label("${priority.to_str()} priority")],
 		Ui.action(
 			reads,
@@ -246,15 +249,16 @@ priority_button = |handles, column, priority| {
 
 move_button : Handles, Board.Column -> Elem
 move_button = |handles, to|
-	Gui.button("Move to ${to.to_str()}", Ui.action(handles.context, |current| move_task(handles, current, current.board.editor.task.key, to, End)))
+	Gui.action_button({ label: Signal.const("Move to ${to.to_str()}"), enabled: handles.editable }, [], Ui.action(handles.context, |current| move_task(handles, current, current.board.editor.task.key, to, End)))
 
 reorder_buttons : Handles, Board.Column -> Elem
 reorder_buttons = |handles, column|
 	Gui.row(
 		[Gui.style({ ..Gui.style_default, gap: 8 })],
 		[
-			Gui.button(
-				"Move to top",
+			Gui.action_button(
+				{ label: Signal.const("Move to top"), enabled: handles.editable },
+				[],
 				Ui.action(
 					handles.context,
 					|context| {
@@ -264,7 +268,7 @@ reorder_buttons = |handles, column|
 					},
 				),
 			),
-			Gui.button("Move to bottom", Ui.action(handles.context, |current| move_task(handles, current, current.board.editor.task.key, column, End))),
+			Gui.action_button({ label: Signal.const("Move to bottom"), enabled: handles.editable }, [], Ui.action(handles.context, |current| move_task(handles, current, current.board.editor.task.key, column, End))),
 		],
 	)
 
@@ -298,7 +302,7 @@ delete_confirmation = |handles, column| {
 				),
 			],
 		),
-		|| Gui.button("Delete task", handles.confirm_delete.on_unit(|_| True)),
+		|| Gui.action_button({ label: Signal.const("Delete task"), enabled: handles.editable }, [], handles.confirm_delete.on_unit(|_| True)),
 	)
 }
 
@@ -341,15 +345,21 @@ new_task_form = |handles| {
 	Gui.row(
 		[Gui.style({ ..Gui.style_default, gap: 12 })],
 		[
-			Gui.text_input({ label: "New task title", value: handles.draft.signal() }, [], handles.draft.on_str(|_, value| value)),
+			Gui.text_input({ label: "New task title", value: handles.draft.signal() }, [Gui.disabled_s(handles.edit_disabled)], handles.draft.on_str(|_, value| value)),
 			Gui.action_button(
-				{ label: Signal.const("Add task"), enabled: handles.draft.signal().map(|title| !title.trim().is_empty()) },
+				{ label: Signal.const("Add task"), enabled: Signal.map2(handles.draft.signal(), handles.editable, |title, editable| editable and !title.trim().is_empty()) },
 				[],
 				Ui.action(
 					reads,
 					|current| {
-						if current.title.trim().is_empty() or current.title.to_utf8().len() > 512 or total_tasks(current.context.board) >= 500 or current.next_id == 18446744073709551615 {
+						if current.title.trim().is_empty() {
 							return Signal.noop
+						}
+						if total_tasks(current.context.board) >= 500 {
+							return handles.document.set_cmd({ ..current.context.document, problem: "This board already has 500 tasks. Delete a task before adding another; your new task draft is retained." })
+						}
+						if current.next_id == 18446744073709551615 {
+							return handles.document.set_cmd({ ..current.context.document, problem: "This board has exhausted its task identities. Existing tasks can still be edited and saved." })
 						}
 						task = Board.new_task(current.next_id, current.title)
 						rows = Rows.apply(current.context.board.planned, [Append([task])]) ?? crash "The next task ID must be unique"
@@ -471,7 +481,14 @@ main = || Ui.state(
 																						|document| {
 																							context = { board: movement, history: history.signal(), document: document.signal() }.Signal
 																							tasks = { open: Files.choose_file_task("board-open"), save: Files.choose_save_path_task("board-save-path"), read: Files.read_text_task("board-read"), write: Files.write_text_task("board-write") }
-																							Ui.state(Close.KeepEditing, |close| board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete, movement, context, history, bytes, document, tasks, close }))
+																							Ui.state(
+																								Close.KeepEditing,
+																								|close| {
+																									editable = document.signal().map(|doc| can_edit(doc.phase))
+																									edit_disabled = editable.map(|value| !value)
+																									board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete, movement, context, history, bytes, document, tasks, close, editable, edit_disabled })
+																								},
+																							)
 																						},
 																					)
 																				},
@@ -539,12 +556,16 @@ history_button = |handles, redo| Gui.action_button(
 				"Undo"
 			},
 		),
-		enabled: handles.history.signal().map(
-			|h| if redo {
-				!h.future.is_empty()
-			} else {
-				!h.past.is_empty()
-			},
+		enabled: Signal.map2(
+			handles.history.signal(),
+			handles.editable,
+			|h, editable| editable and (
+				if redo {
+					!h.future.is_empty()
+				} else {
+					!h.past.is_empty()
+				}
+			),
 		),
 	},
 	[],

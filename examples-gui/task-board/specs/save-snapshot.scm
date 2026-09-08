@@ -2,9 +2,11 @@
  (steps
   (click (role button :name "Save"))
   (expect-pending-task "board-save-path" 1)
+  (expect-disabled (label "Task title") false)
   (fill (label "Task title") "Edited after save began")
   (resolve-file-choice "board-save-path" (chosen "/tmp/project.board.json"))
   (expect-pending-task "board-write" 1)
+  (expect-disabled (label "Task title") false)
   (resolve-file-write "board-write" :path "/tmp/project.board.json" :bytes 1)
   (expect-text (test-id "board-status") "Unsaved changes")
   (expect-text (test-id "board-path") "/tmp/project.board.json")

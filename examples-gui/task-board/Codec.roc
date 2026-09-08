@@ -51,8 +51,8 @@ Codec := [].{
 		if wire.planned.len() + wire.progress.len() + wire.complete.len() > 500 {
 			return Err(Invalid("A board supports at most 500 tasks"))
 		}
-		if wire.next == 0 or wire.next == 18446744073709551615 {
-			return Err(Invalid("The next task identity is exhausted or invalid"))
+		if wire.next == 0 {
+			return Err(Invalid("The next task identity must be nonzero"))
 		}
 		planned = tasks(wire.planned)?
 		progress = tasks(wire.progress)?
@@ -99,4 +99,11 @@ expect {
 		Err(_) => True
 		Ok(_) => False
 	}
+}
+
+## Exhausted documents remain readable and saveable without wrapping identity.
+expect {
+	doc = { next: 18446744073709551615.U64, planned: [], progress: [], complete: [] }
+	decoded = Codec.decode(Codec.encode(doc))?
+	decoded == doc
 }

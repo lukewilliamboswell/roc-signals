@@ -40,7 +40,7 @@ fixtures separately cover pointer gesture delivery and stale drag rejection.
 
 The document stores version 1 JSON, explicit task identities, ordered columns,
 and the next generated identity. Loading rejects malformed JSON, unsupported
-versions, duplicate keys across columns, exhausted identities, oversized fields,
+versions, duplicate keys across columns, invalid next identities, oversized fields,
 and boards over 500 tasks. Validation completes before replacing live data.
 The encoded file must fit the native Files one-MiB limit. Task titles support
 512 UTF-8 bytes, notes 8192, assignees 128, and keys 256. These are document byte
@@ -84,3 +84,7 @@ project. Ctrl+Z and Ctrl+Shift+Z invoke board Undo/Redo from ordinary controls.
 Focused native text inputs keep their standard text-editing undo/redo precedence;
 the toolbar buttons explicitly undo or redo board changes. Keyboard semantic
 specs dispatch the declared shortcuts; they do not emulate OS keyboard routing.
+
+Opening a replacement disables mutations until its read completes. Save chooser
+and write phases allow editing. Exhausted task identities stop creation with an
+explanation while existing tasks remain editable and saveable; IDs never wrap.
