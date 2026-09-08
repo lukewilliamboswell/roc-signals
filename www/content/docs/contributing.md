@@ -677,6 +677,12 @@ native chooser behavior need host tests and a native walkthrough. Keep raw
 malformed payloads or stale delivery. The Board and Notes journeys demonstrate
 save snapshots, failed loads, cancellation, retries, and retained drafts.
 
+A supplied result does not assert the request payload the app emitted. For
+example, resolving a write with `:bytes 14` does not prove that the app submitted
+those fourteen bytes. Test snapshot construction as pure application logic and
+check real submitted data through focused native IO workflows. The harness
+currently exposes pending/canceled counts, not request-body assertions.
+
 Supported async and lifecycle commands:
 
 - `(resolve-task "<task-name>" "<payload>")`
@@ -688,6 +694,12 @@ Supported async and lifecycle commands:
 - `(expect-canceled-task "<task-name>" <count>)`
 - `(expect-interval <period-ms> <count>)`
 - `(expect-cleanup "<cleanup-name>" <count>)`
+
+A window-close assertion records the committed close decision. The harness
+keeps the final semantic tree available for inspection; it does not simulate
+an OS window or automatically reject subsequent interactions with that tree.
+End the interaction journey at closure and use GPUI lifecycle tests to verify
+native removal and teardown.
 
 Supported metric commands:
 

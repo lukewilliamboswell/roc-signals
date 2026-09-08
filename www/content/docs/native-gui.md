@@ -158,14 +158,14 @@ shows retained row drafts and scoped structure.
 
 | App | Main workflow |
 | --- | --- |
-| `task-board` | Create, edit, filter, drag, reorder, and transfer keyed tasks; confirm deletion |
-| `notes-editor` | Edit multiline documents, open and save real files, confirm unsaved changes |
-| `folder-explorer` | Browse sample metadata or scan a chosen directory, cancel, filter, sort, and inspect |
+| `task-board` | Open/save board documents, create/edit/drag keyed tasks, undo changes, and protect unsaved work on close |
+| `notes-editor` | Edit wrapped multiline documents with undo, open/save real files, and wait for saves before closing |
+| `folder-explorer` | Navigate real folders with breadcrumbs/history, filter/sort, preview text, and open files in their associated application |
 | `activity-monitor` | Follow a real UTF-8 log or run explicit replay; pause, retry, filter bounded history, and inspect complete records |
 
 Activity Monitor explicitly separates simulated replay from chosen plain-text
 log files. Folder Explorer labels its sample workspace and offers an explicit
-chooser for real scans.
+chooser for real directory navigation.
 
 Every registered app has native semantic specs. The GUI suite also runs GPUI
 adapter tests with simulated input and layout. A Wayland smoke run checks the
