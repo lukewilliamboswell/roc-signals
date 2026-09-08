@@ -1,7 +1,7 @@
 (test "Cancel preserves the draft and prevents stale task results from replacing it"
   (steps
     (shortcut (test-id "notes-editor") "o" 1)
-    (resolve-task "notes-open" "6:files16:chosen20:/tmp/Ideas café.txt")
+    (resolve-file-choice "notes-open" (chosen "/tmp/Ideas café.txt"))
     (expect-pending-task "notes-read" 1)
     (click (role button :name "Cancel operation"))
     (expect-pending-task "notes-read" 0)
@@ -12,7 +12,7 @@
     (expect-value (label "Note text") "Current draft")
     (expect-text (test-id "document-name") "Untitled note")
     (shortcut (test-id "notes-editor") "s" 1)
-    (resolve-task "notes-save-path" "6:files16:chosen20:/tmp/Ideas café.txt")
+    (resolve-file-choice "notes-save-path" (chosen "/tmp/Ideas café.txt"))
     (fill (label "Note text") "Newer draft")
     (shortcut (test-id "notes-editor") "Escape" 0)
     (expect-pending-task "notes-write" 0)

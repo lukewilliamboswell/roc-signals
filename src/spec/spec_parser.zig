@@ -4,6 +4,7 @@ const std = @import("std");
 const signals = @import("signals");
 const boundary = signals.boundary;
 const sexpr = @import("sexpr.zig");
+const file_fixtures = @import("file_fixtures.zig");
 
 pub const SpecCommandType = enum {
     click,
@@ -98,6 +99,7 @@ pub const SpecCommand = struct {
     cmd_type: SpecCommandType,
     locator: Locator,
     task_name: ?[]const u8 = null,
+    expected_task_kinds: u64 = 0,
     expected_attr: ?[]const u8 = null,
     interval_ms: ?u64 = null,
     shortcut: ?signals.key_chord.Chord = null,
@@ -686,6 +688,23 @@ fn appendDecodedForm(
     if (items.len == 0) return ParseError.InvalidFormat;
     const head = exprSymbol(items[0]) orelse return ParseError.InvalidFormat;
 
+    if (!is_setup and file_fixtures.recognizes(head)) {
+        const fixture = try file_fixtures.parse(allocator, head, items[1..]);
+        errdefer allocator.free(fixture.task_name);
+        errdefer allocator.free(fixture.payload);
+        try commands.append(allocator, .{
+            .cmd_type = if (fixture.failed) .reject_task else .resolve_task,
+            .locator = emptyLocator(),
+            .task_name = fixture.task_name,
+            .expected_task_kinds = fixture.kinds,
+            .expected_text = fixture.payload,
+            .expected_count = null,
+            .expected_bool = null,
+            .line_num = form.span.line,
+        });
+        return;
+    }
+
     var line: std.Io.Writer.Allocating = .init(allocator);
     defer line.deinit();
     const writer = &line.writer;
@@ -1204,4 +1223,46 @@ test "S-expression spec parser decodes native shortcuts" {
     try std.testing.expectEqual(@as(usize, 1), spec.commands.len);
     try std.testing.expectEqual(SpecCommandType.shortcut, spec.commands[0].cmd_type);
     try std.testing.expect(spec.commands[0].shortcut.?.eql(try signals.key_chord.parse("s", 3)));
+}
+
+test "file fixture forms reject malformed values and release partial allocations" {
+    const invalid = [_][]const u8{
+        "(resolve-file-choice \"open\" (chosen \"relative\"))",
+        "(resolve-file-choice \"open\" (canceled \"extra\"))",
+        "(resolve-file-choice \"open\" (chosen \"/tmp/a\") \"extra\")",
+        "(resolve-file-read \"read\" :path \"/tmp/a\" :path \"duplicate\")",
+        "(resolve-file-read \"read\" :path \"/tmp/a\" :wrong \"value\")",
+        "(resolve-file-read \"read\" :path \"/tmp/a\" :text false)",
+        "(resolve-file-write \"write\" :path \"/tmp/a\" :bytes -1)",
+        "(resolve-file-write \"write\" :path \"/tmp/a\" :bytes 1048577)",
+        "(reject-file \"read\" :kind invented :detail \"no\")",
+        "(reject-file \"read\" :kind canceled :detail \"not empty\")",
+    };
+    for (invalid) |form| {
+        const content = try std.fmt.allocPrint(std.testing.allocator, "(test \"invalid\" (steps {s}))", .{form});
+        defer std.testing.allocator.free(content);
+        try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, content));
+    }
+}
+
+fn parseFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
+    var parsed = try parseSExprTestSpec(allocator,
+        \\(test "file workflow"
+        \\  (steps
+        \\    (resolve-file-choice "open" (chosen "/tmp/λ:note.txt"))
+        \\    (resolve-file-choice "save" (canceled))
+        \\    (resolve-file-read "read" :path "/tmp/a" :text "first\nλ")
+        \\    (resolve-file-write "write" :bytes 0 :path "/tmp/a")
+        \\    (reject-file "read" :detail "not allowed" :kind permission-denied)))
+    );
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 5), parsed.commands.len);
+    try std.testing.expectEqualStrings("6:files18:canceled", parsed.commands[1].expected_text.?);
+    try std.testing.expectEqualStrings("6:files16:/tmp/a1:0", parsed.commands[3].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.reject_task, parsed.commands[4].cmd_type);
+    try std.testing.expectEqual(@as(usize, 4), parsed.commands[1].line_num);
+}
+
+test "file fixture parsing owns every allocation on success and refusal" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseFileFixtureAllocationCase, .{});
 }

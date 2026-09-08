@@ -40,6 +40,8 @@ const NativeTaskQueue = native_tasks.Queue(boundary.TaskKind);
 comptime {
     std.testing.refAllDecls(spec_parser);
     std.testing.refAllDecls(spec_runner);
+    std.testing.refAllDecls(@import("spec/file_fixtures.zig"));
+    std.testing.refAllDecls(@import("spec/sexpr.zig"));
     std.testing.refAllDecls(benchmark);
     std.testing.refAllDecls(sim_dom);
     std.testing.refAllDecls(roc_alloc_ledger);
@@ -3200,6 +3202,11 @@ fn addRuntimeMetricsForBenchmark(left: RuntimeMetrics, right: RuntimeMetrics) Ru
 }
 
 const BenchmarkCtx = struct {
+    /// Emits fixture diagnostics separately from benchmark CSV output.
+    pub fn writeStderr(bytes: []const u8) void {
+        crash_handlers.writeStderr(bytes);
+    }
+
     pub const Host = HostEnv;
     pub const RocHost = abi.RocHost;
     pub const DomElement = BenchmarkDomElement;
@@ -3372,6 +3379,13 @@ const BenchmarkCtx = struct {
     /// Updates checked if changed only when the simulated or browser field actually differs.
     pub fn setElementCheckedIfChanged(elem: *BenchmarkDomElement, checked: bool) bool {
         return setElementCheckedForBenchmark(elem, checked);
+    }
+
+    /// Reports the declared service of the pending fixture target before any
+    /// payload decoder runs. Labels select test work; they never infer its kind.
+    pub fn pendingTaskKind(host: *Host, name: []const u8) ?boundary.TaskKind {
+        const index = host.engine.pendingTaskIndexByName(name) orelse return null;
+        return host.engine.pending_tasks.items[index].kind;
     }
 
     /// Delivers pending task through the same source-update and propagation path as other inputs.
@@ -3611,6 +3625,13 @@ const SpecRunnerCtx = struct {
     /// Returns text attr from the host's semantic render model.
     pub fn elementTextAttr(elem: *const DomElement, name: []const u8) ?[]const u8 {
         return sim_dom.textAttr(elem, name);
+    }
+
+    /// Reports the declared service of the pending fixture target before any
+    /// payload decoder runs. Labels select test work; they never infer its kind.
+    pub fn pendingTaskKind(host: *Host, name: []const u8) ?boundary.TaskKind {
+        const index = host.engine.pendingTaskIndexByName(name) orelse return null;
+        return host.engine.pending_tasks.items[index].kind;
     }
 
     /// Delivers pending task through the same source-update and propagation path as other inputs.
