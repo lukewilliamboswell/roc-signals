@@ -355,9 +355,10 @@ pub const PreparedSparseChildren = struct {
         }
     }
 
-    /// Inserts newly-created detached roots before a sibling or at the end.
+    /// Inserts roots detached in this candidate before a sibling or at the end.
     /// Missing cache slots are allowed because creation and link publication
-    /// are separate journals in the same prepared structural transaction.
+    /// are separate journals. A reused active root may remain host-attached,
+    /// so its wire operation explicitly moves or attaches the retained identity.
     pub fn insertRootsBefore(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx), roots: []const ids.ElemId, before: ?ids.ElemId) error{ InvalidAnchor, InvalidRange, MissingNode, ResourceLimit }!void {
         if (roots.len == 0) return;
         if (self.wire_edits.capacity - self.wire_edits.items.len < roots.len) return error.ResourceLimit;
@@ -369,10 +370,13 @@ pub const PreparedSparseChildren = struct {
             entry.next = if (index + 1 == roots.len) null else roots[index + 1];
         }
         try self.attach(Ctx, cache, roots[0], roots[roots.len - 1], roots.len, before);
-        for (roots) |elem_id| self.wire_edits.appendAssumeCapacity(if (before) |anchor|
-            .{ .move_before = .{ .child = elem_id, .before = anchor } }
-        else
-            .{ .append = elem_id });
+        for (roots) |elem_id| {
+            const active = elem_id.index() < cache.nodes.items.len and cache.nodes.items[elem_id.index()].isActive();
+            self.wire_edits.appendAssumeCapacity(if (before != null or active)
+                .{ .move_before = .{ .child = elem_id, .before = before } }
+            else
+                .{ .append = elem_id });
+        }
     }
 
     /// Detaches one contiguous root range. Node-retirement journals own the
@@ -2428,6 +2432,27 @@ test "sparse child journal inserts and removes a complete root set" {
     try std.testing.expectEqual(@as(?ids.ElemId, null), cache.firstChild(ids.root_elem));
     try std.testing.expectEqual(@as(?ids.ElemId, null), cache.nodes.items[1].parent_id);
     try std.testing.expectEqualSlices(ids.ElemId, &.{}, try cache.materializeChildrenSnapshot(allocator, ids.root_elem));
+}
+
+test "sparse child journal reinserts retained roots with an explicit move" {
+    var host = TestHost{};
+    var cache = try initTestChildCache(3);
+    defer cache.deinit(&host);
+    const retained = ids.ElemId.fromRaw(2);
+    var journal = try PreparedSparseChildren.init(TestCtx, std.testing.allocator, &cache, ids.root_elem, 4, 1);
+    defer journal.deinit();
+    try journal.removeRange(TestCtx, &cache, retained, retained, 1);
+    try journal.insertRootsBefore(TestCtx, &cache, &.{retained}, null);
+    try std.testing.expectEqualDeep(PreparedChildrenReplacement.WireEdit{ .move_before = .{ .child = retained, .before = null } }, journal.wireEdits()[0]);
+    journal.apply(TestCtx, &cache);
+    const expected = [_]ids.ElemId{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(3), retained };
+    try std.testing.expectEqualSlices(ids.ElemId, &expected, try cache.materializeChildrenSnapshot(std.testing.allocator, ids.root_elem));
+
+    var fresh = try PreparedSparseChildren.init(TestCtx, std.testing.allocator, &cache, ids.root_elem, 3, 1);
+    defer fresh.deinit();
+    const new_root = ids.ElemId.fromRaw(4);
+    try fresh.insertRootsBefore(TestCtx, &cache, &.{new_root}, null);
+    try std.testing.expectEqualDeep(PreparedChildrenReplacement.WireEdit{ .append = new_root }, fresh.wireEdits()[0]);
 }
 
 test "sparse child journal moves a multi-root range and refreshes dense fallback" {

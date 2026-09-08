@@ -352,6 +352,17 @@ const NativeRenderPublication = struct {
         };
         if (gui_order == null) for (splice.sparse_children.items) |entry| {
             const parent = dom.node(entry.parent_elem_id.raw()) orelse return error.InvalidRenderTopology;
+            // The journal's final links decide detachments even when no wire
+            // append/move is needed. Retiring a node alone does not remove its
+            // id from this simulated parent's retained child array.
+            for (entry.shadows.items) |shadow| {
+                const index = shadow.elem_id.index();
+                if (index >= host.engine.render_cache.nodes.items.len) continue;
+                const old = host.engine.render_cache.nodes.items[index];
+                if (!old.isActive() or old.parent_id != entry.parent_elem_id or shadow.parent_id == entry.parent_elem_id) continue;
+                const child_index = std.mem.indexOfScalar(u64, parent.children.items, shadow.elem_id.raw()) orelse return error.InvalidRenderTopology;
+                _ = parent.children.orderedRemove(child_index);
+            }
             var appended: usize = 0;
             for (entry.wireEdits()) |edit| switch (edit) {
                 .append => appended = std.math.add(usize, appended, 1) catch return error.ResourceLimit,
@@ -7099,6 +7110,93 @@ test "coordinated state writes give new branches the complete proposed snapshot"
                 .{ .state_id = value.raw(), .value = testHostValueI64(44), .cap = host.stateCapability(value) },
             });
             try std.testing.expect(activeTextElementId(&host, "44") != null);
+            return attempts;
+        }
+    };
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts > 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "mixed row and nested branch disposal retries every allocation failure" {
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.engine_allocator_override = null;
+                host.deinit();
+                std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("mixed sparse disposal leaked");
+            }
+            const list_token = newTestBinderToken(&roc_host);
+            const editing_token = newTestBinderToken(&roc_host);
+            const confirm_token = newTestBinderToken(&roc_host);
+            const cap = testHostValueCapability(&roc_host);
+            const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(list_token), cap, &testStatefulRowElemCallable);
+            const list = testElementWith(&roc_host, "section", &.{}, &.{each});
+            const confirmation = testNodeWhenReadingState(&roc_host, confirm_token, cap, testNodeText(&roc_host, "confirm"), testNodeText(&roc_host, "editing"));
+            const details = testElementWith(&roc_host, "aside", &.{}, &.{ testNodeText(&roc_host, "details"), confirmation });
+            const closed = testElementWith(&roc_host, "aside", &.{}, &.{testNodeText(&roc_host, "closed")});
+            const editor = testNodeWhenReadingState(&roc_host, editing_token, cap, details, closed);
+            const view = testElementWith(&roc_host, "main", &.{}, &.{ list, editor });
+            const confirm = testNodeStateWithTokenAndInitialCapability(&roc_host, confirm_token, testHostValueBool(true), view, cap);
+            const editing = testNodeStateWithTokenAndInitialCapability(&roc_host, editing_token, testHostValueBool(true), confirm, cap);
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, list_token, testHostValueI64List(&roc_host, &.{ testHostValueI64(1), testHostValueI64(2) }), editing, cap);
+            defer root.decref(&roc_host);
+            _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            const list_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const editing_id = host.engine.active_stream.scope_sites.items[1].node_id;
+            const confirm_id = host.engine.active_stream.scope_sites.items[2].node_id;
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, list_id.raw(), testHostValueI64List(&roc_host, &.{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) }), cap);
+            const appended_id = activeTextElementId(&host, "row-3-3") orelse return error.TestExpectedEqual;
+            const row_parent = host.dom_elements.items[@intCast(appended_id)].parent_id.?;
+            try std.testing.expectEqual(@as(usize, 3), host.dom_elements.items[@intCast(row_parent)].children.items.len);
+            const generation = host.engine.dirty_signal_generation;
+            const allocations = host.roc_allocations.snapshot();
+            var writes = [_]engine.StateWrite{
+                .{ .state_id = list_id.raw(), .value = testHostValueI64List(&roc_host, &.{ testHostValueI64(1), testHostValueI64(2) }), .cap = cap },
+                .{ .state_id = editing_id.raw(), .value = testHostValueBool(false), .cap = cap },
+                .{ .state_id = confirm_id.raw(), .value = testHostValueBool(false), .cap = cap },
+            };
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            _ = host.engine.tryDispatchStateWrites(&host, &roc_host, &writes) catch |err| retry: {
+                try std.testing.expect(failure_number != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+                try std.testing.expectEqual(generation, host.engine.dirty_signal_generation);
+                try std.testing.expectEqual(appended_id, activeTextElementId(&host, "row-3-3").?);
+                try std.testing.expect(activeTextElementId(&host, "confirm") != null);
+                try std.testing.expect(activeTextElementId(&host, "closed") == null);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations));
+                fault.configure(null);
+                writes[0].value = testHostValueI64List(&roc_host, &.{ testHostValueI64(1), testHostValueI64(2) });
+                writes[1].value = testHostValueBool(false);
+                writes[2].value = testHostValueBool(false);
+                break :retry try host.engine.tryDispatchStateWrites(&host, &roc_host, &writes);
+            };
+            const attempts = fault.attempts;
+            try std.testing.expect(!host.engine.active_stream.render_nodes_ordered);
+            try std.testing.expectEqual(generation + 1, host.engine.dirty_signal_generation);
+            try std.testing.expect(activeTextElementId(&host, "row-3-3") == null);
+            try std.testing.expectEqual(@as(usize, 2), host.dom_elements.items[@intCast(row_parent)].children.items.len);
+            try std.testing.expect(activeTextElementId(&host, "confirm") == null);
+            try std.testing.expect(activeTextElementId(&host, "closed") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-1-1") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
+            // Reopening follows an already unordered sparse publication and
+            // replaces the closed branch while creating a fresh keyed row.
+            const reopen = [_]engine.StateWrite{
+                .{ .state_id = list_id.raw(), .value = testHostValueI64List(&roc_host, &.{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) }), .cap = cap },
+                .{ .state_id = editing_id.raw(), .value = testHostValueBool(true), .cap = cap },
+                .{ .state_id = confirm_id.raw(), .value = testHostValueBool(true), .cap = cap },
+            };
+            _ = try host.engine.tryDispatchStateWrites(&host, &roc_host, &reopen);
+            try std.testing.expectEqual(@as(usize, 3), host.dom_elements.items[@intCast(row_parent)].children.items.len);
+            try std.testing.expect(activeTextElementId(&host, "confirm") != null);
+            try std.testing.expect(activeTextElementId(&host, "closed") == null);
             return attempts;
         }
     };

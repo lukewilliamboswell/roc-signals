@@ -959,6 +959,10 @@ pub const Stream = struct {
     lifecycle_indices_by_scope_id: shared_buffer.List(shared_buffer.List(LifecycleDescriptorIndex)) = .empty,
     scope_descriptor_ownership: shared_buffer.List(ScopeDescriptorOwnership) = .empty,
     state_binders: StateBinderIndex = .{},
+    // Sparse publication preserves identity and sibling indexes while the
+    // dense render array becomes an unordered descriptor pool. Positional
+    // planners must establish this precondition before reading array spans.
+    render_nodes_ordered: bool = true,
     custom_attr_index_active: bool = false,
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .{},
     named_event_indices_by_elem_id: shared_buffer.List(shared_buffer.List(usize)) = .empty,
@@ -1499,6 +1503,7 @@ pub const Stream = struct {
     /// top-level roots therefore enter detached, while links wholly inside a
     /// replacement subtree transfer with that subtree.
     pub fn commitSparseRenderNodesAssumeCapacity(self: *Stream, replacement: *Stream, retired: *Stream, removed_elem_ids: []const u64) void {
+        if (replacement.render_nodes.items.len != 0 or removed_elem_ids.len != 0) self.render_nodes_ordered = false;
         commitSparseRenderNodes(Stream, self, replacement, retired, removed_elem_ids);
     }
 

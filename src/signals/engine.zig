@@ -1851,6 +1851,12 @@ pub fn Engine(comptime Ctx: type) type {
                     eaches[index] = &engine.active_stream.eaches.items[each_index];
                 }
                 try owner.prepareReplacement(sites, eaches, .{}, &.{});
+                if (!engine.active_stream.render_nodes_ordered) {
+                    if (try PreparedCompositeStructural.prepareSparseDownstream(engine, ctx, roc_host, &.{}, &.{}, sites, owner, owner.replacement_owner.?, overlay)) |downstream| {
+                        owner.downstream = downstream;
+                        return owner;
+                    }
+                }
                 try owner.prepareRenderLayouts(sites);
                 try owner.prepareDownstream(sites);
                 return owner;
@@ -2100,6 +2106,47 @@ pub fn Engine(comptime Ctx: type) type {
             changes: []HostDirtyStructuralSignal,
             overlay: *signal_records.PreparedCacheUpdates,
             phase: CommitPhase = .prepared,
+
+            fn prepareSparseDownstream(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, selections: []const AggregateBranchSelection, branch_ranges: []const GlobalRange, sites: []const HostNodeScopeSiteDesc, rows: *PreparedCompositeRows, replacement: *PreparedReplacementOwner, overlay: *signal_records.PreparedCacheUpdates) CollectionError!?*PreparedStructuralDownstream {
+                if (replacement.collection.nested_row_syncs.items.len != 0) return null;
+                const allocator = Ctx.allocator(ctx);
+                var parents: shared_buffer.List(u64) = .empty;
+                defer parents.deinit(allocator);
+                var parent_set: std.AutoHashMapUnmanaged(u64, void) = .{};
+                defer parent_set.deinit(allocator);
+                var retired_roots: shared_buffer.List(ids.ScopeId) = .empty;
+                defer retired_roots.deinit(allocator);
+                var synced_rows: shared_buffer.List(ids.ScopeId) = .empty;
+                defer synced_rows.deinit(allocator);
+                var old_branches: shared_buffer.List(PreparedStructuralDownstream.SparseBranchRange) = .empty;
+                defer old_branches.deinit(allocator);
+                for (sites, rows.rows[0..rows.prepared_len], rows.replacements[0..rows.prepared_len]) |site, row_plan, row_replacement| {
+                    if (row_plan.inputs.rows_transition == null) return null;
+                    for (row_replacement.replacement_rows) |range| if (!range.created) return null;
+                    const parent = try parent_set.getOrPut(allocator, site.parent_elem_id.raw());
+                    if (parent.found_existing) return null;
+                    parents.append(allocator, site.parent_elem_id.raw()) catch return error.OutOfMemory;
+                    retired_roots.appendSlice(allocator, row_plan.rows.removed_scope_ids) catch return error.OutOfMemory;
+                    synced_rows.appendSlice(allocator, row_plan.rows.removed_scope_ids) catch return error.OutOfMemory;
+                }
+                for (selections) |selection| {
+                    const parent = try parent_set.getOrPut(allocator, selection.parent_elem_id.raw());
+                    if (parent.found_existing) return null;
+                    const range = try PreparedStructuralDownstream.sparseBranchRange(engine, allocator, selection) orelse return null;
+                    old_branches.append(allocator, range) catch return error.OutOfMemory;
+                    parents.append(allocator, selection.parent_elem_id.raw()) catch return error.OutOfMemory;
+                    retired_roots.append(allocator, selection.retired_scope_id) catch return error.OutOfMemory;
+                }
+                const downstream = try PreparedStructuralDownstream.prepareSparseExternalScopes(engine, ctx, roc_host, replacement, retired_roots.items, synced_rows.items, parents.items, overlay);
+                errdefer downstream.deinit();
+                for (sites, rows.rows[0..rows.prepared_len]) |site, row_plan| {
+                    try downstream.adoptSparseEachRender(site, &row_plan.inputs.rows_transition.?);
+                }
+                for (selections, old_branches.items, branch_ranges) |selection, range, collected| {
+                    try downstream.adoptSparseBranchRender(selection, range, collected.start, collected.len);
+                }
+                return downstream;
+            }
 
             fn scopeCoveredByRetiredBranch(engine: *Self, scope_id: u64, selections: []const AggregateBranchSelection) CollectionError!bool {
                 for (selections) |selection| if (engine.scopeIsDescendantOrSelf(scope_id, selection.retired_scope_id.raw()) catch |err| return scopeError(err)) return true;
@@ -2374,6 +2421,29 @@ pub fn Engine(comptime Ctx: type) type {
                 replacement_owner.materialize();
                 for (rows.replacements[0..rows.prepared_len], sites) |replacement, site| try replacement.finalizeRenderSpans(site);
                 for (rows.replacements[0..rows.prepared_len]) |replacement| replacement.releaseEvaluatedRows();
+
+                if (try prepareSparseDownstream(engine, ctx, roc_host, selections, branch_ranges, sites, rows, replacement_owner, overlay)) |downstream| {
+                    errdefer downstream.deinit();
+                    const layouts = allocator.alloc(PreparedEachRowRenderLayout, 0) catch return error.OutOfMemory;
+                    errdefer allocator.free(layouts);
+                    const plan = allocator.create(@This()) catch return error.OutOfMemory;
+                    plan.* = .{
+                        .allocator = allocator,
+                        .engine = engine,
+                        .normalized_whens = normalized,
+                        .rows = rows,
+                        .replacement_owner = replacement_owner,
+                        .branch_ranges = branch_ranges,
+                        .row_ranges = row_ranges,
+                        .subsumed_each_indexes = subsumed_each_indexes,
+                        .layouts = layouts,
+                        .downstream = downstream,
+                        .changes = changes,
+                        .overlay = overlay,
+                    };
+                    normalized_owned = false;
+                    return plan;
+                }
 
                 const layouts = allocator.alloc(PreparedEachRowRenderLayout, rows.prepared_len) catch return error.OutOfMemory;
                 var layouts_prepared: usize = 0;
@@ -7874,6 +7944,7 @@ pub fn Engine(comptime Ctx: type) type {
             old_end: usize,
 
             fn prepare(engine: *Self, allocator: std.mem.Allocator, site: HostNodeScopeSiteDesc, rows: *const each_runtime.PreparedRowSync, replacements: []const PreparedEachRowReplacementCollection.ReplacementRow, collection: ?*const StagedCollectionCtx) CollectionError!@This() {
+                if (!engine.active_stream.render_nodes_ordered) return error.ResourceLimit;
                 var segments: shared_buffer.List(HostEachRowRenderSegment) = .empty;
                 defer segments.deinit(allocator);
                 var by_scope: std.AutoHashMapUnmanaged(u64, usize) = .empty;
@@ -8055,6 +8126,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn apply(self: *@This(), stream: *HostNodeDescriptorStream) void {
                 std.mem.swap(shared_buffer.List(HostRenderNode), &self.render_nodes, &stream.render_nodes);
                 std.mem.swap(std.AutoHashMapUnmanaged(u64, HostRenderElemIndex), &self.metadata, &stream.render_metadata_by_elem_id);
+                stream.render_nodes_ordered = true;
             }
 
             fn deinit(self: *@This()) void {
@@ -8550,6 +8622,7 @@ pub fn Engine(comptime Ctx: type) type {
             /// where the retirement scan for this branch begins.
             fn describeBranch(self: *@This(), engine: *Self, selection: AggregateBranchSelection, collected: PreparedReplacementOwner.CollectedWhenSelection) CollectionError!usize {
                 if (self.phase != .describing) return error.ResourceLimit;
+                if (!engine.active_stream.render_nodes_ordered) return error.ResourceLimit;
                 var old_start: ?usize = null;
                 var old_end: usize = 0;
                 for (engine.active_stream.render_nodes.items, 0..) |node, render_index| {
@@ -8930,6 +9003,7 @@ pub fn Engine(comptime Ctx: type) type {
         };
 
         const PreparedStructuralDownstream = struct {
+            const SparseBranchRange = struct { first: ids.ElemId, last: ids.ElemId, count: usize, after: ?ids.ElemId };
             const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
             engine: *Self,
             host_ctx: Ctx.Handle,
@@ -8973,8 +9047,121 @@ pub fn Engine(comptime Ctx: type) type {
             retired_active_events: shared_buffer.List(ActiveEventDesc) = .empty,
             initial_root: bool = false,
             sparse_render_membership: bool = false,
-            sparse_each_site_node_id: ?ids.NodeId = null,
-            sparse_each_first_render_root: ?ids.ElemId = null,
+            sparse_site_anchors: shared_buffer.List(struct { node_id: ids.NodeId, kind: descriptor_stream.ScopeSiteKind, first_root: ids.ElemId }) = .empty,
+
+            // Inspect only descriptors owned by the retiring branch. The
+            // descriptor pool is not document order after a sparse row edit.
+            fn sparseBranchRange(engine: *Self, allocator: std.mem.Allocator, selection: AggregateBranchSelection) CollectionError!?SparseBranchRange {
+                var retirement = scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, allocator, engine.scopes.items, &.{selection.retired_scope_id}) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.OverlappingSubtrees => return error.OverlappingRemoval,
+                };
+                defer retirement.deinit(allocator);
+                var roots: std.AutoHashMapUnmanaged(u64, void) = .{};
+                defer roots.deinit(allocator);
+                for (retirement.scope_ids) |scope_id| for (engine.active_stream.scopeOwnedElemIds(scope_id)) |elem_id| {
+                    const index = engine.active_stream.renderNodeIndex(elem_id) orelse return error.InvalidDescriptor;
+                    const node = engine.active_stream.render_nodes.items[index];
+                    if (renderNodeParentElemId(&engine.active_stream, node) == selection.parent_elem_id.raw()) roots.put(allocator, elem_id.raw(), {}) catch return error.OutOfMemory;
+                };
+                // An empty branch requires a maintained construction-site
+                // anchor; a pool position is deliberately not a substitute.
+                if (roots.count() == 0) return null;
+                var first: ?ids.ElemId = null;
+                var iterator = roots.keyIterator();
+                while (iterator.next()) |raw| {
+                    const id = ids.ElemId.fromRaw(raw.*);
+                    const previous = engine.render_cache.previousSibling(id);
+                    if (previous == null or !roots.contains(previous.?.raw())) {
+                        if (first != null) return error.InvalidRenderTopology;
+                        first = id;
+                    }
+                }
+                var current = first orelse return error.InvalidRenderTopology;
+                for (0..roots.count() - 1) |_| {
+                    current = engine.render_cache.nextSibling(current) orelse return error.InvalidRenderTopology;
+                    if (!roots.contains(current.raw())) return error.InvalidRenderTopology;
+                }
+                return .{ .first = first.?, .last = current, .count = roots.count(), .after = engine.render_cache.nextSibling(current) };
+            }
+
+            fn adoptSparseBranchRender(self: *@This(), selection: AggregateBranchSelection, range: SparseBranchRange, replacement_start: usize, replacement_len: usize) CollectionError!void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                var roots: shared_buffer.List(ids.ElemId) = .empty;
+                defer roots.deinit(allocator);
+                for (self.replacement.stream.render_nodes.items[replacement_start..][0..replacement_len]) |node| {
+                    if (renderNodeParentElemId(&self.replacement.stream, node) == selection.parent_elem_id.raw()) roots.append(allocator, node.elem_id) catch return error.OutOfMemory;
+                }
+                const touched = std.math.add(usize, std.math.add(usize, range.count, roots.items.len) catch return error.ResourceLimit, 4) catch return error.ResourceLimit;
+                var journal = render_cache_mod.PreparedSparseChildren.init(Ctx, allocator, &self.engine.render_cache, selection.parent_elem_id, touched, roots.items.len) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                    error.MissingParent => return error.InvalidRenderTopology,
+                };
+                var owned = true;
+                defer if (owned) journal.deinit();
+                journal.removeRange(Ctx, &self.engine.render_cache, range.first, range.last, range.count) catch |err| switch (err) {
+                    error.ResourceLimit => return error.ResourceLimit,
+                    else => return error.InvalidRenderTopology,
+                };
+                journal.insertRootsBefore(Ctx, &self.engine.render_cache, roots.items, range.after) catch |err| switch (err) {
+                    error.ResourceLimit => return error.ResourceLimit,
+                    else => return error.InvalidRenderTopology,
+                };
+                if (self.publication_phase.needsAbort()) {
+                    self.render_batch_target.?.abort();
+                    self.publication_phase.resetPreflight();
+                }
+                if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| {
+                    publication.deinit();
+                    self.host_render_publication = null;
+                };
+                const splice = &(self.render_splice orelse return error.InvalidRenderTopology);
+                splice.adoptSparseChildren(&journal) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ConflictingParent, error.MissingNode => return error.InvalidRenderTopology,
+                };
+                owned = false;
+                if (roots.items.len != 0) self.sparse_site_anchors.append(allocator, .{ .node_id = selection.node_id, .kind = .when, .first_root = roots.items[0] }) catch return error.OutOfMemory;
+                splice.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                };
+                self.publication_phase.markPreflighted();
+                if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
+                    self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, splice) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.ResourceLimit => return error.ResourceLimit,
+                        error.InvalidRenderTopology => return error.InvalidRenderTopology,
+                    };
+                }
+            }
+
+            fn prepareSparseBranches(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, selections: []const AggregateBranchSelection, collected: []const PreparedReplacementOwner.CollectedWhenSelection, overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!?*@This() {
+                if (engine.active_stream.render_nodes_ordered) return null;
+                if (replacement.collection.nested_row_syncs.items.len != 0) return null;
+                const allocator = Ctx.allocator(ctx);
+                var parents: shared_buffer.List(u64) = .empty;
+                defer parents.deinit(allocator);
+                var parent_set: std.AutoHashMapUnmanaged(u64, void) = .{};
+                defer parent_set.deinit(allocator);
+                var retired_roots: shared_buffer.List(ids.ScopeId) = .empty;
+                defer retired_roots.deinit(allocator);
+                var ranges: shared_buffer.List(SparseBranchRange) = .empty;
+                defer ranges.deinit(allocator);
+                for (selections) |selection| {
+                    const parent = try parent_set.getOrPut(allocator, selection.parent_elem_id.raw());
+                    if (parent.found_existing) return null;
+                    const range = try sparseBranchRange(engine, allocator, selection) orelse return null;
+                    ranges.append(allocator, range) catch return error.OutOfMemory;
+                    parents.append(allocator, selection.parent_elem_id.raw()) catch return error.OutOfMemory;
+                    retired_roots.append(allocator, selection.retired_scope_id) catch return error.OutOfMemory;
+                }
+                const plan = try prepareSparseExternalScopes(engine, ctx, roc_host, replacement, retired_roots.items, &.{}, parents.items, overlay);
+                errdefer plan.deinit();
+                for (selections, ranges.items, collected) |selection, range, next| try plan.adoptSparseBranchRender(selection, range, next.start, next.len);
+                return plan;
+            }
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 try PreparedReplacementOwner.addRootCounts(total, next);
@@ -9009,6 +9196,15 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.replacement_scope_ids[index] = replacement_ranges[index].scope_id;
                 }
                 plan.replacement.materialize();
+
+                if (try prepareSparseBranches(engine, ctx, roc_host, plan.replacement, selections, replacement_ranges, cache_overlay)) |sparse| {
+                    sparse.owns_replacement = true;
+                    sparse.replacement_scope_ids = plan.replacement_scope_ids;
+                    plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                    allocator.destroy(plan);
+                    plan_owns_cleanup = true;
+                    return sparse;
+                }
 
                 var layout_plan = PreparedRenderLayoutPlan.init(allocator);
                 var layout_plan_owned = true;
@@ -9251,13 +9447,24 @@ pub fn Engine(comptime Ctx: type) type {
                     scope_id.* = ids.ScopeId.fromRaw(row.metadata.scope_id);
                 }
 
+                const suppressed_parent = [_]u64{site.parent_elem_id.raw()};
+                const plan = try prepareSparseExternalScopes(engine, ctx, roc_host, replacement.replacement, retired_roots, retired_roots, &suppressed_parent, cache_overlay);
+                errdefer plan.deinit();
+                try plan.adoptSparseEachRender(site, transition);
+                return plan;
+            }
+
+            // Exact scope ownership is shared by one Rows edit and mixed
+            // structural edits. Render-pool positions never identify ownership.
+            fn prepareSparseExternalScopes(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, retired_roots: []const ids.ScopeId, synced_row_roots: []const ids.ScopeId, suppressed_parents: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
+                const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
                 plan.* = .{
                     .engine = engine,
                     .host_ctx = ctx,
                     .roc_host = roc_host,
-                    .replacement = replacement.replacement,
+                    .replacement = replacement,
                     .owns_replacement = false,
                     .sparse_render_membership = true,
                 };
@@ -9295,7 +9502,7 @@ pub fn Engine(comptime Ctx: type) type {
                 defer nested_row_scopes.deinit(allocator);
                 nested_row_scopes.ensureTotalCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
                 for (retirement_scope_ids) |scope_id| {
-                    const is_direct = for (retired_roots) |root| {
+                    const is_direct = for (synced_row_roots) |root| {
                         if (root == scope_id) break true;
                     } else false;
                     if (!is_direct) nested_row_scopes.appendAssumeCapacity(scope_id);
@@ -9323,11 +9530,14 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.publication = structural_splice.preparePublicationDeltas(allocator, plan.replacement.stream.render_nodes.items, &.{}, on_change_base, plan.replacement.stream.on_changes.items.len, mount_base, plan.replacement.stream.mounts.items.len) catch return error.OutOfMemory;
                 errdefer if (plan.publication) |*publication| publication.deinit(allocator);
 
-                const suppressed_parent = [_]u64{site.parent_elem_id.raw()};
-                plan.suppressed_render_parent_ids = &suppressed_parent;
+                plan.sparse_site_anchors.ensureUnusedCapacity(allocator, replacement.stream.scope_sites.items.len) catch return error.OutOfMemory;
+                errdefer plan.sparse_site_anchors.deinit(allocator);
+                for (replacement.stream.scope_sites.items) |site| {
+                    if (site.render_insert_index < replacement.stream.render_nodes.items.len) plan.sparse_site_anchors.appendAssumeCapacity(.{ .node_id = site.node_id, .kind = site.kind, .first_root = replacement.stream.render_nodes.items[site.render_insert_index].elem_id });
+                }
+                plan.suppressed_render_parent_ids = suppressed_parents;
                 try plan.prepareGraphRenderAndPublication(allocator);
                 plan.suppressed_render_parent_ids = &.{};
-                try plan.adoptSparseEachRender(site, transition);
                 return plan;
             }
 
@@ -9426,12 +9636,11 @@ pub fn Engine(comptime Ctx: type) type {
                     error.ConflictingParent, error.MissingNode => return error.InvalidRenderTopology,
                 };
                 journal_owned = false;
-                self.sparse_each_site_node_id = site.node_id;
-                self.sparse_each_first_render_root = if (transition.firstCandidateRenderRoot() catch |err| switch (err) {
+                if (transition.firstCandidateRenderRoot() catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                     else => return error.InvalidDescriptor,
-                }) |anchor| ids.ElemId.fromRaw(anchor.root_id) else null;
+                }) |anchor| self.sparse_site_anchors.append(allocator, .{ .node_id = site.node_id, .kind = .each, .first_root = ids.ElemId.fromRaw(anchor.root_id) }) catch return error.OutOfMemory;
                 splice.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
@@ -9715,6 +9924,9 @@ pub fn Engine(comptime Ctx: type) type {
                     @panic("structural downstream committed a render topology without re-basing its scope sites");
                 }
                 if (self.sparse_render_membership) {
+                    for (self.render_splice.?.sparse_children.items) |*journal| {
+                        if (journal.wireEdits().len != 0) self.engine.active_stream.render_nodes_ordered = false;
+                    }
                     self.engine.active_stream.commitSparseRenderNodesAssumeCapacity(
                         &self.replacement.stream,
                         &self.retired_stream,
@@ -9725,15 +9937,6 @@ pub fn Engine(comptime Ctx: type) type {
                         Ctx.allocator(self.host_ctx),
                         &self.engine.active_stream,
                     );
-                    if (self.sparse_each_first_render_root) |root_id| {
-                        const node_id = self.sparse_each_site_node_id orelse @panic("sparse Rows render anchor lost its site identity");
-                        const descriptor_index = self.engine.active_stream.nodeDescriptorIndex(node_id) orelse @panic("sparse Rows render anchor lost its site descriptor");
-                        const site_index = descriptor_index.scope_sites.get(.each) orelse @panic("sparse Rows render anchor lost its each site");
-                        const render_index = self.engine.active_stream.renderNodeIndex(root_id) orelse @panic("sparse Rows render anchor named an absent root");
-                        const active_site = &self.engine.active_stream.scope_sites.items[site_index];
-                        if (active_site.node_id != node_id or active_site.kind != .each) @panic("sparse Rows render anchor resolved another site");
-                        active_site.render_insert_index = render_index;
-                    }
                     self.engine.active_stream.finishSparseRenderNodeRetirement(removal.scan.removed_elem_ids);
                 }
                 self.engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
@@ -9752,6 +9955,16 @@ pub fn Engine(comptime Ctx: type) type {
                     removal.node_indexes.when_indexes.items,
                     removal.node_indexes.each_indexes.items,
                 );
+                for (self.sparse_site_anchors.items) |anchor| {
+                    const root_id = anchor.first_root;
+                    const node_id = anchor.node_id;
+                    const descriptor_index = self.engine.active_stream.nodeDescriptorIndex(node_id) orelse @panic("sparse render anchor lost its site descriptor");
+                    const site_index = descriptor_index.scope_sites.get(anchor.kind) orelse @panic("sparse render anchor lost its construction site");
+                    const render_index = self.engine.active_stream.renderNodeIndex(root_id) orelse @panic("sparse render anchor named an absent root");
+                    const active_site = &self.engine.active_stream.scope_sites.items[site_index];
+                    if (active_site.node_id != node_id or active_site.kind != anchor.kind) @panic("sparse render anchor resolved another site");
+                    active_site.render_insert_index = render_index;
+                }
                 self.engine.active_stream.commitCustomDescriptorReplacementAssumeCapacity(
                     &self.replacement.stream,
                     &self.retired_stream,
@@ -9771,8 +9984,14 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.initial_root) {
                     std.mem.swap(shared_buffer.List(HostRenderNode), &self.engine.active_stream.render_nodes, &self.replacement.stream.render_nodes);
                     std.mem.swap(std.AutoHashMapUnmanaged(u64, HostRenderElemIndex), &self.engine.active_stream.render_metadata_by_elem_id, &self.replacement.stream.render_metadata_by_elem_id);
+                    self.engine.active_stream.render_nodes_ordered = true;
                 } else if (!self.sparse_render_membership) if (self.final_render_topology) |*topology| topology.apply(&self.engine.active_stream);
-                self.engine.validateActiveRenderDescriptorIntegrity();
+                if (self.sparse_render_membership) {
+                    for (self.publication.?.replacement_elem_ids) |raw| {
+                        const index = self.engine.active_stream.renderNodeIndex(ids.ElemId.fromRaw(raw)) orelse @panic("published render node lost its index");
+                        self.engine.validateRenderNodeDescriptorIntegrity(self.engine.active_stream.render_nodes.items[index]);
+                    }
+                } else self.engine.validateActiveRenderDescriptorIntegrity();
 
                 self.state_retirement.?.apply(self.engine, &self.retired_state_cells);
                 // Retire the old identity generation before publishing replacement
@@ -9859,6 +10078,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.targets) |*targets| targets.deinit(allocator);
                 for (self.retired_scope_steps.items) |*step| self.engine.releasePreparedRetiredScopeStep(step);
                 self.retired_scope_steps.deinit(allocator);
+                self.sparse_site_anchors.deinit(allocator);
                 allocator.free(self.replacement_scope_ids);
                 allocator.destroy(self);
             }
@@ -12140,14 +12360,15 @@ pub fn Engine(comptime Ctx: type) type {
             replacement.eaches.items.len = 0;
         }
 
-        /// Checks that every committed scope site's insertion index still points
-        /// at the render node where its owned structure begins: an `each` site at
-        /// its first row's first render node and a `when` site at its live
-        /// branch's first render node. A site owning nothing rendered may sit
-        /// anywhere inside the stream. Stale indexes are what every later
-        /// structural transaction lays rows out from, so a drift here is a
-        /// corrupted commit rather than a recoverable refusal.
+        /// Checks positional layout invariants while the descriptor pool remains
+        /// in document order. Each nonempty site's index must name its first
+        /// owned node; empty sites may name any stream boundary. Sparse plans
+        /// use identity and sibling indexes instead, so this positional audit
+        /// does not apply once a sparse publication makes the pool unordered.
         pub fn validateActiveScopeSiteInsertIndexes(self: *const Self) void {
+            // Sparse publication retains an identity-indexed descriptor pool;
+            // its positions do not denote a site's lexical first descendant.
+            if (!self.active_stream.render_nodes_ordered) return;
             const nodes = self.active_stream.render_nodes.items;
             const scopes = self.scopes.items;
             for (self.active_stream.scope_sites.items) |site| {
@@ -12180,29 +12401,31 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         fn validateActiveRenderDescriptorIntegrity(self: *Self) void {
-            for (self.active_stream.render_nodes.items) |node| {
-                const found = switch (node.kind) {
-                    .element => findElementDesc(&self.active_stream, node.elem_id.raw()) != null,
-                    .text => findTextNodeDesc(&self.active_stream, node.elem_id.raw()) != null,
-                    .signal_text => findSignalTextNodeDesc(&self.active_stream, node.elem_id.raw()) != null,
-                };
-                if (!found) {
-                    var message: [128]u8 = undefined;
-                    const rendered = std.fmt.bufPrint(
-                        &message,
-                        "active render node {d} with kind {s} has no matching descriptor",
-                        .{ node.elem_id, @tagName(node.kind) },
-                    ) catch "active render node has no matching descriptor";
-                    @panic(rendered);
-                }
-                const parent_elem_id = renderNodeParentElemId(&self.active_stream, node);
-                if (parent_elem_id != 0 and
-                    findElementDesc(&self.active_stream, parent_elem_id) == null and
-                    findTextNodeDesc(&self.active_stream, parent_elem_id) == null and
-                    findSignalTextNodeDesc(&self.active_stream, parent_elem_id) == null)
-                {
-                    @panic("active render node referenced a missing parent descriptor");
-                }
+            for (self.active_stream.render_nodes.items) |node| self.validateRenderNodeDescriptorIntegrity(node);
+        }
+
+        fn validateRenderNodeDescriptorIntegrity(self: *Self, node: HostRenderNode) void {
+            const found = switch (node.kind) {
+                .element => findElementDesc(&self.active_stream, node.elem_id.raw()) != null,
+                .text => findTextNodeDesc(&self.active_stream, node.elem_id.raw()) != null,
+                .signal_text => findSignalTextNodeDesc(&self.active_stream, node.elem_id.raw()) != null,
+            };
+            if (!found) {
+                var message: [128]u8 = undefined;
+                const rendered = std.fmt.bufPrint(
+                    &message,
+                    "active render node {d} with kind {s} has no matching descriptor",
+                    .{ node.elem_id, @tagName(node.kind) },
+                ) catch "active render node has no matching descriptor";
+                @panic(rendered);
+            }
+            const parent_elem_id = renderNodeParentElemId(&self.active_stream, node);
+            if (parent_elem_id != 0 and
+                findElementDesc(&self.active_stream, parent_elem_id) == null and
+                findTextNodeDesc(&self.active_stream, parent_elem_id) == null and
+                findSignalTextNodeDesc(&self.active_stream, parent_elem_id) == null)
+            {
+                @panic("active render node referenced a missing parent descriptor");
             }
         }
 
