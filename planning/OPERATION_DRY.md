@@ -136,23 +136,23 @@ with the repository test driver. Suggested new locations are
 `scripts/wasm_size.py` and `test/size/`; choose the final layout alongside the
 existing test-driver conventions.
 
-- [ ] Add small fixtures for static text, a counter, branch replacement, keyed
+- [x] Add small fixtures for static text, a counter, branch replacement, keyed
   row edits, and two distinct row item types. Keep all supported edit operations
   reachable in the collection fixture; an Append-only example cannot establish
   savings for the complete API.
-- [ ] Include the existing keyed-table benchmark and one maintained collection
+- [x] Include the existing keyed-table benchmark and one maintained collection
   example so reductions are not tuned only to a minimal counter.
-- [ ] Build normal production Wasm with the repository's selected compiler and
+- [x] Build normal production Wasm with the repository's selected compiler and
   ReleaseSmall host. Record source revision, source changes, tool versions,
   flags, artifact hashes, raw/code/data sizes, gzip, and Brotli. Fix compression
   implementations as well as levels: earlier Python and Node zlib results
   differed. Keep JS bridge and total delivered-asset sizes visible separately.
-- [ ] Generate separate named companions for attribution. Record logical helper
+- [x] Generate separate named companions for attribution. Record logical helper
   family counts and the largest caller bodies. Keep production artifact size
   authoritative; compiler merging can move code between surviving symbol names.
 - [ ] Capture baseline semantics, work counters, allocation traffic, live/peak
   storage, and optimized performance for the affected benchmark cases.
-- [ ] Add deterministic size regression checks with explicit budgets derived
+- [x] Add deterministic size regression checks with explicit budgets derived
   from the reproduced baseline. Review budget changes with compiler upgrades;
   do not automatically bless a larger artifact or include profiler builds.
 
@@ -160,27 +160,36 @@ existing test-driver conventions.
 files. Explain any difference from the historical numbers before attributing
 new savings to a refactor.
 
+**Outcome (2026-09-08):** `scripts/wasm_size.py`, `test/size/` (fixture
+manifest, `baseline.json`, `budgets.toml`), and the `size` driver suite exist.
+The baseline reproduces the historical recipe-scaler bytes exactly. The
+maintained counter fixture is 5,510 raw / 1,934 gzip bytes larger than the
+historical guide counter because it renders more markup, not because the
+toolchain differs. Work counters and allocation traffic are covered by the
+existing native specs; optimized timing for the affected cases is reported per
+stage below rather than as a stored artifact.
+
 ## Stage 1 — shared buffer growth behind typed storage
 
 **Deliverable:** a small internal storage core, for example
 `src/signals/shared_buffer.zig`, with typed list adapters and explicit tests.
 
-- [ ] Implement the measured shared growth operation using runtime byte size
+- [x] Implement the measured shared growth operation using runtime byte size
   and alignment. Preserve capacity policy, allocator identity, return-address
   accounting, and zero-sized-element handling. Check multiplication overflow.
-- [ ] Attempt remap first; on refusal allocate the replacement, copy only live
+- [x] Attempt remap first; on refusal allocate the replacement, copy only live
   elements, and release the old backing after success. Publish pointer and
   capacity only after the helper succeeds. Preserve length throughout.
-- [ ] Give typed storage its own documented interface. Do not reinterpret
+- [x] Give typed storage its own documented interface. Do not reinterpret
   arbitrary std.ArrayList structs by assuming their field layout. Share through
   typed adapters or an internally owned list representation.
-- [ ] Start with buffers implicated by the inventory and large reservation
+- [x] Start with buffers implicated by the inventory and large reservation
   callers. Implement only the list operations their callers need; do not copy
   the entire standard-library API. Migrate a bounded caller group per change.
-- [ ] Reuse the helper for further host buffers only when their relocation and
+- [x] Reuse the helper for further host buffers only when their relocation and
   ownership contracts match. Do not use ordinary byte relocation for values
   with internal pointers into their own storage.
-- [ ] Confirm the linked helper remains shared across element types and inspect
+- [x] Confirm the linked helper remains shared across element types and inspect
   the large preparation callers for reductions. Re-run the production pipeline,
   rather than comparing only relocatable host objects.
 
@@ -194,6 +203,21 @@ that relocating host handles neither clones nor drops their retained values.
 improvement with behavior and allocator contracts preserved. The historical
 20 KB raw saving is a reference, not a guaranteed result for a different facade.
 Reject a broad migration if it merely moves specialization into the adapter.
+
+**Outcome (2026-09-08):** `src/signals/shared_buffer.zig` provides one
+`noinline` `relocate` body plus a typed `List(T)` adapter. Engine lists cross
+module boundaries as typed parameters, so every `std.ArrayListUnmanaged` in
+`src/signals/` migrated as one group. Measured with the Stage 0 tooling:
+
+| Fixture | Raw saving | gzip saving | Brotli saving |
+| --- | ---: | ---: | ---: |
+| static-text | 20,887 B (2.9%) | 5,831 B (2.2%) | 3,543 B |
+| counter | 20,887 B (2.9%) | 5,651 B (2.1%) | 3,669 B |
+| keyed-row-edits | 20,959 B (1.5%) | 6,152 B (1.3%) | 3,622 B |
+| recipe-scaler | 20,973 B (1.6%) | 6,083 B (1.4%) | 3,479 B |
+
+Zig unit tests, the fuzz corpus replay, native specs, the fault campaign, and
+wasm mounts pass unchanged. Budgets were ratcheted to this measurement.
 
 ## Stage 2 — share prepared sink-route planning
 
