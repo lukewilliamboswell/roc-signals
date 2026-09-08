@@ -6,3 +6,6 @@ slug = "counter"
 
 [[examples]]
 slug = "keyed-rows"
+
+[[examples]]
+slug = "notes-editor"
