@@ -1,0 +1,46 @@
+# Wasm size budgets checked by `python3 scripts/test.py size`.
+#
+# Generated from a reproduced baseline with 1% headroom above the
+# measured value. Budgets are explicit numbers so a regression fails loudly.
+# Increasing a budget is a deliberate, reviewed decision: explain the cause
+# (compiler upgrade, accepted feature cost) in the pull request. Never
+# regenerate this file automatically to bless a larger artifact, and never
+# derive it from an instrumented or profiler build.
+#
+# Regenerate after an accepted change with:
+#   python3 scripts/wasm_size.py --write-budgets .test-out/size/<label>/report.json
+
+[baseline]
+revision = "2a564d60493a1167779f9f613b0641f1a84125ad"
+roc = "Roc compiler version nightly-2026-09-04-c125b82"
+zig = "0.16.0"
+compression = "node-zlib"
+headroom_percent = 1
+
+[fixtures.static-text]
+raw = 724201  # measured 717031
+gzip = 270170  # measured 267496
+
+[fixtures.counter]
+raw = 731667  # measured 724423
+gzip = 273051  # measured 270348
+
+[fixtures.branch-replacement]
+raw = 739053  # measured 731736
+gzip = 275220  # measured 272496
+
+[fixtures.keyed-row-edits]
+raw = 1431469  # measured 1417297
+gzip = 496465  # measured 491550
+
+[fixtures.two-row-types]
+raw = 1438805  # measured 1424560
+gzip = 491189  # measured 486326
+
+[fixtures.js-framework-benchmark]
+raw = 1440876  # measured 1426610
+gzip = 499847  # measured 494899
+
+[fixtures.recipe-scaler]
+raw = 1289670  # measured 1276901
+gzip = 446852  # measured 442428

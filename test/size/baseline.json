@@ -1,0 +1,511 @@
+{
+  "schema": 1,
+  "label": "baseline",
+  "revision": "2a564d60493a1167779f9f613b0641f1a84125ad",
+  "dirty": [],
+  "tools": {
+    "roc": "Roc compiler version nightly-2026-09-04-c125b82",
+    "roc_pin": "nightly-2026-09-04-c125b82",
+    "zig": "0.16.0",
+    "node": "v20.20.0"
+  },
+  "flags": {
+    "host": [
+      "build",
+      "build-wasm-host",
+      "-Doptimize=ReleaseSmall"
+    ],
+    "app": [
+      "--target=wasm32",
+      "--opt=size",
+      "--no-cache"
+    ]
+  },
+  "compression": {
+    "implementation": "node-zlib",
+    "gzip_level": 9,
+    "brotli_quality": 11
+  },
+  "host": {
+    "raw": 1090110,
+    "sha256": "99819643edab89d1f9a55f6a8db7f6d17e34fafb0439523ee06761ab4d0ad957",
+    "stripped": true
+  },
+  "host_symbols": {
+    "named_raw": 4398787,
+    "note": "unstripped host object built with -Dstrip=false; production artifact sizes remain authoritative",
+    "function_count": 1186,
+    "named_function_count": 1186,
+    "repeated_families": [
+      {
+        "family": "engine.Engine.PreparedStructuralDownstream.commitAssumeCapacityWithEarlyAndLate",
+        "bodies": 4,
+        "bytes": 9984
+      },
+      {
+        "family": "array_list.Aligned.ensureTotalCapacity",
+        "bodies": 19,
+        "bytes": 6036
+      },
+      {
+        "family": "array_list.Aligned.ensureUnusedCapacity",
+        "bodies": 19,
+        "bytes": 5920
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.ensureUnusedCapacity",
+        "bodies": 13,
+        "bytes": 5586
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.putAssumeCapacity",
+        "bodies": 12,
+        "bytes": 3630
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.get",
+        "bodies": 19,
+        "bytes": 3535
+      },
+      {
+        "family": "mem.Allocator.allocWithSizeAndAlignment",
+        "bodies": 22,
+        "bytes": 3430
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.growIfNeeded",
+        "bodies": 5,
+        "bytes": 3243
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.deinit",
+        "bodies": 23,
+        "bytes": 2370
+      },
+      {
+        "family": "signal_records.walkTree",
+        "bodies": 2,
+        "bytes": 2303
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.getIndex",
+        "bodies": 10,
+        "bytes": 2154
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.getOrPutAssumeCapacityAdapted",
+        "bodies": 5,
+        "bytes": 2138
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.getOrPutAssumeCapacityContext",
+        "bodies": 6,
+        "bytes": 1962
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.ensureTotalCapacityContext",
+        "bodies": 6,
+        "bytes": 1656
+      },
+      {
+        "family": "mem.Allocator.free",
+        "bodies": 35,
+        "bytes": 1591
+      },
+      {
+        "family": "array_list.Aligned.append",
+        "bodies": 8,
+        "bytes": 1561
+      },
+      {
+        "family": "mem.Allocator.alloc",
+        "bodies": 9,
+        "bytes": 1510
+      },
+      {
+        "family": "sort.block.mergeInternal",
+        "bodies": 5,
+        "bytes": 1435
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.ensureTotalCapacity",
+        "bodies": 2,
+        "bytes": 1399
+      },
+      {
+        "family": "mem.Allocator.alignedAlloc",
+        "bodies": 8,
+        "bytes": 1348
+      },
+      {
+        "family": "fmt.bufPrint",
+        "bodies": 5,
+        "bytes": 1277
+      },
+      {
+        "family": "debug.panicExtra",
+        "bodies": 4,
+        "bytes": 1244
+      },
+      {
+        "family": "sort.block.mergeInto",
+        "bodies": 5,
+        "bytes": 1221
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.getOrPutAssumeCapacity",
+        "bodies": 6,
+        "bytes": 1193
+      },
+      {
+        "family": "sort.block.mergeExternal",
+        "bodies": 5,
+        "bytes": 1168
+      },
+      {
+        "family": "sort.block.mergeInPlace",
+        "bodies": 5,
+        "bytes": 1063
+      },
+      {
+        "family": "mem.Allocator.remap",
+        "bodies": 5,
+        "bytes": 1047
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.fetchRemove",
+        "bodies": 4,
+        "bytes": 1016
+      },
+      {
+        "family": "sort.block.findFirstBackward",
+        "bodies": 5,
+        "bytes": 969
+      },
+      {
+        "family": "sort.block.findLastForward",
+        "bodies": 5,
+        "bytes": 941
+      },
+      {
+        "family": "array_list.Aligned.deinit",
+        "bodies": 15,
+        "bytes": 934
+      },
+      {
+        "family": "array_list.Aligned.toOwnedSlice",
+        "bodies": 3,
+        "bytes": 924
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.containsContext",
+        "bodies": 9,
+        "bytes": 825
+      },
+      {
+        "family": "hash_map.getAutoHashFn.hash",
+        "bodies": 7,
+        "bytes": 734
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.Iterator.next",
+        "bodies": 3,
+        "bytes": 701
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.getPtr",
+        "bodies": 6,
+        "bytes": 691
+      },
+      {
+        "family": "sort.block.swap",
+        "bodies": 5,
+        "bytes": 645
+      },
+      {
+        "family": "hash_map.HashMapUnmanaged.remove",
+        "bodies": 5,
+        "bytes": 555
+      },
+      {
+        "family": "array_list.Aligned.ensureTotalCapacityPrecise",
+        "bodies": 2,
+        "bytes": 539
+      },
+      {
+        "family": "mem.Allocator.dupe",
+        "bodies": 4,
+        "bytes": 507
+      }
+    ],
+    "largest_bodies": [
+      {
+        "bytes": 42036,
+        "name": "engine.Engine(wasm_host.WasmCtx).PreparedCompositeStructural.prepareWithSubsumedFlag"
+      },
+      {
+        "bytes": 32321,
+        "name": "engine.Engine(wasm_host.WasmCtx).StagedCollectionCtx.collectNestedRowSync"
+      },
+      {
+        "bytes": 28897,
+        "name": "engine.Engine(wasm_host.WasmCtx).BranchReplacementPlan.prepareRenderTopology"
+      },
+      {
+        "bytes": 28615,
+        "name": "engine.Engine(wasm_host.WasmCtx).PreparedSourceTransaction.prepareRoots"
+      },
+      {
+        "bytes": 20925,
+        "name": "engine.Engine(wasm_host.WasmCtx).PreparedStructuralDownstream.prepareGraphRenderAndPublication"
+      },
+      {
+        "bytes": 20810,
+        "name": "engine.Engine(wasm_host.WasmCtx).PreparedStructuralDownstream.prepareSparseExternalEach"
+      },
+      {
+        "bytes": 19492,
+        "name": "engine.Engine(wasm_host.WasmCtx).StagedCollectionCtx.collectInitialEach"
+      },
+      {
+        "bytes": 14644,
+        "name": "engine.Engine(wasm_host.WasmCtx).PreparedActiveEachRows.prepareWithOverlayAndScopeClaims"
+      },
+      {
+        "bytes": 13810,
+        "name": "engine.Engine(wasm_host.WasmCtx).PreparedStructuralDownstream.prepareGraphRoutes"
+      },
+      {
+        "bytes": 13747,
+        "name": "engine.Engine(wasm_host.WasmCtx).StagedCollectionCtx.CapacityPlan.reserve"
+      }
+    ]
+  },
+  "fixtures": [
+    {
+      "name": "static-text",
+      "source": "examples/_fixtures/stable-text/main.roc",
+      "shape": "one state whose derived text never changes",
+      "raw": 717031,
+      "code": 667673,
+      "data": 46152,
+      "sections": {
+        "type": 914,
+        "function": 1169,
+        "table": 5,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 90,
+        "datacount": 2,
+        "code": 667673,
+        "data": 46152
+      },
+      "gzip": 267496,
+      "brotli": 208855,
+      "sha256": "29740eeb330ddcc36203751849ec8f0a00abce9a18b1f132149d75cebd501815",
+      "delivered": {
+        "raw": 841663,
+        "gzip": 292476,
+        "brotli": 230241
+      }
+    },
+    {
+      "name": "counter",
+      "source": "examples/_fixtures/counter/main.roc",
+      "shape": "one integer state, two unit events, one signal text",
+      "raw": 724423,
+      "code": 674680,
+      "data": 46527,
+      "sections": {
+        "type": 914,
+        "function": 1175,
+        "table": 5,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 94,
+        "datacount": 2,
+        "code": 674680,
+        "data": 46527
+      },
+      "gzip": 270348,
+      "brotli": 211498,
+      "sha256": "7223808b01d85a03b68696495dc01288ac32fcf25b9d05861491d9e23d37df9d",
+      "delivered": {
+        "raw": 849055,
+        "gzip": 295328,
+        "brotli": 232884
+      }
+    },
+    {
+      "name": "branch-replacement",
+      "source": "examples/_fixtures/branch-replacement/main.roc",
+      "shape": "one Ui.switch replacing whole subtrees",
+      "raw": 731736,
+      "code": 681234,
+      "data": 47243,
+      "sections": {
+        "type": 914,
+        "function": 1191,
+        "table": 5,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 121,
+        "datacount": 2,
+        "code": 681234,
+        "data": 47243
+      },
+      "gzip": 272496,
+      "brotli": 212952,
+      "sha256": "120a5fb34a233d7be0ded372fb976b137800bf54a66f81bb524470c27f6ac935",
+      "delivered": {
+        "raw": 856368,
+        "gzip": 297476,
+        "brotli": 234338
+      }
+    },
+    {
+      "name": "keyed-row-edits",
+      "source": "examples/_fixtures/keyed-row-edits/main.roc",
+      "shape": "one keyed list with every Rows edit reachable",
+      "raw": 1417297,
+      "code": 1340674,
+      "data": 72827,
+      "sections": {
+        "type": 1002,
+        "function": 1530,
+        "table": 5,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 230,
+        "datacount": 2,
+        "code": 1340674,
+        "data": 72827
+      },
+      "gzip": 491550,
+      "brotli": 373146,
+      "sha256": "b5a8364fc18834c18d474286775743deada653c2de98df6a36b133846df49eb3",
+      "delivered": {
+        "raw": 1541929,
+        "gzip": 516530,
+        "brotli": 394532
+      }
+    },
+    {
+      "name": "two-row-types",
+      "source": "examples/_fixtures/two-row-types/main.roc",
+      "shape": "two keyed lists with distinct item types",
+      "raw": 1424560,
+      "code": 1347382,
+      "data": 73258,
+      "sections": {
+        "type": 1055,
+        "function": 1562,
+        "table": 7,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 267,
+        "datacount": 2,
+        "code": 1347382,
+        "data": 73258
+      },
+      "gzip": 486326,
+      "brotli": 362374,
+      "sha256": "1074fd1fc46265e02df1e080700693ccafa30d39ad60ec858b4372152af3c0ca",
+      "delivered": {
+        "raw": 1549192,
+        "gzip": 511306,
+        "brotli": 383760
+      }
+    },
+    {
+      "name": "js-framework-benchmark",
+      "source": "examples/_fixtures/js-framework-benchmark/main.roc",
+      "shape": "keyed table benchmark with a package dependency",
+      "raw": 1426610,
+      "code": 1345847,
+      "data": 76909,
+      "sections": {
+        "type": 985,
+        "function": 1556,
+        "table": 7,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 277,
+        "datacount": 2,
+        "code": 1345847,
+        "data": 76909
+      },
+      "gzip": 494899,
+      "brotli": 375872,
+      "sha256": "4bf1dd72d59ff7a099c252dccf10eb341136a2ea88dc2508c299e1961f186282",
+      "delivered": {
+        "raw": 1551242,
+        "gzip": 519879,
+        "brotli": 397258
+      }
+    },
+    {
+      "name": "recipe-scaler",
+      "source": "examples/recipe-scaler/main.roc",
+      "shape": "maintained public example with wide derived fan-out",
+      "raw": 1276901,
+      "code": 1188175,
+      "data": 84627,
+      "sections": {
+        "type": 1045,
+        "function": 1577,
+        "table": 7,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 441,
+        "datacount": 2,
+        "code": 1188175,
+        "data": 84627
+      },
+      "gzip": 442428,
+      "brotli": 334641,
+      "sha256": "18fd5a4849c94d8b15a383d0cf00b0c7a85a687fd517b9b05772e1f563f64c44",
+      "delivered": {
+        "raw": 1401533,
+        "gzip": 467408,
+        "brotli": 356027
+      }
+    }
+  ],
+  "bridge": {
+    "note": "browser runtime modules shipped alongside the Wasm; kept separate from the Wasm figures",
+    "files": [
+      {
+        "name": "controlled_input_policy.mjs",
+        "raw": 2486,
+        "gzip": 623,
+        "brotli": 522,
+        "sha256": "0428ee2b633f2ce3605013e1996e596df09a48c46a09e8369a69ef3d61211be3"
+      },
+      {
+        "name": "signals.mjs",
+        "raw": 118443,
+        "gzip": 23239,
+        "brotli": 19862,
+        "sha256": "1a296b9a046ec3af405bca8e589bf3634198706085be0af0abcfd9992927e0e5"
+      },
+      {
+        "name": "wasm_memory_views.mjs",
+        "raw": 3703,
+        "gzip": 1118,
+        "brotli": 1002,
+        "sha256": "dc6a637e3c74e043f7281b549285d2e8df0e12504ea0ea4455ea93842cd6272d"
+      }
+    ],
+    "raw": 124632,
+    "gzip": 24980,
+    "brotli": 21386
+  }
+}

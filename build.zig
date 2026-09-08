@@ -44,6 +44,7 @@ pub fn build(b: *std.Build) void {
     const native_target = b.standardTargetOptions(.{});
     const metrics = b.option(bool, "metrics", "Enable runtime telemetry counters") orelse true;
     const profile = b.option(bool, "profile", "Preserve native host symbols for profiling") orelse false;
+    const strip = b.option(bool, "strip", "Strip the wasm32 browser host object (default: strip unless Debug); -Dstrip=false keeps names for size attribution");
     const test_filters = b.option([]const []const u8, "test-filter", "Skip Zig unit tests that do not match any filter") orelse &.{};
     const fuzz = b.option(bool, "fuzz", "Build AFL++ fuzz executables alongside the repro executables") orelse false;
     const use_system_afl = b.option(bool, "system-afl", "Link fuzz executables with the system AFL++ instead of the vendored one") orelse true;
@@ -89,7 +90,7 @@ pub fn build(b: *std.Build) void {
     }
 
     const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding, .abi = .none });
-    const wasm_host_step = buildAndCopyWasmHostObject(b, wasm_target, optimize, build_options_module);
+    const wasm_host_step = buildAndCopyWasmHostObject(b, wasm_target, optimize, build_options_module, strip);
     build_hosts_step.dependOn(wasm_host_step);
     build_wasm_host_step.dependOn(wasm_host_step);
 
@@ -546,8 +547,12 @@ fn buildAndCopyWasmHostObject(
     target: ResolvedTarget,
     optimize: OptimizeMode,
     build_options: *std.Build.Module,
+    strip: ?bool,
 ) *Step {
     const obj = buildWasmHostObject(b, target, optimize, build_options);
+    // The production artifact is always stripped. `-Dstrip=false` produces the
+    // named companion used for size attribution; it is never the shipped host.
+    if (strip) |explicit| obj.root_module.strip = explicit;
 
     const copy = b.addUpdateSourceFiles();
     copy.addCopyFileToSource(obj.getEmittedBin(), "platform/targets/wasm32/host.wasm");

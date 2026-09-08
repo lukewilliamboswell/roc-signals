@@ -244,6 +244,50 @@ allocations caused by one event. Exact Wasm live/peak and retained-delta
 counters remain the allocation authority; a process gauge is evidence only of
 a plateau or continuing trend.
 
+## Measure Wasm size
+
+Artifact size is gated, not just observed. The measurement command builds the
+ordinary ReleaseSmall browser host and every fixture in `test/size/fixtures.toml`
+as production Wasm (`--target=wasm32 --opt=size --no-cache`):
+
+```sh
+python3 scripts/wasm_size.py --roc-bin /path/to/roc --label before
+# make the change, then
+python3 scripts/wasm_size.py --roc-bin /path/to/roc --label after
+python3 scripts/wasm_size.py --compare .test-out/size/before/report.json .test-out/size/after/report.json
+```
+
+Each report records the source revision and whether the tree was dirty, tool
+versions, flags, per-fixture raw/code/data bytes, gzip level 9 and Brotli
+quality 11 sizes, and SHA-256 identities. The JS bridge and the total delivered
+asset figure are reported separately from the Wasm figure. Keep these fixed
+when comparing:
+
+- **Compiler.** The script refuses a compiler that does not match the selected
+  pin. A different Roc build changes sizes independently of host changes.
+- **Compression implementation.** Sizes come from Node's zlib via
+  `scripts/browser/compress_sizes.mjs`; Python's zlib produces different
+  streams at the same level, so never mix implementations across a comparison.
+- **Isolated platform copies.** Every Roc application links the host present
+  in its platform directory. The script copies `platform/` under
+  `.test-out/size/<label>/` and rebinds each fixture there, so concurrent
+  builds cannot overwrite each other's measurement input.
+
+`test/size/baseline.json` is the committed reproduction of the historical
+baseline, and `test/size/budgets.toml` holds explicit raw and gzip budgets
+derived from it with 1% headroom. `python3 scripts/test.py size` fails when a
+fixture exceeds its budget. After an accepted change, regenerate the budgets
+from the new report with `--write-budgets` and review the diff; never bless a
+larger artifact automatically, and never derive budgets from an instrumented
+or profiler build.
+
+`--symbols` additionally builds the host object with `-Dstrip=false` and
+records repeated helper families (names collapsed over generic arguments and
+anonymous suffixes) plus the largest function bodies. Roc's final link drops
+names, so this attribution reads the unstripped host object: its body sizes
+are pre-relocation and it is evidence for where to look, not a removable-byte
+estimate. The stripped production artifact size remains authoritative.
+
 ## Separate setup from the measured operation
 
 Place `(mark-metrics)` immediately before the action being measured:

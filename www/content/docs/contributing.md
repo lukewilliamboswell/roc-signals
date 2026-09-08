@@ -67,8 +67,18 @@ python3 scripts/test.py native --native always
 python3 scripts/test.py fault --native always
 python3 scripts/test.py bundle --bundle always
 python3 scripts/test.py bench --native always
+python3 scripts/test.py size --roc-bin /path/to/roc
 python3 scripts/test.py published
 ```
+
+`size` builds the ReleaseSmall browser host and the fixed fixture set in
+`test/size/fixtures.toml` as production Wasm, then fails if any fixture's raw
+or gzip size exceeds `test/size/budgets.toml`. It requires the selected
+compiler pin, because a different compiler produces different sizes. The
+budgets are explicit reviewed numbers; do not regenerate them to absorb a
+regression. `scripts/wasm_size.py` also compares two reports
+(`--compare before.json after.json`) and records attribution companions
+(`--symbols`); see `docs/profiling.md` for the measurement practice.
 
 `wasm-bench` is the manual Node/V8 performance workflow for the complete
 production-controlled path from a DOM-double event through Wasm and command

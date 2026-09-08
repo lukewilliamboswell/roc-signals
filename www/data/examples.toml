@@ -625,3 +625,33 @@ public = false
 wasm = false
 native = true
 bench = false
+
+[[examples]]
+slug = "branch-replacement"
+title = "Branch Replacement"
+description = "Internal size fixture: one Ui.switch replacing whole subtrees."
+source = "examples/_fixtures/branch-replacement/main.roc"
+public = false
+wasm = true
+native = false
+bench = false
+
+[[examples]]
+slug = "keyed-row-edits"
+title = "Keyed Row Edits"
+description = "Internal size fixture: every Rows edit reachable on one keyed list."
+source = "examples/_fixtures/keyed-row-edits/main.roc"
+public = false
+wasm = true
+native = false
+bench = false
+
+[[examples]]
+slug = "two-row-types"
+title = "Two Row Types"
+description = "Internal size fixture: two keyed lists with distinct item types."
+source = "examples/_fixtures/two-row-types/main.roc"
+public = false
+wasm = true
+native = false
+bench = false
