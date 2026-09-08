@@ -21,7 +21,7 @@ app's source and specs for the state transitions and error handling.
 The [native GUI guide](../www/content/docs/native-gui.md) describes public controls;
 [contributing](../www/content/docs/contributing.md#native-gui-platform-spike)
 covers the pinned compiler, host build, executable commands, and validation.
-The supported native target is Linux x86_64 with glibc and Wayland.
+The supported native targets are Apple Silicon macOS and Linux x86_64 with glibc and Wayland.
 
 ## Adding another example
 
@@ -36,7 +36,7 @@ Complete one coherent slice across the platform, affected hosts, documentation,
 and example. Register the app in `examples.toml`; the GUI suite discovers its
 specs and the focused fixtures under `test/gui/`. Use native specs for visible
 state and structural work, GPUI tests for layout and input dispatch, and a live
-Wayland run for rendering integration. A smoke command that injects an adapter
+native window run for rendering integration. A smoke command that injects an adapter
 event does not establish operating-system pointer, keyboard, or IME behavior.
 
 When working in parallel, isolate app slices in worktrees and assign shared API

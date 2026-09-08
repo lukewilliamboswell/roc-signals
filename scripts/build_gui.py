@@ -1,26 +1,79 @@
 #!/usr/bin/env python3
-"""Build the Linux x64 GPUI platform's app-independent link inputs."""
+"""Build the native GPUI platform's app-independent link inputs."""
 import argparse
 import json
+import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
+MACOS_FRAMEWORKS = ('AppKit', 'ApplicationServices', 'Carbon', 'CoreFoundation',
+                    'CoreGraphics', 'CoreMedia', 'CoreText', 'CoreVideo',
+                    'Foundation', 'IOKit', 'IOSurface', 'Metal', 'QuartzCore',
+                    'ScreenCaptureKit', 'Security', 'SystemConfiguration')
+
+def host_target():
+    return {('Linux', 'x86_64'): 'x64glibc',
+            ('Darwin', 'arm64'): 'arm64mac'}.get((platform.system(), platform.machine()))
+
+
+def build_environment():
+    """Select Xcode's installed Metal component while preserving explicit overrides."""
+    environment = os.environ.copy()
+    if platform.system() == 'Darwin':
+        environment.setdefault('TOOLCHAINS', 'Metal')
+    return environment
+
+
+def copy_macos_sysroot(sdk, destination):
+    """Retain SDK link stubs and their reexports, never SDK headers or binaries.
+
+    Roc discovers frameworks in targets/macos-sysroot. Resolve SDK symlinks by
+    copying their contents so an extracted package has no machine-local paths.
+    """
+    pending = [Path('System/Library/Frameworks') / (name + '.framework') / (name + '.tbd')
+               for name in MACOS_FRAMEWORKS]
+    pending += [Path('usr/lib') / name for name in ['libSystem.tbd', 'libobjc.tbd', 'libc++.tbd']]
+    copied = set()
+    while pending:
+        relative = pending.pop()
+        if relative in copied:
+            continue
+        source = sdk / relative
+        content = source.read_text()
+        if not re.search(r'^tbd-version:\s+4\s*$', content, re.MULTILINE):
+            raise ValueError(f'Expected SDK TBD version 4: {source}')
+        dest = destination / relative
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, dest)
+        copied.add(relative)
+        # A TBD can contain multiple documents defining its own reexports.
+        provided = set(re.findall(r"^install-name:\s*'([^']+)'", content, re.MULTILINE))
+        for block in re.findall(r'^reexported-libraries:\n(.*?)(?=^\S|\Z)', content, re.MULTILINE | re.DOTALL):
+            for name in re.findall(r"'(/[^']+)'", block):
+                if name in provided:
+                    continue
+                path = Path(name.lstrip('/'))
+                pending.append(path.with_suffix('.tbd') if path.suffix == '.dylib'
+                               else Path(str(path) + '.tbd'))
+
 
 def build(debug=False, jobs=2):
-    if platform.system() != 'Linux' or platform.machine() != 'x86_64':
-        raise SystemExit('The GUI spike currently supports Linux x86_64 with glibc only.')
+    target = host_target()
+    if target is None:
+        raise SystemExit('GUI builds require Linux x86_64 with glibc or Apple Silicon macOS.')
     if jobs < 1:
         raise SystemExit('GUI build jobs must be positive.')
     subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
     # Worktrees may share dependencies, but Cargo can reuse the identically named
     # local crate from another checkout. Rebuild this small crate explicitly.
     subprocess.run(['cargo', 'clean', '-p', 'signals-gpui-host'], cwd=ROOT, check=True)
-    subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, check=True)
-    dest = ROOT / 'platform-gui/targets/x64glibc'
+    subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, env=build_environment(), check=True)
+    dest = ROOT / 'platform-gui/targets' / target
     dest.mkdir(parents=True, exist_ok=True)
     # Merge object members, not archives-as-members: Roc consumes one host archive.
     metadata = json.loads(subprocess.check_output(
@@ -32,10 +85,28 @@ def build(debug=False, jobs=2):
         stage = Path(tmp)
         shutil.copyfile(rust_host, stage / 'rust.a')
         shutil.copyfile(engine, stage / 'engine.a')
-        subprocess.run(['ar', '-M'], input='CREATE libhost.a\nADDLIB rust.a\nADDLIB engine.a\nSAVE\nEND\n', text=True, cwd=stage, check=True)
+        if platform.system() == 'Darwin':
+            subprocess.run(['libtool', '-static', '-o', 'libhost.a', 'rust.a', 'engine.a'], cwd=stage, check=True)
+        else:
+            subprocess.run(['ar', '-M'], input='CREATE libhost.a\nADDLIB rust.a\nADDLIB engine.a\nSAVE\nEND\n', text=True, cwd=stage, check=True)
         shutil.copyfile(stage / 'libhost.a', dest / 'libhost.a')
     for obsolete in ['libgpui_host.a', 'libengine.a']:
         (dest / obsolete).unlink(missing_ok=True)
+    if platform.system() == 'Darwin':
+        sdk = Path(subprocess.check_output(['xcrun', '--show-sdk-path'], text=True).strip())
+        sysroot = dest.parent / 'macos-sysroot'
+        with tempfile.TemporaryDirectory(prefix='signals-sdk-') as tmp:
+            staged = Path(tmp) / 'macos-sysroot'
+            copy_macos_sysroot(sdk, staged)
+            if sysroot.exists():
+                shutil.rmtree(sysroot)
+            shutil.move(staged, sysroot)
+        (dest / 'link-inputs.json').write_text(json.dumps({
+            'sdk_version': subprocess.check_output(['xcrun', '--show-sdk-version'], text=True).strip(),
+            'sdk_build': subprocess.check_output(['xcrun', '--show-sdk-build-version'], text=True).strip(),
+            'frameworks': MACOS_FRAMEWORKS,
+        }, indent=2) + '\n')
+        return
     for name in ['crt1.o', 'crti.o', 'crtn.o']:
         source = subprocess.check_output(['cc', '-print-file-name=' + name], text=True).strip()
         if not Path(source).is_file():

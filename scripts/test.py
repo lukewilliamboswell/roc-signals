@@ -949,7 +949,9 @@ def main() -> int:
     suites = set(args.suites)
     if "all" in suites:
         suites = {"zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "native", "fault", "bundle", "bench"}
-        if gui_suite.supported_host():
+        # macOS GUI builds need full Xcode plus the optional Metal toolchain;
+        # keep them explicit so the ordinary native suite works with CLT alone.
+        if gui_suite.supported_host() and platform.system() == "Linux":
             suites.add("gui")
 
     validate_args_before_build(args, suites)

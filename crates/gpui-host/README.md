@@ -86,7 +86,9 @@ only visible ranks. Ordinary containers still enumerate direct children when
 they render, so use the virtual-list API for wide collections. Reactive row
 scopes remain mounted until ordinary collection or scope disposal removes them.
 
-This Linux x64/Wayland prototype has no cross-platform distribution guarantee.
+The supported hosts are Apple Silicon macOS and Linux x64/Wayland. Bundles
+contain the host targets built locally; they do not promise support for older
+operating systems than those used for validation.
 Bundled ELF link inputs retain system runtime dependencies through SONAMEs;
 building a bundle on a newer glibc system sets a corresponding compatibility
 floor. Release distribution needs an intentional sysroot, dependency/license
@@ -96,8 +98,9 @@ not a desktop installer or a macOS `.app` directory.
 ## Focused tests
 
 `cargo test --locked -p signals-gpui-host --lib -j2` runs adapter tests using
-GPUI's test platform without a display. It needs the xkbcommon-X11 development
+GPUI's test platform without a display. On Linux it needs the xkbcommon-X11 development
 link input (or `LIBRARY_PATH` pointing at the prepared GUI platform inputs).
+On macOS, use `TOOLCHAINS=Metal cargo test ...` to select Xcode's Metal component.
 These tests cover actual GPUI row layout, retained identity on reorder, removal,
 checked-payload ingress, and disabled/stale dispatch. The focused Roc fixture in
 `test/gui/presentation` covers the same shared-engine control workflow.

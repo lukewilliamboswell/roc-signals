@@ -178,8 +178,8 @@ callbacks must match both the captured lifetime and current event binding.
 
 Input labels are both visible captions and semantic metadata. Semantic roles,
 names, and test IDs support native specs and GPUI test selectors. They do not
-establish Linux screen-reader support: the pinned GPUI dependency does not expose
-an operating-system accessibility tree.
+establish native screen-reader support: this adapter does not publish an
+operating-system accessibility tree.
 
 `Gui.virtual_list({row_height, follow_tail}, attrs, children)` presents direct
 children at a fixed logical height. `Ui.each` retains its ordinary key and scope

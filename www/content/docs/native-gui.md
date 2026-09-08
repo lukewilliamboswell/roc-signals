@@ -11,7 +11,7 @@ The native platform runs the same Signals engine behind GPUI. Application state,
 commands, equality pruning, keyed rows, and scope disposal use the APIs described
 in [State, Events, and Forms](@/docs/state-and-events.md) and
 [Dynamic Structure](@/docs/dynamic-structure.md). Import `pf.Gui` for native
-controls. The current target is Linux x86_64 with glibc and a Wayland/GPU session;
+controls. The current targets are Apple Silicon macOS and Linux x86_64 with glibc and a Wayland/GPU session;
 see [contributing](@/docs/contributing.md#native-gui-platform-spike) for the pinned
 compiler, host build, executable build, and test commands.
 
@@ -183,7 +183,7 @@ numbers, excluding punctuation and emoji-only segments. Statistics preserve the
 original text and do not imply language-specific dictionary segmentation.
 
 Every registered app has native semantic specs. The GUI suite also runs GPUI
-adapter tests with simulated input and layout. A Wayland smoke run checks the
+adapter tests with simulated input and layout. A native window smoke run checks the
 linked renderer and adapter; an actual pointer, keyboard, and IME walkthrough
 remains a separate form of validation.
 

@@ -89,7 +89,7 @@ pub fn build(b: *std.Build) void {
     gpui_options.addOption(bool, "metrics", true);
     gpui_options.addOption(bool, "fuzz_fixtures", false);
     gpui_options.addOption(bool, "gpui_spike", true);
-    const gpui_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu });
+    const gpui_target = native_target;
     const gpui_host = buildNativeHostLib(b, gpui_target, .ReleaseSafe, gpui_options.createModule(), true);
     const gpui_install = b.addInstallFile(gpui_host.getEmittedBin(), "gui/libengine.a");
     b.step("build-gui-engine", "Build the experimental GPUI native bridge").dependOn(&gpui_install.step);

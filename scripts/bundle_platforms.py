@@ -12,6 +12,7 @@ import tempfile
 
 from build_gui import build as build_gui
 from prepare_platforms import prepare_platform
+from gui_suite import examples as gui_examples
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -44,8 +45,8 @@ def main():
             stage = Path(tmp)
             source = ROOT / ('platform-' + package)
             prepare_platform(source, stage)
-            hosts = list((source / 'targets').glob('*/*'))
-            hosts = [p for p in hosts if p.suffix in {'.a', '.lib', '.wasm', '.o', '.so', '.json'}]
+            hosts = list((source / 'targets').rglob('*'))
+            hosts = [p for p in hosts if p.is_file() and p.suffix in {'.a', '.lib', '.wasm', '.o', '.so', '.json', '.tbd'}]
             if not hosts:
                 raise SystemExit(f'No {package} hosts found; run without --no-build.')
             for path in hosts:
@@ -74,6 +75,15 @@ def main():
         counter = (ROOT / 'examples-gui/counter/main.roc').read_text().replace('../../platform-gui/main.roc', origin + '/' + manifest['gui'])
         (output / 'Counter.roc').write_text(counter)
         links += '\n<li><a href="Counter.roc">Counter.roc</a> — roc build Counter.roc</li>'
+        for app in gui_examples():
+            destination = output / 'examples-gui' / app.name
+            for source in sorted(app.rglob('*')):
+                if source.is_file() and source.suffix in {'.roc', '.scm'}:
+                    dest = destination / source.relative_to(app)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    content = source.read_text().replace('../../platform-gui/main.roc', origin + '/' + manifest['gui'])
+                    dest.write_text(content)
+            links += f'\n<li><a href="examples-gui/{app.name}/">{app.name} sources and specs</a></li>'
     (output / 'index.html').write_text('<!doctype html><title>Roc Signals platforms</title><h1>Roc Signals platforms</h1><ul>' + links + '</ul>\n')
     for name, path in manifest.items():
         print(f'{name}: {origin}/{path}', flush=True)
