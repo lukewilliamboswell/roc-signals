@@ -87,6 +87,41 @@ requiring the host to interpret application error types.
 `Signal.fake_task` or the `Http` helpers. `task_source` and
 `task_source_with_eq` are internal platform plumbing, not supported app APIs.
 
+## Native Files
+
+Import `pf.Files` with `platform-gui`. Each task factory takes a diagnostic label;
+construct it once in the owning scope and observe it with `Signal.from_task`.
+Commands start or supersede work for that declared task.
+
+| Task factory | Start command | Successful value |
+| --- | --- | --- |
+| `choose_file_task(label)` | `choose_file(task)` | `Choice` |
+| `choose_directory_task(label)` | `choose_directory(task)` | `Choice` |
+| `choose_save_path_task(label)` | `choose_save_path(task, { directory, suggested_name })` | `Choice` |
+| `read_text_task(label)` | `read_text(task, path)` | `{ path, text }` |
+| `write_text_task(label)` | `write_text(task, { path, text })` | `{ path, bytes }` |
+| `scan_task(label)` | `scan(task, root)` | `{ root, entries }` |
+
+`Choice` is `[Chosen(Str), Canceled]`. The save chooser's `directory` is
+`Home` or `At(absolute_path)`. `Home` resolves the native user's home directory;
+a missing or non-UTF-8 environment value returns `Unavailable`. Scan entries
+have `{ path, kind, bytes }`; kinds are `File`, `Directory`, `SymbolicLink`, and
+`Other`. Paths are absolute UTF-8. Byte counts describe regular files.
+
+`Signal.cancel(task)` publishes `Failed(Error.Canceled)` and invalidates late
+results. Dismissing a chooser instead produces `Done(Choice.Canceled)`.
+`Files.error_text(error)` formats errors for display. Other errors are
+`NotFound`, `PermissionDenied`, `InvalidUtf8`, `InvalidPath`, `ResourceLimit`,
+`Io`, and `Unavailable`, each with a diagnostic string.
+
+The native host retains at most 16 operations, including canceled workers or
+portal dialogs awaiting completion. Saturation returns `ResourceLimit`. Paths
+are at most 4,096 bytes; text reads and writes are at most 1 MiB. A scan returns
+one complete snapshot of at most 10,000 entries, 64 levels, and 4 MiB of aggregate
+entry paths. Symlinks are reported without traversal. Limits reject the operation
+rather than truncating results. Writes replace the destination through a temporary
+sibling and rename; cancellation cannot undo an already committed rename.
+
 ## Ui
 
 | Function | Type | Purpose |
