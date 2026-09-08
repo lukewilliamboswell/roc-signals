@@ -74,7 +74,7 @@ def main():
         counter = (ROOT / 'examples-gui/counter/main.roc').read_text().replace('../../platform-gui/main.roc', origin + '/' + manifest['gui'])
         (output / 'Counter.roc').write_text(counter)
         links += '\n<li><a href="Counter.roc">Counter.roc</a> — roc build Counter.roc</li>'
-    (output / 'index.html').write_text('<!doctype html><title>Roc Signals platforms</title><h1>Roc Signals platforms</h1><ul>' + links + '</ul>')
+    (output / 'index.html').write_text('<!doctype html><title>Roc Signals platforms</title><h1>Roc Signals platforms</h1><ul>' + links + '</ul>\n')
     for name, path in manifest.items():
         print(f'{name}: {origin}/{path}', flush=True)
     if args.serve:
