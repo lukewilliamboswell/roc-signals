@@ -14,5 +14,13 @@ runs:
       with:
         version: nightly-new-compiler
         nightly-tag: ${{ steps.pin.outputs.version }}
+    - name: Keep downloaded compiler outside release source
+      shell: bash
+      run: |
+        roc_install_dir="$(cd "$(dirname "$(command -v roc)")" && pwd)"
+        test "$(dirname "$roc_install_dir")" = "$GITHUB_WORKSPACE"
+        test ! -e "$RUNNER_TEMP/roc-toolchain"
+        mv "$roc_install_dir" "$RUNNER_TEMP/roc-toolchain"
+        echo "$RUNNER_TEMP/roc-toolchain" >> "$GITHUB_PATH"
     - shell: bash
       run: python3 scripts/toolchain.py --check --roc-bin roc
