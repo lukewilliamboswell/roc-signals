@@ -10316,27 +10316,14 @@ pub fn Engine(comptime Ctx: type) type {
                     if (!self.isSuppressedRenderParent(parent_id.raw())) touched.putAssumeCapacity(parent_id.raw(), {});
                 }
 
-                const active_event_count = self.engine.active_stream.events.items.len;
-                const final_event_indexes = allocator.alloc(?usize, active_event_count) catch return error.OutOfMemory;
-                defer allocator.free(final_event_indexes);
-                @memset(final_event_indexes, null);
-                const surviving_event_originals = allocator.alloc(usize, active_event_count) catch return error.OutOfMemory;
-                defer allocator.free(surviving_event_originals);
-                for (surviving_event_originals, 0..) |*original, index| original.* = index;
-                var surviving_event_len = active_event_count;
-                for (self.removal.?.descriptor_indexes.event_indexes.items) |index| {
-                    if (index >= surviving_event_len) return error.ResourceLimit;
-                    surviving_event_len -= 1;
-                    surviving_event_originals[index] = surviving_event_originals[surviving_event_len];
-                }
+                var event_reindex = try @import("descriptor_reindex.zig").Plan.prepare(allocator, self.engine.active_stream.events.items.len, self.removal.?.descriptor_indexes.event_indexes.items);
+                defer event_reindex.deinit();
                 var moved_fixed_event_count: usize = 0;
                 var moved_named_elem_ids = std.AutoHashMapUnmanaged(u64, void).empty;
                 defer moved_named_elem_ids.deinit(allocator);
-                moved_named_elem_ids.ensureTotalCapacity(allocator, std.math.cast(u32, surviving_event_len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                for (surviving_event_originals[0..surviving_event_len], 0..) |original, final_index| {
-                    final_event_indexes[original] = final_index;
-                    if (original == final_index) continue;
-                    const desc = self.engine.active_stream.events.items[original];
+                moved_named_elem_ids.ensureTotalCapacity(allocator, std.math.cast(u32, event_reindex.moves.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                for (event_reindex.moves) |move| {
+                    const desc = self.engine.active_stream.events.items[move.original];
                     if (desc.fixedKind() != null) {
                         moved_fixed_event_count = std.math.add(usize, moved_fixed_event_count, 1) catch return error.ResourceLimit;
                     } else moved_named_elem_ids.putAssumeCapacity(desc.elem_id.raw(), {});
@@ -10404,7 +10391,14 @@ pub fn Engine(comptime Ctx: type) type {
                 const custom_attr_wire_edits = std.math.add(usize, old_custom_count, std.math.add(usize, std.math.add(usize, self.replacement_stream.static_custom_text_attrs.items.len, self.replacement_stream.static_custom_bool_attrs.items.len) catch return error.ResourceLimit, std.math.add(usize, self.replacement_stream.signal_custom_text_attrs.items.len, std.math.add(usize, self.replacement_stream.signal_optional_custom_text_attrs.items.len, self.replacement_stream.signal_custom_bool_attrs.items.len) catch return error.ResourceLimit) catch return error.ResourceLimit) catch return error.ResourceLimit) catch return error.ResourceLimit;
                 var next_named_event_count: usize = 0;
                 for (self.replacement_stream.events.items) |event| next_named_event_count = std.math.add(usize, next_named_event_count, @intFromBool(event.fixedKind() == null)) catch return error.ResourceLimit;
-                for (surviving_event_originals[0..surviving_event_len]) |original| next_named_event_count = std.math.add(usize, next_named_event_count, @intFromBool(self.engine.active_stream.events.items[original].fixedKind() == null)) catch return error.ResourceLimit;
+                var moved_named_count: usize = 0;
+                var moved_named_counts = moved_named_elem_ids.keyIterator();
+                while (moved_named_counts.next()) |elem_id| {
+                    for (self.engine.active_stream.namedEventIndices(ids.ElemId.fromRaw(elem_id.*))) |original| {
+                        if (event_reindex.finalIndex(original) != null) moved_named_count = std.math.add(usize, moved_named_count, 1) catch return error.ResourceLimit;
+                    }
+                }
+                next_named_event_count = std.math.add(usize, next_named_event_count, moved_named_count) catch return error.ResourceLimit;
                 const named_event_wire_edits = std.math.add(usize, std.math.add(usize, old_named_event_count, moved_old_named_event_count) catch return error.ResourceLimit, next_named_event_count) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, old_custom_count) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.static_custom_text_attrs.items.len) catch return error.ResourceLimit;
@@ -10414,8 +10408,9 @@ pub fn Engine(comptime Ctx: type) type {
                 wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.signal_custom_bool_attrs.items.len) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.events.items.len) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, old_named_event_count) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, moved_old_named_event_count) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, moved_fixed_event_count) catch return error.ResourceLimit;
-                wire_commands = std.math.add(usize, wire_commands, surviving_event_len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, moved_named_count) catch return error.ResourceLimit;
                 var fixed_event_count: usize = 0;
                 for (self.replacement_stream.events.items) |event| fixed_event_count = std.math.add(usize, fixed_event_count, @intFromBool(event.fixedKind() != null)) catch return error.ResourceLimit;
                 fixed_event_count = std.math.add(usize, fixed_event_count, moved_fixed_event_count) catch return error.ResourceLimit;
@@ -10552,9 +10547,9 @@ pub fn Engine(comptime Ctx: type) type {
                         .payload_descriptor = desc.payload_descriptor,
                     }) catch |err| return renderSpliceError(err);
                 };
-                for (self.engine.active_stream.events.items, 0..) |desc, original_index| {
-                    const final_index = final_event_indexes[original_index] orelse continue;
-                    if (final_index == original_index) continue;
+                for (event_reindex.moves) |move| {
+                    const desc = self.engine.active_stream.events.items[move.original];
+                    const final_index = move.final;
                     if (desc.fixedKind()) |kind| splice.addFixedEvent(&self.engine.render_cache, desc.elem_id, kind, .{
                         .event_id = ids.EventId.fromRaw(std.math.add(u64, std.math.cast(u64, final_index) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit),
                         .delivery = .{ .requested = desc.delivery_request },
@@ -10565,9 +10560,9 @@ pub fn Engine(comptime Ctx: type) type {
                 while (moved_named_iterator.next()) |elem_id| {
                     var named: shared_buffer.List(render_cache_mod.NamedEvent) = .empty;
                     defer named.deinit(allocator);
-                    for (self.engine.active_stream.events.items, 0..) |desc, original_index| {
-                        const final_index = final_event_indexes[original_index] orelse continue;
-                        if (desc.elem_id.raw() != elem_id.*) continue;
+                    for (self.engine.active_stream.namedEventIndices(ids.ElemId.fromRaw(elem_id.*))) |original_index| {
+                        const desc = self.engine.active_stream.events.items[original_index];
+                        const final_index = event_reindex.finalIndex(original_index) orelse continue;
                         const binding = desc.named() orelse continue;
                         named.append(allocator, .{ .name = binding.name, .binding = .{
                             .event_id = ids.EventId.fromRaw(std.math.add(u64, std.math.cast(u64, final_index) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit),

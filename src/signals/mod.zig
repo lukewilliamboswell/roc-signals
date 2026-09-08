@@ -13,6 +13,7 @@ pub const boundary = @import("boundary.zig");
 pub const callable_roles = @import("callable_roles.zig");
 pub const collection_budget = @import("collection_budget.zig");
 pub const collection_plan = @import("collection_plan.zig");
+pub const descriptor_reindex = @import("descriptor_reindex.zig");
 pub const descriptor_stream = @import("descriptor_stream.zig");
 pub const each_runtime = @import("each_runtime.zig");
 pub const each_collection = @import("each_collection.zig");
@@ -60,6 +61,7 @@ comptime {
     std.testing.refAllDecls(callable_roles);
     std.testing.refAllDecls(collection_budget);
     std.testing.refAllDecls(collection_plan);
+    std.testing.refAllDecls(descriptor_reindex);
     std.testing.refAllDecls(descriptor_stream);
     std.testing.refAllDecls(each_runtime);
     std.testing.refAllDecls(each_collection);
