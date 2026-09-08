@@ -1,0 +1,18 @@
+(test "Chooser dismissal and typed scan failures preserve the last dataset"
+  (steps
+    (shortcut (test-id "explorer") "o" 1)
+    (resolve-task "folder-choice" "6:files18:canceled")
+    (expect-visible (text "Folder selection canceled."))
+    (expect-visible (text "Sample workspace"))
+    (click (role button :name "Choose folder"))
+    (shortcut (test-id "explorer") "Escape" 0)
+    (expect-canceled-task "folder-choice" 1)
+    (expect-visible (text "Canceled"))
+    (resolve-stale-task "folder-choice" "late chooser result is ignored")
+    (click (role button :name "Choose folder"))
+    (resolve-task "folder-choice" "6:files16:chosen12:/tmp/project")
+    (reject-task "folder-scan" "6:files117:permission-denied12:/tmp/private")
+    (expect-visible (text "Permission denied: /tmp/private"))
+    (expect-visible (text "Sample workspace"))
+    (expect-visible (text "16 matching entries"))
+  ))
