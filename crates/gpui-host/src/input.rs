@@ -55,6 +55,7 @@ pub struct TextInput {
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
     multiline: bool,
+    fill_height: bool,
     disabled: bool,
     last_layout: Option<TextLayout>,
     last_bounds: Option<Bounds<Pixels>>,
@@ -84,6 +85,7 @@ impl TextInput {
             selection_reversed: false,
             marked_range: None,
             multiline: false,
+            fill_height: false,
             disabled: false,
             last_layout: None,
             last_bounds: None,
@@ -105,6 +107,20 @@ impl TextInput {
         input.multiline = true;
         input.placeholder = "Start writing…".into();
         input
+    }
+
+    /// Uses the field's allocated height without recreating its editor. Auto
+    /// presentation keeps the multiline fallback of 320 logical pixels.
+    pub fn set_fill_height(&mut self, fill_height: bool, cx: &mut Context<Self>) {
+        if self.fill_height != fill_height {
+            self.fill_height = fill_height;
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn viewport_bounds_for_test(&self) -> Bounds<Pixels> {
+        self.scroll.bounds()
     }
 
     /// Prevents user edits while retaining this editor's identity and selection.
@@ -961,7 +977,13 @@ impl Render for TextInput {
             .flex_col()
             .w_full()
             .min_w_0()
-            .h(if self.multiline { px(320.) } else { px(38.) })
+            .min_h_0()
+            .when(self.multiline && self.fill_height, |element| {
+                element.h_full()
+            })
+            .when(!(self.multiline && self.fill_height), |element| {
+                element.h(if self.multiline { px(320.) } else { px(38.) })
+            })
             .overflow_scroll()
             .track_scroll(&self.scroll)
             .p(px(4.))

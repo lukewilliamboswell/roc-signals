@@ -319,6 +319,8 @@ Gui := [].{
 		Html.text_input_attrs(props.label, props.value, lower_attrs(1, style_default, attrs), message)
 
 	## Edit controlled text with hard line breaks and a retained selection.
+	## An explicit height includes caption and padding; the editor fills the rest.
+	## Auto height retains a 320-pixel editing viewport.
 	textarea : { label : Str, value : Signal(Str) }, List(Attr), Msg -> Elem
 	textarea = |props, attrs, message|
 		Html.textarea_attrs(props.label, props.value, lower_attrs(1, style_default, attrs), message)

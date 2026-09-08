@@ -344,6 +344,7 @@ mod tests {
 
     fn runtime() -> Runtime {
         Runtime {
+            unfocused_keys: None,
             engine: Engine::test_boundary(),
             effects: crate::effects::Manager::default(),
             dialogs: Dialogs::default(),

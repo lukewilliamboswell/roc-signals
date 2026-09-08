@@ -60,6 +60,9 @@ impl Render for NodeView {
             .flex_col()
             .gap_2()
             .debug_selector(|| self.node.test_id.clone());
+        if self.node.tag == "root" {
+            element = element.size_full();
+        }
         element = drag::install(element, &self.node, cx.entity_id(), self.runtime.clone());
         if self.focus_subscription.is_none() && self.focus_target(cx).is_some() {
             let focus = self.focus_target(cx).unwrap();
@@ -186,12 +189,20 @@ impl Render for NodeView {
             element = element.child(self.node.text.clone());
         }
         if let Some(input) = &self.input {
+            let constrained = self.node.tag == "textarea"
+                && self.node.style.is_some_and(|style| style.height_kind != 0);
+            if constrained {
+                element = element.min_h_0();
+            }
             element = element.child(self.node.label.clone());
             element = element.child(
                 div()
                     .bg(rgb(0xf4f4f0))
                     .text_color(rgb(0x151515))
                     .p_2()
+                    .when(constrained, |element| {
+                        element.flex().flex_col().flex_1().min_h_0()
+                    })
                     .child(input.clone()),
             );
         }
@@ -296,6 +307,7 @@ fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div
 }
 
 struct Runtime {
+    unfocused_keys: Option<Subscription>,
     engine: Engine,
     effects: effects::Manager,
     dialogs: dialog::Dialogs,
@@ -336,6 +348,7 @@ impl Runtime {
         let engine = Engine::open();
         let initial = engine.changes();
         let mut runtime = Self {
+            unfocused_keys: None,
             engine,
             effects: crate::effects::Manager::default(),
             dialogs: crate::dialog::Dialogs::default(),
@@ -511,6 +524,11 @@ impl Runtime {
                     input.update(cx, |input, cx| {
                         input.set_value(&node.value, cx);
                         input.set_disabled(node.disabled, cx);
+                        input.set_fill_height(
+                            node.tag == "textarea"
+                                && node.style.is_some_and(|style| style.height_kind != 0),
+                            cx,
+                        );
                     });
                 }
                 view.node = node.clone();
@@ -543,6 +561,34 @@ impl Drop for Runtime {
 
 impl Render for Runtime {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.unfocused_keys.is_none() {
+            // GPUI dispatches an unfocused window through its frame root, outside
+            // the rendered div path. This one lifetime-owned subscription only
+            // handles that case; focused controls keep ordinary event precedence.
+            let handle = window.window_handle();
+            let runtime = cx.entity().downgrade();
+            self.unfocused_keys = Some(cx.intercept_keystrokes(move |event, window, cx| {
+                if window.window_handle() != handle || window.focused(cx).is_some() {
+                    return;
+                }
+                let Some(reverse) = tab_direction(&event.keystroke) else {
+                    return;
+                };
+                let Some(runtime) = runtime.upgrade() else {
+                    return;
+                };
+                if !runtime.read(cx).dialogs.active.is_empty() {
+                    return;
+                }
+                if reverse {
+                    window.focus_prev();
+                } else {
+                    window.focus_next();
+                }
+                window.prevent_default();
+                cx.stop_propagation();
+            }));
+        }
         self.prepare_dialog_focus(window, cx);
         let mut root = div()
             .id("signals-root")
@@ -550,12 +596,24 @@ impl Render for Runtime {
             .relative()
             .bg(rgb(0x16252c))
             .text_color(rgb(0xeeeeea))
+            .on_key_down(cx.listener(|runtime, event: &KeyDownEvent, window, cx| {
+                if let Some(reverse) = tab_direction(&event.keystroke)
+                    && runtime.dialogs.active.is_empty()
+                {
+                    if reverse {
+                        window.focus_prev();
+                    } else {
+                        window.focus_next();
+                    }
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            }))
             .child(
                 div()
                     .id("signals-content")
                     .size_full()
                     .overflow_y_scroll()
-                    .p_6()
                     .children(self.roots.iter().map(|root| AnyView::from(root.clone()))),
             );
         for dialog in &self.dialogs.active {
@@ -584,6 +642,15 @@ impl Render for Runtime {
         }
         root
     }
+}
+
+fn tab_direction(key: &Keystroke) -> Option<bool> {
+    (key.key == "tab"
+        && !key.modifiers.control
+        && !key.modifiers.alt
+        && !key.modifiers.platform
+        && !key.modifiers.function)
+        .then_some(key.modifiers.shift)
 }
 
 unsafe extern "C" {
@@ -618,7 +685,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
             }
         })
         .detach();
-        let bounds = Bounds::centered(None, size(px(740.), px(900.)), cx);
+        let bounds = Bounds::centered(None, size(px(1200.), px(820.)), cx);
         let window = cx
             .open_window(
                 WindowOptions {
@@ -693,11 +760,13 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{Engine, Node, Payload, Runtime, bridge};
+    use gpui::Focusable;
     use gpui::{AppContext, TestAppContext, point, px, size};
     use std::{cell::Cell, collections::HashMap, rc::Rc};
 
     fn runtime() -> Runtime {
         Runtime {
+            unfocused_keys: None,
             engine: Engine::test_boundary(),
             effects: crate::effects::Manager::default(),
             dialogs: crate::dialog::Dialogs::default(),
@@ -960,6 +1029,173 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[gpui::test]
+    fn ordinary_tab_traversal_skips_disabled_and_defers_to_focused_shortcuts(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(super::input::bind_keys);
+        cx.update(super::controls::bind_keys);
+        let (runtime, cx) = cx.add_window_view(|_, cx| {
+            let mut runtime = runtime();
+            let mut first = node(1, "button", &[]);
+            first.text = "First".into();
+            first.click = 21;
+            let mut disabled = node(2, "button", &[]);
+            disabled.text = "Disabled".into();
+            disabled.click = 22;
+            disabled.disabled = true;
+            let mut editor = node(3, "input", &[]);
+            editor.input = 23;
+            editor.value = "draft".into();
+            let mut last = node(4, "button", &[]);
+            last.text = "Last".into();
+            last.click = 24;
+            runtime.apply(
+                vec![
+                    node(0, "root", &[1, 2, 3, 4]),
+                    first,
+                    disabled,
+                    editor,
+                    last,
+                ],
+                cx,
+            );
+            runtime
+        });
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| {
+            assert!(runtime.read(cx).nodes[&1].read(cx).focus.is_focused(window));
+        });
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| {
+            let editor = runtime.read(cx).nodes[&3]
+                .read(cx)
+                .input
+                .as_ref()
+                .unwrap()
+                .read(cx);
+            assert!(editor.focus_handle(cx).is_focused(window));
+        });
+        cx.simulate_keystrokes("ctrl-a");
+        assert!(Engine::take_test_event().is_none());
+        cx.simulate_keystrokes("shift-tab enter");
+        assert_eq!(Engine::take_test_event(), Some((21, 0, String::new(), 0)));
+        runtime.update(cx, |runtime, cx| {
+            let mut first = runtime.nodes[&1].read(cx).node.clone();
+            first.shortcuts = vec![super::shortcut::Shortcut {
+                event: 31,
+                key: 258,
+                modifiers: 0,
+            }];
+            runtime.apply(vec![first], cx);
+        });
+        cx.simulate_keystrokes("tab");
+        assert_eq!(Engine::take_test_event(), Some((31, 0, String::new(), 0)));
+        cx.update(|window, cx| {
+            assert!(runtime.read(cx).nodes[&1].read(cx).focus.is_focused(window));
+        });
+        cx.simulate_keystrokes("ctrl-tab");
+        cx.update(|window, cx| {
+            assert!(runtime.read(cx).nodes[&1].read(cx).focus.is_focused(window));
+        });
+        cx.simulate_keystrokes("shift-tab");
+        cx.update(|window, cx| {
+            assert!(runtime.read(cx).nodes[&4].read(cx).focus.is_focused(window));
+        });
+        runtime.update(cx, |runtime, cx| {
+            let mut removed = runtime.nodes[&4].read(cx).node.clone();
+            removed.active = false;
+            runtime.apply(vec![node(0, "root", &[1, 2, 3]), removed], cx);
+        });
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| {
+            assert!(runtime.read(cx).nodes[&1].read(cx).focus.is_focused(window));
+        });
+    }
+
+    #[gpui::test]
+    fn textarea_dimensions_constrain_the_retained_editing_viewport(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let runtime = cx.new(|cx| {
+            let mut runtime = runtime();
+            let mut editor = node(1, "textarea", &[]);
+            editor.test_id = "sized-editor".into();
+            editor.label = "Note text".into();
+            editor.input = 42;
+            editor.value = "first\nsecond".into();
+            editor.style = Some(bridge::Style {
+                direction: 1,
+                gap: 8,
+                width_kind: 1,
+                height_kind: 2,
+                height: 160,
+                ..Default::default()
+            });
+            let mut footer = node(2, "button", &[]);
+            footer.test_id = "after-editor".into();
+            footer.text = "Save".into();
+            let mut root = node(0, "root", &[1, 2]);
+            root.style = Some(bridge::Style {
+                direction: 1,
+                gap: 8,
+                width_kind: 1,
+                height_kind: 1,
+                ..Default::default()
+            });
+            runtime.apply(vec![root, editor, footer], cx);
+            runtime
+        });
+        let original = runtime.read_with(cx, |runtime, cx| {
+            runtime.nodes[&1].read(cx).input.clone().unwrap()
+        });
+        let draw = |cx: &mut gpui::VisualTestContext, height| {
+            cx.draw(point(px(0.), px(0.)), size(px(400.), px(height)), |_, _| {
+                runtime.clone()
+            });
+        };
+        draw(cx, 400.);
+        let outer = cx.debug_bounds("sized-editor").unwrap();
+        let footer = cx.debug_bounds("after-editor").unwrap();
+        let viewport = original.read_with(cx, |input, _| input.viewport_bounds_for_test());
+        assert_eq!(outer.size.height, px(160.));
+        assert!(viewport.size.height > px(80.) && viewport.size.height < px(160.));
+        assert!(viewport.bottom() <= outer.bottom());
+        assert!(footer.top() >= outer.bottom());
+
+        runtime.update(cx, |runtime, cx| {
+            let mut editor = runtime.nodes[&1].read(cx).node.clone();
+            editor.style.as_mut().unwrap().height_kind = 1;
+            runtime.apply(vec![editor], cx);
+        });
+        draw(cx, 400.);
+        let large = original.read_with(cx, |input, _| input.viewport_bounds_for_test());
+        draw(cx, 260.);
+        let small = original.read_with(cx, |input, _| input.viewport_bounds_for_test());
+        assert!(small.size.height > px(80.));
+        assert!(large.size.height > small.size.height + px(100.));
+        let footer = cx.debug_bounds("after-editor").unwrap();
+        assert!(footer.bottom() <= px(260.));
+
+        runtime.update(cx, |runtime, cx| {
+            let mut editor = runtime.nodes[&1].read(cx).node.clone();
+            editor.style.as_mut().unwrap().height_kind = 0;
+            runtime.apply(vec![editor], cx);
+            assert_eq!(
+                runtime.nodes[&1]
+                    .read(cx)
+                    .input
+                    .as_ref()
+                    .unwrap()
+                    .entity_id(),
+                original.entity_id()
+            );
+        });
+        draw(cx, 600.);
+        let auto = original.read_with(cx, |input, _| input.viewport_bounds_for_test());
+        assert_eq!(auto.size.height, px(320.));
+        assert!(Engine::take_test_event().is_none());
     }
 
     #[gpui::test]

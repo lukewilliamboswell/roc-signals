@@ -45,6 +45,15 @@ this validated record along with primitive fields and borrowed UTF-8 data before
 any next engine operation. Rust applies the supplied layout and presentation
 properties with GPUI. Selected state adds the standard selection border, and
 disabled state applies reduced opacity and refuses input dispatch.
+The semantic root fills the host viewport, and apps own outer padding. Explicit
+textarea heights constrain the complete field; the retained editor fills the
+space after caption and padding. Auto presentation retains a 320-pixel editor.
+
+Ordinary Tab and Shift-Tab use GPUI's committed tab-stop index after focused
+handlers decline the key. A Runtime owns one window-filtered GPUI subscription
+for Tab when no control is focused, because that dispatch path does not enter
+the rendered div. The subscription is released with the Runtime and never
+handles other modified Tab chords or an active modal dialog.
 
 `signals_dispatch` accepts event ID, payload kind, UTF-8 pointer/length, and a
 boolean word. Kind 0 is unit, kind 1 is text, kind 2 is checked boolean; boolean

@@ -28,6 +28,8 @@ radius, font size, and overflow. Lengths are `Auto`, `Fill`, or `Px(value)`;
 colors are `Default` or `Rgb(value)`. Zero font size and default colors inherit.
 These are native presentation properties. Semantic labels, test IDs, selected
 state, and enabled state are separate attributes.
+The initial window is 1200 × 820 logical pixels. Apps own their outer padding;
+the host adds none.
 
 | Control | Inputs |
 | --- | --- |
@@ -42,8 +44,14 @@ Text controls are controlled: their value comes from a signal and committed
 edits enter the corresponding message handler. Native editors retain selection,
 clipboard behavior, and IME preedit locally. `textarea` preserves hard line
 breaks; soft wrapping is not implemented. Text input is bounded at 1 MiB.
+An explicit textarea height (`Px` or `Fill`) includes its caption and padding and
+constrains the retained editing viewport. `Auto` keeps a 320-pixel editor. Use
+`Fill` inside a container with a defined height to grow and shrink with its space.
 `Gui.enabled_s` and `Gui.disabled_s` change availability while preserving the
 control's identity.
+Tab and Shift-Tab traverse enabled controls in native layout order. Focused
+control actions and declared shortcuts run first; modal dialogs own their Tab
+navigation while open.
 
 Use `Gui.test_id` for stable spec locators and `Gui.label` for semantic names.
 Labels do not establish native screen-reader support, which is not implemented.
