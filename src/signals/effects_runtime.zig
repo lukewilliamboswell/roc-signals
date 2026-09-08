@@ -113,7 +113,73 @@ pub fn activeIntervalRecordByPeriod(active_signal_graph: anytype, period_ms: u64
     return found;
 }
 
-/// Appends pending task using capacity that must already satisfy the caller's transaction contract.
+/// Owns an unpublished task registration. Preparation copies both payloads and
+/// reserves registry capacity without consuming a request id or retaining a
+/// token until all allocations succeed. The caller must prepare host publication
+/// and source propagation before canceling an existing request and committing.
+pub const PreparedPendingTask = struct {
+    task: ?PendingTask,
+
+    /// Borrows the inputs and reserves one additional registry slot. Refusal
+    /// leaves task membership and the request-id sequence unchanged; successful
+    /// preparation owns independent buffers and one token reference.
+    pub fn prepare(
+        allocator: std.mem.Allocator,
+        tasks: *std.ArrayListUnmanaged(PendingTask),
+        next_task_request_id: u64,
+        owner_scope_id: ids.ScopeId,
+        task_token: HostSignalToken,
+        task_name: []const u8,
+        request: []const u8,
+    ) std.mem.Allocator.Error!PreparedPendingTask {
+        if (next_task_request_id == std.math.maxInt(u64)) @panic("host task request id overflowed");
+        const task_name_copy = try allocator.dupe(u8, task_name);
+        errdefer allocator.free(task_name_copy);
+        const request_copy = try allocator.dupe(u8, request);
+        errdefer allocator.free(request_copy);
+        try tasks.ensureUnusedCapacity(allocator, 1);
+        return .{ .task = .{
+            .request_id = ids.TaskRequestId.fromRaw(next_task_request_id),
+            .owner_scope_id = owner_scope_id,
+            .task_token = retained_values.retainHostSignalToken(task_token),
+            .task_name = task_name_copy,
+            .request = request_copy,
+        } };
+    }
+
+    /// Transfers the complete registration into the reserved slot without
+    /// allocation. No intervening task start may consume the prepared id.
+    pub fn commit(self: *PreparedPendingTask, tasks: *std.ArrayListUnmanaged(PendingTask), next_task_request_id: *u64) ids.TaskRequestId {
+        const task = self.task orelse @panic("prepared task committed twice");
+        if (task.request_id.raw() != next_task_request_id.*) @panic("prepared task request id changed before commit");
+        tasks.appendAssumeCapacity(task);
+        next_task_request_id.* += 1;
+        self.task = null;
+        return task.request_id;
+    }
+
+    /// Consumes the occurrence id without inserting a live registration when
+    /// the prepared transition also disposes its owner. The caller owns the
+    /// returned task until its start/cancel publication and must deinitialize it.
+    pub fn commitRetired(self: *PreparedPendingTask, next_task_request_id: *u64) PendingTask {
+        const task = self.task orelse @panic("prepared task committed twice");
+        if (task.request_id.raw() != next_task_request_id.*) @panic("prepared task request id changed before commit");
+        next_task_request_id.* += 1;
+        self.task = null;
+        return task;
+    }
+
+    /// Aborts an unpublished registration, or does nothing after its ownership
+    /// has transferred to the live registry. It never cancels a host task.
+    pub fn deinit(self: *PreparedPendingTask, allocator: std.mem.Allocator, roc_host: *abi.RocHost) void {
+        if (self.task) |*task| deinitPendingTask(allocator, roc_host, task);
+        self.task = null;
+    }
+};
+
+/// Prepares and commits a registry entry. This convenience boundary treats
+/// allocation refusal as fatal; transactional callers must keep the prepared
+/// registration unpublished until their other fallible preparation succeeds.
 pub fn appendPendingTask(
     allocator: std.mem.Allocator,
     tasks: *std.ArrayListUnmanaged(PendingTask),
@@ -124,29 +190,9 @@ pub fn appendPendingTask(
     task_name: []const u8,
     request: []const u8,
 ) u64 {
-    if (next_task_request_id.* == std.math.maxInt(u64)) @panic("host task request id overflowed");
-    const request_id = next_task_request_id.*;
-    next_task_request_id.* += 1;
-
-    const task_name_copy = allocator.dupe(u8, task_name) catch @panic("out of memory");
-    const request_copy = allocator.dupe(u8, request) catch {
-        allocator.free(task_name_copy);
-        @panic("out of memory");
-    };
-    const owned_task_token = retained_values.retainHostSignalToken(task_token);
-    tasks.append(allocator, .{
-        .request_id = ids.TaskRequestId.fromRaw(request_id),
-        .owner_scope_id = owner_scope_id,
-        .task_token = owned_task_token,
-        .task_name = task_name_copy,
-        .request = request_copy,
-    }) catch {
-        retained_values.releaseHostSignalToken(owned_task_token, roc_host);
-        allocator.free(task_name_copy);
-        allocator.free(request_copy);
-        @panic("out of memory");
-    };
-    return request_id;
+    var prepared = PreparedPendingTask.prepare(allocator, tasks, next_task_request_id.*, owner_scope_id, task_token, task_name, request) catch @panic("out of memory");
+    defer prepared.deinit(allocator, roc_host);
+    return prepared.commit(tasks, next_task_request_id).raw();
 }
 
 /// Appends and start pending task using capacity that must already satisfy the caller's transaction contract.
@@ -683,6 +729,68 @@ test "pending task membership is the active lifecycle state" {
     try std.testing.expectEqual(@as(u64, 2), pendingTaskCountByName(tasks.items, "load"));
     try std.testing.expectEqual(@as(?usize, 0), pendingTaskIndexByRequestId(tasks.items, ids.TaskRequestId.fromRaw(10)));
     try std.testing.expectEqual(@as(?usize, 1), pendingTaskIndexByRequestId(tasks.items, ids.TaskRequestId.fromRaw(11)));
+}
+
+test "pending task preparation refusal preserves membership and request ids" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const token = testSignalToken(&roc_host, 1);
+    defer retained_values.releaseHostSignalToken(token, &roc_host);
+
+    // Empty-registry preparation has three allocations: name, request, and
+    // registry storage. Cross every refusal with retry and unpublished abort.
+    for (1..4) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        const allocator = fault.allocator();
+        var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+        defer tasks.deinit(allocator);
+        defer for (tasks.items) |*task| deinitPendingTask(allocator, &roc_host, task);
+        var next_request_id: u64 = 100;
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload"));
+        try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+        try std.testing.expectEqual(@as(usize, 0), tasks.items.len);
+        try std.testing.expectEqual(@as(u64, 100), next_request_id);
+
+        fault.configure(null);
+        var aborted = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload");
+        fault.configure(1);
+        aborted.deinit(allocator, &roc_host);
+        try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+        try std.testing.expectEqual(@as(usize, 0), tasks.items.len);
+        try std.testing.expectEqual(@as(u64, 100), next_request_id);
+
+        fault.configure(null);
+        var retry = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload");
+        fault.configure(1);
+        try std.testing.expectEqual(ids.TaskRequestId.fromRaw(100), retry.commit(&tasks, &next_request_id));
+        retry.deinit(allocator, &roc_host);
+        try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+        try std.testing.expectEqual(@as(u64, 101), next_request_id);
+        try std.testing.expectEqualStrings("payload", tasks.items[0].request);
+    }
+}
+
+test "aborting a replacement task leaves the old request live" {
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const token = testSignalToken(&roc_host, 1);
+    defer retained_values.releaseHostSignalToken(token, &roc_host);
+    const allocator = std.testing.allocator;
+    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    defer tasks.deinit(allocator);
+    var next_request_id: u64 = 100;
+    _ = appendPendingTask(allocator, &tasks, &next_request_id, &roc_host, ids.ScopeId.fromRaw(10), token, "load", "old");
+    defer deinitPendingTask(allocator, &roc_host, &tasks.items[0]);
+    var replacement = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "new");
+    try std.testing.expectEqual(@as(usize, 1), tasks.items.len);
+    try std.testing.expectEqualStrings("old", tasks.items[0].request);
+    replacement.deinit(allocator, &roc_host);
+    try std.testing.expectEqual(@as(usize, 1), tasks.items.len);
+    try std.testing.expectEqual(ids.TaskRequestId.fromRaw(100), tasks.items[0].request_id);
+    try std.testing.expectEqualStrings("old", tasks.items[0].request);
+    try std.testing.expectEqual(@as(u64, 101), next_request_id);
 }
 
 test "effects runtime starts clears and cancels pending tasks by token" {

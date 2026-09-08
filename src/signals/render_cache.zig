@@ -59,7 +59,7 @@ pub const NamedEvent = struct {
 pub const ScalarNode = struct {
     lifecycle: union(enum) {
         vacant,
-        active: []const u8,
+        active: render.NodeShape,
     } = .vacant,
     parent_id: ?ids.ElemId = null,
     children: std.ArrayListUnmanaged(ids.ElemId) = .empty,
@@ -101,7 +101,11 @@ pub const ScalarNode = struct {
     }
 
     fn initActive(tag: []const u8) ScalarNode {
-        return .{ .lifecycle = .{ .active = tag } };
+        return initActiveShape(render.NodeShape.html(tag));
+    }
+
+    fn initActiveShape(shape: render.NodeShape) ScalarNode {
+        return .{ .lifecycle = .{ .active = shape } };
     }
 
     /// Reports whether this dense cache slot currently owns a render node.
@@ -113,7 +117,15 @@ pub const ScalarNode = struct {
     pub fn activeTag(self: *const ScalarNode) ?[]const u8 {
         return switch (self.lifecycle) {
             .vacant => null,
-            .active => |tag| tag,
+            .active => |shape| shape.displayName(),
+        };
+    }
+
+    /// Returns the immutable node kind, namespace, and local name for reuse.
+    pub fn activeShape(self: *const ScalarNode) ?render.NodeShape {
+        return switch (self.lifecycle) {
+            .vacant => null,
+            .active => |shape| shape,
         };
     }
 
@@ -571,7 +583,7 @@ pub const PreparedTagOverlay = struct {
 /// Owns a cache node until publication; its tag belongs to a tag overlay.
 pub const PreparedNodeCreation = struct {
     elem_id: ids.ElemId,
-    tag: []const u8,
+    shape: render.NodeShape,
     phase: JournalPhase = .prepared,
 
     /// Resolves a provisional tag without changing cache indexes.
@@ -588,9 +600,17 @@ pub const PreparedNodeCreation = struct {
     }
 
     fn prepareImpl(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), tags: *PreparedTagOverlay, elem_id: ids.ElemId, tag: []const u8, replaces_active: bool) (std.mem.Allocator.Error || error{ ActiveNode, ResourceLimit })!PreparedNodeCreation {
+        return prepareShape(Ctx, allocator, cache, tags, elem_id, render.NodeShape.html(tag), replaces_active);
+    }
+
+    /// Owns a provisional node classification, interning only element names.
+    /// Text nodes carry no synthetic tag allocation or namespace.
+    pub fn prepareShape(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), tags: *PreparedTagOverlay, elem_id: ids.ElemId, shape: render.NodeShape, replaces_active: bool) (std.mem.Allocator.Error || error{ ActiveNode, ResourceLimit })!PreparedNodeCreation {
         const index = elem_id.index();
         if (!replaces_active and index < cache.nodes.items.len and cache.nodes.items[index].isActive()) return error.ActiveNode;
-        return .{ .elem_id = elem_id, .tag = try tags.resolve(Ctx, allocator, cache, tag) };
+        var owned_shape = shape;
+        if (owned_shape == .element) owned_shape.element.tag = try tags.resolve(Ctx, allocator, cache, shape.element.tag);
+        return .{ .elem_id = elem_id, .shape = owned_shape };
     }
 
     /// Publishes the node using only pre-reserved storage after tag publication.
@@ -598,7 +618,7 @@ pub const PreparedNodeCreation = struct {
         if (self.phase.isApplied()) @panic("prepared render node creation committed twice");
         const index = self.elem_id.index();
         while (cache.nodes.items.len <= index) cache.nodes.appendAssumeCapacity(.{});
-        cache.nodes.items[index] = ScalarNode.initActive(self.tag);
+        cache.nodes.items[index] = ScalarNode.initActiveShape(self.shape);
         self.phase = .applied;
     }
 
@@ -1033,8 +1053,17 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// (its parent survives, so the wire removes it before recreating it)
         /// or an ancestor's `remove_node` already released it.
         pub fn addNodeReplacement(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8, publication: RemovalPublication) (std.mem.Allocator.Error || error{ DuplicateNode, MissingNode, ResourceLimit })!void {
+            return self.addNodeReplacementShape(cache, elem_id, render.NodeShape.html(tag), publication);
+        }
+
+        /// Replaces a rendered node when its kind, namespace, or name changes.
+        /// The old node's removal and new classification share one journal.
+        pub fn addNodeReplacementShape(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, shape: render.NodeShape, publication: RemovalPublication) (std.mem.Allocator.Error || error{ DuplicateNode, MissingNode, ResourceLimit })!void {
             try self.addRemoval(cache, elem_id, publication);
-            try self.addReplacementCreation(cache, elem_id, tag);
+            self.addCreationOptions(cache, elem_id, shape, true) catch |err| switch (err) {
+                error.ActiveNode => unreachable,
+                else => |other| return other,
+            };
         }
 
         /// Keeps an active node in place while a re-collected subtree claims
@@ -1044,8 +1073,14 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// `clearUnsetReusedFields` retires the fields they no longer declare.
         /// The caller replaces the node's child list through `addChildren`.
         pub fn addNodeReuse(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, tag: []const u8) error{ DuplicateNode, MissingNode, TagMismatch, ResourceLimit }!void {
+            return self.addNodeReuseShape(cache, elem_id, render.NodeShape.html(tag));
+        }
+
+        /// Reuses a node only when its entire immutable classification matches.
+        /// Identical local names in different namespaces are not interchangeable.
+        pub fn addNodeReuseShape(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, shape: render.NodeShape) error{ DuplicateNode, MissingNode, TagMismatch, ResourceLimit }!void {
             const node = self.activeNode(cache, elem_id) orelse return error.MissingNode;
-            if (!std.mem.eql(u8, node.activeTag().?, tag)) return error.TagMismatch;
+            if (!node.activeShape().?.eql(shape)) return error.TagMismatch;
             if (self.reused_nodes.contains(elem_id.raw())) return error.DuplicateNode;
             if (self.reused_nodes.available == 0) return error.ResourceLimit;
             self.reused_nodes.putAssumeCapacity(elem_id.raw(), .{});
@@ -1074,24 +1109,18 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
 
         /// Adds one provisional node and its prepared tag to the journal.
         pub fn addCreation(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
-            return self.addCreationOptions(cache, elem_id, tag, false);
+            return self.addCreationShape(cache, elem_id, render.NodeShape.html(tag));
         }
 
-        /// Adds a provisional node whose active slot is retired by this plan.
-        fn addReplacementCreation(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8) (std.mem.Allocator.Error || error{ DuplicateNode, ResourceLimit })!void {
-            self.addCreationOptions(cache, elem_id, tag, true) catch |err| switch (err) {
-                error.ActiveNode => unreachable,
-                else => |value| return value,
-            };
+        /// Journals an explicitly classified text, HTML, or SVG node.
+        pub fn addCreationShape(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, shape: render.NodeShape) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
+            return self.addCreationOptions(cache, elem_id, shape, false);
         }
 
-        fn addCreationOptions(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8, replaces_active: bool) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
+        fn addCreationOptions(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, shape: render.NodeShape, replaces_active: bool) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
             if (elem_id.index() >= self.provisional_nodes.capacity()) return error.ResourceLimit;
             if (self.isProvisional(elem_id)) return error.DuplicateNode;
-            const prepared = if (replaces_active)
-                try PreparedNodeCreation.prepareReplacing(Ctx, self.allocator, cache, &self.tags, elem_id, tag)
-            else
-                try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, elem_id, tag);
+            const prepared = try PreparedNodeCreation.prepareShape(Ctx, self.allocator, cache, &self.tags, elem_id, shape, replaces_active);
             self.provisional_nodes.set(elem_id.index());
             self.creations.appendAssumeCapacity(prepared);
         }
@@ -1412,7 +1441,10 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (self.removals.items) |removal| if (removal.publication == .subtree_root) try result.addFixed(0);
             for (self.creations.items) |creation| {
                 if (creation.elem_id == ids.root_elem) continue;
-                try result.addFixed(if (std.mem.eql(u8, creation.tag, "text")) 0 else creation.tag.len);
+                try result.addFixed(switch (creation.shape) {
+                    .text => 0,
+                    .element => |element| element.tag.len,
+                });
             }
             for (self.children.items) |children| for (self.childWireEdits(children)) |_| try result.addFixed(0);
             for (self.sparse_children.items) |children| for (children.wireEdits()) |_| try result.addFixed(0);
@@ -1489,7 +1521,15 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (self.removals.items) |removal| if (removal.publication == .subtree_root) try batch.staged.commands.appendRaw(allocator, .remove_node, wireElem(removal.elem_id).raw(), 0, 0, 0, 0);
             for (self.creations.items) |creation| {
                 if (creation.elem_id == ids.root_elem) continue;
-                if (std.mem.eql(u8, creation.tag, "text")) try batch.staged.commands.appendRaw(allocator, .create_text, wireElem(creation.elem_id).raw(), 0, 0, 0, 0) else try appendText(batch, allocator, .create_element, creation.elem_id, creation.tag);
+                switch (creation.shape) {
+                    .text => try batch.staged.commands.appendRaw(allocator, .create_text, wireElem(creation.elem_id).raw(), 0, 0, 0, 0),
+                    .element => |element| {
+                        const offset = std.math.cast(u32, batch.staged.strings.items.len) orelse return error.ResourceLimit;
+                        const len = std.math.cast(u32, element.tag.len) orelse return error.ResourceLimit;
+                        try batch.staged.strings.appendSlice(allocator, element.tag);
+                        try batch.staged.commands.appendRaw(allocator, .create_element, wireElem(creation.elem_id).raw(), offset, len, @intFromEnum(element.namespace), 0);
+                    },
+                }
             }
             for (self.children.items) |children| for (self.childWireEdits(children)) |edit| switch (edit) {
                 .append => |child| try batch.staged.commands.appendRaw(allocator, .append_child, wireElem(children.parent_elem_id).raw(), wireElem(child).raw(), 0, 0, 0),
@@ -1780,11 +1820,17 @@ pub fn Cache(comptime Ctx: type) type {
 
         /// Returns active node tag differs from the maintained active-runtime indexes.
         pub fn activeNodeTagDiffers(self: *const Self, elem_id: ids.ElemId, tag: []const u8) bool {
+            return self.activeNodeShapeDiffers(elem_id, render.NodeShape.html(tag));
+        }
+
+        /// Requires replacement when any immutable rendered-node property
+        /// differs, including text-vs-element kind and namespace.
+        pub fn activeNodeShapeDiffers(self: *const Self, elem_id: ids.ElemId, shape: render.NodeShape) bool {
             const index = elem_id.index();
             if (index >= self.nodes.items.len) return false;
             const node = &self.nodes.items[index];
-            const active_tag = node.activeTag() orelse return false;
-            return !std.mem.eql(u8, active_tag, tag);
+            const active_shape = node.activeShape() orelse return false;
+            return !active_shape.eql(shape);
         }
 
         /// Stages a complete render-surface reset in the host command sink.
@@ -1808,37 +1854,35 @@ pub fn Cache(comptime Ctx: type) type {
             return owned;
         }
 
-        fn ensureCacheNode(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, tag: []const u8) bool {
+        fn ensureCacheNode(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, shape: render.NodeShape) bool {
             const allocator = Ctx.allocator(ctx);
+            var owned_shape = shape;
+            if (owned_shape == .element) owned_shape.element.tag = self.internTag(allocator, shape.element.tag);
             const index = elem_id.index();
             while (index > self.nodes.items.len) {
                 self.nodes.append(allocator, .{}) catch @panic("out of memory");
             }
             if (index == self.nodes.items.len) {
-                self.nodes.append(allocator, ScalarNode.initActive(self.internTag(allocator, tag))) catch @panic("out of memory");
+                self.nodes.append(allocator, ScalarNode.initActiveShape(owned_shape)) catch @panic("out of memory");
                 return true;
             }
             const node = &self.nodes.items[index];
             if (!node.isActive()) {
-                node.* = ScalarNode.initActive(self.internTag(allocator, tag));
+                node.* = ScalarNode.initActiveShape(owned_shape);
                 return true;
             }
-            const active_tag = node.activeTag().?;
-            if (!std.mem.eql(u8, active_tag, tag)) {
-                var message: [160]u8 = undefined;
-                const rendered = std.fmt.bufPrint(
-                    &message,
-                    "render descriptor changed tag for elem {d}: cache '{s}', stream '{s}'",
-                    .{ elem_id, active_tag, tag },
-                ) catch "render descriptor changed the tag for an existing render cache identity";
-                @panic(rendered);
-            }
+            if (!node.activeShape().?.eql(shape)) @panic("render descriptor changed kind, namespace, or local name without replacing its node");
             return false;
         }
 
         /// Emits the already-decided command that attaches a newly created render node.
         pub fn appendNode(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, tag: []const u8) void {
-            const created = self.ensureCacheNode(ctx, elem_id, tag);
+            self.appendNodeShape(ctx, elem_id, parent_elem_id, render.NodeShape.html(tag));
+        }
+
+        /// Creates and attaches an explicitly classified node to its parent.
+        pub fn appendNodeShape(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, shape: render.NodeShape) void {
+            const created = self.ensureCacheNode(ctx, elem_id, shape);
             if (!created) @panic("initial render append reused an existing render cache identity");
             const parent = self.activeNode(parent_elem_id);
             const child = self.activeNode(elem_id);
@@ -1854,13 +1898,18 @@ pub fn Cache(comptime Ctx: type) type {
             parent.child_count += 1;
             parent.children.append(Ctx.allocator(ctx), elem_id) catch @panic("out of memory");
             parent.children_snapshot_valid = true;
-            Ctx.sink(ctx).appendNode(elem_id, parent_elem_id, tag);
+            Ctx.sink(ctx).appendNode(elem_id, parent_elem_id, shape);
         }
 
         /// Ensures the host render surface contains the engine-selected node and tag.
         pub fn ensureNode(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, tag: []const u8, counts: *render.Counts) void {
-            if (!self.ensureCacheNode(ctx, elem_id, tag)) return;
-            Ctx.sink(ctx).ensureNode(elem_id, tag);
+            self.ensureNodeShape(ctx, elem_id, render.NodeShape.html(tag), counts);
+        }
+
+        /// Publishes one creation only when the explicit node is not active.
+        pub fn ensureNodeShape(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, shape: render.NodeShape, counts: *render.Counts) void {
+            if (!self.ensureCacheNode(ctx, elem_id, shape)) return;
+            Ctx.sink(ctx).ensureNode(elem_id, shape);
             counts.addCreateElement();
         }
 
@@ -2212,9 +2261,9 @@ const TestSink = struct {
     /// Stages a complete render-surface reset in the host command sink.
     pub fn reset(_: TestSink) void {}
     /// Emits the already-decided command that attaches a newly created render node.
-    pub fn appendNode(_: TestSink, _: ids.ElemId, _: ids.ElemId, _: []const u8) void {}
+    pub fn appendNode(_: TestSink, _: ids.ElemId, _: ids.ElemId, _: render.NodeShape) void {}
     /// Ensures the host render surface contains the engine-selected node and tag.
-    pub fn ensureNode(_: TestSink, _: ids.ElemId, _: []const u8) void {}
+    pub fn ensureNode(_: TestSink, _: ids.ElemId, _: render.NodeShape) void {}
     /// Emits removal of a node whose owning scope has already been disposed by the engine.
     pub fn removeNode(_: TestSink, _: ids.ElemId) void {}
     /// Publishes the engine-selected child order for one parent.

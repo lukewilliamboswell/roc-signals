@@ -1,29 +1,34 @@
-# Roc nightly updates
+# Automatic Roc nightly updates
 
-This repository checks once daily at 13:43 UTC, about four hours
-after the upstream 09:00 UTC build. Late publication can wait until the next day.
+The scheduled caller runs daily at 13:43 UTC. It selects the latest published
+nightly, creates a verified signed pin-only PR, validates its exact commit, and
+automatically merges a passing update. Source fixes and release URL changes remain
+manually reviewed PRs.
 
-`.roc-version` is the compiler pin. `.github/roc-nightly.json` selects this
-repository's validation workflows, including their validation-only release paths.
-The controller, its tests, and job permissions are maintained in
-[roc-automation](https://github.com/lukewilliamboswell/roc-automation).
-The caller workflows pin shared code to `c6711b0f46ee57beda8e1db4f3eafcbcd9cddae2`.
-Dependabot proposes reviewed updates to Actions/workflow references.
+Literal `roc` fields in the platform and all public application headers own the
+compiler pins. `.github/roc-nightly.json` selects these roots and the validation
+workflows; it contains no duplicate version authority. The selected pins agree.
+The bot changes only their compiler literals, preserving all package/platform URLs.
 
-Follow the shared [integration and permissions guide](https://github.com/lukewilliamboswell/roc-automation/blob/c6711b0f46ee57beda8e1db4f3eafcbcd9cddae2/docs/integration.md)
-for the PR-creation setting, action allowlists, required checks, and first live
-GITHUB_TOKEN run. Keep default token permissions read-only. The updater never
-approves or merges PRs and receives no protection bypass.
+The required checks are `Published examples`, `Platform source`, and
+`Release archive`. Published tests use committed URLs and fresh caches;
+development tests rebind temporary copies to current source. A failed released
+dependency may require a platform patch, a new immutable release, and a reviewed
+example-URL update before retrying the nightly. Local success never substitutes
+for a passing download.
 
-`automation/roc-nightly` is reserved for the bot's pin-only commits. Put manual
-compatibility changes on a separate branch. Candidate failures require diagnosis;
-do not weaken tests or mechanically replace baselines to accept a compiler.
+The caller pins shared automation to `31e10eca5b0f7e4cacbf7864d51dfa8d224ae30f`.
+Dependabot proposes reviewed reference updates. See the shared
+[integration guide](https://github.com/lukewilliamboswell/roc-automation/blob/31e10eca5b0f7e4cacbf7864d51dfa8d224ae30f/docs/integration.md)
+for the strict ruleset and signature checks. Automatic merging requires active
+pull-request and up-to-date required-check rules, Actions PR creation, and no bot
+bypass. Default token permissions stay read-only; candidate test jobs receive no
+publication, merge, or deployment authority.
 
-The PR configuration check validates the local pin and selected workflow files.
-The shared repository owns the controller regression suite. Project tests remain
-in this repository and run on the exact candidate commit. Scheduled bot-token
-acceptance must be verified after merge; file changes alone cannot prove it.
+`automation/roc-nightly` is reserved for pin-only bot commits. The updater never
+approves PRs, publishes releases, or deploys Pages. Compiler bumps do not rebuild
+immutable release starters or versioned documentation.
 
-Use the shared [OpenSSF rollout checklist](https://github.com/lukewilliamboswell/roc-automation/blob/c6711b0f46ee57beda8e1db4f3eafcbcd9cddae2/docs/openssf.md)
-to record project-specific evidence. This integration does not establish badge
-compliance or change repository settings.
+Keep successful merge, no-op, failure, and signed release-follow-up evidence in
+the rollout PR. Configuration files alone do not prove live acceptance or OpenSSF
+compliance. Release setup and recovery are documented in the contributor guide.

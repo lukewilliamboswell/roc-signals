@@ -23,7 +23,7 @@ import HostValue exposing [HostValue]
 Elem := [
 	Component({ child : Box(Elem) }),
 	Cleanup({ cleanup : Node.Cleanup }),
-	Element({ tag : Str, attrs : List(Node.Attr), children : List(Elem) }),
+	Element({ namespace : [Html, Svg], tag : Str, attrs : List(Node.Attr), children : List(Elem) }),
 	OnChange({ signal : Box(Node.SignalExpr), to_cmd : Box((HostValue -> Node.Cmd)) }),
 	OnChangeInitial({ signal : Box(Node.SignalExpr), to_cmd : Box((HostValue -> Node.Cmd)) }),
 	OnMount({ to_cmd : Box((() -> Node.Cmd)) }),

@@ -85,7 +85,7 @@ remove_row : Model, Str -> Model
 remove_row = |model, id| { ..model, rows: Rows.apply(model.rows, [RemoveKey(id)]) ?? model.rows }
 
 element : Str, List(Html.Attr), List(Elem) -> Elem
-element = |tag, attrs, children| Elem.Element({ tag, attrs, children })
+element = |tag, attrs, children| Elem.Element({ namespace: Html, tag, attrs, children })
 
 render_row : Ui.State(Model), Signal.Keyed(Str), Str, Ui.Row(Row) -> Elem
 render_row = |model, selected, key, row| {

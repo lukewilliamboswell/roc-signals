@@ -15,24 +15,32 @@ WebAssembly.
 
 **Required**
 
-- **[Roc](https://www.roc-lang.org/install)** — a recent nightly. Roc is pre-1.0
-  and its syntax still moves; if a code sample here fails to parse, your
-  compiler is probably older or newer than this platform expects.
-- **[Zig 0.16.0](https://ziglang.org/download/)** — builds the host artifacts
-  that Roc links your app against. You do not write any Zig.
+- **[Roc](https://www.roc-lang.org/install)** — install the exact nightly named
+  in your example's `roc` header. Nightly updates are tested against the pinned
+  released dependencies before their compiler pins advance.
+- **Zig 0.16.0** is needed only when developing the platform from source. Release
+  archives already contain the host binaries that Roc links your app against.
 
 **Only if you want to build the full site**
 
 - Python 3, Node.js, [Zola](https://www.getzola.org/), and the
-  [Tailwind CSS standalone CLI](https://tailwindcss.com/blog/standalone-cli).
+  [Tailwind CSS standalone CLI](https://tailwindcss.com/blog/standalone-cli)
+  version 3.4.17 (the site configuration is for Tailwind v3).
 
 ## Get the platform
 
-> **Use a clone, not the published bundle.** Roc app headers can point at a
-> released platform archive over HTTPS, and eventually that will be the normal
-> way to depend on Roc Signals. Right now the published `0.1` bundle predates
-> several breaking Roc syntax changes and **will not compile** with a current
-> compiler. Until a refreshed release lands, build against a clone.
+Download `signals-starters.zip` from the supported platform release. It contains
+complete applications, native specs, the matching browser runtime, and a README
+with direct Roc build commands. Its application headers name immutable release
+URLs; no platform checkout, Zig build, or Python test wrapper is needed.
+
+For development against this checkout, use the clone workflow below and install
+the nightly named in the `roc` header in `platform/main.roc`.
+When upgrading an existing app, follow
+the migration instructions in the target version's
+[release notes](https://github.com/lukewilliamboswell/roc-signals/releases).
+Changes not yet released are recorded in the repository's
+[release notes directory](https://github.com/lukewilliamboswell/roc-signals/tree/main/releases).
 
 ```sh
 git clone https://github.com/lukewilliamboswell/roc-signals.git
@@ -232,9 +240,17 @@ The runtime is a plain ES module with no dependencies:
 </script>
 ```
 
-Copy `www/static/signals.mjs` next to your `.wasm`. It must come from the same
-platform version — the runtime checks a wire protocol version at mount and
-fails immediately on a mismatch rather than misbehaving.
+Copy `signals.mjs`, `wasm_memory_views.mjs`, and `controlled_input_policy.mjs`
+from `www/static/` next to your `.wasm`, preserving their relative paths.
+Alternatively, run `python3 scripts/bundle_browser.py` and extract the resulting
+`.test-out/signals-browser.zip` there. New releases include this browser archive
+alongside the platform bundle. It contains the runtime's imported modules and a
+manifest recording the compiler pin and file digests.
+
+The runtime must come from the same compatible platform version as the app —
+it checks the wire protocol at mount and rejects a mismatch. Keep the files
+together when deploying under a GitHub Pages project path; the relative URLs
+above work without assuming that your app lives at the domain root.
 
 `mountSignalsApp` also accepts `taskHandler` (to intercept HTTP tasks),
 `behaviors` (to attach JavaScript widgets), `telemetry`, and `onError`. See
@@ -268,8 +284,9 @@ That is Conduit's shape, described in
 Run `zig build build-test-hosts -Doptimize=ReleaseSmall`.
 
 **`EFFECTFUL FUNCTION NAME` errors pointing inside the platform**
-Your Roc compiler and the platform disagree. If you are building against the
-published `0.1` bundle URL, that is expected — use a clone instead.
+Your Roc compiler and the platform disagree. Check the compiler pin for your
+platform release, or the `roc` header in `platform/main.roc` when working from a clone. Rebuild the app
+with the matching compiler and deploy its matching browser runtime.
 
 **`LITERAL DEFAULTED ... given the default type Dec`**
 A bare numeric literal with nothing to pin its type. Annotate the surrounding
@@ -308,12 +325,13 @@ This one is common enough that it has its own explanation in
 Your `signals.mjs` and your `.wasm` came from different platform versions. Copy
 `www/static/signals.mjs` from the same clone you built the app with.
 
-**A wasm build segfaults or hangs on Linux**
-Known Roc compiler issues, not platform bugs. This repository's own test driver
-skips two examples on Linux for exactly this reason — one segfaults building for
-`wasm32`, another hangs under `--opt=dev`. If you hit it, try the other
-optimization mode, or build on macOS. Check `LINUX_WASM_SKIPS` in
-`scripts/serve.py` for the current list.
+**A successfully compiled Wasm file fails browser validation**
+Use `--opt=size` with the pinned Roc compiler. Its dev backend can emit invalid
+Wasm for unit-valued state and event callbacks even when compilation succeeds.
+The site builder validates every artifact before copying it into a deployment.
+The maintained examples have no Linux Wasm skips. See
+`UPSTREAM_COMPILER_BUGS.md` in the repository for the reproducer and tested
+compiler version; do not assume every build failure has the same cause.
 
 ## Next
 

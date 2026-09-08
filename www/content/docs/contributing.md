@@ -19,7 +19,7 @@ Install:
 - Python 3,
 - Node.js,
 - Zola,
-- the Tailwind CSS standalone CLI,
+- the Tailwind CSS 3.4.17 standalone CLI (the site uses the v3 configuration),
 - Roc.
 
 Local scripts use `roc` from `PATH` by default. Override it with `ROC_BIN`,
@@ -29,11 +29,17 @@ CI uses the official `roc-lang/setup-roc` GitHub Action. The repository does not
 build Roc itself. The site build uses standalone command-line tools only; there
 is no npm dependency or package manifest.
 
-Pull requests run the normal Zig, browser, and Roc checks plus a Wasm build and
-mount smoke pass on one Linux runner. Pushes to `main` (and manual runs) run the
-complete test suite and native-host coverage on one macOS runner. The static
-site is built separately on Linux for deployment; it does not duplicate the
-test suite.
+Pull requests, pushes to `main`, and nightly validation run the source suite and
+native coverage, public examples against their committed release URLs, and the
+exact candidate archives. The required checks are `Platform source`, `Published
+examples`, and `Release archive`. The release workflow additionally validates
+archives on Linux x64/arm64 and Intel/Apple Silicon macOS. Pages deploys the
+supported release, not development builds from ordinary pushes.
+
+Compiler pins live in the platform and public application headers. Run
+`python3 scripts/toolchain.py --check --roc-bin /path/to/roc` to validate the
+selected roots and installed compiler. The nightly bot advances those pins while
+preserving release URLs and automatically merges only a passing pin-only PR.
 
 ## Test Driver
 
@@ -61,6 +67,7 @@ python3 scripts/test.py native --native always
 python3 scripts/test.py fault --native always
 python3 scripts/test.py bundle --bundle always
 python3 scripts/test.py bench --native always
+python3 scripts/test.py published
 ```
 
 `wasm-bench` is the manual Node/V8 performance workflow for the complete
@@ -102,9 +109,20 @@ resize/remap attempts can vary with process memory layout and cannot report
 recoverable OOM. Host-origin fault placements inside a Roc callback are reported
 as skipped by the recoverable campaign because the erased callback ABI cannot return OOM or
 unwind ownership. Real allocation failure there is a fatal poison-and-trap
-boundary. Other selected host allocations must refuse and retry successfully
-without partial publication. Roc-allocator and fatal-boundary campaigns are
-tracked separately.
+boundary. Infallible command calls, including observer commands after an earlier
+step committed, likewise report `skipped_fatal_command`: the native recoverable
+sweep does not inject at these positions and does not claim they recovered.
+Other selected host allocations must refuse and retry successfully without
+partial publication.
+
+The Wasm suite separately builds the coordinated-writes fixture with test-only
+allocator exports and sweeps every allocation in a write-plus-observer host call.
+It verifies poison, a bounded diagnostic, empty publication buffers, unchanged
+browser DOM, no unpublished task execution, detached event listeners, and
+allocation-free idempotent containment. Recovery uses a fresh instance. This
+linked-app fatal campaign complements native refusal/retry tests; it does not
+turn arbitrary native crashes into accepted outcomes. Roc-allocator fatal
+boundaries also have focused linked-host tests.
 
 Use `--keep-output` when debugging generated artifacts under `.test-out/`.
 
@@ -160,6 +178,11 @@ runtime and host tests. It runs the existing `signals_shared` and
 `signals_host` Zig test roots under kcov, then merges their line coverage into
 one report. This keeps direct `src/signals/` unit coverage and host-driven
 coverage visible together.
+
+This workflow supports macOS and Linux arm64. Linux x86_64 is currently
+disabled because kcov cannot reliably read Zig DWARF on that target; run the
+coverage check on a supported runner rather than interpreting its refusal as
+a completed coverage pass.
 
 Run a fresh coverage pass from the repository root:
 
@@ -253,11 +276,13 @@ python3 scripts/fuzz.py run all --time 5m -j 4
 python3 scripts/fuzz.py status
 ```
 
-`run` rebuilds first, seeds an empty corpus, fuzzes, and then prints throughput,
+`run` rebuilds first, adds the committed regression inputs to the local seed
+corpus (using one minimal seed if there are no inputs), fuzzes, and then prints throughput,
 edge count, stability, and any saved crash inputs. It exits non-zero when a crash
 was saved. Corpora persist under `.fuzz-out/<target>/corpus`, because inputs
 AFL++ found interesting last time are the cheapest way back into deep engine
-states; `--resume` continues a previous session, and `clean` discards both.
+states. Local and CI campaigns use the same seeding path. `--resume` continues a
+previous session's queue rather than importing new seeds, and `clean` discards both.
 
 Watch `stability`, which should sit near 100%. A lower number means the target is
 not deterministic for a fixed input, which breaks the reference-model comparison
@@ -310,6 +335,7 @@ Build host artifacts first, then create a platform bundle:
 ```sh
 zig build build-test-hosts -Doptimize=ReleaseSmall
 scripts/bundle.sh
+python3 scripts/bundle_browser.py
 ```
 
 The bundle script uses `ROC_BIN`, `ROC`, or `roc` from `PATH`. By default it
@@ -358,6 +384,11 @@ The helper builds ReleaseSmall host artifacts, generates
 example apps with `--target=wasm32 --opt=size` by default, and copies
 downloadable source files under `dist/examples/<slug>/source/`.
 
+Each generated Wasm artifact is validated with Node's WebAssembly compiler
+before the build proceeds. A successful Roc compilation alone does not prove
+that the browser can load the generated code; invalid artifacts fail the site
+build with the affected file and validation diagnostic.
+
 Example source files in `dist/` have their local platform header replaced with
 `SIGNALS_PLATFORM_URL` when set. Otherwise they point at
 `extra.release_platform_url` from `www/config.toml`, falling back to the
@@ -375,22 +406,73 @@ python3 scripts/serve.py --platform-url https://example.com/platform/release.tar
 python3 scripts/serve.py --no-server
 ```
 
-For public site content, documentation, or site config changes, use the browser
-host + public apps build gate in both Roc optimization modes without starting a
-server. Run these commands sequentially because both write `dist/`:
+For public site content, documentation, or site config changes, run the browser
+host and public apps production build without starting a server:
 
 ```sh
-python3 scripts/serve.py --no-server --app-opt dev
 python3 scripts/serve.py --no-server --app-opt size
 ```
 
+The pinned compiler's dev backend currently emits invalid Wasm for unit-valued
+capability callbacks (see `UPSTREAM_COMPILER_BUGS.md`, case 10). The optional
+`--app-opt dev` build is a compiler diagnostic, not a passing release gate or a
+deployable alternative. Keep artifact validation enabled. After checking dev
+output, rebuild with `--app-opt size`; both modes write `dist/`.
+
 ## Releases
 
-The `Release` GitHub Actions workflow is manually triggered. Provide the exact
-release tag to publish, matching the URL you intend to put in
-`www/config.toml`; the workflow builds ReleaseSmall host artifacts, creates the
-platform bundle, tests the downloaded bundle on Intel and Apple Silicon macOS
-runners, then creates a GitHub release with the bundle attached.
+Keep user-facing changes and migration instructions in `releases/unreleased.md`,
+reviewed alongside the implementation. Before publishing, rename it to
+`releases/<exact-release-tag>.md` (unprefixed SemVer, such as `0.2.0-rc1`),
+replace the unreleased heading with that version, and name the explicit
+source → target version in the migration section. Create a fresh unreleased file
+when work on the next release begins. Published notes describe that upgrade;
+do not rewrite them to follow later APIs. The site guides document the supported
+API and link to releases rather than duplicating version-specific instructions.
+
+Dispatch `Release` on `main` with `release_tag` and `nightly_validation: false`.
+The release guard explicitly permits exact-nightly bootstrap; it does not claim
+a stable Roc compiler exists. Preparation records the final source SHA and builds
+ReleaseSmall hosts, the platform archive, `signals-browser.zip`, and complete
+`signals-starters.zip`. Tests run those exact artifacts before publication. The
+release body combines the committed versioned notes with compiler/source identity,
+named URLs, and SHA-256 digests in `signals-release.json`.
+
+To exercise preparation locally:
+
+```sh
+python3 scripts/release.py prepare --version 0.2.0-rc1
+python3 scripts/release.py check
+python3 scripts/release.py verify
+```
+
+Preparation requires a clean committed checkout so its source SHA identifies the
+actual inputs. Output defaults to ignored `.release-out/` and must be empty;
+retain an existing candidate when investigating or recovering a release. Published
+checks use isolated caches and committed URLs without rebinding. They do not build
+hosts or borrow the checkout's browser executor. Candidate checks rewrite only
+temporary starter copies to a loopback URL for the exact proposed archive.
+
+After upload, the workflow verifies actual downloads, deploys `signals-site.zip`,
+and opens a verified signed follow-up PR updating public URLs and
+`releases/current.json`. It explicitly dispatches and reports required checks on
+that PR's head; the release follow-up is manually merged. Compiler pins are
+preserved. A moved base or occupied follow-up branch is refused rather than
+overwritten. Nightly validation performs none of these writes.
+
+The site archive retains earlier `/versions/<version>/` pages and platform
+downloads, and serves the supported release at the existing landing URLs. The
+initial migration restores platform downloads from the actually deployed site's
+Actions artifact and refuses to proceed if it cannot recover that evidence.
+Rendered documentation stays in artifacts, not Git.
+
+Ordinary publication rejects any existing tag or release. After partial
+publication, inspect the tag SHA and every existing asset against the retained
+`signals-release.json` and original Actions artifacts. Preserve matching files;
+upload only missing original assets through a reviewed recovery operation, verify
+fresh downloads, then resume deployment/follow-up. Do not rerun preparation from
+a moving branch, overwrite assets, or move a tag. If the original artifacts cannot
+be recovered, prepare a new version rather than claiming the old identity.
 
 ## Spec Language
 
@@ -639,6 +721,6 @@ roc glue <path-to-roc>/src/glue/src/ZigGlue.roc src/signals platform/main.roc
 zig fmt src/signals/roc_platform_abi.zig
 ```
 
-Use the `ZigGlue.roc` from the same Roc commit named by `.roc-version`. The host
+Use the `ZigGlue.roc` from the same Roc commit named by the `roc` header in `platform/main.roc`. The host
 uses the generated types' public `incref` and `decref` methods; generated helper
 functions are implementation details and must not be made public by hand.

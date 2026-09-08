@@ -137,6 +137,8 @@ pub fn build(b: *std.Build) void {
         "--test",
         "scripts/browser/command_buffer_snapshot.test.mjs",
         "scripts/browser/conduit_backend.test.mjs",
+        "scripts/browser/dom_double.test.mjs",
+        "scripts/browser/validate_wasm.test.mjs",
         "scripts/browser/http_task_router.test.mjs",
         "scripts/browser/runtime_contract.test.mjs",
         "scripts/browser/run_wasm_benchmarks.test.mjs",

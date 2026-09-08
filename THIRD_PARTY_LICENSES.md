@@ -1,7 +1,16 @@
 # Third-Party Licenses
 
 This project bundles third-party libraries for static linking on Linux musl
-targets and web parser assets.
+targets, web parser assets, and release tooling.
+
+## roc-automation
+
+Files: `scripts/compiler_pins.py`
+
+The compiler-header parser is vendored from
+https://github.com/lukewilliamboswell/roc-automation and licensed under the
+Universal Permissive License, Version 1.0. See
+[`vendor/roc-automation-LICENSE`](vendor/roc-automation-LICENSE) for its full text.
 
 ## musl libc
 

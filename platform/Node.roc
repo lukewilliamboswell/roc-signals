@@ -19,16 +19,18 @@ Node := [].{
 	## dense state/node identity remains host-owned.
 	BinderRef := [BinderRef(Box((() -> HostValue)))]
 
-	## Reducer message: applies `transform` to the bound source's current value.
-	## The host routes a fired event to the referenced binder and applies the
-	## transform. The payload fields use typed boundary descriptors in Roc; the
-	## host derives compact dispatch descriptors when it ingests the ABI data.
-	Msg := {
-		binder : BinderRef,
-		read_binder : BinderRef,
-		event_extraction_plan : EventExtractionPlan,
-		payload_reducer : HostValue.EventReducerHandle,
-	}
+	## An accepted event's extraction plan and declared handler. Reducers replace
+	## a bound source; actions read a settled signal snapshot and produce a
+	## command. The host derives the compact payload descriptor at ingestion.
+	Msg := { event_extraction_plan : EventExtractionPlan, handler : EventHandler }
+
+	## Reducers replace one state value; actions describe commands for each
+	## accepted event. An action's reads are explicit graph data, not a callback
+	## that discovers dependencies or runs when a displayed value changes.
+	EventHandler := [
+		Reduce({ binder : BinderRef, read_binder : BinderRef, payload_reducer : HostValue.EventReducerHandle }),
+		Action({ reads : Box(SignalExpr), payload_cap : HostValue.CapabilityHandle, to_cmd : Box((HostValue, HostValue -> Cmd)) }),
+	]
 
 	## Signal expression. `Ref` reads a binder's current value. Other variants are
 	## identified by their existing boxed initializer or transform thunk, so no
@@ -73,7 +75,11 @@ Node := [].{
 		IntervalSource(IntervalSource),
 	]
 
-	## Host command emitted by lifecycle hooks or signal change sinks.
+	## One reusable proposed state replacement. Its initializer captures the
+	## typed next value; the host creates an owned value only when executing it.
+	StateWrite := { binder : BinderRef, update : HostValue.StateValueHandle }
+
+	## Host command emitted by event actions, lifecycle hooks, or signal changes.
 	Cmd := [
 		Noop,
 		PushState({ path : Str, query : Str, hash : Str }),
@@ -89,7 +95,8 @@ Node := [].{
 			},
 		),
 		SetDocumentTitle({ title : Str }),
-		UpdateState({ binder : BinderRef, update : HostValue.StateValueHandle }),
+		UpdateState(StateWrite),
+		UpdateStates(List(StateWrite)),
 	]
 
 	## Cleanup descriptor run when a scope is disposed.

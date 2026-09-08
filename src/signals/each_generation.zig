@@ -119,9 +119,11 @@ pub const CandidateEntry = struct {
 
 pub const BindingTable = struct {
     entries: std.AutoHashMapUnmanaged(RowHandleId, RowBinding) = .empty,
+    reserved_entries: usize = 0,
 
     /// Releases host-owned index storage; bindings own no generations.
     pub fn deinit(self: *BindingTable, allocator: std.mem.Allocator) void {
+        std.debug.assert(self.reserved_entries == 0);
         self.entries.deinit(allocator);
         self.* = .{};
     }
@@ -146,6 +148,8 @@ pub const CandidateBindings = struct {
     candidate: std.AutoHashMapUnmanaged(RowHandleId, CandidateEntry) = .empty,
     phase: OverlayPhase = .preparing,
     commit_preflighted: bool = false,
+    reservation_table: ?*BindingTable = null,
+    reserved_entries: usize = 0,
 
     /// Starts an empty candidate edit table.
     pub fn init(allocator: std.mem.Allocator) CandidateBindings {
@@ -190,12 +194,19 @@ pub const CandidateBindings = struct {
         return entry.key_locator orelse @panic("candidate row binding lacked its key locator");
     }
 
-    /// Reserves the persistent table for every possible inserted edit before
-    /// the allocation-free commit boundary.
+    /// Reserves every possible inserted edit alongside all sibling overlays.
+    /// The table must remain at a stable address until this overlay commits or
+    /// is destroyed. Repeated preflight replaces this overlay's reservation.
     pub fn preflightCommit(self: *CandidateBindings, committed: *BindingTable) (std.mem.Allocator.Error || error{ResourceLimit})!void {
         if (self.phase != .preparing) @panic("committed each binding overlay cannot preflight");
-        const maximum = std.math.add(usize, committed.entries.count(), self.candidate.count()) catch return error.ResourceLimit;
+        if (self.reservation_table) |table| std.debug.assert(table == committed);
+        const siblings = committed.reserved_entries - self.reserved_entries;
+        const reserved = std.math.add(usize, siblings, self.candidate.count()) catch return error.ResourceLimit;
+        const maximum = std.math.add(usize, committed.entries.count(), reserved) catch return error.ResourceLimit;
         try committed.entries.ensureTotalCapacity(self.allocator, std.math.cast(u32, maximum) orelse return error.ResourceLimit);
+        committed.reserved_entries = reserved;
+        self.reserved_entries = self.candidate.count();
+        self.reservation_table = committed;
         self.commit_preflighted = true;
     }
 
@@ -203,6 +214,8 @@ pub const CandidateBindings = struct {
     pub fn commit(self: *CandidateBindings, committed: *BindingTable) void {
         if (self.phase != .preparing) @panic("each binding overlay committed twice");
         if (!self.commit_preflighted) @panic("each binding overlay committed before preflight");
+        std.debug.assert(self.reservation_table == committed);
+        std.debug.assert(self.candidate.count() <= self.reserved_entries);
         // Retire old handles before publishing replacements. Besides matching
         // the generation transition, this keeps the allocation-free commit
         // within the preflighted final binding bound when one batch removes
@@ -216,10 +229,20 @@ pub const CandidateBindings = struct {
             committed.entries.putAssumeCapacity(entry.key_ptr.*, binding);
         };
         self.phase = .committed;
+        self.releaseReservation();
+    }
+
+    fn releaseReservation(self: *CandidateBindings) void {
+        if (self.reservation_table) |table| {
+            table.reserved_entries -= self.reserved_entries;
+            self.reservation_table = null;
+            self.reserved_entries = 0;
+        }
     }
 
     /// Releases candidate edit storage after commit or abort.
     pub fn deinit(self: *CandidateBindings) void {
+        self.releaseReservation();
         self.candidate.deinit(self.allocator);
         self.* = undefined;
     }
@@ -321,6 +344,62 @@ test "candidate bindings override committed rows for delayed reads" {
     try overlay.preflightCommit(&committed);
     overlay.commit(&committed);
     try std.testing.expectEqual(next, committed.get(row).?);
+}
+
+test "sibling candidate bindings reserve cumulative commit capacity" {
+    const allocator = std.testing.allocator;
+    var committed = BindingTable{};
+    defer committed.deinit(allocator);
+    var overlays: [16]CandidateBindings = undefined;
+    for (&overlays) |*overlay| overlay.* = CandidateBindings.init(allocator);
+    defer for (&overlays) |*overlay| overlay.deinit();
+    for (&overlays, 0..) |*overlay, index| {
+        try overlay.reserve(1);
+        try overlay.putAssumeCapacity(RowHandleId.fromRaw(index + 1), .{
+            .generation_id = GenerationId.fromRaw(index + 1),
+            .item_slot = 0,
+        }, .{ .snapshot = 0 });
+        try overlay.preflightCommit(&committed);
+    }
+    for (&overlays) |*overlay| overlay.commit(&committed);
+    try std.testing.expectEqual(@as(usize, overlays.len), committed.entries.count());
+    try std.testing.expectEqual(@as(usize, 0), committed.reserved_entries);
+}
+
+test "candidate binding reservation survives refusal and releases on abort" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const allocator = failing.allocator();
+    var committed = BindingTable{};
+    defer committed.deinit(allocator);
+    var first = CandidateBindings.init(allocator);
+    defer first.deinit();
+    try first.reserve(1);
+    try first.putAssumeCapacity(RowHandleId.fromRaw(1), .{
+        .generation_id = GenerationId.fromRaw(1),
+        .item_slot = 0,
+    }, .{ .snapshot = 0 });
+    try first.preflightCommit(&committed);
+    try first.preflightCommit(&committed);
+    try std.testing.expectEqual(@as(usize, 1), committed.reserved_entries);
+
+    var sibling = CandidateBindings.init(allocator);
+    try sibling.reserve(64);
+    for (0..64) |index| try sibling.putAssumeCapacity(RowHandleId.fromRaw(index + 2), .{
+        .generation_id = GenerationId.fromRaw(2),
+        .item_slot = index,
+    }, .{ .snapshot = index });
+    failing.fail_index = failing.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, sibling.preflightCommit(&committed));
+    try std.testing.expectEqual(@as(usize, 1), committed.reserved_entries);
+    failing.fail_index = std.math.maxInt(usize);
+    try sibling.preflightCommit(&committed);
+    try std.testing.expectEqual(@as(usize, 65), committed.reserved_entries);
+    sibling.deinit();
+    try std.testing.expectEqual(@as(usize, 1), committed.reserved_entries);
+    failing.fail_index = failing.alloc_index;
+    first.commit(&committed);
+    try std.testing.expectEqual(@as(usize, 0), committed.reserved_entries);
+    try std.testing.expectEqual(@as(usize, 1), committed.entries.count());
 }
 
 test "candidate key locators remain transaction local across commit and abort" {

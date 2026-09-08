@@ -4,171 +4,86 @@ on:
   workflow_dispatch:
     inputs:
       nightly_validation:
-        description: "Validate a nightly candidate without publishing or deploying"
+        description: Validate a compiler candidate without publication or deployment
         type: boolean
-        required: false
         default: false
   pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  pull-request-checks:
+  smoke:
     name: PR normal and smoke tests
-    if: github.event_name == 'pull_request' || inputs.nightly_validation
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          version: 0.16.0
-          use-cache: false
+          persist-credentials: false
+      - uses: ./.github/actions/setup-toolchain
+      - run: python3 scripts/test.py zig browser roc-check roc-test wasm --native never --bundle never
+      - run: python3 scripts/fuzz.py check
 
-      - name: Read pinned Roc version
-        run: printf 'ROC_NIGHTLY_TAG=%s\n' "$(sed -n '1p' .roc-version)" >> "$GITHUB_ENV"
-
-      - name: Install Roc
-        uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
-        with:
-          version: nightly-new-compiler
-          nightly-tag: ${{ env.ROC_NIGHTLY_TAG }}
-
-      - name: Run normal and smoke tests
-        run: python3 scripts/test.py zig browser roc-check roc-test wasm --native never --bundle never
-
-      # Replaying the committed corpus needs no AFL++ and takes seconds, which is
-      # what makes it affordable on every pull request. It is the step that stops
-      # a fixed crash from returning unnoticed; the campaigns that find new ones
-      # run separately, in the scheduled fuzz workflow.
-      - name: Replay fuzz regression corpus
-        run: python3 scripts/fuzz.py check
-
-  full:
+  source:
     name: Full tests and coverage
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          version: 0.16.0
-          use-cache: false
-
-      - name: Read pinned Roc version
-        run: printf 'ROC_NIGHTLY_TAG=%s\n' "$(sed -n '1p' .roc-version)" >> "$GITHUB_ENV"
-
-      - name: Install Roc
-        uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
-        with:
-          version: nightly-new-compiler
-          nightly-tag: ${{ env.ROC_NIGHTLY_TAG }}
-
-      - name: Install coverage dependencies
-        run: brew install dwarfutils
-
-      - name: Run all tests
-        run: python3 scripts/test.py
-
-      - name: Run native host coverage
+          persist-credentials: false
+      - uses: ./.github/actions/setup-toolchain
+      - run: brew install dwarfutils
+      - run: python3 scripts/test.py
+      - name: Native coverage
         run: |
-          sudo env \
-            "PATH=$PATH" \
+          sudo env "PATH=$PATH" \
             "ZIG_GLOBAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
             "ZIG_LOCAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
-            python3 scripts/coverage.py \
-              --min 86.5 \
+            python3 scripts/coverage.py --min 86.5 \
               --min-file src/signals/engine.zig=71.0 \
               --min-file src/signals/descriptor_stream.zig=76.0 \
               --min-file src/native_host.zig=92.5 \
               --min-file src/signals/roc_platform_abi.zig=72.0 \
-              --min-file src/spec/spec_parser.zig=90.0 \
-              --top 20
-
-      - name: Upload native host coverage
+              --min-file src/spec/spec_parser.zig=90.0 --top 20
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-host-coverage
           path: kcov-output/native-host
 
-  site:
-    name: Build static site
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+  platform-source:
+    name: Platform source
+    needs: [smoke, source]
+    if: always()
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require every source job
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: python3 -c 'import json,os; assert all(job["result"] == "success" for job in json.loads(os.environ["RESULTS"]).values())'
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
-        with:
-          version: 0.16.0
-          use-cache: false
-
-      - name: Read pinned Roc version
-        run: printf 'ROC_NIGHTLY_TAG=%s\n' "$(sed -n '1p' .roc-version)" >> "$GITHUB_ENV"
-
-      - name: Install Roc
-        uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
-        with:
-          version: nightly-new-compiler
-          nightly-tag: ${{ env.ROC_NIGHTLY_TAG }}
-
-      - name: Install site tools
-        run: |
-          curl -fsSL https://github.com/getzola/zola/releases/download/v0.22.1/zola-v0.22.1-x86_64-unknown-linux-gnu.tar.gz -o zola.tar.gz
-          tar -xzf zola.tar.gz
-          sudo mv zola /usr/local/bin/zola
-          curl -fsSL https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-linux-x64 -o tailwindcss
-          chmod +x tailwindcss
-          sudo mv tailwindcss /usr/local/bin/tailwindcss
-
-      - name: Build static site
-        run: |
-          python3 scripts/serve.py --no-server --app-opt dev
-          python3 scripts/serve.py --no-server --app-opt size
-
-      - name: Upload static site artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: github-pages-dist
-          path: dist
-
-      - name: Upload GitHub Pages artifact
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: dist
-
-  deploy-pages:
-    name: Deploy GitHub Pages
+  published:
+    name: Published examples
     runs-on: ubuntu-24.04
-    needs:
-      - full
-      - site
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.nightly_validation
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    concurrency:
-      group: github-pages
-      cancel-in-progress: false
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    timeout-minutes: 45
     steps:
-      - name: Deploy GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-toolchain
+      - run: python3 scripts/test.py published
+
+  archive:
+    name: Release archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-toolchain
+      - run: python3 scripts/release.py prepare --version 0.2.0-rc1 --directory "$RUNNER_TEMP/candidate"
+      - run: python3 scripts/release.py check --directory "$RUNNER_TEMP/candidate"

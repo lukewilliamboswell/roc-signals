@@ -195,13 +195,13 @@ pub fn DomSink(comptime Host: type) type {
         }
 
         /// Emits the already-decided command that attaches a newly created render node.
-        pub fn appendNode(self: @This(), elem_id: ElemId, parent_elem_id: ElemId, tag: []const u8) void {
-            self.host.sinkAppendNode(elem_id, parent_elem_id, tag);
+        pub fn appendNode(self: @This(), elem_id: ElemId, parent_elem_id: ElemId, shape: render.NodeShape) void {
+            self.host.sinkAppendNode(elem_id, parent_elem_id, shape);
         }
 
         /// Ensures the host render surface contains the engine-selected node and tag.
-        pub fn ensureNode(self: @This(), elem_id: ElemId, tag: []const u8) void {
-            self.host.sinkEnsureNode(elem_id, tag);
+        pub fn ensureNode(self: @This(), elem_id: ElemId, shape: render.NodeShape) void {
+            self.host.sinkEnsureNode(elem_id, shape);
         }
 
         /// Emits removal of a node whose owning scope has already been disposed by the engine.
@@ -387,12 +387,12 @@ test "DomSink forwards every render seam method to the host" {
         }
 
         /// Adapts the shared engine's append node command to this host without re-deciding reactive meaning.
-        pub fn sinkAppendNode(self: *@This(), _: ElemId, _: ElemId, _: []const u8) void {
+        pub fn sinkAppendNode(self: *@This(), _: ElemId, _: ElemId, _: render.NodeShape) void {
             self.mark(1);
         }
 
         /// Adapts the shared engine's ensure node command to this host without re-deciding reactive meaning.
-        pub fn sinkEnsureNode(self: *@This(), _: ElemId, _: []const u8) void {
+        pub fn sinkEnsureNode(self: *@This(), _: ElemId, _: render.NodeShape) void {
             self.mark(2);
         }
 
@@ -534,8 +534,8 @@ test "DomSink forwards every render seam method to the host" {
     const elem = ElemId.fromRaw(1);
 
     sink.reset();
-    sink.appendNode(elem, ids.root_elem, "div");
-    sink.ensureNode(elem, "div");
+    sink.appendNode(elem, ids.root_elem, render.NodeShape.html("div"));
+    sink.ensureNode(elem, render.NodeShape.html("div"));
     sink.removeNode(ElemId.fromRaw(9));
     sink.replaceChildren(elem, &children);
     sink.replaceChildrenForMoves(elem, &children);

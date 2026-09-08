@@ -20,12 +20,7 @@ import pf.Ui
 Feed := {}.{
 	PageItem : { key : Str, active : Bool }
 
-	State : { favorite_serial : U64 }
-
 	FavoriteResult : [FavoriteIdle, FavoriteAccepted(Api.Article), FavoriteRejected(Str)]
-
-	initial_state : Feed.State
-	initial_state = { favorite_serial: 0 }
 
 	view : Signal.Signal(Api.Remote(Api.FeedPage)), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
 	view = |remote, session, intent| {
@@ -72,7 +67,6 @@ Feed := {}.{
 		)
 	}
 
-
 	is_empty_state : Api.Remote(Api.FeedPage) -> Bool
 	is_empty_state = |remote|
 		match remote {
@@ -87,110 +81,100 @@ Feed := {}.{
 			_ => []
 		}
 
-
 	preview_row : Str, Signal.Signal(Api.ArticleSummary), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
 	preview_row = |slug, article, session, intent| {
 		Ui.component(
 			|| {
-				Ui.state(
-					initial_state,
-					|model| {
-						favorite_task = Http.request_task("feed-favorite")
-						favorite_result : Signal.Signal(Feed.FavoriteResult)
-						favorite_result = Api.response_state(favorite_task).map(classify_favorite)
+				favorite_task = Http.request_task("feed-favorite")
+				favorite_result : Signal.Signal(Feed.FavoriteResult)
+				favorite_result = Api.response_state(favorite_task).map(classify_favorite)
 
-						model_signal = model.signal()
-						token = session.map(|value| Session.token_of(value))
-						row = { article: article, result: favorite_result }.Signal.map(|value| row_state(value.article, value.result))
-						request_inputs = { model: model_signal, row: row, token: token }.Signal
-						request = request_inputs.map(|value| { serial: value.model.favorite_serial, slug: value.row.slug, favorited: value.row.favorited, token: value.token })
+				token = session.map(|value| Session.token_of(value))
+				row = { article: article, result: favorite_result }.Signal.map(|value| row_state(value.article, value.result))
+				request_inputs = { row: row, token: token }.Signal
+				request = request_inputs.map(|value| { slug: value.row.slug, favorited: value.row.favorited, token: value.token })
 
-						date_text : Signal.Signal(Str)
-						date_text = article.map(|value| Format.display_date(value.created_at))
+				date_text : Signal.Signal(Str)
+				date_text = article.map(|value| Format.display_date(value.created_at))
 
-						title : Signal.Signal(Str)
-						title = row.map(|value| value.title)
+				title : Signal.Signal(Str)
+				title = row.map(|value| value.title)
 
-						description : Signal.Signal(Str)
-						description = row.map(|value| value.description)
+				description : Signal.Signal(Str)
+				description = row.map(|value| value.description)
 
-						favorites : Signal.Signal(Str)
-						favorites = row.map(|value| "${value.favorites_count.to_str()} favorites")
+				favorites : Signal.Signal(Str)
+				favorites = row.map(|value| "${value.favorites_count.to_str()} favorites")
 
-						favorite_label : Signal.Signal(Str)
-						favorite_label = row.map(favorite_button_label)
+				favorite_label : Signal.Signal(Str)
+				favorite_label = row.map(favorite_button_label)
 
-						favorite_error : Signal.Signal(Str)
-						favorite_error = favorite_result.map(favorite_message_of)
+				favorite_error : Signal.Signal(Str)
+				favorite_error = favorite_result.map(favorite_message_of)
 
-						author_rows : Signal.Signal(List(Str))
-						author_rows = article.map(|value| [value.author.username])
+				author_rows : Signal.Signal(List(Str))
+				author_rows = article.map(|value| [value.author.username])
 
-						tags : Signal.Signal(List(Str))
-						tags = article.map(|value| value.tag_list)
+				tags : Signal.Signal(List(Str))
+				tags = article.map(|value| value.tag_list)
 
-						signed_in = session.map(|value| Session.is_signed_in(value))
+				signed_in = session.map(|value| Session.is_signed_in(value))
 
-						Elem.Element(
-							{
-								tag: "article",
-								attrs: [Html.class_attr("border-b border-zinc-200 bg-white py-6 first:border-t")],
-								children: [
-									Ui.on_change(
-										request,
-										|value|
-											if value.serial == 0 or value.slug.is_empty() {
-												Signal.noop
-											} else if value.favorited {
-												Http.start(favorite_task, Api.delete_request(Api.favorite_uri(value.slug), value.token))
-											} else {
-												Http.start(favorite_task, Api.post_request(Api.favorite_uri(value.slug), "", value.token))
-											},
+				Elem.Element({
+					namespace: Html,
+					tag: "article",
+					attrs: [Html.class_attr("border-b border-zinc-200 bg-white py-6 first:border-t")],
+					children: [
+						Html.div_c(
+							"mb-3 flex flex-wrap items-center gap-2 text-sm text-zinc-500",
+							[
+								Ui.each(Signal.map(author_rows, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| Nav.link(each_row.key(), "font-medium text-emerald-600", Route.profile_location(each_row.key()), intent)),
+								Html.text_s(date_text),
+							],
+						),
+						Elem.Element({
+							namespace: Html,
+							tag: "a",
+							attrs: [
+								Html.class_attr("block text-2xl font-semibold tracking-normal text-zinc-900 no-underline hover:text-emerald-700 hover:no-underline"),
+								Html.attr("href", "/article/${slug}"),
+								Html.on_event("click", Html.event_policy_prevent_default, intent.on_unit(|current| Nav.for_target(current, Route.article_location(slug)))),
+							],
+							children: [Html.text_s(title)],
+						}),
+						Html.paragraph_s_c(description, "mt-2 leading-7 text-zinc-600"),
+						Html.div_c(
+							"mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-zinc-500",
+							[
+								Ui.when(
+									signed_in,
+									|| Html.action_button_attrs(
+										favorite_label,
+										favorite_label.map(|_| False),
+										[Html.class_attr("rounded-full border border-emerald-500 bg-white px-3 py-1.5 font-medium text-emerald-700 transition hover:bg-emerald-50")],
+										Ui.action(
+											request,
+											|value|
+												if value.slug.is_empty() {
+													Signal.noop
+												} else if value.favorited {
+													Http.start(favorite_task, Api.delete_request(Api.favorite_uri(value.slug), value.token))
+												} else {
+													Http.start(favorite_task, Api.post_request(Api.favorite_uri(value.slug), "", value.token))
+												},
+										),
 									),
-									Html.div_c(
-										"mb-3 flex flex-wrap items-center gap-2 text-sm text-zinc-500",
-										[
-											Ui.each(Signal.map(author_rows, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| Nav.link(each_row.key(), "font-medium text-emerald-600", Route.profile_location(each_row.key()), intent)),
-											Html.text_s(date_text),
-										],
-									),
-									Elem.Element(
-										{
-											tag: "a",
-											attrs: [
-											Html.class_attr("block text-2xl font-semibold tracking-normal text-zinc-900 no-underline hover:text-emerald-700 hover:no-underline"),
-												Html.attr("href", "/article/${slug}"),
-												Html.on_event("click", Html.event_policy_prevent_default, intent.on_unit(|current| Nav.for_target(current, Route.article_location(slug)))),
-											],
-											children: [Html.text_s(title)],
-										},
-									),
-									Html.paragraph_s_c(description, "mt-2 leading-7 text-zinc-600"),
-									Html.div_c(
-										"mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-zinc-500",
-										[
-											Ui.when(
-												signed_in,
-												|| Html.action_button_attrs(
-													favorite_label,
-													favorite_label.map(|_| False),
-												[Html.class_attr("rounded-full border border-emerald-500 bg-white px-3 py-1.5 font-medium text-emerald-700 transition hover:bg-emerald-50")],
-													model.on_unit(|value| { favorite_serial: value.favorite_serial + 1 }),
-												),
-												|| Html.text_s(favorites),
-											),
-											Html.div_c(
-												"flex gap-1",
-												[Ui.each(Signal.map(tags, |rows_items| Rows.from_list(rows_items, |tag| tag) ?? crash "duplicate row key"), |each_row| tag_pill(each_row.key(), intent))],
-											),
-										],
-									),
-									Html.paragraph_s_c(favorite_error, "mt-3 text-sm text-red-700"),
-								],
-							},
-						)
-					},
-				)
+									|| Html.text_s(favorites),
+								),
+								Html.div_c(
+									"flex gap-1",
+									[Ui.each(Signal.map(tags, |rows_items| Rows.from_list(rows_items, |tag| tag) ?? crash "duplicate row key"), |each_row| tag_pill(each_row.key(), intent))],
+								),
+							],
+						),
+						Html.paragraph_s_c(favorite_error, "mt-3 text-sm text-red-700"),
+					],
+				})
 			},
 		)
 	}
@@ -253,13 +237,12 @@ Feed := {}.{
 	pagination = |remote, feed, intent| {
 		inputs = { remote: remote, feed: feed }.Signal
 		items = inputs.map(|value| page_items(value.remote, value.feed))
-		Elem.Element(
-			{
-				tag: "nav",
-				attrs: [Html.attr("aria-label", "Pagination"), Html.class_attr("flex flex-wrap gap-2 py-6")],
-				children: [Ui.each(Signal.map(items, |rows_items| Rows.from_list(rows_items, |item| item.key) ?? crash "duplicate row key"), |each_row| page_link_row(intent)(each_row.key(), each_row.signal()))],
-			},
-		)
+		Elem.Element({
+			namespace: Html,
+			tag: "nav",
+			attrs: [Html.attr("aria-label", "Pagination"), Html.class_attr("flex flex-wrap gap-2 py-6")],
+			children: [Ui.each(Signal.map(items, |rows_items| Rows.from_list(rows_items, |item| item.key) ?? crash "duplicate row key"), |each_row| page_link_row(intent)(each_row.key(), each_row.signal()))],
+		})
 	}
 
 	page_link_row : Ui.State(Nav.RouteIntent) -> (Str, Signal.Signal(Feed.PageItem) -> Elem)
@@ -315,7 +298,7 @@ Feed := {}.{
 				Route.feed_location({ page: page, tag: tag, source: Global })
 			},
 		)
-		?? Route.home_location
+			?? Route.home_location
 
 	number_range : U64, U64 -> List(U64)
 	number_range = |from, to|
@@ -324,7 +307,6 @@ Feed := {}.{
 		} else {
 			[from].concat(number_range(from + 1, to))
 		}
-
 
 }
 

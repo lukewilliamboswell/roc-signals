@@ -19,7 +19,6 @@ import pf.Ui
 Article := {}.{
 	State : {
 		article_delete_serial : U64,
-		favorite_serial : U64,
 		comment_body : Str,
 		comment_serial : U64,
 		submitted_comment_body : Str,
@@ -38,7 +37,6 @@ Article := {}.{
 	initial_state : Article.State
 	initial_state = {
 		article_delete_serial: 0,
-		favorite_serial: 0,
 		comment_body: "",
 		comment_serial: 0,
 		submitted_comment_body: "",
@@ -85,9 +83,16 @@ Article := {}.{
 						article_delete_inputs = { model: model_signal, slug: slug, token: token }.Signal
 						article_delete_request = article_delete_inputs.map(|value| { serial: value.model.article_delete_serial, slug: value.slug, token: value.token })
 
-						favorite_inputs = { model: model_signal, article: article_state, slug: slug, token: token }.Signal
-						favorite_request = favorite_inputs.map(
-							|value| { serial: value.model.favorite_serial, slug: value.slug, token: value.token, favorited: article_favorited(value.article) },
+						favorite_action = Ui.action(
+							{ article: article_state, slug: slug, token: token }.Signal,
+							|request|
+								if request.slug.is_empty() {
+									Signal.noop
+								} else if article_favorited(request.article) {
+									Http.start(favorite_task, Api.delete_request(Api.favorite_uri(request.slug), request.token))
+								} else {
+									Http.start(favorite_task, Api.post_request(Api.favorite_uri(request.slug), "", request.token))
+								},
 						)
 
 						comment_inputs = { model: model_signal, slug: slug, token: token }.Signal
@@ -185,17 +190,6 @@ Article := {}.{
 										},
 								),
 								Ui.on_change(
-									favorite_request,
-									|request|
-										if request.serial == 0 or request.slug.is_empty() {
-											Signal.noop
-										} else if request.favorited {
-											Http.start(favorite_task, Api.delete_request(Api.favorite_uri(request.slug), request.token))
-										} else {
-											Http.start(favorite_task, Api.post_request(Api.favorite_uri(request.slug), "", request.token))
-										},
-								),
-								Ui.on_change(
 									comment_request,
 									|request|
 										if request.serial == 0 or request.slug.is_empty() {
@@ -240,14 +234,14 @@ Article := {}.{
 								Ui.on_change(
 									article_refetch,
 									|request|
-									match request.result {
-										FavoriteAccepted(_) => if request.slug.is_empty() {
-											Signal.noop
-										} else {
-											Http.get_text(article_task, Api.article_uri(request.slug))
-										}
-										_ => Signal.noop
-									},
+										match request.result {
+											FavoriteAccepted(_) => if request.slug.is_empty() {
+												Signal.noop
+											} else {
+												Http.get_text(article_task, Api.article_uri(request.slug))
+											}
+											_ => Signal.noop
+										},
 								),
 								Ui.on_change(
 									article_delete_done,
@@ -268,7 +262,7 @@ Article := {}.{
 										|| Html.div(
 											[Html.attr("data-conduit", "article"), Html.class_attr("rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm sm:p-10")],
 											[
-												Elem.Element({ tag: "h2", attrs: [Html.class_attr("text-4xl font-semibold leading-tight tracking-normal text-zinc-950 sm:text-5xl")], children: [Html.text_s(title)] }),
+												Elem.Element({ namespace: Html, tag: "h2", attrs: [Html.class_attr("text-4xl font-semibold leading-tight tracking-normal text-zinc-950 sm:text-5xl")], children: [Html.text_s(title)] }),
 												Html.div_c(
 													"flex flex-wrap items-center gap-2 py-4 text-sm text-zinc-500",
 													[
@@ -282,7 +276,7 @@ Article := {}.{
 														favorite_label,
 														favorite_label.map(|_| False),
 														[Html.class_attr("mb-4 mr-2 rounded-lg border border-emerald-500 bg-white px-4 py-2 text-sm font-medium text-emerald-700 shadow-sm transition hover:bg-emerald-50")],
-														model.on_unit(|value| { ..value, favorite_serial: value.favorite_serial + 1 }),
+														favorite_action,
 													),
 													|| Html.text(""),
 												),
@@ -406,7 +400,7 @@ Article := {}.{
 		Html.div_c(
 			"mt-10 border-t border-zinc-200 pt-8",
 			[
-				Elem.Element({ tag: "h3", attrs: [Html.class_attr("mb-5 text-2xl font-semibold tracking-normal text-zinc-950")], children: [Html.text("Comments")] }),
+				Elem.Element({ namespace: Html, tag: "h3", attrs: [Html.class_attr("mb-5 text-2xl font-semibold tracking-normal text-zinc-950")], children: [Html.text("Comments")] }),
 				Ui.when(
 					signed_in,
 					|| comment_form(comment_body, comment_errors, model),
@@ -537,18 +531,12 @@ Article := {}.{
 			_ => ""
 		}
 
-
-
-
 	comments_of : Api.Remote(List(Api.Comment)) -> List(Api.Comment)
 	comments_of = |remote|
 		match remote {
 			Ready(comments) => comments
 			_ => []
 		}
-
-
-
 
 	article_title : Api.Remote(Api.Article) -> Str
 	article_title = |remote|

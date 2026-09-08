@@ -318,6 +318,39 @@ native = true
 bench = false
 
 [[examples]]
+slug = "svg"
+title = "Reactive SVG"
+description = "Explicit SVG namespaces, reactive labels, and mixed-namespace dynamic structure."
+source = "examples/_fixtures/svg/main.roc"
+specs = "examples/_fixtures/svg/specs"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
+slug = "coordinated-writes"
+title = "Coordinated state writes"
+description = "Atomic independent state writes, settled observers, and reusable commands."
+source = "examples/_fixtures/coordinated-writes/main.roc"
+specs = "examples/_fixtures/coordinated-writes/specs"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
+slug = "event-actions"
+title = "Event Actions"
+description = "Internal fixture for occurrence-preserving actions, declared read snapshots, and scoped disposal."
+source = "examples/_fixtures/event-actions/main.roc"
+specs = "examples/_fixtures/event-actions/specs"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
 slug = "state-reads"
 title = "State Reads"
 description = "Internal fixture for reducers that atomically read one state while writing another."

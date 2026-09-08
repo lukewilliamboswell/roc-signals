@@ -62,15 +62,13 @@ For three or more inputs use the record builder rather than nesting `map2`:
 | Function | Type |
 | --- | --- |
 | `fake_task` | `Str, (Str -> a), (Str -> err) -> Task(a, err)` |
-| `task_source` | `Str, (Str -> a), (Str -> err), Bool -> Task(a, err)` |
-| `task_source_with_eq` | `Str, (Str -> a), (Str -> err), Bool, (a, a -> Bool), (err, err -> Bool) -> Task(a, err)` |
 | `from_task` | `Task(a, err) -> Signal(TaskStatus(a, err))` |
 | `fold_task` | `Task(a, err), b, (a -> b), (err -> b) -> Signal(b)` |
 | `start_str` | `Task(a, err), Str -> Cmd` |
 
-`TaskStatus(a, err)` is `[Loading, Done(a), Failed(err)]`. The `Bool` on
-`task_source` is `reset_on_start`: whether starting a request republishes
-`Loading` or keeps the last value while pending.
+`TaskStatus(a, err)` is `[Loading, Done(a), Failed(err)]`. Construct tasks with
+`Signal.fake_task` or the `Http` helpers. `task_source` and
+`task_source_with_eq` are internal platform plumbing, not supported app APIs.
 
 ## Ui
 
@@ -79,7 +77,14 @@ For three or more inputs use the record builder rather than nesting `map2`:
 | `state` | `a, (State(a) -> Elem) -> Elem` | introduce a source |
 | `component` | `(() -> Elem) -> Elem` | private identity scope |
 | `when` | `Signal(Bool), (() -> Elem), (() -> Elem) -> Elem` | conditional |
+| `switch` | `Signal(case), (case -> Elem) -> Elem` where `case.is_eq` | lazy branch; replace its scope when the case changes |
 | `each` | `Signal(Rows(item)), (Ui.Row(item) -> Elem) -> Elem` | keyed rows |
+| `action` | `Signal(a), (a -> Cmd) -> Msg` | command for each unit event, using settled declared reads |
+| `action_str` | `Signal(a), (a, Str -> Cmd) -> Msg` | command with target text value |
+| `action_bool` | `Signal(a), (a, Bool -> Cmd) -> Msg` | command with target checked value |
+| `action_key` | `Signal(a), (a, KeyPayload -> Cmd) -> Msg` | command with key text and shift state |
+| `action_detail` | `Signal(a), (a, Str -> Cmd) -> Msg` | command with serialized custom-event detail |
+| `update_states` | `List(StateWrite) -> Cmd` | replace distinct states in one propagation turn |
 | `on_mount` | `(() -> Cmd) -> Elem` | run on scope mount |
 | `on_change` | `Signal(a), (a -> Cmd) -> Elem` | run on value change |
 | `on_change_initial` | `Signal(a), (a -> Cmd) -> Elem` | first value **and** changes |
@@ -128,8 +133,29 @@ within one unpublished batch preserves that row's stable slot.
 | `on_bool` | `State(a), (a, Bool -> a) -> Msg` | checkbox change |
 | `on_key` | `State(a), (a, KeyPayload -> a) -> Msg` | keydown |
 | `on_detail` | `State(a), (a, Str -> a) -> Msg` | custom event detail |
+| `on_unit_with` | `State(a), State(b), (a, b -> a) -> Msg` | snapshot a second state while reducing the first |
+| `on_str_with` | `State(a), State(b), (a, b, Str -> a) -> Msg` | text input plus a second state |
+| `on_bool_with` | `State(a), State(b), (a, b, Bool -> a) -> Msg` | checkbox plus a second state |
+| `on_key_with` | `State(a), State(b), (a, b, KeyPayload -> a) -> Msg` | keyboard plus a second state |
+| `on_detail_with` | `State(a), State(b), (a, b, Str -> a) -> Msg` | custom event plus a second state |
+| `set_cmd` | `State(a), a -> Cmd` | describe a replacement from a command-producing hook |
+| `write` | `State(a), a -> Ui.StateWrite` | describe one destination of a coordinated write set |
 
 `Ui.KeyPayload` is `{ key : Str, shift_key : Bool }`.
+
+The `_with` methods read both states from the same pre-event snapshot and write
+only the receiver. A `set_cmd` emitted by a value-change hook starts a subsequent
+state update; several such hooks do not form one atomic multi-source write.
+Use `Ui.update_states(List(Ui.StateWrite))` to replace several distinct states
+in one propagation turn. Duplicate destinations are errors even if their values
+are unchanged. An empty write set does nothing. State commands are reusable:
+executing one materializes fresh owned proposals from its captured values.
+
+`Ui.action` attaches to a click, submit, or other payload-free event just like a
+reducer message. Combine reads with `{ first: first, second: second }.Signal`.
+Changing these reads does not run the action; each accepted event does, even
+when its reads equal those of the preceding event. Its command can use
+`state.set_cmd(value)` to write a state declared in an enclosing scope.
 
 ## Html
 
@@ -250,12 +276,34 @@ Non-2xx statuses resolve as **responses**, not errors. The runtime does not set
 | `remove_local_storage(key)` | `Str -> Cmd` |
 | `remove_session_storage(key)` | `Str -> Cmd` |
 
+## Svg
+
+Import `pf.Svg` for SVG elements that use the same signals, attributes, event
+messages, and dynamic scopes as HTML. `Svg.svg(attrs, children)` creates a
+viewport; `Svg.group(attrs, children)` groups shapes. `Svg.path`, `Svg.rect`,
+`Svg.line`, and `Svg.polyline` accept attribute lists. Use
+`Svg.element(local_name, attrs, children)` for other case-sensitive SVG names.
+`Svg.text(attrs, label)` and `Svg.text_s(attrs, label_signal)` create genuine SVG
+text elements with text-node children.
+
+```roc
+Svg.svg([Html.attr("viewBox", "0 0 200 100")], [
+    Svg.rect([Html.attr("width", "80"), Html.attr("height", "30")]),
+    Svg.text_s([Html.attr("x", "5"), Html.attr("y", "20")], label),
+])
+```
+
+Namespace selection is explicit, not inherited from parents. Use HTML helpers
+for HTML content inside `Svg.element("foreignObject", ...)`. SVG attributes
+such as `viewBox` retain their case; use `Html.attr` and `Html.attr_s` for static
+and signal-backed values.
+
 ## Elem
 
 Usually built through `Html`, but available directly for arbitrary tags:
 
 ```roc
-Elem.Element({ tag: "header", attrs: [Html.class_attr("...")], children: [...] })
+Elem.Element({ namespace: Html, tag: "header", attrs: [Html.class_attr("...")], children: [...] })
 ```
 
 Variants: `Element`, `Text`, `TextSignal`, `State`, `When`, `Each`, `Component`,
@@ -404,9 +452,8 @@ page — check here before designing around one.
 | Document- or window-level events | All event bindings attach to elements | JS behaviour |
 | WebSocket / SSE / streaming | Realtime is polling only | `taskHandler`, or poll |
 | Raw HTML injection | By design — no `dangerouslySetInnerHTML` | Parse to `Elem` nodes ([Conduit's `Markdown.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples/conduit/Markdown.roc)) |
-| Multi-way `match` on a route | Nine routes means nine nested `Ui.when` | Nested `Ui.when`, built inside-out |
 | List virtualization | `Ui.each` materializes every row | — |
-| Table/list element helpers | Use `Elem.Element({ tag: "table", ... })` directly | — |
+| Table/list element helpers | Use `Elem.Element({ namespace: Html, tag: "table", ... })` directly | — |
 | Enter/exit animation hooks | No transition lifecycle | CSS transitions on signal-backed classes |
 | Generated unique ids | `aria-describedby` targets are hand-written, so repeated rows collide | Derive an id from the row key |
 

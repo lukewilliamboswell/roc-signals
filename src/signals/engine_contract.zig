@@ -74,8 +74,8 @@ pub fn verifyRegistryOps(comptime Ops: type) void {
 /// Performs verify sink inside the shared engine while preserving transaction and changed-set invariants.
 pub fn verifySink(comptime Sink: type) void {
     verifyDeclFn("engine Sink", Sink, "reset", .{Sink}, void);
-    verifyDeclFn("engine Sink", Sink, "appendNode", .{ Sink, ids.ElemId, ids.ElemId, []const u8 }, void);
-    verifyDeclFn("engine Sink", Sink, "ensureNode", .{ Sink, ids.ElemId, []const u8 }, void);
+    verifyDeclFn("engine Sink", Sink, "appendNode", .{ Sink, ids.ElemId, ids.ElemId, render.NodeShape }, void);
+    verifyDeclFn("engine Sink", Sink, "ensureNode", .{ Sink, ids.ElemId, render.NodeShape }, void);
     verifyDeclFn("engine Sink", Sink, "removeNode", .{ Sink, ids.ElemId }, void);
     verifyDeclFn("engine Sink", Sink, "replaceChildren", .{ Sink, ids.ElemId, []const ids.ElemId }, void);
     verifyDeclFn("engine Sink", Sink, "replaceChildrenForMoves", .{ Sink, ids.ElemId, []const ids.ElemId }, void);
@@ -126,9 +126,9 @@ const VerifySink = struct {
     /// Stages a complete render-surface reset in the host command sink.
     pub fn reset(_: VerifySink) void {}
     /// Emits the already-decided command that attaches a newly created render node.
-    pub fn appendNode(_: VerifySink, _: ids.ElemId, _: ids.ElemId, _: []const u8) void {}
+    pub fn appendNode(_: VerifySink, _: ids.ElemId, _: ids.ElemId, _: render.NodeShape) void {}
     /// Ensures the host render surface contains the engine-selected node and tag.
-    pub fn ensureNode(_: VerifySink, _: ids.ElemId, _: []const u8) void {}
+    pub fn ensureNode(_: VerifySink, _: ids.ElemId, _: render.NodeShape) void {}
     /// Emits removal of a node whose owning scope has already been disposed by the engine.
     pub fn removeNode(_: VerifySink, _: ids.ElemId) void {}
     /// Publishes the engine-selected child order for one parent.

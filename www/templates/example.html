@@ -17,8 +17,11 @@
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <a class="button" href="{{ get_url(path='examples/' ~ example.slug ~ '/source/main.roc') }}">Source</a>
+        {% if config.extra.release_starters_url | default(value="") %}
+        <a class="button" href="{{ config.extra.release_starters_url }}">Complete starters</a>
+        {% endif %}
         {% if example.specs %}
-        <a class="button" href="{{ config.extra.github_url }}/tree/main/{{ example.specs }}">Specs</a>
+        <a class="button" href="{{ config.extra.github_url }}/tree/{{ config.extra.release_version | default(value='main') }}/{{ example.specs }}">Specs</a>
         {% endif %}
         <a class="button-primary" href="{{ get_url(path='examples/', trailing_slash=true) }}">All examples</a>
       </div>

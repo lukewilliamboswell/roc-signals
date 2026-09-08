@@ -46,6 +46,10 @@
 //!
 //! The element tree is a `div` whose children are a mix of static text, `each`
 //! sites, `when` sites, and nested wrapper elements holding more of the same.
+//! Every wrapper also carries six custom attributes. Nested builders reserve
+//! their descriptors before the parent's remaining descriptors are collected,
+//! so attributes exercise outstanding reservations across those boundaries.
+//! The oracle checks their publication alongside topology and ownership.
 //! Wrappers matter: they are what puts sibling sites under *distinct render
 //! parents*, which is the shape the multi-parent suppression bug needed.
 //!
@@ -891,7 +895,15 @@ fn buildChildren(children: []const Child, roc_host: *abi.RocHost, shared: *const
             .when => |when| fixtures.whenOnListPredicate(roc_host, shared.token, when.condition.predicate, when.condition.operand, buildBranch(when.when_true, roc_host, shared), buildBranch(when.when_false, roc_host, shared)),
         };
     }
-    return fixtures.element(roc_host, built[0..children.len]);
+    return attributedElement(roc_host, built[0..children.len]);
+}
+
+const wrapper_attr_names = [_][]const u8{ "data-a", "data-b", "data-c", "data-d", "data-e", "data-f" };
+
+fn attributedElement(roc_host: *abi.RocHost, children: []const abi.Elem) abi.Elem {
+    var attrs: [wrapper_attr_names.len]abi.NodeAttr = undefined;
+    for (wrapper_attr_names, &attrs) |name, *attr| attr.* = fixtures.customTextAttr(roc_host, name, "present");
+    return fixtures.elementWith(roc_host, "div", &attrs, children);
 }
 
 fn buildBranch(branch: Branch, roc_host: *abi.RocHost, shared: *const SharedSource) abi.Elem {
@@ -933,7 +945,7 @@ fn rowCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_
         .when => fixtures.whenOnListPredicate(roc_host, capture.shared.token, spec.condition.predicate, spec.condition.operand, fixtures.text(roc_host, label), fixtures.text(roc_host, hidden_text)),
         .nested_each => blk: {
             const children = [_]abi.Elem{ fixtures.text(roc_host, label), buildSite(spec.inner.?, roc_host, capture.shared, rowVersion(spec, item)) };
-            break :blk fixtures.element(roc_host, &children);
+            break :blk attributedElement(roc_host, &children);
         },
     };
     fixtures.writeResult(abi.Elem, ret, elem);
@@ -993,6 +1005,16 @@ fn expectPublished(host: *const Host, program: Program, items: []const i64) void
     }
     expectLabels(host, program, items);
     expectDocumentOrder(host, program, items);
+    for (host.dom_elements.items) |elem| {
+        if (!elem.active or elem.id == fixtures.render_root.raw() or !std.mem.eql(u8, elem.tag, "div")) continue;
+        if (elem.attrs.items.len != wrapper_attr_names.len) fail("wrapper {d} has {d} custom attributes, expected {d}", .{ elem.id, elem.attrs.items.len, wrapper_attr_names.len });
+        for (wrapper_attr_names) |name| {
+            const value = for (elem.attrs.items) |attr| {
+                if (std.mem.eql(u8, attr.name, name)) break attr.value;
+            } else fail("wrapper {d} lost attribute {s}", .{ elem.id, name });
+            if (!std.mem.eql(u8, value, "present")) fail("wrapper {d} changed attribute {s}", .{ elem.id, name });
+        }
+    }
     host.engine.validateActiveScopeSiteInsertIndexes();
 }
 

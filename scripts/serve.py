@@ -16,6 +16,7 @@ import socketserver
 import subprocess
 import threading
 import tomllib
+from toolchain import replace_platform
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -300,11 +301,10 @@ class PortReservation:
 
 
 def rewrite_platform_headers(root: Path, platform_ref: str) -> None:
-    replacement = f'platform "{platform_ref}"'
     for source in sorted(root.rglob("*.roc")):
         text = source.read_text(encoding="utf-8")
-        updated, count = PLATFORM_HEADER_RE.subn(replacement, text, count=1)
-        if count != 0:
+        updated = replace_platform(text, platform_ref)
+        if updated != text:
             source.write_text(updated, encoding="utf-8")
 
 
@@ -387,6 +387,7 @@ def build_example_wasm(
             build_dir / source.name,
         ]
     )
+    run(["node", ROOT / "scripts" / "browser" / "validate_wasm.mjs", wasm_path])
 
 
 def build_examples(

@@ -97,20 +97,19 @@ Home := {}.{
 						}
 					},
 		)
-		Elem.Element(
-			{
-				tag: "nav",
-				attrs: [Html.attr("aria-label", "Feed tabs"), Html.class_attr("mb-4 flex border-b border-zinc-200")],
-				children: [
-					Ui.when(
-						signed_in,
-						|| Nav.link_c("Your Feed", yours_class, Route.feed_location({ page: 1, tag: AllTags, source: Yours }), intent),
-						|| Html.text(""),
-					),
-					Nav.link_c("Global Feed", global_class, Route.home_location, intent),
-				],
-			},
-		)
+		Elem.Element({
+			namespace: Html,
+			tag: "nav",
+			attrs: [Html.attr("aria-label", "Feed tabs"), Html.class_attr("mb-4 flex border-b border-zinc-200")],
+			children: [
+				Ui.when(
+					signed_in,
+					|| Nav.link_c("Your Feed", yours_class, Route.feed_location({ page: 1, tag: AllTags, source: Yours }), intent),
+					|| Html.text(""),
+				),
+				Nav.link_c("Global Feed", global_class, Route.home_location, intent),
+			],
+		})
 	}
 
 	tags_sidebar : Signal.Signal(Api.Remote(List(Str))), Ui.State(Nav.RouteIntent) -> Elem
@@ -124,36 +123,33 @@ Home := {}.{
 		tags : Signal.Signal(List(Str))
 		tags = tags_state.map(tags_of)
 
-		Elem.Element(
-			{
-				tag: "aside",
-				attrs: [Html.class_attr("h-fit rounded-xl border border-zinc-200 bg-zinc-100 p-5")],
-				children: [
-					Html.paragraph_c("Popular Tags", "mb-3 font-semibold text-zinc-900"),
-					Ui.when(
-						is_loading,
-						|| Html.paragraph("Loading tags..."),
+		Elem.Element({
+			namespace: Html,
+			tag: "aside",
+			attrs: [Html.class_attr("h-fit rounded-xl border border-zinc-200 bg-zinc-100 p-5")],
+			children: [
+				Html.paragraph_c("Popular Tags", "mb-3 font-semibold text-zinc-900"),
+				Ui.when(
+					is_loading,
+					|| Html.paragraph("Loading tags..."),
 
-						|| Ui.when(
-							is_failed,
-							|| Html.paragraph_c("Tags are unavailable.", "text-red-700"),
+					|| Ui.when(
+						is_failed,
+						|| Html.paragraph_c("Tags are unavailable.", "text-red-700"),
 
-							|| Html.div_c(
-								"flex flex-wrap gap-1",
-								[Ui.each(Signal.map(tags, |rows_items| Rows.from_list(rows_items, |tag| tag) ?? crash "duplicate row key"), |each_row| sidebar_tag(each_row.key(), intent))],
-							),
+						|| Html.div_c(
+							"flex flex-wrap gap-1",
+							[Ui.each(Signal.map(tags, |rows_items| Rows.from_list(rows_items, |tag| tag) ?? crash "duplicate row key"), |each_row| sidebar_tag(each_row.key(), intent))],
 						),
 					),
-				],
-			},
-		)
+				),
+			],
+		})
 	}
 
 	sidebar_tag : Str, Ui.State(Nav.RouteIntent) -> Elem
 	sidebar_tag = |tag, intent|
 		Nav.link(tag, "rounded-full bg-zinc-600 px-3 py-1 text-xs font-medium text-white no-underline hover:bg-emerald-700 hover:text-white hover:no-underline", Route.feed_location({ page: 1, tag: Tagged(tag), source: Global }), intent)
-
-
 
 	tags_of : Api.Remote(List(Str)) -> List(Str)
 	tags_of = |remote|

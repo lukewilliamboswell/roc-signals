@@ -403,6 +403,17 @@ fn writeBoundaryTextPayload(bytes: []u8, offset: *usize, text: []const u8) void 
     offset.* += text.len;
 }
 
+test "nested record rejection does not inspect the forbidden body" {
+    const prefix = [_]u8{ SchemaTag.record, 1, 1, 'a', SchemaTag.record };
+    try std.testing.expectError(error.NestedRecordField, parseBoundarySchemaPayloadKind(&prefix));
+    try std.testing.expectError(error.NestedRecordField, parseEventExtractionPayloadKind(&prefix));
+
+    // Even a long chain must stop at the first nested tag in both grammars.
+    const deep = [_]u8{ SchemaTag.record, 1, 1, 'a' } ** 8192 ++ [_]u8{SchemaTag.text};
+    try std.testing.expectError(error.NestedRecordField, parseBoundarySchemaPayloadKind(&deep));
+    try std.testing.expectError(error.NestedRecordField, parseEventExtractionPayloadKind(&deep));
+}
+
 fn parseBoundaryRecord(cursor: *Cursor, comptime parseNode: fn (*Cursor) ParseError!PayloadKind) ParseError!PayloadKind {
     const field_count = try cursor.readByte();
     if (field_count == 0) return error.EmptyRecord;
@@ -421,8 +432,11 @@ fn parseBoundaryRecord(cursor: *Cursor, comptime parseNode: fn (*Cursor) ParseEr
         }
         field_names[parsed_fields] = name;
 
-        const field_kind = try parseNode(cursor);
-        if (field_kind == .bytes) return error.NestedRecordField;
+        // Record fields are scalar. Reject the tag before parsing its body:
+        // descending first makes a forbidden shape consume an unbounded stack.
+        if (cursor.offset >= cursor.bytes.len) return error.Truncated;
+        if (cursor.bytes[cursor.offset] == SchemaTag.record) return error.NestedRecordField;
+        _ = try parseNode(cursor);
     }
 
     return .bytes;

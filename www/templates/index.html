@@ -8,6 +8,9 @@
   <section class="grid gap-6 py-6 lg:grid-cols-[1.2fr_0.8fr] lg:items-center">
     <div class="grid gap-5">
       <p class="text-sm font-medium uppercase tracking-wide text-emerald-700">Roc platform experiment</p>
+      {% if config.extra.release_version | default(value="") %}
+      <p>Supported platform: <a href="{{ config.extra.github_url }}/releases/tag/{{ config.extra.release_version }}">{{ config.extra.release_version }}</a></p>
+      {% endif %}
       <h1 class="max-w-4xl text-4xl font-semibold tracking-normal text-zinc-950 sm:text-5xl">Signal-based UI apps in Roc, running in the browser.</h1>
       <p class="max-w-3xl text-lg leading-8 text-zinc-700">Roc Signals keeps app descriptions pure while the host owns retained state, events, tasks, and DOM patches. Explore the examples, read the guide, or drop in your own wasm build.</p>
       <div class="flex flex-wrap gap-3">

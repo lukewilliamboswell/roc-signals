@@ -174,13 +174,15 @@ def ensure_built(targets: list[Target], need_afl: bool, skip_build: bool) -> Non
 
 
 def seed_corpus(target: Target) -> None:
-    """Creates the corpus directory and plants a seed if it is empty.
+    """Adds committed regressions without discarding local campaign seeds.
 
     AFL++ refuses to start against an empty input directory. The corpus is kept
     between runs on purpose: inputs AFL++ found interesting last time are the
     cheapest way to reach deep engine states quickly on the next run.
     """
     target.corpus_dir.mkdir(parents=True, exist_ok=True)
+    for regression in target.regression_inputs():
+        shutil.copyfile(regression, target.corpus_dir / f"regression-{regression.name}")
     if any(target.corpus_dir.iterdir()):
         return
     (target.corpus_dir / "seed").write_bytes(target.seed)

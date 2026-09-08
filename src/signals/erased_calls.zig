@@ -150,6 +150,17 @@ pub fn callUnitToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable) Cm
     return result;
 }
 
+/// Evaluates an action with borrowed snapshot and payload arguments. The
+/// returned command is independently owned by the caller; neither argument
+/// transfers ownership through the erased-call argument record.
+pub fn callErasedHostValueHostValueToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, snapshot: HostValue, event_payload: HostValue) Cmd {
+    const payload = erasedCallablePayload(callable);
+    var call_args = ErasedHostValueBinaryArgs{ .arg0 = snapshot.toRaw(), .arg1 = event_payload.toRaw() };
+    var result: Cmd = undefined;
+    callErasedCallable(payload, roc_host, @ptrCast(&result), @ptrCast(&call_args), abi.rocErasedCallableCapturePtr(callable));
+    return result;
+}
+
 /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
 pub fn callErasedHostValueHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue, arg1: HostValue) HostValue {
     const payload = erasedCallablePayload(callable);

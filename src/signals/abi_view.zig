@@ -440,18 +440,42 @@ pub const SignalBoolAttr = struct {
 };
 
 pub const EventMessage = struct {
-    binder: StateBinderToken,
-    read_binder: StateBinderToken,
     payload_descriptor: BoundaryPayloadDescriptor,
-    payload_reducer: HostEventReducer,
+    handler: union(enum) {
+        reduce: struct {
+            binder: StateBinderToken,
+            read_binder: StateBinderToken,
+            payload_reducer: HostEventReducer,
+        },
+        action: struct {
+            reads: *const abi.NodeSignalExpr,
+            payload_cap: HostValueCapability,
+            to_cmd: roles.CommandBuilder,
+        },
+    },
 
     /// Builds a borrowed typed view over a previously validated raw ABI record.
     pub fn fromAbi(msg: anytype) EventMessage {
         return .{
-            .binder = StateBinderToken.fromAbi(msg.binder),
-            .read_binder = StateBinderToken.fromAbi(msg.read_binder),
             .payload_descriptor = boundary.boundaryPayloadDescriptorFromExtractionBytes(msg.event_extraction_plan.bytes.items()),
-            .payload_reducer = msg.payload_reducer,
+            .handler = switch (msg.handler.tag) {
+                .Reduce => blk: {
+                    const reduce = msg.handler.payload_reduce();
+                    break :blk .{ .reduce = .{
+                        .binder = StateBinderToken.fromAbi(reduce.binder),
+                        .read_binder = StateBinderToken.fromAbi(reduce.read_binder),
+                        .payload_reducer = reduce.payload_reducer,
+                    } };
+                },
+                .Action => blk: {
+                    const action = msg.handler.payload_action();
+                    break :blk .{ .action = .{
+                        .reads = action.reads,
+                        .payload_cap = action.payload_cap,
+                        .to_cmd = roles.CommandBuilder.fromAbi(action.to_cmd),
+                    } };
+                },
+            },
         };
     }
 };
@@ -571,6 +595,7 @@ pub const NodeAttr = union(enum) {
 };
 
 pub const ElementElem = struct {
+    namespace: render.ElementNamespace,
     tag: RocStrView,
     attrs: []const abi.NodeAttr,
     children: []const abi.Elem,
@@ -638,6 +663,10 @@ pub const Elem = union(enum) {
             .Element => blk: {
                 const payload = elem.payload_element();
                 break :blk .{ .element = .{
+                    .namespace = switch (payload.namespace) {
+                        .html => .html,
+                        .svg => .svg,
+                    },
                     .tag = RocStrView.fromAbi(payload.tag),
                     .attrs = payload.attrs.items(),
                     .children = payload.children.items(),
@@ -1193,10 +1222,12 @@ test "NodeAttr.fromAbi decodes static bool attrs and events" {
         .payload = .{ .on = .{
             .kind = .{ .id = @intFromEnum(EventKind.pointer_down) },
             .msg = .{
-                .binder = binder,
-                .read_binder = binder,
                 .event_extraction_plan = testEventExtractionPlan(.record_key_shift),
-                .payload_reducer = reducer,
+                .handler = .{ .payload = .{ .reduce = .{
+                    .binder = binder,
+                    .read_binder = binder,
+                    .payload_reducer = reducer,
+                } }, .tag = .Reduce },
             },
             .name = abi.RocStr.empty(),
             .delivery = testEventDelivery(true),
@@ -1208,9 +1239,9 @@ test "NodeAttr.fromAbi decodes static bool attrs and events" {
         .event => |payload| {
             try std.testing.expectEqual(EventKind.pointer_down, payload.kind);
             try std.testing.expectEqual(EventDeliveryRequest.native, payload.delivery_request);
-            try std.testing.expectEqual(binder, payload.msg.binder.callable);
+            try std.testing.expectEqual(binder, payload.msg.handler.reduce.binder.callable);
             try std.testing.expectEqual(BoundaryPayloadDescriptor.init(.bytes, .record_key_shift), payload.msg.payload_descriptor);
-            try std.testing.expectEqual(reducer, payload.msg.payload_reducer);
+            try std.testing.expectEqual(reducer, payload.msg.handler.reduce.payload_reducer);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -1223,10 +1254,12 @@ test "NodeAttr.fromAbi decodes named events" {
         .payload = .{ .on = .{
             .kind = .{ .id = 0 },
             .msg = .{
-                .binder = binder,
-                .read_binder = binder,
                 .event_extraction_plan = testEventExtractionPlan(.none),
-                .payload_reducer = reducer,
+                .handler = .{ .payload = .{ .reduce = .{
+                    .binder = binder,
+                    .read_binder = binder,
+                    .payload_reducer = reducer,
+                } }, .tag = .Reduce },
             },
             .name = borrowedRocStr("keydown"),
             .delivery = testEventDelivery(false),
@@ -1239,10 +1272,39 @@ test "NodeAttr.fromAbi decodes named events" {
             try std.testing.expectEqualStrings("keydown", payload.name.asSlice());
             try std.testing.expect(payload.policy.eql(EventPolicy.fromBits(render.listener_option_prevent_default | render.listener_option_self | render.listener_option_trusted)));
             try std.testing.expectEqual(EventDeliveryRequest.auto, payload.delivery_request);
-            try std.testing.expectEqual(binder, payload.msg.binder.callable);
+            try std.testing.expectEqual(binder, payload.msg.handler.reduce.binder.callable);
             try std.testing.expectEqual(BoundaryPayloadDescriptor.init(.unit, .none), payload.msg.payload_descriptor);
         },
         else => return error.TestUnexpectedResult,
+    }
+}
+
+test "EventMessage.fromAbi preserves action reads payload capability and command role" {
+    const binder = testCallableToken(0x12000);
+    var reads = abi.NodeSignalExpr{ .payload = .{ .ref = binder }, .tag = .Ref };
+    const payload_cap = HostValueCapability{
+        .clone = testCallableToken(0x13000),
+        .drop = testCallableToken(0x14000),
+        .eq = testCallableToken(0x15000),
+    };
+    const callback = testCallableToken(0x16000);
+    const raw = abi.NodeMsg{
+        .event_extraction_plan = testEventExtractionPlan(.none),
+        .handler = .{ .payload = .{ .action = .{
+            .reads = &reads,
+            .payload_cap = payload_cap,
+            .to_cmd = callback,
+        } }, .tag = .Action },
+    };
+    const msg = EventMessage.fromAbi(raw);
+    try std.testing.expectEqual(BoundaryPayloadDescriptor.init(.unit, .none), msg.payload_descriptor);
+    switch (msg.handler) {
+        .action => |action| {
+            try std.testing.expectEqual(&reads, action.reads);
+            try std.testing.expectEqual(payload_cap, action.payload_cap);
+            try std.testing.expectEqual(callback, action.to_cmd.toAbi());
+        },
+        .reduce => return error.TestUnexpectedResult,
     }
 }
 
@@ -1263,6 +1325,7 @@ test "Elem.fromAbi decodes element text and cleanup payloads" {
     var children = [_]abi.Elem{child};
     const element = abi.Elem{
         .payload = .{ .element = .{
+            .namespace = .html,
             .attrs = borrowedNodeAttrList(attrs[0..]),
             .children = borrowedElemList(children[0..]),
             .tag = borrowedRocStr("button"),
@@ -1272,6 +1335,7 @@ test "Elem.fromAbi decodes element text and cleanup payloads" {
     switch (Elem.fromAbi(element)) {
         .element => |payload| {
             try std.testing.expectEqualStrings("button", payload.tag.asSlice());
+            try std.testing.expectEqual(render.ElementNamespace.html, payload.namespace);
             try std.testing.expectEqual(@as(usize, 1), payload.attrs.len);
             try std.testing.expectEqual(abi.NodeAttrTag.StaticBool, payload.attrs[0].tag);
             try std.testing.expectEqual(@as(usize, 1), payload.children.len);
@@ -1279,6 +1343,12 @@ test "Elem.fromAbi decodes element text and cleanup payloads" {
         },
         else => return error.TestUnexpectedResult,
     }
+    var svg = element;
+    svg.payload.element.namespace = .svg;
+    svg.payload.element.tag = borrowedRocStr("text");
+    const svg_view = Elem.fromAbi(svg).element;
+    try std.testing.expectEqual(render.ElementNamespace.svg, svg_view.namespace);
+    try std.testing.expectEqualStrings("text", svg_view.tag.asSlice());
 
     switch (Elem.fromAbi(child)) {
         .text => |payload| try std.testing.expectEqualStrings("child", payload.text.asSlice()),

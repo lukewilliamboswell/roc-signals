@@ -1,0 +1,26 @@
+name: Install pinned Signals toolchain
+description: Validate the header roots and install their exact Roc compiler and Zig.
+runs:
+  using: composite
+  steps:
+    - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+      with:
+        version: 0.16.0
+        use-cache: false
+    - id: pin
+      shell: bash
+      run: echo "version=$(python3 scripts/toolchain.py --check)" >> "$GITHUB_OUTPUT"
+    - uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
+      with:
+        version: nightly-new-compiler
+        nightly-tag: ${{ steps.pin.outputs.version }}
+    - name: Keep downloaded compiler outside release source
+      shell: bash
+      run: |
+        roc_install_dir="$(cd "$(dirname "$(command -v roc)")" && pwd)"
+        test "$(dirname "$roc_install_dir")" = "$GITHUB_WORKSPACE"
+        test ! -e "$RUNNER_TEMP/roc-toolchain"
+        mv "$roc_install_dir" "$RUNNER_TEMP/roc-toolchain"
+        echo "$RUNNER_TEMP/roc-toolchain" >> "$GITHUB_PATH"
+    - shell: bash
+      run: python3 scripts/toolchain.py --check --roc-bin roc

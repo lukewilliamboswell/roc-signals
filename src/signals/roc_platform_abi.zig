@@ -1191,17 +1191,19 @@ comptime {
     }
 }
 
-/// Element type for __AnonStruct_2516a61694df9d14
-pub const __AnonStruct_2516a61694df9d14 = if (@sizeOf(usize) == 4) extern struct {
+/// Element type for __AnonStruct_b8e742f9da13c125
+pub const __AnonStruct_b8e742f9da13c125 = if (@sizeOf(usize) == 4) extern struct {
     attrs: RocList(NodeAttr),
     children: RocList(Elem),
     tag: RocStr,
+    namespace: HtmlOrSvg,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         decrefListOfNodeAttr(value.attrs, roc_host);
         decrefListOfElem(value.children, roc_host);
         value.tag.decref(roc_host);
+        value.namespace.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -1210,17 +1212,20 @@ pub const __AnonStruct_2516a61694df9d14 = if (@sizeOf(usize) == 4) extern struct
         value.attrs.incref(amount);
         value.children.incref(amount);
         value.tag.incref(amount);
+        value.namespace.incref(amount);
     }
 } else extern struct {
     attrs: RocList(NodeAttr),
     children: RocList(Elem),
     tag: RocStr,
+    namespace: HtmlOrSvg,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         decrefListOfNodeAttr(value.attrs, roc_host);
         decrefListOfElem(value.children, roc_host);
         value.tag.decref(roc_host);
+        value.namespace.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -1229,17 +1234,18 @@ pub const __AnonStruct_2516a61694df9d14 = if (@sizeOf(usize) == 4) extern struct
         value.attrs.incref(amount);
         value.children.incref(amount);
         value.tag.incref(amount);
+        value.namespace.incref(amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_2516a61694df9d14) != 72) @compileError("__AnonStruct_2516a61694df9d14 size mismatch");
-        if (@alignOf(__AnonStruct_2516a61694df9d14) != 8) @compileError("__AnonStruct_2516a61694df9d14 alignment mismatch");
+        if (@sizeOf(__AnonStruct_b8e742f9da13c125) != 80) @compileError("__AnonStruct_b8e742f9da13c125 size mismatch");
+        if (@alignOf(__AnonStruct_b8e742f9da13c125) != 8) @compileError("__AnonStruct_b8e742f9da13c125 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_2516a61694df9d14) != 36) @compileError("__AnonStruct_2516a61694df9d14 size mismatch");
-        if (@alignOf(__AnonStruct_2516a61694df9d14) != 4) @compileError("__AnonStruct_2516a61694df9d14 alignment mismatch");
+        if (@sizeOf(__AnonStruct_b8e742f9da13c125) != 40) @compileError("__AnonStruct_b8e742f9da13c125 size mismatch");
+        if (@alignOf(__AnonStruct_b8e742f9da13c125) != 4) @compileError("__AnonStruct_b8e742f9da13c125 alignment mismatch");
     }
 }
 
@@ -1298,11 +1304,11 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeEventBinding) != 144) @compileError("NodeEventBinding size mismatch");
+        if (@sizeOf(NodeEventBinding) != 152) @compileError("NodeEventBinding size mismatch");
         if (@alignOf(NodeEventBinding) != 8) @compileError("NodeEventBinding alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeEventBinding) != 80) @compileError("NodeEventBinding size mismatch");
+        if (@sizeOf(NodeEventBinding) != 88) @compileError("NodeEventBinding size mismatch");
         if (@alignOf(NodeEventBinding) != 8) @compileError("NodeEventBinding alignment mismatch");
     }
 }
@@ -1397,58 +1403,46 @@ comptime {
 
 /// Element type for Node.Msg
 pub const NodeMsg = if (@sizeOf(usize) == 4) extern struct {
-    binder: RocErasedCallable,
     event_extraction_plan: NodeEventExtractionPlan,
-    payload_reducer: HostValueEventReducerHandle,
-    read_binder: RocErasedCallable,
+    handler: NodeEventHandler,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefErasedCallable(value.binder, roc_host);
         value.event_extraction_plan.decref(roc_host);
-        value.payload_reducer.decref(roc_host);
-        decrefErasedCallable(value.read_binder, roc_host);
+        value.handler.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        increfErasedCallable(value.binder, amount);
         value.event_extraction_plan.incref(amount);
-        value.payload_reducer.incref(amount);
-        increfErasedCallable(value.read_binder, amount);
+        value.handler.incref(amount);
     }
 } else extern struct {
-    binder: RocErasedCallable,
     event_extraction_plan: NodeEventExtractionPlan,
-    payload_reducer: HostValueEventReducerHandle,
-    read_binder: RocErasedCallable,
+    handler: NodeEventHandler,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefErasedCallable(value.binder, roc_host);
         value.event_extraction_plan.decref(roc_host);
-        value.payload_reducer.decref(roc_host);
-        decrefErasedCallable(value.read_binder, roc_host);
+        value.handler.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        increfErasedCallable(value.binder, amount);
         value.event_extraction_plan.incref(amount);
-        value.payload_reducer.incref(amount);
-        increfErasedCallable(value.read_binder, amount);
+        value.handler.incref(amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeMsg) != 96) @compileError("NodeMsg size mismatch");
+        if (@sizeOf(NodeMsg) != 104) @compileError("NodeMsg size mismatch");
         if (@alignOf(NodeMsg) != 8) @compileError("NodeMsg alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeMsg) != 48) @compileError("NodeMsg size mismatch");
+        if (@sizeOf(NodeMsg) != 52) @compileError("NodeMsg size mismatch");
         if (@alignOf(NodeMsg) != 4) @compileError("NodeMsg alignment mismatch");
     }
 }
@@ -1493,573 +1487,55 @@ comptime {
     }
 }
 
-/// Element type for HostValue.EventReducerHandle
-pub const HostValueEventReducerHandle = if (@sizeOf(usize) == 4) extern struct {
-    capability: HostValueCapabilityHandle,
-    read_capability: HostValueCapabilityHandle,
-    transform: RocErasedCallable,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.capability.decref(roc_host);
-        value.read_capability.decref(roc_host);
-        decrefErasedCallable(value.transform, roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.capability.incref(amount);
-        value.read_capability.incref(amount);
-        increfErasedCallable(value.transform, amount);
-    }
-} else extern struct {
-    capability: HostValueCapabilityHandle,
-    read_capability: HostValueCapabilityHandle,
-    transform: RocErasedCallable,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.capability.decref(roc_host);
-        value.read_capability.decref(roc_host);
-        decrefErasedCallable(value.transform, roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.capability.incref(amount);
-        value.read_capability.incref(amount);
-        increfErasedCallable(value.transform, amount);
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(HostValueEventReducerHandle) != 56) @compileError("HostValueEventReducerHandle size mismatch");
-        if (@alignOf(HostValueEventReducerHandle) != 8) @compileError("HostValueEventReducerHandle alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(HostValueEventReducerHandle) != 28) @compileError("HostValueEventReducerHandle size mismatch");
-        if (@alignOf(HostValueEventReducerHandle) != 4) @compileError("HostValueEventReducerHandle alignment mismatch");
-    }
-}
-
-/// Element type for __AnonStruct_b2fd8769c5bbb26a
-pub const __AnonStruct_b2fd8769c5bbb26a = if (@sizeOf(usize) == 4) extern struct {
-    capture: bool,
-    once: bool,
-    passive: bool,
-    prevent_default: bool,
-    self: bool,
-    stop_immediate: bool,
-    stop_propagation: bool,
-    trusted: bool,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        _ = value;
-        _ = roc_host;
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        _ = value;
-        _ = amount;
-    }
-} else extern struct {
-    capture: bool,
-    once: bool,
-    passive: bool,
-    prevent_default: bool,
-    self: bool,
-    stop_immediate: bool,
-    stop_propagation: bool,
-    trusted: bool,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        _ = value;
-        _ = roc_host;
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        _ = value;
-        _ = amount;
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_b2fd8769c5bbb26a) != 8) @compileError("__AnonStruct_b2fd8769c5bbb26a size mismatch");
-        if (@alignOf(__AnonStruct_b2fd8769c5bbb26a) != 1) @compileError("__AnonStruct_b2fd8769c5bbb26a alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_b2fd8769c5bbb26a) != 8) @compileError("__AnonStruct_b2fd8769c5bbb26a size mismatch");
-        if (@alignOf(__AnonStruct_b2fd8769c5bbb26a) != 1) @compileError("__AnonStruct_b2fd8769c5bbb26a alignment mismatch");
-    }
-}
-
-/// Element type for __AnonStruct_c4502953588f5545
-pub const __AnonStruct_c4502953588f5545 = if (@sizeOf(usize) == 4) extern struct {
-    field: NodeBoolField,
-    name: RocStr,
-    read: HostValueBoolReadHandle,
-    signal: *NodeSignalExpr,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.field.decref(roc_host);
-        value.name.decref(roc_host);
-        value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType135, roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.field.incref(amount);
-        value.name.incref(amount);
-        value.read.incref(amount);
-        increfBox(@ptrCast(value.signal), amount);
-    }
-} else extern struct {
-    field: NodeBoolField,
-    name: RocStr,
-    read: HostValueBoolReadHandle,
-    signal: *NodeSignalExpr,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.field.decref(roc_host);
-        value.name.decref(roc_host);
-        value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType135, roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.field.incref(amount);
-        value.name.incref(amount);
-        value.read.incref(amount);
-        increfBox(@ptrCast(value.signal), amount);
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_c4502953588f5545) != 72) @compileError("__AnonStruct_c4502953588f5545 size mismatch");
-        if (@alignOf(__AnonStruct_c4502953588f5545) != 8) @compileError("__AnonStruct_c4502953588f5545 alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_c4502953588f5545) != 40) @compileError("__AnonStruct_c4502953588f5545 size mismatch");
-        if (@alignOf(__AnonStruct_c4502953588f5545) != 8) @compileError("__AnonStruct_c4502953588f5545 alignment mismatch");
-    }
-}
-
-/// Element type for Node.BoolField
-pub const NodeBoolField = if (@sizeOf(usize) == 4) extern struct {
-    id: u64,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        _ = value;
-        _ = roc_host;
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        _ = value;
-        _ = amount;
-    }
-} else extern struct {
-    id: u64,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        _ = value;
-        _ = roc_host;
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        _ = value;
-        _ = amount;
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeBoolField) != 8) @compileError("NodeBoolField size mismatch");
-        if (@alignOf(NodeBoolField) != 8) @compileError("NodeBoolField alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeBoolField) != 8) @compileError("NodeBoolField size mismatch");
-        if (@alignOf(NodeBoolField) != 8) @compileError("NodeBoolField alignment mismatch");
-    }
-}
-
-/// Element type for HostValue.BoolReadHandle
-pub const HostValueBoolReadHandle = if (@sizeOf(usize) == 4) extern struct {
-    capability: HostValueCapabilityHandle,
-    read: RocErasedCallable,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.capability.decref(roc_host);
-        decrefErasedCallable(value.read, roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.capability.incref(amount);
-        increfErasedCallable(value.read, amount);
-    }
-} else extern struct {
-    capability: HostValueCapabilityHandle,
-    read: RocErasedCallable,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.capability.decref(roc_host);
-        decrefErasedCallable(value.read, roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.capability.incref(amount);
-        increfErasedCallable(value.read, amount);
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(HostValueBoolReadHandle) != 32) @compileError("HostValueBoolReadHandle size mismatch");
-        if (@alignOf(HostValueBoolReadHandle) != 8) @compileError("HostValueBoolReadHandle alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(HostValueBoolReadHandle) != 16) @compileError("HostValueBoolReadHandle size mismatch");
-        if (@alignOf(HostValueBoolReadHandle) != 4) @compileError("HostValueBoolReadHandle alignment mismatch");
-    }
-}
-
-/// Element type for __AnonStruct_3919d24a90aa1c30
-pub const __AnonStruct_3919d24a90aa1c30 = if (@sizeOf(usize) == 4) extern struct {
-    field: NodeTextField,
-    name: RocStr,
-    read: HostValueTextReadHandle,
-    signal: *NodeSignalExpr,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.field.decref(roc_host);
-        value.name.decref(roc_host);
-        value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType135, roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.field.incref(amount);
-        value.name.incref(amount);
-        value.read.incref(amount);
-        increfBox(@ptrCast(value.signal), amount);
-    }
-} else extern struct {
-    field: NodeTextField,
-    name: RocStr,
-    read: HostValueTextReadHandle,
-    signal: *NodeSignalExpr,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.field.decref(roc_host);
-        value.name.decref(roc_host);
-        value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType135, roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.field.incref(amount);
-        value.name.incref(amount);
-        value.read.incref(amount);
-        increfBox(@ptrCast(value.signal), amount);
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_3919d24a90aa1c30) != 72) @compileError("__AnonStruct_3919d24a90aa1c30 size mismatch");
-        if (@alignOf(__AnonStruct_3919d24a90aa1c30) != 8) @compileError("__AnonStruct_3919d24a90aa1c30 alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_3919d24a90aa1c30) != 40) @compileError("__AnonStruct_3919d24a90aa1c30 size mismatch");
-        if (@alignOf(__AnonStruct_3919d24a90aa1c30) != 8) @compileError("__AnonStruct_3919d24a90aa1c30 alignment mismatch");
-    }
-}
-
-/// Element type for Node.TextField
-pub const NodeTextField = if (@sizeOf(usize) == 4) extern struct {
-    id: u64,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        _ = value;
-        _ = roc_host;
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        _ = value;
-        _ = amount;
-    }
-} else extern struct {
-    id: u64,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        _ = value;
-        _ = roc_host;
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        _ = value;
-        _ = amount;
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeTextField) != 8) @compileError("NodeTextField size mismatch");
-        if (@alignOf(NodeTextField) != 8) @compileError("NodeTextField alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeTextField) != 8) @compileError("NodeTextField size mismatch");
-        if (@alignOf(NodeTextField) != 8) @compileError("NodeTextField alignment mismatch");
-    }
-}
-
-/// Element type for __AnonStruct_ac223ceb3485be80
-pub const __AnonStruct_ac223ceb3485be80 = if (@sizeOf(usize) == 4) extern struct {
-    field: NodeBoolField,
-    name: RocStr,
-    value: bool,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.field.decref(roc_host);
-        value.name.decref(roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.field.incref(amount);
-        value.name.incref(amount);
-    }
-} else extern struct {
-    field: NodeBoolField,
-    name: RocStr,
-    value: bool,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.field.decref(roc_host);
-        value.name.decref(roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.field.incref(amount);
-        value.name.incref(amount);
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_ac223ceb3485be80) != 40) @compileError("__AnonStruct_ac223ceb3485be80 size mismatch");
-        if (@alignOf(__AnonStruct_ac223ceb3485be80) != 8) @compileError("__AnonStruct_ac223ceb3485be80 alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_ac223ceb3485be80) != 24) @compileError("__AnonStruct_ac223ceb3485be80 size mismatch");
-        if (@alignOf(__AnonStruct_ac223ceb3485be80) != 8) @compileError("__AnonStruct_ac223ceb3485be80 alignment mismatch");
-    }
-}
-
-/// Element type for __AnonStruct_20a3f6b65fe503ef
-pub const __AnonStruct_20a3f6b65fe503ef = if (@sizeOf(usize) == 4) extern struct {
-    field: NodeTextField,
-    name: RocStr,
-    value: RocStr,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.field.decref(roc_host);
-        value.name.decref(roc_host);
-        value.value.decref(roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.field.incref(amount);
-        value.name.incref(amount);
-        value.value.incref(amount);
-    }
-} else extern struct {
-    field: NodeTextField,
-    name: RocStr,
-    value: RocStr,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.field.decref(roc_host);
-        value.name.decref(roc_host);
-        value.value.decref(roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.field.incref(amount);
-        value.name.incref(amount);
-        value.value.incref(amount);
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_20a3f6b65fe503ef) != 56) @compileError("__AnonStruct_20a3f6b65fe503ef size mismatch");
-        if (@alignOf(__AnonStruct_20a3f6b65fe503ef) != 8) @compileError("__AnonStruct_20a3f6b65fe503ef alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_20a3f6b65fe503ef) != 32) @compileError("__AnonStruct_20a3f6b65fe503ef size mismatch");
-        if (@alignOf(__AnonStruct_20a3f6b65fe503ef) != 8) @compileError("__AnonStruct_20a3f6b65fe503ef alignment mismatch");
-    }
-}
-
-/// Element type for __AnonStruct_dce81af82680946c
-pub const __AnonStruct_dce81af82680946c = if (@sizeOf(usize) == 4) extern struct {
-    field: NodeTextField,
-    name: RocStr,
-    present: HostValueBoolReadHandle,
-    read: HostValueTextReadHandle,
-    signal: *NodeSignalExpr,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.field.decref(roc_host);
-        value.name.decref(roc_host);
-        value.present.decref(roc_host);
-        value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType135, roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.field.incref(amount);
-        value.name.incref(amount);
-        value.present.incref(amount);
-        value.read.incref(amount);
-        increfBox(@ptrCast(value.signal), amount);
-    }
-} else extern struct {
-    field: NodeTextField,
-    name: RocStr,
-    present: HostValueBoolReadHandle,
-    read: HostValueTextReadHandle,
-    signal: *NodeSignalExpr,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.field.decref(roc_host);
-        value.name.decref(roc_host);
-        value.present.decref(roc_host);
-        value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType135, roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.field.incref(amount);
-        value.name.incref(amount);
-        value.present.incref(amount);
-        value.read.incref(amount);
-        increfBox(@ptrCast(value.signal), amount);
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_dce81af82680946c) != 104) @compileError("__AnonStruct_dce81af82680946c size mismatch");
-        if (@alignOf(__AnonStruct_dce81af82680946c) != 8) @compileError("__AnonStruct_dce81af82680946c alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_dce81af82680946c) != 56) @compileError("__AnonStruct_dce81af82680946c size mismatch");
-        if (@alignOf(__AnonStruct_dce81af82680946c) != 8) @compileError("__AnonStruct_dce81af82680946c alignment mismatch");
-    }
-}
-
-/// Element type for __AnonStruct_e273a265345e3f00
-pub const __AnonStruct_e273a265345e3f00 = if (@sizeOf(usize) == 4) extern struct {
-    signal: *NodeSignalExpr,
+/// Element type for __AnonStruct_1208acb69630e8
+pub const __AnonStruct_1208acb69630e8 = if (@sizeOf(usize) == 4) extern struct {
+    payload_cap: HostValueCapabilityHandle,
+    reads: *NodeSignalExpr,
     to_cmd: RocErasedCallable,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+        value.payload_cap.decref(roc_host);
+        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType119, roc_host);
         decrefErasedCallable(value.to_cmd, roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        increfBox(@ptrCast(value.signal), amount);
+        value.payload_cap.incref(amount);
+        increfBox(@ptrCast(value.reads), amount);
         increfErasedCallable(value.to_cmd, amount);
     }
 } else extern struct {
-    signal: *NodeSignalExpr,
+    payload_cap: HostValueCapabilityHandle,
+    reads: *NodeSignalExpr,
     to_cmd: RocErasedCallable,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+        value.payload_cap.decref(roc_host);
+        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType119, roc_host);
         decrefErasedCallable(value.to_cmd, roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        increfBox(@ptrCast(value.signal), amount);
+        value.payload_cap.incref(amount);
+        increfBox(@ptrCast(value.reads), amount);
         increfErasedCallable(value.to_cmd, amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_e273a265345e3f00) != 16) @compileError("__AnonStruct_e273a265345e3f00 size mismatch");
-        if (@alignOf(__AnonStruct_e273a265345e3f00) != 8) @compileError("__AnonStruct_e273a265345e3f00 alignment mismatch");
+        if (@sizeOf(__AnonStruct_1208acb69630e8) != 40) @compileError("__AnonStruct_1208acb69630e8 size mismatch");
+        if (@alignOf(__AnonStruct_1208acb69630e8) != 8) @compileError("__AnonStruct_1208acb69630e8 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_e273a265345e3f00) != 8) @compileError("__AnonStruct_e273a265345e3f00 size mismatch");
-        if (@alignOf(__AnonStruct_e273a265345e3f00) != 4) @compileError("__AnonStruct_e273a265345e3f00 alignment mismatch");
+        if (@sizeOf(__AnonStruct_1208acb69630e8) != 20) @compileError("__AnonStruct_1208acb69630e8 size mismatch");
+        if (@alignOf(__AnonStruct_1208acb69630e8) != 4) @compileError("__AnonStruct_1208acb69630e8 alignment mismatch");
     }
 }
 
@@ -2349,80 +1825,84 @@ comptime {
     }
 }
 
-/// Element type for __AnonStruct_589081ece2d74afa
-pub const __AnonStruct_589081ece2d74afa = if (@sizeOf(usize) == 4) extern struct {
-    update: HostValueStateValueHandle,
+/// Element type for Node.StateWrite
+pub const NodeStateWrite = if (@sizeOf(usize) == 4) extern struct {
     binder: RocErasedCallable,
+    update: HostValueStateValueHandle,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        value.update.decref(roc_host);
         decrefErasedCallable(value.binder, roc_host);
+        value.update.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.update.incref(amount);
         increfErasedCallable(value.binder, amount);
+        value.update.incref(amount);
     }
 } else extern struct {
-    update: HostValueStateValueHandle,
     binder: RocErasedCallable,
+    update: HostValueStateValueHandle,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        value.update.decref(roc_host);
         decrefErasedCallable(value.binder, roc_host);
+        value.update.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.update.incref(amount);
         increfErasedCallable(value.binder, amount);
+        value.update.incref(amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_589081ece2d74afa) != 40) @compileError("__AnonStruct_589081ece2d74afa size mismatch");
-        if (@alignOf(__AnonStruct_589081ece2d74afa) != 8) @compileError("__AnonStruct_589081ece2d74afa alignment mismatch");
+        if (@sizeOf(NodeStateWrite) != 40) @compileError("NodeStateWrite size mismatch");
+        if (@alignOf(NodeStateWrite) != 8) @compileError("NodeStateWrite alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_589081ece2d74afa) != 32) @compileError("__AnonStruct_589081ece2d74afa size mismatch");
-        if (@alignOf(__AnonStruct_589081ece2d74afa) != 8) @compileError("__AnonStruct_589081ece2d74afa alignment mismatch");
+        if (@sizeOf(NodeStateWrite) != 20) @compileError("NodeStateWrite size mismatch");
+        if (@alignOf(NodeStateWrite) != 4) @compileError("NodeStateWrite alignment mismatch");
     }
 }
 
 /// Element type for HostValue.StateValueHandle
 pub const HostValueStateValueHandle = if (@sizeOf(usize) == 4) extern struct {
-    value: u64,
     capability: HostValueCapabilityHandle,
+    initial: RocErasedCallable,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.capability.decref(roc_host);
+        decrefErasedCallable(value.initial, roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         value.capability.incref(amount);
+        increfErasedCallable(value.initial, amount);
     }
 } else extern struct {
-    value: u64,
     capability: HostValueCapabilityHandle,
+    initial: RocErasedCallable,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.capability.decref(roc_host);
+        decrefErasedCallable(value.initial, roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         value.capability.incref(amount);
+        increfErasedCallable(value.initial, amount);
     }
 };
 
@@ -2432,8 +1912,630 @@ comptime {
         if (@alignOf(HostValueStateValueHandle) != 8) @compileError("HostValueStateValueHandle alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(HostValueStateValueHandle) != 24) @compileError("HostValueStateValueHandle size mismatch");
-        if (@alignOf(HostValueStateValueHandle) != 8) @compileError("HostValueStateValueHandle alignment mismatch");
+        if (@sizeOf(HostValueStateValueHandle) != 16) @compileError("HostValueStateValueHandle size mismatch");
+        if (@alignOf(HostValueStateValueHandle) != 4) @compileError("HostValueStateValueHandle alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_f660464d15310d0c
+pub const __AnonStruct_f660464d15310d0c = if (@sizeOf(usize) == 4) extern struct {
+    binder: RocErasedCallable,
+    payload_reducer: HostValueEventReducerHandle,
+    read_binder: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        decrefErasedCallable(value.binder, roc_host);
+        value.payload_reducer.decref(roc_host);
+        decrefErasedCallable(value.read_binder, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        increfErasedCallable(value.binder, amount);
+        value.payload_reducer.incref(amount);
+        increfErasedCallable(value.read_binder, amount);
+    }
+} else extern struct {
+    binder: RocErasedCallable,
+    payload_reducer: HostValueEventReducerHandle,
+    read_binder: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        decrefErasedCallable(value.binder, roc_host);
+        value.payload_reducer.decref(roc_host);
+        decrefErasedCallable(value.read_binder, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        increfErasedCallable(value.binder, amount);
+        value.payload_reducer.incref(amount);
+        increfErasedCallable(value.read_binder, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_f660464d15310d0c) != 72) @compileError("__AnonStruct_f660464d15310d0c size mismatch");
+        if (@alignOf(__AnonStruct_f660464d15310d0c) != 8) @compileError("__AnonStruct_f660464d15310d0c alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_f660464d15310d0c) != 36) @compileError("__AnonStruct_f660464d15310d0c size mismatch");
+        if (@alignOf(__AnonStruct_f660464d15310d0c) != 4) @compileError("__AnonStruct_f660464d15310d0c alignment mismatch");
+    }
+}
+
+/// Element type for HostValue.EventReducerHandle
+pub const HostValueEventReducerHandle = if (@sizeOf(usize) == 4) extern struct {
+    capability: HostValueCapabilityHandle,
+    read_capability: HostValueCapabilityHandle,
+    transform: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.capability.decref(roc_host);
+        value.read_capability.decref(roc_host);
+        decrefErasedCallable(value.transform, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.capability.incref(amount);
+        value.read_capability.incref(amount);
+        increfErasedCallable(value.transform, amount);
+    }
+} else extern struct {
+    capability: HostValueCapabilityHandle,
+    read_capability: HostValueCapabilityHandle,
+    transform: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.capability.decref(roc_host);
+        value.read_capability.decref(roc_host);
+        decrefErasedCallable(value.transform, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.capability.incref(amount);
+        value.read_capability.incref(amount);
+        increfErasedCallable(value.transform, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(HostValueEventReducerHandle) != 56) @compileError("HostValueEventReducerHandle size mismatch");
+        if (@alignOf(HostValueEventReducerHandle) != 8) @compileError("HostValueEventReducerHandle alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(HostValueEventReducerHandle) != 28) @compileError("HostValueEventReducerHandle size mismatch");
+        if (@alignOf(HostValueEventReducerHandle) != 4) @compileError("HostValueEventReducerHandle alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_b2fd8769c5bbb26a
+pub const __AnonStruct_b2fd8769c5bbb26a = if (@sizeOf(usize) == 4) extern struct {
+    capture: bool,
+    once: bool,
+    passive: bool,
+    prevent_default: bool,
+    self: bool,
+    stop_immediate: bool,
+    stop_propagation: bool,
+    trusted: bool,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        _ = value;
+        _ = roc_host;
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        _ = value;
+        _ = amount;
+    }
+} else extern struct {
+    capture: bool,
+    once: bool,
+    passive: bool,
+    prevent_default: bool,
+    self: bool,
+    stop_immediate: bool,
+    stop_propagation: bool,
+    trusted: bool,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        _ = value;
+        _ = roc_host;
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        _ = value;
+        _ = amount;
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_b2fd8769c5bbb26a) != 8) @compileError("__AnonStruct_b2fd8769c5bbb26a size mismatch");
+        if (@alignOf(__AnonStruct_b2fd8769c5bbb26a) != 1) @compileError("__AnonStruct_b2fd8769c5bbb26a alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_b2fd8769c5bbb26a) != 8) @compileError("__AnonStruct_b2fd8769c5bbb26a size mismatch");
+        if (@alignOf(__AnonStruct_b2fd8769c5bbb26a) != 1) @compileError("__AnonStruct_b2fd8769c5bbb26a alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_c4502953588f5545
+pub const __AnonStruct_c4502953588f5545 = if (@sizeOf(usize) == 4) extern struct {
+    field: NodeBoolField,
+    name: RocStr,
+    read: HostValueBoolReadHandle,
+    signal: *NodeSignalExpr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.field.decref(roc_host);
+        value.name.decref(roc_host);
+        value.read.decref(roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.field.incref(amount);
+        value.name.incref(amount);
+        value.read.incref(amount);
+        increfBox(@ptrCast(value.signal), amount);
+    }
+} else extern struct {
+    field: NodeBoolField,
+    name: RocStr,
+    read: HostValueBoolReadHandle,
+    signal: *NodeSignalExpr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.field.decref(roc_host);
+        value.name.decref(roc_host);
+        value.read.decref(roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.field.incref(amount);
+        value.name.incref(amount);
+        value.read.incref(amount);
+        increfBox(@ptrCast(value.signal), amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_c4502953588f5545) != 72) @compileError("__AnonStruct_c4502953588f5545 size mismatch");
+        if (@alignOf(__AnonStruct_c4502953588f5545) != 8) @compileError("__AnonStruct_c4502953588f5545 alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_c4502953588f5545) != 40) @compileError("__AnonStruct_c4502953588f5545 size mismatch");
+        if (@alignOf(__AnonStruct_c4502953588f5545) != 8) @compileError("__AnonStruct_c4502953588f5545 alignment mismatch");
+    }
+}
+
+/// Element type for Node.BoolField
+pub const NodeBoolField = if (@sizeOf(usize) == 4) extern struct {
+    id: u64,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        _ = value;
+        _ = roc_host;
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        _ = value;
+        _ = amount;
+    }
+} else extern struct {
+    id: u64,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        _ = value;
+        _ = roc_host;
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        _ = value;
+        _ = amount;
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeBoolField) != 8) @compileError("NodeBoolField size mismatch");
+        if (@alignOf(NodeBoolField) != 8) @compileError("NodeBoolField alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeBoolField) != 8) @compileError("NodeBoolField size mismatch");
+        if (@alignOf(NodeBoolField) != 8) @compileError("NodeBoolField alignment mismatch");
+    }
+}
+
+/// Element type for HostValue.BoolReadHandle
+pub const HostValueBoolReadHandle = if (@sizeOf(usize) == 4) extern struct {
+    capability: HostValueCapabilityHandle,
+    read: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.capability.decref(roc_host);
+        decrefErasedCallable(value.read, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.capability.incref(amount);
+        increfErasedCallable(value.read, amount);
+    }
+} else extern struct {
+    capability: HostValueCapabilityHandle,
+    read: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.capability.decref(roc_host);
+        decrefErasedCallable(value.read, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.capability.incref(amount);
+        increfErasedCallable(value.read, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(HostValueBoolReadHandle) != 32) @compileError("HostValueBoolReadHandle size mismatch");
+        if (@alignOf(HostValueBoolReadHandle) != 8) @compileError("HostValueBoolReadHandle alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(HostValueBoolReadHandle) != 16) @compileError("HostValueBoolReadHandle size mismatch");
+        if (@alignOf(HostValueBoolReadHandle) != 4) @compileError("HostValueBoolReadHandle alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_3919d24a90aa1c30
+pub const __AnonStruct_3919d24a90aa1c30 = if (@sizeOf(usize) == 4) extern struct {
+    field: NodeTextField,
+    name: RocStr,
+    read: HostValueTextReadHandle,
+    signal: *NodeSignalExpr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.field.decref(roc_host);
+        value.name.decref(roc_host);
+        value.read.decref(roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.field.incref(amount);
+        value.name.incref(amount);
+        value.read.incref(amount);
+        increfBox(@ptrCast(value.signal), amount);
+    }
+} else extern struct {
+    field: NodeTextField,
+    name: RocStr,
+    read: HostValueTextReadHandle,
+    signal: *NodeSignalExpr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.field.decref(roc_host);
+        value.name.decref(roc_host);
+        value.read.decref(roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.field.incref(amount);
+        value.name.incref(amount);
+        value.read.incref(amount);
+        increfBox(@ptrCast(value.signal), amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_3919d24a90aa1c30) != 72) @compileError("__AnonStruct_3919d24a90aa1c30 size mismatch");
+        if (@alignOf(__AnonStruct_3919d24a90aa1c30) != 8) @compileError("__AnonStruct_3919d24a90aa1c30 alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_3919d24a90aa1c30) != 40) @compileError("__AnonStruct_3919d24a90aa1c30 size mismatch");
+        if (@alignOf(__AnonStruct_3919d24a90aa1c30) != 8) @compileError("__AnonStruct_3919d24a90aa1c30 alignment mismatch");
+    }
+}
+
+/// Element type for Node.TextField
+pub const NodeTextField = if (@sizeOf(usize) == 4) extern struct {
+    id: u64,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        _ = value;
+        _ = roc_host;
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        _ = value;
+        _ = amount;
+    }
+} else extern struct {
+    id: u64,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        _ = value;
+        _ = roc_host;
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        _ = value;
+        _ = amount;
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeTextField) != 8) @compileError("NodeTextField size mismatch");
+        if (@alignOf(NodeTextField) != 8) @compileError("NodeTextField alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeTextField) != 8) @compileError("NodeTextField size mismatch");
+        if (@alignOf(NodeTextField) != 8) @compileError("NodeTextField alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_ac223ceb3485be80
+pub const __AnonStruct_ac223ceb3485be80 = if (@sizeOf(usize) == 4) extern struct {
+    field: NodeBoolField,
+    name: RocStr,
+    value: bool,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.field.decref(roc_host);
+        value.name.decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.field.incref(amount);
+        value.name.incref(amount);
+    }
+} else extern struct {
+    field: NodeBoolField,
+    name: RocStr,
+    value: bool,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.field.decref(roc_host);
+        value.name.decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.field.incref(amount);
+        value.name.incref(amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_ac223ceb3485be80) != 40) @compileError("__AnonStruct_ac223ceb3485be80 size mismatch");
+        if (@alignOf(__AnonStruct_ac223ceb3485be80) != 8) @compileError("__AnonStruct_ac223ceb3485be80 alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_ac223ceb3485be80) != 24) @compileError("__AnonStruct_ac223ceb3485be80 size mismatch");
+        if (@alignOf(__AnonStruct_ac223ceb3485be80) != 8) @compileError("__AnonStruct_ac223ceb3485be80 alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_20a3f6b65fe503ef
+pub const __AnonStruct_20a3f6b65fe503ef = if (@sizeOf(usize) == 4) extern struct {
+    field: NodeTextField,
+    name: RocStr,
+    value: RocStr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.field.decref(roc_host);
+        value.name.decref(roc_host);
+        value.value.decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.field.incref(amount);
+        value.name.incref(amount);
+        value.value.incref(amount);
+    }
+} else extern struct {
+    field: NodeTextField,
+    name: RocStr,
+    value: RocStr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.field.decref(roc_host);
+        value.name.decref(roc_host);
+        value.value.decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.field.incref(amount);
+        value.name.incref(amount);
+        value.value.incref(amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_20a3f6b65fe503ef) != 56) @compileError("__AnonStruct_20a3f6b65fe503ef size mismatch");
+        if (@alignOf(__AnonStruct_20a3f6b65fe503ef) != 8) @compileError("__AnonStruct_20a3f6b65fe503ef alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_20a3f6b65fe503ef) != 32) @compileError("__AnonStruct_20a3f6b65fe503ef size mismatch");
+        if (@alignOf(__AnonStruct_20a3f6b65fe503ef) != 8) @compileError("__AnonStruct_20a3f6b65fe503ef alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_dce81af82680946c
+pub const __AnonStruct_dce81af82680946c = if (@sizeOf(usize) == 4) extern struct {
+    field: NodeTextField,
+    name: RocStr,
+    present: HostValueBoolReadHandle,
+    read: HostValueTextReadHandle,
+    signal: *NodeSignalExpr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.field.decref(roc_host);
+        value.name.decref(roc_host);
+        value.present.decref(roc_host);
+        value.read.decref(roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.field.incref(amount);
+        value.name.incref(amount);
+        value.present.incref(amount);
+        value.read.incref(amount);
+        increfBox(@ptrCast(value.signal), amount);
+    }
+} else extern struct {
+    field: NodeTextField,
+    name: RocStr,
+    present: HostValueBoolReadHandle,
+    read: HostValueTextReadHandle,
+    signal: *NodeSignalExpr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.field.decref(roc_host);
+        value.name.decref(roc_host);
+        value.present.decref(roc_host);
+        value.read.decref(roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.field.incref(amount);
+        value.name.incref(amount);
+        value.present.incref(amount);
+        value.read.incref(amount);
+        increfBox(@ptrCast(value.signal), amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_dce81af82680946c) != 104) @compileError("__AnonStruct_dce81af82680946c size mismatch");
+        if (@alignOf(__AnonStruct_dce81af82680946c) != 8) @compileError("__AnonStruct_dce81af82680946c alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_dce81af82680946c) != 56) @compileError("__AnonStruct_dce81af82680946c size mismatch");
+        if (@alignOf(__AnonStruct_dce81af82680946c) != 8) @compileError("__AnonStruct_dce81af82680946c alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_e273a265345e3f00
+pub const __AnonStruct_e273a265345e3f00 = if (@sizeOf(usize) == 4) extern struct {
+    signal: *NodeSignalExpr,
+    to_cmd: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+        decrefErasedCallable(value.to_cmd, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        increfBox(@ptrCast(value.signal), amount);
+        increfErasedCallable(value.to_cmd, amount);
+    }
+} else extern struct {
+    signal: *NodeSignalExpr,
+    to_cmd: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+        decrefErasedCallable(value.to_cmd, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        increfBox(@ptrCast(value.signal), amount);
+        increfErasedCallable(value.to_cmd, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_e273a265345e3f00) != 16) @compileError("__AnonStruct_e273a265345e3f00 size mismatch");
+        if (@alignOf(__AnonStruct_e273a265345e3f00) != 8) @compileError("__AnonStruct_e273a265345e3f00 alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_e273a265345e3f00) != 8) @compileError("__AnonStruct_e273a265345e3f00 size mismatch");
+        if (@alignOf(__AnonStruct_e273a265345e3f00) != 4) @compileError("__AnonStruct_e273a265345e3f00 alignment mismatch");
     }
 }
 
@@ -2693,7 +2795,7 @@ pub const ElemPayload = extern union {
     cleanup: __AnonStruct_e3ba6f75038959ff,
     component: __AnonStruct_180edd8bcea11b3f,
     each: __AnonStruct_2fc5076a97aa9b29,
-    element: __AnonStruct_2516a61694df9d14,
+    element: __AnonStruct_b8e742f9da13c125,
     on_change: __AnonStruct_e273a265345e3f00,
     on_change_initial: __AnonStruct_e273a265345e3f00,
     on_mount: __AnonStruct_5c77869b771e6bdb,
@@ -2719,8 +2821,8 @@ pub const Elem = if (@sizeOf(usize) == 4) extern struct {
         const ptr: *const __AnonStruct_2fc5076a97aa9b29 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_element(self: *const @This()) __AnonStruct_2516a61694df9d14 {
-        const ptr: *const __AnonStruct_2516a61694df9d14 = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_element(self: *const @This()) __AnonStruct_b8e742f9da13c125 {
+        const ptr: *const __AnonStruct_b8e742f9da13c125 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     pub fn payload_on_change(self: *const @This()) __AnonStruct_e273a265345e3f00 {
@@ -2772,7 +2874,7 @@ pub const Elem = if (@sizeOf(usize) == 4) extern struct {
     pub fn payload_each(self: *const @This()) __AnonStruct_2fc5076a97aa9b29 {
         return self.payload.each;
     }
-    pub fn payload_element(self: *const @This()) __AnonStruct_2516a61694df9d14 {
+    pub fn payload_element(self: *const @This()) __AnonStruct_b8e742f9da13c125 {
         return self.payload.element;
     }
     pub fn payload_on_change(self: *const @This()) __AnonStruct_e273a265345e3f00 {
@@ -3331,7 +3433,7 @@ pub const NodeAttrPayload = extern union {
 
 /// Tag union: Node.Attr
 pub const NodeAttr = if (@sizeOf(usize) == 4) extern struct {
-    payload: [80]u8 align(8),
+    payload: [88]u8 align(8),
     tag: NodeAttrTag,
     pub fn payload_on(self: *const @This()) NodeEventBinding {
         const ptr: *const NodeEventBinding = @ptrCast(@alignCast(&self.payload));
@@ -3400,14 +3502,80 @@ pub const NodeAttr = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeAttr) != 152) @compileError("NodeAttr size mismatch");
+        if (@sizeOf(NodeAttr) != 160) @compileError("NodeAttr size mismatch");
         if (@alignOf(NodeAttr) != 8) @compileError("NodeAttr alignment mismatch");
-        if (@offsetOf(NodeAttr, "tag") != 144) @compileError("NodeAttr tag offset mismatch");
+        if (@offsetOf(NodeAttr, "tag") != 152) @compileError("NodeAttr tag offset mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeAttr) != 88) @compileError("NodeAttr size mismatch");
+        if (@sizeOf(NodeAttr) != 96) @compileError("NodeAttr size mismatch");
         if (@alignOf(NodeAttr) != 8) @compileError("NodeAttr alignment mismatch");
-        if (@offsetOf(NodeAttr, "tag") != 80) @compileError("NodeAttr tag offset mismatch");
+        if (@offsetOf(NodeAttr, "tag") != 88) @compileError("NodeAttr tag offset mismatch");
+    }
+}
+
+/// Tag discriminant for Node.EventHandler.
+pub const NodeEventHandlerTag = enum(u8) {
+    Action = 0,
+    Reduce = 1,
+};
+
+/// Payload union for Node.EventHandler.
+pub const NodeEventHandlerPayload = extern union {
+    action: __AnonStruct_1208acb69630e8,
+    reduce: __AnonStruct_f660464d15310d0c,
+};
+
+/// Tag union: Node.EventHandler
+pub const NodeEventHandler = if (@sizeOf(usize) == 4) extern struct {
+    payload: [36]u8 align(4),
+    tag: NodeEventHandlerTag,
+    pub fn payload_action(self: *const @This()) __AnonStruct_1208acb69630e8 {
+        const ptr: *const __AnonStruct_1208acb69630e8 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_reduce(self: *const @This()) __AnonStruct_f660464d15310d0c {
+        const ptr: *const __AnonStruct_f660464d15310d0c = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefNodeEventHandler(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfNodeEventHandler(self, amount);
+    }
+} else extern struct {
+    payload: NodeEventHandlerPayload,
+    tag: NodeEventHandlerTag,
+    pub fn payload_action(self: *const @This()) __AnonStruct_1208acb69630e8 {
+        return self.payload.action;
+    }
+    pub fn payload_reduce(self: *const @This()) __AnonStruct_f660464d15310d0c {
+        return self.payload.reduce;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefNodeEventHandler(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfNodeEventHandler(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeEventHandler) != 80) @compileError("NodeEventHandler size mismatch");
+        if (@alignOf(NodeEventHandler) != 8) @compileError("NodeEventHandler alignment mismatch");
+        if (@offsetOf(NodeEventHandler, "tag") != 72) @compileError("NodeEventHandler tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeEventHandler) != 40) @compileError("NodeEventHandler size mismatch");
+        if (@alignOf(NodeEventHandler) != 4) @compileError("NodeEventHandler alignment mismatch");
+        if (@offsetOf(NodeEventHandler, "tag") != 36) @compileError("NodeEventHandler tag offset mismatch");
     }
 }
 
@@ -3421,6 +3589,7 @@ pub const NodeCmdTag = enum(u8) {
     SetStorageText = 5,
     StartTask = 6,
     UpdateState = 7,
+    UpdateStates = 8,
 };
 
 /// Payload union for Node.Cmd.
@@ -3432,7 +3601,8 @@ pub const NodeCmdPayload = extern union {
     set_document_title: __AnonStruct_9d5ad8648ab57c4b,
     set_storage_text: __AnonStruct_bf0aa8f11210a4ce,
     start_task: __AnonStruct_d7d87ab0a59c379b,
-    update_state: __AnonStruct_589081ece2d74afa,
+    update_state: NodeStateWrite,
+    update_states: RocList(NodeStateWrite),
 };
 
 /// Tag union: Node.Cmd
@@ -3463,8 +3633,12 @@ pub const NodeCmd = if (@sizeOf(usize) == 4) extern struct {
         const ptr: *const __AnonStruct_d7d87ab0a59c379b = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_update_state(self: *const @This()) __AnonStruct_589081ece2d74afa {
-        const ptr: *const __AnonStruct_589081ece2d74afa = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_update_state(self: *const @This()) NodeStateWrite {
+        const ptr: *const NodeStateWrite = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_update_states(self: *const @This()) RocList(NodeStateWrite) {
+        const ptr: *const RocList(NodeStateWrite) = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     /// Recursively decrement Roc-owned payloads.
@@ -3497,8 +3671,11 @@ pub const NodeCmd = if (@sizeOf(usize) == 4) extern struct {
     pub fn payload_start_task(self: *const @This()) __AnonStruct_d7d87ab0a59c379b {
         return self.payload.start_task;
     }
-    pub fn payload_update_state(self: *const @This()) __AnonStruct_589081ece2d74afa {
+    pub fn payload_update_state(self: *const @This()) NodeStateWrite {
         return self.payload.update_state;
+    }
+    pub fn payload_update_states(self: *const @This()) RocList(NodeStateWrite) {
+        return self.payload.update_states;
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -3521,6 +3698,34 @@ comptime {
         if (@sizeOf(NodeCmd) != 40) @compileError("NodeCmd size mismatch");
         if (@alignOf(NodeCmd) != 8) @compileError("NodeCmd alignment mismatch");
         if (@offsetOf(NodeCmd, "tag") != 36) @compileError("NodeCmd tag offset mismatch");
+    }
+}
+
+/// Tag union: HtmlOrSvg
+pub const HtmlOrSvg = enum(u8) {
+    html = 0,
+    svg = 1,
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        _ = self;
+        _ = roc_host;
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        _ = self;
+        _ = amount;
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(HtmlOrSvg) != 1) @compileError("HtmlOrSvg size mismatch");
+        if (@alignOf(HtmlOrSvg) != 1) @compileError("HtmlOrSvg alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(HtmlOrSvg) != 1) @compileError("HtmlOrSvg size mismatch");
+        if (@alignOf(HtmlOrSvg) != 1) @compileError("HtmlOrSvg alignment mismatch");
     }
 }
 
@@ -3688,7 +3893,7 @@ pub const Ui_initTag = ElemTag;
 pub const Ui_initCleanup = __AnonStruct_e3ba6f75038959ff;
 pub const Ui_initComponent = __AnonStruct_180edd8bcea11b3f;
 pub const Ui_initEach = __AnonStruct_2fc5076a97aa9b29;
-pub const Ui_initElement = __AnonStruct_2516a61694df9d14;
+pub const Ui_initElement = __AnonStruct_b8e742f9da13c125;
 pub const Ui_initOnChange = __AnonStruct_e273a265345e3f00;
 pub const Ui_initOnChangeInitial = __AnonStruct_e273a265345e3f00;
 pub const Ui_initOnMount = __AnonStruct_5c77869b771e6bdb;
@@ -3698,7 +3903,7 @@ pub const Ui_initWhen = __AnonStruct_355e5277e4150238;
 pub const ElemCleanup = __AnonStruct_e3ba6f75038959ff;
 pub const ElemComponent = __AnonStruct_180edd8bcea11b3f;
 pub const ElemEach = __AnonStruct_2fc5076a97aa9b29;
-pub const ElemElement = __AnonStruct_2516a61694df9d14;
+pub const ElemElement = __AnonStruct_b8e742f9da13c125;
 pub const ElemOnChange = __AnonStruct_e273a265345e3f00;
 pub const ElemOnChangeInitial = __AnonStruct_e273a265345e3f00;
 pub const ElemOnMount = __AnonStruct_5c77869b771e6bdb;
@@ -3711,7 +3916,7 @@ pub const ElemComponentChildTag = ElemTag;
 pub const ElemComponentChildCleanup = __AnonStruct_e3ba6f75038959ff;
 pub const ElemComponentChildComponent = __AnonStruct_180edd8bcea11b3f;
 pub const ElemComponentChildEach = __AnonStruct_2fc5076a97aa9b29;
-pub const ElemComponentChildElement = __AnonStruct_2516a61694df9d14;
+pub const ElemComponentChildElement = __AnonStruct_b8e742f9da13c125;
 pub const ElemComponentChildOnChange = __AnonStruct_e273a265345e3f00;
 pub const ElemComponentChildOnChangeInitial = __AnonStruct_e273a265345e3f00;
 pub const ElemComponentChildOnMount = __AnonStruct_5c77869b771e6bdb;
@@ -3835,6 +4040,105 @@ pub const NodeAttrSignalText = __AnonStruct_3919d24a90aa1c30;
 pub const NodeAttrStaticBool = __AnonStruct_ac223ceb3485be80;
 pub const NodeAttrStaticText = __AnonStruct_20a3f6b65fe503ef;
 pub const NodeAttrTextOptionalSignal = __AnonStruct_dce81af82680946c;
+pub const NodeEventHandlerAction = __AnonStruct_1208acb69630e8;
+pub const NodeEventHandlerReduce = __AnonStruct_f660464d15310d0c;
+pub const NodeEventHandlerActionReads = NodeSignalExpr;
+pub const NodeEventHandlerActionReadsPayload = NodeSignalExprPayload;
+pub const NodeEventHandlerActionReadsTag = NodeSignalExprTag;
+pub const NodeEventHandlerActionReadsCombine = NodeSignalExpr;
+pub const NodeEventHandlerActionReadsCombinePayload = NodeSignalExprPayload;
+pub const NodeEventHandlerActionReadsCombineTag = NodeSignalExprTag;
+pub const NodeEventHandlerActionReadsCombineCombine = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsCombineConstValue = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsCombineEntropySeedSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsCombineIntervalSource = __AnonStruct_3343639b60ca5b0;
+pub const NodeEventHandlerActionReadsCombineKeyedSelect = HostValueTextReadHandle;
+pub const NodeEventHandlerActionReadsCombineLocationSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsCombineMap = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsCombineMap2 = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsCombineOnlineSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsCombineRowSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsCombineSelect = HostValueTextReadHandle;
+pub const NodeEventHandlerActionReadsCombineStorageSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsCombineTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeEventHandlerActionReadsCombineVisibilitySource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsConstValue = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsEntropySeedSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsIntervalSource = __AnonStruct_3343639b60ca5b0;
+pub const NodeEventHandlerActionReadsKeyedSelect = NodeSignalExpr;
+pub const NodeEventHandlerActionReadsKeyedSelectPayload = NodeSignalExprPayload;
+pub const NodeEventHandlerActionReadsKeyedSelectTag = NodeSignalExprTag;
+pub const NodeEventHandlerActionReadsKeyedSelectCombine = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsKeyedSelectConstValue = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsKeyedSelectEntropySeedSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsKeyedSelectIntervalSource = __AnonStruct_3343639b60ca5b0;
+pub const NodeEventHandlerActionReadsKeyedSelectKeyedSelect = HostValueTextReadHandle;
+pub const NodeEventHandlerActionReadsKeyedSelectLocationSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsKeyedSelectMap = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsKeyedSelectMap2 = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsKeyedSelectOnlineSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsKeyedSelectRowSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsKeyedSelectSelect = HostValueTextReadHandle;
+pub const NodeEventHandlerActionReadsKeyedSelectStorageSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsKeyedSelectTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeEventHandlerActionReadsKeyedSelectVisibilitySource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsLocationSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMap = NodeSignalExpr;
+pub const NodeEventHandlerActionReadsMapPayload = NodeSignalExprPayload;
+pub const NodeEventHandlerActionReadsMapTag = NodeSignalExprTag;
+pub const NodeEventHandlerActionReadsMapCombine = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMapConstValue = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMapEntropySeedSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMapIntervalSource = __AnonStruct_3343639b60ca5b0;
+pub const NodeEventHandlerActionReadsMapKeyedSelect = HostValueTextReadHandle;
+pub const NodeEventHandlerActionReadsMapLocationSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMapMap = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMapMap2 = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMapOnlineSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMapRowSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMapSelect = HostValueTextReadHandle;
+pub const NodeEventHandlerActionReadsMapStorageSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMapTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeEventHandlerActionReadsMapVisibilitySource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMap2 = NodeSignalExpr;
+pub const NodeEventHandlerActionReadsMap2Payload = NodeSignalExprPayload;
+pub const NodeEventHandlerActionReadsMap2Tag = NodeSignalExprTag;
+pub const NodeEventHandlerActionReadsMap2Combine = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMap2ConstValue = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMap2EntropySeedSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMap2IntervalSource = __AnonStruct_3343639b60ca5b0;
+pub const NodeEventHandlerActionReadsMap2KeyedSelect = HostValueTextReadHandle;
+pub const NodeEventHandlerActionReadsMap2LocationSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMap2Map = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMap2Map2 = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMap2OnlineSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMap2RowSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMap2Select = HostValueTextReadHandle;
+pub const NodeEventHandlerActionReadsMap2StorageSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsMap2TaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeEventHandlerActionReadsMap2VisibilitySource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsOnlineSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsRowSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsSelect = NodeSignalExpr;
+pub const NodeEventHandlerActionReadsSelectPayload = NodeSignalExprPayload;
+pub const NodeEventHandlerActionReadsSelectTag = NodeSignalExprTag;
+pub const NodeEventHandlerActionReadsSelectCombine = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsSelectConstValue = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsSelectEntropySeedSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsSelectIntervalSource = __AnonStruct_3343639b60ca5b0;
+pub const NodeEventHandlerActionReadsSelectKeyedSelect = HostValueTextReadHandle;
+pub const NodeEventHandlerActionReadsSelectLocationSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsSelectMap = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsSelectMap2 = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsSelectOnlineSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsSelectRowSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsSelectSelect = HostValueTextReadHandle;
+pub const NodeEventHandlerActionReadsSelectStorageSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsSelectTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeEventHandlerActionReadsSelectVisibilitySource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsStorageSource = HostValueCapabilityHandle;
+pub const NodeEventHandlerActionReadsTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeEventHandlerActionReadsVisibilitySource = HostValueCapabilityHandle;
 pub const NodeEventBindingPolicy = __AnonStruct_b2fd8769c5bbb26a;
 pub const NodeAttrSignalBoolSignal = NodeSignalExpr;
 pub const NodeAttrSignalBoolSignalPayload = NodeSignalExprPayload;
@@ -4133,7 +4437,7 @@ pub const ElemElementChildrenTag = ElemTag;
 pub const ElemElementChildrenCleanup = __AnonStruct_e3ba6f75038959ff;
 pub const ElemElementChildrenComponent = __AnonStruct_180edd8bcea11b3f;
 pub const ElemElementChildrenEach = __AnonStruct_2fc5076a97aa9b29;
-pub const ElemElementChildrenElement = __AnonStruct_2516a61694df9d14;
+pub const ElemElementChildrenElement = __AnonStruct_b8e742f9da13c125;
 pub const ElemElementChildrenOnChange = __AnonStruct_e273a265345e3f00;
 pub const ElemElementChildrenOnChangeInitial = __AnonStruct_e273a265345e3f00;
 pub const ElemElementChildrenOnMount = __AnonStruct_5c77869b771e6bdb;
@@ -4180,7 +4484,7 @@ pub const ElemStateChildTag = ElemTag;
 pub const ElemStateChildCleanup = __AnonStruct_e3ba6f75038959ff;
 pub const ElemStateChildComponent = __AnonStruct_180edd8bcea11b3f;
 pub const ElemStateChildEach = __AnonStruct_2fc5076a97aa9b29;
-pub const ElemStateChildElement = __AnonStruct_2516a61694df9d14;
+pub const ElemStateChildElement = __AnonStruct_b8e742f9da13c125;
 pub const ElemStateChildOnChange = __AnonStruct_e273a265345e3f00;
 pub const ElemStateChildOnChangeInitial = __AnonStruct_e273a265345e3f00;
 pub const ElemStateChildOnMount = __AnonStruct_5c77869b771e6bdb;
@@ -4575,8 +4879,8 @@ pub const __AnonStruct_ecacf74f54997c48Release = struct {
     }
 };
 
-pub const __AnonStruct_2516a61694df9d14Release = struct {
-    pub fn release(value: __AnonStruct_2516a61694df9d14, roc_host: *RocHost) void {
+pub const __AnonStruct_b8e742f9da13c125Release = struct {
+    pub fn release(value: __AnonStruct_b8e742f9da13c125, roc_host: *RocHost) void {
         value.decref(roc_host);
     }
 };
@@ -4663,6 +4967,160 @@ pub const NodeEventExtractionPlanRelease = struct {
     }
 };
 
+fn decrefNodeEventHandler(value: NodeEventHandler, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .Action => {
+            value.payload_action().decref(roc_host);
+        },
+        .Reduce => {
+            value.payload_reduce().decref(roc_host);
+        },
+    }
+}
+
+fn increfNodeEventHandler(value: NodeEventHandler, amount: isize) void {
+    switch (value.tag) {
+        .Action => {
+            value.payload_action().incref(amount);
+        },
+        .Reduce => {
+            value.payload_reduce().incref(amount);
+        },
+    }
+}
+
+pub const NodeEventHandlerRelease = struct {
+    pub fn release(value: NodeEventHandler, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_1208acb69630e8Release = struct {
+    pub fn release(value: __AnonStruct_1208acb69630e8, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+fn decrefNodeCmd(value: NodeCmd, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .Noop => {},
+        .PushState => {
+            value.payload_push_state().decref(roc_host);
+        },
+        .RemoveStorage => {
+            value.payload_remove_storage().decref(roc_host);
+        },
+        .ReplaceState => {
+            value.payload_replace_state().decref(roc_host);
+        },
+        .SetDocumentTitle => {
+            value.payload_set_document_title().decref(roc_host);
+        },
+        .SetStorageText => {
+            value.payload_set_storage_text().decref(roc_host);
+        },
+        .StartTask => {
+            value.payload_start_task().decref(roc_host);
+        },
+        .UpdateState => {
+            value.payload_update_state().decref(roc_host);
+        },
+        .UpdateStates => {
+            decrefListOfNodeStateWrite(value.payload_update_states(), roc_host);
+        },
+    }
+}
+
+fn increfNodeCmd(value: NodeCmd, amount: isize) void {
+    switch (value.tag) {
+        .Noop => {},
+        .PushState => {
+            value.payload_push_state().incref(amount);
+        },
+        .RemoveStorage => {
+            value.payload_remove_storage().incref(amount);
+        },
+        .ReplaceState => {
+            value.payload_replace_state().incref(amount);
+        },
+        .SetDocumentTitle => {
+            value.payload_set_document_title().incref(amount);
+        },
+        .SetStorageText => {
+            value.payload_set_storage_text().incref(amount);
+        },
+        .StartTask => {
+            value.payload_start_task().incref(amount);
+        },
+        .UpdateState => {
+            value.payload_update_state().incref(amount);
+        },
+        .UpdateStates => {
+            value.payload_update_states().incref(amount);
+        },
+    }
+}
+
+pub const NodeCmdRelease = struct {
+    pub fn release(value: NodeCmd, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_f47856d36e0a8406Release = struct {
+    pub fn release(value: __AnonStruct_f47856d36e0a8406, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_ec418947c360ad1eRelease = struct {
+    pub fn release(value: __AnonStruct_ec418947c360ad1e, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_9d5ad8648ab57c4bRelease = struct {
+    pub fn release(value: __AnonStruct_9d5ad8648ab57c4b, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_bf0aa8f11210a4ceRelease = struct {
+    pub fn release(value: __AnonStruct_bf0aa8f11210a4ce, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_d7d87ab0a59c379bRelease = struct {
+    pub fn release(value: __AnonStruct_d7d87ab0a59c379b, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const HostValueTaskRequestReadHandleRelease = struct {
+    pub fn release(value: HostValueTaskRequestReadHandle, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const NodeStateWriteRelease = struct {
+    pub fn release(value: NodeStateWrite, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const HostValueStateValueHandleRelease = struct {
+    pub fn release(value: HostValueStateValueHandle, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_f660464d15310d0cRelease = struct {
+    pub fn release(value: __AnonStruct_f660464d15310d0c, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
 pub const HostValueEventReducerHandleRelease = struct {
     pub fn release(value: HostValueEventReducerHandle, roc_host: *RocHost) void {
         value.decref(roc_host);
@@ -4729,114 +5187,6 @@ pub const __AnonStruct_e273a265345e3f00Release = struct {
     }
 };
 
-fn decrefNodeCmd(value: NodeCmd, roc_host: *RocHost) void {
-    switch (value.tag) {
-        .Noop => {},
-        .PushState => {
-            value.payload_push_state().decref(roc_host);
-        },
-        .RemoveStorage => {
-            value.payload_remove_storage().decref(roc_host);
-        },
-        .ReplaceState => {
-            value.payload_replace_state().decref(roc_host);
-        },
-        .SetDocumentTitle => {
-            value.payload_set_document_title().decref(roc_host);
-        },
-        .SetStorageText => {
-            value.payload_set_storage_text().decref(roc_host);
-        },
-        .StartTask => {
-            value.payload_start_task().decref(roc_host);
-        },
-        .UpdateState => {
-            value.payload_update_state().decref(roc_host);
-        },
-    }
-}
-
-fn increfNodeCmd(value: NodeCmd, amount: isize) void {
-    switch (value.tag) {
-        .Noop => {},
-        .PushState => {
-            value.payload_push_state().incref(amount);
-        },
-        .RemoveStorage => {
-            value.payload_remove_storage().incref(amount);
-        },
-        .ReplaceState => {
-            value.payload_replace_state().incref(amount);
-        },
-        .SetDocumentTitle => {
-            value.payload_set_document_title().incref(amount);
-        },
-        .SetStorageText => {
-            value.payload_set_storage_text().incref(amount);
-        },
-        .StartTask => {
-            value.payload_start_task().incref(amount);
-        },
-        .UpdateState => {
-            value.payload_update_state().incref(amount);
-        },
-    }
-}
-
-pub const NodeCmdRelease = struct {
-    pub fn release(value: NodeCmd, roc_host: *RocHost) void {
-        value.decref(roc_host);
-    }
-};
-
-pub const __AnonStruct_f47856d36e0a8406Release = struct {
-    pub fn release(value: __AnonStruct_f47856d36e0a8406, roc_host: *RocHost) void {
-        value.decref(roc_host);
-    }
-};
-
-pub const __AnonStruct_ec418947c360ad1eRelease = struct {
-    pub fn release(value: __AnonStruct_ec418947c360ad1e, roc_host: *RocHost) void {
-        value.decref(roc_host);
-    }
-};
-
-pub const __AnonStruct_9d5ad8648ab57c4bRelease = struct {
-    pub fn release(value: __AnonStruct_9d5ad8648ab57c4b, roc_host: *RocHost) void {
-        value.decref(roc_host);
-    }
-};
-
-pub const __AnonStruct_bf0aa8f11210a4ceRelease = struct {
-    pub fn release(value: __AnonStruct_bf0aa8f11210a4ce, roc_host: *RocHost) void {
-        value.decref(roc_host);
-    }
-};
-
-pub const __AnonStruct_d7d87ab0a59c379bRelease = struct {
-    pub fn release(value: __AnonStruct_d7d87ab0a59c379b, roc_host: *RocHost) void {
-        value.decref(roc_host);
-    }
-};
-
-pub const HostValueTaskRequestReadHandleRelease = struct {
-    pub fn release(value: HostValueTaskRequestReadHandle, roc_host: *RocHost) void {
-        value.decref(roc_host);
-    }
-};
-
-pub const __AnonStruct_589081ece2d74afaRelease = struct {
-    pub fn release(value: __AnonStruct_589081ece2d74afa, roc_host: *RocHost) void {
-        value.decref(roc_host);
-    }
-};
-
-pub const HostValueStateValueHandleRelease = struct {
-    pub fn release(value: HostValueStateValueHandle, roc_host: *RocHost) void {
-        value.decref(roc_host);
-    }
-};
-
 pub const __AnonStruct_5c77869b771e6bdbRelease = struct {
     pub fn release(value: __AnonStruct_5c77869b771e6bdb, roc_host: *RocHost) void {
         value.decref(roc_host);
@@ -4883,6 +5233,14 @@ pub fn decrefListOfNodeAttr(value: RocList(NodeAttr), roc_host: *RocHost) void {
     value.deinitWith(NodeAttrRelease, roc_host);
 }
 
+/// Release one owned reference to a `RocList(NodeStateWrite)`.
+///
+/// The allocation's final reference is claimed atomically before any element
+/// is read, so concurrent owners cannot skip or duplicate element teardown.
+pub fn decrefListOfNodeStateWrite(value: RocList(NodeStateWrite), roc_host: *RocHost) void {
+    value.deinitWith(NodeStateWriteRelease, roc_host);
+}
+
 /// Release one owned reference to a `RocList(Elem)`.
 ///
 /// The allocation's final reference is claimed atomically before any element
@@ -4901,7 +5259,12 @@ fn decrefBoxPayloadType71(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c
     payload.*.decref(roc_host);
 }
 
-fn decrefBoxPayloadType135(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
+fn decrefBoxPayloadType119(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
+    const payload: *NodeSignalExpr = @ptrCast(@alignCast(data_ptr orelse return));
+    payload.*.decref(roc_host);
+}
+
+fn decrefBoxPayloadType169(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
     const payload: *NodeSignalExpr = @ptrCast(@alignCast(data_ptr orelse return));
     payload.*.decref(roc_host);
 }
@@ -4923,13 +5286,26 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == __AnonStruct_3343639b60ca5b0) return __AnonStruct_3343639b60ca5b0Release;
     if (T == HostValueTextReadHandle) return HostValueTextReadHandleRelease;
     if (T == __AnonStruct_ecacf74f54997c48) return __AnonStruct_ecacf74f54997c48Release;
-    if (T == __AnonStruct_2516a61694df9d14) return __AnonStruct_2516a61694df9d14Release;
+    if (T == __AnonStruct_b8e742f9da13c125) return __AnonStruct_b8e742f9da13c125Release;
     if (T == RocList(NodeAttr)) return RocListRelease(RocList(NodeAttr), NodeAttrRelease);
     if (T == NodeAttr) return NodeAttrRelease;
     if (T == NodeEventBinding) return NodeEventBindingRelease;
     if (T == NodeMsg) return NodeMsgRelease;
     if (T == NodeEventExtractionPlan) return NodeEventExtractionPlanRelease;
     if (T == RocListWith(u8, false)) return RocListSpineRelease(RocListWith(u8, false));
+    if (T == NodeEventHandler) return NodeEventHandlerRelease;
+    if (T == __AnonStruct_1208acb69630e8) return __AnonStruct_1208acb69630e8Release;
+    if (T == NodeCmd) return NodeCmdRelease;
+    if (T == __AnonStruct_f47856d36e0a8406) return __AnonStruct_f47856d36e0a8406Release;
+    if (T == __AnonStruct_ec418947c360ad1e) return __AnonStruct_ec418947c360ad1eRelease;
+    if (T == __AnonStruct_9d5ad8648ab57c4b) return __AnonStruct_9d5ad8648ab57c4bRelease;
+    if (T == __AnonStruct_bf0aa8f11210a4ce) return __AnonStruct_bf0aa8f11210a4ceRelease;
+    if (T == __AnonStruct_d7d87ab0a59c379b) return __AnonStruct_d7d87ab0a59c379bRelease;
+    if (T == HostValueTaskRequestReadHandle) return HostValueTaskRequestReadHandleRelease;
+    if (T == NodeStateWrite) return NodeStateWriteRelease;
+    if (T == HostValueStateValueHandle) return HostValueStateValueHandleRelease;
+    if (T == RocList(NodeStateWrite)) return RocListRelease(RocList(NodeStateWrite), NodeStateWriteRelease);
+    if (T == __AnonStruct_f660464d15310d0c) return __AnonStruct_f660464d15310d0cRelease;
     if (T == HostValueEventReducerHandle) return HostValueEventReducerHandleRelease;
     if (T == __AnonStruct_c4502953588f5545) return __AnonStruct_c4502953588f5545Release;
     if (T == HostValueBoolReadHandle) return HostValueBoolReadHandleRelease;
@@ -4939,15 +5315,6 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == __AnonStruct_dce81af82680946c) return __AnonStruct_dce81af82680946cRelease;
     if (T == RocList(Elem)) return RocListRelease(RocList(Elem), ElemRelease);
     if (T == __AnonStruct_e273a265345e3f00) return __AnonStruct_e273a265345e3f00Release;
-    if (T == NodeCmd) return NodeCmdRelease;
-    if (T == __AnonStruct_f47856d36e0a8406) return __AnonStruct_f47856d36e0a8406Release;
-    if (T == __AnonStruct_ec418947c360ad1e) return __AnonStruct_ec418947c360ad1eRelease;
-    if (T == __AnonStruct_9d5ad8648ab57c4b) return __AnonStruct_9d5ad8648ab57c4bRelease;
-    if (T == __AnonStruct_bf0aa8f11210a4ce) return __AnonStruct_bf0aa8f11210a4ceRelease;
-    if (T == __AnonStruct_d7d87ab0a59c379b) return __AnonStruct_d7d87ab0a59c379bRelease;
-    if (T == HostValueTaskRequestReadHandle) return HostValueTaskRequestReadHandleRelease;
-    if (T == __AnonStruct_589081ece2d74afa) return __AnonStruct_589081ece2d74afaRelease;
-    if (T == HostValueStateValueHandle) return HostValueStateValueHandleRelease;
     if (T == __AnonStruct_5c77869b771e6bdb) return __AnonStruct_5c77869b771e6bdbRelease;
     if (T == __AnonStruct_31ce7c44d4d70f76) return __AnonStruct_31ce7c44d4d70f76Release;
     if (T == __AnonStruct_e8f8b3c0e45c6fd1) return __AnonStruct_e8f8b3c0e45c6fd1Release;

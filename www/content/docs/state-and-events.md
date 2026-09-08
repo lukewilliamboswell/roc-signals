@@ -21,14 +21,16 @@ Ui.state(
 )
 ```
 
-The handle gives you exactly two things:
+The handle gives you:
 
 - **`model.signal()`** — the current value, as a signal you can derive from.
 - **reducers** — `on_unit`, `on_str`, `on_bool`, `on_key`, `on_detail` — which
   build event handlers.
+- **`model.set_cmd(next)`** — a replacement command for an action or lifecycle
+  hook to return.
 
-There is no setter. You never assign to state; you attach a reducer to an event
-and the host applies it.
+These are descriptions, not imperative assignments. The host applies a reducer
+or a returned replacement command through the shared propagation engine.
 
 State is scoped to where you declare it. Put it at the top of your app for
 app-wide state, inside a `Ui.each` row renderer for per-row state, or inside
@@ -140,6 +142,67 @@ commit_seats = |model|
 ```
 
 Then attach it: `Html.on_blur(model.on_unit(commit_seats))`.
+
+## Actions with declared reads
+
+Use `Ui.action(reads, to_cmd)` when a click or submit should run a command using
+the current values of independent signals. For example, with `source` and
+`result` state handles in scope:
+
+```roc
+Html.button(
+    "Append snapshot",
+    Ui.action(
+        { source: source.signal(), result: result.signal() }.Signal,
+        |reads| result.set_cmd("${reads.result}|${reads.source}"),
+    ),
+)
+```
+
+The callback sees settled values for the declared reads. Each accepted event
+invokes it, including repeated clicks with identical reads. Changing a read
+does **not** invoke it. Return a task, navigation, storage, or state command;
+do not add serial counters just to make repeated clicks look like value changes.
+
+The mounted event's scope owns its read graph and any task it starts. Disposing
+that scope removes the handler, releases its read edges, and cancels its work.
+`Ui.action` accepts payload-free events. For typed payloads, use `Ui.action_str`,
+`Ui.action_bool`, `Ui.action_key`, or `Ui.action_detail`. Their callbacks receive
+`(reads, payload)`; extraction matches the corresponding `State.on_*` method.
+The state reducers remain the compact choice when one state is both the only
+read and the only destination.
+
+```roc
+Html.on_custom(
+    "package-preview",
+    Ui.action_detail(settings.signal(), |current_settings, detail|
+        preview.set_cmd(render_preview(current_settings, detail))),
+)
+```
+
+## Updating several states together
+
+An action can replace several distinct states in one turn. Build each proposal
+with `state.write(next)`, then return `Ui.update_states(writes)`. For example,
+changing a search query can reset pagination without briefly requesting the new
+query at the old page:
+
+```roc
+query_changed = Ui.action_str(query.signal(), |_current_query, text|
+    Ui.update_states([query.write(text), page.write(1)]))
+```
+
+Derived values, conditional branches, and value-change observers see the
+complete proposed snapshot, regardless of the order of these writes. Equal
+replacements are pruned. Each destination may appear only once, including
+unchanged destinations; duplicates are programmer errors. An empty list does
+nothing.
+
+`set_cmd` and coordinated-write commands capture replacement values, not live
+reads. They can safely be stored and returned repeatedly; each execution creates
+fresh owned proposals. Use an action's explicit reads when the replacement must
+depend on the current state. Separate commands returned by separate observers
+remain separate turns, not one coordinated write set.
 
 ## Deriving values
 

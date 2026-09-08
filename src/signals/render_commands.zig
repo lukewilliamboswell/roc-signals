@@ -6,7 +6,7 @@ const ids = @import("ids.zig");
 
 /// Version 12: `remove_node` releases the whole subtree under its target, so
 /// the engine publishes one removal per retired subtree root.
-pub const protocol_version: u32 = 13;
+pub const protocol_version: u32 = 14;
 pub const protocol_feature_dynamic_attrs: u32 = 1 << 0;
 pub const protocol_feature_dynamic_events: u32 = 1 << 1;
 pub const protocol_features: u32 = protocol_feature_dynamic_attrs | protocol_feature_dynamic_events;
@@ -96,6 +96,53 @@ pub const EventPolicy = struct {
         return self.eql(EventPolicy.none);
     }
 };
+
+/// Element creation selects a namespace explicitly; tag spelling and parent
+/// namespace never determine it. Text nodes are a separate render operation.
+pub const ElementNamespace = enum(u32) { html = 0, svg = 1 };
+
+/// Immutable rendered-node classification, separate from construction identity.
+/// Names are borrowed from descriptors or the render cache's interned storage.
+pub const NodeShape = union(enum) {
+    text,
+    element: struct { namespace: ElementNamespace, tag: []const u8 },
+
+    /// Describes an HTML element without deriving a namespace from its name.
+    pub fn html(tag: []const u8) NodeShape {
+        return .{ .element = .{ .namespace = .html, .tag = tag } };
+    }
+
+    /// Compares every immutable property required for rendered-node reuse.
+    pub fn eql(self: NodeShape, other: NodeShape) bool {
+        return switch (self) {
+            .text => other == .text,
+            .element => |element| other == .element and element.namespace == other.element.namespace and std.mem.eql(u8, element.tag, other.element.tag),
+        };
+    }
+
+    /// Returns a display name for diagnostics and native semantic locators.
+    /// The text-node label is not a discriminator; use the union tag instead.
+    pub fn displayName(self: NodeShape) []const u8 {
+        return switch (self) {
+            .text => "text",
+            .element => |element| element.tag,
+        };
+    }
+};
+
+test "rendered-node reuse compares kind namespace and exact local name" {
+    const shapes = [_]NodeShape{
+        .text,
+        NodeShape.html("text"),
+        .{ .element = .{ .namespace = .svg, .tag = "text" } },
+        .{ .element = .{ .namespace = .svg, .tag = "linearGradient" } },
+        .{ .element = .{ .namespace = .svg, .tag = "lineargradient" } },
+    };
+    for (shapes, 0..) |left, left_index| for (shapes, 0..) |right, right_index| {
+        try std.testing.expectEqual(left_index == right_index, left.eql(right));
+        try std.testing.expectEqual(left.eql(right), right.eql(left));
+    };
+}
 
 pub const Op = enum(u32) {
     reset_dom = 1,
@@ -542,6 +589,7 @@ pub const TransactionalBatch = struct {
     /// While open, effect commands the engine emits through the host sink at
     /// publication belong to the transaction and use its reserved capacity.
     transaction_open: bool = false,
+    reserved: BatchCapacity = .{},
 
     /// Sets limits at the narrow host or engine boundary that owns the mutation.
     pub fn setLimits(self: *TransactionalBatch, limits: BatchLimits) error{ResourceLimit}!void {
@@ -583,6 +631,7 @@ pub const TransactionalBatch = struct {
             return error.ResourceLimit;
         }
         try self.staged.ensureTotalCapacity(allocator, capacity);
+        self.reserved = capacity;
         self.transaction_open = true;
     }
 
@@ -602,6 +651,88 @@ pub const TransactionalBatch = struct {
         if (records.items.len >= records.capacity) @panic("engine sink command exceeded the transaction's reserved command capacity");
         records.appendAssumeCapacity(Record.initRaw(op, a, b, c, d, e));
     }
+
+    /// Appends one complete task-start command and its two borrowed payloads.
+    /// Wire validation and all growth precede staging, so refusal preserves
+    /// earlier sealed commands and exposes neither a partial payload nor a
+    /// partial task command. This standalone publication cannot interleave
+    /// with an open engine transaction.
+    pub fn appendTaskStart(self: *TransactionalBatch, allocator: std.mem.Allocator, request_id: ids.TaskRequestId, task_name: []const u8, request: []const u8) PreflightError!void {
+        if (self.isTransactionOpen()) @panic("standalone task publication inside an open engine transaction");
+        var publication = try self.prepareTaskStart(allocator, request_id, task_name, request, 0);
+        defer publication.deinit();
+        publication.commit();
+    }
+
+    /// Reserves a task start and the fixed cancellation records preceding it.
+    /// Payloads remain borrowed until commit or abort. No task bytes or records
+    /// are staged during preparation, and cancellation must use only the
+    /// reserved allocation-free sink path while this publication is open. An
+    /// unstaged source reservation may be extended; that source must commit
+    /// immediately before this publication, with no intervening transaction.
+    pub fn prepareTaskStart(self: *TransactionalBatch, allocator: std.mem.Allocator, request_id: ids.TaskRequestId, task_name: []const u8, request: []const u8, cancellation_count: usize) PreflightError!TaskPublication {
+        if (self.hasUnsealedStaging()) @panic("task preparation interleaved with staged commands");
+        const wire_id = std.math.cast(u32, request_id.raw()) orelse return error.ResourceLimit;
+        _ = std.math.cast(u32, task_name.len) orelse return error.ResourceLimit;
+        _ = std.math.cast(u32, request.len) orelse return error.ResourceLimit;
+        const string_bytes = std.math.add(usize, task_name.len, request.len) catch return error.ResourceLimit;
+        const command_count = std.math.add(usize, cancellation_count, 1) catch return error.ResourceLimit;
+        const base: BatchCapacity = if (self.isTransactionOpen()) self.reserved else .{ .commands = self.sealed.commands, .strings = self.sealed.strings, .dynamic = self.sealed.dynamic };
+        try self.preflight(allocator, .{
+            .commands = std.math.add(usize, base.commands - self.sealed.commands, command_count) catch return error.ResourceLimit,
+            .strings = std.math.add(usize, base.strings - self.sealed.strings, string_bytes) catch return error.ResourceLimit,
+            .dynamic = base.dynamic - self.sealed.dynamic,
+        });
+        return .{ .batch = self, .request_id = wire_id, .task_name = task_name, .request = request };
+    }
+
+    /// Borrows a reserved batch and task payloads until publication completes.
+    pub const TaskPublication = struct {
+        batch: ?*TransactionalBatch,
+        request_id: u32,
+        task_name: []const u8,
+        request: []const u8,
+
+        /// Reopens this reserved publication after a joined source transaction
+        /// seals its render commands. The owner must call this before any
+        /// subsequent transaction can reuse the reservation.
+        pub fn beginCommit(self: *TaskPublication) void {
+            const batch = self.batch orelse @panic("task publication already completed");
+            if (batch.hasUnsealedStaging()) @panic("task publication resumed amid unsealed commands");
+            batch.transaction_open = true;
+        }
+
+        /// Stages both payloads and the start after any reserved cancellations,
+        /// then seals the whole transaction without allocating.
+        pub fn commit(self: *TaskPublication) void {
+            self.finish(false);
+        }
+
+        /// Publishes an occurrence whose prepared Loading transition disposes
+        /// its owner, followed immediately by cancellation in the same seal.
+        pub fn commitRetired(self: *TaskPublication) void {
+            self.finish(true);
+        }
+
+        fn finish(self: *TaskPublication, retired: bool) void {
+            const batch = self.batch orelse @panic("task publication committed twice");
+            const name_offset: u32 = @intCast(batch.staged.strings.items.len);
+            batch.staged.strings.appendSliceAssumeCapacity(self.task_name);
+            const request_offset: u32 = @intCast(batch.staged.strings.items.len);
+            batch.staged.strings.appendSliceAssumeCapacity(self.request);
+            batch.stageSinkCommandAssumeCapacity(.start_task, self.request_id, name_offset, @intCast(self.task_name.len), request_offset, @intCast(self.request.len));
+            if (retired) batch.stageSinkCommandAssumeCapacity(.cancel_task, self.request_id, 0, 0, 0, 0);
+            batch.commit();
+            self.batch = null;
+        }
+
+        /// Discards uncommitted staging, preserving earlier sealed commands.
+        /// Once committed, ownership has transferred and this is a no-op.
+        pub fn deinit(self: *TaskPublication) void {
+            if (self.batch) |batch| batch.abort();
+            self.batch = null;
+        }
+    };
 
     /// Seals the staged transaction onto the host-call batch without allocating.
     /// The commands become part of what `publish` will make visible; they are
@@ -735,6 +866,129 @@ fn exerciseTransactionalBatch(backing_allocator: std.mem.Allocator, preflight_al
     try std.testing.expectEqualStrings("committed", batch.published.strings.items);
     try std.testing.expect(batch.published.dynamic.len() != 0);
     try std.testing.expectEqual(@as(usize, 0), batch.staged.commands.len());
+}
+
+fn exerciseTaskPublication(failure_number: ?usize) !usize {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(allocator);
+    batch.begin();
+    try batch.preflight(allocator, .{ .commands = 1, .strings = 6 });
+    batch.stageSinkCommandAssumeCapacity(.set_text, 7, 0, 6, 0, 0);
+    batch.staged.strings.appendSliceAssumeCapacity("before");
+    batch.commit();
+    const previous = batch.sealed;
+    const request = "x" ** 1024;
+    fault.configure(failure_number);
+    batch.appendTaskStart(allocator, ids.TaskRequestId.fromRaw(42), "load", request) catch |err| {
+        try std.testing.expect(failure_number != null);
+        try std.testing.expectEqual(error.OutOfMemory, err);
+        try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+        try std.testing.expectEqualDeep(previous, batch.sealed);
+        try std.testing.expectEqual(@as(usize, 1), batch.staged.commands.len());
+        try std.testing.expectEqualStrings("before", batch.staged.strings.items);
+        try std.testing.expect(!batch.isTransactionOpen());
+        try std.testing.expect(!batch.hasUnsealedStaging());
+        try std.testing.expectEqual(@as(usize, 0), batch.published.commands.len());
+        fault.configure(null);
+        try batch.appendTaskStart(allocator, ids.TaskRequestId.fromRaw(42), "load", request);
+    };
+    const attempts = fault.attempts;
+    try std.testing.expectEqual(@as(usize, 2), batch.sealed.commands);
+    try std.testing.expectEqualStrings("beforeload" ++ request, batch.staged.strings.items);
+    try std.testing.expectEqual(@as(usize, 0), batch.published.commands.len());
+    fault.configure(1);
+    batch.publish();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 2), batch.published.commands.len());
+    try std.testing.expectEqualDeep(Record.initRaw(.start_task, 42, 6, 4, 10, 1024), batch.published.commands.records.items[1]);
+    return attempts;
+}
+
+test "task publication sweeps refusal without sealing partial payloads" {
+    const attempts = try exerciseTaskPublication(null);
+    try std.testing.expect(attempts > 0);
+    for (1..attempts + 1) |failure_number| _ = try exerciseTaskPublication(failure_number);
+}
+
+test "task publication rejects oversized ids before allocation or staging" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(fault.allocator());
+    try std.testing.expectError(error.ResourceLimit, batch.appendTaskStart(fault.allocator(), ids.TaskRequestId.fromRaw(@as(u64, std.math.maxInt(u32)) + 1), "load", "request"));
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 0), batch.staged.commands.len());
+    try std.testing.expectEqual(@as(usize, 0), batch.staged.strings.items.len);
+    try std.testing.expect(!batch.isTransactionOpen());
+}
+
+test "prepared task publication reserves cancellation and aborts the complete replacement" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(allocator);
+    var abandoned = try batch.prepareTaskStart(allocator, ids.TaskRequestId.fromRaw(11), "load", "new", 1);
+    fault.configure(1);
+    batch.stageSinkCommandAssumeCapacity(.cancel_task, 10, 0, 0, 0, 0);
+    abandoned.deinit();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 0), batch.sealed.commands);
+    try std.testing.expectEqual(@as(usize, 0), batch.staged.commands.len());
+    fault.configure(null);
+    var retry = try batch.prepareTaskStart(allocator, ids.TaskRequestId.fromRaw(11), "load", "new", 1);
+    defer retry.deinit();
+    fault.configure(1);
+    batch.stageSinkCommandAssumeCapacity(.cancel_task, 10, 0, 0, 0, 0);
+    retry.commit();
+    batch.publish();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 2), batch.published.commands.len());
+    try std.testing.expectEqualDeep(Record.initRaw(.cancel_task, 10, 0, 0, 0, 0), batch.published.commands.records.items[0]);
+    try std.testing.expectEqualDeep(Record.initRaw(.start_task, 11, 0, 4, 4, 3), batch.published.commands.records.items[1]);
+    try std.testing.expectEqualStrings("loadnew", batch.published.strings.items);
+}
+
+test "task publication joins Loading reservation and cancels a retired owner without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(allocator);
+    try batch.preflight(allocator, .{ .commands = 1, .strings = 7 });
+    var task = try batch.prepareTaskStart(allocator, ids.TaskRequestId.fromRaw(11), "load", "new", 2);
+    defer task.deinit();
+    try std.testing.expectEqual(@as(usize, 4), batch.reserved.commands);
+    try std.testing.expectEqual(@as(usize, 14), batch.reserved.strings);
+    fault.configure(1);
+    batch.staged.strings.appendSliceAssumeCapacity("Loading");
+    batch.stageSinkCommandAssumeCapacity(.set_text, 7, 0, 7, 0, 0);
+    batch.commit();
+    task.beginCommit();
+    batch.stageSinkCommandAssumeCapacity(.cancel_task, 10, 0, 0, 0, 0);
+    task.commitRetired();
+    batch.publish();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 4), batch.published.commands.len());
+    try std.testing.expectEqualDeep(Record.initRaw(.start_task, 11, 7, 4, 11, 3), batch.published.commands.records.items[2]);
+    try std.testing.expectEqualDeep(Record.initRaw(.cancel_task, 11, 0, 0, 0, 0), batch.published.commands.records.items[3]);
+    try std.testing.expectEqualStrings("Loadingloadnew", batch.published.strings.items);
+}
+
+test "joined task reservation applies limits to Loading and task commands together" {
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(std.testing.allocator);
+    try batch.setLimits(.{ .command_records = 3 });
+    try batch.preflight(std.testing.allocator, .{ .commands = 1 });
+    try std.testing.expectError(error.ResourceLimit, batch.prepareTaskStart(std.testing.allocator, ids.TaskRequestId.fromRaw(11), "load", "new", 2));
+    try std.testing.expectEqual(@as(usize, 0), batch.staged.commands.len());
+    try std.testing.expectEqual(@as(usize, 0), batch.staged.strings.items.len);
+    try std.testing.expectEqual(@as(usize, 0), batch.sealed.commands);
+    try std.testing.expectEqual(@as(usize, 1), batch.reserved.commands);
+    batch.abort();
 }
 
 test "transaction command preflight sweeps every allocation failure" {

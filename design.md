@@ -861,13 +861,23 @@ from a string-valued selected signal and dispatches the option value. They do
 not introduce separate browser-state channels.
 
 Rich content is ordinary `Elem` structure. Apps or packages may parse markdown,
-prose blocks, or CMS data into `Elem.Element({ tag, attrs, children })` nodes,
+prose blocks, or CMS data into `Elem.Element({ namespace: Html, tag, attrs, children })` nodes,
 including headings, lists, blockquotes, inline code, emphasis, and links, while
 placing user-controlled text only in `Html.text` or `Html.text_s` leaves. The
 platform intentionally exposes no raw HTML, `innerHTML`, or sanitizer surface;
 link-scheme allowlists, markdown parsing, and other content policy stay in
 app/package code unless repeated maintained apps prove a smaller shared helper
 is needed.
+
+Element descriptors select HTML or SVG explicitly. Namespace selection is
+independent of tag spelling, parent namespace, and mount position. The shared
+engine retains node kind, namespace, and local name through collection,
+reconciliation, and publication; the browser executes that decision with the
+corresponding DOM creation operation. A text node is a distinct node kind, never
+an element whose local name happens to be `text`. Reuse requires matching kind,
+namespace, and local name; a mismatch replaces the rendered node while obeying
+the ordinary scope and identity rules. HTML children of SVG `foreignObject`
+remain explicitly HTML, just as nested SVG elements remain explicitly SVG.
 
 HTTP helpers are wrappers over the pinned `roc-lang/http` request/response
 values plus Signals-owned transport errors. The text helpers decode successful

@@ -302,10 +302,10 @@ fn checkCorruptionsAreRejected(
 
 /// A rule the parser is specified to enforce, and the error it must answer with.
 ///
-/// Every variant is a tree that is well-formed in every respect but one, so a
-/// parser that answers with a different error is as much a regression as one
-/// that accepts the input: it means a different rule fired first, and the rule
-/// under test is no longer reachable.
+/// Each variant reaches one specified rejection boundary. Nested records also
+/// vary bytes beyond that boundary: their forbidden body must never be parsed.
+/// A different error means the parser inspected data beyond the first violated
+/// rule or failed to reach the rule being tested.
 const Violation = enum {
     empty_record,
     empty_field_name,
@@ -374,7 +374,7 @@ fn checkViolationsAreRejected(gpa: std.mem.Allocator, reader: *FuzzReader, debug
     }
 }
 
-/// Emits a tree that breaks exactly `violation` and nothing else.
+/// Emits a tree whose first violated rule is `violation`.
 fn buildViolation(
     gpa: std.mem.Allocator,
     reader: *FuzzReader,
@@ -414,8 +414,13 @@ fn buildViolation(
         },
         .nested_record_field => {
             try out.appendSlice(gpa, &.{ SchemaTag.record, 1, 1, 'a' });
-            try out.appendSlice(gpa, &.{ SchemaTag.record, 1, 1, 'b' });
-            try appendValidScalar(gpa, reader, grammar, out);
+            // Rejection belongs to the nested tag, independent of its body.
+            // Vary the remaining bytes freely, including an absent body. A
+            // parser that descends before rejecting reports another error or
+            // exhausts its stack, so this oracle detects that regression.
+            try out.append(gpa, SchemaTag.record);
+            const trailing = reader.intRangeAtMost(u8, 0, 32);
+            for (0..trailing) |_| try out.append(gpa, reader.readByte());
         },
         .unknown_extraction_source => {
             try out.append(gpa, SchemaTag.text);
