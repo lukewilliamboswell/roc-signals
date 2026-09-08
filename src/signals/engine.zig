@@ -16317,7 +16317,7 @@ pub fn Engine(comptime Ctx: type) type {
                         }
                         plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, plan.each_rows.?, .{}, &.{}, &plan.caches, external_state);
                         errdefer plan.each_replacement.?.deinit();
-                        if (plan.each_rows.?.direct_delta) {
+                        if (plan.each_rows.?.direct_delta or !engine.active_stream.render_nodes_ordered) {
                             plan.structural_downstream = try PreparedStructuralDownstream.prepareSparseExternalEach(engine, ctx, roc_host, site, plan.each_rows.?, plan.each_replacement.?, &plan.caches);
                         } else {
                             plan.each_layout = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &plan.each_rows.?.rows, plan.each_replacement.?.replacement_rows, &plan.each_replacement.?.replacement.collection);
