@@ -9,3 +9,6 @@ slug = "keyed-rows"
 
 [[examples]]
 slug = "notes-editor"
+
+[[examples]]
+slug = "activity-monitor"
