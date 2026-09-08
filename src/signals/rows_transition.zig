@@ -595,7 +595,7 @@ pub const PreparedTransition = struct {
                 const row_id = try self.resolveOrderSlot(value.first_slot);
                 const roots = self.render_order.rootsInRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit) catch |err| return renderOrderError(err);
                 value.first_scope_id = try self.scopeForRow(row_id);
-                value.last_scope_id = try self.lastScopeInRange(row_id, value.count);
+                value.last_scope_id = try self.lastScopeInRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit);
                 value.first_root = roots.first;
                 value.last_root = roots.last;
                 value.root_count = roots.count;
@@ -606,7 +606,7 @@ pub const PreparedTransition = struct {
                 const before = if (value.before_slot == 0) null else try self.resolveOrderSlot(value.before_slot);
                 const roots = self.render_order.rootsInRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit) catch |err| return renderOrderError(err);
                 value.first_scope_id = try self.scopeForRow(row_id);
-                value.last_scope_id = try self.lastScopeInRange(row_id, value.count);
+                value.last_scope_id = try self.lastScopeInRange(row_id, std.math.cast(usize, value.count) orelse return error.ResourceLimit);
                 value.first_root = roots.first;
                 value.last_root = roots.last;
                 value.root_count = roots.count;
