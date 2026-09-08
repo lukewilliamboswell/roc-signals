@@ -12343,14 +12343,15 @@ pub const fuzz_fixtures = struct {
         return engine_ptr.states.items[index].activePayloadConst().cell.value;
     }
 
-    /// Lists the render-cache children of `parent`, in committed render order.
-    ///
-    /// The multi-parent splice bugs this surface exists to catch are visible
-    /// here and almost nowhere else: a parent whose children were registered by
-    /// two different staging passes ends up holding the same child twice, which
-    /// no count-based oracle notices.
-    pub fn renderChildren(host: *const HostEnv, parent: ids.ElemId) []const ids.ElemId {
-        return host.engine.render_cache.nodes.items[parent.index()].children.items;
+    /// Borrows the native executor's published child IDs until the next engine
+    /// operation. This observes the applied command stream rather than a dense
+    /// render-cache snapshot, which sparse edits need not materialize. The fuzz
+    /// oracle compares this order with both its pure model and durable sibling
+    /// links, so a cache/executor disagreement remains a separate failure.
+    pub fn publishedChildren(host: *const HostEnv, parent: ids.ElemId) []const u64 {
+        const parent_node = &host.dom_elements.items[parent.index()];
+        if (!parent_node.active) @panic("fuzz oracle referenced an inactive published parent");
+        return parent_node.children.items;
     }
 
     /// The committed render root, node 0 of the render cache.
