@@ -777,6 +777,7 @@ pub fn Engine(comptime Ctx: type) type {
         active_row_sources: std.AutoHashMapUnmanaged(row_handles.RowHandleId, *HostSignalRecord) = .{},
         selectors: selector_runtime.Registry(HostSignalRecord) = .{},
         render_cache: render_cache_mod.Cache(Ctx) = .{},
+        positions: ?structural_positions.Positions = null,
         pending_tasks: shared_buffer.List(HostPendingTask) = .empty,
         active_intervals: effects_runtime.IntervalRegistry = .empty,
         cleanup_events: HostCleanupEvents = .empty,
@@ -1663,6 +1664,10 @@ pub fn Engine(comptime Ctx: type) type {
                         const slot = inputs.slot(row_index) orelse return error.InvalidDescriptor;
                         const key = inputs.key(row_index) orelse return error.InvalidDescriptor;
                         const row_handle = inputs.row_handles_by_index[row_index] orelse return error.InvalidDescriptor;
+                        const render_span: rows_site_store.RowRenderSpan = if (rows_store.findScope(row_scope_id.raw())) |location|
+                            (rows_store.getRowConst(location.site_id, location.row_id) catch return error.InvalidDescriptor).metadata.render_span
+                        else
+                            .{};
                         stable_edits[row_index + 1] = .{ .insert = .{
                             .slot = slot,
                             .before_slot = 0,
@@ -1671,6 +1676,7 @@ pub fn Engine(comptime Ctx: type) type {
                                 .item_slot = slot,
                                 .scope_id = row_scope_id.raw(),
                                 .row_handle = row_handle.raw(),
+                                .render_span = render_span,
                             },
                         } };
                     }
@@ -1851,7 +1857,7 @@ pub fn Engine(comptime Ctx: type) type {
                     eaches[index] = &engine.active_stream.eaches.items[each_index];
                 }
                 try owner.prepareReplacement(sites, eaches, .{}, &.{});
-                if (!engine.active_stream.render_nodes_ordered) {
+                {
                     if (try PreparedCompositeStructural.prepareSparseDownstream(engine, ctx, roc_host, &.{}, &.{}, sites, owner, owner.replacement_owner.?, overlay)) |downstream| {
                         owner.downstream = downstream;
                         return owner;
@@ -2108,7 +2114,6 @@ pub fn Engine(comptime Ctx: type) type {
             phase: CommitPhase = .prepared,
 
             fn prepareSparseDownstream(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, selections: []const AggregateBranchSelection, branch_ranges: []const GlobalRange, sites: []const HostNodeScopeSiteDesc, rows: *PreparedCompositeRows, replacement: *PreparedReplacementOwner, overlay: *signal_records.PreparedCacheUpdates) CollectionError!?*PreparedStructuralDownstream {
-                if (replacement.collection.nested_row_syncs.items.len != 0) return null;
                 const allocator = Ctx.allocator(ctx);
                 var parents: shared_buffer.List(u64) = .empty;
                 defer parents.deinit(allocator);
@@ -2118,33 +2123,25 @@ pub fn Engine(comptime Ctx: type) type {
                 defer retired_roots.deinit(allocator);
                 var synced_rows: shared_buffer.List(ids.ScopeId) = .empty;
                 defer synced_rows.deinit(allocator);
-                var old_branches: shared_buffer.List(PreparedStructuralDownstream.SparseBranchRange) = .empty;
-                defer old_branches.deinit(allocator);
                 for (sites, rows.rows[0..rows.prepared_len], rows.replacements[0..rows.prepared_len]) |site, row_plan, row_replacement| {
                     if (row_plan.inputs.rows_transition == null) return null;
                     for (row_replacement.replacement_rows) |range| if (!range.created) return null;
                     const parent = try parent_set.getOrPut(allocator, site.parent_elem_id.raw());
-                    if (parent.found_existing) return null;
-                    parents.append(allocator, site.parent_elem_id.raw()) catch return error.OutOfMemory;
+                    if (!parent.found_existing) parents.append(allocator, site.parent_elem_id.raw()) catch return error.OutOfMemory;
                     retired_roots.appendSlice(allocator, row_plan.rows.removed_scope_ids) catch return error.OutOfMemory;
                     synced_rows.appendSlice(allocator, row_plan.rows.removed_scope_ids) catch return error.OutOfMemory;
                 }
                 for (selections) |selection| {
                     const parent = try parent_set.getOrPut(allocator, selection.parent_elem_id.raw());
-                    if (parent.found_existing) return null;
-                    const range = try PreparedStructuralDownstream.sparseBranchRange(engine, allocator, selection) orelse return null;
-                    old_branches.append(allocator, range) catch return error.OutOfMemory;
-                    parents.append(allocator, selection.parent_elem_id.raw()) catch return error.OutOfMemory;
+                    if (!parent.found_existing) parents.append(allocator, selection.parent_elem_id.raw()) catch return error.OutOfMemory;
                     retired_roots.append(allocator, selection.retired_scope_id) catch return error.OutOfMemory;
                 }
                 const downstream = try PreparedStructuralDownstream.prepareSparseExternalScopes(engine, ctx, roc_host, replacement, retired_roots.items, synced_rows.items, parents.items, overlay);
                 errdefer downstream.deinit();
                 for (sites, rows.rows[0..rows.prepared_len]) |site, row_plan| {
-                    try downstream.adoptSparseEachRender(site, &row_plan.inputs.rows_transition.?);
+                    try downstream.adoptSparseEachRender(site, row_plan);
                 }
-                for (selections, old_branches.items, branch_ranges) |selection, range, collected| {
-                    try downstream.adoptSparseBranchRender(selection, range, collected.start, collected.len);
-                }
+                try downstream.adoptSparseBranches(selections, branch_ranges);
                 return downstream;
             }
 
@@ -3384,6 +3381,8 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         fn clearEachRowSites(self: *Self, allocator: std.mem.Allocator) void {
+            if (self.positions) |*positions| positions.deinit();
+            self.positions = null;
             each_runtime.clearSites(allocator, &self.each_row_sites, &self.each_row_site_indexes, &self.each_row_memberships_by_scope_id);
             if (self.rows_store) |*store| store.deinit();
             self.rows_store = null;
@@ -8345,12 +8344,24 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
+        fn positionError(err: structural_positions.Error) CollectionError {
+            return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.ResourceLimit => error.ResourceLimit,
+                else => error.InvalidRenderTopology,
+            };
+        }
+
         const PreparedReplacementOwner = struct {
             engine: *Self,
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
             stream: HostNodeDescriptorStream = .{},
             collection: StagedCollectionCtx = undefined,
+            positions: ?structural_positions.Prepared = null,
+            construction_ranges: std.AutoHashMapUnmanaged(ids.ScopeId, ConstructionRange) = .empty,
+
+            const ConstructionRange = struct { start: usize, len: usize };
 
             fn addRootCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 inline for (std.meta.fields(StaticRootCounts)) |field| {
@@ -8372,6 +8383,30 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer owner.stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
                 owner.collection = try StagedCollectionCtx.init(engine, ctx, &owner.stream, limits, counts, expected_roots);
                 return owner;
+            }
+
+            fn preparePositions(self: *@This()) *structural_positions.Prepared {
+                if (self.positions == null) {
+                    if (self.engine.positions == null) self.engine.positions = structural_positions.Positions.init(Ctx.allocator(self.host_ctx));
+                    self.positions = self.engine.positions.?.prepare();
+                }
+                return &self.positions.?;
+            }
+
+            fn rememberConstructionRange(self: *@This(), scope: ids.ScopeId, start: usize) CollectionError!void {
+                self.construction_ranges.put(Ctx.allocator(self.host_ctx), scope, .{ .start = start, .len = self.collection.construction_order.items.len - start }) catch return error.OutOfMemory;
+            }
+
+            fn placeConstructionRange(self: *@This(), scope: ids.ScopeId, parent: ids.ElemId, before: ?structural_positions.PositionId) CollectionError!void {
+                const range = self.construction_ranges.get(scope) orelse return error.InvalidDescriptor;
+                const positions = self.preparePositions();
+                for (self.collection.construction_order.items[range.start..][0..range.len]) |entry| {
+                    positions.place(entry, if (entry.parent == parent) before else null) catch |err| return positionError(err);
+                }
+            }
+
+            fn commitPositions(self: *@This()) void {
+                if (self.positions) |*positions| positions.commit();
             }
 
             fn attachExternalScopeIds(self: *@This(), scope_ids: []const u64) CollectionError!void {
@@ -8401,7 +8436,9 @@ pub fn Engine(comptime Ctx: type) type {
                 var dom_ordinal = ids.SiteOrdinal.fromRaw(0);
                 const render_start = self.collection.prepared_render_order.items.len;
                 const site_start = self.collection.prepared_state_sites.items.len;
+                const construction_start = self.collection.construction_order.items.len;
                 try self.engine.collectActiveElemDescriptorsWith(*StagedCollectionCtx, &self.collection, self.host_ctx, self.roc_host, &self.stream, selection.elem, branch_scope.scope_id, selection.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, true, dirty_source_node_ids);
+                try self.rememberConstructionRange(branch_scope.scope_id, construction_start);
                 return .{
                     .scope_id = branch_scope.scope_id.raw(),
                     .start = render_start,
@@ -8427,7 +8464,9 @@ pub fn Engine(comptime Ctx: type) type {
                 var dom_ordinal = ids.SiteOrdinal.fromRaw(0);
                 const render_start = self.collection.prepared_render_order.items.len;
                 const site_start = self.collection.prepared_state_sites.items.len;
+                const construction_start = self.collection.construction_order.items.len;
                 try self.engine.collectActiveEachRowElemDescriptorsWith(*StagedCollectionCtx, &self.collection, self.host_ctx, self.roc_host, &self.stream, each, elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, scope_created, dirty_source_node_ids);
+                try self.rememberConstructionRange(row_scope_id, construction_start);
                 return .{ .start = render_start, .len = self.collection.prepared_render_order.items.len - render_start, .site_start = site_start, .site_len = self.collection.prepared_state_sites.items.len - site_start };
             }
 
@@ -8437,6 +8476,8 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
+                if (self.positions) |*positions| positions.deinit();
+                self.construction_ranges.deinit(allocator);
                 self.collection.deinit();
                 self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 allocator.destroy(self);
@@ -8464,6 +8505,9 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer owner.deinit();
                 try engine.collectActiveElemRootDescriptorsWith(*StagedCollectionCtx, &owner.collection, ctx, roc_host, &owner.stream, root, dirty_source_node_ids);
                 owner.materialize();
+                const positions = owner.preparePositions();
+                for (owner.collection.construction_order.items) |entry| positions.place(entry, null) catch |err| return positionError(err);
+                positions.preflight() catch |err| return positionError(err);
                 plan.* = .{ .owner = owner };
                 return plan;
             }
@@ -8479,6 +8523,7 @@ pub fn Engine(comptime Ctx: type) type {
             /// irreversible step is used by a complete root transaction.
             pub fn commit(self: *@This()) HostNodeDescriptorStream {
                 self.owner.collection.commit();
+                self.owner.commitPositions();
                 const stream = self.owner.stream;
                 self.owner.stream = .{};
                 const allocator = Ctx.allocator(self.owner.host_ctx);
@@ -9047,7 +9092,6 @@ pub fn Engine(comptime Ctx: type) type {
             retired_active_events: shared_buffer.List(ActiveEventDesc) = .empty,
             initial_root: bool = false,
             sparse_render_membership: bool = false,
-            sparse_site_anchors: shared_buffer.List(struct { node_id: ids.NodeId, kind: descriptor_stream.ScopeSiteKind, first_root: ids.ElemId }) = .empty,
 
             // Inspect only descriptors owned by the retiring branch. The
             // descriptor pool is not document order after a sparse row edit.
@@ -9085,29 +9129,8 @@ pub fn Engine(comptime Ctx: type) type {
                 return .{ .first = first.?, .last = current, .count = roots.count(), .after = engine.render_cache.nextSibling(current) };
             }
 
-            fn adoptSparseBranchRender(self: *@This(), selection: AggregateBranchSelection, range: SparseBranchRange, replacement_start: usize, replacement_len: usize) CollectionError!void {
-                const allocator = Ctx.allocator(self.host_ctx);
-                var roots: shared_buffer.List(ids.ElemId) = .empty;
-                defer roots.deinit(allocator);
-                for (self.replacement.stream.render_nodes.items[replacement_start..][0..replacement_len]) |node| {
-                    if (renderNodeParentElemId(&self.replacement.stream, node) == selection.parent_elem_id.raw()) roots.append(allocator, node.elem_id) catch return error.OutOfMemory;
-                }
-                const touched = std.math.add(usize, std.math.add(usize, range.count, roots.items.len) catch return error.ResourceLimit, 4) catch return error.ResourceLimit;
-                var journal = render_cache_mod.PreparedSparseChildren.init(Ctx, allocator, &self.engine.render_cache, selection.parent_elem_id, touched, roots.items.len) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.ResourceLimit => return error.ResourceLimit,
-                    error.MissingParent => return error.InvalidRenderTopology,
-                };
-                var owned = true;
-                defer if (owned) journal.deinit();
-                journal.removeRange(Ctx, &self.engine.render_cache, range.first, range.last, range.count) catch |err| switch (err) {
-                    error.ResourceLimit => return error.ResourceLimit,
-                    else => return error.InvalidRenderTopology,
-                };
-                journal.insertRootsBefore(Ctx, &self.engine.render_cache, roots.items, range.after) catch |err| switch (err) {
-                    error.ResourceLimit => return error.ResourceLimit,
-                    else => return error.InvalidRenderTopology,
-                };
+            fn sparseJournal(self: *@This(), parent: ids.ElemId, touched: usize, wire: usize) CollectionError!*render_cache_mod.PreparedSparseChildren {
+                const splice = &(self.render_splice orelse return error.InvalidRenderTopology);
                 if (self.publication_phase.needsAbort()) {
                     self.render_batch_target.?.abort();
                     self.publication_phase.resetPreflight();
@@ -9116,17 +9139,40 @@ pub fn Engine(comptime Ctx: type) type {
                     publication.deinit();
                     self.host_render_publication = null;
                 };
-                const splice = &(self.render_splice orelse return error.InvalidRenderTopology);
-                splice.adoptSparseChildren(&journal) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.ConflictingParent, error.MissingNode => return error.InvalidRenderTopology,
+                for (splice.sparse_children.items) |*journal| if (journal.parent_elem_id == parent) {
+                    journal.reserveAdditional(touched, wire) catch |err| return positionError(err);
+                    return journal;
                 };
-                owned = false;
-                if (roots.items.len != 0) self.sparse_site_anchors.append(allocator, .{ .node_id = selection.node_id, .kind = .when, .first_root = roots.items[0] }) catch return error.OutOfMemory;
-                splice.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
+                var journal = render_cache_mod.PreparedSparseChildren.init(Ctx, Ctx.allocator(self.host_ctx), &self.engine.render_cache, parent, touched, wire) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
+                    error.MissingParent => return error.InvalidRenderTopology,
                 };
+                errdefer journal.deinit();
+                splice.adoptSparseChildren(&journal) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return error.InvalidRenderTopology,
+                };
+                return &splice.sparse_children.items[splice.sparse_children.items.len - 1];
+            }
+
+            fn finishSparsePublication(self: *@This()) CollectionError!void {
+                if (self.publication_phase.needsAbort()) {
+                    self.render_batch_target.?.abort();
+                    self.publication_phase.resetPreflight();
+                }
+                if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| {
+                    publication.deinit();
+                    self.host_render_publication = null;
+                };
+                self.replacement.preparePositions().preflight() catch |err| return positionError(err);
+                const allocator = Ctx.allocator(self.host_ctx);
+                const splice = &self.render_splice.?;
+                splice.finishSparseParents() catch |err| return switch (err) {
+                    error.InvalidRange => error.InvalidRenderTopology,
+                    else => |other| renderSpliceError(other),
+                };
+                splice.preflight(self.render_batch_target.?, allocator) catch |err| return positionError(err);
                 self.publication_phase.markPreflighted();
                 if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
                     self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, splice) catch |err| switch (err) {
@@ -9137,9 +9183,61 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
+            fn retirePositions(self: *@This()) CollectionError!void {
+                const positions = self.replacement.preparePositions();
+                for (self.targets.?.scope_retirement.?.scope_ids) |scope| positions.retireScope(scope) catch |err| return positionError(err);
+            }
+
+            fn adoptSparseBranches(self: *@This(), selections: []const AggregateBranchSelection, collected: anytype) CollectionError!void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                // Retire visible ranges first. Candidate lexical positions then
+                // supply surviving insertion anchors even for zero-root sites.
+                for (selections) |selection| if (try sparseBranchRange(self.engine, allocator, selection)) |range| {
+                    const journal = try self.sparseJournal(selection.parent_elem_id, range.count + 4, 0);
+                    journal.removeRange(Ctx, &self.engine.render_cache, range.first, range.last, range.count) catch |err| switch (err) {
+                        error.ResourceLimit => return error.ResourceLimit,
+                        else => return error.InvalidRenderTopology,
+                    };
+                };
+                try self.retirePositions();
+                const positions = self.replacement.preparePositions();
+                const Ordered = struct { index: usize, parent: ids.ElemId, rank: usize };
+                const ordered = allocator.alloc(Ordered, selections.len) catch return error.OutOfMemory;
+                defer allocator.free(ordered);
+                for (selections, ordered, 0..) |selection, *entry, index| entry.* = .{
+                    .index = index,
+                    .parent = selection.parent_elem_id,
+                    .rank = positions.positionRank(selection.parent_elem_id, structural_positions.PositionId.marker(selection.node_id, .when)) catch |err| return positionError(err),
+                };
+                std.mem.sort(Ordered, ordered, {}, struct {
+                    fn less(_: void, a: Ordered, b: Ordered) bool {
+                        if (a.parent != b.parent) return a.parent.raw() < b.parent.raw();
+                        return a.rank > b.rank;
+                    }
+                }.less);
+                var roots: shared_buffer.List(ids.ElemId) = .empty;
+                defer roots.deinit(allocator);
+                for (ordered) |entry| {
+                    const selection = selections[entry.index];
+                    const next = collected[entry.index];
+                    const marker = structural_positions.PositionId.marker(selection.node_id, .when);
+                    const before = positions.anchor(selection.parent_elem_id, marker) catch |err| return positionError(err);
+                    const lexical_before = positions.nextPosition(selection.parent_elem_id, marker) catch |err| return positionError(err);
+                    roots.clearRetainingCapacity();
+                    for (self.replacement.stream.render_nodes.items[next.start..][0..next.len]) |node| {
+                        if (renderNodeParentElemId(&self.replacement.stream, node) == selection.parent_elem_id.raw()) roots.append(allocator, node.elem_id) catch return error.OutOfMemory;
+                    }
+                    const journal = try self.sparseJournal(selection.parent_elem_id, roots.items.len + 4, roots.items.len);
+                    journal.insertRootsBefore(Ctx, &self.engine.render_cache, roots.items, before) catch |err| switch (err) {
+                        error.ResourceLimit => return error.ResourceLimit,
+                        else => return error.InvalidRenderTopology,
+                    };
+                    try self.replacement.placeConstructionRange(ids.ScopeId.fromRaw(next.scope_id), selection.parent_elem_id, lexical_before);
+                }
+                try self.finishSparsePublication();
+            }
+
             fn prepareSparseBranches(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, selections: []const AggregateBranchSelection, collected: []const PreparedReplacementOwner.CollectedWhenSelection, overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!?*@This() {
-                if (engine.active_stream.render_nodes_ordered) return null;
-                if (replacement.collection.nested_row_syncs.items.len != 0) return null;
                 const allocator = Ctx.allocator(ctx);
                 var parents: shared_buffer.List(u64) = .empty;
                 defer parents.deinit(allocator);
@@ -9147,19 +9245,14 @@ pub fn Engine(comptime Ctx: type) type {
                 defer parent_set.deinit(allocator);
                 var retired_roots: shared_buffer.List(ids.ScopeId) = .empty;
                 defer retired_roots.deinit(allocator);
-                var ranges: shared_buffer.List(SparseBranchRange) = .empty;
-                defer ranges.deinit(allocator);
                 for (selections) |selection| {
                     const parent = try parent_set.getOrPut(allocator, selection.parent_elem_id.raw());
-                    if (parent.found_existing) return null;
-                    const range = try sparseBranchRange(engine, allocator, selection) orelse return null;
-                    ranges.append(allocator, range) catch return error.OutOfMemory;
-                    parents.append(allocator, selection.parent_elem_id.raw()) catch return error.OutOfMemory;
+                    if (!parent.found_existing) parents.append(allocator, selection.parent_elem_id.raw()) catch return error.OutOfMemory;
                     retired_roots.append(allocator, selection.retired_scope_id) catch return error.OutOfMemory;
                 }
                 const plan = try prepareSparseExternalScopes(engine, ctx, roc_host, replacement, retired_roots.items, &.{}, parents.items, overlay);
                 errdefer plan.deinit();
-                for (selections, ranges.items, collected) |selection, range, next| try plan.adoptSparseBranchRender(selection, range, next.start, next.len);
+                try plan.adoptSparseBranches(selections, collected);
                 return plan;
             }
 
@@ -9421,9 +9514,6 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareSparseExternalEach(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, rows: *PreparedActiveEachRows, replacement: *PreparedEachRowReplacementCollection, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
-                const allocator = Ctx.allocator(ctx);
-                const transition = if (rows.inputs.rows_transition) |*value| value else return error.InvalidDescriptor;
-                const rows_store = if (engine.rows_store) |*store| store else return error.InvalidDescriptor;
                 const rows_site_id = rows.inputs.rows_site_id orelse return error.InvalidDescriptor;
                 const previous_bindings = engine.active_each_candidate_bindings;
                 const previous_inputs = engine.active_each_candidate_inputs;
@@ -9440,17 +9530,14 @@ pub fn Engine(comptime Ctx: type) type {
                     engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
 
-                const retired_roots = allocator.alloc(ids.ScopeId, transition.removedRows().len) catch return error.OutOfMemory;
-                defer allocator.free(retired_roots);
-                for (transition.removedRows(), retired_roots) |row_id, *scope_id| {
-                    const row = rows_store.getRowConst(rows_site_id, row_id) catch return error.InvalidDescriptor;
-                    scope_id.* = ids.ScopeId.fromRaw(row.metadata.scope_id);
-                }
+                const retired_roots = rows.rows.removed_scope_ids;
 
                 const suppressed_parent = [_]u64{site.parent_elem_id.raw()};
                 const plan = try prepareSparseExternalScopes(engine, ctx, roc_host, replacement.replacement, retired_roots, retired_roots, &suppressed_parent, cache_overlay);
                 errdefer plan.deinit();
-                try plan.adoptSparseEachRender(site, transition);
+                try plan.adoptSparseEachRender(site, rows);
+                try plan.retirePositions();
+                try plan.finishSparsePublication();
                 return plan;
             }
 
@@ -9530,20 +9617,68 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.publication = structural_splice.preparePublicationDeltas(allocator, plan.replacement.stream.render_nodes.items, &.{}, on_change_base, plan.replacement.stream.on_changes.items.len, mount_base, plan.replacement.stream.mounts.items.len) catch return error.OutOfMemory;
                 errdefer if (plan.publication) |*publication| publication.deinit(allocator);
 
-                plan.sparse_site_anchors.ensureUnusedCapacity(allocator, replacement.stream.scope_sites.items.len) catch return error.OutOfMemory;
-                errdefer plan.sparse_site_anchors.deinit(allocator);
-                for (replacement.stream.scope_sites.items) |site| {
-                    if (site.render_insert_index < replacement.stream.render_nodes.items.len) plan.sparse_site_anchors.appendAssumeCapacity(.{ .node_id = site.node_id, .kind = site.kind, .first_root = replacement.stream.render_nodes.items[site.render_insert_index].elem_id });
-                }
                 plan.suppressed_render_parent_ids = suppressed_parents;
                 try plan.prepareGraphRenderAndPublication(allocator);
                 plan.suppressed_render_parent_ids = &.{};
                 return plan;
             }
 
-            fn adoptSparseEachRender(self: *@This(), site: HostNodeScopeSiteDesc, transition: *rows_transition.PreparedTransition) CollectionError!void {
+            fn adoptSparseSnapshotRows(self: *@This(), site: HostNodeScopeSiteDesc, rows: *PreparedActiveEachRows) CollectionError!void {
+                const positions = self.replacement.preparePositions();
+                const parent = site.parent_elem_id;
+                for (rows.rows.removed_scope_ids) |scope| {
+                    const first = structural_positions.PositionId.rowStart(scope);
+                    const last = structural_positions.PositionId.rowEnd(scope);
+                    const roots = positions.rootsInRange(parent, first, last) catch |err| return positionError(err);
+                    const journal = try self.sparseJournal(parent, roots.count + 4, 0);
+                    if (roots.count != 0) journal.removeRange(Ctx, &self.engine.render_cache, roots.first.?, roots.last.?, roots.count) catch |err| switch (err) {
+                        error.ResourceLimit => return error.ResourceLimit,
+                        else => return error.InvalidRenderTopology,
+                    };
+                    positions.retireRange(parent, first, last) catch |err| return positionError(err);
+                }
+                // Snapshot matching has already identified retained scopes.
+                // Place them right-to-left; an unchanged suffix produces no
+                // render moves, while empty row ranges carry their markers.
                 const allocator = Ctx.allocator(self.host_ctx);
-                const splice = &(self.render_splice orelse return error.InvalidRenderTopology);
+                var roots: shared_buffer.List(ids.ElemId) = .empty;
+                defer roots.deinit(allocator);
+                var before_position = structural_positions.PositionId.marker(site.node_id, .each_end);
+                var index = rows.rows.next_scope_ids.len;
+                while (index != 0) {
+                    index -= 1;
+                    const scope = rows.rows.next_scope_ids[index];
+                    const before = positions.anchor(parent, before_position) catch |err| return positionError(err);
+                    if (self.replacement.construction_ranges.get(scope)) |range| {
+                        roots.clearRetainingCapacity();
+                        for (self.replacement.collection.construction_order.items[range.start..][0..range.len]) |entry| {
+                            if (entry.parent == parent and entry.position.raw() >> 64 == 0) roots.append(allocator, ids.ElemId.fromRaw(@truncate(entry.position.raw()))) catch return error.OutOfMemory;
+                        }
+                        const journal = try self.sparseJournal(parent, roots.items.len + 4, roots.items.len);
+                        journal.insertRootsBefore(Ctx, &self.engine.render_cache, roots.items, before) catch |err| switch (err) {
+                            error.ResourceLimit => return error.ResourceLimit,
+                            else => return error.InvalidRenderTopology,
+                        };
+                        try self.replacement.placeConstructionRange(scope, parent, before_position);
+                    } else {
+                        const first = structural_positions.PositionId.rowStart(scope);
+                        const last = structural_positions.PositionId.rowEnd(scope);
+                        const span = positions.rootsInRange(parent, first, last) catch |err| return positionError(err);
+                        const journal = try self.sparseJournal(parent, span.count + 4, span.count);
+                        if (span.count != 0) journal.moveRangeBefore(Ctx, &self.engine.render_cache, span.first.?, span.last.?, span.count, before) catch |err| switch (err) {
+                            error.ResourceLimit => return error.ResourceLimit,
+                            else => return error.InvalidRenderTopology,
+                        };
+                        positions.moveRange(parent, first, last, before_position) catch |err| return positionError(err);
+                    }
+                    before_position = structural_positions.PositionId.rowStart(scope);
+                }
+            }
+
+            fn adoptSparseEachRender(self: *@This(), site: HostNodeScopeSiteDesc, rows: *PreparedActiveEachRows) CollectionError!void {
+                if (!rows.direct_delta) return self.adoptSparseSnapshotRows(site, rows);
+                const transition = &rows.inputs.rows_transition.?;
+                const allocator = Ctx.allocator(self.host_ctx);
                 if (self.publication_phase.needsAbort()) {
                     self.render_batch_target.?.abort();
                     self.publication_phase.resetPreflight();
@@ -9553,115 +9688,76 @@ pub fn Engine(comptime Ctx: type) type {
                     self.host_render_publication = null;
                 };
 
-                var touched_roots: usize = 0;
-                var wire_edits: usize = 0;
-                for (transition.orderEdits()) |edit| switch (edit) {
-                    .insert => |insert| {
-                        const candidate = transition.candidateBySlot(insert.slot) orelse return error.InvalidDescriptor;
-                        touched_roots = std.math.add(usize, touched_roots, candidate.metadata.render_span.root_count) catch return error.ResourceLimit;
-                        wire_edits = std.math.add(usize, wire_edits, candidate.metadata.render_span.root_count) catch return error.ResourceLimit;
-                    },
-                    .remove => |remove| touched_roots = std.math.add(usize, touched_roots, remove.root_count) catch return error.ResourceLimit,
-                    .move => |move| {
-                        touched_roots = std.math.add(usize, touched_roots, move.root_count) catch return error.ResourceLimit;
-                        wire_edits = std.math.add(usize, wire_edits, move.root_count) catch return error.ResourceLimit;
-                    },
-                    .clear => |clear| touched_roots = std.math.add(usize, touched_roots, clear.root_count) catch return error.ResourceLimit,
-                };
-                touched_roots = std.math.add(usize, touched_roots, std.math.mul(usize, transition.orderEdits().len, 4) catch return error.ResourceLimit) catch return error.ResourceLimit;
-                var journal = render_cache_mod.PreparedSparseChildren.init(Ctx, allocator, &self.engine.render_cache, site.parent_elem_id, touched_roots, wire_edits) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.ResourceLimit => return error.ResourceLimit,
-                    error.MissingParent => return error.InvalidRenderTopology,
-                };
-                var journal_owned = true;
-                defer if (journal_owned) journal.deinit();
-
-                const committed_last = transition.committedLastRenderRoot() catch return error.InvalidDescriptor;
-                const terminal_before: ?ids.ElemId = if (committed_last) |last_root|
-                    self.engine.render_cache.nextSibling(ids.ElemId.fromRaw(last_root))
-                else
-                    null;
+                const journal = try self.sparseJournal(site.parent_elem_id, 0, 0);
+                const positions = self.replacement.preparePositions();
+                const end_marker = structural_positions.PositionId.marker(site.node_id, .each_end);
                 var roots: shared_buffer.List(ids.ElemId) = .empty;
                 defer roots.deinit(allocator);
-                roots.ensureTotalCapacity(allocator, wire_edits) catch return error.OutOfMemory;
 
                 for (transition.orderEdits()) |edit| switch (edit) {
                     .insert => |insert| {
                         const candidate = transition.candidateBySlot(insert.slot) orelse return error.InvalidDescriptor;
                         const span = candidate.metadata.render_span;
+                        journal.reserveAdditional(span.root_count + 4, span.root_count) catch |err| return positionError(err);
+                        roots.ensureTotalCapacity(allocator, span.root_count) catch return error.OutOfMemory;
+                        const lexical_before = if (insert.before_scope_id == 0) end_marker else structural_positions.PositionId.rowStart(ids.ScopeId.fromRaw(insert.before_scope_id));
+                        const before = positions.anchor(site.parent_elem_id, lexical_before) catch |err| return positionError(err);
+                        const row_scope = ids.ScopeId.fromRaw(insert.scope_id);
+                        if (self.replacement.construction_ranges.contains(row_scope)) {
+                            try self.replacement.placeConstructionRange(row_scope, site.parent_elem_id, lexical_before);
+                        } else {
+                            positions.moveRange(site.parent_elem_id, structural_positions.PositionId.rowStart(row_scope), structural_positions.PositionId.rowEnd(row_scope), lexical_before) catch |err| return positionError(err);
+                        }
                         if (span.root_count == 0) continue;
                         roots.clearRetainingCapacity();
                         var current: ?ids.ElemId = if (span.first_root) |root_id| ids.ElemId.fromRaw(root_id) else null;
                         for (0..span.root_count) |_| {
                             const root_id = current orelse return error.InvalidRenderTopology;
-                            const node_index = self.replacement.stream.renderNodeIndex(root_id) orelse return error.InvalidRenderTopology;
-                            if (node_index >= self.replacement.stream.render_nodes.items.len) return error.InvalidRenderTopology;
-                            const node = self.replacement.stream.render_nodes.items[node_index];
-                            if (renderNodeParentElemId(&self.replacement.stream, node) != site.parent_elem_id.raw()) return error.InvalidRenderTopology;
+                            const stream = if (self.replacement.stream.renderNodeIndex(root_id) != null) &self.replacement.stream else &self.engine.active_stream;
+                            const node_index = stream.renderNodeIndex(root_id) orelse return error.InvalidRenderTopology;
+                            if (node_index >= stream.render_nodes.items.len) return error.InvalidRenderTopology;
+                            const node = stream.render_nodes.items[node_index];
+                            if (renderNodeParentElemId(stream, node) != site.parent_elem_id.raw()) return error.InvalidRenderTopology;
                             roots.appendAssumeCapacity(root_id);
-                            current = self.replacement.stream.nextRenderSibling(root_id);
+                            current = stream.nextRenderSibling(root_id);
                         }
-                        const before = try sparseRenderAnchor(transition, insert.before_slot, insert.before_root, terminal_before);
                         journal.insertRootsBefore(Ctx, &self.engine.render_cache, roots.items, before) catch |err| switch (err) {
                             error.ResourceLimit => return error.ResourceLimit,
                             error.InvalidAnchor, error.InvalidRange, error.MissingNode => return error.InvalidRenderTopology,
                         };
                     },
                     .remove => |remove| {
-                        if (remove.root_count == 0) continue;
-                        journal.removeRange(Ctx, &self.engine.render_cache, ids.ElemId.fromRaw(remove.first_root orelse return error.InvalidRenderTopology), ids.ElemId.fromRaw(remove.last_root orelse return error.InvalidRenderTopology), remove.root_count) catch |err| switch (err) {
+                        const span = positions.rootsInRange(site.parent_elem_id, structural_positions.PositionId.rowStart(ids.ScopeId.fromRaw(remove.first_scope_id)), structural_positions.PositionId.rowEnd(ids.ScopeId.fromRaw(remove.last_scope_id))) catch |err| return positionError(err);
+                        journal.reserveAdditional(span.count + 4, 0) catch |err| return positionError(err);
+                        positions.retireRange(site.parent_elem_id, structural_positions.PositionId.rowStart(ids.ScopeId.fromRaw(remove.first_scope_id)), structural_positions.PositionId.rowEnd(ids.ScopeId.fromRaw(remove.last_scope_id))) catch |err| return positionError(err);
+                        if (span.count == 0) continue;
+                        journal.removeRange(Ctx, &self.engine.render_cache, span.first.?, span.last.?, span.count) catch |err| switch (err) {
                             error.ResourceLimit => return error.ResourceLimit,
                             error.InvalidRange, error.MissingNode => return error.InvalidRenderTopology,
                         };
                     },
                     .move => |move| {
-                        if (move.root_count == 0) continue;
-                        const before = try sparseRenderAnchor(transition, move.before_slot, move.before_root, terminal_before);
-                        journal.moveRangeBefore(Ctx, &self.engine.render_cache, ids.ElemId.fromRaw(move.first_root orelse return error.InvalidRenderTopology), ids.ElemId.fromRaw(move.last_root orelse return error.InvalidRenderTopology), move.root_count, before) catch |err| switch (err) {
+                        const span = positions.rootsInRange(site.parent_elem_id, structural_positions.PositionId.rowStart(ids.ScopeId.fromRaw(move.first_scope_id)), structural_positions.PositionId.rowEnd(ids.ScopeId.fromRaw(move.last_scope_id))) catch |err| return positionError(err);
+                        journal.reserveAdditional(span.count + 4, span.count) catch |err| return positionError(err);
+                        const lexical_before = if (move.before_scope_id == 0) end_marker else structural_positions.PositionId.rowStart(ids.ScopeId.fromRaw(move.before_scope_id));
+                        const before = positions.anchor(site.parent_elem_id, lexical_before) catch |err| return positionError(err);
+                        positions.moveRange(site.parent_elem_id, structural_positions.PositionId.rowStart(ids.ScopeId.fromRaw(move.first_scope_id)), structural_positions.PositionId.rowEnd(ids.ScopeId.fromRaw(move.last_scope_id)), lexical_before) catch |err| return positionError(err);
+                        if (span.count == 0) continue;
+                        journal.moveRangeBefore(Ctx, &self.engine.render_cache, span.first.?, span.last.?, span.count, before) catch |err| switch (err) {
                             error.ResourceLimit => return error.ResourceLimit,
                             error.InvalidAnchor, error.InvalidRange, error.MissingNode => return error.InvalidRenderTopology,
                         };
                     },
-                    .clear => |clear| {
-                        if (clear.root_count == 0) continue;
-                        journal.removeRange(Ctx, &self.engine.render_cache, ids.ElemId.fromRaw(clear.first_root orelse return error.InvalidRenderTopology), ids.ElemId.fromRaw(clear.last_root orelse return error.InvalidRenderTopology), clear.root_count) catch |err| switch (err) {
+                    .clear => {
+                        const span = positions.rootsInRange(site.parent_elem_id, structural_positions.PositionId.marker(site.node_id, .each), end_marker) catch |err| return positionError(err);
+                        journal.reserveAdditional(span.count + 4, 0) catch |err| return positionError(err);
+                        if (span.count == 0) continue;
+                        journal.removeRange(Ctx, &self.engine.render_cache, span.first.?, span.last.?, span.count) catch |err| switch (err) {
                             error.ResourceLimit => return error.ResourceLimit,
                             error.InvalidRange, error.MissingNode => return error.InvalidRenderTopology,
                         };
                     },
                 };
-                splice.adoptSparseChildren(&journal) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.ConflictingParent, error.MissingNode => return error.InvalidRenderTopology,
-                };
-                journal_owned = false;
-                if (transition.firstCandidateRenderRoot() catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.ResourceLimit => return error.ResourceLimit,
-                    else => return error.InvalidDescriptor,
-                }) |anchor| self.sparse_site_anchors.append(allocator, .{ .node_id = site.node_id, .kind = .each, .first_root = ids.ElemId.fromRaw(anchor.root_id) }) catch return error.OutOfMemory;
-                splice.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.ResourceLimit => return error.ResourceLimit,
-                };
-                self.publication_phase.markPreflighted();
-                if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
-                    self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, splice) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        error.ResourceLimit => return error.ResourceLimit,
-                        error.InvalidRenderTopology => return error.InvalidRenderTopology,
-                    };
-                }
-            }
-
-            fn sparseRenderAnchor(transition: *const rows_transition.PreparedTransition, before_slot: u64, prepared_root: ?u64, terminal_before: ?ids.ElemId) CollectionError!?ids.ElemId {
-                if (prepared_root) |root| return ids.ElemId.fromRaw(root);
-                if (before_slot != 0 and transition.candidateBySlot(before_slot) != null) {
-                    const anchor = transition.firstRenderRootAtOrAfterSlot(before_slot) catch return error.InvalidDescriptor;
-                    if (anchor) |value| return ids.ElemId.fromRaw(value.root_id);
-                }
-                return terminal_before;
             }
 
             fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, scan_scopes: ?[]const []const bool, external_row_sync: bool, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!void {
@@ -9955,16 +10051,6 @@ pub fn Engine(comptime Ctx: type) type {
                     removal.node_indexes.when_indexes.items,
                     removal.node_indexes.each_indexes.items,
                 );
-                for (self.sparse_site_anchors.items) |anchor| {
-                    const root_id = anchor.first_root;
-                    const node_id = anchor.node_id;
-                    const descriptor_index = self.engine.active_stream.nodeDescriptorIndex(node_id) orelse @panic("sparse render anchor lost its site descriptor");
-                    const site_index = descriptor_index.scope_sites.get(anchor.kind) orelse @panic("sparse render anchor lost its construction site");
-                    const render_index = self.engine.active_stream.renderNodeIndex(root_id) orelse @panic("sparse render anchor named an absent root");
-                    const active_site = &self.engine.active_stream.scope_sites.items[site_index];
-                    if (active_site.node_id != node_id or active_site.kind != anchor.kind) @panic("sparse render anchor resolved another site");
-                    active_site.render_insert_index = render_index;
-                }
                 self.engine.active_stream.commitCustomDescriptorReplacementAssumeCapacity(
                     &self.replacement.stream,
                     &self.retired_stream,
@@ -10036,6 +10122,7 @@ pub fn Engine(comptime Ctx: type) type {
                     row_retirement.pruneSites(Ctx.allocator(self.host_ctx), &self.engine.each_row_sites, &self.engine.each_row_site_indexes, &self.engine.each_row_memberships_by_scope_id, &row_keys);
                 }
                 self.replacement.collection.commit();
+                self.replacement.commitPositions();
                 self.engine.commitPreparedScopeRetirement(Ctx.allocator(self.host_ctx), &self.targets.?.scope_retirement.?, &self.retired_scope_steps);
                 self.engine.validateActiveScopeSiteInsertIndexes();
 
@@ -10078,7 +10165,6 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.targets) |*targets| targets.deinit(allocator);
                 for (self.retired_scope_steps.items) |*step| self.engine.releasePreparedRetiredScopeStep(step);
                 self.retired_scope_steps.deinit(allocator);
-                self.sparse_site_anchors.deinit(allocator);
                 allocator.free(self.replacement_scope_ids);
                 allocator.destroy(self);
             }
@@ -15795,6 +15881,7 @@ pub fn Engine(comptime Ctx: type) type {
             each_replacement: ?*PreparedEachRowReplacementCollection = null,
             each_layout: ?PreparedEachRowRenderLayout = null,
             sparse_each_parent_elem_id: ?ids.ElemId = null,
+            position_edits: ?structural_positions.Prepared = null,
             sparse_each_render_roots_moved: usize = 0,
             pending_on_change_commands: shared_buffer.List(HostPendingOnChangeCommand) = .empty,
             fallback_batch: render.TransactionalBatch = .{},
@@ -15987,20 +16074,14 @@ pub fn Engine(comptime Ctx: type) type {
                     .insert, .remove, .clear => return false,
                 };
 
-                const stats = transition.renderOrderStats();
-                var move_count: usize = 0;
-                for (transition.orderEdits()) |edit| switch (edit) {
-                    .move => move_count += 1,
-                    else => unreachable,
-                };
-                const touched_capacity = std.math.add(usize, stats.roots_moved, std.math.mul(usize, move_count, 4) catch return error.ResourceLimit) catch return error.ResourceLimit;
+                var roots_moved: usize = 0;
                 var journal = render_cache_mod.PreparedSparseChildren.init(
                     Ctx,
                     Ctx.allocator(self.host_ctx),
                     &self.engine.render_cache,
                     site.parent_elem_id,
-                    touched_capacity,
-                    stats.roots_moved,
+                    0,
+                    0,
                 ) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
@@ -16009,28 +16090,25 @@ pub fn Engine(comptime Ctx: type) type {
                 var journal_owned = true;
                 defer if (journal_owned) journal.deinit();
 
-                const committed_last = transition.committedLastRenderRoot() catch return error.InvalidDescriptor;
-                const terminal_before: ?ids.ElemId = if (committed_last) |last_root|
-                    self.engine.render_cache.nextSibling(ids.ElemId.fromRaw(last_root))
-                else
-                    null;
+                var positions = (if (self.engine.positions) |*value| value else return error.InvalidRenderTopology).prepare();
+                var positions_owned = true;
+                defer if (positions_owned) positions.deinit();
+                const end_marker = structural_positions.PositionId.marker(site.node_id, .each_end);
                 for (transition.orderEdits()) |edit| switch (edit) {
                     .move => |move| {
-                        const candidate = transition.candidateBySlot(move.first_slot) orelse return error.InvalidDescriptor;
-                        const span = candidate.metadata.render_span;
-                        if (span.root_count == 0) continue;
-                        const before: ?ids.ElemId = if (move.before_slot == 0)
-                            terminal_before
-                        else blk: {
-                            const anchor = transition.firstRenderRootAtOrAfterSlot(move.before_slot) catch return error.InvalidDescriptor;
-                            break :blk if (anchor) |value| ids.ElemId.fromRaw(value.root_id) else terminal_before;
-                        };
+                        const span = positions.rootsInRange(site.parent_elem_id, structural_positions.PositionId.rowStart(ids.ScopeId.fromRaw(move.first_scope_id)), structural_positions.PositionId.rowEnd(ids.ScopeId.fromRaw(move.last_scope_id))) catch |err| return positionError(err);
+                        journal.reserveAdditional(span.count + 4, span.count) catch |err| return positionError(err);
+                        const lexical_before = if (move.before_scope_id == 0) end_marker else structural_positions.PositionId.rowStart(ids.ScopeId.fromRaw(move.before_scope_id));
+                        const before = positions.anchor(site.parent_elem_id, lexical_before) catch |err| return positionError(err);
+                        positions.moveRange(site.parent_elem_id, structural_positions.PositionId.rowStart(ids.ScopeId.fromRaw(move.first_scope_id)), structural_positions.PositionId.rowEnd(ids.ScopeId.fromRaw(move.last_scope_id)), lexical_before) catch |err| return positionError(err);
+                        if (span.count == 0) continue;
+                        roots_moved = std.math.add(usize, roots_moved, span.count) catch return error.ResourceLimit;
                         journal.moveRangeBefore(
                             Ctx,
                             &self.engine.render_cache,
-                            ids.ElemId.fromRaw(span.first_root.?),
-                            ids.ElemId.fromRaw(span.last_root.?),
-                            @intCast(span.root_count),
+                            span.first.?,
+                            span.last.?,
+                            span.count,
                             before,
                         ) catch |err| switch (err) {
                             error.ResourceLimit => return error.ResourceLimit,
@@ -16039,14 +16117,17 @@ pub fn Engine(comptime Ctx: type) type {
                     },
                     else => unreachable,
                 };
+                positions.preflight() catch |err| return positionError(err);
                 const splice = &(self.render_splice orelse return error.ResourceLimit);
                 splice.adoptSparseChildren(&journal) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ConflictingParent, error.MissingNode => return error.InvalidRenderTopology,
                 };
                 journal_owned = false;
+                self.position_edits = positions;
+                positions_owned = false;
                 self.sparse_each_parent_elem_id = site.parent_elem_id;
-                self.sparse_each_render_roots_moved = stats.roots_moved;
+                self.sparse_each_render_roots_moved = roots_moved;
                 return true;
             }
 
@@ -16055,6 +16136,10 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepareDirectRenderPublication(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
                 self.batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(self.host_ctx) else &self.fallback_batch;
                 errdefer self.fallback_batch.deinit(allocator);
+                self.render_splice.?.finishSparseParents() catch |err| return switch (err) {
+                    error.InvalidRange => error.InvalidRenderTopology,
+                    else => |other| renderSpliceError(other),
+                };
                 self.render_splice.?.preflight(self.batch_target, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
@@ -16073,32 +16158,9 @@ pub fn Engine(comptime Ctx: type) type {
             /// Mirrors a prepared sparse child move into the descriptor
             /// stream's durable sibling links. The Rows transition has already
             /// validated range identity and the operation allocates nothing.
-            fn applySparseEachDescriptorOrder(self: *@This(), rows: *const PreparedActiveEachRows) void {
-                const transition = if (rows.inputs.rows_transition) |*value| value else @panic("sparse Rows publication lost its transition");
-                const terminal_before: ?ids.ElemId = if (transition.committedLastRenderRoot() catch @panic("sparse Rows publication lost its committed site")) |last_root|
-                    self.engine.active_stream.nextRenderSibling(ids.ElemId.fromRaw(last_root))
-                else
-                    null;
-                for (transition.orderEdits()) |edit| switch (edit) {
-                    .move => |move| {
-                        const candidate = transition.candidateBySlot(move.first_slot) orelse @panic("sparse Rows publication lost a moved row");
-                        const span = candidate.metadata.render_span;
-                        if (span.root_count == 0) continue;
-                        const before: ?ids.ElemId = if (move.before_slot == 0)
-                            terminal_before
-                        else if (transition.firstRenderRootAtOrAfterSlot(move.before_slot) catch @panic("sparse Rows publication lost its anchor")) |anchor|
-                            ids.ElemId.fromRaw(anchor.root_id)
-                        else
-                            terminal_before;
-                        _ = self.engine.active_stream.moveRenderSiblingRangeBefore(
-                            self.sparse_each_parent_elem_id orelse @panic("sparse Rows publication lost its render parent"),
-                            ids.ElemId.fromRaw(span.first_root.?),
-                            ids.ElemId.fromRaw(span.last_root.?),
-                            before,
-                        );
-                    },
-                    else => unreachable,
-                };
+            fn applySparseEachDescriptorOrder(self: *@This(), _: *const PreparedActiveEachRows) void {
+                self.render_splice.?.applySparseChildrenToIndexedStream(HostNodeDescriptorStream, Ctx.allocator(self.host_ctx), &self.engine.active_stream);
+                self.position_edits.?.commit();
             }
 
             fn prepareState(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, node_id: u64, incoming: HostValue, cap: HostValueCapability) CollectionError!?*@This() {
@@ -16317,7 +16379,7 @@ pub fn Engine(comptime Ctx: type) type {
                         }
                         plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, plan.each_rows.?, .{}, &.{}, &plan.caches, external_state);
                         errdefer plan.each_replacement.?.deinit();
-                        if (plan.each_rows.?.direct_delta or !engine.active_stream.render_nodes_ordered) {
+                        if (engine.positions != null) {
                             plan.structural_downstream = try PreparedStructuralDownstream.prepareSparseExternalEach(engine, ctx, roc_host, site, plan.each_rows.?, plan.each_replacement.?, &plan.caches);
                         } else {
                             plan.each_layout = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &plan.each_rows.?.rows, plan.each_replacement.?.replacement_rows, &plan.each_replacement.?.replacement.collection);
@@ -16508,6 +16570,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
+                if (self.position_edits) |*positions| positions.deinit();
                 if (self.publication_phase.needsAbort()) self.batch_target.abort();
                 if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_publication) |*publication| publication.deinit();
                 self.caches.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);

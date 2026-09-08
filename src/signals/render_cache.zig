@@ -246,6 +246,52 @@ pub const PreparedSparseChildren = struct {
         return self;
     }
 
+    /// Reserves another changed site's contribution to this parent journal.
+    /// Several structural sites may share a parent; they compose into one
+    /// candidate child order before any cache or host publication occurs.
+    pub fn reserveAdditional(self: *PreparedSparseChildren, touched_roots: usize, wire_edit_count: usize) (std.mem.Allocator.Error || error{ResourceLimit})!void {
+        try self.shadow_indexes.ensureUnusedCapacity(self.allocator, std.math.cast(u32, touched_roots) orelse return error.ResourceLimit);
+        try self.shadows.ensureUnusedCapacity(self.allocator, touched_roots);
+        try self.wire_edits.ensureUnusedCapacity(self.allocator, wire_edit_count);
+    }
+
+    /// Encodes the final changed child order after several sites compose.
+    /// Earlier moves may name roots retired later in the same transaction;
+    /// final-link segments omit those roots and never use retired anchors.
+    fn finishWireEdits(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx)) (std.mem.Allocator.Error || error{InvalidRange})!void {
+        var moved: std.AutoHashMapUnmanaged(ids.ElemId, void) = .empty;
+        defer moved.deinit(self.allocator);
+        try moved.ensureUnusedCapacity(self.allocator, @intCast(self.wire_edits.items.len));
+        for (self.wire_edits.items) |edit| {
+            const child = switch (edit) {
+                .append => |id| id,
+                .move_before => |move| move.child,
+            };
+            const index = self.shadow_indexes.get(child.raw()) orelse return error.InvalidRange;
+            if (self.shadows.items[index].parent_id == self.parent_elem_id) moved.putAssumeCapacity(child, {});
+        }
+        self.wire_edits.clearRetainingCapacity();
+        var iterator = moved.keyIterator();
+        var emitted: usize = 0;
+        while (iterator.next()) |last| {
+            const tail = self.shadows.items[self.shadow_indexes.get(last.raw()).?];
+            if (tail.next) |next| if (moved.contains(next)) continue;
+            var child: ?ids.ElemId = last.*;
+            var before = tail.next;
+            while (child) |id| {
+                if (!moved.contains(id)) break;
+                const current = self.shadows.items[self.shadow_indexes.get(id.raw()).?];
+                const active = id.index() < cache.nodes.items.len and cache.nodes.items[id.index()].isActive();
+                self.wire_edits.appendAssumeCapacity(if (before == null and !active) .{ .append = id } else .{ .move_before = .{ .child = id, .before = before } });
+                emitted += 1;
+                if (emitted > moved.count()) return error.InvalidRange;
+                before = id;
+                child = current.previous;
+            }
+        }
+        if (emitted != moved.count()) return error.InvalidRange;
+    }
+
     fn shadow(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx), elem_id: ids.ElemId, allow_missing: bool) error{ MissingNode, ResourceLimit }!*Shadow {
         if (self.shadow_indexes.get(elem_id.raw())) |index| return &self.shadows.items[index];
         if (self.shadow_indexes.available == 0 or self.shadows.items.len == self.shadows.capacity) return error.ResourceLimit;
@@ -1295,6 +1341,19 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             }
             try self.sparse_children.append(self.allocator, journal.*);
             journal.* = undefined;
+        }
+
+        /// Completes final parent links after all sites sharing sparse child
+        /// journals have contributed. Call once before publication preflight;
+        /// this also validates newly inserted roots against provisional nodes.
+        pub fn finishSparseParents(self: *Self) (std.mem.Allocator.Error || error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit, InvalidRange })!void {
+            for (self.sparse_children.items) |*journal| try journal.finishWireEdits(Ctx, self.cache);
+            var additional: usize = 0;
+            for (self.sparse_children.items) |journal| additional = std.math.add(usize, additional, journal.shadows.items.len) catch return error.ResourceLimit;
+            try self.reserveAdditionalChildren(0, additional);
+            for (self.sparse_children.items) |journal| for (journal.shadows.items) |entry| {
+                try self.setParentIntent(self.cache, entry.elem_id.raw(), if (entry.parent_id) |parent| parent.raw() else null);
+            };
         }
 
         fn childWireEdits(self: *const Self, children: PreparedChildrenReplacement) []const PreparedChildrenReplacement.WireEdit {

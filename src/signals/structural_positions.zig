@@ -230,6 +230,38 @@ pub const Prepared = struct {
         _ = try value.edits.moveRange(first, last_rank - first_rank + 1, before);
     }
 
+    /// Retires a lexical interval, including markers owned by nested scopes.
+    /// Other parents belonging to those scopes are retired by retireScope.
+    pub fn retireRange(self: *Prepared, parent_id: ids.ElemId, first: PositionId, last: PositionId) Error!void {
+        const value = try self.parent(parent_id);
+        const first_rank = try value.edits.rank(first);
+        const last_rank = try value.edits.rank(last);
+        if (last_rank < first_rank) return error.InvalidRange;
+        for (0..last_rank - first_rank + 1) |_| {
+            const position = try value.edits.rowAt(first_rank);
+            try self.remove(parent_id, position);
+        }
+    }
+
+    /// Returns one position's candidate rank for ordering a changed set of
+    /// neighboring construction sites, without inspecting unrelated siblings.
+    pub fn positionRank(self: *const Prepared, parent_id: ids.ElemId, position: PositionId) error{InvalidRow}!usize {
+        if (self.parents.get(parent_id)) |value| return value.edits.rank(position);
+        const index = self.positions.parents.get(parent_id) orelse return error.InvalidRow;
+        return index.rank(position);
+    }
+
+    /// Summarizes visible roots inside retained lexical boundaries. Empty
+    /// nested sites contribute zero, so callers never scan unrelated rows.
+    pub fn rootsInRange(self: *Prepared, parent_id: ids.ElemId, first: PositionId, last: PositionId) Error!struct { first: ?ids.ElemId, last: ?ids.ElemId, count: usize } {
+        const value = try self.parent(parent_id);
+        const first_rank = try value.edits.rank(first);
+        const last_rank = try value.edits.rank(last);
+        if (last_rank < first_rank) return error.InvalidRange;
+        const roots = try value.edits.rootsInRange(first, last_rank - first_rank + 1);
+        return .{ .first = if (roots.first) |id| ids.ElemId.fromRaw(id) else null, .last = if (roots.last) |id| ids.ElemId.fromRaw(id) else null, .count = roots.count };
+    }
+
     /// Queries the final candidate after preceding removals and insertions.
     /// Adjacent empty sites do not require per-neighbor anchor rewrites.
     pub fn anchor(self: *const Prepared, parent_id: ids.ElemId, marker: PositionId) error{InvalidRow}!?ids.ElemId {
@@ -511,4 +543,39 @@ test "structural ownership rejects scope stealing and cross-parent aliases" {
     try std.testing.expectError(error.InvalidRow, wrong_parent.place(.{ .parent = ids.ElemId.fromRaw(9), .position = existing, .owner = ids.ScopeId.fromRaw(0) }, null));
     try std.testing.expectEqual(ids.root_elem, positions.entry(existing).?.parent);
     try std.testing.expectEqual(@as(usize, 2), positions.ownedCount(ids.ScopeId.fromRaw(0)));
+}
+
+test "retiring a lexical row interval preserves neighboring empty markers and nested ownership" {
+    var positions = Positions.init(std.testing.allocator);
+    defer positions.deinit();
+    const scope = ids.ScopeId.fromRaw(1);
+    const nested = ids.ScopeId.fromRaw(2);
+    const parent = ids.root_elem;
+    const boundary = PositionId.marker(ids.NodeId.fromRaw(4), .when);
+    const start = PositionId.rowStart(scope);
+    const end = PositionId.rowEnd(scope);
+    const root = PositionId.element(ids.ElemId.fromRaw(8));
+    var seed = positions.prepare();
+    defer seed.deinit();
+    try seed.place(.{ .parent = parent, .position = start, .owner = scope }, null);
+    try seed.place(.{ .parent = parent, .position = root, .owner = nested }, null);
+    try seed.place(.{ .parent = parent, .position = end, .owner = scope }, null);
+    try seed.place(.{ .parent = parent, .position = boundary, .owner = ids.root_scope }, null);
+    try seed.place(.{ .parent = ids.ElemId.fromRaw(8), .position = PositionId.element(ids.ElemId.fromRaw(9)), .owner = nested }, null);
+    try seed.preflight();
+    seed.commit();
+    var next = positions.prepare();
+    defer next.deinit();
+    const roots = try next.rootsInRange(parent, start, end);
+    try std.testing.expectEqual(@as(usize, 1), roots.count);
+    try std.testing.expectEqual(ids.ElemId.fromRaw(8), roots.first.?);
+    try next.retireRange(parent, start, end);
+    try next.retireScope(nested);
+    try std.testing.expectEqual(@as(usize, 0), try next.positionRank(parent, boundary));
+    try std.testing.expectEqual(@as(usize, 2), positions.ownedCount(nested));
+    try next.preflight();
+    next.commit();
+    try std.testing.expectEqual(@as(usize, 0), positions.ownedCount(scope));
+    try std.testing.expectEqual(@as(usize, 0), positions.ownedCount(nested));
+    try std.testing.expectEqual(null, try positions.anchor(parent, boundary));
 }

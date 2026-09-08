@@ -7888,10 +7888,11 @@ test "sibling each sites keep their insertion indexes after an earlier site grow
                 const rows = try host.engine.activeEachRowScopes(std.testing.allocator, site.scope_id, site.ordinal);
                 defer std.testing.allocator.free(rows);
                 try std.testing.expectEqual(@as(usize, 4), rows.len);
-                const first_row_index = for (host.engine.active_stream.render_nodes.items, 0..) |node, index| {
-                    if (engine.renderNodeScopeId(&host.engine.active_stream, node) == rows[0].raw()) break index;
+                const first_row = for (host.engine.active_stream.render_nodes.items) |node| {
+                    if (engine.renderNodeScopeId(&host.engine.active_stream, node) == rows[0].raw()) break node.elem_id;
                 } else return error.TestUnexpectedResult;
-                try std.testing.expectEqual(first_row_index, site.render_insert_index);
+                const first_row_index = publishedRenderIndex(&host, first_row.raw()) orelse return error.TestUnexpectedResult;
+                try expectScopeSiteInsertIndex(&host, node_id, .each, first_row_index);
             }
 
             // The next transaction is staged from the re-based indexes; a
@@ -7920,7 +7921,7 @@ test "sibling each sites keep their insertion indexes after an earlier site grow
                 const rows = try host.engine.activeEachRowScopes(std.testing.allocator, site.scope_id, site.ordinal);
                 defer std.testing.allocator.free(rows);
                 try std.testing.expectEqual(@as(usize, 3), rows.len);
-                const children = host.engine.render_cache.nodes.items[site.parent_elem_id.index()].children.items;
+                const children = host.dom_elements.items[site.parent_elem_id.index()].children.items;
                 try std.testing.expectEqual(@as(usize, 3), children.len);
             }
             try std.testing.expect(activeTextElementId(&host, "row-1-1") == null);
@@ -7938,17 +7939,45 @@ test "sibling each sites keep their insertion indexes after an earlier site grow
 /// of `parent_elem_id`, so a test can assert document order after a splice.
 fn childOrderOfText(host: *HostEnv, parent_elem_id: ids.ElemId, text: []const u8) ?usize {
     const elem_id = activeTextElementId(host, text) orelse return null;
-    const children = host.engine.render_cache.nodes.items[parent_elem_id.index()].children.items;
-    for (children, 0..) |child, index| if (child.raw() == elem_id) return index;
+    const children = host.dom_elements.items[parent_elem_id.index()].children.items;
+    var indexed = host.engine.render_cache.nodes.items[parent_elem_id.index()].first_child;
+    if (host.engine.render_cache.nodes.items[parent_elem_id.index()].child_count != children.len) return null;
+    var result: ?usize = null;
+    for (children, 0..) |child, index| {
+        if (indexed == null or indexed.?.raw() != child) return null;
+        if (child == elem_id) result = index;
+        indexed = host.engine.render_cache.nextSibling(indexed.?);
+    }
+    if (indexed != null) return null;
+    return result;
+}
+
+// Test-only traversal of the published native tree. Production uses retained
+// lexical indexes; physical descriptor storage is intentionally unordered.
+fn publishedRenderIndex(host: *HostEnv, wanted: u64) ?usize {
+    var cursor: usize = 0;
+    return publishedRenderIndexWithin(host, ids.root_elem.raw(), wanted, &cursor);
+}
+
+fn publishedRenderIndexWithin(host: *HostEnv, parent: u64, wanted: u64, cursor: *usize) ?usize {
+    for (host.dom_elements.items[@intCast(parent)].children.items) |child| {
+        if (child == wanted) return cursor.*;
+        cursor.* += 1;
+        if (publishedRenderIndexWithin(host, child, wanted, cursor)) |found| return found;
+    }
     return null;
 }
 
-/// Position of the text element rendering `text` in the committed render
-/// stream, which is the order every later structural transaction lays out from.
+fn publishedSubtreeSize(host: *HostEnv, parent: u64) usize {
+    var count: usize = 1;
+    for (host.dom_elements.items[@intCast(parent)].children.items) |child| count += publishedSubtreeSize(host, child);
+    return count;
+}
+
+/// Position in the published native tree, independent of descriptor storage.
 fn streamOrderOfText(host: *HostEnv, text: []const u8) ?usize {
     const elem_id = activeTextElementId(host, text) orelse return null;
-    for (host.engine.active_stream.render_nodes.items, 0..) |node, index| if (node.elem_id.raw() == elem_id) return index;
-    return null;
+    return publishedRenderIndex(host, elem_id);
 }
 
 /// Node ids of the active scope sites of one kind, in collection order.
@@ -7962,12 +7991,20 @@ fn activeScopeSiteNodeIdsOfKind(host: *HostEnv, kind: HostNodeScopeSiteKind, buf
     return buffer[0..write];
 }
 
-/// Asserts a committed scope site's `render_insert_index`. Indexes are
-/// positions in the active render stream, where the root element itself is
-/// node 0, so a root's first child sits at index 1.
+/// Checks the lexical site's insertion boundary against published native order.
+/// Empty markers have no native node and resolve to the next root or parent end.
 fn expectScopeSiteInsertIndex(host: *HostEnv, node_id: ids.NodeId, kind: HostNodeScopeSiteKind, expected: usize) !void {
     const site = host.engine.activeScopeSiteByNodeId(node_id.raw(), kind) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(expected, site.render_insert_index);
+    const positions = &(host.engine.positions orelse return error.TestUnexpectedResult);
+    const marker = signals.structural_positions.PositionId.marker(node_id, if (kind == .each) .each else .when);
+    const anchor = try positions.anchor(site.parent_elem_id, marker);
+    const actual = if (anchor) |elem|
+        publishedRenderIndex(host, elem.raw()) orelse return error.TestUnexpectedResult
+    else if (site.parent_elem_id == ids.root_elem)
+        publishedSubtreeSize(host, ids.root_elem.raw()) - 1
+    else
+        (publishedRenderIndex(host, site.parent_elem_id.raw()) orelse return error.TestUnexpectedResult) + publishedSubtreeSize(host, site.parent_elem_id.raw());
+    try std.testing.expectEqual(expected, actual);
 }
 
 /// A `when` whose condition reads a state cell directly through a bare `Ref`.
@@ -8270,7 +8307,7 @@ test "an empty when before another empty when at one index stays in front when t
             try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "first-on"));
             try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "second-on"));
             try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, section_id, "tail"));
-            try std.testing.expectEqual(@as(usize, 3), host.engine.render_cache.nodes.items[section_id.index()].children.items.len);
+            try std.testing.expectEqual(@as(usize, 3), host.engine.render_cache.nodes.items[section_id.index()].child_count);
             return attempts;
         }
     };
@@ -8316,12 +8353,12 @@ test "a when flipping from an empty branch anchors its DOM node at its site, not
             try std.testing.expectEqual(@as(?usize, 2), streamOrderOfText(&host, "tail"));
             try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "on"));
             try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "tail"));
-            try std.testing.expectEqual(@as(usize, 2), host.engine.render_cache.nodes.items[section_id.index()].children.items.len);
+            try std.testing.expectEqual(@as(usize, 2), host.engine.render_cache.nodes.items[section_id.index()].child_count);
 
             // Flipping back removes the node; flipping again anchors it again.
             _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueBool(false), cap);
             try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "tail"));
-            try std.testing.expectEqual(@as(usize, 1), host.engine.render_cache.nodes.items[section_id.index()].children.items.len);
+            try std.testing.expectEqual(@as(usize, 1), host.engine.render_cache.nodes.items[section_id.index()].child_count);
             _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueBool(true), cap);
             try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "on"));
             try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "tail"));
@@ -8576,7 +8613,7 @@ test "a when site collected later inside an earlier branch still orders before t
             const section_id = host.engine.active_stream.elements.items[0].elem_id;
             try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "nested-on"));
             try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "sibling-on"));
-            try std.testing.expectEqual(@as(usize, 2), host.engine.render_cache.nodes.items[section_id.index()].children.items.len);
+            try std.testing.expectEqual(@as(usize, 2), host.engine.render_cache.nodes.items[section_id.index()].child_count);
             return attempts;
         }
     };
@@ -8641,7 +8678,7 @@ test "a when branch and an each under one parent grow in one transaction and re-
             try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "row-1-1"));
             try std.testing.expectEqual(@as(?usize, 4), childOrderOfText(&host, section_id, "row-4-4"));
             try std.testing.expectEqual(@as(?usize, 5), childOrderOfText(&host, section_id, "tail"));
-            try std.testing.expectEqual(@as(usize, 6), host.engine.render_cache.nodes.items[section_id.index()].children.items.len);
+            try std.testing.expectEqual(@as(usize, 6), host.engine.render_cache.nodes.items[section_id.index()].child_count);
 
             // Shrinking flips the branch back and drops rows in one transaction.
             const shrunk = [_]HostValue{testHostValueI64(3)};
@@ -8654,7 +8691,7 @@ test "a when branch and an each under one parent grow in one transaction and re-
             try std.testing.expect(activeTextElementId(&host, "has-one") == null);
             try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "row-3-3"));
             try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "tail"));
-            try std.testing.expectEqual(@as(usize, 2), host.engine.render_cache.nodes.items[section_id.index()].children.items.len);
+            try std.testing.expectEqual(@as(usize, 2), host.engine.render_cache.nodes.items[section_id.index()].child_count);
             return attempts;
         }
     };
@@ -8740,8 +8777,9 @@ test "an each reading a root state list through a bare ref mounts in one staged 
             const rows = try host.engine.activeEachRowScopes(std.testing.allocator, site.scope_id, site.ordinal);
             defer std.testing.allocator.free(rows);
             try std.testing.expectEqual(@as(usize, 3), rows.len);
-            const children = host.engine.render_cache.nodes.items[site.parent_elem_id.index()].children.items;
+            const children = host.dom_elements.items[site.parent_elem_id.index()].children.items;
             try std.testing.expectEqual(@as(usize, 3), children.len);
+            try std.testing.expectEqual(@as(usize, 3), host.engine.render_cache.nodes.items[site.parent_elem_id.index()].child_count);
             try std.testing.expectEqual(@as(usize, 4), host.engine.states.items.len);
             try std.testing.expect(activeTextElementId(&host, "row-1-1") != null);
             try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
