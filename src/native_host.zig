@@ -31,6 +31,7 @@ const native_style = signals.native_style;
 const roc_alloc_ledger = @import("roc_alloc_ledger.zig");
 const crash_handlers = @import("crash_handlers.zig");
 const native_tasks = @import("native_tasks.zig");
+const native_timers = @import("native_timers.zig");
 const native_files_codec = @import("native_files_codec.zig");
 const NativeTaskQueue = native_tasks.Queue(boundary.TaskKind);
 
@@ -43,6 +44,7 @@ comptime {
     std.testing.refAllDecls(sim_dom);
     std.testing.refAllDecls(roc_alloc_ledger);
     std.testing.refAllDecls(native_tasks);
+    std.testing.refAllDecls(native_timers);
     std.testing.refAllDecls(native_files_codec);
 }
 
@@ -501,6 +503,11 @@ const NativeCtx = struct {
     /// Creates the host's zeroed metric accumulator for a new engine operation.
     pub fn zeroMetrics() Metrics {
         return zeroRuntimeMetrics();
+    }
+
+    /// Reserves native timer identities before a structural transaction commits.
+    pub fn reserveTimerRegistrations(ctx: Handle, additional: usize) error{ OutOfMemory, ResourceLimit }!void {
+        if (gpui_spike and Gpui.live) try Gpui.timers.reserve(allocator(ctx), additional);
     }
 
     /// Returns the allocator owned by this host context for shared-engine work.
@@ -1239,10 +1246,14 @@ const HostEnv = struct {
     }
 
     /// Adapts the shared engine's start interval command to this host without re-deciding reactive meaning.
-    pub fn sinkStartInterval(_: *HostEnv, _: ids.IntervalToken, _: u64) void {}
+    pub fn sinkStartInterval(_: *HostEnv, token: ids.IntervalToken, period_ms: u64) void {
+        if (gpui_spike and Gpui.live) Gpui.timers.start(token.raw(), period_ms);
+    }
 
     /// Adapts the shared engine's cancel interval command to this host without re-deciding reactive meaning.
-    pub fn sinkCancelInterval(_: *HostEnv, _: ids.IntervalToken) void {}
+    pub fn sinkCancelInterval(_: *HostEnv, token: ids.IntervalToken) void {
+        if (gpui_spike and Gpui.live) Gpui.timers.cancel(token.raw());
+    }
 
     /// Adapts the shared engine's start task command to this host without re-deciding reactive meaning.
     pub fn sinkStartTask(self: *HostEnv, request_id: ids.TaskRequestId, _: boundary.TaskKind, task_name: []const u8, _: []const u8) void {
@@ -3708,7 +3719,10 @@ comptime {
             @export(&Gpui.childAt, .{ .name = "signals_child_at" });
             @export(&Gpui.readShortcuts, .{ .name = "signals_read_shortcuts" });
             @export(&Gpui.metrics, .{ .name = "signals_metrics" });
-            @export(&Gpui.tick, .{ .name = "signals_tick" });
+            @export(&Gpui.timerVersion, .{ .name = "signals_timer_version" });
+            @export(&Gpui.timerSize, .{ .name = "signals_timer_size" });
+            @export(&Gpui.nextTimer, .{ .name = "signals_timer_next" });
+            @export(&Gpui.tickTimer, .{ .name = "signals_timer_tick" });
             @export(&Gpui.effectVersion, .{ .name = "signals_effect_version" });
             @export(&Gpui.effectSize, .{ .name = "signals_effect_size" });
             @export(&Gpui.nextEffect, .{ .name = "signals_effect_next" });
@@ -12379,6 +12393,7 @@ const Gpui = struct {
     var roc_host: abi.RocHost = undefined;
     var live = false;
     var tasks: NativeTaskQueue = .{};
+    var timers: native_timers.Registry = .{};
     var child_order: signals.native_child_order.Tree = undefined;
     var changed: [limit]u64 = undefined;
     var seen: [limit]bool = @splat(false);
@@ -12419,6 +12434,7 @@ const Gpui = struct {
         child_order.deinit();
         host.deinit();
         tasks.deinit(host.hostAllocator());
+        timers.deinit(host.hostAllocator());
         if (host.gpa.deinit() == .leak) failHost("GPUI spike leaked host allocations");
         current_host = null;
         current_roc_host = null;
@@ -12542,12 +12558,23 @@ const Gpui = struct {
         if (!live) failHost("GPUI child query before mount");
         return (child_order.childAt(ids.ElemId.fromRaw(parent), rank) catch failHost("invalid GPUI child rank")).raw();
     }
-    fn tick() callconv(.c) void {
-        if (!live) failHost("GPUI tick before mount");
+    fn timerVersion() callconv(.c) u32 {
+        return 1;
+    }
+    fn timerSize() callconv(.c) usize {
+        return @sizeOf(native_timers.Message);
+    }
+    fn nextTimer(out: *native_timers.Message) callconv(.c) u32 {
+        if (!live) failHost("GPUI timer read before mount");
+        out.* = timers.next() orelse return 0;
+        return 1;
+    }
+    fn tickTimer(token: u64) callconv(.c) u32 {
+        if (!live) failHost("GPUI timer tick before mount");
         clear();
-        if (host.engine.activeIntervalRecordCountByPeriod(1000) != 0) {
-            _ = tickIntervalSource(&host, &roc_host, 1000);
-        }
+        if (!timers.isActive(token)) return 0;
+        _ = host.engine.tickIntervalSourceByRuntimeToken(&host, &roc_host, token);
+        return 1;
     }
     fn metrics(out: [*]u64) callconv(.c) void {
         out[0] = host.engine.last_runtime_metrics.derived_calls_into_roc;

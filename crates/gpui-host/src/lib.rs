@@ -3,9 +3,12 @@ mod effects;
 mod file_io;
 mod input;
 mod shortcut;
+mod timers;
 use bridge::{Engine, Node, Payload};
 use gpui::{div, prelude::*, px, rgb, *};
-use std::{cell::Cell, collections::HashMap, rc::Rc, time::Duration};
+#[cfg(not(test))]
+use std::time::Duration;
+use std::{cell::Cell, collections::HashMap, rc::Rc};
 
 struct NodeView {
     node: Node,
@@ -218,7 +221,7 @@ struct Runtime {
     roots: Vec<Entity<NodeView>>,
     renders: Rc<Cell<u64>>,
     child_visits: Rc<Cell<u64>>,
-    _clock: Option<Task<()>>,
+    timers: timers::Manager,
 }
 impl Runtime {
     fn shortcut_if_live(
@@ -251,27 +254,10 @@ impl Runtime {
             roots: vec![],
             renders: Rc::new(Cell::new(0)),
             child_visits: Rc::new(Cell::new(0)),
-            _clock: None,
+            timers: timers::Manager::new(clock),
         };
         runtime.apply(initial, cx);
         runtime.drain_effects(cx);
-        if clock {
-            runtime._clock = Some(cx.spawn(async move |this, cx| {
-                loop {
-                    cx.background_executor().timer(Duration::from_secs(1)).await;
-                    if this
-                        .update(cx, |this, cx| {
-                            let changes = this.engine.tick();
-                            this.apply(changes, cx);
-                            this.drain_effects(cx);
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            }));
-        }
         runtime
     }
     fn event_if_live(&mut self, id: u64, event: u64, payload: Payload<'_>, cx: &mut Context<Self>) {
@@ -296,7 +282,18 @@ impl Runtime {
         self.apply(changes, cx);
         self.drain_effects(cx);
     }
+    fn timer_tick(&mut self, token: u64, cx: &mut Context<Self>) -> bool {
+        let Some(changes) = self.engine.tick_timer(token) else {
+            return false;
+        };
+        self.apply(changes, cx);
+        self.drain_effects(cx);
+        true
+    }
     fn drain_effects(&mut self, cx: &mut Context<Self>) {
+        while let Some(message) = self.engine.next_timer() {
+            self.timers.accept(message, cx);
+        }
         while let Some(message) = self.engine.next_effect() {
             self.effects.accept(message, cx);
         }
@@ -403,6 +400,7 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         // Invalidate worker callbacks before Engine releases task-owned values.
+        self.timers.shutdown();
         self.effects.shutdown();
     }
 }
@@ -433,6 +431,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
         return unsafe { signals_spec_main(argc, argv) };
     }
     let smoke = args.iter().any(|arg| arg == "--smoke");
+    let smoke_timers = args.iter().any(|arg| arg == "--smoke-timers");
     let click = args
         .windows(2)
         .find(|a| a[0] == "--smoke-click")
@@ -456,7 +455,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|cx| Runtime::new(!smoke, cx)),
+                |_, cx| cx.new(|cx| Runtime::new(!smoke || smoke_timers, cx)),
             )
             .unwrap();
         cx.activate(true);
@@ -488,7 +487,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                     })
                     .unwrap();
                 cx.background_executor()
-                    .timer(Duration::from_millis(300))
+                    .timer(Duration::from_millis(if smoke_timers { 1200 } else { 300 }))
                     .await;
                 window
                     .update(cx, |runtime, _, cx| {
@@ -529,7 +528,7 @@ mod tests {
             roots: vec![],
             renders: Rc::new(Cell::new(0)),
             child_visits: Rc::new(Cell::new(0)),
-            _clock: None,
+            timers: crate::timers::Manager::new(false),
         }
     }
 

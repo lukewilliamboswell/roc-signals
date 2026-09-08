@@ -11323,7 +11323,8 @@ pub fn Engine(comptime Ctx: type) type {
             effects_runtime.ensureActiveInterval(Ctx, ctx, Ctx.allocator(ctx), &self.active_intervals, &self.next_interval_token, self.roc_host.?, source_token, period_ms);
         }
 
-        fn reserveActiveIntervals(self: *Self, ctx: Ctx.Handle, additional: usize) error{OutOfMemory}!void {
+        fn reserveActiveIntervals(self: *Self, ctx: Ctx.Handle, additional: usize) CollectionError!void {
+            if (comptime @hasDecl(Ctx, "reserveTimerRegistrations")) try Ctx.reserveTimerRegistrations(ctx, additional);
             try effects_runtime.reserveActiveIntervals(Ctx.allocator(ctx), &self.active_intervals, additional);
         }
 

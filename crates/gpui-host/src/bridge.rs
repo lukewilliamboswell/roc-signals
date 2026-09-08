@@ -118,7 +118,8 @@ pub struct Engine {
     read: unsafe extern "C" fn(usize, *mut RawNode),
     read_shortcuts: unsafe extern "C" fn(u64, *mut Shortcut, usize) -> usize,
     metrics: unsafe extern "C" fn(*mut u64),
-    tick: unsafe extern "C" fn(),
+    tick_timer: unsafe extern "C" fn(u64) -> u32,
+    next_timer: unsafe extern "C" fn(*mut crate::timers::Message) -> u32,
     child_at: unsafe extern "C" fn(u64, usize) -> u64,
     next_effect: unsafe extern "C" fn(*mut RawEffect) -> u32,
     task_result: unsafe extern "C" fn(u64, u32, *const u8, usize),
@@ -134,7 +135,8 @@ impl Engine {
                 read: signals_read_changed,
                 read_shortcuts: signals_read_shortcuts,
                 metrics: signals_metrics,
-                tick: signals_tick,
+                tick_timer: signals_timer_tick,
+                next_timer: signals_timer_next,
                 child_at: signals_child_at,
                 next_effect: signals_effect_next,
                 task_result: signals_task_result,
@@ -156,6 +158,11 @@ impl Engine {
                 "native effect protocol mismatch"
             );
             assert_eq!(signals_effect_size(), std::mem::size_of::<RawEffect>());
+            assert_eq!(signals_timer_version(), 1, "native timer protocol mismatch");
+            assert_eq!(
+                signals_timer_size(),
+                std::mem::size_of::<crate::timers::Message>()
+            );
             signals_mount();
             engine
         }
@@ -213,9 +220,20 @@ impl Engine {
         unsafe { (self.dispatch)(event, kind, bytes.as_ptr(), bytes.len(), boolean) };
         self.changes()
     }
-    pub fn tick(&mut self) -> Vec<Node> {
-        unsafe { (self.tick)() };
-        self.changes()
+    pub fn tick_timer(&mut self, token: u64) -> Option<Vec<Node>> {
+        match unsafe { (self.tick_timer)(token) } {
+            0 => None,
+            1 => Some(self.changes()),
+            _ => panic!("invalid native timer delivery status"),
+        }
+    }
+    pub fn next_timer(&mut self) -> Option<crate::timers::Message> {
+        let mut message = crate::timers::Message::default();
+        match unsafe { (self.next_timer)(&mut message) } {
+            0 => None,
+            1 => Some(message),
+            _ => panic!("invalid native timer read status"),
+        }
     }
     pub fn child_at(&self, parent: u64, rank: usize) -> u64 {
         unsafe { (self.child_at)(parent, rank) }
@@ -270,7 +288,10 @@ unsafe extern "C" {
     fn signals_read_changed(index: usize, node: *mut RawNode);
     fn signals_read_shortcuts(id: u64, output: *mut Shortcut, capacity: usize) -> usize;
     fn signals_metrics(out: *mut u64);
-    fn signals_tick();
+    fn signals_timer_tick(token: u64) -> u32;
+    fn signals_timer_next(out: *mut crate::timers::Message) -> u32;
+    fn signals_timer_version() -> u32;
+    fn signals_timer_size() -> usize;
     fn signals_child_at(parent: u64, rank: usize) -> u64;
     fn signals_effect_version() -> u32;
     fn signals_effect_size() -> usize;
@@ -288,6 +309,12 @@ thread_local! {
 impl Engine {
     pub fn test_boundary() -> Self {
         unsafe extern "C" fn noop() {}
+        unsafe extern "C" fn tick_timer(_: u64) -> u32 {
+            0
+        }
+        unsafe extern "C" fn next_timer(_: *mut crate::timers::Message) -> u32 {
+            0
+        }
         unsafe extern "C" fn child_at(parent: u64, rank: usize) -> u64 {
             TEST_CHILDREN.with(|children| children.borrow()[&parent][rank])
         }
@@ -329,7 +356,8 @@ impl Engine {
             read,
             read_shortcuts,
             metrics,
-            tick: noop,
+            tick_timer,
+            next_timer,
             child_at,
             next_effect,
             task_result,

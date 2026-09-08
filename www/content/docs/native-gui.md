@@ -75,6 +75,22 @@ A region accepts at most 32 shortcuts. Duplicate chords are errors. Registration
 belong to their element's scope and stop receiving events after disposal.
 See `test/gui/shortcuts` for a complete app and scoped routing spec.
 
+## Scoped timers and files
+
+`Signal.interval(period_ms)` registers a native timer while its declaring scope
+is live. Every tick enters the shared engine; scope disposal cancels the native
+job and rejects any stale callback. Native transactions reserve at most 256 live
+or newly declared timers. Activity Monitor uses a 500 ms interval whose scope is
+present only while replay is running.
+
+`pf.Files` provides native file/directory choosers, UTF-8 reads, atomic text
+writes, and recursive metadata scans as typed tasks. Use `Signal.from_task` to
+observe results and `Signal.cancel` to invalidate pending work. See the
+[task reference](@/docs/reference.md#native-files) for signatures, errors, and
+bounds. A dismissed chooser returns `Choice.Canceled`; explicit task cancellation
+returns `Error.Canceled`. Keep the submitted write snapshot separate from the
+editable draft so a completed save cannot incorrectly mark later edits as saved.
+
 ## Example coverage
 
 The collection in `examples-gui/` exercises platform features through ordinary

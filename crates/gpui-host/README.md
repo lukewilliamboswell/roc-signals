@@ -32,9 +32,11 @@ notification table statically. Input text is limited to 1 MiB. Each editor allow
 one deferred edit callback at a time; saturation is an explicit fatal diagnostic.
 Callbacks check the node and binding identity before dispatch, so a callback for
 a disposed editor cannot affect a later lifetime. Rust entities reference the
-runtime weakly; the scope clock uses one mount-owned GPUI task, and its ticks
-enter the engine's ordinary scoped interval path. This spike supports only the
-sample's 1-second clock, not a general timer/task transport.
+runtime weakly. Engine-issued interval tokens own individual native timer tasks;
+scope disposal cancels them, and queued stale callbacks are rejected before Roc
+runs. Timer delivery uses the shared engine's indexed interval path. `Files`
+provides bounded, cancellable chooser/read/write/scan operations through that same
+propagation model; workers hold only copied primitive requests and results.
 
 The command boundary is process-local and statically linked. Borrowed node data
 expires at the next host operation and is copied before that operation. Rust

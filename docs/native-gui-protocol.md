@@ -206,3 +206,29 @@ without traversal. Limits refuse the entire operation instead of truncating it.
 Writes create a temporary sibling, write the immutable submitted text, and rename
 it into place. Failure or cancellation before commit removes the temporary file;
 cancellation cannot undo a rename that has already committed.
+
+
+## Native timers
+
+The separate timer boundary is version **1**. Before mount, Rust checks
+`signals_timer_version()` and `signals_timer_size()`. `signals_timer_next(out)`
+returns zero when empty or one with `{token: u64, period_ms: u64, action: u32,
+reserved: u32}`. Action 1 starts the exact engine-issued token and period; action
+2 cancels it and has period zero. The reserved field is zero.
+`signals_timer_tick(token)` returns one after ordinary propagation or zero for a
+callback invalidated by disposal. It never routes by matching periods.
+
+At most **256** intervals may be committed or reserved by a native transaction.
+Reservation failure rejects preparation before publication. A fixed **512-slot**
+notification pool also holds cancellations of previously announced timers while
+new registrations are published. Starts canceled before the adapter reads them
+release immediately. Lookup, enqueue, cancellation, and notification draining
+touch only the affected identities. A pending cancellation invalidates delivery
+before the native task handle is dropped. Shutdown cancels native jobs before
+engine teardown.
+
+Native periods are executor wake intervals; each wake submits one tick, without
+inventing elapsed-time values or merging queued ticks. Long waits are split into
+day-sized executor waits to avoid overflowing native clock arithmetic. Normal
+smoke checks disable clocks for deterministic assertions; `--smoke-timers`
+enables real timer delivery and waits 1.2 seconds after the requested action.
