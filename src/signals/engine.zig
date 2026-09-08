@@ -14390,8 +14390,8 @@ pub fn Engine(comptime Ctx: type) type {
 
         fn applyActiveStreamFieldsForElemOptions(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, counts: *render.Counts, dirty_source_node_ids: []const u64, dirty_generation: u64, apply_custom_attrs: bool) void {
             const descriptor_index = self.active_stream.elemDescriptorIndex(elem_id) orelse @panic("active render node had no descriptor index");
-            const text_fields = [_]RenderTextField{ .text, .role, .label, .test_id, .value, .class };
-            const bool_fields = [_]RenderBoolField{ .checked, .disabled };
+            const text_fields = std.enums.values(RenderTextField);
+            const bool_fields = std.enums.values(RenderBoolField);
 
             for (text_fields) |field| {
                 if (!streamHasTextField(&self.active_stream, elem_id, field) and self.clearRenderTextField(ctx, elem_id, field)) {
@@ -14486,8 +14486,8 @@ pub fn Engine(comptime Ctx: type) type {
                 self.replaceRenderChildren(ctx, parent_elem_id, children, &counts);
             }
 
-            const text_fields = [_]RenderTextField{ .text, .role, .label, .test_id, .value, .class };
-            const bool_fields = [_]RenderBoolField{ .checked, .disabled };
+            const text_fields = std.enums.values(RenderTextField);
+            const bool_fields = std.enums.values(RenderBoolField);
             for (seen, 0..) |is_seen, index| {
                 if (index == 0 or !is_seen) continue;
                 const elem_id: u64 = @intCast(index);
@@ -14863,8 +14863,8 @@ pub fn Engine(comptime Ctx: type) type {
                 self.replaceRenderChildren(ctx, ids.ElemId.fromRaw(@intCast(index)), children.items, &counts);
             }
 
-            const text_fields = [_]RenderTextField{ .text, .role, .label, .test_id, .value, .class };
-            const bool_fields = [_]RenderBoolField{ .checked, .disabled };
+            const text_fields = std.enums.values(RenderTextField);
+            const bool_fields = std.enums.values(RenderBoolField);
             for (seen, 0..) |is_seen, index| {
                 if (index == 0 or !is_seen) continue;
                 const elem_id: u64 = @intCast(index);

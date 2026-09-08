@@ -267,17 +267,11 @@ fn appendRemovalIndexAssumeCapacity(indexes: *shared_buffer.List(usize), index: 
 }
 
 fn appendTextFieldRemovalIndexesAssumeCapacity(indexes: *shared_buffer.List(usize), fields: anytype) void {
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.text));
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.role));
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.label));
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.test_id));
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.value));
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.class));
+    inline for (std.meta.fields(@TypeOf(fields))) |field| appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(@field(fields, field.name)));
 }
 
 fn appendBoolFieldRemovalIndexesAssumeCapacity(indexes: *shared_buffer.List(usize), fields: anytype) void {
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.checked));
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.disabled));
+    inline for (std.meta.fields(@TypeOf(fields))) |field| appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(@field(fields, field.name)));
 }
 
 fn appendEventRemovalIndexesAssumeCapacity(indexes: *shared_buffer.List(usize), events: anytype) void {
@@ -297,18 +291,12 @@ fn descriptorIndexValue(index: anytype) ?usize {
 
 /// Appends text field removal indexes using capacity that must already satisfy the caller's transaction contract.
 pub fn appendTextFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *shared_buffer.List(usize), fields: anytype) void {
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.text));
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.role));
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.label));
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.test_id));
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.value));
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.class));
+    inline for (std.meta.fields(@TypeOf(fields))) |field| appendRemovalIndex(allocator, indexes, descriptorIndexValue(@field(fields, field.name)));
 }
 
 /// Appends bool field removal indexes using capacity that must already satisfy the caller's transaction contract.
 pub fn appendBoolFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *shared_buffer.List(usize), fields: anytype) void {
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.checked));
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.disabled));
+    inline for (std.meta.fields(@TypeOf(fields))) |field| appendRemovalIndex(allocator, indexes, descriptorIndexValue(@field(fields, field.name)));
 }
 
 /// Appends event removal indexes using capacity that must already satisfy the caller's transaction contract.
@@ -952,6 +940,38 @@ test "structural splice scratch collects descriptor indexes" {
 
     scratch.clearRetainingCapacity();
     scratch.assertEmpty();
+}
+
+test "structural removal includes every scalar descriptor field without publication allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var scratch: ElemOwnedRemovalScratch = .{};
+    defer scratch.deinit(allocator);
+    var descriptor: descriptor_stream.ElemDescriptorIndex = .{};
+    for (std.enums.values(render.TextField), 0..) |field, index| {
+        descriptor.static_text_attrs.slot(field).* = descriptor_stream.DescriptorIndex.init(index);
+        descriptor.signal_text_attrs.slot(field).* = descriptor_stream.DescriptorIndex.init(index);
+    }
+    for (std.enums.values(render.BoolField), 0..) |field, index| {
+        descriptor.static_bool_attrs.slot(field).* = descriptor_stream.DescriptorIndex.init(index);
+        descriptor.signal_bool_attrs.slot(field).* = descriptor_stream.DescriptorIndex.init(index);
+    }
+    try scratch.prepare(allocator, 1);
+    fault.configure(1);
+    scratch.appendDescriptorIndexesAssumeCapacity(descriptor);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(std.enums.values(render.TextField).len, scratch.static_text_attr_indexes.items.len);
+    try std.testing.expectEqual(std.enums.values(render.TextField).len, scratch.signal_text_attr_indexes.items.len);
+    try std.testing.expectEqual(std.enums.values(render.BoolField).len, scratch.static_bool_attr_indexes.items.len);
+    try std.testing.expectEqual(std.enums.values(render.BoolField).len, scratch.signal_bool_attr_indexes.items.len);
+    try std.testing.expectEqual(descriptor.static_text_attrs.native_style.get().?, scratch.static_text_attr_indexes.items[scratch.static_text_attr_indexes.items.len - 1]);
+    try std.testing.expectEqual(descriptor.signal_bool_attrs.selected.get().?, scratch.signal_bool_attr_indexes.items[scratch.signal_bool_attr_indexes.items.len - 1]);
+    scratch.clearRetainingCapacity();
+    scratch.appendDescriptorIndexes(allocator, descriptor);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(std.enums.values(render.TextField).len, scratch.static_text_attr_indexes.items.len);
+    try std.testing.expectEqual(std.enums.values(render.BoolField).len, scratch.signal_bool_attr_indexes.items.len);
 }
 
 test "structural splice builds target scope set through explicit lookup" {
