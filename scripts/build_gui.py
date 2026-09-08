@@ -16,11 +16,17 @@ def build(debug=False, jobs=2):
     if jobs < 1:
         raise SystemExit('GUI build jobs must be positive.')
     subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
+    # Worktrees may share dependencies, but Cargo can reuse the identically named
+    # local crate from another checkout. Rebuild this small crate explicitly.
+    subprocess.run(['cargo', 'clean', '-p', 'signals-gpui-host'], cwd=ROOT, check=True)
     subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, check=True)
     dest = ROOT / 'platform-gui/targets/x64glibc'
     dest.mkdir(parents=True, exist_ok=True)
     # Merge object members, not archives-as-members: Roc consumes one host archive.
-    rust_host = ROOT / 'target' / ('debug' if debug else 'release') / 'libsignals_gpui_host.a'
+    metadata = json.loads(subprocess.check_output(
+        ['cargo', 'metadata', '--locked', '--no-deps', '--format-version=1'], cwd=ROOT, text=True,
+    ))
+    rust_host = Path(metadata['target_directory']) / ('debug' if debug else 'release') / 'libsignals_gpui_host.a'
     engine = ROOT / 'zig-out/gui/libengine.a'
     with tempfile.TemporaryDirectory(prefix='signals-host-') as tmp:
         stage = Path(tmp)

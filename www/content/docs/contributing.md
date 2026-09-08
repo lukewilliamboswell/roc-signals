@@ -777,7 +777,7 @@ roc build examples-gui/counter/main.roc --output=.test-out/Counter
 
 `python3 scripts/test.py gui --roc-bin /path/to/pinned/roc --keep-output`
 checks the compiler identity, prepares shared sources, builds the development
-GUI host once, runs `roc check` and `roc test` for each registered GUI app,
+GUI host, runs focused GPUI adapter/editor tests, then `roc check` and `roc test` for each registered GUI app and internal fixture under `test/gui/`,
 builds fresh executables, and runs their native semantic specs without a display.
 The manifest at `examples-gui/examples.toml` must list every app directory, and
 each app must have specs. Every GUI check must pass; this suite has no known-failure
@@ -787,9 +787,13 @@ dedicated Linux job. GUI executables remain under `.test-out/gui` when output is
 
 Host builds default to two Cargo workers. Use `scripts/build_gui.py --jobs N`
 or `scripts/test.py gui --gui-build-jobs N` to adjust memory pressure. Parallel
-app work should serialize substantial host builds. GUI tests validate shared
+app work should serialize substantial host builds. The builder cleans the local
+Rust host crate before compiling so a shared Cargo target cannot reuse another
+worktree's host implementation; dependency artifacts remain cached.
+GUI specs validate shared
 semantics; the separate Wayland smoke above checks rendering and adapter dispatch,
-and does not establish OS keyboard, pointer, or IME behavior.
+and does not establish OS keyboard, pointer, or IME behavior. GPUI adapter tests
+exercise simulated input and layout; they also do not replace a real Wayland walkthrough.
 
 After `scripts/bundle.sh --serve`, download `http://127.0.0.1:8000/Counter.roc`
 and run `roc build Counter.roc`. Alternatively, `roc run Counter.roc --opt=speed`

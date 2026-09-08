@@ -1,6 +1,7 @@
 """Build and test maintained GUI applications through the shared native runner."""
 
 from pathlib import Path
+import os
 import platform
 import re
 import subprocess
@@ -37,15 +38,32 @@ def examples(root: Path = ROOT) -> tuple[Path, ...]:
     return tuple(directory / slug for slug in slugs)
 
 
+def fixtures(root: Path = ROOT) -> tuple[Path, ...]:
+    apps = tuple(sorted(path.parent for path in (root / "test/gui").glob("*/main.roc")))
+    for app in apps:
+        spec_driver.discover_specs(app / "specs")
+    return apps
+
+
 def run(roc: str, args, output: Path) -> None:
     if not supported_host():
         raise SystemExit("GUI tests require Linux x86_64 with glibc; no display is needed.")
-    apps = examples()
+    apps = examples() + fixtures()
     toolchain.verify_compiler(roc, toolchain.read_pin(ROOT / "platform-gui/main.roc"))
     subprocess.run([sys.executable, ROOT / "scripts/prepare_platforms.py"], check=True)
     subprocess.run(
         [sys.executable, ROOT / "scripts/build_gui.py", "--debug", "--jobs", str(args.gui_build_jobs)],
         check=True,
+    )
+    environment = os.environ.copy()
+    library_path = str(ROOT / "platform-gui/targets/x64glibc")
+    if environment.get("LIBRARY_PATH"):
+        library_path += os.pathsep + environment["LIBRARY_PATH"]
+    environment["LIBRARY_PATH"] = library_path
+    subprocess.run(
+        ["cargo", "test", "--locked", "-p", "signals-gpui-host", "--lib", "-j",
+         str(args.gui_build_jobs), "--", "--test-threads=1"],
+        cwd=ROOT, env=environment, check=True,
     )
     output.mkdir(parents=True, exist_ok=True)
     failures = []
@@ -59,7 +77,8 @@ def run(roc: str, args, output: Path) -> None:
             continue
         matched += len(cases)
         source = app / "main.roc"
-        executable = output / app.name
+        name = app.name if app.parent.name == "examples-gui" else "fixture-" + app.name
+        executable = output / name
         try:
             for command in (
                 [roc, "check", source],

@@ -76,7 +76,7 @@ jobs:
       - name: Install GUI host build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-0
+          sudo apt-get install -y libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev
           rustup toolchain install 1.95.0 --profile minimal
       - name: Verify GUI discovery and applications
         env:
