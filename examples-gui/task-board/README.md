@@ -78,3 +78,9 @@ close; Close without saving is explicit; Save and close waits for a successful
 write. Failed or canceled saves leave the window and board open for correction
 or retry. The decision belongs to the ordinary scoped GUI close registration;
 repeated native close requests do not bypass the pending decision.
+
+Ctrl+S saves, Ctrl+Shift+S chooses another destination, and Ctrl+O opens a
+project. Ctrl+Z and Ctrl+Shift+Z invoke board Undo/Redo from ordinary controls.
+Focused native text inputs keep their standard text-editing undo/redo precedence;
+the toolbar buttons explicitly undo or redo board changes. Keyboard semantic
+specs dispatch the declared shortcuts; they do not emulate OS keyboard routing.

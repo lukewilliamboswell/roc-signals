@@ -375,6 +375,8 @@ new_task_form = |handles| {
 
 board_view : Handles -> Elem
 board_view = |handles| {
+	actions = document_actions(handles)
+	chord = { key: "s", control: True, shift: False, alt: False, meta: False }
 	selected = Signal.map2(
 		handles.editor.signal(),
 		handles.editing.signal(),
@@ -406,10 +408,10 @@ board_view = |handles| {
 		},
 		[
 			Gui.column(
-				[Gui.style({ ..Gui.style_default, padding: 20, gap: 20, width: Fill })],
+				[Gui.style({ ..Gui.style_default, padding: 20, gap: 20, width: Fill }), Gui.test_id("launch-board"), Gui.on_shortcut(chord, actions.save), Gui.on_shortcut({ ..chord, shift: True }, actions.save_as), Gui.on_shortcut({ ..chord, key: "o" }, actions.open), Gui.on_shortcut({ ..chord, key: "z" }, history_message(handles, False)), Gui.on_shortcut({ ..chord, key: "z", shift: True }, history_message(handles, True))],
 				[
 					Gui.heading("Launch Board"),
-					document_toolbar(handles),
+					document_toolbar(handles, actions),
 					close_dialog(handles),
 					Gui.text("A small team's workspace for the next release."),
 					Gui.text("Drag onto a card to place a task before it, or into a column to move it to the end."),
@@ -546,39 +548,42 @@ history_button = |handles, redo| Gui.action_button(
 		),
 	},
 	[],
-	Ui.action(
-		handles.context,
-		|context| {
-			if !can_edit(context.document.phase) {
-				return Signal.noop
-			}
-			stack = if redo {
-				context.history.future
-			} else {
-				context.history.past
-			}
-			match stack.first() {
-				Err(_) => Signal.noop
-				Ok(previous) => {
-					history = if redo {
-						{ past: trim_history([context.board].concat(context.history.past)), future: stack.drop_first(1) }
-					} else {
-						{ past: stack.drop_first(1), future: trim_history([context.board].concat(context.history.future)) }
-					}
-					Ui.update_states([
-						handles.planned.write(previous.planned),
-						handles.progress.write(previous.progress),
-						handles.complete.write(previous.complete),
-						handles.editor.write(previous.editor),
-						handles.editing.write(previous.editing),
-						handles.bytes.write(previous.bytes),
-						handles.confirm_delete.write(False),
-						handles.history.write(bound_history(history, redo)),
-					])
+	history_message(handles, redo),
+)
+
+history_message : Handles, Bool -> Gui.Msg
+history_message = |handles, redo| Ui.action(
+	handles.context,
+	|context| {
+		if !can_edit(context.document.phase) {
+			return Signal.noop
+		}
+		stack = if redo {
+			context.history.future
+		} else {
+			context.history.past
+		}
+		match stack.first() {
+			Err(_) => Signal.noop
+			Ok(previous) => {
+				history = if redo {
+					{ past: trim_history([context.board].concat(context.history.past)), future: stack.drop_first(1) }
+				} else {
+					{ past: stack.drop_first(1), future: trim_history([context.board].concat(context.history.future)) }
 				}
+				Ui.update_states([
+					handles.planned.write(previous.planned),
+					handles.progress.write(previous.progress),
+					handles.complete.write(previous.complete),
+					handles.editor.write(previous.editor),
+					handles.editing.write(previous.editing),
+					handles.bytes.write(previous.bytes),
+					handles.confirm_delete.write(False),
+					handles.history.write(bound_history(history, redo)),
+				])
 			}
-		},
-	),
+		}
+	},
 )
 
 can_edit : Phase -> Bool
@@ -593,46 +598,21 @@ dirty = |context| match context.document.baseline {
 	Some(saved) => context.board.planned != saved.planned or context.board.progress != saved.progress or context.board.complete != saved.complete
 }
 
-document_toolbar : Handles -> Elem
-document_toolbar = |handles| {
+DocumentActions : { open : Gui.Msg, save : Gui.Msg, save_as : Gui.Msg, cancel : Gui.Msg }
+
+document_toolbar : Handles, DocumentActions -> Elem
+document_toolbar = |handles, actions| {
 	ready = handles.document.signal().map(|doc| doc.phase == Phase.Idle)
-	save_reads = { context: handles.context, next: handles.next_id.signal() }.Signal
-	save_message = |save_as| Ui.action(save_reads, |{ context, next }| save_document(handles, context, next, { save_as, close_after: False }))
-	open = Ui.action(
-		handles.context,
-		|context| if context.document.phase != Phase.Idle {
-			Signal.noop
-		} else {
-			handles.document.set_cmd({
-				..context.document,
-				phase: if dirty(context) {
-					Phase.ConfirmOpen
-				} else {
-					Phase.ChoosingOpen
-				},
-				problem: "",
-			})
-		},
-	)
-	cancel = Ui.action(
-		handles.document.signal(),
-		|doc| match doc.phase {
-			Phase.ChoosingOpen => Signal.cancel(handles.tasks.open)
-			Phase.ChoosingSave(_) => Signal.cancel(handles.tasks.save)
-			Phase.Reading(_) => Signal.cancel(handles.tasks.read)
-			Phase.Writing(_) => Signal.cancel(handles.tasks.write)
-			_ => handles.document.set_cmd({ ..doc, phase: Phase.Idle })
-		},
-	)
+
 	Gui.column(
 		[Gui.test_id("board-document")],
 		[
 			Gui.row(
 				[],
 				[
-					Gui.action_button({ label: Signal.const("Open…"), enabled: ready }, [], open),
-					Gui.action_button({ label: Signal.const("Save"), enabled: ready }, [], save_message(False)),
-					Gui.action_button({ label: Signal.const("Save As…"), enabled: ready }, [], save_message(True)),
+					Gui.action_button({ label: Signal.const("Open…"), enabled: ready }, [], actions.open),
+					Gui.action_button({ label: Signal.const("Save"), enabled: ready }, [], actions.save),
+					Gui.action_button({ label: Signal.const("Save As…"), enabled: ready }, [], actions.save_as),
 				],
 			),
 			Gui.panel(
@@ -673,18 +653,18 @@ document_toolbar = |handles| {
 			Ui.when(
 				handles.document.signal().map(|doc| doc.phase == Phase.ConfirmOpen),
 				|| Gui.dialog(
-					{ label: "Replace unsaved board?", on_dismiss: cancel },
+					{ label: "Replace unsaved board?", on_dismiss: actions.cancel },
 					[Gui.test_id("board-discard")],
 					[
 						Gui.heading("Replace unsaved board?"),
 						Gui.text("Save your board first to keep these changes. Opening succeeds only after the new file is completely validated."),
-						Gui.button("Keep editing", cancel),
+						Gui.button("Keep editing", actions.cancel),
 						Gui.button("Discard and open", handles.document.on_unit(|doc| { ..doc, phase: Phase.ChoosingOpen })),
 					],
 				),
 				|| Gui.text(""),
 			),
-			Ui.when(handles.document.signal().map(|doc| doc.phase != Phase.Idle and doc.phase != Phase.ConfirmOpen), || Gui.button("Cancel operation", cancel), || Gui.text("")),
+			Ui.when(handles.document.signal().map(|doc| doc.phase != Phase.Idle and doc.phase != Phase.ConfirmOpen), || Gui.button("Cancel operation", actions.cancel), || Gui.text("")),
 		],
 	)
 }
@@ -922,4 +902,37 @@ close_dialog = |handles| {
 			|| Gui.text(""),
 		),
 	)
+}
+
+document_actions : Handles -> DocumentActions
+document_actions = |handles| {
+	save_reads = { context: handles.context, next: handles.next_id.signal() }.Signal
+	save_message = |save_as| Ui.action(save_reads, |{ context, next }| save_document(handles, context, next, { save_as, close_after: False }))
+	open = Ui.action(
+		handles.context,
+		|context| if context.document.phase != Phase.Idle {
+			Signal.noop
+		} else {
+			handles.document.set_cmd({
+				..context.document,
+				phase: if dirty(context) {
+					Phase.ConfirmOpen
+				} else {
+					Phase.ChoosingOpen
+				},
+				problem: "",
+			})
+		},
+	)
+	cancel = Ui.action(
+		handles.document.signal(),
+		|doc| match doc.phase {
+			Phase.ChoosingOpen => Signal.cancel(handles.tasks.open)
+			Phase.ChoosingSave(_) => Signal.cancel(handles.tasks.save)
+			Phase.Reading(_) => Signal.cancel(handles.tasks.read)
+			Phase.Writing(_) => Signal.cancel(handles.tasks.write)
+			_ => handles.document.set_cmd({ ..doc, phase: Phase.Idle })
+		},
+	)
+	{ open, save: save_message(False), save_as: save_message(True), cancel }
 }
