@@ -2,17 +2,20 @@ import HostValue exposing [HostValue]
 import Capability exposing [Capability]
 import Node
 
-## Current state of a host-backed task.
-TaskStatus(a, err) := [Loading, Done(a), Failed(err)]
-
-## Host-backed task source that accepts string requests.
-Task(a, err) := { source : Node.TaskSource, cap : Capability(TaskStatus(a, err)) }
-
 ## Opaque, typed signal. Wraps a boxed pure `Node.SignalExpr` descriptor
 ## referencing state/source binders. The `a` lives only in Roc's type system.
 ## Runtime values are opaque host-owned cells; each edge carries the exact typed
 ## thunks that can read, compare, transform, and release that cell.
 Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
+
+	## Current state of a host-backed task.
+	TaskStatus(value, err) := [Loading, Done(value), Failed(err)]
+
+	## A typed effect declaration; its mutable request and value live in the engine.
+	Task(value, err) := { source : Node.TaskSource, cap : Capability(TaskStatus(value, err)) }
+
+	## Declaration-owned terminal errors for cancellation and capacity refusal.
+	TaskConfig(err) : { name : Str, reset_on_start : Bool, canceled : () -> err, refused : () -> err }
 
 	## One exact-key selector construction site shared by keyed rows.
 	Keyed(value) := {
@@ -74,38 +77,48 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 	}
 
 	## Create a deterministic string-payload task source for tests and examples.
+	## Explicit cancellation passes "canceled" to this fake model's error decoder;
+	## capacity refusal passes "refused". These strings belong to the fake model.
 	fake_task : Str, (Str -> a), (Str -> err) -> Task(a, err)
 		where [
 			a.is_eq : a, a -> Bool,
 			err.is_eq : err, err -> Bool,
 		]
-	fake_task = |name, to_done, to_failed| Signal.task_source(name, to_done, to_failed, True)
+	fake_task = |name, to_done, to_failed| Signal.task_source({ name, reset_on_start: True, canceled: || to_failed("canceled"), refused: || to_failed("refused") }, to_done, to_failed)
 
 	## Low-level host task source constructor. `reset_on_start` controls whether
 	## starting a new request publishes `Loading` or keeps the last cached value
 	## while the runtime request is pending. Starting a request for a task source
 	## cancels any older pending request for that same source; if an older host
 	## result arrives anyway, the runtime ignores it and keeps the newer request in
-	## control.
-	task_source : Str, (Str -> a), (Str -> err), Bool -> Task(a, err)
+	## control. The config's canceled initializer returns the error published by
+	## explicit cancellation, without running the host failure decoder. The refused
+	## initializer supplies a terminal error when a bounded host cannot admit work;
+	## this also supersedes the source's older pending request.
+	task_source : TaskConfig(err), (Str -> a), (Str -> err) -> Task(a, err)
 		where [
 			a.is_eq : a, a -> Bool,
 			err.is_eq : err, err -> Bool,
 		]
-	task_source = |name, to_done, to_failed, reset_on_start|
+	task_source = |config, to_done, to_failed|
 		Signal.task_source_with_eq(
-			name,
+			config,
 			to_done,
 			to_failed,
-			reset_on_start,
 			|left, right| left.is_eq(right),
 			|left, right| left.is_eq(right),
 		)
 
 	## Host task source constructor for external result types that cannot define an
 	## associated `is_eq` method in this package.
-	task_source_with_eq : Str, (Str -> a), (Str -> err), Bool, (a, a -> Bool), (err, err -> Bool) -> Task(a, err)
-	task_source_with_eq = |name, to_done, to_failed, reset_on_start, done_is_eq, failed_is_eq| {
+	task_source_with_eq : TaskConfig(err), (Str -> a), (Str -> err), (a, a -> Bool), (err, err -> Bool) -> Task(a, err)
+	task_source_with_eq = |config, to_done, to_failed, done_is_eq, failed_is_eq|
+		Signal.host_task_source_with_eq(Node.TaskKind.External, config, to_done, to_failed, done_is_eq, failed_is_eq)
+
+	## Platform service constructor with an explicit closed route. Application file
+	## work uses Files helpers so request/result codecs stay owned by the platform.
+	host_task_source_with_eq : Node.TaskKind, TaskConfig(err), (Str -> a), (Str -> err), (a, a -> Bool), (err, err -> Bool) -> Task(a, err)
+	host_task_source_with_eq = |kind, config, to_done, to_failed, done_is_eq, failed_is_eq| {
 		status_cap =
 			Capability.new_with_eq(
 				|left, right|
@@ -151,16 +164,27 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 			Capability.store(Box.box(status), status_cap)
 		}
 
+		on_cancel = config.canceled
+		canceled : () -> HostValue
+		canceled = || Capability.store(Box.box(TaskStatus.Failed(on_cancel())), status_cap)
+
+		on_refused = config.refused
+		refused : () -> HostValue
+		refused = || Capability.store(Box.box(TaskStatus.Failed(on_refused())), status_cap)
+
 		{
 			source: {
 				token: initial_box,
-				name,
+				name: config.name,
+				kind,
 				cap: Capability.handle(status_cap),
 				payload_cap: Capability.handle(payload_cap),
 				initial: initial_box,
 				done: Box.box(done),
 				failed: Box.box(failed),
-				reset_on_start,
+				canceled: Box.box(canceled),
+				refused: Box.box(refused),
+				reset_on_start: config.reset_on_start,
 			},
 			cap: status_cap,
 		}
@@ -181,6 +205,11 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 			request_read: { capability: Capability.handle(request_cap), read: Box.box(request_read) },
 		})
 	}
+
+	## Cancel the active request and publish its declaration-owned terminal value.
+	## A source without a pending request is unchanged; late host results are stale.
+	cancel : Task(a, err) -> Node.Cmd
+	cancel = |task| Node.Cmd.CancelTask({ task_token: task.source.token })
 
 	## Command that intentionally performs no host work.
 	noop : Node.Cmd

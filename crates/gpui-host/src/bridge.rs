@@ -100,6 +100,17 @@ struct RawNode {
     style: Style,
     viewport: [u32; 2],
 }
+#[repr(C)]
+struct RawEffect {
+    op: u32,
+    kind: u32,
+    id: u64,
+    request: Slice,
+}
+pub enum Effect {
+    Start { id: u64, kind: u32, request: String },
+    Cancel(u64),
+}
 pub struct Engine {
     unmount: unsafe extern "C" fn(),
     dispatch: unsafe extern "C" fn(u64, u32, *const u8, usize, u32),
@@ -109,6 +120,8 @@ pub struct Engine {
     metrics: unsafe extern "C" fn(*mut u64),
     tick: unsafe extern "C" fn(),
     child_at: unsafe extern "C" fn(u64, usize) -> u64,
+    next_effect: unsafe extern "C" fn(*mut RawEffect) -> u32,
+    task_result: unsafe extern "C" fn(u64, u32, *const u8, usize),
     _main_thread: PhantomData<Rc<()>>,
 }
 impl Engine {
@@ -123,6 +136,8 @@ impl Engine {
                 metrics: signals_metrics,
                 tick: signals_tick,
                 child_at: signals_child_at,
+                next_effect: signals_effect_next,
+                task_result: signals_task_result,
                 _main_thread: PhantomData,
             };
             assert_eq!(
@@ -135,6 +150,12 @@ impl Engine {
                 std::mem::size_of::<RawNode>(),
                 "spike bridge ABI size mismatch; rebuild with build.py"
             );
+            assert_eq!(
+                signals_effect_version(),
+                1,
+                "native effect protocol mismatch"
+            );
+            assert_eq!(signals_effect_size(), std::mem::size_of::<RawEffect>());
             signals_mount();
             engine
         }
@@ -199,6 +220,34 @@ impl Engine {
     pub fn child_at(&self, parent: u64, rank: usize) -> u64 {
         unsafe { (self.child_at)(parent, rank) }
     }
+    /// Copy one committed primitive message before another engine call can
+    /// invalidate its borrowed storage. At most sixteen requests are retained.
+    pub fn next_effect(&mut self) -> Option<Effect> {
+        let mut raw = std::mem::MaybeUninit::<RawEffect>::uninit();
+        match unsafe { (self.next_effect)(raw.as_mut_ptr()) } {
+            0 => None,
+            1 => {
+                let raw = unsafe { raw.assume_init() };
+                assert_ne!(raw.id, 0, "invalid native task identity");
+                assert!(raw.request.len <= 8 * 1024 * 1024);
+                Some(match raw.op {
+                    1 => Effect::Start {
+                        id: raw.id,
+                        kind: raw.kind,
+                        request: unsafe { raw.request.copy() },
+                    },
+                    2 if raw.kind == 0 && raw.request.len == 0 => Effect::Cancel(raw.id),
+                    _ => panic!("invalid native effect operation"),
+                })
+            }
+            _ => panic!("invalid native effect availability"),
+        }
+    }
+    pub fn task_result(&mut self, id: u64, failed: bool, payload: &str) -> Vec<Node> {
+        assert!(payload.len() <= 8 * 1024 * 1024);
+        unsafe { (self.task_result)(id, u32::from(failed), payload.as_ptr(), payload.len()) };
+        self.changes()
+    }
     pub fn metrics(&self) -> [u64; 3] {
         let mut result = [0; 3];
         unsafe { (self.metrics)(result.as_mut_ptr()) };
@@ -223,6 +272,10 @@ unsafe extern "C" {
     fn signals_metrics(out: *mut u64);
     fn signals_tick();
     fn signals_child_at(parent: u64, rank: usize) -> u64;
+    fn signals_effect_version() -> u32;
+    fn signals_effect_size() -> usize;
+    fn signals_effect_next(out: *mut RawEffect) -> u32;
+    fn signals_task_result(id: u64, failed: u32, ptr: *const u8, len: usize);
 }
 
 #[cfg(test)]
@@ -240,6 +293,12 @@ impl Engine {
         }
         unsafe extern "C" fn count() -> usize {
             0
+        }
+        unsafe extern "C" fn next_effect(_: *mut RawEffect) -> u32 {
+            0
+        }
+        unsafe extern "C" fn task_result(_: u64, _: u32, _: *const u8, _: usize) {
+            panic!("unexpected test task result")
         }
         unsafe extern "C" fn read(_: usize, _: *mut RawNode) {
             panic!("unexpected test node read")
@@ -272,6 +331,8 @@ impl Engine {
             metrics,
             tick: noop,
             child_at,
+            next_effect,
+            task_result,
             _main_thread: PhantomData,
         }
     }

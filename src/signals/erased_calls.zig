@@ -16,6 +16,7 @@ pub const HostValueList = abi.RocListWith(HostValue, false);
 pub const U64List = abi.RocListWith(u64, false);
 pub const Cmd = abi.NodeCmd;
 pub const StartTaskCmd = @FieldType(abi.NodeCmdPayload, "start_task");
+pub const CancelTaskCmd = @FieldType(abi.NodeCmdPayload, "cancel_task");
 pub const UpdateStateCmd = @FieldType(abi.NodeCmdPayload, "update_state");
 pub const RocBoxPair = extern struct {
     keep: abi.RocBox,

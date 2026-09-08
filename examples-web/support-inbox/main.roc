@@ -435,13 +435,13 @@ main = || {
 						|session| {
 							# Sync endpoint. `reset_on_start` is False so an in-flight
 							# poll does not blank the inbox while it is running.
-							inbox_task = Signal.task_source("inbox", Inbox.parse_snapshot, |err| err, False)
+							inbox_task = Signal.task_source({ name: "inbox", reset_on_start: False, canceled: || "canceled", refused: || "too many pending requests" }, Inbox.parse_snapshot, |err| err)
 
 							# Send endpoint. Both payloads are the client id, so the app
 							# can tell which optimistic message settled. Starting a send
 							# publishes Loading while the optimistic row is inserted in
 							# the same flush; the spec below guards that structural update.
-							send_task = Signal.task_source("send", |value| value, |err| err, True)
+							send_task = Signal.task_source({ name: "send", reset_on_start: True, canceled: || "canceled", refused: || "too many pending requests" }, |value| value, |err| err)
 
 							snapshot = Signal.fold_task(inbox_task, Inbox.empty_snapshot, |value| value, |_| Inbox.empty_snapshot)
 							sync_status =

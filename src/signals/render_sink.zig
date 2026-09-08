@@ -279,8 +279,8 @@ pub fn DomSink(comptime Host: type) type {
         }
 
         /// Starts bounded asynchronous host work for an engine-issued task request.
-        pub fn startTask(self: @This(), request_id: TaskRequestId, task_name: []const u8, request: []const u8) void {
-            self.host.sinkStartTask(request_id, task_name, request);
+        pub fn startTask(self: @This(), request_id: TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8) void {
+            self.host.sinkStartTask(request_id, kind, task_name, request);
         }
 
         /// Cancels host work for a task request retired by engine lifecycle policy.
@@ -481,7 +481,7 @@ test "DomSink forwards every render seam method to the host" {
         }
 
         /// Adapts the shared engine's start task command to this host without re-deciding reactive meaning.
-        pub fn sinkStartTask(self: *@This(), _: TaskRequestId, task_name: []const u8, request: []const u8) void {
+        pub fn sinkStartTask(self: *@This(), _: TaskRequestId, _: boundary.TaskKind, task_name: []const u8, request: []const u8) void {
             self.mark(14);
             self.last_task_name = task_name;
             self.last_task_request = request;
@@ -566,7 +566,7 @@ test "DomSink forwards every render seam method to the host" {
     sink.clearEvent(elem, .{ .named = "keydown" });
     sink.startInterval(IntervalToken.fromRaw(8), 1000);
     sink.cancelInterval(IntervalToken.fromRaw(8));
-    sink.startTask(TaskRequestId.fromRaw(9), "lookup", "roc");
+    sink.startTask(TaskRequestId.fromRaw(9), .external, "lookup", "roc");
     sink.cancelTask(TaskRequestId.fromRaw(9));
     sink.setStorageText(.local, "checkout:draft", "saved");
     sink.removeStorage(.session, "checkout:flash");

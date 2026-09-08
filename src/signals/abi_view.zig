@@ -122,11 +122,14 @@ pub const KeyedSelectSignal = struct {
 
 pub const TaskSourceSignal = struct {
     token: SignalToken,
+    kind: boundary.TaskKind,
     name: RocStrView,
     payload_capability: HostValueCapability,
     initial: roles.Initializer,
     done: roles.Transform,
     failed: roles.Transform,
+    canceled: roles.Initializer,
+    refused: roles.Initializer,
     capability: HostValueCapability,
     reset_on_start: bool,
 };
@@ -285,10 +288,21 @@ pub const SignalExpr = union(enum) {
                 break :blk .{ .task_source = .{
                     .token = token,
                     .name = RocStrView.fromAbi(payload.name),
+                    .kind = switch (payload.kind) {
+                        .external => .external,
+                        .choose_file => .choose_file,
+                        .choose_directory => .choose_directory,
+                        .choose_save_path => .choose_save_path,
+                        .read_text => .read_text,
+                        .write_text => .write_text,
+                        .scan_directory => .scan_directory,
+                    },
                     .payload_capability = payload.payload_cap,
                     .initial = .fromAbi(payload.initial),
                     .done = .fromAbi(payload.done),
                     .failed = .fromAbi(payload.failed),
+                    .canceled = .fromAbi(payload.canceled),
+                    .refused = .fromAbi(payload.refused),
                     .capability = payload.cap,
                     .reset_on_start = payload.reset_on_start,
                 } };
@@ -994,10 +1008,13 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
         .payload = .{ .task_source = .{
             .token = task_token,
             .name = borrowedRocStr("load-user"),
+            .kind = .read_text,
             .payload_cap = capability,
             .initial = task_token,
             .done = null,
             .failed = null,
+            .canceled = task_token,
+            .refused = task_token,
             .cap = capability,
             .reset_on_start = true,
         } },
@@ -1008,6 +1025,8 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
             try std.testing.expectEqual(task_token, payload.token.callable);
             try std.testing.expectEqualStrings("load-user", payload.name.asSlice());
             try std.testing.expect(payload.reset_on_start);
+            try std.testing.expectEqual(boundary.TaskKind.read_text, payload.kind);
+            try std.testing.expectEqual(task_token, payload.canceled.toAbi());
             try std.testing.expectEqual(capability, payload.payload_capability);
             try std.testing.expectEqual(capability, payload.capability);
         },

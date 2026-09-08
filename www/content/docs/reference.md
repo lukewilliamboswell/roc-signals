@@ -75,6 +75,13 @@ For three or more inputs use the record builder rather than nesting `map2`:
 | `from_task` | `Task(a, err) -> Signal(TaskStatus(a, err))` |
 | `fold_task` | `Task(a, err), b, (a -> b), (err -> b) -> Signal(b)` |
 | `start_str` | `Task(a, err), Str -> Cmd` |
+| `cancel` | `Task(a, err) -> Cmd` |
+
+The public associated types are `Signal.Task(a, err)` and
+`Signal.TaskStatus(a, err)`. Low-level task constructors take a `TaskConfig(err)`
+record containing `name`, `reset_on_start`, `canceled: () -> err`, and
+`refused: () -> err`. The last two initializers declare terminal errors without
+requiring the host to interpret application error types.
 
 `TaskStatus(a, err)` is `[Loading, Done(a), Failed(err)]`. Construct tasks with
 `Signal.fake_task` or the `Http` helpers. `task_source` and
@@ -272,7 +279,7 @@ Delivery: `event_delivery_auto` (default), `event_delivery_native`.
 ## Http
 
 `Http.Header` is `{ name : Str, value : Str }`.
-`Http.HttpError` is `[Network(Str), Timeout, Canceled, Unsupported(Str), ResponseMaterialization(Str)]`.
+`Http.HttpError` is `[Network(Str), Timeout, Canceled, ResourceLimit(Str), Unsupported(Str), ResponseMaterialization(Str)]`.
 
 | Group | Members |
 | --- | --- |

@@ -56,8 +56,16 @@ const WasmCtx = struct {
 
     /// Reserves the engine-selected cancellation records and complete task
     /// payload before the engine changes live request membership.
-    pub fn prepareTaskPublication(_: Handle, request_id: ids.TaskRequestId, task_name: []const u8, request: []const u8, cancellation_count: usize) render.PreflightError!TaskPublication {
+    pub fn prepareTaskPublication(_: Handle, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8, cancellation_count: usize) render.PreflightError!TaskPublication {
+        if (kind != .external) failHostWithFmt("native task service is unsupported by the browser host", .{});
         return command_batch.prepareTaskStart(WasmCtx.allocator(.{}), request_id, task_name, request, cancellation_count);
+    }
+
+    pub const TaskCancellationPublication = render.TransactionalBatch.TaskCancellationPublication;
+
+    /// Reserves cancellation records before the terminal source value commits.
+    pub fn prepareTaskCancellation(_: Handle, count: usize) render.PreflightError!TaskCancellationPublication {
+        return command_batch.prepareTaskCancellation(WasmCtx.allocator(.{}), count);
     }
 
     /// Creates the host's zeroed metric accumulator for a new engine operation.
@@ -250,7 +258,8 @@ const WasmSink = struct {
     }
 
     /// Starts bounded asynchronous host work for an engine-issued task request.
-    pub fn startTask(_: WasmSink, request_id: ids.TaskRequestId, task_name: []const u8, request: []const u8) void {
+    pub fn startTask(_: WasmSink, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8) void {
+        if (kind != .external) failHostWithFmt("native task service is unsupported by the browser host", .{});
         command_batch.appendTaskStart(allocator(), request_id, task_name, request) catch |err| switch (err) {
             error.OutOfMemory => failHostWith("out of memory while preparing task publication"),
             error.ResourceLimit => failHostWith("task publication exceeded Wasm wire resource limit"),

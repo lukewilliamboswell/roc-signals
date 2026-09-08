@@ -687,6 +687,45 @@ pub const TransactionalBatch = struct {
         return .{ .batch = self, .request_id = wire_id, .task_name = task_name, .request = request };
     }
 
+    /// Reserves only task cancellation records, joined to an optional prepared
+    /// source transaction. The caller must commit that source immediately before
+    /// publishing these records, without an intervening host operation.
+    pub fn prepareTaskCancellation(self: *TransactionalBatch, allocator: std.mem.Allocator, count: usize) PreflightError!TaskCancellationPublication {
+        if (self.hasUnsealedStaging()) @panic("task cancellation preparation interleaved with staged commands");
+        const base: BatchCapacity = if (self.isTransactionOpen()) self.reserved else .{ .commands = self.sealed.commands, .strings = self.sealed.strings, .dynamic = self.sealed.dynamic };
+        try self.preflight(allocator, .{
+            .commands = std.math.add(usize, base.commands - self.sealed.commands, count) catch return error.ResourceLimit,
+            .strings = base.strings - self.sealed.strings,
+            .dynamic = base.dynamic - self.sealed.dynamic,
+        });
+        return .{ .batch = self };
+    }
+
+    /// Owns a reserved cancellation publication until commit or abandonment.
+    pub const TaskCancellationPublication = struct {
+        batch: ?*TransactionalBatch,
+
+        /// Reopens the joined reservation after its source transaction seals.
+        pub fn beginCommit(self: *@This()) void {
+            const batch = self.batch orelse @panic("task cancellation already completed");
+            if (batch.hasUnsealedStaging()) @panic("task cancellation resumed amid unsealed commands");
+            batch.transaction_open = true;
+        }
+
+        /// Seals the cancellation records the engine staged without allocating.
+        pub fn commit(self: *@This()) void {
+            const batch = self.batch orelse @panic("task cancellation already completed");
+            batch.commit();
+            self.batch = null;
+        }
+
+        /// Discards unpublished cancellation staging and preserves earlier seals.
+        pub fn deinit(self: *@This()) void {
+            if (self.batch) |batch| batch.abort();
+            self.batch = null;
+        }
+    };
+
     /// Borrows a reserved batch and task payloads until publication completes.
     pub const TaskPublication = struct {
         batch: ?*TransactionalBatch,
@@ -990,6 +1029,35 @@ test "joined task reservation applies limits to Loading and task commands togeth
     try std.testing.expectEqual(@as(usize, 0), batch.sealed.commands);
     try std.testing.expectEqual(@as(usize, 1), batch.reserved.commands);
     batch.abort();
+}
+
+test "task cancellation joins terminal rendering and can abandon without a partial seal" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(allocator);
+    try batch.preflight(allocator, .{ .commands = 1, .strings = 8 });
+    var abandoned = try batch.prepareTaskCancellation(allocator, 1);
+    batch.stageSinkCommandAssumeCapacity(.cancel_task, 10, 0, 0, 0, 0);
+    abandoned.deinit();
+    try std.testing.expectEqual(@as(usize, 0), batch.sealed.commands);
+    try std.testing.expectEqual(@as(usize, 0), batch.staged.commands.len());
+    try batch.preflight(allocator, .{ .commands = 1, .strings = 8 });
+    var cancellation = try batch.prepareTaskCancellation(allocator, 1);
+    defer cancellation.deinit();
+    fault.configure(1);
+    batch.staged.strings.appendSliceAssumeCapacity("canceled");
+    batch.stageSinkCommandAssumeCapacity(.set_text, 7, 0, 8, 0, 0);
+    batch.commit();
+    cancellation.beginCommit();
+    batch.stageSinkCommandAssumeCapacity(.cancel_task, 10, 0, 0, 0, 0);
+    cancellation.commit();
+    batch.publish();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 2), batch.published.commands.len());
+    try std.testing.expectEqualDeep(Record.initRaw(.cancel_task, 10, 0, 0, 0, 0), batch.published.commands.records.items[1]);
+    try std.testing.expectEqualStrings("canceled", batch.published.strings.items);
 }
 
 test "transaction command preflight sweeps every allocation failure" {

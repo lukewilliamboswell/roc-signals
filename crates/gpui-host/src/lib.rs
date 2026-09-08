@@ -1,4 +1,6 @@
 mod bridge;
+mod effects;
+mod file_io;
 mod input;
 mod shortcut;
 use bridge::{Engine, Node, Payload};
@@ -211,6 +213,7 @@ fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div
 
 struct Runtime {
     engine: Engine,
+    effects: effects::Manager,
     nodes: HashMap<u64, Entity<NodeView>>,
     roots: Vec<Entity<NodeView>>,
     renders: Rc<Cell<u64>>,
@@ -243,6 +246,7 @@ impl Runtime {
         let initial = engine.changes();
         let mut runtime = Self {
             engine,
+            effects: crate::effects::Manager::default(),
             nodes: HashMap::new(),
             roots: vec![],
             renders: Rc::new(Cell::new(0)),
@@ -250,6 +254,7 @@ impl Runtime {
             _clock: None,
         };
         runtime.apply(initial, cx);
+        runtime.drain_effects(cx);
         if clock {
             runtime._clock = Some(cx.spawn(async move |this, cx| {
                 loop {
@@ -258,6 +263,7 @@ impl Runtime {
                         .update(cx, |this, cx| {
                             let changes = this.engine.tick();
                             this.apply(changes, cx);
+                            this.drain_effects(cx);
                         })
                         .is_err()
                     {
@@ -288,6 +294,18 @@ impl Runtime {
             self.engine.metrics()
         );
         self.apply(changes, cx);
+        self.drain_effects(cx);
+    }
+    fn drain_effects(&mut self, cx: &mut Context<Self>) {
+        while let Some(message) = self.engine.next_effect() {
+            self.effects.accept(message, cx);
+        }
+    }
+    fn complete_task(&mut self, id: u64, failed: bool, payload: &str, cx: &mut Context<Self>) {
+        self.effects.complete(id);
+        let changes = self.engine.task_result(id, failed, payload);
+        self.apply(changes, cx);
+        self.drain_effects(cx);
     }
     fn apply(&mut self, changes: Vec<Node>, cx: &mut Context<Self>) {
         if changes.is_empty() {
@@ -382,6 +400,13 @@ impl Runtime {
         }
     }
 }
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // Invalidate worker callbacks before Engine releases task-owned values.
+        self.effects.shutdown();
+    }
+}
+
 impl Render for Runtime {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -499,6 +524,7 @@ mod tests {
     fn runtime() -> Runtime {
         Runtime {
             engine: Engine::test_boundary(),
+            effects: crate::effects::Manager::default(),
             nodes: HashMap::new(),
             roots: vec![],
             renders: Rc::new(Cell::new(0)),

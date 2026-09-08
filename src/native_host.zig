@@ -30,6 +30,9 @@ const sim_dom = @import("sim_dom.zig");
 const native_style = signals.native_style;
 const roc_alloc_ledger = @import("roc_alloc_ledger.zig");
 const crash_handlers = @import("crash_handlers.zig");
+const native_tasks = @import("native_tasks.zig");
+const native_files_codec = @import("native_files_codec.zig");
+const NativeTaskQueue = native_tasks.Queue(boundary.TaskKind);
 
 // Keep host-module tests discoverable when no matching root-host test uses
 // their functions. refAllDecls is a no-op in non-test builds.
@@ -39,6 +42,8 @@ comptime {
     std.testing.refAllDecls(benchmark);
     std.testing.refAllDecls(sim_dom);
     std.testing.refAllDecls(roc_alloc_ledger);
+    std.testing.refAllDecls(native_tasks);
+    std.testing.refAllDecls(native_files_codec);
 }
 
 const gpui_spike = @hasDecl(build_options, "gpui_spike") and build_options.gpui_spike;
@@ -66,22 +71,54 @@ const RenderEventKind = render.EventKind;
 const CommandCounts = render.Counts;
 const HostScopeBranch = scope_tree.Branch;
 
+const NativeTaskCancellationPublication = struct {
+    /// All observation storage was reserved before source propagation committed.
+    pub fn beginCommit(_: *@This()) void {}
+    /// Cancellation sink calls already transferred each retired observation.
+    pub fn commit(_: *@This()) void {}
+    /// Uncommitted cancellation owns no additional payload or registration.
+    pub fn deinit(_: *@This()) void {}
+};
+
 const NativeTaskPublication = struct {
     host: *HostEnv,
-    record: ?NativeTaskRecord,
+    record: ?NativeTaskRecord = null,
+    native: ?NativeTaskQueue.Prepared = null,
+    request_id: ids.TaskRequestId,
 
-    fn prepare(host: *HostEnv, request_id: ids.TaskRequestId, task_name: []const u8, cancellation_count: usize) std.mem.Allocator.Error!NativeTaskPublication {
+    fn prepare(host: *HostEnv, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8, cancellation_count: usize) error{ OutOfMemory, ResourceLimit }!NativeTaskPublication {
         const allocator = host.hostAllocator();
+        if (Gpui.live) {
+            const arguments: usize = switch (kind) {
+                .external => failHost("external tasks require an external task executor"),
+                .choose_file, .choose_directory => 0,
+                .read_text, .scan_directory => 1,
+                .write_text => 2,
+                .choose_save_path => 3,
+            };
+            native_files_codec.validateRequest(request, arguments) catch failHost("malformed native Files request");
+            return .{
+                .host = host,
+                .request_id = request_id,
+                .native = try Gpui.tasks.prepare(allocator, request_id.raw(), kind, request),
+            };
+        }
         const name = try allocator.dupe(u8, task_name);
         errdefer allocator.free(name);
         try host.started_tasks.ensureUnusedCapacity(allocator, 1);
         try host.canceled_tasks.ensureUnusedCapacity(allocator, cancellation_count);
-        return .{ .host = host, .record = .{ .request_id = request_id, .name = name } };
+        return .{ .host = host, .request_id = request_id, .record = .{ .request_id = request_id, .name = name } };
     }
 
-    /// Publishes the prepared observation without allocating. The live task
-    /// table takes ownership of the copied name until resolution or teardown.
+    /// Transfers a prepared request to the native transport or an observation
+    /// to the spec runner without allocation. Each receiver owns its copy until
+    /// resolution, cancellation before dispatch, or teardown.
     pub fn commit(self: *NativeTaskPublication) void {
+        if (self.native) |*native| {
+            native.commit();
+            self.native = null;
+            return;
+        }
         self.host.started_tasks.appendAssumeCapacity(self.record orelse @panic("task publication committed twice"));
         self.record = null;
     }
@@ -93,13 +130,14 @@ const NativeTaskPublication = struct {
     /// Records the accepted start and immediate cancellation selected when
     /// the same prepared transition disposes the request's owning scope.
     pub fn commitRetired(self: *NativeTaskPublication) void {
-        const request_id = (self.record orelse @panic("task publication already completed")).request_id;
         self.commit();
-        self.host.recordCanceledTask(request_id);
+        self.host.recordCanceledTask(self.request_id);
     }
 
     /// Releases an unpublished name without recording a task start or cancel.
     pub fn deinit(self: *NativeTaskPublication) void {
+        if (self.native) |*native| native.deinit();
+        self.native = null;
         if (self.record) |record| self.host.hostAllocator().free(record.name);
         self.record = null;
     }
@@ -115,20 +153,20 @@ test "native task publication refuses without changing old requests and commits 
             std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("task publication leaked");
         }
         host.configureAllocationFailure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), "load", 1));
+        try std.testing.expectError(error.OutOfMemory, NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), .external, "load", "request", 1));
         try std.testing.expectEqual(@as(usize, 1), host.allocation_fault.?.induced_failures);
         try std.testing.expectEqual(@as(usize, 0), host.started_tasks.items.len);
         try std.testing.expectEqual(@as(usize, 0), host.canceled_tasks.items.len);
         host.configureAllocationFailure(null);
         host.recordStartedTask(ids.TaskRequestId.fromRaw(10), "old");
-        var abandoned = try NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), "new", 1);
+        var abandoned = try NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), .external, "new", "request", 1);
         host.configureAllocationFailure(1);
         abandoned.deinit();
         try std.testing.expectEqualStrings("old", host.started_tasks.items[0].name);
         try std.testing.expectEqual(@as(usize, 0), host.canceled_tasks.items.len);
         try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
         host.configureAllocationFailure(null);
-        var replacement = try NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), "new", 1);
+        var replacement = try NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), .external, "new", "request", 1);
         defer replacement.deinit();
         host.configureAllocationFailure(1);
         host.recordCanceledTask(ids.TaskRequestId.fromRaw(10));
@@ -412,6 +450,21 @@ const NativeCtx = struct {
     pub const Sink = render_sink.DomSink(HostEnv);
     pub const RenderPublication = NativeRenderPublication;
     pub const TaskPublication = NativeTaskPublication;
+    pub const TaskCancellationPublication = NativeTaskCancellationPublication;
+
+    /// Reserves native cancellation observations without changing live tasks.
+    pub fn prepareTaskCancellation(ctx: Handle, count: usize) std.mem.Allocator.Error!TaskCancellationPublication {
+        if (!Gpui.live) try ctx.canceled_tasks.ensureUnusedCapacity(ctx.hostAllocator(), count);
+        return .{};
+    }
+
+    /// Applies the fixed native transport bound before the engine publishes a
+    /// start. The source's declared refusal initializer owns the terminal value.
+    pub fn canAdmitTask(_: Handle, kind: boundary.TaskKind, payload_length: usize) bool {
+        if (!Gpui.live) return true;
+        if (kind == .external) failHost("external tasks require an external task executor");
+        return Gpui.tasks.canAdmit(payload_length);
+    }
 
     /// Marks an infallible command call for the recoverable-only native sweep.
     /// Actual exhaustion still terminates the process. Linked-Wasm fault tests
@@ -430,8 +483,8 @@ const NativeCtx = struct {
     /// Reserves task observations before the engine replaces live requests.
     /// Cancellation reuses each old request's owned name; only the new start
     /// needs a copy. No observation is appended during preparation.
-    pub fn prepareTaskPublication(ctx: Handle, request_id: ids.TaskRequestId, task_name: []const u8, _: []const u8, cancellation_count: usize) std.mem.Allocator.Error!TaskPublication {
-        return TaskPublication.prepare(ctx, request_id, task_name, cancellation_count);
+    pub fn prepareTaskPublication(ctx: Handle, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8, cancellation_count: usize) error{ OutOfMemory, ResourceLimit }!TaskPublication {
+        return TaskPublication.prepare(ctx, request_id, kind, task_name, request, cancellation_count);
     }
 
     /// Creates the host's zeroed metric accumulator for a new engine operation.
@@ -1011,12 +1064,20 @@ const HostEnv = struct {
     }
 
     fn noteTaskResolved(self: *HostEnv, request_id: ids.TaskRequestId) void {
+        if (Gpui.live) {
+            Gpui.tasks.complete(self.hostAllocator(), request_id.raw());
+            return;
+        }
         if (self.takeStartedTask(request_id)) |record| {
             self.hostAllocator().free(record.name);
         }
     }
 
     fn recordCanceledTask(self: *HostEnv, request_id: ids.TaskRequestId) void {
+        if (Gpui.live) {
+            Gpui.tasks.cancel(self.hostAllocator(), request_id.raw());
+            return;
+        }
         const record = self.takeStartedTask(request_id) orelse return;
         self.canceled_tasks.append(self.hostAllocator(), record) catch {
             self.hostAllocator().free(record.name);
@@ -1173,7 +1234,7 @@ const HostEnv = struct {
     pub fn sinkCancelInterval(_: *HostEnv, _: ids.IntervalToken) void {}
 
     /// Adapts the shared engine's start task command to this host without re-deciding reactive meaning.
-    pub fn sinkStartTask(self: *HostEnv, request_id: ids.TaskRequestId, task_name: []const u8, _: []const u8) void {
+    pub fn sinkStartTask(self: *HostEnv, request_id: ids.TaskRequestId, _: boundary.TaskKind, task_name: []const u8, _: []const u8) void {
         self.recordStartedTask(request_id, task_name);
     }
 
@@ -2574,6 +2635,10 @@ fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, 
 
 fn tryResolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, payload_text: []const u8, failed: bool) HostEngine.CollectionError!CommandCounts {
     const pending_index = host.engine.pendingTaskIndexByName(name) orelse failHost("fake task result had no matching pending request");
+    return tryResolvePendingTaskAt(host, roc_host, pending_index, payload_text, failed);
+}
+
+fn tryResolvePendingTaskAt(host: *HostEnv, roc_host: *abi.RocHost, pending_index: usize, payload_text: []const u8, failed: bool) HostEngine.CollectionError!CommandCounts {
     const pending = host.engine.pending_tasks.items[pending_index];
 
     const record = host.engine.activeTaskRecordByToken(pending.task_token) orelse failHost("fake task result matched no active task source");
@@ -3633,6 +3698,10 @@ comptime {
             @export(&Gpui.readShortcuts, .{ .name = "signals_read_shortcuts" });
             @export(&Gpui.metrics, .{ .name = "signals_metrics" });
             @export(&Gpui.tick, .{ .name = "signals_tick" });
+            @export(&Gpui.effectVersion, .{ .name = "signals_effect_version" });
+            @export(&Gpui.effectSize, .{ .name = "signals_effect_size" });
+            @export(&Gpui.nextEffect, .{ .name = "signals_effect_next" });
+            @export(&Gpui.taskResult, .{ .name = "signals_task_result" });
         } else @export(&main, .{ .name = "main" });
         if (@import("builtin").os.tag == .windows) {
             @export(&__main, .{ .name = "__main" });
@@ -5708,10 +5777,13 @@ fn makeTestConsumingTaskSourceRecord(host: *HostEnv, roc_host: *abi.RocHost, nam
         null,
         .{ .amount = 0 },
     );
+    abi.increfErasedCallable(initial, 2);
     return HostSignalRecord.init(allocator, .{ .task_source = .{
         .name = allocator.dupe(u8, name) catch @panic("out of memory"),
         .payload_cap = payload_cap,
         .initial = .fromAbi(initial),
+        .canceled = .fromAbi(initial),
+        .refused = .fromAbi(initial),
         .done = .fromAbi(writeTestErasedCallable(
             TestTaskPayloadCapture,
             roc_host,
@@ -5832,6 +5904,7 @@ test "signals host task result callbacks consume heap string payloads" {
 
     const record = makeTestConsumingTaskSourceRecord(&host, &roc_host, "lookup");
     host.engine.retainActiveSignalRecord(&host, record);
+    host.engine.active_stream.rememberSignalRecord(host.hostAllocator(), record);
     defer {
         host.engine.clearActiveSignalGraph(&host);
         record.release(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
@@ -5933,6 +6006,8 @@ test "native task resolution uses the pending source token when active names rep
     const second = makeTestConsumingTaskSourceRecord(&host, &roc_host, "favorite");
     host.engine.retainActiveSignalRecord(&host, first);
     host.engine.retainActiveSignalRecord(&host, second);
+    host.engine.active_stream.rememberSignalRecord(host.hostAllocator(), first);
+    host.engine.active_stream.rememberSignalRecord(host.hostAllocator(), second);
     defer {
         host.engine.clearActiveSignalGraph(&host);
         first.release(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
@@ -10205,6 +10280,9 @@ fn testNodeTaskSourceExpr(roc_host: *abi.RocHost, name: []const u8, initial_text
                 payload_capture,
             ),
             .initial = initial,
+            .canceled = testHostValueInitialThunk(roc_host, hostValueStrWithCapability(host, roc_host, "canceled", cap)),
+            .refused = testHostValueInitialThunk(roc_host, hostValueStrWithCapability(host, roc_host, "refused", cap)),
+            .kind = .external,
             .name = RocStr.fromSlice(name, roc_host),
             .payload_cap = payload_cap,
             .token = initial,
@@ -12193,9 +12271,16 @@ const Gpui = struct {
         style: native_style.Style,
         viewport: native_style.Viewport,
     };
+    const Effect = extern struct {
+        op: u32,
+        kind: u32,
+        id: u64,
+        request: Slice,
+    };
     var host: HostEnv = undefined;
     var roc_host: abi.RocHost = undefined;
     var live = false;
+    var tasks: NativeTaskQueue = .{};
     var child_order: signals.native_child_order.Tree = undefined;
     var changed: [limit]u64 = undefined;
     var seen: [limit]bool = @splat(false);
@@ -12235,6 +12320,7 @@ const Gpui = struct {
         if (!live) return;
         child_order.deinit();
         host.deinit();
+        tasks.deinit(host.hostAllocator());
         if (host.gpa.deinit() == .leak) failHost("GPUI spike leaked host allocations");
         current_host = null;
         current_roc_host = null;
@@ -12291,6 +12377,40 @@ const Gpui = struct {
             index += 1;
         };
         return needed;
+    }
+    fn effectVersion() callconv(.c) u32 {
+        return 1;
+    }
+    fn effectSize() callconv(.c) usize {
+        return @sizeOf(Effect);
+    }
+    // One borrowed transport message. Copy its primitive payload before calling
+    // into the engine again; no application value or callable crosses this ABI.
+    fn nextEffect(out: *Effect) callconv(.c) u32 {
+        if (!live) failHost("native effect read before mount");
+        const message = tasks.next() orelse return 0;
+        out.* = switch (message) {
+            .start => |start| .{ .op = 1, .kind = @intFromEnum(start.kind), .id = start.id, .request = Slice.from(start.request) },
+            .cancel => |id| .{ .op = 2, .kind = 0, .id = id, .request = Slice.from("") },
+        };
+        return 1;
+    }
+    // Result decoding and propagation run on the engine's UI thread. A canceled
+    // or disposed request is rejected before calling any declaration-owned decoder.
+    fn taskResult(id: u64, failed: u32, ptr: [*]const u8, len: usize) callconv(.c) void {
+        if (!live or failed > 1 or len > native_tasks.max_payload_bytes) failHost("invalid native task completion");
+        if (!std.unicode.utf8ValidateSlice(ptr[0..len])) failHost("native task completion is not UTF-8");
+        clear();
+        const request_id = ids.TaskRequestId.fromRaw(id);
+        if (tasks.isCanceled(id)) {
+            if (host.engine.classifyTaskResolution(request_id) != .superseded) failHost("canceled native task remained pending");
+            tasks.complete(host.hostAllocator(), id);
+            host.engine.noteStaleTaskResolutionIgnored();
+            return;
+        }
+        const index = host.engine.pendingTaskIndexByRequestId(request_id) orelse failHost("native completion has no pending request");
+        _ = tryResolvePendingTaskAt(&host, &roc_host, index, ptr[0..len], failed == 1) catch |err| failPreparedStateDispatch(err);
+        finishHostMetrics(&host);
     }
     // Every slice is borrowed until the next mount/dispatch/unmount call. Rust
     // copies it before another host call and never owns any Roc allocation.
@@ -12392,4 +12512,76 @@ test "native sparse move-before attaches a new root and repositions an existing 
     try std.testing.expectEqualSlices(u64, &.{ 3, 2 }, parent.children.items);
     try NativeRenderPublication.prepareSparseChildEdit(&parent, .{ .move_before = .{ .child = ids.ElemId.fromRaw(2), .before = ids.ElemId.fromRaw(3) } });
     try std.testing.expectEqualSlices(u64, &.{ 2, 3 }, parent.children.items);
+}
+
+test "task cancellation and capacity refusal sweep OOM and reject late results" {
+    const Runner = struct {
+        fn run(failure_number: ?usize, refused: bool) !usize {
+            const settle: *const @TypeOf(HostEngine.tryRefuseTaskCommand) = if (refused) &HostEngine.tryRefuseTaskCommand else &HostEngine.tryCancelTaskCommand;
+            const terminal: []const u8 = if (refused) "refused" else "canceled";
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+            const task = testNodeTaskSourceExpr(&roc_host, "load", "loading", false);
+            const root = testElement(&roc_host, &.{testNodeTextSignal(&roc_host, task)});
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+            const start = testStartTaskCmd(&roc_host, task, "load", "/a");
+            defer start.decref(&roc_host);
+            _ = host.engine.startTaskCommand(&host, &roc_host, ids.root_scope, start);
+            const record = host.engine.activeTaskRecordByToken(task.payload_task_source().token.?).?;
+            const request_id = host.engine.pending_tasks.items[0].request_id;
+            const source_before = record.requireTaskSource().cached_value.present.value;
+            const generation_before = host.engine.dirty_signal_generation;
+            const allocations_before = host.roc_allocations.snapshot();
+            const cancel = erased_calls.CancelTaskCmd{ .task_token = task.payload_task_source().token };
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = settle(&host.engine, &host, &roc_host, cancel);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+                try std.testing.expectEqual(@as(usize, 1), host.engine.pending_tasks.items.len);
+                try std.testing.expectEqual(request_id, host.engine.pending_tasks.items[0].request_id);
+                try std.testing.expectEqual(source_before, record.requireTaskSource().cached_value.present.value);
+                try std.testing.expectEqual(generation_before, host.engine.dirty_signal_generation);
+                try std.testing.expectEqual(@as(usize, 0), host.canceled_tasks.items.len);
+                try std.testing.expect(activeTextElementId(&host, "loading") != null);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                fault.configure(null);
+                _ = try settle(&host.engine, &host, &roc_host, cancel);
+            } else {
+                _ = try result;
+            }
+            try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
+            try std.testing.expectEqual(@as(usize, 1), host.canceled_tasks.items.len);
+            try std.testing.expect(activeTextElementId(&host, terminal) != null);
+            try std.testing.expectEqual(engine.TaskResolutionClass.superseded, host.engine.classifyTaskResolution(request_id));
+            const settled_generation = host.engine.dirty_signal_generation;
+            try std.testing.expectEqual(@as(u64, 0), (try settle(&host.engine, &host, &roc_host, cancel)).total);
+            try std.testing.expectEqual(settled_generation, host.engine.dirty_signal_generation);
+            _ = resolveStalePendingTask(&host, "load", "late", false);
+            try std.testing.expect(activeTextElementId(&host, terminal) != null);
+            _ = host.engine.startTaskCommand(&host, &roc_host, ids.root_scope, start);
+            try std.testing.expectEqual(@as(usize, 1), host.engine.pending_tasks.items.len);
+            try std.testing.expectEqual(@as(u64, 0), (try settle(&host.engine, &host, &roc_host, cancel)).total);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
+            try std.testing.expectEqual(settled_generation, host.engine.dirty_signal_generation);
+            return attempts;
+        }
+    };
+    for ([_]bool{ false, true }) |refused| {
+        const attempts = try Runner.run(null, refused);
+        try std.testing.expect(attempts != 0);
+        for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number, refused);
+    }
 }

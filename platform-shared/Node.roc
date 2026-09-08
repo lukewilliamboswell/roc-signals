@@ -38,14 +38,21 @@ Node := [].{
 	## retained in the ABI for now and contains the same allocation as the evaluator
 	## field. `TaskSource` and `IntervalSource` are host-owned effect sources whose
 	## results enter the same signal graph.
+	## Closed host service route. External tasks retain their explicitly installed
+	## host adapter; native file helpers select a fixed service without label routing.
+	TaskKind := [External, ChooseFile, ChooseDirectory, ChooseSavePath, ReadText, WriteText, ScanDirectory].{ is_eq : _ }
+
 	TaskSource : {
 		token : Box((() -> HostValue)),
 		name : Str,
+		kind : TaskKind,
 		cap : HostValue.CapabilityHandle,
 		payload_cap : HostValue.CapabilityHandle,
 		initial : Box((() -> HostValue)),
 		done : Box((HostValue -> HostValue)),
 		failed : Box((HostValue -> HostValue)),
+		canceled : Box((() -> HostValue)),
+		refused : Box((() -> HostValue)),
 		reset_on_start : Bool,
 	}
 
@@ -101,6 +108,7 @@ Node := [].{
 				request_read : HostValue.TaskRequestReadHandle,
 			},
 		),
+		CancelTask({ task_token : Box((() -> HostValue)) }),
 		SetDocumentTitle({ title : Str }),
 		UpdateState(StateWrite),
 		UpdateStates(List(StateWrite)),

@@ -6,6 +6,7 @@ const abi = @import("roc_platform_abi.zig");
 const retained_values = @import("retained_values.zig");
 const signal_records = @import("signal_records.zig");
 const ids = @import("ids.zig");
+const boundary = @import("boundary.zig");
 
 pub const HostSignalToken = retained_values.HostSignalToken;
 pub const HostSignalRecord = signal_records.Record;
@@ -19,6 +20,7 @@ pub const PendingTask = struct {
     task_token: HostSignalToken,
     task_name: []const u8,
     request: []const u8,
+    kind: boundary.TaskKind = .external,
 };
 
 pub const ActiveInterval = struct {
@@ -182,6 +184,7 @@ pub const PreparedPendingTask = struct {
         task_token: HostSignalToken,
         task_name: []const u8,
         request: []const u8,
+        kind: boundary.TaskKind,
     ) std.mem.Allocator.Error!PreparedPendingTask {
         if (next_task_request_id == std.math.maxInt(u64)) @panic("host task request id overflowed");
         const task_name_copy = try allocator.dupe(u8, task_name);
@@ -195,6 +198,7 @@ pub const PreparedPendingTask = struct {
             .task_token = retained_values.retainHostSignalToken(task_token),
             .task_name = task_name_copy,
             .request = request_copy,
+            .kind = kind,
         } };
     }
 
@@ -241,7 +245,7 @@ pub fn appendPendingTask(
     task_name: []const u8,
     request: []const u8,
 ) u64 {
-    var prepared = PreparedPendingTask.prepare(allocator, tasks, next_task_request_id.*, owner_scope_id, task_token, task_name, request) catch @panic("out of memory");
+    var prepared = PreparedPendingTask.prepare(allocator, tasks, next_task_request_id.*, owner_scope_id, task_token, task_name, request, .external) catch @panic("out of memory");
     defer prepared.deinit(allocator, roc_host);
     return prepared.commit(tasks, next_task_request_id).raw();
 }
@@ -260,7 +264,7 @@ pub fn appendAndStartPendingTask(
     request: []const u8,
 ) u64 {
     const request_id = appendPendingTask(allocator, tasks, next_task_request_id, roc_host, owner_scope_id, task_token, task_name, request);
-    Ctx.sink(ctx).startTask(ids.TaskRequestId.fromRaw(request_id), task_name, request);
+    Ctx.sink(ctx).startTask(ids.TaskRequestId.fromRaw(request_id), .external, task_name, request);
     return request_id;
 }
 
@@ -560,7 +564,7 @@ const TestIntervalSink = struct {
     host: *TestIntervalHost,
 
     /// Starts bounded asynchronous host work for an engine-issued task request.
-    pub fn startTask(self: @This(), request_id: ids.TaskRequestId, _: []const u8, _: []const u8) void {
+    pub fn startTask(self: @This(), request_id: ids.TaskRequestId, _: boundary.TaskKind, _: []const u8, _: []const u8) void {
         self.host.start_task_count += 1;
         self.host.last_started_task = request_id.raw();
     }
@@ -611,6 +615,8 @@ fn testTaskRecord(token: HostSignalToken, name: []const u8) HostSignalRecord {
             .initial = .fromAbi(token),
             .done = undefined,
             .failed = undefined,
+            .canceled = undefined,
+            .refused = undefined,
             .cap = undefined,
             .reset_on_start = false,
         } },
@@ -785,13 +791,13 @@ test "pending task preparation refusal preserves membership and request ids" {
         defer for (tasks.items) |*task| deinitPendingTask(allocator, &roc_host, task);
         var next_request_id: u64 = 100;
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload"));
+        try std.testing.expectError(error.OutOfMemory, PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload", .external));
         try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
         try std.testing.expectEqual(@as(usize, 0), tasks.items.len);
         try std.testing.expectEqual(@as(u64, 100), next_request_id);
 
         fault.configure(null);
-        var aborted = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload");
+        var aborted = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload", .external);
         fault.configure(1);
         aborted.deinit(allocator, &roc_host);
         try std.testing.expectEqual(@as(usize, 0), fault.attempts);
@@ -799,7 +805,7 @@ test "pending task preparation refusal preserves membership and request ids" {
         try std.testing.expectEqual(@as(u64, 100), next_request_id);
 
         fault.configure(null);
-        var retry = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload");
+        var retry = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload", .external);
         fault.configure(1);
         try std.testing.expectEqual(ids.TaskRequestId.fromRaw(100), retry.commit(&tasks, &next_request_id));
         retry.deinit(allocator, &roc_host);
@@ -820,7 +826,7 @@ test "aborting a replacement task leaves the old request live" {
     var next_request_id: u64 = 100;
     _ = appendPendingTask(allocator, &tasks, &next_request_id, &roc_host, ids.ScopeId.fromRaw(10), token, "load", "old");
     defer deinitPendingTask(allocator, &roc_host, &tasks.items[0]);
-    var replacement = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "new");
+    var replacement = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "new", .external);
     try std.testing.expectEqual(@as(usize, 1), tasks.items.len);
     try std.testing.expectEqualStrings("old", tasks.items[0].request);
     replacement.deinit(allocator, &roc_host);

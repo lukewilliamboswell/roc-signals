@@ -119,3 +119,84 @@ when they render. Fixed-height row caches preserve retained subtree identity.
 Follow-tail positions the final matching row at the bottom when the list is
 updated while enabled. Turning it off leaves scrolling under user control.
 This is presentation policy, not a second timer, observer, or reactive graph.
+
+## Native Files and task transport
+
+`Files` declares native chooser, read, write, and recursive scan tasks. Each
+factory takes a diagnostic label; the label never selects host behavior.
+`Node.TaskKind` is an explicit closed route: external=0, choose-file=1,
+choose-directory=2, choose-save-path=3, read-text=4, write-text=5, scan-directory=6.
+The browser rejects non-external task routes before command publication. Its
+existing task command wire format is unchanged.
+
+Task declarations own separate initializers for cancellation and capacity
+refusal. `Signal.cancel(task)` publishes the declared terminal error and retires
+the pending request in one shared source transaction. Canceling an already
+settled task has no effect. Saturation publishes the declared refusal value and
+supersedes older work for that source. Files uses `Error.Canceled` and
+`Error.ResourceLimit`. Neither case invokes a failure decoder with invented text.
+Scope disposal cancels without creating a new application-visible value.
+
+The separate native effects boundary is version **1**. Rust checks
+`signals_effect_version()` and `signals_effect_size()` before mount.
+`signals_effect_next(out)` returns zero when empty or one after writing an
+`extern` record: `op: u32`, `kind: u32`, `id: u64`, and request pointer/length.
+Start has op=1 and an explicit kind; cancel has op=2, kind=0, and an empty request.
+The UI thread copies request bytes before the next engine call. Results enter
+through `signals_task_result(id, failed, pointer, length)`, where failed is zero
+or one and text is strict UTF-8. No Roc value, callable, layout, or pointer leaves
+the engine thread.
+
+The host reserves at most **16** operations, including queued work, running work,
+canceled workers, and completed results awaiting UI-thread delivery. It reserves
+and copies requests before engine commit; publication allocates nothing. A queued
+request canceled before dispatch releases immediately. A running request retains
+its reservation until completion; late canceled results are rejected before any
+Roc decoder runs. Result commit releases the reservation before observers launch
+follow-up work. Rust only schedules copied primitive work and returns results;
+identity, scope lifetime, replacement, and propagation remain in the engine.
+
+GPUI dialogs use the desktop portal. Explicit cancellation invalidates result
+delivery; the pinned GPUI API provides no handle for closing an already open
+dialog, so its receiver keeps a reservation until the dialog actually settles.
+Closing the host invalidates worker flags and callbacks before engine teardown.
+Workers check cancellation between bounded chunks or entries; a blocked operating
+system call can delay completion. Capacity remains bounded during that delay.
+
+Files uses a strict private `files1` codec. Each frame is a canonical decimal UTF-8
+byte length, a colon, and exactly that many bytes. Every packet begins with the
+frame `6:files1`, has at most **8 MiB**, and has no trailing fields. Lengths have
+no signs or leading zeroes. Native publication validates request framing before
+publishing work; both adapter and Roc result decoder reject malformed packets.
+Task kind defines the remaining request frames:
+
+| Kind | Request frames |
+| --- | --- |
+| Choose file / directory | none |
+| Choose save path | location kind (`home` or `at`), directory, suggested file name |
+| Read text / scan | absolute path |
+| Write text | absolute path, complete UTF-8 text |
+
+Choice results are `chosen, path` or `canceled`. A user dismissing a dialog is
+`Done(Choice.Canceled)`; explicit task cancellation is `Failed(Error.Canceled)`.
+Read results are `path, text`; write results are `path, byte count`; scan results
+are `root, entry count` followed by `path, kind, bytes` for each entry. Entry kinds
+are `file`, `directory`, `symbolic-link`, and `other`. Errors have `code, detail`;
+codes are `canceled`, `not-found`, `permission-denied`, `invalid-utf8`,
+`invalid-path`, `resource-limit`, `io`, and `unavailable`.
+
+`choose_save_path` takes `{directory: [Home, At(Str)], suggested_name: Str}`.
+`Home` resolves the native environment's UTF-8 `HOME`; a missing or non-UTF-8 value
+returns `Unavailable`. `At` supplies an explicit initial directory. Both paths
+must be absolute and valid. In the private request record `home` requires an
+empty directory frame; `at` carries the supplied path. No empty-path convention
+is exposed to applications.
+
+Paths are absolute UTF-8, at most **4096 bytes**; invalid paths and unsupported
+traversal return typed errors. Text reads and writes are bounded at **1 MiB**.
+Scans return one complete snapshot of at most **10,000 entries**, **64 levels**,
+and **4 MiB of aggregate entry paths**. Symlinks and other entries are reported
+without traversal. Limits refuse the entire operation instead of truncating it.
+Writes create a temporary sibling, write the immutable submitted text, and rename
+it into place. Failure or cancellation before commit removes the temporary file;
+cancellation cannot undo a rename that has already committed.

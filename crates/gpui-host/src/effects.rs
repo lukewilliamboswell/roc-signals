@@ -1,0 +1,433 @@
+//! Native service adapter. Only owned primitive requests leave the UI thread;
+//! all task identity, cancellation state, and result propagation belong to Zig.
+use crate::{
+    Runtime,
+    bridge::Effect,
+    file_io::{self, FileError, Kind},
+};
+use gpui::{Context, PathPromptOptions};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
+const MAX_REQUESTS: usize = 16;
+const MAX_PACKET: usize = 8 * 1024 * 1024;
+
+#[derive(Default)]
+pub(crate) struct Manager {
+    jobs: HashMap<u64, Arc<AtomicBool>>,
+}
+
+impl Manager {
+    pub(crate) fn accept(&mut self, message: Effect, cx: &mut Context<Runtime>) {
+        match message {
+            Effect::Cancel(id) => self
+                .jobs
+                .get(&id)
+                .expect("cancel for unknown native worker")
+                .store(true, Ordering::Release),
+            Effect::Start { id, kind, request } => {
+                assert!(
+                    self.jobs.len() < MAX_REQUESTS,
+                    "engine exceeded native task capacity"
+                );
+                let request =
+                    Request::decode(kind, &request).expect("malformed native Files request");
+                let cancel = Arc::new(AtomicBool::new(false));
+                assert!(
+                    self.jobs.insert(id, cancel.clone()).is_none(),
+                    "duplicate native task identity"
+                );
+                match request {
+                    Request::ChooseFile | Request::ChooseDirectory => {
+                        let directories = matches!(request, Request::ChooseDirectory);
+                        let receiver = cx.prompt_for_paths(PathPromptOptions {
+                            files: !directories,
+                            directories,
+                            multiple: false,
+                            prompt: None,
+                        });
+                        cx.spawn(async move |runtime, cx| {
+                            let result = match receiver.await {
+                                Ok(Ok(Some(mut paths))) if paths.len() == 1 => {
+                                    choice(Some(paths.remove(0)))
+                                }
+                                Ok(Ok(None)) => choice(None),
+                                Ok(Ok(Some(_))) => Err(FileError::Unavailable(
+                                    "single-path chooser returned an invalid selection count"
+                                        .into(),
+                                )),
+                                Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
+                                Err(error) => Err(FileError::Unavailable(error.to_string())),
+                            };
+                            let (failed, payload) = settle(result, &cancel);
+                            let _ = runtime.update(cx, |runtime, cx| {
+                                runtime.complete_task(id, failed, &payload, cx)
+                            });
+                        })
+                        .detach();
+                    }
+                    Request::ChooseSavePath {
+                        directory,
+                        suggested_name,
+                    } => {
+                        let directory = match directory.resolve() {
+                            Ok(directory) => directory,
+                            Err(error) => {
+                                self.deliver(id, Err(error), cancel, cx);
+                                return;
+                            }
+                        };
+                        if let Err(error) = validate_save_options(&directory, &suggested_name) {
+                            self.deliver(id, Err(error), cancel, cx);
+                            return;
+                        }
+                        let receiver =
+                            cx.prompt_for_new_path(Path::new(&directory), Some(&suggested_name));
+                        cx.spawn(async move |runtime, cx| {
+                            let result = match receiver.await {
+                                Ok(Ok(path)) => choice(path),
+                                Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
+                                Err(error) => Err(FileError::Unavailable(error.to_string())),
+                            };
+                            let (failed, payload) = settle(result, &cancel);
+                            let _ = runtime.update(cx, |runtime, cx| {
+                                runtime.complete_task(id, failed, &payload, cx)
+                            });
+                        })
+                        .detach();
+                    }
+                    request => {
+                        let worker_cancel = cancel.clone();
+                        let worker = cx.background_executor().spawn(async move {
+                            match request {
+                                Request::ReadText(path) => {
+                                    file_io::read_text(&path, &worker_cancel)
+                                        .map(|file| packet(&[&file.path, &file.text]))
+                                }
+                                Request::WriteText { path, text } => {
+                                    file_io::write_text(&path, &text, &worker_cancel, id)
+                                        .map(|file| packet(&[&file.path, &file.bytes.to_string()]))
+                                }
+                                Request::Scan(path) => {
+                                    file_io::scan(&path, &worker_cancel).map(scan_packet)
+                                }
+                                _ => unreachable!(),
+                            }
+                        });
+                        cx.spawn(async move |runtime, cx| {
+                            // A successful save may already have committed its rename.
+                            // The engine still rejects canceled delivery by request ID.
+                            let result = worker.await;
+                            let (failed, payload) = encode_result(result);
+                            let _ = runtime.update(cx, |runtime, cx| {
+                                runtime.complete_task(id, failed, &payload, cx)
+                            });
+                        })
+                        .detach();
+                    }
+                }
+            }
+        }
+    }
+
+    fn deliver(
+        &self,
+        id: u64,
+        result: Result<String, FileError>,
+        cancel: Arc<AtomicBool>,
+        cx: &mut Context<Runtime>,
+    ) {
+        cx.spawn(async move |runtime, cx| {
+            let (failed, payload) = settle(result, &cancel);
+            let _ = runtime.update(cx, |runtime, cx| {
+                runtime.complete_task(id, failed, &payload, cx)
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn complete(&mut self, id: u64) {
+        assert!(
+            self.jobs.remove(&id).is_some(),
+            "completion for unknown native worker"
+        );
+    }
+
+    pub(crate) fn shutdown(&mut self) {
+        for cancel in self.jobs.values() {
+            cancel.store(true, Ordering::Release);
+        }
+        self.jobs.clear();
+    }
+}
+
+impl Drop for Manager {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Request {
+    ChooseFile,
+    ChooseDirectory,
+    ChooseSavePath {
+        directory: Directory,
+        suggested_name: String,
+    },
+    ReadText(String),
+    WriteText {
+        path: String,
+        text: String,
+    },
+    Scan(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Directory {
+    Home,
+    At(String),
+}
+
+impl Directory {
+    fn resolve(self) -> Result<String, FileError> {
+        match self {
+            Self::Home => std::env::var("HOME")
+                .map_err(|_| FileError::Unavailable("HOME is missing or is not UTF-8".into())),
+            Self::At(path) => Ok(path),
+        }
+    }
+}
+
+impl Request {
+    fn decode(kind: u32, payload: &str) -> Result<Self, &'static str> {
+        if payload.len() > MAX_PACKET {
+            return Err("packet limit");
+        }
+        let mut reader = Reader(payload);
+        if reader.frame()? != "files1" {
+            return Err("unsupported codec");
+        }
+        let request = match kind {
+            1 => Self::ChooseFile,
+            2 => Self::ChooseDirectory,
+            3 => {
+                let kind = reader.frame()?;
+                let path = reader.frame()?;
+                let directory = match (kind, path) {
+                    ("home", "") => Directory::Home,
+                    ("at", path) => Directory::At(path.into()),
+                    _ => return Err("invalid save directory"),
+                };
+                Self::ChooseSavePath {
+                    directory,
+                    suggested_name: reader.frame()?.into(),
+                }
+            }
+            4 => Self::ReadText(reader.frame()?.into()),
+            5 => Self::WriteText {
+                path: reader.frame()?.into(),
+                text: reader.frame()?.into(),
+            },
+            6 => Self::Scan(reader.frame()?.into()),
+            _ => return Err("unknown task kind"),
+        };
+        if !reader.0.is_empty() {
+            return Err("trailing fields");
+        }
+        Ok(request)
+    }
+}
+
+struct Reader<'a>(&'a str);
+impl<'a> Reader<'a> {
+    fn frame(&mut self) -> Result<&'a str, &'static str> {
+        let (length, rest) = self.0.split_once(':').ok_or("missing length")?;
+        let length_value = length.parse::<usize>().map_err(|_| "invalid length")?;
+        if length_value.to_string() != length {
+            return Err("noncanonical length");
+        }
+        let value = rest
+            .get(..length_value)
+            .ok_or("truncated frame or split UTF-8")?;
+        self.0 = &rest[length_value..];
+        Ok(value)
+    }
+}
+
+fn append_frame(output: &mut String, value: &str) {
+    use std::fmt::Write;
+    write!(output, "{}:", value.len()).unwrap();
+    output.push_str(value);
+    assert!(
+        output.len() <= MAX_PACKET,
+        "native Files result exceeded packet bound"
+    );
+}
+
+fn packet(fields: &[&str]) -> String {
+    let mut output = String::new();
+    append_frame(&mut output, "files1");
+    for field in fields {
+        append_frame(&mut output, field);
+    }
+    output
+}
+
+fn scan_packet(scan: file_io::Scan) -> String {
+    let mut output = packet(&[&scan.root, &scan.entries.len().to_string()]);
+    for entry in scan.entries {
+        append_frame(&mut output, &entry.path);
+        append_frame(
+            &mut output,
+            match entry.kind {
+                Kind::File => "file",
+                Kind::Directory => "directory",
+                Kind::SymbolicLink => "symbolic-link",
+                Kind::Other => "other",
+            },
+        );
+        append_frame(&mut output, &entry.bytes.to_string());
+    }
+    output
+}
+
+fn validate_path(path: &str) -> Result<(), FileError> {
+    if path.len() > 4096 {
+        return Err(FileError::InvalidPath("path exceeds 4096 bytes".into()));
+    }
+    if !Path::new(path).is_absolute() || path.contains('\0') {
+        return Err(FileError::InvalidPath(path.into()));
+    }
+    Ok(())
+}
+
+fn validate_save_options(directory: &str, name: &str) -> Result<(), FileError> {
+    validate_path(directory)?;
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\0')
+        || name == "."
+        || name == ".."
+        || name.len() > 255
+    {
+        return Err(FileError::InvalidPath(name.into()));
+    }
+    Ok(())
+}
+
+fn choice(path: Option<PathBuf>) -> Result<String, FileError> {
+    match path {
+        None => Ok(packet(&["canceled"])),
+        Some(path) => {
+            let path = path
+                .to_str()
+                .ok_or_else(|| FileError::InvalidUtf8("selected path".into()))?;
+            validate_path(path)?;
+            Ok(packet(&["chosen", path]))
+        }
+    }
+}
+
+fn settle(result: Result<String, FileError>, cancel: &AtomicBool) -> (bool, String) {
+    encode_result(if cancel.load(Ordering::Acquire) {
+        Err(FileError::Canceled)
+    } else {
+        result
+    })
+}
+
+fn encode_result(result: Result<String, FileError>) -> (bool, String) {
+    match result {
+        Ok(payload) => (false, payload),
+        Err(error) => {
+            let (code, detail) = match &error {
+                FileError::Canceled => ("canceled", ""),
+                FileError::NotFound(detail) => ("not-found", detail.as_str()),
+                FileError::PermissionDenied(detail) => ("permission-denied", detail.as_str()),
+                FileError::InvalidUtf8(detail) => ("invalid-utf8", detail.as_str()),
+                FileError::InvalidPath(detail) => ("invalid-path", detail.as_str()),
+                FileError::ResourceLimit(detail) => ("resource-limit", detail.as_str()),
+                FileError::Io(detail) => ("io", detail.as_str()),
+                FileError::Unavailable(detail) => ("unavailable", detail.as_str()),
+            };
+            (true, packet(&[code, detail]))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_preserve_utf8_newlines_colons_and_empty_text() {
+        let path = "/tmp/a:b\nλ.txt";
+        let text = "first\nsecond:\0λ";
+        assert_eq!(
+            Request::decode(5, &packet(&[path, text])).unwrap(),
+            Request::WriteText {
+                path: path.into(),
+                text: text.into()
+            }
+        );
+        assert_eq!(
+            Request::decode(5, &packet(&[path, ""])).unwrap(),
+            Request::WriteText {
+                path: path.into(),
+                text: "".into()
+            }
+        );
+    }
+
+    #[test]
+    fn request_codec_rejects_malformed_and_wrong_shape_packets() {
+        for bad in [
+            "",
+            "06:files1",
+            "6:files1",
+            "6:files12:λx",
+            "6:files11:λ",
+            "6:files15:shorter",
+            "6:files1+1:x",
+        ] {
+            assert!(Request::decode(4, bad).is_err(), "accepted {bad:?}");
+        }
+        assert!(Request::decode(0, &packet(&[])).is_err());
+        assert!(Request::decode(1, &packet(&["extra"])).is_err());
+        assert!(Request::decode(5, &packet(&["/tmp/path"])).is_err());
+    }
+
+    #[test]
+    fn chooser_cancellation_and_explicit_cancellation_are_distinct() {
+        assert_eq!(choice(None).unwrap(), packet(&["canceled"]));
+        let cancel = AtomicBool::new(true);
+        assert_eq!(
+            settle(choice(None), &cancel),
+            (true, packet(&["canceled", ""]))
+        );
+        assert!(validate_save_options("/tmp", "../escape").is_err());
+        assert!(validate_save_options("relative", "note.txt").is_err());
+        assert_eq!(
+            Request::decode(3, &packet(&["home", "", "note.txt"])).unwrap(),
+            Request::ChooseSavePath {
+                directory: Directory::Home,
+                suggested_name: "note.txt".into()
+            }
+        );
+        assert!(Request::decode(3, &packet(&["home", "/tmp", "note.txt"])).is_err());
+        assert_eq!(
+            Request::decode(3, &packet(&["at", "/tmp", "note.txt"])).unwrap(),
+            Request::ChooseSavePath {
+                directory: Directory::At("/tmp".into()),
+                suggested_name: "note.txt".into()
+            }
+        );
+    }
+}

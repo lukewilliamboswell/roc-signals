@@ -430,10 +430,13 @@ pub const KeyedSelectRecord = SelectRecord;
 
 pub const TaskSourceRecord = struct {
     name: []const u8,
+    kind: @import("boundary.zig").TaskKind = .external,
     payload_cap: HostValueCapability,
     initial: roles.Initializer,
     done: roles.Transform,
     failed: roles.Transform,
+    canceled: roles.Initializer,
+    refused: roles.Initializer,
     cap: HostValueCapability,
     reset_on_start: bool,
     cached_value: CacheSlot = .absent,
@@ -609,8 +612,10 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             abi.decrefErasedCallable(payload.initial.toAbi(), roc_host);
             abi.decrefErasedCallable(payload.done.toAbi(), roc_host);
             abi.decrefErasedCallable(payload.failed.toAbi(), roc_host);
+            abi.decrefErasedCallable(payload.canceled.toAbi(), roc_host);
+            abi.decrefErasedCallable(payload.refused.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
-            metrics.bump(.closure_releases, 3);
+            metrics.bump(.closure_releases, 5);
         },
         .interval_source => |payload| {
             var cached = payload.cached_value;
