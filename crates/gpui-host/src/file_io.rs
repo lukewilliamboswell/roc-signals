@@ -18,6 +18,7 @@ use std::{
 };
 
 pub const MAX_PATH_BYTES: usize = 4096;
+pub const MAX_ERROR_DETAIL_BYTES: usize = 4096;
 pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 pub const MAX_SCAN_ENTRIES: usize = 10_000;
 pub const MAX_SCAN_DEPTH: usize = 64;
@@ -73,13 +74,17 @@ fn canceled(cancel: &AtomicBool) -> Result<(), FileError> {
     }
 }
 
-fn bounded_detail(mut message: String) -> String {
-    if message.len() > MAX_PATH_BYTES {
-        let mut end = MAX_PATH_BYTES;
+/// Bounds diagnostic text before native result framing, preserving UTF-8 and
+/// marking omitted detail. This never changes a task's error code or data result.
+pub(crate) fn bounded_detail(mut message: String) -> String {
+    const MARKER: &str = " [truncated]";
+    if message.len() > MAX_ERROR_DETAIL_BYTES {
+        let mut end = MAX_ERROR_DETAIL_BYTES - MARKER.len();
         while !message.is_char_boundary(end) {
             end -= 1;
         }
         message.truncate(end);
+        message.push_str(MARKER);
     }
     message
 }
@@ -288,6 +293,9 @@ impl Drop for Temporary<'_> {
 /// Existing ordinary permission bits are preserved; new files use mode 0600.
 /// Cancellation is checked before rename, which is the commit point: once it
 /// succeeds the operation returns Written, even if cancellation races afterward.
+/// The file is synchronized before rename; the parent directory is not, so this
+/// guarantees atomic replacement rather than power-loss durability. Failed
+/// temporary cleanup is reported as Io and can leave the temporary name behind.
 /// A blocked syscall keeps its caller's worker reservation until it returns.
 pub fn write_text(
     path: &str,
@@ -462,9 +470,9 @@ fn scan_directory(
             )?;
             let opened = file_stat(&child, &entry_path)?;
             if opened.st_dev != stat.st_dev || opened.st_ino != stat.st_ino {
-                return Err(FileError::Io(format!(
+                return Err(FileError::Io(bounded_detail(format!(
                     "{entry_path}: entry changed during scan"
-                )));
+                ))));
             }
             scan_directory(&child, &entry_path, depth + 1, cancel, budget)?;
         }

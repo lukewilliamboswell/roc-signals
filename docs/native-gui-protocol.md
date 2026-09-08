@@ -206,22 +206,30 @@ are `root, entry count` followed by `path, kind, bytes` for each entry. Entry ki
 are `file`, `directory`, `symbolic-link`, and `other`. Errors have `code, detail`;
 codes are `canceled`, `not-found`, `permission-denied`, `invalid-utf8`,
 `invalid-path`, `resource-limit`, `io`, and `unavailable`.
+Diagnostic detail is at most **4096 UTF-8 bytes**, including an explicit
+` [truncated]` suffix when detail was omitted. Error codes remain unchanged;
+paths, text, and metadata results are never truncated.
 
 `choose_save_path` takes `{directory: [Home, At(Str)], suggested_name: Str}`.
 `Home` resolves the native environment's UTF-8 `HOME`; a missing or non-UTF-8 value
 returns `Unavailable`. `At` supplies an explicit initial directory. Both paths
 must be absolute and valid. In the private request record `home` requires an
 empty directory frame; `at` carries the supplied path. No empty-path convention
-is exposed to applications.
+is exposed to applications. Suggested names must be a single nonempty file name
+of at most **255 UTF-8 bytes**; invalid names return `InvalidPath`.
 
 Paths are absolute UTF-8, at most **4096 bytes**; invalid paths and unsupported
 traversal return typed errors. Text reads and writes are bounded at **1 MiB**.
-Scans return one complete snapshot of at most **10,000 entries**, **64 levels**,
-and **4 MiB of aggregate entry paths**. Symlinks and other entries are reported
+Scans return one complete metadata result of at most **10,000 entries**, **64
+levels**, and **4 MiB of paths including the root**. They observe the filesystem
+over time; concurrent changes may fail the scan. Symlinks and other entries are reported
 without traversal. Limits refuse the entire operation instead of truncating it.
-Writes create a temporary sibling, write the immutable submitted text, and rename
-it into place. Failure or cancellation before commit removes the temporary file;
-cancellation cannot undo a rename that has already committed.
+Writes create a temporary sibling, write and synchronize the immutable submitted
+text, and rename it into place. This guarantees atomic replacement; the parent
+directory is not synchronized, so power-loss durability is not guaranteed.
+Failure or cancellation before commit attempts to remove the temporary file;
+failed cleanup returns `Io` and may leave that file behind. Cancellation cannot
+undo a rename that has already committed.
 
 
 ## Native timers

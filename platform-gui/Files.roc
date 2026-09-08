@@ -27,25 +27,35 @@ read_frame = |bytes| {
 	while $end < bytes.len() and bytes.get($end) != Ok(58) {
 		$end = $end + 1
 	}
-	if $end == bytes.len() { crash "malformed Files frame length" }
+	if $end == bytes.len() {
+		crash "malformed Files frame length"
+	}
 	count = number(utf8(bytes.take_first($end)))
 	start = $end + 1
-	if count > bytes.len() - start { crash "truncated Files frame" }
+	if count > bytes.len() - start {
+		crash "truncated Files frame"
+	}
 	{ value: utf8(bytes.drop_first(start).take_first(count)), rest: bytes.drop_first(start + count) }
 }
 
 reader : Str -> List(U8)
 reader = |payload| {
 	bytes = payload.to_utf8()
-	if bytes.len() > 8388608 { crash "Files payload limit exceeded" }
+	if bytes.len() > 8388608 {
+		crash "Files payload limit exceeded"
+	}
 	version = read_frame(bytes)
-	if version.value != "files1" { crash "unsupported Files payload version" }
+	if version.value != "files1" {
+		crash "unsupported Files payload version"
+	}
 	version.rest
 }
 
 finish : List(U8) -> {}
 finish = |rest| {
-	if !rest.is_empty() { crash "unexpected Files payload fields" }
+	if !rest.is_empty() {
+		crash "unexpected Files payload fields"
+	}
 	{}
 }
 
@@ -63,7 +73,9 @@ file_task = |kind, name, decode|
 
 file_start : Node.TaskKind, Signal.Task(a, Files.Error), List(Str) -> Node.Cmd
 file_start = |kind, task, fields| {
-	if task.source.kind != kind { crash "Files command used a different task kind" }
+	if task.source.kind != kind {
+		crash "Files command used a different task kind"
+	}
 	Signal.start_str(task, packet(fields))
 }
 
@@ -72,7 +84,9 @@ file_start = |kind, task, fields| {
 ## signal and scope lifetime. At most 16 native operations, including canceled
 ## workers awaiting completion, may be retained; saturation returns ResourceLimit.
 Files := [].{
-	Choice := [Canceled, Chosen(Str)].{ is_eq : _ }
+	Choice := [Canceled, Chosen(Str)].{
+		is_eq : _
+	}
 	Error := [
 		Canceled,
 		NotFound(Str),
@@ -82,8 +96,12 @@ Files := [].{
 		ResourceLimit(Str),
 		Io(Str),
 		Unavailable(Str),
-	].{ is_eq : _ }
-	Kind := [File, Directory, SymbolicLink, Other].{ is_eq : _ }
+	].{
+		is_eq : _
+	}
+	Kind := [File, Directory, SymbolicLink, Other].{
+		is_eq : _
+	}
 	TextFile : { path : Str, text : Str }
 	Written : { path : Str, bytes : U64 }
 	Entry : { path : Str, kind : Kind, bytes : U64 }
@@ -111,6 +129,7 @@ Files := [].{
 
 	## Ask for a save path at the user's home or an absolute initial directory.
 	## Home returns Unavailable if the native environment has no UTF-8 HOME value.
+	## The suggestion is one nonempty file name of at most 255 UTF-8 bytes.
 	choose_save_path : Signal.Task(Choice, Error), { directory : [Home, At(Str)], suggested_name : Str } -> Node.Cmd
 	choose_save_path = |task, options| {
 		location = match options.directory {
@@ -133,16 +152,19 @@ Files := [].{
 	write_text_task = |name| file_task(Node.TaskKind.WriteText, name, decode_written)
 
 	## Save the submitted immutable text. Cancellation cannot undo a committed rename.
+	## Replacement is atomic; parent-directory power-loss durability is not guaranteed.
+	## Failed temporary cleanup returns Io and may leave the temporary file behind.
 	write_text : Signal.Task(Written, Error), { path : Str, text : Str } -> Node.Cmd
 	write_text = |task, file| file_start(Node.TaskKind.WriteText, task, [file.path, file.text])
 
 	## Create a recursive folder scan: at most 10,000 entries and 64 levels.
 	## Symlinks and other entries are reported; symlinks are never traversed.
-	## Aggregate entry paths are bounded at four MiB; limits refuse the whole scan.
+	## Paths including the root are bounded at four MiB; limits refuse the whole scan.
 	scan_task : Str -> Signal.Task(Scan, Error)
 	scan_task = |name| file_task(Node.TaskKind.ScanDirectory, name, decode_scan)
 
-	## Publish one complete metadata snapshot, or a typed error without truncation.
+	## Publish one complete metadata result, or a typed error without truncation.
+	## Entries are observed over time; concurrent filesystem changes may fail the scan.
 	scan : Signal.Task(Scan, Error), Str -> Node.Cmd
 	scan = |task, root| file_start(Node.TaskKind.ScanDirectory, task, [root])
 
@@ -179,7 +201,9 @@ Files := [].{
 		path = read_frame(reader(payload))
 		text = read_frame(path.rest)
 		finish(text.rest)
-		if text.value.to_utf8().len() > 1048576 { crash "Files text result limit exceeded" }
+		if text.value.to_utf8().len() > 1048576 {
+			crash "Files text result limit exceeded"
+		}
 		{ path: path.value, text: text.value }
 	}
 
@@ -194,7 +218,9 @@ Files := [].{
 		root = read_frame(reader(payload))
 		count = read_frame(root.rest)
 		total = number(count.value)
-		if total > 10000 { crash "Files scan result limit exceeded" }
+		if total > 10000 {
+			crash "Files scan result limit exceeded"
+		}
 		var $rest = count.rest
 		var $entries = []
 		var $index = 0.U64

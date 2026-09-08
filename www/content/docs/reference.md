@@ -112,15 +112,21 @@ have `{ path, kind, bytes }`; kinds are `File`, `Directory`, `SymbolicLink`, and
 results. Dismissing a chooser instead produces `Done(Choice.Canceled)`.
 `Files.error_text(error)` formats errors for display. Other errors are
 `NotFound`, `PermissionDenied`, `InvalidUtf8`, `InvalidPath`, `ResourceLimit`,
-`Io`, and `Unavailable`, each with a diagnostic string.
+`Io`, and `Unavailable`, each with a diagnostic string. Diagnostic text is bounded
+at 4,096 UTF-8 bytes and ends with ` [truncated]` when detail was omitted; the error
+case remains unchanged. Save suggestions must be single nonempty file names of
+at most 255 UTF-8 bytes.
 
 The native host retains at most 16 operations, including canceled workers or
 portal dialogs awaiting completion. Saturation returns `ResourceLimit`. Paths
 are at most 4,096 bytes; text reads and writes are at most 1 MiB. A scan returns
-one complete snapshot of at most 10,000 entries, 64 levels, and 4 MiB of aggregate
-entry paths. Symlinks are reported without traversal. Limits reject the operation
+one complete metadata result of at most 10,000 entries, 64 levels, and 4 MiB of
+paths including the root. Concurrent filesystem changes can fail a scan. Symlinks
+are reported without traversal. Limits reject the operation
 rather than truncating results. Writes replace the destination through a temporary
 sibling and rename; cancellation cannot undo an already committed rename.
+Replacement is atomic, but parent-directory power-loss durability is not
+guaranteed. Failed temporary cleanup returns `Io` and may leave the file behind.
 
 ## Ui
 

@@ -310,13 +310,12 @@ fn validate_path(path: &str) -> Result<(), FileError> {
 
 fn validate_save_options(directory: &str, name: &str) -> Result<(), FileError> {
     validate_path(directory)?;
-    if name.is_empty()
-        || name.contains('/')
-        || name.contains('\0')
-        || name == "."
-        || name == ".."
-        || name.len() > 255
-    {
+    if name.len() > 255 {
+        return Err(FileError::InvalidPath(
+            "suggested file name exceeds 255 UTF-8 bytes".into(),
+        ));
+    }
+    if name.is_empty() || name.contains('/') || name.contains('\0') || name == "." || name == ".." {
         return Err(FileError::InvalidPath(name.into()));
     }
     Ok(())
@@ -347,17 +346,17 @@ fn encode_result(result: Result<String, FileError>) -> (bool, String) {
     match result {
         Ok(payload) => (false, payload),
         Err(error) => {
-            let (code, detail) = match &error {
-                FileError::Canceled => ("canceled", ""),
-                FileError::NotFound(detail) => ("not-found", detail.as_str()),
-                FileError::PermissionDenied(detail) => ("permission-denied", detail.as_str()),
-                FileError::InvalidUtf8(detail) => ("invalid-utf8", detail.as_str()),
-                FileError::InvalidPath(detail) => ("invalid-path", detail.as_str()),
-                FileError::ResourceLimit(detail) => ("resource-limit", detail.as_str()),
-                FileError::Io(detail) => ("io", detail.as_str()),
-                FileError::Unavailable(detail) => ("unavailable", detail.as_str()),
+            let (code, detail) = match error {
+                FileError::Canceled => ("canceled", String::new()),
+                FileError::NotFound(detail) => ("not-found", detail),
+                FileError::PermissionDenied(detail) => ("permission-denied", detail),
+                FileError::InvalidUtf8(detail) => ("invalid-utf8", detail),
+                FileError::InvalidPath(detail) => ("invalid-path", detail),
+                FileError::ResourceLimit(detail) => ("resource-limit", detail),
+                FileError::Io(detail) => ("io", detail),
+                FileError::Unavailable(detail) => ("unavailable", detail),
             };
-            (true, packet(&[code, detail]))
+            (true, packet(&[code, &file_io::bounded_detail(detail)]))
         }
     }
 }
@@ -365,6 +364,56 @@ fn encode_result(result: Result<String, FileError>) -> (bool, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maximum_request_name_returns_a_bounded_typed_refusal() {
+        let name = "x".repeat(MAX_PACKET - 26);
+        let request = packet(&["at", "/tmp", &name]);
+        assert_eq!(request.len(), MAX_PACKET);
+        let Request::ChooseSavePath { suggested_name, .. } = Request::decode(3, &request).unwrap()
+        else {
+            panic!("wrong request kind")
+        };
+        let error = validate_save_options("/tmp", &suggested_name).unwrap_err();
+        assert_eq!(
+            encode_result(Err(error)),
+            (
+                true,
+                packet(&[
+                    "invalid-path",
+                    "suggested file name exceeds 255 UTF-8 bytes"
+                ])
+            )
+        );
+    }
+
+    #[test]
+    fn error_detail_limits_preserve_codes_and_mark_utf8_truncation() {
+        let detail = format!("{}λ{}", "x".repeat(4083), "é".repeat(MAX_PACKET / 2));
+        for (constructor, code) in [
+            (FileError::NotFound as fn(String) -> FileError, "not-found"),
+            (FileError::PermissionDenied, "permission-denied"),
+            (FileError::InvalidUtf8, "invalid-utf8"),
+            (FileError::InvalidPath, "invalid-path"),
+            (FileError::ResourceLimit, "resource-limit"),
+            (FileError::Io, "io"),
+            (FileError::Unavailable, "unavailable"),
+        ] {
+            let (failed, payload) = encode_result(Err(constructor(detail.clone())));
+            assert!(failed);
+            let mut reader = Reader(&payload);
+            assert_eq!(reader.frame().unwrap(), "files1");
+            assert_eq!(reader.frame().unwrap(), code);
+            let encoded_detail = reader.frame().unwrap();
+            assert_eq!(encoded_detail, format!("{} [truncated]", "x".repeat(4083)));
+            assert!(encoded_detail.len() <= file_io::MAX_ERROR_DETAIL_BYTES);
+            assert!(reader.0.is_empty());
+        }
+        assert_eq!(
+            encode_result(Err(FileError::Io("ordinary failure".into()))),
+            (true, packet(&["io", "ordinary failure"]))
+        );
+    }
 
     #[test]
     fn frames_preserve_utf8_newlines_colons_and_empty_text() {
