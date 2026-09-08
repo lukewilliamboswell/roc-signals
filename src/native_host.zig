@@ -188,6 +188,18 @@ const NativeRenderPublication = struct {
 
     dom: sim_dom.PreparedPublication,
     gui_order: ?signals.native_child_order.Prepared = null,
+    retired_nodes: []const render_cache.PreparedNodeRemoval = &.{},
+
+    fn validateDrag(node: *const sim_dom.Element) error{InvalidRenderTopology}!void {
+        if (!node.active) return;
+        if (node.native_drag_key) |key| {
+            if (key.len == 0 or key.len > 256 or !std.unicode.utf8ValidateSlice(key)) return error.InvalidRenderTopology;
+        }
+        if (node.native_drop_target) {
+            const event = sim_dom.namedEvent(node, "drop") orelse return error.InvalidRenderTopology;
+            if (event.binding.delivery.requested != .native or event.binding.key_chord != null or !event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .detail))) return error.InvalidRenderTopology;
+        }
+    }
 
     fn prepareTextField(allocator: std.mem.Allocator, node: *sim_dom.Element, field: RenderTextField, next: ?[]const u8) std.mem.Allocator.Error!void {
         const slot: *?[]const u8 = switch (field) {
@@ -199,6 +211,7 @@ const NativeRenderPublication = struct {
             .class => &node.class,
             .native_style => &node.native_style,
             .native_viewport => &node.native_viewport,
+            .native_drag_key => &node.native_drag_key,
         };
         if (field == .native_viewport) if (next) |bytes| {
             _ = native_style.decodeViewport(bytes) catch failHost("invalid native viewport record");
@@ -386,6 +399,7 @@ const NativeRenderPublication = struct {
                     node.checked_update_count += 1;
                 },
                 .selected => node.selected = entry.next orelse false,
+                .native_drop_target => node.native_drop_target = entry.next orelse false,
                 .disabled => {
                     node.disabled = entry.next orelse false;
                     node.disabled_update_count += 1;
@@ -426,13 +440,23 @@ const NativeRenderPublication = struct {
                 .binding = event.binding,
             });
         }
-        return .{ .dom = dom, .gui_order = gui_order };
+        for (dom.existing.items) |*node| try validateDrag(node);
+        for (dom.appended.items) |*node| try validateDrag(node);
+        if (gpui_spike and Gpui.live) {
+            for (splice.removals.items) |removed| {
+                if (Gpui.lifetimes[removed.elem_id.index()] == std.math.maxInt(u64)) return error.ResourceLimit;
+            }
+        }
+        return .{ .dom = dom, .gui_order = gui_order, .retired_nodes = splice.removals.items };
     }
 
     fn apply(self: *NativeRenderPublication, host: *HostEnv) void {
         self.dom.apply(&host.dom_elements);
         if (self.gui_order) |*candidate| candidate.commit();
         if (gpui_spike) {
+            if (Gpui.live) {
+                for (self.retired_nodes) |removed| Gpui.lifetimes[removed.elem_id.index()] += 1;
+            }
             for (self.dom.existing_ids.items) |id| Gpui.touch(id);
             for (self.dom.original_len..host.dom_elements.items.len) |id| Gpui.touch(id);
         }
@@ -2553,6 +2577,7 @@ fn setRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFiel
             _ = native_style.decode(value) catch failHost("invalid native presentation record");
             sim_dom.setOwnedString(host.hostAllocator(), &elem.native_style, value);
         },
+        .native_drag_key => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_drag_key, value),
         .native_viewport => {
             _ = native_style.decodeViewport(value) catch failHost("invalid native viewport record");
             sim_dom.setOwnedString(host.hostAllocator(), &elem.native_viewport, value);
@@ -2570,6 +2595,7 @@ fn setRenderBoolField(host: *HostEnv, elem_id: ids.ElemId, field: RenderBoolFiel
         .checked => setElementChecked(elem, value),
         .disabled => setElementDisabled(elem, value),
         .selected => elem.selected = value,
+        .native_drop_target => elem.native_drop_target = value,
     }
 }
 
@@ -2584,6 +2610,7 @@ fn clearRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFi
         .class => sim_dom.clearOwnedString(host.hostAllocator(), &elem.class),
         .native_style => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_style),
         .native_viewport => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_viewport),
+        .native_drag_key => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_drag_key),
     }
 }
 
@@ -2597,6 +2624,7 @@ fn clearRenderBoolField(host: *HostEnv, elem_id: ids.ElemId, field: RenderBoolFi
         .checked => setElementChecked(elem, false),
         .disabled => setElementDisabled(elem, false),
         .selected => elem.selected = false,
+        .native_drop_target => elem.native_drop_target = false,
     }
 }
 
@@ -12382,6 +12410,9 @@ const Gpui = struct {
         style_present: u64,
         style: native_style.Style,
         viewport: native_style.Viewport,
+        lifetime: u64,
+        drag_key: Slice,
+        drop: u64,
     };
     const Effect = extern struct {
         op: u32,
@@ -12395,6 +12426,7 @@ const Gpui = struct {
     var tasks: NativeTaskQueue = .{};
     var timers: native_timers.Registry = .{};
     var child_order: signals.native_child_order.Tree = undefined;
+    var lifetimes: [limit]u64 = @splat(0);
     var changed: [limit]u64 = undefined;
     var seen: [limit]bool = @splat(false);
     var changed_len: usize = 0;
@@ -12412,7 +12444,7 @@ const Gpui = struct {
         }
     }
     fn protocolVersion() callconv(.c) u32 {
-        return 4;
+        return 5;
     }
     fn nodeSize() callconv(.c) usize {
         return @sizeOf(Node);
@@ -12420,6 +12452,7 @@ const Gpui = struct {
     fn mount() callconv(.c) void {
         if (live) failHost("GPUI spike already mounted");
         clear();
+        @memset(&lifetimes, 0);
         host = HostEnv.init();
         child_order = signals.native_child_order.Tree.init(host.hostAllocator());
         roc_host = makeSignalsRocHost(&host);
@@ -12552,6 +12585,9 @@ const Gpui = struct {
             .style_present = @intFromBool(elem.native_style != null),
             .style = if (elem.native_style) |bytes| native_style.decode(bytes) catch unreachable else .{},
             .viewport = if (elem.native_viewport) |bytes| native_style.decodeViewport(bytes) catch unreachable else .{},
+            .lifetime = lifetimes[elem.id],
+            .drag_key = Slice.from(elem.native_drag_key orelse ""),
+            .drop = if (elem.native_drop_target) sim_dom.namedEvent(elem, "drop").?.binding.event_id.raw() else 0,
         };
     }
     fn childAt(parent: u64, rank: usize) callconv(.c) u64 {
@@ -12709,4 +12745,25 @@ test "task cancellation and capacity refusal sweep OOM and reject late results" 
         try std.testing.expect(attempts != 0);
         for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number, refused);
     }
+}
+
+test "native drag metadata rejects invalid keys and mismatched detail handlers" {
+    const allocator = std.testing.allocator;
+    var node = sim_dom.Element.init(1, try allocator.dupe(u8, "div"));
+    defer node.deinit(allocator);
+    node.native_drag_key = try allocator.dupe(u8, "");
+    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateDrag(&node));
+    allocator.free(node.native_drag_key.?);
+    node.native_drag_key = try allocator.dupe(u8, "task-λ");
+    try NativeRenderPublication.validateDrag(&node);
+    node.native_drop_target = true;
+    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateDrag(&node));
+    try node.named_events.append(allocator, .{ .name = try allocator.dupe(u8, "drop"), .binding = .{
+        .event_id = ids.EventId.fromRaw(1),
+        .delivery = .{ .requested = .native },
+        .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
+    } });
+    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateDrag(&node));
+    node.named_events.items[0].binding.payload_descriptor = BoundaryPayloadDescriptor.init(.str, .detail);
+    try NativeRenderPublication.validateDrag(&node);
 }

@@ -3641,6 +3641,7 @@ pub const TextFieldDescriptorIndexes = struct {
     class: DescriptorIndex = .none,
     native_style: DescriptorIndex = .none,
     native_viewport: DescriptorIndex = .none,
+    native_drag_key: DescriptorIndex = .none,
 
     /// Returns the stored value without changing its identity or ownership policy.
     pub fn get(self: TextFieldDescriptorIndexes, field: TextField) ?usize {
@@ -3653,6 +3654,7 @@ pub const TextFieldDescriptorIndexes = struct {
             .class => self.class.get(),
             .native_style => self.native_style.get(),
             .native_viewport => self.native_viewport.get(),
+            .native_drag_key => self.native_drag_key.get(),
         };
     }
 
@@ -3667,6 +3669,7 @@ pub const TextFieldDescriptorIndexes = struct {
             .class => &self.class,
             .native_style => &self.native_style,
             .native_viewport => &self.native_viewport,
+            .native_drag_key => &self.native_drag_key,
         };
     }
 };
@@ -3675,6 +3678,7 @@ pub const BoolFieldDescriptorIndexes = struct {
     checked: DescriptorIndex = .none,
     disabled: DescriptorIndex = .none,
     selected: DescriptorIndex = .none,
+    native_drop_target: DescriptorIndex = .none,
 
     /// Returns the stored value without changing its identity or ownership policy.
     pub fn get(self: BoolFieldDescriptorIndexes, field: BoolField) ?usize {
@@ -3682,6 +3686,7 @@ pub const BoolFieldDescriptorIndexes = struct {
             .checked => self.checked.get(),
             .disabled => self.disabled.get(),
             .selected => self.selected.get(),
+            .native_drop_target => self.native_drop_target.get(),
         };
     }
 
@@ -3691,6 +3696,7 @@ pub const BoolFieldDescriptorIndexes = struct {
             .checked => &self.checked,
             .disabled => &self.disabled,
             .selected => &self.selected,
+            .native_drop_target => &self.native_drop_target,
         };
     }
 };
@@ -5858,7 +5864,7 @@ test "descriptor index mutation helpers preserve explicit slots" {
 
 test "descriptor indexes retain a cache-dense layout" {
     try std.testing.expectEqual(@as(usize, 4), @sizeOf(DescriptorIndex));
-    try std.testing.expectEqual(@as(usize, 128), @sizeOf(ElemDescriptorIndex));
+    try std.testing.expectEqual(@as(usize, 144), @sizeOf(ElemDescriptorIndex));
     try std.testing.expectEqual(@as(usize, 28), @sizeOf(NodeDescriptorIndex));
 }
 

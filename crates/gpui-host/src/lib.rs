@@ -1,4 +1,5 @@
 mod bridge;
+mod drag;
 mod effects;
 mod file_io;
 mod input;
@@ -28,6 +29,7 @@ impl Render for NodeView {
             .flex_col()
             .gap_2()
             .debug_selector(|| self.node.test_id.clone());
+        element = drag::install(element, &self.node, cx.entity_id(), self.runtime.clone());
         if !self.node.shortcuts.is_empty() && !self.node.disabled {
             let runtime = self.runtime.clone();
             let node_id = self.node.id;
@@ -259,6 +261,43 @@ impl Runtime {
         runtime.apply(initial, cx);
         runtime.drain_effects(cx);
         runtime
+    }
+    fn valid_drop(&self, target: drag::Target, item: &drag::Item, cx: &App) -> bool {
+        if item.runtime != target.runtime || item.key.is_empty() || item.key.len() > 256 {
+            return false;
+        }
+        let Some(source) = self.nodes.get(&item.source) else {
+            return false;
+        };
+        let source_node = &source.read(cx).node;
+        if source.entity_id() != item.view
+            || source_node.disabled
+            || source_node.lifetime != item.lifetime
+            || source_node.drag_key != item.key
+        {
+            return false;
+        }
+        let Some(destination) = self.nodes.get(&target.node) else {
+            return false;
+        };
+        let destination_node = &destination.read(cx).node;
+        destination.entity_id() == target.view
+            && !destination_node.disabled
+            && destination_node.lifetime == target.lifetime
+            && destination_node.drop == target.event
+            && target.event != 0
+    }
+    fn accept_drop(
+        &mut self,
+        target: drag::Target,
+        item: &drag::Item,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.valid_drop(target, item, cx) {
+            return false;
+        }
+        self.event(target.event, Payload::Text(&item.key), cx);
+        true
     }
     fn event_if_live(&mut self, id: u64, event: u64, payload: Payload<'_>, cx: &mut Context<Self>) {
         // A deferred editor callback may outlive disposal. Match both node and
@@ -634,6 +673,109 @@ mod tests {
                 runtime.apply(vec![node(0, "root", &[1]), region], cx);
                 assert_ne!(runtime.nodes[&1].entity_id(), view_id);
                 assert!(!runtime.shortcut_if_live(1, view_id, second, cx));
+                assert!(Engine::take_test_event().is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn actual_gpui_drag_delivers_source_key_to_the_drop_target(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            let mut runtime = runtime();
+            let mut source = node(1, "div", &[]);
+            source.test_id = "source".into();
+            source.drag_key = "task-λ".into();
+            source.style = Some(super::bridge::Style {
+                width_kind: 2,
+                width: 200,
+                height_kind: 2,
+                height: 80,
+                ..Default::default()
+            });
+            let mut destination = source.clone();
+            destination.id = 2;
+            destination.test_id = "destination".into();
+            destination.drag_key.clear();
+            destination.drop = 61;
+            runtime.apply(vec![node(0, "root", &[1, 2]), source, destination], cx);
+            runtime
+        });
+        cx.run_until_parked();
+        let start = cx.debug_bounds("source").unwrap().center();
+        let end = cx.debug_bounds("destination").unwrap().center();
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(
+            start + point(px(20.), px(0.)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_move(end, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::default());
+        assert_eq!(Engine::take_test_event(), Some((61, 1, "task-λ".into(), 0)));
+    }
+
+    #[gpui::test]
+    fn drag_rejects_disposed_replaced_disabled_and_rebound_lifetimes(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let owner = cx.new(|_| runtime());
+            owner.update(cx, |runtime, cx| {
+                let mut source = node(1, "div", &[]);
+                source.drag_key = "task-λ".into();
+                let mut destination = node(2, "div", &[]);
+                destination.drop = 61;
+                runtime.apply(
+                    vec![
+                        node(0, "root", &[1, 2]),
+                        source.clone(),
+                        destination.clone(),
+                    ],
+                    cx,
+                );
+                let item = crate::drag::Item {
+                    key: source.drag_key.clone(),
+                    source: 1,
+                    lifetime: 0,
+                    view: runtime.nodes[&1].entity_id(),
+                    runtime: cx.entity_id(),
+                };
+                let target = crate::drag::Target {
+                    node: 2,
+                    event: 61,
+                    lifetime: 0,
+                    view: runtime.nodes[&2].entity_id(),
+                    runtime: cx.entity_id(),
+                };
+                assert!(runtime.accept_drop(target, &item, cx));
+                assert_eq!(Engine::take_test_event(), Some((61, 1, "task-λ".into(), 0)));
+                source.lifetime = 1;
+                runtime.apply(vec![source.clone()], cx);
+                assert!(!runtime.accept_drop(target, &item, cx));
+                let current = crate::drag::Item {
+                    lifetime: 1,
+                    ..item.clone()
+                };
+                destination.disabled = true;
+                runtime.apply(vec![destination.clone()], cx);
+                assert!(!runtime.accept_drop(target, &current, cx));
+                destination.disabled = false;
+                destination.drop = 62;
+                runtime.apply(vec![destination.clone()], cx);
+                assert!(!runtime.accept_drop(target, &current, cx));
+                destination.drop = 61;
+                destination.lifetime = 1;
+                runtime.apply(vec![destination], cx);
+                assert!(!runtime.accept_drop(target, &current, cx));
+                source.active = false;
+                runtime.apply(vec![node(0, "root", &[2]), source.clone()], cx);
+                assert!(!runtime.accept_drop(target, &current, cx));
+                source.active = true;
+                runtime.apply(vec![node(0, "root", &[1, 2]), source], cx);
+                let current_target = crate::drag::Target {
+                    lifetime: 1,
+                    ..target
+                };
+                assert!(!runtime.accept_drop(current_target, &current, cx));
                 assert!(Engine::take_test_event().is_none());
             });
         });

@@ -5,6 +5,9 @@ use std::{marker::PhantomData, rc::Rc};
 #[derive(Clone, Debug, Default)]
 pub struct Node {
     pub id: u64,
+    pub lifetime: u64,
+    pub drag_key: String,
+    pub drop: u64,
     pub active: bool,
     pub tag: String,
     pub text: String,
@@ -99,6 +102,9 @@ struct RawNode {
     style_present: u64,
     style: Style,
     viewport: [u32; 2],
+    lifetime: u64,
+    drag_key: Slice,
+    drop: u64,
 }
 #[repr(C)]
 struct RawEffect {
@@ -144,7 +150,7 @@ impl Engine {
             };
             assert_eq!(
                 signals_protocol_version(),
-                4,
+                5,
                 "native GUI protocol mismatch"
             );
             assert_eq!(
@@ -188,6 +194,9 @@ impl Engine {
                     );
                     Node {
                         id: r.id,
+                        lifetime: r.lifetime,
+                        drag_key: r.drag_key.copy(),
+                        drop: r.drop,
                         active: r.active != 0,
                         tag: r.tag.copy(),
                         text: r.text.copy(),

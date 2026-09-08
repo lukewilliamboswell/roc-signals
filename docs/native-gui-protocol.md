@@ -1,14 +1,15 @@
 # Native GUI presentation boundary
 
-The statically linked GUI boundary uses protocol version **4**. Zig exports
+The statically linked GUI boundary uses protocol version **5**. Zig exports
 `signals_protocol_version` and `signals_node_size`; Rust checks both before
-mount. Version 4 adds the typed shortcut accessor to version 3's indexed child
-queries and virtual-list metadata. Both sides must be rebuilt together.
+mount. Version 5 adds an element lifetime, borrowed drag key, and drop event ID
+to the node record. Both sides must be rebuilt together.
 The browser protocol and its version are unchanged.
 
 `Gui` lowers native presentation through the shared scalar descriptor machinery.
-Text field **8** is `native_style`, field **9** is `native_viewport`, and boolean
-field **4** is `selected`. The unused
+Text field **8** is `native_style`, field **9** is `native_viewport`, field **10**
+is `native_drag_key`; boolean fields **4** and **5** are `selected` and
+`native_drop_target`. The unused
 IDs 7 and 3 remain the existing custom text/bool field markers. Native fields
 are explicit protocol fields, not CSS, class names, test identifiers, or custom
 attribute conventions. The browser rejects them before reserving or staging a
@@ -84,6 +85,21 @@ Clicking a shortcut region makes it focusable without stealing focus from a
 focused child. A listener whose element was disposed, disabled, or rebound does
 not dispatch or consume the keystroke. Removing a region releases its shortcuts
 through ordinary scope disposal and releases the corresponding retained view.
+
+Internal drag sources expose a nonempty UTF-8 key of at most 256 bytes through
+`Gui.drag_source`. `Gui.drop_target` binds an ordinary native `drop` event with a
+string-detail extraction descriptor. The target flag requires that binding;
+invalid keys or payload shapes reject preparation before publication. Both
+native scalar fields are rejected by the browser boundary.
+
+Rust copies the key into the drag along with source element, view, runtime, and
+lifetime guards. It checks both source and target at hover and again at drop,
+including current enabled state and binding. The engine advances a checked
+lifetime counter on descriptor retirement, even when the same element identity
+is reused in that transaction. Disposed, replaced, rebound, disabled, or foreign
+sources and targets cannot deliver a stale drop. Accepted drops enter ordinary
+engine propagation as string detail. The key is application data, never an
+identity derived from content. External drags are not supported.
 
 Native editors accept at most one MiB of UTF-8 text, matching the ingress and
 Files read limits. An oversized user insertion, paste, or IME replacement is

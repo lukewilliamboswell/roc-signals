@@ -206,7 +206,7 @@ const WasmSink = struct {
 
     /// Applies an engine-decided text field value to one render node.
     pub fn applyTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField, value: []const u8) void {
-        if (field == .native_style or field == .native_viewport) failHostWithFmt("native presentation is unsupported by the browser host", .{});
+        if (field.isNative()) failHostWithFmt("native presentation is unsupported by the browser host", .{});
         appendStringCommand(field.setOp(), toU32(elem_id.raw()), value);
     }
 
@@ -222,7 +222,7 @@ const WasmSink = struct {
 
     /// Clears an engine-decided text field from one render node.
     pub fn clearTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField) void {
-        if (field == .native_style or field == .native_viewport) failHostWithFmt("native presentation is unsupported by the browser host", .{});
+        if (field.isNative()) failHostWithFmt("native presentation is unsupported by the browser host", .{});
         appendStringCommand(field.setOp(), toU32(elem_id.raw()), "");
     }
 
@@ -813,7 +813,7 @@ fn appendDynamicClearEvent(elem_id: u32, name: []const u8) void {
 }
 
 fn appendBoolFieldCommand(field: RenderBoolField, elem_id: u32, value: bool) void {
-    if (field == .selected) failHostWithFmt("native selection is unsupported by the browser host", .{});
+    if (field.isNative()) failHostWithFmt("native selection is unsupported by the browser host", .{});
     appendCommand(field.setOp(), elem_id, @intFromBool(value), 0, 0, 0);
 }
 

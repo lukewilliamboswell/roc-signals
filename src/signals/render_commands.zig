@@ -1395,6 +1395,15 @@ pub const TextField = enum(u64) {
     /// Versioned native presentation record; never encoded on the browser wire.
     native_style = 8,
     native_viewport = 9,
+    native_drag_key = 10,
+
+    /// Identifies fields consumed only by the native presentation adapter.
+    pub fn isNative(self: TextField) bool {
+        return switch (self) {
+            .native_style, .native_viewport, .native_drag_key => true,
+            else => false,
+        };
+    }
 
     /// Returns the browser opcode for a web scalar. Native presentation has no
     /// browser encoding and must be rejected before wire preparation.
@@ -1406,7 +1415,7 @@ pub const TextField = enum(u64) {
             .test_id => .set_test_id,
             .value => .set_value,
             .class => .set_class,
-            .native_style, .native_viewport => @panic("native style has no browser opcode"),
+            .native_style, .native_viewport, .native_drag_key => @panic("native text metadata has no browser opcode"),
         };
     }
 };
@@ -1416,6 +1425,15 @@ pub const BoolField = enum(u64) {
     disabled = 2,
     /// Native selected presentation, independent of checkbox state.
     selected = 4,
+    native_drop_target = 5,
+
+    /// Identifies native metadata that has no browser wire representation.
+    pub fn isNative(self: BoolField) bool {
+        return switch (self) {
+            .selected, .native_drop_target => true,
+            else => false,
+        };
+    }
 
     /// Returns the browser opcode for a web boolean. Native selection is kept
     /// in the native publication and may never enter a browser command batch.
@@ -1423,7 +1441,7 @@ pub const BoolField = enum(u64) {
         return switch (self) {
             .checked => .set_checked,
             .disabled => .set_disabled,
-            .selected => @panic("native selection has no browser opcode"),
+            .selected, .native_drop_target => @panic("native boolean metadata has no browser opcode"),
         };
     }
 };
@@ -1540,7 +1558,7 @@ pub const Counts = struct {
     /// Counts one changed scalar. Native presentation contributes a metadata
     /// operation without claiming it has a browser opcode.
     pub fn addTextField(self: *Counts, field: TextField) void {
-        if (field == .native_style or field == .native_viewport) self.addOp(.extended) else self.addOp(field.setOp());
+        if (field.isNative()) self.addOp(.extended) else self.addOp(field.setOp());
     }
 
     /// Appends text attr to the prepared, unpublished command batch.
@@ -1550,7 +1568,7 @@ pub const Counts = struct {
 
     /// Counts one changed boolean, including native selection as metadata.
     pub fn addBoolField(self: *Counts, field: BoolField) void {
-        if (field == .selected) self.addOp(.extended) else self.addOp(field.setOp());
+        if (field.isNative()) self.addOp(.extended) else self.addOp(field.setOp());
     }
 
     /// Appends event binding to the prepared, unpublished command batch.
@@ -1817,4 +1835,16 @@ fn readTestU32(bytes: []const u8, cursor: *usize) u32 {
     const value = std.mem.readInt(u32, bytes[cursor.*..][0..@sizeOf(u32)], .little);
     cursor.* += @sizeOf(u32);
     return value;
+}
+
+test "every native scalar counts as metadata without a browser opcode" {
+    var counts: Counts = .{};
+    inline for (std.meta.tags(TextField)) |field| {
+        if (field.isNative()) counts.addTextField(field);
+    }
+    inline for (std.meta.tags(BoolField)) |field| {
+        if (field.isNative()) counts.addBoolField(field);
+    }
+    try std.testing.expectEqual(@as(u64, 5), counts.total);
+    try std.testing.expectEqual(counts.total, counts.set_metadata);
 }

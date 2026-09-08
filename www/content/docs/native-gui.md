@@ -75,6 +75,18 @@ A region accepts at most 32 shortcuts. Duplicate chords are errors. Registration
 belong to their element's scope and stop receiving events after disposal.
 See `test/gui/shortcuts` for a complete app and scoped routing spec.
 
+## Internal drag and drop
+
+Add `Gui.drag_source(key)` to a card and `Gui.drop_target(message)` to a
+destination. Keys are nonempty strings of at most 256 UTF-8 bytes. Create the
+message with `Ui.action_detail` or `Ui.State.on_detail` to receive that key and
+return the same commands used by keyboard or button alternatives. The key is
+payload data; keyed row identity remains explicit in `Ui.each`.
+
+Drops from disposed, replaced, disabled, or rebound controls are refused. This
+API supports drags inside one running application. It does not accept files or
+other external desktop drag payloads.
+
 ## Scoped timers and files
 
 `Signal.interval(period_ms)` registers a native timer while its declaring scope

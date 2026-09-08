@@ -33,6 +33,8 @@ Attribute := [
 	Selected(Signal(Bool)),
 	Enabled(Signal(Bool)),
 	Shortcut(Node.KeyChord, Node.Msg),
+	DragSource(Str),
+	DropTarget(Node.Msg),
 ]
 
 native_style_field : Node.TextField
@@ -99,7 +101,18 @@ lower_attrs = |direction, defaults, attrs| {
 	} else {
 		[]
 	}
-	initial.concat(
+	drop_targets = attrs.keep_if(
+		|attr| match attr {
+			Attribute.DropTarget(_) => True
+			_ => False
+		},
+	)
+	with_drop = if drop_targets.is_empty() {
+		initial
+	} else {
+		initial.append(Node.Attr.StaticBool({ field: { id: 5 }, name: "", value: True }))
+	}
+	with_drop.concat(
 		attrs.map(
 			|attr| match attr {
 				Attribute.Presentation(value) => style_attr(direction, value)
@@ -121,6 +134,15 @@ lower_attrs = |direction, defaults, attrs| {
 					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: { id: 2 } })
 					_ => crash "expected a signal bool descriptor"
 				}
+				Attribute.DragSource(key) => Node.Attr.StaticText({ field: { id: 10 }, name: "", value: key })
+				Attribute.DropTarget(msg) => Node.Attr.On({
+					kind: { id: 0 },
+					name: "drop",
+					msg,
+					policy: { ..Html.event_policy_none, prevent_default: True, stop_propagation: True },
+					delivery: Html.event_delivery_native,
+					key_chord: None,
+				})
 				Attribute.Shortcut(chord, msg) => Node.Attr.On({
 					kind: { id: 0 },
 					name: "keydown",
@@ -145,6 +167,21 @@ Gui := [].{
 	Msg : Node.Msg
 	Cmd : Node.Cmd
 	KeyChord : Node.KeyChord
+
+	## Offer a bounded application key for an internal drag. The native adapter
+	## separately validates source lifetime; this key never creates UI identity.
+	drag_source : Str -> Attr
+	drag_source = |key| {
+		if key.is_empty() or key.to_utf8().len() > 256 {
+			crash "Gui drag key must contain 1 to 256 UTF-8 bytes"
+		}
+		Attribute.DragSource(key)
+	}
+
+	## Accept a live internal drag through Ui.action_detail or State.on_detail.
+	## The message receives the source key. Keep explicit move controls available.
+	drop_target : Msg -> Attr
+	drop_target = |message| Attribute.DropTarget(message)
 
 	## Bind an exact key and all modifiers within this focused region. The nearest
 	## matching ancestor receives one unit event and consumes the keystroke.
