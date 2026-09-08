@@ -161,7 +161,7 @@ impl Engine {
             );
             assert_eq!(
                 signals_effect_version(),
-                1,
+                2,
                 "native effect protocol mismatch"
             );
             assert_eq!(signals_effect_size(), std::mem::size_of::<RawEffect>());

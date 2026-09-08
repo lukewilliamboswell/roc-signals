@@ -142,7 +142,8 @@ or newly declared timers. Activity Monitor uses a 500 ms interval whose scope is
 present only while replay is running.
 
 `pf.Files` provides native file/directory choosers, UTF-8 reads, atomic text
-writes, and recursive metadata scans as typed tasks. Use `Signal.from_task` to
+writes, recursive scans, direct-child directory listings, bounded previews,
+incremental log reads, and associated-application launches as typed tasks. Use `Signal.from_task` to
 observe results and `Signal.cancel` to invalidate pending work. See the
 [task reference](@/docs/reference.md#native-files) for signatures, errors, and
 bounds. A dismissed chooser returns `Choice.Canceled`; explicit task cancellation

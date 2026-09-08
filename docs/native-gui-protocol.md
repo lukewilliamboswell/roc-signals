@@ -188,7 +188,8 @@ This is presentation policy, not a second timer, observer, or reactive graph.
 `Files` declares native chooser, read, write, and recursive scan tasks. Each
 factory takes a diagnostic label; the label never selects host behavior.
 `Node.TaskKind` is an explicit closed route: external=0, choose-file=1,
-choose-directory=2, choose-save-path=3, read-text=4, write-text=5, scan-directory=6.
+choose-directory=2, choose-save-path=3, read-text=4, write-text=5, scan-directory=6,
+list-directory=7, open-path=8, read-preview=9, read-log=10.
 The browser rejects non-external task routes before command publication. Its
 existing task command wire format is unchanged.
 
@@ -200,7 +201,7 @@ supersedes older work for that source. Files uses `Error.Canceled` and
 `Error.ResourceLimit`. Neither case invokes a failure decoder with invented text.
 Scope disposal cancels without creating a new application-visible value.
 
-The separate native effects boundary is version **1**. Rust checks
+The separate native effects boundary is version **2**. Rust checks
 `signals_effect_version()` and `signals_effect_size()` before mount.
 `signals_effect_next(out)` returns zero when empty or one after writing an
 `extern` record: `op: u32`, `kind: u32`, `id: u64`, and request pointer/length.
@@ -237,7 +238,8 @@ Task kind defines the remaining request frames:
 | --- | --- |
 | Choose file / directory | none |
 | Choose save path | location kind (`home` or `at`), directory, suggested file name |
-| Read text / scan | absolute path |
+| Read text / scan / list directory / open path / read preview | absolute path |
+| Read log | absolute path, position (`start`, `end`, `after`), device, inode, offset |
 | Write text | absolute path, complete UTF-8 text |
 
 Choice results are `chosen, path` or `canceled`. A user dismissing a dialog is
@@ -297,3 +299,47 @@ inventing elapsed-time values or merging queued ticks. Long waits are split into
 day-sized executor waits to avoid overflowing native clock arithmetic. Normal
 smoke checks disable clocks for deterministic assertions; `--smoke-timers`
 enables real timer delivery and waits 1.2 seconds after the requested action.
+
+### Directory navigation, previews, associated applications, and logs
+
+`ListDirectory` returns `path, count` followed by the same entry triples as a
+recursive scan. It observes only direct children, under the same 10,000-entry,
+four-MiB aggregate-path, UTF-8 and no-follow rules. It refuses the complete result
+on overflow or observation failure. Existing recursive scan semantics are unchanged.
+
+`OpenPath` returns `path` once `gio open` accepts the launch. The worker validates
+one regular file through no-follow handles, then passes the absolute pathname as
+an argument, without a shell. The associated application subsequently resolves
+that path under its own access policy; the host does not promise a stable file
+snapshot across that external handoff. Launcher output is discarded and the
+launcher is killed and reaped on cancellation or a 30-second deadline. Launch
+failures/deadlines are typed `Unavailable`; cancellation cannot undo a completed
+handoff or close the independently owned application.
+
+`ReadPreview` returns `path, text, truncated` (`true`/`false`). It reads at most
+64 KiB plus one lookahead byte, returns at most 64 KiB of complete UTF-8, and
+reports omitted bytes explicitly. An incomplete code point cut by the prefix
+bound is left out. Invalid internal UTF-8, or an incomplete code point at the end
+of a complete file, returns `InvalidUtf8`. Content beyond the prefix is not validated.
+
+`ReadLog` returns `path, text, device, inode, offset, change, state`. All cursor
+integers are canonical unsigned 64-bit decimals. `start` and `end` requests carry
+zero device/inode/offset; `after` carries the application's previous cursor.
+Position tags and cursor fields are validated before command publication.
+The result changes are `initial`, `continued`, `rotated`, `truncated`; states are
+`more`, `at-end`, `partial-utf8`. The worker opens a regular file independently
+for every request, retains no cursor or descriptor between results, reads at
+most 64 KiB plus one lookahead byte, and advances only through complete UTF-8.
+An incomplete endpoint remains unread with `partial-utf8`; an invalid internal
+sequence returns `InvalidUtf8`. `more` means unread bytes were observed; the app
+may request the next bounded chunk. Chunks may split lines, so applications own
+bounded partial-line assembly and history.
+
+A different device/inode restarts at offset zero with `rotated`; observed size
+below the previous offset restarts with `truncated`. Same-inode truncation and
+regrowth between observations cannot be detected. Concurrent writes are bounded
+observations, not snapshots. `start` reads history; `end` returns an empty chunk
+at EOF after validating its terminal code point (up to four bytes). An incomplete
+or invalid EOF code point refuses `end` with `InvalidUtf8`; skipped history is
+not validated. All routes use the existing 16-operation reservations, shared
+scope cancellation, stale-result rejection, and typed failure delivery.

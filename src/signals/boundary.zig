@@ -12,6 +12,10 @@ pub const TaskKind = enum(u32) {
     read_text = 4,
     write_text = 5,
     scan_directory = 6,
+    list_directory = 7,
+    open_path = 8,
+    read_preview = 9,
+    read_log = 10,
 };
 
 /// Host boundary payload kind ids. These are the ABI-level containers that cross

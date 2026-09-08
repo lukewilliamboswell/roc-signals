@@ -106,6 +106,20 @@ Files := [].{
 	Written : { path : Str, bytes : U64 }
 	Entry : { path : Str, kind : Kind, bytes : U64 }
 	Scan : { root : Str, entries : List(Entry) }
+	Directory : { path : Str, entries : List(Entry) }
+	Opened : { path : Str }
+	Preview : { path : Str, text : Str, truncated : Bool }
+	LogCursor : { device : U64, inode : U64, offset : U64 }
+	LogPosition := [Start, End, After(LogCursor)].{
+		is_eq : _
+	}
+	LogChange := [Initial, Continued, Rotated, Truncated].{
+		is_eq : _
+	}
+	LogState := [More, AtEnd, PartialUtf8].{
+		is_eq : _
+	}
+	LogChunk : { path : Str, text : Str, cursor : LogCursor, change : LogChange, state : LogState }
 
 	## Create one file-choice task. The label is diagnostic and never routes work.
 	choose_file_task : Str -> Signal.Task(Choice, Error)
@@ -167,6 +181,55 @@ Files := [].{
 	## Entries are observed over time; concurrent filesystem changes may fail the scan.
 	scan : Signal.Task(Scan, Error), Str -> Node.Cmd
 	scan = |task, root| file_start(Node.TaskKind.ScanDirectory, task, [root])
+
+	## Create a direct-child listing task, bounded like scan but without recursion.
+	list_directory_task : Str -> Signal.Task(Directory, Error)
+	list_directory_task = |name| file_task(Node.TaskKind.ListDirectory, name, decode_directory)
+
+	## Observe one directory's direct children; refuse the whole result on error.
+	list_directory : Signal.Task(Directory, Error), Str -> Node.Cmd
+	list_directory = |task, path| file_start(Node.TaskKind.ListDirectory, task, [path])
+
+	## Create a task that requests the desktop's associated file application.
+	open_path_task : Str -> Signal.Task(Opened, Error)
+	open_path_task = |name| file_task(Node.TaskKind.OpenPath, name, decode_opened)
+
+	## Success confirms an accepted launch, not the external application's lifetime.
+	## Cancellation cannot undo a completed handoff. The regular file is validated
+	## without following links first; the external app subsequently resolves its path.
+	open_path : Signal.Task(Opened, Error), Str -> Node.Cmd
+	open_path = |task, path| file_start(Node.TaskKind.OpenPath, task, [path])
+
+	## Create a bounded UTF-8 preview task; at most 64 KiB is returned.
+	read_preview_task : Str -> Signal.Task(Preview, Error)
+	read_preview_task = |name| file_task(Node.TaskKind.ReadPreview, name, decode_preview)
+
+	## Read a prefix, reporting truncation. Only a code point cut by the byte bound
+	## is omitted; invalid internal UTF-8 or an incomplete complete file is refused.
+	read_preview : Signal.Task(Preview, Error), Str -> Node.Cmd
+	read_preview = |task, path| file_start(Node.TaskKind.ReadPreview, task, [path])
+
+	## Create a stateless incremental log task. Cursors belong to the application;
+	## no descriptor or registry is retained between completed requests.
+	read_log_task : Str -> Signal.Task(LogChunk, Error)
+	read_log_task = |name| file_task(Node.TaskKind.ReadLog, name, decode_log)
+
+	## Read at most 64 KiB, consuming complete UTF-8 code points. An incomplete
+	## endpoint is left unread and reported as PartialUtf8; invalid bytes are errors.
+	## Chunks may split lines: the application owns bounded partial-line assembly.
+	## Start reads history; End seeds EOF after validating its terminal code point,
+	## refusing an incomplete endpoint. End does not validate skipped history.
+	## Device/inode change restarts at zero as Rotated; size below offset restarts
+	## as Truncated. Same-inode truncate-and-regrow between observations is invisible.
+	read_log : Signal.Task(LogChunk, Error), { path : Str, position : LogPosition } -> Node.Cmd
+	read_log = |task, request| {
+		fields = match request.position {
+			LogPosition.Start => ["start", "0", "0", "0"]
+			LogPosition.End => ["end", "0", "0", "0"]
+			LogPosition.After(cursor) => ["after", cursor.device.to_str(), cursor.inode.to_str(), cursor.offset.to_str()]
+		}
+		file_start(Node.TaskKind.ReadLog, task, [request.path].concat(fields))
+	}
 
 	## Describe a native failure without losing its typed case.
 	error_text : Error -> Str
@@ -243,6 +306,68 @@ Files := [].{
 		{ root: root.value, entries: $entries }
 	}
 
+	decode_directory = |payload| {
+		scan_result = decode_scan(payload)
+		{ path: scan_result.root, entries: scan_result.entries }
+	}
+
+	decode_opened = |payload| {
+		path = read_frame(reader(payload))
+		finish(path.rest)
+		{ path: path.value }
+	}
+
+	decode_preview = |payload| {
+		path = read_frame(reader(payload))
+		text = read_frame(path.rest)
+		truncated = read_frame(text.rest)
+		finish(truncated.rest)
+		if text.value.to_utf8().len() > 65536 {
+			crash "Files preview result limit exceeded"
+		}
+		{
+			path: path.value,
+			text: text.value,
+			truncated: match truncated.value {
+				"true" => True
+				"false" => False
+				_ => crash "malformed Files preview truncation"
+			},
+		}
+	}
+
+	decode_log = |payload| {
+		path = read_frame(reader(payload))
+		text = read_frame(path.rest)
+		device = read_frame(text.rest)
+		inode = read_frame(device.rest)
+		offset = read_frame(inode.rest)
+		change = read_frame(offset.rest)
+		state = read_frame(change.rest)
+		finish(state.rest)
+		if text.value.to_utf8().len() > 65536 {
+			crash "Files log result limit exceeded"
+		}
+		{
+			path: path.value,
+			text: text.value,
+			cursor: { device: number(device.value), inode: number(inode.value), offset: number(offset.value) },
+			change: match change.value {
+				"initial" => LogChange.Initial
+				"continued" => LogChange.Continued
+				"rotated" => LogChange.Rotated
+				"truncated" => LogChange.Truncated
+				_ => crash "malformed Files log change"
+			},
+			state: match state.value {
+				"more" => LogState.More
+				"at-end" => LogState.AtEnd
+				"partial-utf8" => LogState.PartialUtf8
+				_ => crash "malformed Files log state"
+			},
+		}
+	}
+
 	decode_error = |payload| {
 		kind = read_frame(reader(payload))
 		detail = read_frame(kind.rest)
@@ -266,3 +391,8 @@ expect Files.decode_text(packet(["/tmp/a:b\nλ.txt", "first\nsecond: λ"])) == {
 expect Files.decode_choice(packet(["canceled"])) == Files.Choice.Canceled
 expect Files.decode_written(packet(["/tmp/empty", "0"])) == { path: "/tmp/empty", bytes: 0 }
 expect Files.decode_scan(packet(["/tmp", "1", "/tmp/link", "symbolic-link", "0"])) == { root: "/tmp", entries: [{ path: "/tmp/link", kind: Files.Kind.SymbolicLink, bytes: 0 }] }
+
+expect Files.decode_directory(packet(["/tmp", "1", "/tmp/child", "directory", "0"])) == { path: "/tmp", entries: [{ path: "/tmp/child", kind: Files.Kind.Directory, bytes: 0 }] }
+expect Files.decode_opened(packet(["/tmp/a:λ.txt"])) == { path: "/tmp/a:λ.txt" }
+expect Files.decode_preview(packet(["/tmp/text", "first\nλ", "true"])) == { path: "/tmp/text", text: "first\nλ", truncated: True }
+expect Files.decode_log(packet(["/tmp/log", "λ\n", "7", "13", "3", "rotated", "partial-utf8"])) == { path: "/tmp/log", text: "λ\n", cursor: { device: 7, inode: 13, offset: 3 }, change: Files.LogChange.Rotated, state: Files.LogState.PartialUtf8 }

@@ -3,7 +3,7 @@
 use crate::{
     Runtime,
     bridge::Effect,
-    file_io::{self, FileError, Kind},
+    file_io::{self, FileError, Kind, LogChange, LogCursor, LogPosition, LogState},
 };
 use gpui::{Context, PathPromptOptions};
 use std::{
@@ -117,6 +117,28 @@ impl Manager {
                                 Request::Scan(path) => {
                                     file_io::scan(&path, &worker_cancel).map(scan_packet)
                                 }
+                                Request::ListDirectory(path) => {
+                                    file_io::list_directory(&path, &worker_cancel).map(|listing| {
+                                        entries_packet(&listing.path, listing.entries)
+                                    })
+                                }
+                                Request::OpenPath(path) => {
+                                    file_io::open_path(&path, &worker_cancel)
+                                        .map(|opened| packet(&[&opened.path]))
+                                }
+                                Request::ReadPreview(path) => {
+                                    file_io::read_preview(&path, &worker_cancel).map(|preview| {
+                                        packet(&[
+                                            &preview.path,
+                                            &preview.text,
+                                            if preview.truncated { "true" } else { "false" },
+                                        ])
+                                    })
+                                }
+                                Request::ReadLog { path, position } => {
+                                    file_io::read_log(&path, position, &worker_cancel)
+                                        .map(log_packet)
+                                }
                                 _ => unreachable!(),
                             }
                         });
@@ -187,6 +209,13 @@ enum Request {
         text: String,
     },
     Scan(String),
+    ListDirectory(String),
+    OpenPath(String),
+    ReadPreview(String),
+    ReadLog {
+        path: String,
+        position: LogPosition,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -236,6 +265,27 @@ impl Request {
                 text: reader.frame()?.into(),
             },
             6 => Self::Scan(reader.frame()?.into()),
+            7 => Self::ListDirectory(reader.frame()?.into()),
+            8 => Self::OpenPath(reader.frame()?.into()),
+            9 => Self::ReadPreview(reader.frame()?.into()),
+            10 => {
+                let path = reader.frame()?.into();
+                let position = reader.frame()?;
+                let device = reader.number()?;
+                let inode = reader.number()?;
+                let offset = reader.number()?;
+                let position = match (position, device, inode, offset) {
+                    ("start", 0, 0, 0) => LogPosition::Start,
+                    ("end", 0, 0, 0) => LogPosition::End,
+                    ("after", device, inode, offset) => LogPosition::After(LogCursor {
+                        device,
+                        inode,
+                        offset,
+                    }),
+                    _ => return Err("invalid log cursor"),
+                };
+                Self::ReadLog { path, position }
+            }
             _ => return Err("unknown task kind"),
         };
         if !reader.0.is_empty() {
@@ -247,6 +297,16 @@ impl Request {
 
 struct Reader<'a>(&'a str);
 impl<'a> Reader<'a> {
+    fn number(&mut self) -> Result<u64, &'static str> {
+        let frame = self.frame()?;
+        let value = frame
+            .parse::<u64>()
+            .map_err(|_| "invalid unsigned number")?;
+        if value.to_string() != frame {
+            return Err("noncanonical unsigned number");
+        }
+        Ok(value)
+    }
     fn frame(&mut self) -> Result<&'a str, &'static str> {
         let (length, rest) = self.0.split_once(':').ok_or("missing length")?;
         let length_value = length.parse::<usize>().map_err(|_| "invalid length")?;
@@ -281,8 +341,12 @@ fn packet(fields: &[&str]) -> String {
 }
 
 fn scan_packet(scan: file_io::Scan) -> String {
-    let mut output = packet(&[&scan.root, &scan.entries.len().to_string()]);
-    for entry in scan.entries {
+    entries_packet(&scan.root, scan.entries)
+}
+
+fn entries_packet(path: &str, entries: Vec<file_io::Entry>) -> String {
+    let mut output = packet(&[path, &entries.len().to_string()]);
+    for entry in entries {
         append_frame(&mut output, &entry.path);
         append_frame(
             &mut output,
@@ -296,6 +360,27 @@ fn scan_packet(scan: file_io::Scan) -> String {
         append_frame(&mut output, &entry.bytes.to_string());
     }
     output
+}
+
+fn log_packet(chunk: file_io::LogChunk) -> String {
+    packet(&[
+        &chunk.path,
+        &chunk.text,
+        &chunk.cursor.device.to_string(),
+        &chunk.cursor.inode.to_string(),
+        &chunk.cursor.offset.to_string(),
+        match chunk.change {
+            LogChange::Initial => "initial",
+            LogChange::Continued => "continued",
+            LogChange::Rotated => "rotated",
+            LogChange::Truncated => "truncated",
+        },
+        match chunk.state {
+            LogState::More => "more",
+            LogState::AtEnd => "at-end",
+            LogState::PartialUtf8 => "partial-utf8",
+        },
+    ])
 }
 
 fn validate_path(path: &str) -> Result<(), FileError> {
@@ -364,6 +449,61 @@ fn encode_result(result: Result<String, FileError>) -> (bool, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_task_routes_and_cursor_frames_are_strict_and_unambiguous() {
+        assert_eq!(
+            Request::decode(7, &packet(&["/tmp"])).unwrap(),
+            Request::ListDirectory("/tmp".into())
+        );
+        assert_eq!(
+            Request::decode(8, &packet(&["/tmp/file"])).unwrap(),
+            Request::OpenPath("/tmp/file".into())
+        );
+        assert_eq!(
+            Request::decode(9, &packet(&["/tmp/file"])).unwrap(),
+            Request::ReadPreview("/tmp/file".into())
+        );
+        assert_eq!(
+            Request::decode(
+                10,
+                &packet(&["/tmp/log", "after", "1", "2", "18446744073709551615"])
+            )
+            .unwrap(),
+            Request::ReadLog {
+                path: "/tmp/log".into(),
+                position: LogPosition::After(LogCursor {
+                    device: 1,
+                    inode: 2,
+                    offset: u64::MAX
+                })
+            }
+        );
+        for fields in [
+            vec!["/tmp/log", "start", "1", "0", "0"],
+            vec!["/tmp/log", "after", "01", "0", "0"],
+            vec!["/tmp/log", "after", "0", "0", "18446744073709551616"],
+            vec!["/tmp/log", "middle", "0", "0", "0"],
+            vec!["/tmp/log", "end", "0", "0"],
+        ] {
+            assert!(Request::decode(10, &packet(&fields)).is_err());
+        }
+        let chunk = file_io::LogChunk {
+            path: "/tmp/log".into(),
+            text: "λ\n".into(),
+            cursor: LogCursor {
+                device: 7,
+                inode: 13,
+                offset: 3,
+            },
+            change: LogChange::Rotated,
+            state: LogState::PartialUtf8,
+        };
+        assert_eq!(
+            log_packet(chunk),
+            packet(&["/tmp/log", "λ\n", "7", "13", "3", "rotated", "partial-utf8"])
+        );
+    }
 
     #[test]
     fn maximum_request_name_returns_a_bounded_typed_refusal() {

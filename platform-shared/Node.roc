@@ -40,7 +40,7 @@ Node := [].{
 	## results enter the same signal graph.
 	## Closed host service route. External tasks retain their explicitly installed
 	## host adapter; native file helpers select a fixed service without label routing.
-	TaskKind := [External, ChooseFile, ChooseDirectory, ChooseSavePath, ReadText, WriteText, ScanDirectory].{ is_eq : _ }
+	TaskKind := [External, ChooseFile, ChooseDirectory, ChooseSavePath, ReadText, WriteText, ScanDirectory, ListDirectory, OpenPath, ReadPreview, ReadLog].{ is_eq : _ }
 
 	TaskSource : {
 		token : Box((() -> HostValue)),

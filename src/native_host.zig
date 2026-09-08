@@ -94,11 +94,13 @@ const NativeTaskPublication = struct {
             const arguments: usize = switch (kind) {
                 .external => failHost("external tasks require an external task executor"),
                 .choose_file, .choose_directory => 0,
-                .read_text, .scan_directory => 1,
+                .read_text, .scan_directory, .list_directory, .open_path, .read_preview => 1,
                 .write_text => 2,
                 .choose_save_path => 3,
+                .read_log => 5,
             };
             native_files_codec.validateRequest(request, arguments) catch failHost("malformed native Files request");
+            if (kind == .read_log) native_files_codec.validateLogRequest(request) catch failHost("malformed native Files log cursor");
             return .{
                 .host = host,
                 .request_id = request_id,
@@ -12565,7 +12567,7 @@ const Gpui = struct {
         return needed;
     }
     fn effectVersion() callconv(.c) u32 {
-        return 1;
+        return 2;
     }
     fn effectSize() callconv(.c) usize {
         return @sizeOf(Effect);

@@ -8,7 +8,7 @@
 use std::{
     ffi::{CString, OsStr},
     fs::{self, File},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     os::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::ffi::OsStrExt,
@@ -23,7 +23,8 @@ pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 pub const MAX_SCAN_ENTRIES: usize = 10_000;
 pub const MAX_SCAN_DEPTH: usize = 64;
 pub const MAX_SCAN_PATH_BYTES: usize = 4 * 1024 * 1024;
-const CHUNK_BYTES: usize = 64 * 1024;
+pub const MAX_CHUNK_BYTES: usize = 64 * 1024;
+const CHUNK_BYTES: usize = MAX_CHUNK_BYTES;
 static TEMP_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -46,6 +47,54 @@ pub struct Entry {
 pub struct Scan {
     pub root: String,
     pub entries: Vec<Entry>,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub struct DirectoryListing {
+    pub path: String,
+    pub entries: Vec<Entry>,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub struct Preview {
+    pub path: String,
+    pub text: String,
+    pub truncated: bool,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub struct Opened {
+    pub path: String,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogCursor {
+    pub device: u64,
+    pub inode: u64,
+    pub offset: u64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogPosition {
+    Start,
+    End,
+    After(LogCursor),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogChange {
+    Initial,
+    Continued,
+    Rotated,
+    Truncated,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogState {
+    More,
+    AtEnd,
+    PartialUtf8,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub struct LogChunk {
+    pub path: String,
+    pub text: String,
+    pub cursor: LogCursor,
+    pub change: LogChange,
+    pub state: LogState,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -210,9 +259,7 @@ fn kind(mode: libc::mode_t) -> Kind {
     }
 }
 
-/// Reads one regular UTF-8 file, checking cancellation between bounded chunks.
-/// Symbolic links (including parent components) and special files are refused.
-pub fn read_text(path: &str, cancel: &AtomicBool) -> Result<TextFile, FileError> {
+fn regular_file(path: &str, cancel: &AtomicBool) -> Result<(File, libc::stat), FileError> {
     let parts = path_parts(path)?;
     let (name, parents) = parts
         .split_last()
@@ -220,7 +267,7 @@ pub fn read_text(path: &str, cancel: &AtomicBool) -> Result<TextFile, FileError>
     let parent = directory(parents, path, cancel)?;
     // O_NONBLOCK prevents a raced FIFO/device replacement from blocking before
     // its kind can be refused; it has no effect on regular-file reads.
-    let mut file = open_at(
+    let file = open_at(
         parent.as_raw_fd(),
         name,
         libc::O_RDONLY | libc::O_NONBLOCK,
@@ -231,6 +278,13 @@ pub fn read_text(path: &str, cancel: &AtomicBool) -> Result<TextFile, FileError>
     if kind(stat.st_mode) != Kind::File {
         return Err(FileError::InvalidPath(path.into()));
     }
+    Ok((file, stat))
+}
+
+/// Reads one regular UTF-8 file, checking cancellation between bounded chunks.
+/// Symbolic links (including parent components) and special files are refused.
+pub fn read_text(path: &str, cancel: &AtomicBool) -> Result<TextFile, FileError> {
+    let (mut file, stat) = regular_file(path, cancel)?;
     if stat.st_size > MAX_TEXT_BYTES as i64 {
         return Err(FileError::ResourceLimit(path.into()));
     }
@@ -421,6 +475,7 @@ fn scan_directory(
     depth: usize,
     cancel: &AtomicBool,
     budget: &mut ScanBudget,
+    recursive: bool,
 ) -> Result<(), FileError> {
     canceled(cancel)?;
     // /proc/self/fd resolves our still-owned descriptor, not an application path.
@@ -457,7 +512,7 @@ fn scan_directory(
             kind: entry_kind,
             bytes: stat.st_size.max(0) as u64,
         });
-        if entry_kind == Kind::Directory {
+        if recursive && entry_kind == Kind::Directory {
             if depth == MAX_SCAN_DEPTH {
                 return Err(FileError::ResourceLimit(path.into()));
             }
@@ -474,7 +529,7 @@ fn scan_directory(
                     "{entry_path}: entry changed during scan"
                 ))));
             }
-            scan_directory(&child, &entry_path, depth + 1, cancel, budget)?;
+            scan_directory(&child, &entry_path, depth + 1, cancel, budget, true)?;
         }
     }
     Ok(())
@@ -490,7 +545,7 @@ pub fn scan(root: &str, cancel: &AtomicBool) -> Result<Scan, FileError> {
         entries: Vec::new(),
         path_bytes: root.len(),
     };
-    scan_directory(&directory, root, 0, cancel, &mut budget)?;
+    scan_directory(&directory, root, 0, cancel, &mut budget, true)?;
     canceled(cancel)?;
     budget
         .entries
@@ -499,6 +554,236 @@ pub fn scan(root: &str, cancel: &AtomicBool) -> Result<Scan, FileError> {
         root: root.into(),
         entries: budget.entries,
     })
+}
+
+/// Lists only direct children through one owned no-follow directory handle.
+/// The whole observation is refused above 10,000 entries or four MiB of paths;
+/// symlinks are metadata entries and are never followed. Results are path-sorted.
+pub fn list_directory(path: &str, cancel: &AtomicBool) -> Result<DirectoryListing, FileError> {
+    let parts = path_parts(path)?;
+    let directory = directory(&parts, path, cancel)?;
+    let mut budget = ScanBudget {
+        entries: Vec::new(),
+        path_bytes: path.len(),
+    };
+    scan_directory(&directory, path, 0, cancel, &mut budget, false)?;
+    canceled(cancel)?;
+    budget
+        .entries
+        .sort_unstable_by(|left, right| left.path.cmp(&right.path));
+    Ok(DirectoryListing {
+        path: path.into(),
+        entries: budget.entries,
+    })
+}
+
+// Retain at most the requested byte count. A read can end between UTF-8 code
+// points; callers decide whether an incomplete tail is a prefix or pending data.
+fn read_chunk(
+    file: &mut File,
+    path: &str,
+    cancel: &AtomicBool,
+    count: usize,
+) -> Result<Vec<u8>, FileError> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(count)
+        .map_err(|_| FileError::ResourceLimit(path.into()))?;
+    bytes.resize(count, 0);
+    let mut used = 0;
+    while used < count {
+        canceled(cancel)?;
+        let read = file
+            .read(&mut bytes[used..])
+            .map_err(|error| io_error(path, error))?;
+        if read == 0 {
+            break;
+        }
+        used += read;
+    }
+    canceled(cancel)?;
+    bytes.truncate(used);
+    Ok(bytes)
+}
+
+fn utf8_prefix(bytes: &[u8], path: &str) -> Result<usize, FileError> {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => Ok(bytes.len()),
+        Err(error) if error.error_len().is_none() => Ok(error.valid_up_to()),
+        Err(_) => Err(FileError::InvalidUtf8(path.into())),
+    }
+}
+
+/// Reads a UTF-8 prefix of at most 64 KiB, reporting omitted bytes explicitly.
+/// A code point cut by the prefix bound is excluded; invalid UTF-8 inside the
+/// prefix or an incomplete terminal code point in a complete file is refused.
+pub fn read_preview(path: &str, cancel: &AtomicBool) -> Result<Preview, FileError> {
+    let (mut file, _) = regular_file(path, cancel)?;
+    let mut bytes = read_chunk(&mut file, path, cancel, MAX_CHUNK_BYTES + 1)?;
+    let truncated = bytes.len() > MAX_CHUNK_BYTES;
+    bytes.truncate(MAX_CHUNK_BYTES);
+    let valid = utf8_prefix(&bytes, path)?;
+    if !truncated && valid != bytes.len() {
+        return Err(FileError::InvalidUtf8(path.into()));
+    }
+    bytes.truncate(valid);
+    Ok(Preview {
+        path: path.into(),
+        text: String::from_utf8(bytes).unwrap(),
+        truncated,
+    })
+}
+
+/// Reads at most 64 KiB from a caller-owned cursor; the host retains no file or
+/// cursor between requests. A changed device/inode restarts at zero as Rotated;
+/// a shorter file restarts as Truncated. Same-inode truncate-and-regrow between
+/// observations cannot be distinguished. Start reads history; End seeds EOF
+/// after validating its terminal code point (not the skipped history). An
+/// incomplete or invalid EOF code point refuses End with InvalidUtf8.
+/// Only complete UTF-8 is consumed, so a partial terminal code point is retried
+/// from the returned offset. Invalid bytes refuse the request. Line assembly is
+/// the caller's bounded responsibility, and concurrent writes are observations,
+/// not snapshots. Cancellation closes the request's independently owned file.
+pub fn read_log(
+    path: &str,
+    position: LogPosition,
+    cancel: &AtomicBool,
+) -> Result<LogChunk, FileError> {
+    let (mut file, stat) = regular_file(path, cancel)?;
+    let size = u64::try_from(stat.st_size).map_err(|_| FileError::InvalidPath(path.into()))?;
+    let mut cursor = LogCursor {
+        device: stat.st_dev,
+        inode: stat.st_ino,
+        offset: 0,
+    };
+    let change = match position {
+        LogPosition::Start => LogChange::Initial,
+        LogPosition::End => {
+            cursor.offset = size;
+            LogChange::Initial
+        }
+        LogPosition::After(previous)
+            if previous.device != cursor.device || previous.inode != cursor.inode =>
+        {
+            LogChange::Rotated
+        }
+        LogPosition::After(previous) if previous.offset > size => LogChange::Truncated,
+        LogPosition::After(previous) => {
+            cursor.offset = previous.offset;
+            LogChange::Continued
+        }
+    };
+    if matches!(position, LogPosition::End) {
+        // End skips history, but must not seed a continuation in the middle of
+        // a code point. Four trailing bytes contain any complete UTF-8 endpoint.
+        file.seek(SeekFrom::Start(size.saturating_sub(4)))
+            .map_err(|error| io_error(path, error))?;
+        let tail = read_chunk(&mut file, path, cancel, size.min(4) as usize)?;
+        if !tail.is_empty() {
+            let mut start = tail.len() - 1;
+            while start > 0 && tail[start] & 0xc0 == 0x80 {
+                start -= 1;
+            }
+            std::str::from_utf8(&tail[start..]).map_err(|_| FileError::InvalidUtf8(path.into()))?;
+        }
+        canceled(cancel)?;
+        return Ok(LogChunk {
+            path: path.into(),
+            text: String::new(),
+            cursor,
+            change,
+            state: LogState::AtEnd,
+        });
+    }
+    file.seek(SeekFrom::Start(cursor.offset))
+        .map_err(|error| io_error(path, error))?;
+    let mut bytes = read_chunk(&mut file, path, cancel, MAX_CHUNK_BYTES + 1)?;
+    let more = bytes.len() > MAX_CHUNK_BYTES;
+    bytes.truncate(MAX_CHUNK_BYTES);
+    let valid = utf8_prefix(&bytes, path)?;
+    let state = if more {
+        LogState::More
+    } else if valid != bytes.len() {
+        LogState::PartialUtf8
+    } else {
+        LogState::AtEnd
+    };
+    bytes.truncate(valid);
+    cursor.offset = cursor
+        .offset
+        .checked_add(valid as u64)
+        .ok_or_else(|| FileError::ResourceLimit(path.into()))?;
+    Ok(LogChunk {
+        path: path.into(),
+        text: String::from_utf8(bytes).unwrap(),
+        cursor,
+        change,
+        state,
+    })
+}
+
+/// Requests the Linux desktop's associated application through `gio open`.
+/// Success means the desktop accepted the launch; it does not own the resulting
+/// application. Cancellation/deadline kills and reaps the launcher but cannot
+/// undo a launch already handed off. The path is validated through no-follow
+/// handles first; the external application subsequently resolves that path and
+/// owns its own access policy. Launcher stdout/stderr are never retained.
+pub fn open_path(path: &str, cancel: &AtomicBool) -> Result<Opened, FileError> {
+    open_path_with_launcher(path, cancel, OsStr::new("gio"))
+}
+
+fn open_path_with_launcher(
+    path: &str,
+    cancel: &AtomicBool,
+    launcher: &OsStr,
+) -> Result<Opened, FileError> {
+    use std::{
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    let (_file, _) = regular_file(path, cancel)?;
+    canceled(cancel)?;
+    let mut child = Command::new(launcher)
+        .arg("open")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            FileError::Unavailable(bounded_detail(format!("desktop file launcher: {error}")))
+        })?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(Opened { path: path.into() }),
+            Ok(Some(status)) => {
+                return Err(FileError::Unavailable(format!(
+                    "desktop file launcher exited with {status}"
+                )));
+            }
+            Ok(None) => (),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(FileError::Unavailable(bounded_detail(format!(
+                    "desktop file launcher: {error}"
+                ))));
+            }
+        }
+        if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return if cancel.load(Ordering::Acquire) {
+                Err(FileError::Canceled)
+            } else {
+                Err(FileError::Unavailable(
+                    "desktop file launcher timed out".into(),
+                ))
+            };
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[cfg(test)]
@@ -542,6 +827,182 @@ mod tests {
     }
     fn active() -> AtomicBool {
         AtomicBool::new(false)
+    }
+
+    #[test]
+    fn direct_listing_does_not_descend_and_refuses_entry_overflow() {
+        let dir = Directory::new();
+        fs::create_dir(dir.path("child")).unwrap();
+        fs::write(dir.path("child/hidden.txt"), "nested").unwrap();
+        symlink(dir.path("child"), dir.path("link")).unwrap();
+        let listing = list_directory(dir.root(), &active()).unwrap();
+        assert_eq!(listing.entries.len(), 2);
+        assert_eq!(listing.entries[0].kind, Kind::Directory);
+        assert_eq!(listing.entries[1].kind, Kind::SymbolicLink);
+        assert_eq!(
+            list_directory(&dir.path("child"), &active())
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
+        assert!(matches!(
+            list_directory(&dir.path("link"), &active()),
+            Err(FileError::InvalidPath(_))
+        ));
+        assert_eq!(
+            list_directory(dir.root(), &AtomicBool::new(true)),
+            Err(FileError::Canceled)
+        );
+        for index in 0..MAX_SCAN_ENTRIES - 2 {
+            fs::write(dir.path(&format!("entry-{index}")), "").unwrap();
+        }
+        assert_eq!(
+            list_directory(dir.root(), &active()).unwrap().entries.len(),
+            MAX_SCAN_ENTRIES
+        );
+        fs::write(dir.path("overflow"), "").unwrap();
+        assert!(matches!(
+            list_directory(dir.root(), &active()),
+            Err(FileError::ResourceLimit(_))
+        ));
+    }
+
+    #[test]
+    fn preview_preserves_utf8_and_distinguishes_prefix_from_invalid_content() {
+        let dir = Directory::new();
+        let path = dir.path("preview.txt");
+        fs::write(&path, format!("{}λtail", "x".repeat(MAX_CHUNK_BYTES - 1))).unwrap();
+        let preview = read_preview(&path, &active()).unwrap();
+        assert!(preview.truncated);
+        assert_eq!(preview.text.len(), MAX_CHUNK_BYTES - 1);
+        fs::write(&path, "x".repeat(MAX_CHUNK_BYTES)).unwrap();
+        assert!(!read_preview(&path, &active()).unwrap().truncated);
+        for bytes in [&b"invalid\xffbytes"[..], &b"partial\xce"[..]] {
+            fs::write(&path, bytes).unwrap();
+            assert!(matches!(
+                read_preview(&path, &active()),
+                Err(FileError::InvalidUtf8(_))
+            ));
+        }
+        assert_eq!(
+            read_preview(&path, &AtomicBool::new(true)),
+            Err(FileError::Canceled)
+        );
+    }
+
+    #[test]
+    fn log_cursor_handles_append_partial_utf8_truncation_and_rotation() {
+        let dir = Directory::new();
+        let path = dir.path("events.log");
+        fs::write(&path, b"first\npart\xce").unwrap();
+        let first = read_log(&path, LogPosition::Start, &active()).unwrap();
+        assert_eq!(first.text, "first\npart");
+        assert_eq!(first.cursor.offset, 10);
+        assert_eq!(first.change, LogChange::Initial);
+        assert_eq!(first.state, LogState::PartialUtf8);
+        assert!(matches!(
+            read_log(&path, LogPosition::End, &active()),
+            Err(FileError::InvalidUtf8(_))
+        ));
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"\xbb\nnext")
+            .unwrap();
+        let second = read_log(&path, LogPosition::After(first.cursor), &active()).unwrap();
+        assert_eq!(second.text, "λ\nnext");
+        assert_eq!(second.change, LogChange::Continued);
+        assert_eq!(second.state, LogState::AtEnd);
+        let end = read_log(&path, LogPosition::End, &active()).unwrap();
+        assert_eq!(end.cursor, second.cursor);
+        assert!(end.text.is_empty());
+        fs::write(&path, "short").unwrap();
+        let truncated = read_log(&path, LogPosition::After(second.cursor), &active()).unwrap();
+        assert_eq!(truncated.change, LogChange::Truncated);
+        assert_eq!(truncated.text, "short");
+        fs::rename(&path, dir.path("old.log")).unwrap();
+        fs::write(&path, "rotated\n").unwrap();
+        let rotated = read_log(&path, LogPosition::After(truncated.cursor), &active()).unwrap();
+        assert_eq!(rotated.change, LogChange::Rotated);
+        assert_eq!(rotated.text, "rotated\n");
+        assert_ne!(rotated.cursor.inode, truncated.cursor.inode);
+        assert_eq!(
+            read_log(&path, LogPosition::Start, &AtomicBool::new(true)),
+            Err(FileError::Canceled)
+        );
+    }
+
+    #[test]
+    fn log_bound_never_consumes_partial_codepoint_and_end_rejects_bad_endpoint() {
+        let dir = Directory::new();
+        let path = dir.path("events.log");
+        fs::write(&path, format!("{}λtail", "x".repeat(MAX_CHUNK_BYTES - 1))).unwrap();
+        let first = read_log(&path, LogPosition::Start, &active()).unwrap();
+        assert_eq!(first.text.len(), MAX_CHUNK_BYTES - 1);
+        assert_eq!(first.cursor.offset, (MAX_CHUNK_BYTES - 1) as u64);
+        assert_eq!(first.state, LogState::More);
+        let second = read_log(&path, LogPosition::After(first.cursor), &active()).unwrap();
+        assert_eq!(second.text, "λtail");
+        assert_eq!(second.state, LogState::AtEnd);
+        for text in ["", "λ", "ab🦀", "xé", "🦀é"] {
+            fs::write(&path, text).unwrap();
+            assert_eq!(
+                read_log(&path, LogPosition::End, &active())
+                    .unwrap()
+                    .cursor
+                    .offset,
+                text.len() as u64
+            );
+        }
+        fs::write(&path, b"\xff").unwrap();
+        assert!(matches!(
+            read_log(&path, LogPosition::Start, &active()),
+            Err(FileError::InvalidUtf8(_))
+        ));
+        assert!(matches!(
+            read_log(&path, LogPosition::End, &active()),
+            Err(FileError::InvalidUtf8(_))
+        ));
+        fs::write(&path, b"x\xf0\x9f\xa6").unwrap();
+        let partial = read_log(&path, LogPosition::Start, &active()).unwrap();
+        assert_eq!(partial.text, "x");
+        assert_eq!(partial.cursor.offset, 1);
+        assert_eq!(partial.state, LogState::PartialUtf8);
+        assert!(matches!(
+            read_log(&path, LogPosition::End, &active()),
+            Err(FileError::InvalidUtf8(_))
+        ));
+    }
+
+    #[test]
+    fn associated_open_reports_launcher_result_and_cancels_without_launching() {
+        let dir = Directory::new();
+        let path = dir.path("file.txt");
+        fs::write(&path, "document").unwrap();
+        assert_eq!(
+            open_path_with_launcher(&path, &active(), OsStr::new("/usr/bin/true"))
+                .unwrap()
+                .path,
+            path
+        );
+        assert!(matches!(
+            open_path_with_launcher(&path, &active(), OsStr::new("/usr/bin/false")),
+            Err(FileError::Unavailable(_))
+        ));
+        assert_eq!(
+            open_path_with_launcher(
+                &path,
+                &AtomicBool::new(true),
+                OsStr::new("/missing-launcher")
+            ),
+            Err(FileError::Canceled)
+        );
+        assert!(matches!(
+            open_path_with_launcher(&path, &active(), OsStr::new("/missing-launcher")),
+            Err(FileError::Unavailable(_))
+        ));
     }
 
     #[test]
@@ -764,7 +1225,7 @@ mod tests {
             path_bytes: 0,
         };
         assert!(matches!(
-            scan_directory(&handle, dir.root(), 0, &active(), &mut count_limit),
+            scan_directory(&handle, dir.root(), 0, &active(), &mut count_limit, true),
             Err(FileError::ResourceLimit(_))
         ));
         assert_eq!(count_limit.entries.len(), MAX_SCAN_ENTRIES);
@@ -773,7 +1234,7 @@ mod tests {
             path_bytes: MAX_SCAN_PATH_BYTES,
         };
         assert!(matches!(
-            scan_directory(&handle, dir.root(), 0, &active(), &mut path_limit),
+            scan_directory(&handle, dir.root(), 0, &active(), &mut path_limit, true),
             Err(FileError::ResourceLimit(_))
         ));
         assert!(path_limit.entries.is_empty());
@@ -788,7 +1249,8 @@ mod tests {
                 dir.root(),
                 MAX_SCAN_DEPTH,
                 &active(),
-                &mut depth_limit
+                &mut depth_limit,
+                true,
             ),
             Err(FileError::ResourceLimit(_))
         ));

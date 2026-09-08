@@ -3581,9 +3581,13 @@ pub const NodeTaskKind = enum(u8) {
     choose_file = 1,
     choose_save_path = 2,
     external = 3,
-    read_text = 4,
-    scan_directory = 5,
-    write_text = 6,
+    list_directory = 4,
+    open_path = 5,
+    read_log = 6,
+    read_preview = 7,
+    read_text = 8,
+    scan_directory = 9,
+    write_text = 10,
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         _ = self;
