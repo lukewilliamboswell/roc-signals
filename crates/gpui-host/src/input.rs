@@ -53,6 +53,7 @@ pub struct TextInput {
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
     multiline: bool,
+    disabled: bool,
     last_layout: Option<TextLayout>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
@@ -81,6 +82,7 @@ impl TextInput {
             selection_reversed: false,
             marked_range: None,
             multiline: false,
+            disabled: false,
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
@@ -101,6 +103,16 @@ impl TextInput {
         input.multiline = true;
         input.placeholder = "Start writing…".into();
         input
+    }
+
+    /// Prevents user edits while retaining this editor's identity and selection.
+    /// Reading, selecting, and copying remain available; authoritative engine
+    /// values can still replace the document while native work is in progress.
+    pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
+        if self.disabled != disabled {
+            self.disabled = disabled;
+            cx.notify();
+        }
     }
 
     /// Applies an authoritative engine value. Repeated snapshots and equal
@@ -233,6 +245,9 @@ impl TextInput {
     }
 
     fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         self.replace_text_in_range(None, "\n", window, cx);
     }
 
@@ -280,6 +295,9 @@ impl TextInput {
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.select_to(self.previous_boundary(self.cursor_offset()), cx)
         }
@@ -287,6 +305,9 @@ impl TextInput {
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.select_to(self.next_boundary(self.cursor_offset()), cx)
         }
@@ -329,6 +350,9 @@ impl TextInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             if self.multiline {
                 self.replace_text_in_range(None, &text, window, cx);
@@ -346,6 +370,9 @@ impl TextInput {
         }
     }
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
@@ -482,10 +509,13 @@ impl EntityInputHandler for TextInput {
 
     fn selected_text_range(
         &mut self,
-        _ignore_disabled_input: bool,
+        ignore_disabled_input: bool,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
+        if self.disabled && !ignore_disabled_input {
+            return None;
+        }
         Some(UTF16Selection {
             range: self.range_to_utf16(&self.selected_range),
             reversed: self.selection_reversed,
@@ -503,7 +533,14 @@ impl EntityInputHandler for TextInput {
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.marked_range = None;
+        if self.disabled {
+            return;
+        }
+        // Wayland resets composition with unmark_text before mouse dispatch.
+        // The displayed preedit becomes committed text before that next action.
+        if self.marked_range.take().is_some() {
+            self.emit_change(cx);
+        }
         cx.notify();
     }
 
@@ -514,6 +551,9 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -544,6 +584,9 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -1097,6 +1140,72 @@ mod tests {
                 assert!(!input.selection_reversed);
             })
         });
+    }
+
+    #[gpui::test]
+    fn ending_preedit_before_a_pointer_action_commits_the_visible_text(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let edits = Rc::new(RefCell::new(Vec::new()));
+        let captured = edits.clone();
+        let (input, cx) = cx.add_window_view(|_, cx| {
+            TextInput::new_multiline(
+                "".into(),
+                Rc::new(move |text, _| captured.borrow_mut().push(text)),
+                cx,
+            )
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "café", None, window, cx);
+                input.unmark_text(window, cx);
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(*edits.borrow(), vec!["café"]);
+        cx.update(|window, cx| input.update(cx, |input, cx| input.unmark_text(window, cx)));
+        assert_eq!(edits.borrow().len(), 1);
+    }
+
+    #[gpui::test]
+    fn disabled_editor_preserves_identity_and_selection_while_refusing_edits(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(bind_keys);
+        let edits = Rc::new(RefCell::new(Vec::new()));
+        let captured = edits.clone();
+        let (input, cx) = cx.add_window_view(|window, cx| {
+            let input = TextInput::new_multiline(
+                "Keep this".into(),
+                Rc::new(move |text, _| captured.borrow_mut().push(text)),
+                cx,
+            );
+            input.focus_handle.focus(window);
+            input
+        });
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| {
+                input.move_to(0, cx);
+                input.select_to(4, cx);
+                input.set_disabled(true, cx);
+            })
+        });
+        cx.simulate_keystrokes("backspace delete enter ctrl-x ctrl-v");
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "changed", window, cx);
+                input.replace_and_mark_text_in_range(None, "preedit", None, window, cx);
+                assert_eq!(input.content.as_ref(), "Keep this");
+                assert_eq!(input.selected_range, 0..4);
+                assert!(input.marked_range.is_none());
+                assert!(input.focus_handle.is_focused(window));
+                input.copy(&Copy, window, cx);
+                input.set_disabled(false, cx);
+            })
+        });
+        assert!(edits.borrow().is_empty());
+        cx.simulate_keystrokes("ctrl-v");
+        cx.update(|_, cx| assert_eq!(input.read(cx).content.as_ref(), "Keep this"));
     }
 
     #[gpui::test]
