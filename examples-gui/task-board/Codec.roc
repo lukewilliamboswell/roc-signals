@@ -27,7 +27,7 @@ Codec := [].{
 			return Err(Invalid("Task keys must contain 1–256 UTF-8 bytes"))
 		}
 		if value.title.to_utf8().len() > 512 or value.notes.to_utf8().len() > 8192 or value.assignee.to_utf8().len() > 128 {
-			return Err(Invalid("Task text exceeds the supported size"))
+			return Err(Invalid("Task limits are 512 bytes for titles, 8192 for notes, and 128 for assignees"))
 		}
 		Ok({ key: value.key, title: value.title, notes: value.notes, assignee: value.assignee, priority })
 	}
@@ -84,10 +84,12 @@ expect {
 
 ## Unknown versions and malformed input never become partial boards.
 expect {
-	[Codec.decode("{}"), Codec.decode("{\"version\":2,\"next\":1,\"planned\":[],\"progress\":[],\"complete\":[]}")].all(|value| match value {
-		Err(_) => True
-		Ok(_) => False
-	})
+	[Codec.decode("{}"), Codec.decode("{\"version\":2,\"next\":1,\"planned\":[],\"progress\":[],\"complete\":[]}")].all(
+		|value| match value {
+			Err(_) => True
+			Ok(_) => False
+		},
+	)
 }
 
 ## Duplicate identities across columns are refused before constructing Rows.

@@ -207,9 +207,6 @@ edit_field = |field, handles, column, label, attrs, update, read| {
 			|context, text| {
 				current = context.board
 				task = update(current.editor.task, text)
-				if task.title.to_utf8().len() > 512 or task.notes.to_utf8().len() > 8192 or task.assignee.to_utf8().len() > 128 {
-					return handles.document.set_cmd({ ..context.document, problem: "Task text limit reached: title 512 bytes, notes 8192 bytes, assignee 128 bytes. The edit was not applied." })
-				}
 				if task == current.editor.task {
 					return Signal.noop
 				}
@@ -580,6 +577,10 @@ document_toolbar = |handles| {
 			text = Codec.encode({ next, planned: Rows.to_list(context.board.planned), progress: Rows.to_list(context.board.progress), complete: Rows.to_list(context.board.complete) })
 			if text.to_utf8().len() > 1048576 {
 				return handles.document.set_cmd({ ..context.document, problem: "The encoded board exceeds one MiB. Shorten task notes before saving." })
+			}
+			match Codec.decode(text) {
+				Err(Codec.Error.Invalid(problem)) => return handles.document.set_cmd({ ..context.document, problem: "Cannot save: ${problem}. Your draft is retained." })
+				Ok(_) => {}
 			}
 			save = { text, snapshot: context.board }
 			phase = match context.document.path {

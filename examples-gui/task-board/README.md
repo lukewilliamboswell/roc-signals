@@ -43,9 +43,11 @@ and the next generated identity. Loading rejects malformed JSON, unsupported
 versions, duplicate keys across columns, exhausted identities, oversized fields,
 and boards over 500 tasks. Validation completes before replacing live data.
 The encoded file must fit the native Files one-MiB limit. Task titles support
-512 UTF-8 bytes, notes 8192, assignees 128, and keys 256. These are byte bounds,
-not character counts. A refused field edit leaves its previous value and explains
-the limit. Save reports an oversized encoded document without writing anything.
+512 UTF-8 bytes, notes 8192, assignees 128, and keys 256. These are document byte
+bounds, not character counts. Editing retains a draft beyond those limits so
+validation does not discard text or disagree with the native input. Save explains
+invalid fields or an oversized document without writing anything; shorten the
+draft and retry. Native individual text controls also have a one-MiB input bound.
 
 Open asks before replacing an unsaved board. Cancel or a failed read leaves the
 board and its previous path intact, even after choosing to discard. Saving holds
