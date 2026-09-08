@@ -1,6 +1,6 @@
 //! Shared runtime-sized buffer relocation behind typed list storage.
 //!
-//! Every typed `shared_buffer.List(T)` in the engine specializes its growth
+//! Every typed `std.ArrayListUnmanaged(T)` in the engine specializes its growth
 //! path per element type, so the browser artifact carries one remap/allocate/
 //! copy/free body per list type. This module implements that algorithm once,
 //! taking element size and alignment as ordinary runtime values, and offers a
@@ -20,7 +20,6 @@
 //! the returned pointer and the requested capacity; the old buffer is gone.
 
 const std = @import("std");
-const shared_buffer = @import("shared_buffer.zig");
 const math = std.math;
 const mem = std.mem;
 const Allocator = mem.Allocator;
@@ -68,7 +67,7 @@ pub noinline fn relocate(
 
 /// Returns the standard super-linear growth target for `minimum` elements.
 ///
-/// Kept identical to `shared_buffer.List(T).growCapacity` so migrating a
+/// Kept identical to `std.ArrayListUnmanaged(T).growCapacity` so migrating a
 /// list changes emitted code, not allocation traffic or capacity plateaus.
 pub fn growCapacity(comptime T: type, minimum: usize) usize {
     if (@sizeOf(T) == 0) return math.maxInt(usize);
@@ -442,7 +441,7 @@ test "initial allocation and standard growth policy" {
     defer list.deinit(std.testing.allocator);
     try list.append(std.testing.allocator, 0);
     try std.testing.expectEqual(growCapacity(u32, 1), list.capacity);
-    var reference: shared_buffer.List(u32) = .empty;
+    var reference: std.ArrayListUnmanaged(u32) = .empty;
     defer reference.deinit(std.testing.allocator);
     try reference.append(std.testing.allocator, 0);
     var i: u32 = 1;
