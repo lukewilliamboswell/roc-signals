@@ -47,10 +47,12 @@ pub const signal_graph = @import("signal_graph.zig");
 pub const signal_records = @import("signal_records.zig");
 pub const selector_runtime = @import("selector_runtime.zig");
 pub const shared_buffer = @import("shared_buffer.zig");
+pub const structural_positions = @import("structural_positions.zig");
 pub const structural_splice = @import("structural_splice.zig");
 
 // Discover imported tests even when the command filters out namespace tests.
 comptime {
+    @setEvalBranchQuota(10000);
     std.testing.refAllDecls(abi_view);
     std.testing.refAllDecls(active_signal_graph);
     std.testing.refAllDecls(boundary);
@@ -84,5 +86,6 @@ comptime {
     std.testing.refAllDecls(scope_tree);
     std.testing.refAllDecls(signal_graph);
     std.testing.refAllDecls(signal_records);
+    std.testing.refAllDecls(structural_positions);
     std.testing.refAllDecls(structural_splice);
 }

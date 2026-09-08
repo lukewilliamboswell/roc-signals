@@ -18,7 +18,7 @@ pub fn OrderIndex(comptime Span: type) type {
 }
 
 /// Reuses the prepared order index for another engine-owned identity domain.
-/// `Id.raw()` must provide a stable u64; identities stay nominal rather than
+/// `Id.raw()` must provide a stable unsigned integer; identities stay nominal rather than
 /// converting element handles into row handles. The caller owns all lifetime
 /// validation, and must retire an identity before publishing its replacement.
 pub fn StableOrderIndex(comptime Id: type, comptime Span: type) type {
@@ -344,7 +344,10 @@ pub fn StableOrderIndex(comptime Id: type, comptime Span: type) type {
             // Row ids are host-minted rather than app-controlled. SplitMix64
             // removes their sequential slot pattern while remaining exactly
             // deterministic across hosts and runs.
-            var value = row_id.raw() +% 0x9e37_79b9_7f4a_7c15;
+            const raw = row_id.raw();
+            var identity_word: u64 = @truncate(raw);
+            if (@bitSizeOf(@TypeOf(raw)) > 64) identity_word ^= @truncate(raw >> 64);
+            var value = identity_word +% 0x9e37_79b9_7f4a_7c15;
             value = (value ^ (value >> 30)) *% 0xbf58_476d_1ce4_e5b9;
             value = (value ^ (value >> 27)) *% 0x94d0_49bb_1331_11eb;
             return value ^ (value >> 31);

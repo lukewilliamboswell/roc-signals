@@ -29,6 +29,7 @@ const engine_contract = @import("engine_contract.zig");
 const render_sink = @import("render_sink.zig");
 const render_cache_mod = @import("render_cache.zig");
 const descriptor_stream = @import("descriptor_stream.zig");
+const structural_positions = @import("structural_positions.zig");
 const retained_values = @import("retained_values.zig");
 const signal_records = @import("signal_records.zig");
 const selector_runtime = @import("selector_runtime.zig");
@@ -4424,7 +4425,9 @@ pub fn Engine(comptime Ctx: type) type {
         fn collectActiveEachRowElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, each: HostNodeEachDesc, row_elem: abi.Elem, row_scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, dom_ordinal: *ids.SiteOrdinal, binder_stack: *shared_buffer.List(HostBinderBinding), row_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
             Ctx.pushHostValueCapabilities(ctx, &.{each.ops.item_capability});
             defer Ctx.popHostValueCapabilities(ctx);
+            try collection.appendConstructionPosition(row_scope_id, parent_elem_id, .rowStart(row_scope_id));
             try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, row_elem, row_scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
+            try collection.appendConstructionPosition(row_scope_id, parent_elem_id, .rowEnd(row_scope_id));
         }
 
         fn buildEachRowElem(self: *Self, roc_host: *abi.RocHost, ops: HostEachOps, row_scope_id: ids.ScopeId) abi.Elem {
@@ -4513,6 +4516,7 @@ pub fn Engine(comptime Ctx: type) type {
             fresh_dom_cursor: u64 = 0,
             prepared_nodes: shared_buffer.List(HostNodeDescriptorStream.PreparedStaticNode) = .empty,
             prepared_render_order: shared_buffer.List(PreparedRenderNode) = .empty,
+            construction_order: shared_buffer.List(structural_positions.Entry) = .empty,
             prepared_attrs: shared_buffer.List(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
             prepared_signal_attrs: shared_buffer.List(HostNodeDescriptorStream.PreparedSignalDescriptor) = .empty,
             /// Exact names already staged by this transaction. Keys borrow
@@ -4719,6 +4723,10 @@ pub fn Engine(comptime Ctx: type) type {
                     const state_cells = try total(self.state_sites, self.external_states);
                     collection.prepared_nodes.ensureUnusedCapacity(allocator, self.nodes) catch return error.OutOfMemory;
                     collection.prepared_render_order.ensureUnusedCapacity(allocator, self.nodes) catch return error.OutOfMemory;
+                    const row_positions = try total(self.each_rows, self.each_rows);
+                    const site_positions = try total(self.when_sites, try total(self.each_sites, self.each_sites));
+                    const position_count = try total(self.nodes, try total(site_positions, row_positions));
+                    collection.construction_order.ensureUnusedCapacity(allocator, position_count) catch return error.OutOfMemory;
                     collection.prepared_attrs.ensureUnusedCapacity(allocator, static_attrs) catch return error.OutOfMemory;
                     collection.prepared_signal_attrs.ensureUnusedCapacity(allocator, signal_descriptors) catch return error.OutOfMemory;
                     // A nested branch can reserve before its parent's remaining
@@ -4787,6 +4795,7 @@ pub fn Engine(comptime Ctx: type) type {
                     const stream = collection.stream;
                     std.debug.assert(collection.prepared_nodes.capacity >= self.nodes);
                     std.debug.assert(collection.prepared_render_order.capacity >= self.nodes);
+                    std.debug.assert(collection.construction_order.capacity >= self.nodes + self.when_sites + self.each_sites);
                     const static_attrs = self.static_text_attrs +| self.static_custom_text_attrs +| self.static_bool_attrs +| self.static_custom_bool_attrs;
                     const signal_descriptors = self.signal_text_attrs +| self.signal_custom_text_attrs +| self.signal_optional_custom_text_attrs +| self.signal_bool_attrs +| self.signal_custom_bool_attrs +| self.signal_text_nodes;
                     std.debug.assert(collection.prepared_attrs.capacity >= static_attrs);
@@ -4944,6 +4953,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 self.prepared_nodes.deinit(allocator);
                 self.prepared_render_order.deinit(allocator);
+                self.construction_order.deinit(allocator);
                 self.prepared_attrs.deinit(allocator);
                 self.prepared_signal_attrs.deinit(allocator);
                 self.prepared_events.deinit(allocator);
@@ -5321,6 +5331,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .when, binder_stack) catch return error.OutOfMemory;
                 site.desc.render_insert_index = self.prepared_render_order.items.len;
                 errdefer site.abort(allocator);
+                try self.appendConstructionPosition(scope_id, parent_elem_id, .marker(node_id, .when));
                 const condition = try self.bindSignalRoot(roc_host, payload.condition.*, binder_stack);
                 var prepared = self.stream.prepareWhen(node_id, condition, payload.ops, &self.engine.pending_roc_metrics);
                 errdefer prepared.abort(allocator, self.host_ctx, roc_host, &self.engine.pending_roc_metrics);
@@ -5363,6 +5374,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .each, binder_stack.items) catch return error.OutOfMemory;
                 site.desc.render_insert_index = self.prepared_render_order.items.len;
                 errdefer site.abort(allocator);
+                try self.appendConstructionPosition(scope_id, parent_elem_id, .marker(node_id, .each));
                 const items = try self.bindSignalRoot(roc_host, payload.rows.*, binder_stack.items);
                 var prepared_each = self.stream.prepareEach(node_id, items, payload.ops, &self.engine.pending_roc_metrics);
                 errdefer prepared_each.abort(allocator, self.host_ctx, roc_host, &self.engine.pending_roc_metrics);
@@ -5382,6 +5394,7 @@ pub fn Engine(comptime Ctx: type) type {
                 // its rows afresh.
                 if (self.liveEachSiteIndex(scope_id, site_ordinal)) |site_index| {
                     try self.collectNestedRowSync(roc_host, scope_id, parent_elem_id, site_ordinal, site_index, &prepared_each.desc, binder_stack, dirty_source_node_ids);
+                    try self.appendConstructionPosition(scope_id, parent_elem_id, .marker(node_id, .each_end));
                     self.prepared_state_sites.appendAssumeCapacity(site);
                     self.prepared_eaches.appendAssumeCapacity(prepared_each);
                     ordinal.* = ids.SiteOrdinal.fromRaw(ordinal.*.raw() + 1);
@@ -5502,6 +5515,8 @@ pub fn Engine(comptime Ctx: type) type {
                     else => error.InvalidDescriptor,
                 };
                 self.row_render_span_intents.ensureUnusedCapacity(allocator, row_render_ranges.len) catch return error.OutOfMemory;
+
+                try self.appendConstructionPosition(scope_id, parent_elem_id, .marker(node_id, .each_end));
 
                 // Transfer the only still-fallible owner first. If growing
                 // this journal refuses, the local errdefers remain the sole
@@ -5950,6 +5965,14 @@ pub fn Engine(comptime Ctx: type) type {
                 for (row_render_ranges.items) |range| self.row_render_span_intents.appendAssumeCapacity(.{ .owner = .{ .nested = nested_sync_index }, .range = range });
             }
 
+            fn appendConstructionPosition(self: *@This(), owner: ids.ScopeId, parent: ids.ElemId, position: structural_positions.PositionId) CollectionError!void {
+                try self.budget.charge(0, @sizeOf(structural_positions.Entry));
+                // External replacement rows can add their boundary pair after
+                // static-root counts are known. Growth is still provisional,
+                // charged to this collection, and released on refusal.
+                self.construction_order.append(Ctx.allocator(self.host_ctx), .{ .owner = owner, .parent = parent, .position = position }) catch return error.OutOfMemory;
+            }
+
             fn appendElement(self: *@This(), scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, dom_ordinal: *ids.SiteOrdinal, tag: []const u8, namespace: render.ElementNamespace) CollectionError!ids.ElemId {
                 const descriptor_bytes = std.math.add(usize, @sizeOf(HostElementDesc), tag.len) catch return error.ResourceLimit;
                 try self.budget.charge(1, descriptor_bytes);
@@ -5958,6 +5981,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const prepared = try self.stream.prepareElementInNamespace(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, tag, namespace);
                 self.prepared_nodes.appendAssumeCapacity(prepared);
                 self.prepared_render_order.appendAssumeCapacity(.{ .static = self.prepared_nodes.items.len - 1 });
+                try self.appendConstructionPosition(scope_id, parent_elem_id, .element(elem_id));
                 dom_ordinal.* = ids.SiteOrdinal.fromRaw(dom_ordinal.*.raw() + 1);
                 return elem_id;
             }
@@ -5970,6 +5994,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const prepared = try self.stream.prepareTextNode(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, value);
                 self.prepared_nodes.appendAssumeCapacity(prepared);
                 self.prepared_render_order.appendAssumeCapacity(.{ .static = self.prepared_nodes.items.len - 1 });
+                try self.appendConstructionPosition(scope_id, parent_elem_id, .element(elem_id));
                 dom_ordinal.* = ids.SiteOrdinal.fromRaw(dom_ordinal.*.raw() + 1);
             }
 
@@ -5990,6 +6015,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.signal_records.transferDescriptorRoot(signal.record);
                 const journaled = self.signal_bindings.pop() orelse @panic("staged signal binding journal underflow");
                 if (journaled.record != signal.record or journaled.source_node_ids.ptr != signal.source_node_ids.ptr or journaled.source_node_ids.len != signal.source_node_ids.len) @panic("staged signal binding journal transfer mismatch");
+                try self.appendConstructionPosition(scope_id, parent_elem_id, .element(elem_id));
                 dom_ordinal.* = ids.SiteOrdinal.fromRaw(dom_ordinal.*.raw() + 1);
             }
 
