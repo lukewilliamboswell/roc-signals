@@ -152,10 +152,10 @@ main = || {
 							## A lane's value is a settlement record, not a live status, so lanes
 							## are built with reset_on_start = False: starting a request must not
 							## erase the Notes.token the lane last settled.
-							task_0 = Signal.task_source({ name: "note-sync", reset_on_start: False, canceled: || "canceled", refused: || "too many pending requests" }, |value| value, |err| err)
-							task_1 = Signal.task_source({ name: "note-sync", reset_on_start: False, canceled: || "canceled", refused: || "too many pending requests" }, |value| value, |err| err)
-							task_2 = Signal.task_source({ name: "note-sync", reset_on_start: False, canceled: || "canceled", refused: || "too many pending requests" }, |value| value, |err| err)
-							task_3 = Signal.task_source({ name: "note-sync", reset_on_start: False, canceled: || "canceled", refused: || "too many pending requests" }, |value| value, |err| err)
+							task_0 = Signal.task_source("note-sync", |value| value, |err| err, False)
+							task_1 = Signal.task_source("note-sync", |value| value, |err| err, False)
+							task_2 = Signal.task_source("note-sync", |value| value, |err| err, False)
+							task_3 = Signal.task_source("note-sync", |value| value, |err| err, False)
 
 							## Wide fan-in: one lane status signal per outbox lane, each from its
 							## own task source, combined into the lane status vector.
