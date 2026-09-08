@@ -544,6 +544,233 @@ const StreamElementDesc = ElementDesc;
 const StreamTextNodeDesc = TextNodeDesc;
 const StreamSignalTextNodeDesc = SignalTextNodeDesc;
 
+/// Resolves a retained binder inside one owning scope without visiting sibling
+/// states. Descriptor aliases in the same scope keep the existing first-site
+/// winner. An indexed treap maintains that order through dense-array swaps;
+/// lookup itself reads the cached minimum, independent of the alias count.
+/// Tokens are borrowed identities: StateDesc.initial owns their callable.
+const StateBinderIndex = struct {
+    const Entry = struct {
+        key: u128,
+        order: usize,
+        priority: u64,
+        parent: ?NodeId = null,
+        left: ?NodeId = null,
+        right: ?NodeId = null,
+    };
+    const Bucket = struct { root: NodeId, first: NodeId };
+
+    buckets: std.AutoHashMapUnmanaged(u128, Bucket) = .{},
+    entries: std.AutoHashMapUnmanaged(u64, Entry) = .{},
+
+    fn key(scope: ScopeId, token: BinderToken) u128 {
+        return (@as(u128, scope.raw()) << 64) | @as(u128, @intFromPtr(token));
+    }
+
+    fn reserve(self: *@This(), allocator: std.mem.Allocator, additional: usize) ReserveError!void {
+        const count = std.math.cast(u32, additional) orelse return error.ResourceLimit;
+        try self.buckets.ensureUnusedCapacity(allocator, count);
+        try self.entries.ensureUnusedCapacity(allocator, count);
+    }
+
+    fn entry(self: *@This(), node: NodeId) *Entry {
+        return self.entries.getPtr(node.raw()).?;
+    }
+
+    fn has(self: *const @This(), node: NodeId) bool {
+        return self.entries.contains(node.raw());
+    }
+
+    fn find(self: *const @This(), scope: ScopeId, token: BinderToken) ?NodeId {
+        return if (self.buckets.get(key(scope, token))) |bucket| bucket.first else null;
+    }
+
+    fn priorityBefore(self: *@This(), left: NodeId, right: NodeId) bool {
+        const a = self.entry(left).priority;
+        const b = self.entry(right).priority;
+        return a < b or (a == b and left.raw() < right.raw());
+    }
+
+    fn rotateUp(self: *@This(), child: NodeId) void {
+        const parent = self.entry(child).parent.?;
+        const grandparent = self.entry(parent).parent;
+        if (self.entry(parent).left == child) {
+            const middle = self.entry(child).right;
+            self.entry(parent).left = middle;
+            if (middle) |node| self.entry(node).parent = parent;
+            self.entry(child).right = parent;
+        } else {
+            std.debug.assert(self.entry(parent).right == child);
+            const middle = self.entry(child).left;
+            self.entry(parent).right = middle;
+            if (middle) |node| self.entry(node).parent = parent;
+            self.entry(child).left = parent;
+        }
+        self.entry(parent).parent = child;
+        self.entry(child).parent = grandparent;
+        if (grandparent) |node| {
+            if (self.entry(node).left == parent) self.entry(node).left = child else self.entry(node).right = child;
+        } else {
+            self.buckets.getPtr(self.entry(child).key).?.root = child;
+        }
+    }
+
+    fn insertAssumeCapacity(self: *@This(), scope: ScopeId, token: BinderToken, node: NodeId, order: usize) void {
+        self.insertKeyAssumeCapacity(key(scope, token), node, order);
+    }
+
+    fn insertKeyAssumeCapacity(self: *@This(), binder_key: u128, node: NodeId, order: usize) void {
+        if (self.entries.contains(node.raw())) @panic("state binder identity published twice");
+        const raw = node.raw();
+        self.entries.putAssumeCapacity(raw, .{ .key = binder_key, .order = order, .priority = std.hash.Wyhash.hash(0, std.mem.asBytes(&raw)) });
+        const bucket = self.buckets.getOrPutAssumeCapacity(binder_key);
+        if (!bucket.found_existing) {
+            bucket.value_ptr.* = .{ .root = node, .first = node };
+            return;
+        }
+        if (order < self.entry(bucket.value_ptr.first).order) bucket.value_ptr.first = node;
+        var parent = bucket.value_ptr.root;
+        while (true) {
+            if (order == self.entry(parent).order) @panic("state binder sites shared a descriptor index");
+            const before = order < self.entry(parent).order;
+            const next = if (before) self.entry(parent).left else self.entry(parent).right;
+            if (next) |candidate| {
+                parent = candidate;
+            } else {
+                if (before) self.entry(parent).left = node else self.entry(parent).right = node;
+                self.entry(node).parent = parent;
+                break;
+            }
+        }
+        while (self.entry(node).parent) |ancestor| {
+            if (!self.priorityBefore(node, ancestor)) break;
+            self.rotateUp(node);
+        }
+    }
+
+    fn remove(self: *@This(), node: NodeId) void {
+        if (!self.has(node)) return;
+        const binder_key = self.entry(node).key;
+        while (self.entry(node).left != null or self.entry(node).right != null) {
+            const left = self.entry(node).left;
+            const right = self.entry(node).right;
+            const child = if (left == null) right.? else if (right == null) left.? else if (self.priorityBefore(left.?, right.?)) left.? else right.?;
+            self.rotateUp(child);
+        }
+        const bucket = self.buckets.getPtr(binder_key).?;
+        if (self.entry(node).parent) |parent| {
+            if (self.entry(parent).left == node) self.entry(parent).left = null else self.entry(parent).right = null;
+            if (bucket.first == node) {
+                var first = bucket.root;
+                while (self.entry(first).left) |next| first = next;
+                bucket.first = first;
+            }
+        } else {
+            std.debug.assert(bucket.root == node);
+            _ = self.buckets.remove(binder_key);
+        }
+        _ = self.entries.remove(node.raw());
+    }
+
+    fn updateOrder(self: *@This(), node: NodeId, order: usize) void {
+        if (!self.has(node) or self.entry(node).order == order) return;
+        const binder_key = self.entry(node).key;
+        self.remove(node);
+        self.insertKeyAssumeCapacity(binder_key, node, order);
+    }
+
+    fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.buckets.deinit(allocator);
+        self.entries.deinit(allocator);
+        self.* = .{};
+    }
+};
+
+test "state binder index preserves scoped aliases and current descriptor order" {
+    const allocator = std.testing.allocator;
+    var index: StateBinderIndex = .{};
+    defer index.deinit(allocator);
+    const token: BinderToken = @ptrFromInt(0x1000);
+    try index.reserve(allocator, 4);
+    index.insertAssumeCapacity(ScopeId.fromRaw(0), token, NodeId.fromRaw(2), 20);
+    index.insertAssumeCapacity(ScopeId.fromRaw(0), token, NodeId.fromRaw(5), 10);
+    index.insertAssumeCapacity(ScopeId.fromRaw(1), token, NodeId.fromRaw(3), 0);
+    try std.testing.expectEqual(NodeId.fromRaw(5), index.find(ScopeId.fromRaw(0), token).?);
+    try std.testing.expectEqual(NodeId.fromRaw(3), index.find(ScopeId.fromRaw(1), token).?);
+    try std.testing.expectEqual(@as(?NodeId, null), index.find(ScopeId.fromRaw(2), token));
+
+    index.updateOrder(NodeId.fromRaw(2), 5);
+    try std.testing.expectEqual(NodeId.fromRaw(2), index.find(ScopeId.fromRaw(0), token).?);
+    index.remove(NodeId.fromRaw(2));
+    try std.testing.expectEqual(NodeId.fromRaw(5), index.find(ScopeId.fromRaw(0), token).?);
+    index.remove(NodeId.fromRaw(5));
+    try std.testing.expectEqual(@as(?NodeId, null), index.find(ScopeId.fromRaw(0), token));
+    index.insertAssumeCapacity(ScopeId.fromRaw(2), token, NodeId.fromRaw(2), 7);
+    try std.testing.expectEqual(NodeId.fromRaw(2), index.find(ScopeId.fromRaw(2), token).?);
+    try std.testing.expectEqual(NodeId.fromRaw(3), index.find(ScopeId.fromRaw(1), token).?);
+}
+
+test "state binder index keeps the first alias through a long removal and reorder sequence" {
+    const allocator = std.testing.allocator;
+    const count = 1000;
+    var index: StateBinderIndex = .{};
+    defer index.deinit(allocator);
+    const token: BinderToken = @ptrFromInt(0x1000);
+    const scope = ScopeId.fromRaw(0);
+    try index.reserve(allocator, count * 2);
+    for (0..count) |i| {
+        index.insertAssumeCapacity(scope, token, NodeId.fromIndex(i), i);
+        index.insertAssumeCapacity(ScopeId.fromRaw(i + 1), token, NodeId.fromIndex(count + i), i);
+    }
+    for (0..count / 2) |i| {
+        index.remove(NodeId.fromIndex(i));
+        try std.testing.expectEqual(NodeId.fromIndex(i + 1), index.find(scope, token).?);
+        try std.testing.expectEqual(NodeId.fromIndex(count + i), index.find(ScopeId.fromRaw(i + 1), token).?);
+    }
+    for (count / 2..count) |i| index.updateOrder(NodeId.fromIndex(i), count * 4 - i);
+    try std.testing.expectEqual(NodeId.fromIndex(count - 1), index.find(scope, token).?);
+    var remaining: usize = count;
+    while (remaining > count / 2) {
+        remaining -= 1;
+        index.remove(NodeId.fromIndex(remaining));
+        const expected: ?NodeId = if (remaining == count / 2) null else NodeId.fromIndex(remaining - 1);
+        try std.testing.expectEqual(expected, index.find(scope, token));
+    }
+}
+
+test "state binder index reservation failures preserve committed lookup and publication allocates nothing" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const token: BinderToken = @ptrFromInt(0x1000);
+    const Runner = struct {
+        fn run(failure: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            const allocator = fault.allocator();
+            var index: StateBinderIndex = .{};
+            defer index.deinit(allocator);
+            try index.reserve(allocator, 1);
+            index.insertAssumeCapacity(ScopeId.fromRaw(0), token, NodeId.fromRaw(0), 9);
+            fault.configure(failure);
+            index.reserve(allocator, 1000) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(NodeId.fromRaw(0), index.find(ScopeId.fromRaw(0), token).?);
+                try std.testing.expectEqual(@as(?NodeId, null), index.find(ScopeId.fromRaw(1), token));
+                return fault.attempts;
+            };
+            const attempts = fault.attempts;
+            fault.configure(1);
+            index.insertAssumeCapacity(ScopeId.fromRaw(0), token, NodeId.fromRaw(1), 10);
+            index.updateOrder(NodeId.fromRaw(1), 0);
+            try std.testing.expectEqual(NodeId.fromRaw(1), index.find(ScopeId.fromRaw(0), token).?);
+            index.remove(NodeId.fromRaw(1));
+            try std.testing.expectEqual(NodeId.fromRaw(0), index.find(ScopeId.fromRaw(0), token).?);
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            return attempts;
+        }
+    };
+    const attempts = try Runner.run(null);
+    for (1..attempts + 1) |failure| _ = try Runner.run(failure);
+}
+
 /// Maintains custom attr refs within the indexed descriptor stream used by both hosts.
 pub fn CustomAttrRefs(comptime StreamType: type) type {
     return struct {
@@ -730,6 +957,7 @@ pub const Stream = struct {
     custom_attr_indices_by_elem_id: shared_buffer.List(shared_buffer.List(CustomAttrDescriptorIndex)) = .empty,
     lifecycle_indices_by_scope_id: shared_buffer.List(shared_buffer.List(LifecycleDescriptorIndex)) = .empty,
     scope_descriptor_ownership: shared_buffer.List(ScopeDescriptorOwnership) = .empty,
+    state_binders: StateBinderIndex = .{},
     custom_attr_index_active: bool = false,
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .{},
     named_event_indices_by_elem_id: shared_buffer.List(shared_buffer.List(usize)) = .empty,
@@ -797,6 +1025,7 @@ pub const Stream = struct {
         for (replacement.scope_sites.items) |site| highest_node_id = @max(highest_node_id, site.node_id.index());
         const node_index_len = if (replacement.scope_sites.items.len == 0) self.descriptor_indexes_by_node_id.items.len else std.math.add(usize, highest_node_id, 1) catch return error.ResourceLimit;
         try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, node_index_len);
+        if (replacement.states.items.len != 0) try self.state_binders.reserve(allocator, replacement.states.items.len);
 
         for (replacement.named_event_indices_by_elem_id.items, 0..) |replacement_indexes, elem_id| {
             if (replacement_indexes.items.len == 0 or elem_id >= self.named_event_indices_by_elem_id.items.len) continue;
@@ -1233,6 +1462,7 @@ pub const Stream = struct {
             const index = self.states.items.len;
             self.states.appendAssumeCapacity(desc);
             setFreshIndex(&self.descriptor_indexes_by_node_id.items[desc.node_id.index()].state, index);
+            self.recordStateBinderAssumeCapacity(desc);
         }
         replacement.states.items.len = 0;
         for (replacement.whens.items) |desc| {
@@ -1735,21 +1965,33 @@ pub const Stream = struct {
     /// Records the dense scope site descriptor index used for O(1) runtime lookup.
     pub fn recordScopeSiteIndex(self: *Stream, allocator: std.mem.Allocator, node_id: u64, kind: ScopeSiteKind, index: usize) void {
         recordScopeSiteIndexImpl(Stream, self, allocator, node_id, kind, index);
+        if (kind == .state) self.state_binders.updateOrder(NodeId.fromRaw(node_id), index);
     }
 
     /// Updates the dense scope site descriptor index after a local structural splice.
     pub fn updateScopeSiteIndex(self: *Stream, node_id: u64, kind: ScopeSiteKind, index: usize) void {
         updateScopeSiteIndexImpl(Stream, self, node_id, kind, index);
+        if (kind == .state) self.state_binders.updateOrder(NodeId.fromRaw(node_id), index);
     }
 
     /// Clears scope site index while retaining bounded storage where the type promises reuse.
     pub fn clearScopeSiteIndex(self: *Stream, node_id: u64, kind: ScopeSiteKind, expected: usize) void {
+        if (kind == .state) self.state_binders.remove(NodeId.fromRaw(node_id));
         clearScopeSiteIndexImpl(Stream, self, node_id, kind, expected);
     }
 
-    /// Records the dense state descriptor index used for O(1) runtime lookup.
+    /// Reserves binder lookup storage before legacy append or splice mutation.
+    /// Prepared ingestion and replacement reserve this storage with their other
+    /// descriptor destinations; reservation never publishes lookup candidates.
+    pub fn reserveStateBinderPublication(self: *Stream, allocator: std.mem.Allocator, additional: usize) ReserveError!void {
+        try self.state_binders.reserve(allocator, additional);
+    }
+
+    /// Records a state descriptor and its scoped binder lookup. Binder storage
+    /// must be reserved before publication; this operation does not grow it.
     pub fn recordStateIndex(self: *Stream, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
         recordStateIndexImpl(Stream, self, allocator, node_id, index);
+        self.recordStateBinderAssumeCapacity(self.states.items[index]);
     }
 
     /// Updates the dense state descriptor index after a local structural splice.
@@ -1759,7 +2001,22 @@ pub const Stream = struct {
 
     /// Clears state index while retaining bounded storage where the type promises reuse.
     pub fn clearStateIndex(self: *Stream, node_id: u64, expected: usize) void {
+        self.state_binders.remove(NodeId.fromRaw(node_id));
         clearStateIndexImpl(Stream, self, node_id, expected);
+    }
+
+    fn recordStateBinderAssumeCapacity(self: *Stream, state: StateDesc) void {
+        const index = self.descriptor_indexes_by_node_id.items[state.node_id.index()].scope_sites.state.get() orelse @panic("state descriptor lacked its owning site");
+        const site = self.scope_sites.items[index];
+        self.state_binders.insertAssumeCapacity(site.scope_id, retained.hostSignalTokenFromCallable(state.initial.toAbi()), state.node_id, index);
+    }
+
+    /// Resolves a binder declared directly in this scope. The caller walks live
+    /// ancestor scopes when needed; sibling placements are never candidates.
+    /// Reused descriptions within one scope retain the first descriptor-site
+    /// match, including after swap removal changes the descriptor order.
+    pub fn stateNodeForBinder(self: *const Stream, scope_id: ScopeId, token: BinderToken) ?NodeId {
+        return self.state_binders.find(scope_id, token);
     }
 
     /// Records the dense when descriptor index used for O(1) runtime lookup.
@@ -1884,6 +2141,7 @@ pub const Stream = struct {
             desc.deinit(roc_host, metrics);
         }
         self.states.deinit(allocator);
+        self.state_binders.deinit(allocator);
 
         for (self.whens.items) |*desc| {
             desc.deinit(allocator, ctx, roc_host, metrics);
@@ -2293,6 +2551,7 @@ pub const Stream = struct {
     pub fn reservePreparedStateSites(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) ReserveError!void {
         try self.scope_sites.ensureUnusedCapacity(allocator, additional);
         try self.states.ensureUnusedCapacity(allocator, additional);
+        try self.state_binders.reserve(allocator, additional);
         const highest_index = std.math.cast(usize, highest_node_id) orelse return error.ResourceLimit;
         const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
         if (descriptor_len > self.descriptor_indexes_by_node_id.items.len) try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, descriptor_len);
@@ -2333,6 +2592,7 @@ pub const Stream = struct {
         const state_index = self.states.items.len;
         self.states.appendAssumeCapacity(state.desc);
         setFreshIndex(&self.descriptor_indexes_by_node_id.items[node_id.index()].state, state_index);
+        self.recordStateBinderAssumeCapacity(state.desc);
     }
 
     /// Appends prepared scope site using capacity that must already satisfy the caller's transaction contract.
@@ -3284,6 +3544,7 @@ pub const Stream = struct {
 
     /// Appends state using capacity that must already satisfy the caller's transaction contract.
     pub fn appendState(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, node_id: NodeId, initial: roles.Initializer, cap: HostValueCapability) void {
+        self.reserveStateBinderPublication(allocator, 1) catch @panic("out of memory reserving state binder index");
         _ = retainHostValueCapability(cap, metrics);
         abi.increfErasedCallable(initial.toAbi(), 1);
         metrics.bump(.closure_retains, 1);
@@ -5302,6 +5563,7 @@ test "prepared state site publication is allocation free" {
     try std.testing.expectEqual(@as(?usize, 0), stream.nodeDescriptorIndex(NodeId.fromRaw(4)).?.scope_sites.get(.state));
     try std.testing.expectEqual(@as(?usize, 0), stream.nodeDescriptorIndex(NodeId.fromRaw(4)).?.state.get());
     try std.testing.expectEqual(binder, stream.scope_sites.items[0].binder_bindings[0].token);
+    try std.testing.expectEqual(NodeId.fromRaw(4), stream.stateNodeForBinder(ScopeId.fromRaw(0), retained.hostSignalTokenFromCallable(initial)).?);
 }
 
 test "prepared state site replacement transfers ownership without allocation" {
@@ -5331,9 +5593,10 @@ test "prepared state site replacement transfers ownership without allocation" {
     defer abi.decrefErasedCallable(initial, &roc_host);
     const token: BinderToken = @ptrFromInt(0x9200);
 
-    try active.reservePreparedStateSites(allocator, 1, 4);
-    try active.reserveScopeDescriptorOwnership(allocator, ScopeId.fromRaw(1), 0, 1);
+    try active.reservePreparedStateSites(allocator, 2, 6);
+    try active.reserveScopeDescriptorOwnership(allocator, ScopeId.fromRaw(1), 0, 2);
     active.appendPreparedStateSite(try active.prepareScopeSite(allocator, NodeId.fromRaw(4), ScopeId.fromRaw(1), SiteOrdinal.fromRaw(0), ElemId.fromRaw(1), .state, &.{.{ .token = token, .node_id = NodeId.fromRaw(4) }}), active.prepareState(NodeId.fromRaw(4), .fromAbi(initial), std.mem.zeroes(HostValueCapability), &metrics));
+    active.appendPreparedStateSite(try active.prepareScopeSite(allocator, NodeId.fromRaw(6), ScopeId.fromRaw(1), SiteOrdinal.fromRaw(1), ElemId.fromRaw(1), .state, &.{}), active.prepareState(NodeId.fromRaw(6), .fromAbi(initial), std.mem.zeroes(HostValueCapability), &metrics));
     try replacement.reservePreparedStateSites(allocator, 1, 5);
     try replacement.reserveScopeDescriptorOwnership(allocator, ScopeId.fromRaw(2), 0, 1);
     replacement.appendPreparedStateSite(try replacement.prepareScopeSite(allocator, NodeId.fromRaw(5), ScopeId.fromRaw(2), SiteOrdinal.fromRaw(0), ElemId.fromRaw(2), .state, &.{.{ .token = token, .node_id = NodeId.fromRaw(5) }}), replacement.prepareState(NodeId.fromRaw(5), .fromAbi(initial), std.mem.zeroes(HostValueCapability), &metrics));
@@ -5343,12 +5606,16 @@ test "prepared state site replacement transfers ownership without allocation" {
     fault.configure(1);
     active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{0}, &.{0}, &.{}, &.{});
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
-    try std.testing.expectEqual(NodeId.fromRaw(5), active.scope_sites.items[0].node_id);
-    try std.testing.expectEqual(@as(?usize, 0), active.nodeDescriptorIndex(NodeId.fromRaw(5)).?.state.get());
+    try std.testing.expectEqual(NodeId.fromRaw(6), active.scope_sites.items[0].node_id);
+    try std.testing.expectEqual(NodeId.fromRaw(5), active.scope_sites.items[1].node_id);
+    try std.testing.expectEqual(@as(?usize, 1), active.nodeDescriptorIndex(NodeId.fromRaw(5)).?.state.get());
     try std.testing.expectEqual(NodeId.fromRaw(4), retired.states.items[0].node_id);
     try std.testing.expectEqual(token, retired.scope_sites.items[0].binder_bindings[0].token);
-    try std.testing.expectEqual(@as(usize, 0), active.scopeOwnedNodeIds(ScopeId.fromRaw(1)).len);
+    try std.testing.expectEqualSlices(NodeId, &.{NodeId.fromRaw(6)}, active.scopeOwnedNodeIds(ScopeId.fromRaw(1)));
     try std.testing.expectEqualSlices(NodeId, &.{NodeId.fromRaw(5)}, active.scopeOwnedNodeIds(ScopeId.fromRaw(2)));
+    const state_token = retained.hostSignalTokenFromCallable(initial);
+    try std.testing.expectEqual(NodeId.fromRaw(6), active.stateNodeForBinder(ScopeId.fromRaw(1), state_token).?);
+    try std.testing.expectEqual(NodeId.fromRaw(5), active.stateNodeForBinder(ScopeId.fromRaw(2), state_token).?);
 }
 
 test "when descriptor replacement transfers ownership without allocation" {

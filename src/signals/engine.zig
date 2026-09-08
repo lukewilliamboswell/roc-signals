@@ -12050,10 +12050,10 @@ pub fn Engine(comptime Ctx: type) type {
             replacement.scope_sites.items.len = 0;
 
             const state_base = self.active_stream.states.items.len;
-            for (replacement.states.items, 0..) |desc, offset| {
-                self.active_stream.recordStateIndex(allocator, desc.node_id, state_base + offset);
-            }
             self.active_stream.states.appendSlice(allocator, replacement.states.items) catch @panic("out of memory");
+            for (replacement.states.items, 0..) |desc, offset| {
+                self.active_stream.recordStateIndex(allocator, desc.node_id.raw(), state_base + offset);
+            }
             replacement.states.items.len = 0;
 
             const when_base = self.active_stream.whens.items.len;
@@ -12212,6 +12212,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         fn spliceActiveStreamReplacingTargetWithScopeSet(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, target: HostStructuralReplacementTarget, render_insert_index: usize, replacement: *HostNodeDescriptorStream, child_insert_hint: ?HostRenderChildInsertHint, refresh_suffix_indexes: bool, prebuilt_target_scopes: ?[]const bool) HostStructuralSplice {
             const allocator = Ctx.allocator(ctx);
+            self.active_stream.reserveStateBinderPublication(allocator, replacement.states.items.len) catch @panic("out of memory reserving state binder index");
             const target_scopes = prebuilt_target_scopes orelse self.buildReplacementTargetScopeSet(ctx, target);
             defer if (prebuilt_target_scopes == null) self.scratch.replacement_target_scopes.clearRetainingCapacity();
 
@@ -13789,31 +13790,15 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         fn resolveStateCommandTarget(self: *Self, owner_scope_id: ids.ScopeId, binder_token: HostBinderToken) ids.NodeId {
-            var target_node_id: ?ids.NodeId = null;
-            var target_depth: usize = 0;
-
-            for (self.active_stream.scope_sites.items) |site| {
-                if (site.kind != .state) continue;
-                if (!(self.scopeIsDescendantOrSelf(owner_scope_id.raw(), site.scope_id.raw()) catch @panic("state command owner referenced an unknown scope"))) continue;
-
-                var matching_state: ?HostNodeStateDesc = null;
-                for (self.active_stream.states.items) |state| {
-                    if (state.node_id == site.node_id) {
-                        matching_state = state;
-                        break;
-                    }
-                }
-                const state = matching_state orelse continue;
-                if (retained_values.hostSignalTokenFromCallable(state.initial.toAbi()) != binder_token) continue;
-
-                const depth = self.scopeDepth(site.scope_id.raw());
-                if (target_node_id == null or depth > target_depth) {
-                    target_node_id = site.node_id;
-                    target_depth = depth;
-                }
+            var scope_id = owner_scope_id;
+            while (true) {
+                if (scope_id.index() >= self.scopes.items.len or !self.scopes.items[scope_id.index()].lifecycle.isActive()) @panic("state command owner referenced an inactive scope");
+                if (self.active_stream.stateNodeForBinder(scope_id, binder_token)) |node_id| return node_id;
+                const scope = self.scopes.items[scope_id.index()];
+                if (scope.parent_scope_id == null) break;
+                scope_id = scope.parent_scope_id.?;
             }
-
-            return target_node_id orelse @panic("UpdateState referenced a state binder outside the command's active scope");
+            @panic("UpdateState referenced a state binder outside the command's active scope");
         }
 
         /// Evaluates scope is each site row descendant or self using explicit scope ownership rather than DOM position or content.
@@ -17455,6 +17440,45 @@ fn deinitVerifyStateEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, roc_
     engine.active_node_identity_ids.deinit(ctx.allocator);
     for (engine.scopes.items) |*scope| if (scope.lifecycle.isActive()) deinitHostScopeStep(&scope.step);
     deinitVerifyStaticEngine(engine, ctx);
+}
+
+test "state command targets resolve the nearest live ancestor among unrelated scoped aliases" {
+    const allocator = std.testing.allocator;
+    for ([_]usize{ 100, 1000 }) |unrelated_count| {
+        var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+        var roc_host = abi.makeRocHost(&env);
+        const callable = abi.rocErasedCallableAllocate(&roc_host, verifyErasedCallable, null, 0).?;
+        defer abi.decrefErasedCallable(callable, &roc_host);
+        const cap = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+        var ctx = VerifyCtxHost{ .allocator = allocator };
+        var engine = Engine(VerifyCtx).init();
+        defer engine.scopes.deinit(allocator);
+        defer engine.active_stream.deinit(allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+        const root = (try scope_tree.internRoot(HostEachRowScopeStep, allocator, &engine.scopes)).scope_id;
+        const child = try scope_tree.internComponent(HostEachRowScopeStep, allocator, &engine.scopes, root, ids.SiteOrdinal.fromRaw(0), ids.Generation.fromRaw(0));
+        const sibling = try scope_tree.internComponent(HostEachRowScopeStep, allocator, &engine.scopes, root, ids.SiteOrdinal.fromRaw(1), ids.Generation.fromRaw(0));
+        const nested = try scope_tree.internComponent(HostEachRowScopeStep, allocator, &engine.scopes, child.scope_id, ids.SiteOrdinal.fromRaw(0), ids.Generation.fromRaw(0));
+        const owners = [_]ids.ScopeId{ root, child.scope_id, sibling.scope_id };
+        try engine.active_stream.reservePreparedStateSites(allocator, unrelated_count + owners.len, @intCast(unrelated_count + owners.len));
+        for (owners, 0..) |scope, i| {
+            try engine.active_stream.reserveScopeDescriptorOwnership(allocator, scope, 0, if (scope == sibling.scope_id) unrelated_count + 1 else 1);
+            const node = ids.NodeId.fromIndex(i);
+            const site = try engine.active_stream.prepareScopeSite(allocator, node, scope, ids.SiteOrdinal.fromRaw(0), ids.ElemId.fromRaw(0), .state, &.{});
+            const state = engine.active_stream.prepareState(node, .fromAbi(callable), cap, &engine.pending_roc_metrics);
+            engine.active_stream.appendPreparedStateSite(site, state);
+        }
+        for (0..unrelated_count) |i| {
+            const node = ids.NodeId.fromIndex(i + owners.len);
+            const site = try engine.active_stream.prepareScopeSite(allocator, node, sibling.scope_id, ids.SiteOrdinal.fromIndex(i + 1), ids.ElemId.fromRaw(0), .state, &.{});
+            const state = engine.active_stream.prepareState(node, .fromAbi(callable), cap, &engine.pending_roc_metrics);
+            engine.active_stream.appendPreparedStateSite(site, state);
+        }
+        const token = retained_values.hostSignalTokenFromCallable(callable);
+        try std.testing.expectEqual(ids.NodeId.fromRaw(0), engine.resolveStateCommandTarget(root, token));
+        try std.testing.expectEqual(ids.NodeId.fromRaw(1), engine.resolveStateCommandTarget(child.scope_id, token));
+        try std.testing.expectEqual(ids.NodeId.fromRaw(1), engine.resolveStateCommandTarget(nested.scope_id, token));
+        try std.testing.expectEqual(ids.NodeId.fromRaw(2), engine.resolveStateCommandTarget(sibling.scope_id, token));
+    }
 }
 
 test "provisional each-row scopes abort and publish without partial scope mutation" {
