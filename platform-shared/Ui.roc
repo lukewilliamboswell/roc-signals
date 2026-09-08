@@ -345,6 +345,22 @@ Ui := [].{
 		set_cmd : State(a), a -> Node.Cmd
 		set_cmd = |st, next| Node.Cmd.UpdateState(st.write(next))
 
+		## Describe a pure update of this state's settled value when the command
+		## executes. Useful for appending a task result or timer event to retained
+		## history without subscribing the producer to the history it updates.
+		## The state must remain live; preparation may evaluate the update again
+		## after refusal. The returned command is reusable and owns no state value.
+		update_cmd : State(a), (a -> a) -> Node.Cmd
+		update_cmd = |st, update| {
+			cap = st.cap
+			transform : HostValue -> HostValue
+			transform = |current| {
+				value = Box.unbox(Capability.get(current, cap))
+				Capability.store(Box.box(update(value)), cap)
+			}
+			Node.Cmd.UpdateTransform({ binder: st.ref, capability: Capability.handle(cap), transform: Box.box(transform) })
+		}
+
 		## Describe a replacement for `Ui.update_states`. The proposal captures
 		## a typed value and can be reused; it does not mutate the source itself.
 		write : State(a), a -> StateWrite

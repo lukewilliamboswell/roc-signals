@@ -5,8 +5,8 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-main : () -> Elem
-main = || {
+source_commands : () -> Elem
+source_commands = || {
 	ticks = Signal.interval(1000)
 	task = Signal.fake_task("state-command-task", |value| value, |err| err)
 
@@ -38,3 +38,20 @@ main = || {
 			),
 	)
 }
+
+history_panel : () -> Elem
+history_panel = || Ui.state("", |history| Ui.state(False, |running| {
+	append = history.update_cmd(|current| "${current}event;")
+	Html.div([], [
+		Html.paragraph_s_attrs(history.signal(), [Html.test_id("history")]),
+		Html.button("Append event", Ui.action(Signal.const({}), |_| append)),
+		Html.button("Unchanged history", Ui.action(Signal.const({}), |_| history.update_cmd(|current| current))),
+		Html.button("Toggle history clock", running.on_unit(|current| !current)),
+		Ui.when(running.signal(), || {
+			Ui.on_change(Signal.interval(250), |_| append)
+		}, || Html.text("History clock stopped")),
+	])
+}))
+
+main : () -> Elem
+main = || Html.div([], [source_commands(), history_panel()])

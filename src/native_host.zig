@@ -6752,6 +6752,50 @@ test "signals host evaluates map2 through bind and dirty propagation" {
     try std.testing.expectEqualStrings("32", host.dom_elements.items[1].text.?);
 }
 
+test "state updater commands remain reusable after every preparation refusal" {
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.engine_allocator_override = null;
+                host.deinit();
+                std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("state updater leaked");
+            }
+            const token = newTestBinderToken(&roc_host);
+            const root = testNodeStateWithTokenAndInitial(&roc_host, token, testHostValueI64(10), testNodeI64TextSignal(&roc_host, testNodeMapExpr(&roc_host, testNodeRefExpr(token))));
+            defer root.decref(&roc_host);
+            _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            const site = host.engine.active_stream.scope_sites.items[0];
+            const transform = writeTestErasedCallable(TestErasedI64Capture, &roc_host, &testUnaryHostValueCallable, &testErasedCallableOnDrop, .{ .amount = 1 });
+            defer abi.decrefErasedCallable(transform, &roc_host);
+            const command = abi.NodeStateTransform{ .binder = token, .capability = host.stateCapability(site.node_id), .transform = transform };
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const allocations = host.roc_allocations.snapshot();
+            _ = host.engine.tryUpdateTransformCommand(&host, &roc_host, site.scope_id, command) catch |err| retry: {
+                try std.testing.expect(failure_number != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqualStrings("11", host.dom_elements.items[1].text.?);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations));
+                fault.configure(null);
+                break :retry try host.engine.tryUpdateTransformCommand(&host, &roc_host, site.scope_id, command);
+            };
+            const attempts = fault.attempts;
+            try std.testing.expectEqualStrings("12", host.dom_elements.items[1].text.?);
+            fault.configure(null);
+            _ = try host.engine.tryUpdateTransformCommand(&host, &roc_host, site.scope_id, command);
+            try std.testing.expectEqualStrings("13", host.dom_elements.items[1].text.?);
+            return attempts;
+        }
+    };
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts > 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "coordinated state writes share one pruned graph wave and sweep every refusal" {
     const Runner = struct {
         fn run(failure_number: ?usize, reverse: bool) !usize {

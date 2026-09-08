@@ -393,6 +393,8 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
                 mount_cmd.append("--exercise-event-actions")
             if example.slug == "coordinated-writes":
                 mount_cmd.append("--exercise-coordinated-writes")
+            if example.slug == "state-commands":
+                mount_cmd.append("--exercise-state-updates")
             if example.slug == "svg":
                 mount_cmd.append("--exercise-svg")
             try:

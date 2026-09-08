@@ -16519,6 +16519,21 @@ pub fn Engine(comptime Ctx: type) type {
             return self.tryDispatchStateWrites(ctx, roc_host, writes);
         }
 
+        /// Reads the explicit destination once from settled state and evaluates
+        /// a reusable pure updater through its owning capability. The input is
+        /// independently owned and released here; the proposed replacement is
+        /// consumed by the normal state transaction, including on refusal.
+        pub fn tryUpdateTransformCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, cmd: abi.NodeStateTransform) CollectionError!render.Counts {
+            const binder_token = retained_values.hostSignalTokenFromCallable(cmd.binder);
+            const target = self.resolveStateCommandTarget(owner_scope_id, binder_token);
+            const cap = Ctx.stateCapability(ctx, target.raw());
+            assertHostValueCapabilitiesMatch(cmd.capability, cap, "state updater capability did not match its target state");
+            const current = Ctx.stateValueByNodeId(ctx, target.raw());
+            defer callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), current);
+            const next = callHostValueToHostValueWithCapability(ctx, roc_host, cap, cmd.transform, current);
+            return self.tryDispatchStateValue(ctx, roc_host, target.raw(), next, cap);
+        }
+
         /// Runs a command at a fatal boundary, including follow-on commands
         /// after an earlier engine step committed. Unlike tryRunCommand, this
         /// call cannot unwind a failed preparation to its caller. Native fault
@@ -16551,6 +16566,7 @@ pub fn Engine(comptime Ctx: type) type {
                 .SetDocumentTitle => self.setDocumentTitleCommand(ctx, cmd.payload_set_document_title()),
                 .UpdateState => self.tryUpdateStateCommand(ctx, roc_host, owner_scope_id, cmd.payload_update_state()),
                 .UpdateStates => self.tryUpdateStateCommands(ctx, roc_host, owner_scope_id, cmd.payload_update_states().items()),
+                .UpdateTransform => self.tryUpdateTransformCommand(ctx, roc_host, owner_scope_id, cmd.payload_update_transform()),
             };
         }
 

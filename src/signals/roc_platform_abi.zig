@@ -3590,7 +3590,34 @@ pub const NodeCmdTag = enum(u8) {
     StartTask = 6,
     UpdateState = 7,
     UpdateStates = 8,
+    UpdateTransform = 9,
 };
+
+/// App-compiled state transform, paired with its destination and value capability.
+pub const NodeStateTransform = extern struct {
+    binder: RocErasedCallable,
+    capability: HostValueCapabilityHandle,
+    transform: RocErasedCallable,
+
+    /// Releases the destination identity, owning capability, and transform closure.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefErasedCallable(self.binder, roc_host);
+        self.capability.decref(roc_host);
+        decrefErasedCallable(self.transform, roc_host);
+    }
+
+    /// Retains every callable edge when the enclosing command is copied.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfErasedCallable(self.binder, amount);
+        self.capability.incref(amount);
+        increfErasedCallable(self.transform, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(NodeStateTransform) != 5 * @sizeOf(usize)) @compileError("NodeStateTransform size mismatch");
+    if (@alignOf(NodeStateTransform) != @alignOf(usize)) @compileError("NodeStateTransform alignment mismatch");
+}
 
 /// Payload union for Node.Cmd.
 pub const NodeCmdPayload = extern union {
@@ -3603,6 +3630,7 @@ pub const NodeCmdPayload = extern union {
     start_task: __AnonStruct_d7d87ab0a59c379b,
     update_state: NodeStateWrite,
     update_states: RocList(NodeStateWrite),
+    update_transform: NodeStateTransform,
 };
 
 /// Tag union: Node.Cmd
@@ -3641,6 +3669,11 @@ pub const NodeCmd = if (@sizeOf(usize) == 4) extern struct {
         const ptr: *const RocList(NodeStateWrite) = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
+    /// Borrows the explicit destination, capability, and updater from this command.
+    pub fn payload_update_transform(self: *const @This()) NodeStateTransform {
+        const ptr: *const NodeStateTransform = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         decrefNodeCmd(self, roc_host);
@@ -3676,6 +3709,10 @@ pub const NodeCmd = if (@sizeOf(usize) == 4) extern struct {
     }
     pub fn payload_update_states(self: *const @This()) RocList(NodeStateWrite) {
         return self.payload.update_states;
+    }
+    /// Borrows the explicit destination, capability, and updater from this command.
+    pub fn payload_update_transform(self: *const @This()) NodeStateTransform {
+        return self.payload.update_transform;
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -5028,6 +5065,7 @@ fn decrefNodeCmd(value: NodeCmd, roc_host: *RocHost) void {
         .UpdateStates => {
             decrefListOfNodeStateWrite(value.payload_update_states(), roc_host);
         },
+        .UpdateTransform => value.payload_update_transform().decref(roc_host),
     }
 }
 
@@ -5058,6 +5096,7 @@ fn increfNodeCmd(value: NodeCmd, amount: isize) void {
         .UpdateStates => {
             value.payload_update_states().incref(amount);
         },
+        .UpdateTransform => value.payload_update_transform().incref(amount),
     }
 }
 

@@ -417,6 +417,13 @@ outlive a rendered region is owned by an explicit longer-lived scope. Ordinary
 component functions accept static values, named records of signals, and typed
 action callbacks without requiring descriptor inspection.
 
+A single-state update command may declare its destination as its input as well.
+Its pure transform reads that state's settled value when the command executes,
+then proposes a replacement through the ordinary transaction. This allows a
+timer or task result to append to retained history without subscribing its
+producer to the history. The command is reusable, and preparation refusal may
+evaluate it again; it does not capture or borrow an earlier state value.
+
 ### Equality is an observation contract
 
 A successful `is_eq(a, b)` permits the engine to retain the cached value and
@@ -2440,6 +2447,7 @@ Ui.state : a, (State(a) -> Elem) -> Elem
     where [a.is_eq : a, a -> Bool]
 State.signal : State(a) -> Signal(a)
 State.on_unit : State(a), (a -> a) -> Msg
+State.update_cmd : State(a), (a -> a) -> Cmd
 State.on_str : State(a), (a, Str -> a) -> Msg
 State.on_bool : State(a), (a, Bool -> a) -> Msg
 State.on_detail : State(a), (a, Str -> a) -> Msg

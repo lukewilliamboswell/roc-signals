@@ -131,6 +131,7 @@ are retained once by the keyed construction site.
 | `on_key_with` | `State(a), State(b), (a, b, KeyPayload -> a) -> Msg` | keyboard plus a second state |
 | `on_detail_with` | `State(a), State(b), (a, b, Str -> a) -> Msg` | custom event plus a second state |
 | `set_cmd` | `State(a), a -> Cmd` | describe a replacement from a command-producing hook |
+| `update_cmd` | `State(a), (a -> a) -> Cmd` | transform the destination's settled value when the command executes |
 | `write` | `State(a), a -> Ui.StateWrite` | describe one destination of a coordinated write set |
 
 `Ui.KeyPayload` is `{ key : Str, shift_key : Bool }`.
@@ -142,6 +143,11 @@ Use `Ui.update_states(List(Ui.StateWrite))` to replace several distinct states
 in one propagation turn. Duplicate destinations are errors even if their values
 are unchanged. An empty write set does nothing. State commands are reusable:
 executing one materializes fresh owned proposals from its captured values.
+`state.update_cmd(update)` instead reads its explicitly named destination when
+the command executes and applies a pure `update` function to that settled value.
+For example, `Ui.on_change(ticks, |_| history.update_cmd(append_event))` updates
+retained history without making the timer observer depend on history changes.
+The update may run again after preparation refusal, so it must remain pure.
 
 `Ui.action` attaches to a click, submit, or other payload-free event just like a
 reducer message. Combine reads with `{ first: first, second: second }.Signal`.

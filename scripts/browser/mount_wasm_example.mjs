@@ -29,6 +29,7 @@ let exerciseLocationCanonicalBranch = false;
 let exerciseStorageCommands = false;
 let exerciseEventActions = false;
 let exerciseCoordinatedWrites = false;
+let exerciseStateUpdates = false;
 let exerciseSvg = false;
 let exerciseCounter = false;
 let rawName;
@@ -53,6 +54,8 @@ while (args.length > 0) {
     exerciseEventActions = true;
   } else if (arg === "--exercise-coordinated-writes") {
     exerciseCoordinatedWrites = true;
+  } else if (arg === "--exercise-state-updates") {
+    exerciseStateUpdates = true;
   } else if (arg === "--exercise-counter") {
     exerciseCounter = true;
   } else if (arg === "--exercise-svg") {
@@ -70,7 +73,7 @@ while (args.length > 0) {
 
 if (!wasmPath) {
   console.error(
-    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-location-source] [--exercise-location-navigation] [--exercise-location-canonical-branch] [--exercise-storage-commands] [--exercise-event-actions] [--exercise-coordinated-writes] [--exercise-svg] [--exercise-counter]",
+    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-location-source] [--exercise-location-navigation] [--exercise-location-canonical-branch] [--exercise-storage-commands] [--exercise-event-actions] [--exercise-coordinated-writes] [--exercise-state-updates] [--exercise-svg] [--exercise-counter]",
   );
   process.exit(2);
 }
@@ -231,6 +234,22 @@ if (exerciseCounter) {
     if (!root.textContent.includes(`Count: ${expected}`)) fail(`counter did not reach ${expected}`);
   }
   console.log(`counter events passed for ${name}`);
+}
+
+if (exerciseStateUpdates) {
+  const history = () => findNode(root, (node) => node.getAttribute?.("data-testid") === "history")?.textContent;
+  let expected = "";
+  for (let occurrence = 0; occurrence < 7; occurrence++) {
+    const button = findByText(root, "button", "Append event");
+    if (!button) fail("missing state update button");
+    fireEvent(button, "click", { bubbles: true });
+    expected += "event;";
+    failOnRuntimeErrors(name, errors, "appending retained history");
+    if (history() !== expected) fail("reused state updater did not read the latest value");
+  }
+  fireEvent(findByText(root, "button", "Unchanged history"), "click", { bubbles: true });
+  failOnRuntimeErrors(name, errors, "pruning unchanged history");
+  if (history() !== expected) fail("identity updater changed retained history");
 }
 
 if (exerciseClickFirstLink) {

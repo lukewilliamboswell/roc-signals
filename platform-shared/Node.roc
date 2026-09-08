@@ -79,6 +79,13 @@ Node := [].{
 	## typed next value; the host creates an owned value only when executing it.
 	StateWrite := { binder : BinderRef, update : HostValue.StateValueHandle }
 
+	## A command-local read and replacement of one explicitly named state.
+	StateTransform := {
+		binder : BinderRef,
+		capability : HostValue.CapabilityHandle,
+		transform : Box((HostValue -> HostValue)),
+	}
+
 	## Host command emitted by event actions, lifecycle hooks, or signal changes.
 	Cmd := [
 		Noop,
@@ -97,6 +104,7 @@ Node := [].{
 		SetDocumentTitle({ title : Str }),
 		UpdateState(StateWrite),
 		UpdateStates(List(StateWrite)),
+		UpdateTransform(StateTransform),
 	]
 
 	## Cleanup descriptor run when a scope is disposed.
