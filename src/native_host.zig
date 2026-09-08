@@ -209,7 +209,7 @@ const NativeRenderPublication = struct {
                     child_index = index;
                     break;
                 };
-                const child = parent.children.orderedRemove(child_index orelse return error.InvalidRenderTopology);
+                const child = if (child_index) |index| parent.children.orderedRemove(index) else move.child.raw();
                 if (move.before) |before| {
                     var before_index: ?usize = null;
                     for (parent.children.items, 0..) |existing, index| if (existing == before.raw()) {
@@ -317,7 +317,7 @@ const NativeRenderPublication = struct {
             var appended: usize = 0;
             for (entry.wireEdits()) |edit| switch (edit) {
                 .append => appended = std.math.add(usize, appended, 1) catch return error.ResourceLimit,
-                .move_before => {},
+                .move_before => appended = std.math.add(usize, appended, 1) catch return error.ResourceLimit,
             };
             try parent.children.ensureUnusedCapacity(allocator, appended);
             for (entry.wireEdits()) |edit| try prepareSparseChildEdit(parent, edit);
@@ -12341,4 +12341,16 @@ test "native GUI payload contract rejects unused fields and invalid UTF-8" {
     try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(1, "text", 1));
     try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(2, "", 2));
     try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(3, "", 0));
+}
+
+test "native sparse move-before attaches a new root and repositions an existing root" {
+    const allocator = std.testing.allocator;
+    var parent = sim_dom.Element.init(0, try allocator.dupe(u8, "div"));
+    defer parent.deinit(allocator);
+    try parent.children.ensureTotalCapacity(allocator, 3);
+    parent.children.appendAssumeCapacity(2);
+    try NativeRenderPublication.prepareSparseChildEdit(&parent, .{ .move_before = .{ .child = ids.ElemId.fromRaw(3), .before = ids.ElemId.fromRaw(2) } });
+    try std.testing.expectEqualSlices(u64, &.{ 3, 2 }, parent.children.items);
+    try NativeRenderPublication.prepareSparseChildEdit(&parent, .{ .move_before = .{ .child = ids.ElemId.fromRaw(2), .before = ids.ElemId.fromRaw(3) } });
+    try std.testing.expectEqualSlices(u64, &.{ 2, 3 }, parent.children.items);
 }
