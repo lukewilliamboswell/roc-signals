@@ -26,7 +26,7 @@
 ## "the designer produced at least one field" with "every generated field is
 ## currently valid". The longest chain is four hops:
 ## `answers -> preview_rows -> all_valid -> submittable -> submit_disabled`.
-app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform/main.roc" }
+app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc1/2AkoWkbJFbvPCzryikfAUcwUs1hL8x6UzwhzPFoxuvN5.tar.zst" }
 
 import Form
 import pf.Elem exposing [Elem]
