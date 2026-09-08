@@ -1,14 +1,14 @@
 # Native GUI presentation boundary
 
-The statically linked GUI boundary uses protocol version **5**. Zig exports
+The statically linked GUI boundary uses protocol version **6**. Zig exports
 `signals_protocol_version` and `signals_node_size`; Rust checks both before
-mount. Version 5 adds an element lifetime, borrowed drag key, and drop event ID
-to the node record. Both sides must be rebuilt together.
+mount. Version 6 appends a close-request event ID and close-decision word
+(two u64 fields) to the node record. Both sides must be rebuilt together.
 The browser protocol and its version are unchanged.
 
 `Gui` lowers native presentation through the shared scalar descriptor machinery.
 Text field **8** is `native_style`, field **9** is `native_viewport`, field **10**
-is `native_drag_key`; boolean fields **4** and **5** are `selected` and
+is `native_drag_key`, and field **11** is `native_window_close`; boolean fields **4** and **5** are `selected` and
 `native_drop_target`. The unused
 IDs 7 and 3 remain the existing custom text/bool field markers. Native fields
 are explicit protocol fields, not CSS, class names, test identifiers, or custom
@@ -63,6 +63,27 @@ a zero boolean word. Each kind uses the shared
 engine's existing event extraction descriptor and capability-owned reducer path.
 Deferred callbacks validate both node identity and current binding, and cannot
 update disposed or rebound controls.
+
+`Gui.window_lifecycle` declares one `window` element directly beneath the
+semantic root. Field 11 carries exactly `keep-open`, `await-decision`, or `close`,
+and a native unit `close-requested` binding is mandatory. Preparation rejects
+nested or duplicate registrations, missing bindings, invalid policy text, and
+wrong payload schemas before publication. The raw close-decision word is zero
+for an unregistered node, otherwise KeepOpen=1, AwaitDecision=2, Close=3.
+
+A native close request dispatches that current event through ordinary engine
+propagation. KeepOpen cancels the request, AwaitDecision retains one pending
+request, and Close grants closure only for that pending registration. Repeated
+OS requests while awaiting a decision do not dispatch another event. An async
+save can publish Close later; rendering then removes the window. Close with no
+pending request is inert. Pending ownership includes element, view, lifetime,
+and event binding; disposal, replacement, or rebinding cancels it. Teardown
+releases the registration with its runtime. An app without a registration uses
+the normal immediate-close behavior. No native code knows whether an app is dirty.
+
+Native specs provide `request-window-close` and `expect-window-closed` as a
+semantic simulation of this protocol; GPUI tests exercise the installed native
+close callback separately.
 
 `Gui.on_shortcut` adds a typed `key_chord` filter to the canonical shared event
 binding. It always uses a unit `keydown` route with native delivery and static

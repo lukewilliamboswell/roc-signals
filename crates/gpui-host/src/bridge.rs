@@ -8,6 +8,8 @@ pub struct Node {
     pub lifetime: u64,
     pub drag_key: String,
     pub drop: u64,
+    pub close_requested: u64,
+    pub close_policy: u64,
     pub parent: Option<u64>,
     pub active: bool,
     pub tag: String,
@@ -106,6 +108,8 @@ struct RawNode {
     lifetime: u64,
     drag_key: Slice,
     drop: u64,
+    close_requested: u64,
+    close_policy: u64,
 }
 #[repr(C)]
 struct RawEffect {
@@ -151,7 +155,7 @@ impl Engine {
             };
             assert_eq!(
                 signals_protocol_version(),
-                5,
+                6,
                 "native GUI protocol mismatch"
             );
             assert_eq!(
@@ -198,6 +202,8 @@ impl Engine {
                         lifetime: r.lifetime,
                         drag_key: r.drag_key.copy(),
                         drop: r.drop,
+                        close_requested: r.close_requested,
+                        close_policy: r.close_policy,
                         parent: (r.parent != u64::MAX).then_some(r.parent),
                         active: r.active != 0,
                         tag: r.tag.copy(),

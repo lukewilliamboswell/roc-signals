@@ -661,6 +661,7 @@ Supported async and lifecycle commands:
 - `(resolve-stale-task "<task-name>" "<payload>")`
 - `(reject-task "<task-name>" "<payload>")`
 - `(tick-interval <period-ms>)`, `(tick-interval-if-active <period-ms>)`
+- `(request-window-close)`, `(expect-window-closed true|false)` (native GUI lifecycle)
 - `(expect-pending-task "<task-name>" <count>)`
 - `(expect-canceled-task "<task-name>" <count>)`
 - `(expect-interval <period-ms> <count>)`

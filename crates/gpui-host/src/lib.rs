@@ -7,6 +7,7 @@ mod file_io;
 mod input;
 mod shortcut;
 mod timers;
+mod window_lifecycle;
 use bridge::{Engine, Node, Payload};
 use gpui::{div, prelude::*, px, rgb, *};
 #[cfg(not(test))]
@@ -311,6 +312,7 @@ struct Runtime {
     engine: Engine,
     effects: effects::Manager,
     dialogs: dialog::Dialogs,
+    window_lifecycle: window_lifecycle::Lifecycle,
     nodes: HashMap<u64, Entity<NodeView>>,
     roots: Vec<Entity<NodeView>>,
     renders: Rc<Cell<u64>>,
@@ -352,6 +354,7 @@ impl Runtime {
             engine,
             effects: crate::effects::Manager::default(),
             dialogs: crate::dialog::Dialogs::default(),
+            window_lifecycle: crate::window_lifecycle::Lifecycle::default(),
             nodes: HashMap::new(),
             roots: vec![],
             renders: Rc::new(Cell::new(0)),
@@ -474,6 +477,7 @@ impl Runtime {
                     "root"
                         | "div"
                         | "dialog"
+                        | "window"
                         | "h1"
                         | "h2"
                         | "p"
@@ -546,6 +550,7 @@ impl Runtime {
                 roots_changed |= before != self.roots.len();
             }
         }
+        self.sync_window_lifecycle(&changes, cx);
         if self.sync_dialogs(&changes, cx) || roots_changed {
             cx.notify();
         }
@@ -589,6 +594,7 @@ impl Render for Runtime {
                 cx.stop_propagation();
             }));
         }
+        self.prepare_window_lifecycle(window, cx);
         self.prepare_dialog_focus(window, cx);
         let mut root = div()
             .id("signals-root")
@@ -770,6 +776,7 @@ mod tests {
             engine: Engine::test_boundary(),
             effects: crate::effects::Manager::default(),
             dialogs: crate::dialog::Dialogs::default(),
+            window_lifecycle: crate::window_lifecycle::Lifecycle::default(),
             nodes: HashMap::new(),
             roots: vec![],
             renders: Rc::new(Cell::new(0)),
@@ -787,6 +794,53 @@ mod tests {
             child_count: children.len(),
             ..Default::default()
         }
+    }
+
+    #[gpui::test]
+    fn native_window_close_callback_dispatches_one_live_unit_request(cx: &mut TestAppContext) {
+        let mut owner = node(1, "window", &[]);
+        owner.parent = Some(0);
+        owner.close_requested = 81;
+        owner.close_policy = 2;
+        let (runtime, cx) = cx.add_window_view(|_, cx| {
+            let mut runtime = runtime();
+            runtime.apply(vec![node(0, "root", &[1]), owner.clone()], cx);
+            runtime
+        });
+        cx.run_until_parked();
+        assert!(!cx.simulate_close());
+        assert_eq!(Engine::take_test_event(), Some((81, 0, String::new(), 0)));
+        assert!(!cx.simulate_close());
+        assert_eq!(Engine::take_test_event(), None);
+        owner.close_policy = 1;
+        cx.update(|_, cx| runtime.update(cx, |runtime, cx| runtime.apply(vec![owner.clone()], cx)));
+        assert!(!cx.simulate_close());
+        assert_eq!(Engine::take_test_event(), Some((81, 0, String::new(), 0)));
+        // Close is inert before a fresh request; the request then observes its
+        // committed immediate decision and returns permission to the OS.
+        owner.close_policy = 3;
+        cx.update(|_, cx| runtime.update(cx, |runtime, cx| runtime.apply(vec![owner], cx)));
+        assert!(cx.simulate_close());
+        assert_eq!(Engine::take_test_event(), Some((81, 0, String::new(), 0)));
+    }
+
+    #[gpui::test]
+    fn committed_async_close_decision_removes_the_native_window(cx: &mut TestAppContext) {
+        let mut owner = node(1, "window", &[]);
+        owner.parent = Some(0);
+        owner.close_requested = 91;
+        owner.close_policy = 2;
+        let (runtime, cx) = cx.add_window_view(|_, cx| {
+            let mut runtime = runtime();
+            runtime.apply(vec![node(0, "root", &[1]), owner.clone()], cx);
+            runtime
+        });
+        cx.run_until_parked();
+        assert!(!cx.simulate_close());
+        owner.close_policy = 3;
+        cx.update(|_, cx| runtime.update(cx, |runtime, cx| runtime.apply(vec![owner], cx)));
+        cx.run_until_parked();
+        assert!(cx.windows().is_empty());
     }
 
     #[gpui::test]

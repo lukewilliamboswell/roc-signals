@@ -650,6 +650,25 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
+                    .request_window_close => {
+                        if (@hasDecl(Ctx, "requestWindowClose")) {
+                            Ctx.requestWindowClose(host, roc_host);
+                        } else {
+                            writeLocatorFailure(cmd.line_num, "window close requires the native GUI semantic host");
+                            return 1;
+                        }
+                    },
+                    .expect_window_closed => {
+                        if (@hasDecl(Ctx, "windowClosed")) {
+                            if (Ctx.windowClosed(host) != cmd.expected_bool.?) {
+                                writeLocatorFailure(cmd.line_num, "window closed state differs from expected");
+                                return 1;
+                            }
+                        } else {
+                            writeLocatorFailure(cmd.line_num, "window close requires the native GUI semantic host");
+                            return 1;
+                        }
+                    },
                     .shortcut => {
                         const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");

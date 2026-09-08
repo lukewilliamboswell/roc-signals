@@ -15,6 +15,8 @@ pub const SpecCommandType = enum {
     pointer_leave,
     key_down,
     shortcut,
+    request_window_close,
+    expect_window_closed,
     focus,
     blur,
     change,
@@ -383,6 +385,10 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             const key_copy = try dupeUnescapedQuoted(allocator, key_split.quoted);
             errdefer allocator.free(key_copy);
             try appendSpecCommand(&commands, allocator, .key_down, try parseLocator(allocator, key_split.head), key_copy, null, try parseBoolToken(shift_split.token), line_num);
+        } else if (std.mem.eql(u8, trimmed, "request_window_close")) {
+            try appendSpecCommand(&commands, allocator, .request_window_close, emptyLocator(), null, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "expect_window_closed ")) {
+            try appendSpecCommand(&commands, allocator, .expect_window_closed, emptyLocator(), null, null, try parseBoolToken(trimmed["expect_window_closed ".len..]), line_num);
         } else if (std.mem.startsWith(u8, trimmed, "shortcut ")) {
             const modifier_split = try splitTrailingToken(trimmed["shortcut ".len..]);
             const modifiers = std.fmt.parseInt(u32, modifier_split.token, 10) catch return ParseError.InvalidFormat;
@@ -1265,4 +1271,15 @@ fn parseFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
 
 test "file fixture parsing owns every allocation on success and refusal" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, parseFileFixtureAllocationCase, .{});
+}
+
+test "window close requests and assertions decode without locators" {
+    const spec = try parseSExprTestSpec(std.testing.allocator,
+        \\(test "closing" (steps (request-window-close) (expect-window-closed false)))
+    );
+    defer spec.deinit(std.testing.allocator);
+    try std.testing.expectEqual(SpecCommandType.request_window_close, spec.commands[0].cmd_type);
+    try std.testing.expectEqual(false, spec.commands[1].expected_bool.?);
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "request_window_close extra"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "expect_window_closed yes"));
 }

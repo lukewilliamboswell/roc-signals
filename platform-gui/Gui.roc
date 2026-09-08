@@ -249,6 +249,45 @@ Gui := [].{
 	panel : List(Attr), List(Elem) -> Elem
 	panel = |attrs, children| Html.div(lower_attrs(1, { ..style_default, padding: 16, border_width: 1, radius: 8, border_color: Rgb(4743275) }, attrs), children)
 
+	## A native close request enters the ordinary event graph. KeepOpen cancels
+	## it, AwaitDecision retains one pending request, and Close completes that
+	## request after the decision's transaction commits. Close without a pending
+	## request has no effect. Declare exactly one wrapper directly under the app
+	## root; disposing or replacing it cancels its pending request.
+	CloseDecision : [KeepOpen, AwaitDecision, Close]
+
+	window_lifecycle : { on_close_requested : Msg, decision : Signal(CloseDecision) }, List(Elem) -> Elem
+	window_lifecycle = |props, children| {
+		policy = props.decision.map(
+			|decision| match decision {
+				KeepOpen => "keep-open"
+				AwaitDecision => "await-decision"
+				Close => "close"
+			},
+		)
+		policy_attr = match Html.attr_s("", policy) {
+			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: { id: 11 } })
+			_ => crash "expected a signal text descriptor"
+		}
+		Elem.Element({
+			namespace: Html,
+			tag: "window",
+			attrs: [
+				style_attr(1, { ..style_default, width: Fill, height: Fill }),
+				policy_attr,
+				Node.Attr.On({
+					kind: { id: 0 },
+					name: "close-requested",
+					msg: props.on_close_requested,
+					policy: Html.event_policy_none,
+					delivery: Html.event_delivery_native,
+					key_chord: None,
+				}),
+			],
+			children,
+		})
+	}
+
 	## Present a modal owned by this element's explicit Ui.when scope. The host
 	## moves focus inside, traps Tab, routes Escape to on_dismiss, and restores
 	## a still-live enabled control after disposal. Concurrent dialogs form one

@@ -171,3 +171,18 @@ Every registered app has native semantic specs. The GUI suite also runs GPUI
 adapter tests with simulated input and layout. A Wayland smoke run checks the
 linked renderer and adapter; an actual pointer, keyboard, and IME walkthrough
 remains a separate form of validation.
+
+## Window close decisions
+
+Wrap the app's top-level content in `Gui.window_lifecycle` to protect work before
+closing. Its `on_close_requested` message receives a unit event through the
+ordinary graph. Its `decision` is a `Signal(Gui.CloseDecision)`:
+`KeepOpen` cancels the request, `AwaitDecision` waits for confirmation or work,
+and `Close` completes the pending request. This lets a save result close the
+window only after the write succeeds. Close without a pending request is inert.
+
+Declare exactly one wrapper directly beneath the app root. Repeated native close
+requests while awaiting a decision are ignored. Disposing or replacing the
+wrapper cancels its pending request; the native adapter validates registration
+lifetime and binding. Apps without a wrapper close immediately. The Notes
+example demonstrates Save and close, Discard and close, and Keep editing.

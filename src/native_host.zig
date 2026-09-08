@@ -193,6 +193,7 @@ const NativeRenderPublication = struct {
     dom: sim_dom.PreparedPublication,
     gui_order: ?signals.native_child_order.Prepared = null,
     retired_nodes: []const render_cache.PreparedNodeRemoval = &.{},
+    window_registration: ?u64 = null,
 
     fn validateDrag(node: *const sim_dom.Element) error{InvalidRenderTopology}!void {
         if (!node.active) return;
@@ -203,6 +204,16 @@ const NativeRenderPublication = struct {
             const event = sim_dom.namedEvent(node, "drop") orelse return error.InvalidRenderTopology;
             if (event.binding.delivery.requested != .native or event.binding.key_chord != null or !event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .detail))) return error.InvalidRenderTopology;
         }
+    }
+
+    fn validateWindow(node: *const sim_dom.Element) error{InvalidRenderTopology}!void {
+        if (!node.active) return;
+        if (node.native_window_close) |policy| {
+            if (!std.mem.eql(u8, node.tag, "window") or node.parent_id != 0) return error.InvalidRenderTopology;
+            if (!std.mem.eql(u8, policy, "keep-open") and !std.mem.eql(u8, policy, "await-decision") and !std.mem.eql(u8, policy, "close")) return error.InvalidRenderTopology;
+            const event = sim_dom.namedEvent(node, "close-requested") orelse return error.InvalidRenderTopology;
+            if (event.binding.delivery.requested != .native or event.binding.key_chord != null or !event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) return error.InvalidRenderTopology;
+        } else if (std.mem.eql(u8, node.tag, "window")) return error.InvalidRenderTopology;
     }
 
     fn prepareTextField(allocator: std.mem.Allocator, node: *sim_dom.Element, field: RenderTextField, next: ?[]const u8) std.mem.Allocator.Error!void {
@@ -216,6 +227,7 @@ const NativeRenderPublication = struct {
             .native_style => &node.native_style,
             .native_viewport => &node.native_viewport,
             .native_drag_key => &node.native_drag_key,
+            .native_window_close => &node.native_window_close,
         };
         if (field == .native_viewport) if (next) |bytes| {
             _ = native_style.decodeViewport(bytes) catch failHost("invalid native viewport record");
@@ -444,6 +456,25 @@ const NativeRenderPublication = struct {
                 .binding = event.binding,
             });
         }
+        var window_registration = host.window_registration;
+        // Remove the old registration before considering replacements, independent
+        // of publication order. Only touched descriptors participate.
+        if (window_registration) |id| {
+            if (dom.node(id)) |node| {
+                if (!node.active or node.native_window_close == null) window_registration = null;
+            }
+        }
+        inline for (.{ dom.existing.items, dom.appended.items }) |nodes| {
+            for (nodes) |*node| {
+                try validateWindow(node);
+                if (node.active and node.native_window_close != null) {
+                    if (window_registration) |id| {
+                        if (id != node.id) return error.InvalidRenderTopology;
+                    }
+                    window_registration = node.id;
+                }
+            }
+        }
         for (dom.existing.items) |*node| try validateDrag(node);
         for (dom.appended.items) |*node| try validateDrag(node);
         if (gpui_spike and Gpui.live) {
@@ -451,11 +482,18 @@ const NativeRenderPublication = struct {
                 if (Gpui.lifetimes[removed.elem_id.index()] == std.math.maxInt(u64)) return error.ResourceLimit;
             }
         }
-        return .{ .dom = dom, .gui_order = gui_order, .retired_nodes = splice.removals.items };
+        return .{ .dom = dom, .gui_order = gui_order, .retired_nodes = splice.removals.items, .window_registration = window_registration };
     }
 
     fn apply(self: *NativeRenderPublication, host: *HostEnv) void {
         self.dom.apply(&host.dom_elements);
+        host.window_registration = self.window_registration;
+        if (host.spec_pending_close) |pending| {
+            for (self.retired_nodes) |removed| {
+                if (removed.elem_id.raw() == pending.node) host.spec_pending_close = null;
+            }
+            refreshSpecWindowClose(host);
+        }
         if (self.gui_order) |*candidate| candidate.commit();
         if (gpui_spike) {
             if (Gpui.live) {
@@ -994,6 +1032,9 @@ const HostEnv = struct {
     debug_phase: DebugPhase = .idle,
     active_capabilities: hv.ActiveCapabilityStack = .{},
     dom_elements: std.ArrayListUnmanaged(DomElement) = .empty,
+    window_registration: ?u64 = null,
+    spec_pending_close: ?struct { node: u64, event: ids.EventId } = null,
+    spec_window_closed: bool = false,
     started_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
@@ -2582,6 +2623,7 @@ fn setRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFiel
             sim_dom.setOwnedString(host.hostAllocator(), &elem.native_style, value);
         },
         .native_drag_key => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_drag_key, value),
+        .native_window_close => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_window_close, value),
         .native_viewport => {
             _ = native_style.decodeViewport(value) catch failHost("invalid native viewport record");
             sim_dom.setOwnedString(host.hostAllocator(), &elem.native_viewport, value);
@@ -2615,6 +2657,7 @@ fn clearRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFi
         .native_style => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_style),
         .native_viewport => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_viewport),
         .native_drag_key => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_drag_key),
+        .native_window_close => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_window_close),
     }
 }
 
@@ -3512,6 +3555,29 @@ const BenchmarkCtx = struct {
 const BenchmarkRunner = benchmark.Runner(BenchmarkCtx);
 const runAppBenchmarks = BenchmarkRunner.runAppBenchmarks;
 
+fn refreshSpecWindowClose(host: *HostEnv) void {
+    const pending = host.spec_pending_close orelse return;
+    if (host.window_registration != pending.node) {
+        host.spec_pending_close = null;
+        return;
+    }
+    const node = &host.dom_elements.items[@intCast(pending.node)];
+    const event = sim_dom.namedEvent(node, "close-requested") orelse {
+        host.spec_pending_close = null;
+        return;
+    };
+    if (event.binding.event_id != pending.event) {
+        host.spec_pending_close = null;
+        return;
+    }
+    const policy = node.native_window_close orelse unreachable;
+    if (std.mem.eql(u8, policy, "keep-open")) host.spec_pending_close = null;
+    if (std.mem.eql(u8, policy, "close")) {
+        host.spec_pending_close = null;
+        host.spec_window_closed = true;
+    }
+}
+
 const SpecRunnerCtx = struct {
     pub const Host = HostEnv;
     pub const RocHost = abi.RocHost;
@@ -3553,6 +3619,27 @@ const SpecRunnerCtx = struct {
     /// Provides named event for native semantic observation without duplicating engine behavior.
     pub fn namedEvent(elem: *const DomElement, name: []const u8) ?DomNamedEvent {
         return nodeEventName(elem, name);
+    }
+
+    /// Simulates the native close ingress through the one declared unit event.
+    /// A pending decision remains owned by its registration until cancellation,
+    /// successful closure, or retirement; repeated requests retain that decision.
+    pub fn requestWindowClose(host: *Host, roc_host: *RocHost) void {
+        if (host.spec_window_closed or host.spec_pending_close != null) return;
+        const id = host.window_registration orelse {
+            host.spec_window_closed = true;
+            return;
+        };
+        const event = sim_dom.namedEvent(&host.dom_elements.items[@intCast(id)], "close-requested").?.binding;
+        host.spec_pending_close = .{ .node = id, .event = event.event_id };
+        dispatchRocEventWithStats(host, roc_host, event.event_id, event.payload_descriptor, SpecRunnerCtx.hostValueUnit(host, roc_host), null);
+        refreshSpecWindowClose(host);
+    }
+
+    /// Reports simulated closure after committed application decisions. This is
+    /// semantic evidence; GPUI tests establish actual native window admission.
+    pub fn windowClosed(host: *const Host) bool {
+        return host.spec_window_closed;
     }
 
     /// Resolves one declared native shortcut without simulating focus or host key routing.
@@ -12475,6 +12562,8 @@ const Gpui = struct {
         lifetime: u64,
         drag_key: Slice,
         drop: u64,
+        close_requested: u64,
+        close_policy: u64,
     };
     const Effect = extern struct {
         op: u32,
@@ -12506,7 +12595,7 @@ const Gpui = struct {
         }
     }
     fn protocolVersion() callconv(.c) u32 {
-        return 5;
+        return 6;
     }
     fn nodeSize() callconv(.c) usize {
         return @sizeOf(Node);
@@ -12650,6 +12739,8 @@ const Gpui = struct {
             .lifetime = lifetimes[elem.id],
             .drag_key = Slice.from(elem.native_drag_key orelse ""),
             .drop = if (elem.native_drop_target) sim_dom.namedEvent(elem, "drop").?.binding.event_id.raw() else 0,
+            .close_requested = if (elem.active and elem.native_window_close != null) sim_dom.namedEvent(elem, "close-requested").?.binding.event_id.raw() else 0,
+            .close_policy = if (elem.native_window_close) |policy| (if (std.mem.eql(u8, policy, "keep-open")) @as(u64, 1) else if (std.mem.eql(u8, policy, "await-decision")) @as(u64, 2) else @as(u64, 3)) else 0,
         };
     }
     fn childAt(parent: u64, rank: usize) callconv(.c) u64 {
@@ -12828,4 +12919,69 @@ test "native drag metadata rejects invalid keys and mismatched detail handlers" 
     try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateDrag(&node));
     node.named_events.items[0].binding.payload_descriptor = BoundaryPayloadDescriptor.init(.str, .detail);
     try NativeRenderPublication.validateDrag(&node);
+}
+
+test "native window close rejects malformed policy ownership and event payloads" {
+    const allocator = std.testing.allocator;
+    var node = sim_dom.Element.init(1, try allocator.dupe(u8, "window"));
+    defer node.deinit(allocator);
+    node.parent_id = 0;
+    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateWindow(&node));
+    node.native_window_close = try allocator.dupe(u8, "await-decision");
+    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateWindow(&node));
+    try node.named_events.append(allocator, .{ .name = try allocator.dupe(u8, "close-requested"), .binding = .{
+        .event_id = ids.EventId.fromRaw(1),
+        .delivery = .{ .requested = .native },
+        .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
+    } });
+    try NativeRenderPublication.validateWindow(&node);
+    node.parent_id = 2;
+    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateWindow(&node));
+    node.parent_id = 0;
+    node.named_events.items[0].binding.payload_descriptor = BoundaryPayloadDescriptor.init(.str, .detail);
+    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateWindow(&node));
+    node.named_events.items[0].binding.payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none);
+    allocator.free(node.native_window_close.?);
+    node.native_window_close = try allocator.dupe(u8, "guess");
+    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateWindow(&node));
+}
+
+test "native window registration rejects duplicates before publication" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+    const allocator = host.hostAllocator();
+    host.engine.resetRenderTree(&host);
+    var splice = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{
+        .node_capacity = 3,
+        .new_tags = 2,
+        .creations = 2,
+        .children = 1,
+        .child_links = 2,
+        .text_fields = 2,
+        .named_events = 2,
+        .named_event_wire_edits = 2,
+        .wire_commands = 10,
+    });
+    defer splice.deinit();
+    const first = ids.ElemId.fromRaw(1);
+    const second = ids.ElemId.fromRaw(2);
+    try splice.addCreation(&host.engine.render_cache, first, "window");
+    try splice.addCreation(&host.engine.render_cache, second, "window");
+    try splice.addChildren(&host.engine.render_cache, ids.root_elem, &.{ first, second });
+    for ([_]ids.ElemId{ first, second }) |id| {
+        try splice.addTextField(&host.engine.render_cache, id, .native_window_close, "keep-open");
+        try splice.addNamedEvents(&host.engine.render_cache, id, &.{.{ .name = "close-requested", .binding = .{
+            .event_id = ids.EventId.fromRaw(id.raw()),
+            .delivery = .{ .requested = .native },
+            .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
+        } }});
+    }
+    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.prepare(&host, &splice));
+    try std.testing.expectEqual(@as(?u64, null), host.window_registration);
+    try std.testing.expectEqual(@as(usize, 1), host.dom_elements.items.len);
 }

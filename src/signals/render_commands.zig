@@ -1396,11 +1396,12 @@ pub const TextField = enum(u64) {
     native_style = 8,
     native_viewport = 9,
     native_drag_key = 10,
+    native_window_close = 11,
 
     /// Identifies fields consumed only by the native presentation adapter.
     pub fn isNative(self: TextField) bool {
         return switch (self) {
-            .native_style, .native_viewport, .native_drag_key => true,
+            .native_style, .native_viewport, .native_drag_key, .native_window_close => true,
             else => false,
         };
     }
@@ -1415,7 +1416,7 @@ pub const TextField = enum(u64) {
             .test_id => .set_test_id,
             .value => .set_value,
             .class => .set_class,
-            .native_style, .native_viewport, .native_drag_key => @panic("native text metadata has no browser opcode"),
+            .native_style, .native_viewport, .native_drag_key, .native_window_close => @panic("native text metadata has no browser opcode"),
         };
     }
 };
@@ -1845,6 +1846,6 @@ test "every native scalar counts as metadata without a browser opcode" {
     inline for (std.meta.tags(BoolField)) |field| {
         if (field.isNative()) counts.addBoolField(field);
     }
-    try std.testing.expectEqual(@as(u64, 5), counts.total);
+    try std.testing.expectEqual(@as(u64, 6), counts.total);
     try std.testing.expectEqual(counts.total, counts.set_metadata);
 }
