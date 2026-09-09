@@ -115,12 +115,19 @@ def main():
                 "zig": subprocess.check_output([str(zig), "version"], text=True)}
     if "release: 1.95.0\n" not in versions["rustc"] or versions["zig"].strip() != "0.16.0":
         raise ValueError("candidate toolchain version mismatch")
+    rust_host = next(line.removeprefix("host: ") for line in versions["rustc"].splitlines() if line.startswith("host: "))
+    if rust_host != "x86_64-pc-windows-msvc":
+        raise ValueError("unreviewed native Rust build-host target")
     with (output / "cargo.jsonl").open("w") as stream:
         run(["cargo", "build", "--locked", "--release", "--target", TRIPLE,
              "-p", "signals-gpui-host", "-j", "2", "--message-format=json-render-diagnostics"], env, stream)
     metadata = subprocess.check_output(["cargo", "metadata", "--locked", "--format-version=1",
                                         "--filter-platform", TRIPLE], cwd=ROOT, env=env)
     (output / "metadata.json").write_bytes(metadata)
+    host_metadata = subprocess.check_output([
+        "cargo", "metadata", "--locked", "--format-version=1", "--filter-platform", rust_host,
+    ], cwd=ROOT, env=env)
+    (output / "metadata-host.json").write_bytes(host_metadata)
     shutil.copyfile(ROOT / "Cargo.lock", output / "Cargo.lock")
     run([sys.executable, "scripts/prepare_platforms.py"], env)
     run([str(zig), "build", "build-gui-engine", "-Dtarget=x86_64-windows-gnu",
@@ -137,6 +144,8 @@ def main():
         raise ValueError("raw host does not match one optimized Cargo artifact")
     shutil.copyfile(host, payload / "libsignals_gpui_host.a")
     shutil.copyfile(output / "zig-out/gui/libengine.a", payload / "libengine.a")
+    subprocess.run([str(zig), "rc", "signals.rc", str(payload / "signals.res")],
+                   cwd=ROOT / "crates/gpui-host/windows", check=True)
     shaders = output / "shaders"
     shaders.mkdir()
     for directory in (output / "cargo-target" / TRIPLE / "release/build").glob("gpui-*/out"):
@@ -150,7 +159,9 @@ def main():
     for original in (fxc, dll):
         verify(tool_dir / original.name, inventory[original.name]["sha256"])
     receipt = {"schema_version": 1, "candidate_only": True, "source_commit": commit,
-               "target": "x64mingw", "rust_target": TRIPLE, "profile": "release",
+               "target": "x64mingw", "rust_target": TRIPLE, "rust_host": rust_host, "profile": "release",
+               "metadata": identity(output / "metadata.json"),
+               "metadata_host": identity(output / "metadata-host.json"),
                "versions": versions, "zig_archive_sha256": ZIG_SHA,
                "tools": inventory, "outputs": {p.name: identity(p) for p in payload.iterdir()},
                "shaders": {p.name: identity(p) for p in shaders.iterdir()},

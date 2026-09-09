@@ -1,7 +1,10 @@
 """Structural helper rejection tests; no opaque object hashes authorize removal."""
 import struct
 import unittest
-from windows_gnu_coff import classify
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+from windows_gnu_coff import classify, identity, separate, validate_separation
 
 
 def null_descriptor(name='__NULL_IMPORT_DESCRIPTOR_kernel32'):
@@ -73,3 +76,32 @@ class StructuralTests(unittest.TestCase):
         # Ordinary code remains an implementation even if member names resemble helpers.
         data[20:28] = b'.text\0\0\0'
         self.assertIsNone(classify(bytes(data), self.inventory))
+
+
+class ReceiptTests(unittest.TestCase):
+    def test_output_and_raw_ledgers_reject_substitution(self):
+        code = bytearray(null_descriptor())
+        code[20:28] = b'.text\0\0\0'
+        payloads = [bytes(code), null_descriptor()]
+        archive = bytearray(b'!<arch>\n')
+        for index, body in enumerate(payloads):
+            archive.extend((str(index) + '.o/').encode().ljust(16) + b'0'.ljust(12)
+                           + b'0'.ljust(6) + b'0'.ljust(6) + b'644'.ljust(8)
+                           + str(len(body)).encode().ljust(10) + b'`\n' + body)
+            if len(body) % 2:
+                archive.extend(b'\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            raw, final = Path(temporary) / 'raw.a', Path(temporary) / 'final.a'
+            raw.write_bytes(archive)
+            with patch('windows_gnu_coff.subprocess.run'):
+                receipt = separate(raw, final, StructuralTests.inventory, Path(__file__))
+            validate_separation(receipt, final.read_bytes(), raw=raw.read_bytes(), inventory=StructuralTests.inventory)
+            receipt['removed'][0]['kind'] = 'unvalidated'
+            with self.assertRaises(ValueError):
+                validate_separation(receipt, final, raw=raw, inventory=StructuralTests.inventory)
+            changed = bytearray(final.read_bytes())
+            changed[-2] ^= 1
+            final.write_bytes(changed)
+            receipt['output'] = identity(changed)
+            with self.assertRaises(ValueError):
+                validate_separation(receipt, final)

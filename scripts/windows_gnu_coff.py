@@ -129,6 +129,46 @@ def classify(data, inventory):
     return {'kind': 'structural-import-helper', 'sections': names}
 
 
+def validate_separation(receipt, final, *, raw=None, inventory=None):
+    """Validate final member bytes/order; also recheck removal when raw is supplied.
+
+    Without raw bytes, the producer's input identity and removal ledger must
+    additionally be bound to captured build evidence by the caller.
+    """
+    if (receipt.get('schema_version'), receipt.get('target'), receipt.get('operation')) != (
+            1, 'x64mingw', 'separate-coff-imports-v1'):
+        raise ValueError('unsupported COFF separation receipt')
+    data = final if isinstance(final, bytes) else final.read_bytes()
+    if identity(data) != receipt['output']:
+        raise ValueError('separated archive identity mismatch')
+    indices = [record['index'] for record in receipt['retained'] + receipt['removed']]
+    if any(type(index) is not int or index < 0 for index in indices) or len(set(indices)) != len(indices):
+        raise ValueError('invalid or duplicate source member indices')
+    if [record['index'] for record in receipt['retained']] != sorted(record['index'] for record in receipt['retained']):
+        raise ValueError('retained member order differs')
+    actual = [identity(body)['sha256'] for name, body in members(data) if name not in ('/', '//')]
+    if actual != [record['sha256'] for record in receipt['retained']]:
+        raise ValueError('retained implementation member bytes or order differ')
+    if raw is not None:
+        if inventory is None:
+            raise ValueError('raw removal validation requires complete provider inventory')
+        original = raw if isinstance(raw, bytes) else raw.read_bytes()
+        if identity(original) != receipt['input']:
+            raise ValueError('raw archive identity mismatch')
+        retained, removed = [], []
+        for index, (name, body) in enumerate(members(original)):
+            if name in ('/', '//'):
+                continue
+            record = {'index': index, 'sha256': identity(body)['sha256']}
+            classification = classify(body, inventory)
+            if classification is None:
+                retained.append(record)
+            else:
+                removed.append(dict(record, **classification))
+        if retained != receipt['retained'] or removed != receipt['removed']:
+            raise ValueError('removal ledger differs from structural classification')
+
+
 def separate(source, output, inventory, zig):
     raw = source.read_bytes()
     kept, removed = [], []
@@ -153,6 +193,9 @@ def separate(source, output, inventory, zig):
     after = [identity(data)['sha256'] for name, data in members(output.read_bytes()) if name not in ('/', '//')]
     if after != [record['sha256'] for record, data in kept]:
         raise ValueError('implementation bytes or order changed')
-    return {'schema_version': 1, 'candidate_only': True, 'input': identity(raw),
+    receipt = {'schema_version': 1, 'candidate_only': True, 'target': 'x64mingw',
+               'operation': 'separate-coff-imports-v1', 'input': identity(raw),
             'output': identity(output.read_bytes()), 'removed': removed,
             'retained': [record for record, data in kept], 'index_tool': identity(Path(zig).read_bytes())}
+    validate_separation(receipt, output, raw=source, inventory=inventory)
+    return receipt
