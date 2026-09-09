@@ -1097,8 +1097,14 @@ See `UPSTREAM_COMPILER_BUGS.md` for the observed limitations.
 The GUI targets are Apple Silicon macOS, Linux x86_64 with glibc and a
 Wayland/GPU session, and Windows x86_64. Host development needs Rust (tested
 with 1.95.0 on macOS, Linux, and Windows CI) and Zig 0.16. Linux also
-needs a C toolchain/CRT, FreeType and
-xkbcommon development packages, and the xkbcommon-X11 runtime. macOS needs Xcode
+needs a C toolchain for Rust dependencies with native code,
+xkbcommon development packages, and the xkbcommon-X11 runtime. FreeType is
+an independently verified release input. The Linux Cargo `links` override in
+`.cargo/config.toml` supplies `dylib=freetype` and suppresses freetype-sys
+`build.rs` entirely, so missing pkg-config cannot trigger its bundled C build.
+Roc links the released FreeType input separately; host release evidence rejects
+any executed or compiled freetype-sys build script. Changing that crate version
+requires reviewing the override. macOS needs Xcode
 with its Metal compiler component (`xcodebuild -downloadComponent MetalToolchain`).
 If Xcode reports mismatched support frameworks, complete
 `xcodebuild -runFirstLaunch` first. Windows needs the `x86_64-pc-windows-msvc`
@@ -1112,8 +1118,10 @@ MinGW-w64 definitions. Source host builds require authenticated GitHub CLI acces
 and verify that dependency before compiling the host; there is no local import
 generation fallback. Windows bundle staging verifies it again and includes the
 selected lock, manifest, and license. The host build still compiles its own
-application manifest resource. No MSVC link step or Windows SDK libraries are
-involved. Use
+application manifest resource. The host static archive is not linked through
+MSVC, but Roc's final Windows application link still discovers installed MSVC/SDK
+inputs implicitly; the independent import release does not yet remove that
+consumer requirement. Use
 `python` rather than
 `python3` in the commands below on Windows, where `python3` is often a Store
 shortcut; `build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
@@ -1186,14 +1194,16 @@ and run `roc build Counter.roc`. Alternatively, `roc run Counter.roc --opt=speed
 compiles and opens the window directly. Plain `roc run` currently encounters the
 required-`main` shim collision documented in `UPSTREAM_COMPILER_BUGS.md`, case 12. The app author needs the pinned Roc compiler
 and the target operating system (plus runtime GUI libraries on Linux).
-Rust, Zig, and the native SDK/toolchain are used only when
-preparing the platform bundle. On macOS, the package embeds compiled Metal shaders
+Rust and Zig are used when preparing the platform bundle. Windows application
+linking still needs Roc's implicit MSVC/SDK inputs. On macOS, the package embeds compiled Metal shaders
 and copies the required SDK framework/library link stubs into
 `targets/macos-sysroot`; building a bundled app does not need Xcode. The macOS
 build is validated on macOS 26.3; older versions are not yet validated.
 This produces a native executable, not a desktop
-installer. The Linux prebuilt host depends on the build machine's glibc/library ABI;
-portable release packaging needs a deliberate sysroot and license inventory.
+installer. Linux bundles now include independently built glibc 2.39 link stubs,
+startup objects and complete corresponding source/license inventories. The Rust
+host still depends on its build environment's glibc ABI; the pinned link inputs
+do not establish compatibility with older Linux distributions.
 
 The `GUI host link inputs` workflow (`gui-hosts.yml`) builds native candidates
 and runs all GUI application specs with the pinned Roc compiler against their

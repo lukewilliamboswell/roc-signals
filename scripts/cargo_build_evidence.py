@@ -40,6 +40,10 @@ def derive(metadata_bytes, messages_bytes, lock_bytes, target, host_bytes, host_
         reachable.add(identity)
         pending.extend(d["pkg"] for d in nodes[identity]["deps"]
                        if any(k["kind"] != "dev" for k in d["dep_kinds"]))
+    freetype = {identity for identity in reachable if packages[identity]["name"] == "freetype-sys"}
+    if target == "x64glibc" and any(packages[identity]["version"] != "0.20.1"
+                                    or packages[identity].get("links") != "freetype" for identity in freetype):
+        raise ValueError("review the FreeType native link override for this dependency")
     compiled = set()
     scripts = []
     finished = False
@@ -59,6 +63,9 @@ def derive(metadata_bytes, messages_bytes, lock_bytes, target, host_bytes, host_
             identity = message["package_id"]
             if identity not in reachable or identity not in packages:
                 raise ValueError("compiled package is outside the host metadata graph")
+            if target == "x64glibc" and identity in freetype and (
+                    reason == "build-script-executed" or "custom-build" in message["target"]["kind"]):
+                raise ValueError("FreeType build script ran instead of the independent library override")
             compiled.add(identity)
             if reason == "build-script-executed":
                 scripts.append({k: message[k] for k in ("package_id", "linked_libs", "linked_paths")})
@@ -111,6 +118,10 @@ def capture(root, target, output, jobs, environment, expected_fingerprint=None):
     """Build once and atomically retain the exact messages used for selection."""
     if output.exists():
         raise FileExistsError(output)
+    if target == "x64glibc":
+        configuration = tomllib.loads((root / ".cargo/config.toml").read_text())
+        if configuration.get("target", {}).get(TARGETS[target], {}).get("freetype") != {"rustc-link-lib": ["dylib=freetype"]}:
+            raise ValueError("Linux host requires the independent FreeType Cargo override")
     fingerprint = source_fingerprint(root)
     if expected_fingerprint is not None and fingerprint != expected_fingerprint:
         raise ValueError("host source changed before Cargo build")
