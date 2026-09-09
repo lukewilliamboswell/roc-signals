@@ -25,6 +25,9 @@ class NoticePayloadTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        (self.root / ".cargo").mkdir()
+        (self.root / ".cargo/config.toml").write_text(
+            '[target.x86_64-unknown-linux-gnu.freetype]\nrustc-link-lib = ["dylib=freetype"]\n')
         self.policy = self.root / "policy"
         self.policy.mkdir()
         self.host = b"actual host output"
@@ -322,6 +325,29 @@ class NoticePayloadTests(unittest.TestCase):
             self.assertEqual({item.name for item in output.iterdir()},
                              {"gui-host-x64glibc.tar", "gui-host-sources-x64glibc.tar"})
             self.assertEqual(native.call_count, 2)
+    def test_linux_freetype_build_script_and_bundled_fallback_are_rejected(self):
+        metadata = json.loads(json.dumps(self.metadata).replace("example", "freetype-sys"))
+        freetype = metadata["packages"][1]
+        freetype["links"] = "freetype"
+        freetype["version"] = "0.20.1"
+        lock = self.lock.replace(b'name="example"\nversion="1.0.0"', b'name="freetype-sys"\nversion="0.20.1"')
+        messages = json.loads(json.dumps(self.messages).replace("example", "freetype-sys"))
+        def derive(records):
+            return cargo.derive(json.dumps(metadata).encode(),
+                                b"\n".join(json.dumps(m).encode() for m in records),
+                                lock, "x64glibc", self.host, fingerprint="source-fingerprint")
+        # Cargo emits only the Rust library artifact when the links override is active.
+        derive(messages)
+        for libs in (["static=freetype2"], ["freetype"], ["dylib=freetype"]):
+            with self.subTest(libraries=libs), self.assertRaisesRegex(ValueError, "FreeType build script ran"):
+                derive([{"reason": "build-script-executed", "package_id": freetype["id"],
+                         "linked_libs": libs, "linked_paths": []}, *messages])
+        with self.assertRaisesRegex(ValueError, "FreeType build script ran"):
+            derive([{"reason": "compiler-artifact", "package_id": freetype["id"],
+                     "target": {"kind": ["custom-build"]}}, *messages])
+        freetype["version"] = "0.21.0"
+        with self.assertRaisesRegex(ValueError, "review the FreeType"):
+            derive(messages)
 
     def test_capture_refuses_source_drift_across_cargo_execution(self):
         (self.root / "Cargo.lock").write_bytes(self.lock)
