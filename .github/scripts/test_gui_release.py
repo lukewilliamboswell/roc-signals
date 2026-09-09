@@ -60,6 +60,82 @@ class GuiReleaseTests(unittest.TestCase):
     def save_manifest(self):
         (self.output / release.MANIFEST).write_text(json.dumps(self.manifest))
 
+    def retarget(self, target):
+        identities = release.host_identities(target) | release.TARGET_EXTERNALS[target]
+        entries = {}
+        for identity in identities:
+            entry = dict(next(iter(self.lock['artifacts'].values())))
+            entry.update(name=identity.removesuffix('-' + target), target=target, asset=identity + '.tar')
+            entries[identity] = entry
+        self.manifest['targets'] = [target]
+        self.manifest['dependencies'] = {'schema_version': 1, 'artifacts': entries}
+        original = {'schema_version': 1, 'artifacts': {name: entries[name] for name in release.host_identities(target)}}
+        lock = self.output / 'host-release.lock.json'
+        lock.write_text(json.dumps(original))
+        self.manifest['assets']['host_lock'] = dict(release.record(lock), url=f'{release.BASE}/{self.tag}/{lock.name}')
+        companion = entries['gui-host-sources-' + target]
+        self.manifest['source_companions'] = [dict(companion, url=release.source_url(companion))]
+        self.save_manifest()
+
+    def test_target_selection_and_native_execution_do_not_relabel_platforms(self):
+        for target, system, machine in [('arm64mac', 'Darwin', 'arm64'), ('x64mingw', 'Windows', 'AMD64')]:
+            self.retarget(target)
+            release.read_manifest(self.output)
+            commands = []
+            with patch.object(release.platform, 'system', return_value=system), \
+                    patch.object(release.platform, 'machine', return_value=machine), \
+                    patch.object(release.toolchain, 'verify_compiler'), patch.object(release, 'inspect_platform'), \
+                    patch.object(release, 'run', side_effect=lambda command, **kwargs: commands.append(command)), \
+                    patch.object(release.spec_driver, 'run_suite', return_value=[types.SimpleNamespace(passed=True)]), \
+                    patch.object(release.spec_driver, 'print_summary'), patch.object(release.gui_smoke, 'run') as smoke:
+                release.check(self.output, 'roc')
+            self.assertEqual(len(commands), len(self.slugs))
+            self.assertTrue(all('--target=' + target in command for command in commands))
+            self.assertTrue(all(command[-2].endswith('.exe') == (target == 'x64mingw') for command in commands))
+            smoke.assert_called_once()
+            with patch.object(release.platform, 'system', return_value='wrong'), patch.object(release, 'run') as run:
+                with self.assertRaisesRegex(ValueError, 'native'):
+                    release.check(self.output, 'roc')
+                run.assert_not_called()
+        self.manifest['targets'] = ['x64glibc', 'arm64mac']
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, 'exactly one'):
+            release.read_manifest(self.output)
+        with self.assertRaisesRegex(ValueError, 'production input admission'):
+            release.prepare(self.tag, 'deps-gui-host-1', self.root / 'unsupported', 'roc', target='x64mingw')
+
+    def test_mac_catalog_admission_rejects_changed_tbd_host_and_validation(self):
+        import build_macos_stubs as stubs
+        archives = self.root / 'host'
+        archives.mkdir()
+        for name in stubs.ARCHIVES:
+            (archives / name).write_bytes(name.encode())
+        directory = self.root / 'interfaces'
+        stubs.generate(archives, directory)
+        prefix = 'targets/macos-sysroot/'
+        observed = {'targets/arm64mac/' + name: {'sha256': stubs.digest((archives / name).read_bytes()),
+                                               'size': (archives / name).stat().st_size} for name in stubs.ARCHIVES}
+        for path in directory.rglob('*'):
+            if path.is_file():
+                observed[prefix + path.relative_to(directory).as_posix()] = {'sha256': stubs.digest(path.read_bytes()), 'size': path.stat().st_size}
+        validation = {'schema_version': 1, 'compiler_pin': self.pin, 'examples': {name: 1 for name in self.slugs},
+                      'interface_manifest_sha256': observed[prefix + 'manifest.json']['sha256']}
+        data = json.dumps(validation).encode()
+        observed[prefix + 'validation.json'] = {'sha256': stubs.digest(data), 'size': len(data)}
+        retained = {prefix + 'manifest.json': json.loads((directory / 'manifest.json').read_bytes()),
+                    prefix + 'validation.json': validation}
+        expected = release.macos_interfaces(observed, retained, self.manifest)
+        self.assertEqual(set(expected), {name for name in observed if name.startswith(prefix)})
+        tbd = prefix + next(iter(stubs.render(stubs.read_catalog())))
+        for name in (tbd, 'targets/arm64mac/libengine.a'):
+            altered = {key: dict(value) for key, value in observed.items()}
+            altered[name]['sha256'] = '0' * 64
+            with self.assertRaises(ValueError):
+                release.macos_interfaces(altered, retained, self.manifest)
+        validation['interface_manifest_sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'native validation'):
+            release.macos_interfaces(observed, retained, self.manifest)
+
     def test_manifest_rejects_changed_assets_sources_and_extra_files(self):
         release.read_manifest(self.output)
         source = self.manifest['source_companions'][0]['url']
