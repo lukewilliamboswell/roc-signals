@@ -4,6 +4,14 @@ name: GUI host link inputs
 # External dependency inputs have their own release and verification policies.
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/gui-hosts.yml
+      - scripts/gui_host_artifacts.py
+      - scripts/test_gui_host_artifacts.py
+      - scripts/release_dependencies.py
+      - scripts/dependency_artifacts.py
+      - scripts/dependency_archive.py
   workflow_dispatch:
     inputs:
       release_tag:
@@ -17,6 +25,10 @@ permissions:
 
 env:
   GH_TOKEN: ${{ github.token }}
+
+concurrency:
+  group: gui-hosts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -41,6 +53,8 @@ jobs:
         with:
           python-version: '3.12'
       - uses: ./.github/actions/setup-toolchain
+      - name: Check host archive admission
+        run: python -m unittest discover -s scripts -p test_gui_host_artifacts.py
       - name: Install GUI host build dependencies
         shell: bash
         run: |
