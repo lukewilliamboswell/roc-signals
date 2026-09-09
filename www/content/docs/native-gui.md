@@ -15,6 +15,30 @@ controls. The current targets are Apple Silicon macOS, Linux x86_64 with glibc a
 see [contributing](@/docs/contributing.md#native-gui-platform-spike) for the pinned
 compiler, host build, executable build, and test commands.
 
+## Try the Linux release candidate
+
+Download and extract [signals-gui-starters.zip](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.1/signals-gui-starters.zip)
+from [gui-0.1.0-rc.1](https://github.com/lukewilliamboswell/roc-signals/releases/tag/gui-0.1.0-rc.1).
+Install Roc `nightly-2026-09-04-c125b82`, the compiler named in each app's header.
+From the extracted directory, build and run Counter:
+
+```sh
+roc build --target=x64glibc --output=counter examples-gui/counter/main.roc
+./counter
+```
+
+The download includes all six example apps and their companion files. Roc fetches
+the pinned platform archive, which contains the compiled host and its link inputs;
+building these apps requires no Rust, Zig, or repository checkout. Preserve the
+bundled notices when redistributing the platform.
+
+This RC supports Linux x86_64 with glibc, a Wayland desktop and a working graphics
+driver. The operating system supplies runtime libraries, including FreeType and
+xkbcommon. CI validated Ubuntu 24.04 using software Vulkan, built every downloaded
+app, ran all 39 example specs, and checked rendering for all six apps. macOS and
+Windows are development targets; their downloadable release validation remains
+in progress.
+
 ## Controls and layout
 
 `Gui.row`, `Gui.column`, and `Gui.panel` take an attribute list followed by a
