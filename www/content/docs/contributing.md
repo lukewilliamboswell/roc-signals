@@ -852,14 +852,25 @@ The flat layout is intentional: nested `shared/` imports and hosted declarations
 currently fail with the pinned compiler, including when compiled from bundles.
 See `UPSTREAM_COMPILER_BUGS.md` for the observed limitations.
 
-The GUI targets are Apple Silicon macOS and Linux x86_64 with glibc and a
-Wayland/GPU session. Host development needs Rust (tested with 1.94 on macOS and
-1.95 on Linux) and Zig 0.16. Linux also needs a C toolchain/CRT, FreeType and
+The GUI targets are Apple Silicon macOS, Linux x86_64 with glibc and a
+Wayland/GPU session, and Windows x86_64. Host development needs Rust (tested
+with 1.94 on macOS, 1.95 on Linux, and 1.89 on Windows) and Zig 0.16. Linux also
+needs a C toolchain/CRT, FreeType and
 xkbcommon development packages, and the xkbcommon-X11 runtime. macOS needs Xcode
 with its Metal compiler component (`xcodebuild -downloadComponent MetalToolchain`).
 If Xcode reports mismatched support frameworks, complete
-`xcodebuild -runFirstLaunch` first. The workspace pins GPUI 0.2.2. Other native
-targets, including Intel macOS, are not implemented.
+`xcodebuild -runFirstLaunch` first. Windows needs the `x86_64-pc-windows-msvc`
+Rust toolchain; the optimized host build also compiles GPUI's shaders with the
+Windows SDK's `fxc.exe` (set `GPUI_FXC_PATH` if it is not discovered), and a
+development build compiles them at runtime instead. Zig supplies the archiver
+and resource compiler, Roc's own `x64win` link supplies the C runtime, and the
+one import library still needed is generated from the MinGW-w64 definitions
+Zig bundles, so no MSVC link step or Windows SDK libraries are involved. Use
+`python` rather than
+`python3` in the commands below on Windows, where `python3` is often a Store
+shortcut; `build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
+Other native targets, including Intel macOS and Windows on Arm, are not
+implemented.
 The GUI builder selects `TOOLCHAINS=Metal` on macOS unless explicitly overridden;
 use the same setting for direct `cargo test` commands if Xcode's default lookup
 still reports the installed Metal component as missing.
@@ -912,6 +923,26 @@ build is validated on macOS 26.3; older versions are not yet validated.
 This produces a native executable, not a desktop
 installer. The Linux prebuilt host depends on the build machine's glibc/library ABI;
 portable release packaging needs a deliberate sysroot and license inventory.
+
+Prebuilt link inputs come from CI on their own release cycle instead of a
+local host build, and no binary is committed. The `GUI host link inputs`
+workflow (`gui-hosts.yml`, dispatched with a `gui-hosts-<date>` tag) builds the
+optimized `platform-gui/targets/<target>` trees on each supported runner,
+records signed build provenance, and publishes them as a GitHub release of
+`gui-link-inputs-<target>.tar` archives. Rerun it only when the host changes.
+To bundle from a published set, verify and extract each archive, then pass the
+extracted `targets/` tree:
+
+```sh
+gh release download gui-hosts-2026-09-09 --pattern 'gui-link-inputs-*.tar' --dir /tmp/hosts
+gh attestation verify /tmp/hosts/gui-link-inputs-x64win.tar --repo lukewilliamboswell/roc-signals
+mkdir -p /tmp/hosts/targets && tar -xf /tmp/hosts/gui-link-inputs-x64win.tar -C /tmp/hosts/targets
+scripts/bundle.sh --package gui --no-build --prebuilt-targets /tmp/hosts/targets
+```
+
+`--prebuilt-targets` copies the tree into the staged platform alongside any
+inputs already present locally, so one bundle can carry every operating
+system's inputs.
 
 The bundle output also contains every registered GUI app under `examples-gui/`,
 including its supporting Roc modules and semantic specs. Those generated app

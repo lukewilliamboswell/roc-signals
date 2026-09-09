@@ -4,13 +4,25 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gpui = { version = "=0.2.2", default-features = false, features = ["wayland"] }
 unicode-segmentation = "1"
+
+# GPUI's Wayland backend is the supported Linux presentation layer. Windows uses
+# GPUI's DirectX/DirectWrite backend; the manifest feature is omitted because it
+# only embeds resources into Cargo-linked executables, and Roc performs the link.
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+gpui = { version = "=0.2.2", default-features = false, features = ["wayland"] }
 libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui = { version = "=0.2.2", default-features = false }
+windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [lib]
 name = "signals_gpui_host"
 crate-type = ["staticlib"]
 
-[dev-dependencies]
+[target.'cfg(not(target_os = "windows"))'.dev-dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["wayland", "test-support"] }
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+gpui = { version = "=0.2.2", default-features = false, features = ["test-support"] }

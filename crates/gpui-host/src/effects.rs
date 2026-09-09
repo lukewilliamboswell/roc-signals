@@ -400,7 +400,8 @@ fn validate_save_options(directory: &str, name: &str) -> Result<(), FileError> {
             "suggested file name exceeds 255 UTF-8 bytes".into(),
         ));
     }
-    if name.is_empty() || name.contains('/') || name.contains('\0') || name == "." || name == ".." {
+    let separator = name.contains('/') || (cfg!(windows) && name.contains('\\'));
+    if name.is_empty() || separator || name.contains('\0') || name == "." || name == ".." {
         return Err(FileError::InvalidPath(name.into()));
     }
     Ok(())
@@ -449,6 +450,9 @@ fn encode_result(result: Result<String, FileError>) -> (bool, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An absolute directory under the host operating system's path rules.
+    const ABSOLUTE_DIRECTORY: &str = if cfg!(windows) { "C:\\tmp" } else { "/tmp" };
 
     #[test]
     fn new_task_routes_and_cursor_frames_are_strict_and_unambiguous() {
@@ -507,14 +511,14 @@ mod tests {
 
     #[test]
     fn maximum_request_name_returns_a_bounded_typed_refusal() {
-        let name = "x".repeat(MAX_PACKET - 26);
-        let request = packet(&["at", "/tmp", &name]);
+        let name = "x".repeat(MAX_PACKET - 22 - ABSOLUTE_DIRECTORY.len());
+        let request = packet(&["at", ABSOLUTE_DIRECTORY, &name]);
         assert_eq!(request.len(), MAX_PACKET);
         let Request::ChooseSavePath { suggested_name, .. } = Request::decode(3, &request).unwrap()
         else {
             panic!("wrong request kind")
         };
-        let error = validate_save_options("/tmp", &suggested_name).unwrap_err();
+        let error = validate_save_options(ABSOLUTE_DIRECTORY, &suggested_name).unwrap_err();
         assert_eq!(
             encode_result(Err(error)),
             (

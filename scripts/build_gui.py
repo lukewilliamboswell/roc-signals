@@ -11,6 +11,12 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
+# Windows DLLs that the host still binds through conventional import libraries.
+# The Rust host and the `windows` crates use raw-dylib, which needs none, but
+# GPUI's `winsafe` dependency declares these with ordinary `#[link]` and a
+# development build retains the references. Roc's x64win link supplies only
+# kernel32, ntdll, and the UCRT itself.
+WINDOWS_IMPORT_LIBS = ('advapi32',)
 MACOS_FRAMEWORKS = ('AppKit', 'ApplicationServices', 'Carbon', 'CoreFoundation',
                     'CoreGraphics', 'CoreMedia', 'CoreText', 'CoreVideo',
                     'Foundation', 'IOKit', 'IOSurface', 'Metal', 'QuartzCore',
@@ -18,7 +24,17 @@ MACOS_FRAMEWORKS = ('AppKit', 'ApplicationServices', 'Carbon', 'CoreFoundation',
 
 def host_target():
     return {('Linux', 'x86_64'): 'x64glibc',
-            ('Darwin', 'arm64'): 'arm64mac'}.get((platform.system(), platform.machine()))
+            ('Darwin', 'arm64'): 'arm64mac',
+            ('Windows', 'AMD64'): 'x64win'}.get((platform.system(), platform.machine()))
+
+
+def host_archive(target):
+    """Roc's Windows link lists COFF archives by their conventional name."""
+    return 'host.lib' if target == 'x64win' else 'libhost.a'
+
+
+def executable_name(name):
+    return name + '.exe' if platform.system() == 'Windows' else name
 
 
 def build_environment():
@@ -62,10 +78,24 @@ def copy_macos_sysroot(sdk, destination):
                                else Path(str(path) + '.tbd'))
 
 
+def merge_archives(stage, output, members):
+    """Merge object members, not archives-as-members: Roc consumes one host archive.
+
+    Zig's bundled llvm-ar reads the same MRI script everywhere, so Windows needs
+    neither MSVC's lib.exe nor a separate binutils installation.
+    """
+    if platform.system() == 'Darwin':
+        subprocess.run(['libtool', '-static', '-o', output] + members, cwd=stage, check=True)
+        return
+    script = f'CREATE {output}\n' + ''.join(f'ADDLIB {member}\n' for member in members) + 'SAVE\nEND\n'
+    tool = ['zig', 'ar'] if platform.system() == 'Windows' else ['ar']
+    subprocess.run(tool + ['-M'], input=script, text=True, cwd=stage, check=True)
+
+
 def build(debug=False, jobs=2):
     target = host_target()
     if target is None:
-        raise SystemExit('GUI builds require Linux x86_64 with glibc or Apple Silicon macOS.')
+        raise SystemExit('GUI builds require Linux x86_64 with glibc, Apple Silicon macOS, or Windows x86_64.')
     if jobs < 1:
         raise SystemExit('GUI build jobs must be positive.')
     subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
@@ -79,19 +109,21 @@ def build(debug=False, jobs=2):
     metadata = json.loads(subprocess.check_output(
         ['cargo', 'metadata', '--locked', '--no-deps', '--format-version=1'], cwd=ROOT, text=True,
     ))
-    rust_host = Path(metadata['target_directory']) / ('debug' if debug else 'release') / 'libsignals_gpui_host.a'
+    rust_name = 'signals_gpui_host.lib' if target == 'x64win' else 'libsignals_gpui_host.a'
+    rust_host = Path(metadata['target_directory']) / ('debug' if debug else 'release') / rust_name
     engine = ROOT / 'zig-out/gui/libengine.a'
+    archive = host_archive(target)
     with tempfile.TemporaryDirectory(prefix='signals-host-') as tmp:
         stage = Path(tmp)
         shutil.copyfile(rust_host, stage / 'rust.a')
         shutil.copyfile(engine, stage / 'engine.a')
-        if platform.system() == 'Darwin':
-            subprocess.run(['libtool', '-static', '-o', 'libhost.a', 'rust.a', 'engine.a'], cwd=stage, check=True)
-        else:
-            subprocess.run(['ar', '-M'], input='CREATE libhost.a\nADDLIB rust.a\nADDLIB engine.a\nSAVE\nEND\n', text=True, cwd=stage, check=True)
-        shutil.copyfile(stage / 'libhost.a', dest / 'libhost.a')
+        merge_archives(stage, archive, ['rust.a', 'engine.a'])
+        shutil.copyfile(stage / archive, dest / archive)
     for obsolete in ['libgpui_host.a', 'libengine.a']:
         (dest / obsolete).unlink(missing_ok=True)
+    if target == 'x64win':
+        build_windows_inputs(dest)
+        return
     if platform.system() == 'Darwin':
         sdk = Path(subprocess.check_output(['xcrun', '--show-sdk-path'], text=True).strip())
         sysroot = dest.parent / 'macos-sysroot'
@@ -126,6 +158,59 @@ def build(debug=False, jobs=2):
         shutil.copyfile(source, dest / ('lib' + name + '.so'))
         provenance[name] = str(source)
     (dest / 'link-inputs.json').write_text(json.dumps(provenance, indent=2) + '\n')
+
+
+def zig_lib_dir():
+    """Zig prints its environment as a Zig literal, not JSON."""
+    output = subprocess.check_output(['zig', 'env'], text=True)
+    match = re.search(r'\.lib_dir = "((?:[^"\\]|\\.)*)"', output)
+    if not match:
+        raise SystemExit('zig env did not report lib_dir')
+    return Path(match.group(1).encode().decode('unicode_escape'))
+
+
+def windows_import_library(name, dest):
+    """Generate one import library from the MinGW-w64 definitions Zig bundles.
+
+    A `.def.in` carries architecture macros and is expanded with Zig's C
+    preprocessor the way Zig's own libc build expands it; a plain `.def` is
+    used as is. The result binds symbol names to the system DLL and contains no
+    code, so it is what the Windows SDK's own import library would provide.
+    """
+    common = zig_lib_dir() / 'libc/mingw/lib-common'
+    definition = dest / (name + '.def')
+    if (common / (name + '.def.in')).is_file():
+        subprocess.run(['zig', 'cc', '-E', '-P', '-xc', '-D__x86_64__', '-I', str(common.parent / 'def-include'),
+                        str(common / (name + '.def.in')), '-o', str(definition)], check=True)
+    elif (common / (name + '.def')).is_file():
+        shutil.copyfile(common / (name + '.def'), definition)
+    else:
+        raise SystemExit('Zig does not bundle a MinGW definition for ' + name)
+    subprocess.run(['zig', 'dlltool', '-m', 'i386:x86-64', '-d', str(definition), '-l', str(dest / (name + '.lib'))], check=True)
+    definition.unlink()
+
+
+def build_windows_inputs(dest):
+    """Produce the x64win inputs beyond the host archive itself.
+
+    The application manifest is embedded into every executable Roc links: GPUI
+    imports TaskDialogIndirect at load time, which only the Common Controls 6
+    side-by-side comctl32 exports, and the manifest also declares per-monitor
+    DPI awareness. The import libraries cover the DLLs in WINDOWS_IMPORT_LIBS.
+    """
+    dest = dest.resolve()
+    resources = ROOT / 'crates/gpui-host/windows'
+    subprocess.run(['zig', 'rc', 'signals.rc', str(dest / 'signals.res')], cwd=resources, check=True)
+    for name in WINDOWS_IMPORT_LIBS:
+        windows_import_library(name, dest)
+    (dest / 'link-inputs.json').write_text(json.dumps({
+        'manifest': 'crates/gpui-host/windows/signals.manifest.xml',
+        'import_libraries': {name: 'zig ' + subprocess.check_output(['zig', 'version'], text=True).strip()
+                             + ' lib/libc/mingw/lib-common' for name in WINDOWS_IMPORT_LIBS},
+        'rust_target': 'x86_64-pc-windows-msvc',
+        'engine_target': 'x86_64-windows-msvc',
+    }, indent=2) + '\n')
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)

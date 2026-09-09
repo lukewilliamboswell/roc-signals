@@ -1,0 +1,97 @@
+name: GUI host link inputs
+
+# Publishes the prebuilt, app-independent GUI link inputs on their own release
+# cycle. Platform bundles pull a published set through
+# `scripts/bundle.sh --package gui --no-build --prebuilt-targets DIR`, so a
+# host rebuild happens only when the host itself changes, and nothing binary is
+# ever committed: every archive carries signed build provenance that
+# `gh attestation verify` checks against this repository.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag for this set of link inputs (gui-hosts-<date>)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build link inputs (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: x64win
+          - os: ubuntu-24.04
+            target: x64glibc
+          # arm64mac needs a runner with Xcode's Metal toolchain component; add
+          # it here once one is validated, alongside its macos-sysroot tree.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/setup-toolchain
+      - name: Install GUI host build dependencies
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev
+          fi
+          rustup toolchain install 1.95.0 --profile minimal
+      - name: Build the optimized host and its link inputs
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+        shell: bash
+        run: |
+          python scripts/prepare_platforms.py
+          python scripts/build_gui.py
+          tar -cf "gui-link-inputs-${{ matrix.target }}.tar" -C platform-gui/targets "${{ matrix.target }}"
+          python -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest(), sys.argv[1])" "gui-link-inputs-${{ matrix.target }}.tar" | tee "gui-link-inputs-${{ matrix.target }}.sha256"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: gui-link-inputs-${{ matrix.target }}
+          path: |
+            gui-link-inputs-${{ matrix.target }}.tar
+            gui-link-inputs-${{ matrix.target }}.sha256
+          retention-days: 30
+
+  publish:
+    name: Attest and release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: gui-link-inputs-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/link-inputs
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: ${{ runner.temp }}/link-inputs/*.tar
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          case "$RELEASE_TAG" in gui-hosts-*) ;; *) echo "release_tag must start with gui-hosts-"; exit 1;; esac
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "GUI host link inputs $RELEASE_TAG" \
+            --notes "Prebuilt app-independent GUI link inputs for platform-gui, built from $GITHUB_SHA. Verify with: gh attestation verify <file> --repo $GITHUB_REPOSITORY" \
+            "$RUNNER_TEMP"/link-inputs/*.tar "$RUNNER_TEMP"/link-inputs/*.sha256

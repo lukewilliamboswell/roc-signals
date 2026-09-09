@@ -85,9 +85,36 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_gui_suite.py'
           python3 scripts/test.py gui --keep-output
 
+  gui-windows:
+    name: Native GUI build and specs (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/setup-toolchain
+      - name: Install GUI host build dependencies
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Verify GUI discovery and applications
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+        run: |
+          python -m unittest discover -s scripts -p 'test_gui_suite.py'
+          python scripts/test.py gui --keep-output
+      # Distributable inputs are published with provenance by gui-hosts.yml on
+      # their own release cycle; this job only proves the optimized build works.
+      - name: Build the distributable Windows link inputs
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+        run: python scripts/build_gui.py
+
   platform-source:
     name: Platform source
-    needs: [smoke, source, gui]
+    needs: [smoke, source, gui, gui-windows]
     if: always()
     runs-on: ubuntu-24.04
     steps:
