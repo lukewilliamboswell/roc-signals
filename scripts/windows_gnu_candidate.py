@@ -10,6 +10,9 @@ import sys
 import urllib.request
 import zipfile
 
+from cargo_build_evidence import derive
+from host_build_identity import record_outputs, source_fingerprint
+
 ROOT = Path(__file__).resolve().parents[1]
 TRIPLE = "x86_64-pc-windows-gnullvm"
 SDK = "10.0.26100.0"
@@ -59,6 +62,8 @@ def main():
     if sys.platform != "win32":
         raise ValueError("native Windows is required for GPUI release shader compilation")
     commit = clean_commit()
+    fingerprint = source_fingerprint(ROOT)
+    lock = (ROOT / "Cargo.lock").read_bytes()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     sdk = Path(os.environ["ProgramFiles(x86)"]) / "Windows Kits/10/bin" / SDK / "x64"
@@ -128,7 +133,9 @@ def main():
         "cargo", "metadata", "--locked", "--format-version=1", "--filter-platform", rust_host,
     ], cwd=ROOT, env=env)
     (output / "metadata-host.json").write_bytes(host_metadata)
-    shutil.copyfile(ROOT / "Cargo.lock", output / "Cargo.lock")
+    if (ROOT / "Cargo.lock").read_bytes() != lock:
+        raise ValueError("Cargo.lock changed during candidate build")
+    (output / "Cargo.lock").write_bytes(lock)
     run([sys.executable, "scripts/prepare_platforms.py"], env)
     run([str(zig), "build", "build-gui-engine", "-Dtarget=x86_64-windows-gnu",
          "-Dgpui-gnu-candidate=true", "--prefix", str(output / "zig-out")], env)
@@ -156,6 +163,14 @@ def main():
         raise ValueError("optimized GPUI shader evidence missing")
     if clean_commit() != commit:
         raise ValueError("candidate source changed during build")
+    evidence, selection = derive(
+        metadata, (output / "cargo.jsonl").read_bytes(), lock, "x64mingw",
+        (payload / "libsignals_gpui_host.a").read_bytes(), fingerprint=fingerprint,
+        host_metadata_bytes=host_metadata, compiler_host=rust_host,
+    )
+    (output / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    (output / "selection.json").write_text(json.dumps(selection, indent=2) + "\n")
+    record_outputs(ROOT, "x64mingw", payload, output, fingerprint)
     for original in (fxc, dll):
         verify(tool_dir / original.name, inventory[original.name]["sha256"])
     receipt = {"schema_version": 1, "candidate_only": True, "source_commit": commit,
