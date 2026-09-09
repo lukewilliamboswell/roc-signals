@@ -8,5 +8,7 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
-lto = "thin"
+# Keep optimization within each cached crate. Cross-crate LTO reprocesses the
+# dependency graph whenever our host changes, defeating that build boundary.
+lto = false
 strip = "debuginfo"

@@ -951,6 +951,10 @@ or `scripts/test.py gui --gui-build-jobs N` to adjust memory pressure. Parallel
 app work should serialize substantial host builds. The builder cleans the local
 Rust host crate before compiling so a shared Cargo target cannot reuse another
 worktree's host implementation; dependency artifacts remain cached.
+Release builds retain Rust's optimized per-crate compilation and local ThinLTO,
+with cross-crate LTO disabled so rebuilding the host does not optimize the full
+dependency graph again. This policy makes no claim about runtime performance
+relative to a whole-program LTO build.
 GUI specs validate shared
 semantics; the separate window smoke above checks rendering and adapter dispatch,
 and does not establish OS keyboard, pointer, or IME behavior. GPUI adapter tests
