@@ -236,6 +236,24 @@ command attaches all assets before publishing; publication then locks their byte
 and the tag. Historical releases created before immutability was enabled remain
 mutable and must not be described as having that protection.
 
+The `Complete Windows system import releases` workflow builds its independent
+pure-import package on Linux x86-64 and executes the exact candidate on Windows.
+It installs the recipe's checksum-pinned Rust and Zig tools itself. To reproduce
+both builds with Python 3.12 or newer:
+
+```sh
+python3 scripts/build_windows_system_imports.py --output /tmp/windows-imports-a --cache /tmp/windows-import-downloads
+python3 scripts/build_windows_system_imports.py --output /tmp/windows-imports-b --cache /tmp/windows-import-downloads
+cmp /tmp/windows-imports-a/windows-system-imports-x64mingw.tar /tmp/windows-imports-b/windows-system-imports-x64mingw.tar
+python3 scripts/test_windows_system_import_artifact.py /tmp/windows-imports-a/windows-system-imports-x64mingw.tar
+```
+
+The last command requires Zig 0.16.0. On Windows, run the same candidate probe
+with `--require-native`; cross-linking on Linux is not a native runtime test.
+Publication uses a fresh `deps-windows-system-imports-<version>` tag on `main`
+after both build and native jobs pass. This package does not yet replace existing
+Windows consumer inputs or provide CRT implementations.
+
 GUI CI caches compiled Cargo dependencies using the lockfile, Rust environment,
 and runner image identity. Only successful pushes to `main` save the cache;
 pull requests restore it without publishing entries. Workspace host code remains

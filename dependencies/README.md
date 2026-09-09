@@ -143,6 +143,19 @@ compiling the host. Bundle staging independently admits it, replaces any mutable
 checkout copy, and preserves its complete notice/source payload and receipt.
 Publication and consumer-lock adoption remain separate reviewed operations.
 
+## Complete Windows system import producer
+
+`windows-system-imports.json` defines a separate, source-only producer for complete
+reviewed per-DLL import inventories. Rust compiles pinned Windows bindings with
+an explicit full module/feature closure, and Zig supplies complete MinGW import
+definitions for the GNU runtime's OS calls. The package contains 340 pure import
+archives plus original source, notice and reproduction payloads; CRT
+implementations remain a separate dependency. Two clean builds and a native
+Windows ICUUC/NTDLL/OLE32/KERNEL32 probe gate independent signed publication.
+See [the producer contract](windows-system-imports/README.md) for coverage and
+provider-order boundaries. Producer support does not adopt this package in the
+platform's consumer lock or switch its Windows ABI.
+
 ## Coverage and remaining boundaries
 
 The artifact contract above applies to dependencies selected in the root
