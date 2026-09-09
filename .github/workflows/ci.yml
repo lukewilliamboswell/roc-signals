@@ -149,7 +149,7 @@ jobs:
           python-version: '3.12'
       - uses: ./.github/actions/setup-toolchain
       - name: Install GUI host build dependencies
-        run: rustup toolchain install 1.95.0 --profile minimal
+        run: rustup toolchain install 1.95.0 --profile minimal --target x86_64-pc-windows-gnullvm
       - name: Restore compiled Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         env:
@@ -177,9 +177,9 @@ jobs:
           python -m unittest discover -s scripts -p 'test_windows_archive_audit.py'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/windows-import-audit"
-          python scripts/audit_windows_archive.py platform-gui/targets/x64win/signals_gpui_host.lib > "$env:RUNNER_TEMP/windows-import-audit/host.json"
+          python scripts/audit_windows_archive.py platform-gui/targets/x64mingw/libsignals_gpui_host.a > "$env:RUNNER_TEMP/windows-import-audit/host.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python scripts/audit_windows_archive.py platform-gui/targets/x64win/engine.lib > "$env:RUNNER_TEMP/windows-import-audit/engine.json"
+          python scripts/audit_windows_archive.py platform-gui/targets/x64mingw/libengine.a > "$env:RUNNER_TEMP/windows-import-audit/engine.json"
       - name: Upload Windows dependency review evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

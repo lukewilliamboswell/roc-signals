@@ -535,8 +535,8 @@ class DependencyStagingTests(unittest.TestCase):
         self.assertEqual((destination / "advapi32.lib").read_bytes(), b"verified import")
 
     def test_windows_verification_failure_prevents_compilation(self):
-        with patch.object(build_gui, "host_target", return_value="x64win"), patch.object(
-                build_gui, "install_windows_imports", side_effect=ValueError("untrusted signer")), patch.object(
+        with patch.object(build_gui, "host_target", return_value="x64mingw"), patch.object(
+                prepare_dependencies, "install_windows_gnu", side_effect=ValueError("untrusted signer")), patch.object(
                 build_gui.subprocess, "run") as compiler:
             with self.assertRaisesRegex(ValueError, "untrusted signer"):
                 build_gui.build()

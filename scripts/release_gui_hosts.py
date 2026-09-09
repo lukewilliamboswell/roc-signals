@@ -12,11 +12,11 @@ import tempfile
 from dependency_artifacts import sha256, unpack_verified, verify_archive, read_lock
 from release_dependencies import REPOSITORY, publish_assets
 
-POLICY = {"targets": ("x64glibc", "x64win"),
+POLICY = {"targets": ("x64glibc", "x64mingw"),
                  "files_by_target": {
                      "x64glibc": ("libsignals_gpui_host.a", "libengine.a"),
                      "arm64mac": ("libsignals_gpui_host.a", "libengine.a"),
-                     "x64win": ("signals_gpui_host.lib", "engine.lib", "signals.res"),
+                     "x64mingw": ("libsignals_gpui_host.a", "libengine.a", "signals.res"),
                  },
                  "licenses": ("LICENSE", "LICENSE-GPUI", "NOTICE.md", "NOTICE.json", "third-party-notices.tar.xz"),
                  "workflow": "gui-hosts.yml",

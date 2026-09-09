@@ -1174,50 +1174,37 @@ any executed or compiled freetype-sys build script. Changing that crate version
 requires reviewing the override. macOS needs Xcode
 with its Metal compiler component (`xcodebuild -downloadComponent MetalToolchain`).
 If Xcode reports mismatched support frameworks, complete
-`xcodebuild -runFirstLaunch` first. Windows needs the `x86_64-pc-windows-msvc`
-Rust toolchain; the optimized host build also compiles GPUI's shaders with the
-Windows SDK's `fxc.exe` (set `GPUI_FXC_PATH` if it is not discovered), and a
-development build compiles them at runtime instead. Zig supplies the archiver
-and resource compiler, Roc's own `x64win` link supplies the C runtime, and the
-one additional import library is fetched from the independently signed Windows
-dependency release pinned in `dependencies.lock.json`. Its producer uses Zig's
-MinGW-w64 definitions. Source host builds require authenticated GitHub CLI access
-and verify that dependency before compiling the host; there is no local import
-generation fallback. Windows bundle staging verifies it again and includes the
-selected lock, manifest, and license. The host build still compiles its own
-application manifest resource. The host static archive is not linked through
-MSVC, but Roc's final Windows application link still discovers installed MSVC/SDK
-inputs implicitly; the independent import release does not yet remove that
-consumer requirement. Use
-`python` rather than
-`python3` in the commands below on Windows, where `python3` is often a Store
-shortcut; `build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
-The `Windows GNU host candidate` workflow is an isolated toolchain
-experiment, with inventory checks on its pull requests and manual build dispatches. Its inventory mode records the fixed Windows SDK 10.0.26100.0 FXC
-executable, its actual loaded D3DCompiler DLL, file versions, signatures and
-hashes. Build mode requires the committed hashes and Microsoft signer reviewed from
-inventory run `34343278660` (file version `10.0.26100.8249`); dispatch inputs
-cannot override them.
-Build mode captures an optimized Rust 1.95.0 gnullvm host, a GNU Zig engine,
-shader outputs, the Windows resource, and Cargo evidence for both the compiler
-host and GNU target. A source fingerprint captured before compilation binds every
-raw host output after the build. These candidate artifacts neither change
-the production Windows platform target nor constitute a dependency release.
-The shader compiler remains a Windows build tool; the separate experiment aims
-to remove SDK library discovery from Roc's final application link.
+`xcodebuild -runFirstLaunch` first. Windows uses Rust's MSVC compiler host with
+its `x86_64-pc-windows-gnullvm` target (`rustup target add --toolchain 1.95.0
+x86_64-pc-windows-gnullvm`). The shared Windows builder pins Zig 0.16.0 and the
+Microsoft-signed FXC/compiler DLL pair from SDK 10.0.26100.0, file version
+10.0.26100.8249. It checks the actual loaded compiler DLL and committed hashes;
+ambient `GPUI_FXC_PATH` cannot override release shader tooling. Optimized builds
+compile GPUI shaders before packaging; development builds compile them at runtime.
 
-The candidate workflow's `apps` mode consumes successful, identified CI artifacts:
-a fixed raw GNU host build, the complete Windows DLL inventory, and an explicitly
-reviewed runtime run/source/archive hash. It structurally validates COFF import
-records and descriptors before separating them, preserves implementation members
-byte-for-byte, and records the transformation. Native builds, semantic specs and
-rendering checks run for all six examples, followed by fresh-cache HTTP bundle
-consumption. Each Roc build explicitly selects `--target=x64mingw`; this does not
-prove automatic Windows target selection. Complete original host notices are
-composed against the captured build source and included in the measured bundle,
-with the validated source companion retained as a separate artifact. The raw host
-transformation receipt preserves the engine and resource identities. This remains
-a candidate test, not signed dependency admission.
+Windows host builds verify and reuse both independently signed dependencies in
+`dependencies.lock.json`: complete per-DLL import archives and GNU CRT inputs.
+Authenticated GitHub CLI access is required. There is no local native dependency
+build fallback. The host and engine use the GNU ABI, and the host build produces
+its own application manifest resource. Structural COFF validation separates only
+import records and exact linker helpers from the raw Rust archive, preserving
+every implementation member byte-for-byte and in order. The transformation
+receipt binds raw Cargo output to the final archive; engine/resource bytes remain
+unchanged. Complete original notices are bundled and the validated source
+companion remains a separate release asset.
+
+Roc's final Windows link explicitly selects `--target=x64mingw` and uses all
+released inputs from the platform header. It does not discover installed MSVC/SDK
+libraries. FXC remains a build-time SDK tool. Use `python` instead of `python3`
+in the commands below on Windows, where `python3` can be a Store shortcut.
+`build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
+
+The separate `Windows GNU host candidate` workflow can inventory shader tooling
+or test identified CI artifacts before release. It uses the same native builder
+and structural transformer as production. Its full app gate admits original
+notices and paired sources, then runs all six builds/specs/render checks natively
+and through a fresh HTTP bundle cache. Candidate artifacts do not substitute for
+signed production dependency admission.
 
 Other native targets, including Intel macOS and Windows on Arm, are not
 implemented.
@@ -1226,8 +1213,7 @@ use the same setting for direct `cargo test` commands if Xcode's default lookup
 still reports the installed Metal component as missing.
 
 The GUI platform header lists the Rust host and Zig engine as separate link
-inputs: `libsignals_gpui_host.a` and `libengine.a` on Linux and macOS, or
-`signals_gpui_host.lib` and `engine.lib` on Windows. Roc links these with the
+inputs: `libsignals_gpui_host.a` and `libengine.a` on all supported native targets. Roc links these with the
 application object and the other declared inputs to produce the executable.
 The builder does not merge them into a combined host archive. Rebuild older
 prebuilt target directories before using them with this header.

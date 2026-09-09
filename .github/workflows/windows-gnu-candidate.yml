@@ -5,6 +5,7 @@ on:
       - .github/workflows/windows-gnu-candidate.yml
       - scripts/windows_fxc_inventory.ps1
       - scripts/windows_gnu_candidate.py
+      - scripts/windows_gnu_build.py
       - scripts/test_windows_gnu_candidate.py
       - scripts/windows_gnu_coff.py
       - scripts/test_windows_gnu_coff.py

@@ -1,4 +1,4 @@
-"""Candidate-only COFF import separation, preserving every implementation byte.
+"""COFF import separation, preserving every implementation byte.
 
 The accepted descriptor templates are LLVM COFF import-library records: zero
 import-descriptor/thunk sections, their exact relocations, and linker symbols.
@@ -193,9 +193,30 @@ def separate(source, output, inventory, zig):
     after = [identity(data)['sha256'] for name, data in members(output.read_bytes()) if name not in ('/', '//')]
     if after != [record['sha256'] for record, data in kept]:
         raise ValueError('implementation bytes or order changed')
-    receipt = {'schema_version': 1, 'candidate_only': True, 'target': 'x64mingw',
+    receipt = {'schema_version': 1, 'target': 'x64mingw',
                'operation': 'separate-coff-imports-v1', 'input': identity(raw),
             'output': identity(output.read_bytes()), 'removed': removed,
             'retained': [record for record, data in kept], 'index_tool': identity(Path(zig).read_bytes())}
     validate_separation(receipt, output, raw=source, inventory=inventory)
     return receipt
+
+
+def normalize(source, output, inventory, zig):
+    """Record the structural transformation and actual indexing tool identity."""
+    import json
+    separation = separate(source, output, inventory, zig)
+    separation['inventory_sha256'] = hashlib.sha256(json.dumps(inventory, sort_keys=True).encode()).hexdigest()
+    separation['transformer'] = identity(Path(__file__).read_bytes())
+    return {
+        'schema_version': 1, 'target': 'x64mingw',
+        'tools': {'zig': dict(identity(Path(zig).read_bytes()),
+                              version=subprocess.check_output([str(zig), 'version'], text=True).strip()),
+                  'windows_gnu_coff.py': dict(separation['transformer'], version='separate-coff-imports-v1')},
+        'archives': {output.name: {
+            'operation': 'separate-coff-imports-v1', 'input': separation['input'],
+            'output': separation['output'], 'separation': separation,
+            'steps': [{'tool': 'windows_gnu_coff.py',
+                       'args': ['separate($INPUT, $OUTPUT, $INVENTORY, $ZIG)']},
+                      {'tool': 'zig', 'args': ['ar', 's', '$OUTPUT']}],
+        }},
+    }

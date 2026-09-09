@@ -16,7 +16,7 @@ import gui_smoke
 import gui_suite
 import spec_driver
 import toolchain
-from windows_gnu_coff import identity, separate
+from windows_gnu_coff import identity, normalize
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = 'lukewilliamboswell/roc-signals'
@@ -140,22 +140,7 @@ def main():
     zig = shutil.which('zig')
     if subprocess.check_output([zig, 'version'], text=True).strip() != '0.16.0':
         raise ValueError('candidate requires Zig0.16.0')
-    normalization = separate(raw, destination / raw.name, inventory, zig)
-    normalization['inventory_sha256'] = hashlib.sha256(json.dumps(inventory, sort_keys=True).encode()).hexdigest()
-    normalization['transformer'] = identity((ROOT / 'scripts/windows_gnu_coff.py').read_bytes())
-    normalization = {
-        'schema_version': 1, 'target': 'x64mingw',
-        'tools': {'zig': dict(identity(Path(zig).read_bytes()),
-                              version=subprocess.check_output([zig, 'version'], text=True).strip()),
-                  'windows_gnu_coff.py': dict(normalization['transformer'], version='separate-coff-imports-v1')},
-        'archives': {raw.name: {
-            'operation': 'separate-coff-imports-v1', 'input': normalization['input'],
-            'output': normalization['output'], 'separation': normalization,
-            'steps': [{'tool': 'windows_gnu_coff.py',
-                       'args': ['separate($INPUT, $OUTPUT, $INVENTORY, $ZIG)']},
-                      {'tool': 'zig', 'args': ['ar', 's', '$OUTPUT']}],
-        }},
-    }
+    normalization = normalize(raw, destination / raw.name, inventory, zig)
     (destination / 'normalization.json').write_text(json.dumps(normalization, indent=2) + '\n')
     shutil.copyfile(destination / 'normalization.json', stage / 'normalization.json')
     shutil.copyfile(engine, destination / engine.name)
@@ -180,7 +165,7 @@ def main():
     inputs = ['crt2.obj', raw.name, engine.name, 'signals.res', 'APP', *runtimes, *providers]
     header = stage / 'main.roc'
     contents = header.read_text()
-    line = next(line for line in contents.splitlines() if 'x64win: { inputs:' in line)
+    line = next(line for line in contents.splitlines() if 'x64win: { inputs:' in line or 'x64mingw: { inputs:' in line)
     header.write_text(contents.replace(line, '        x64mingw: { inputs: [' + ', '.join('app' if n == 'APP' else json.dumps(n) for n in inputs) + '] },'))
     (stage / 'CANDIDATE.json').write_text(json.dumps({
         'candidate_only': True, 'complete_host_notices': True,

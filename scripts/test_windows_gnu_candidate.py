@@ -2,7 +2,7 @@
 import tempfile
 from pathlib import Path
 import unittest
-from windows_gnu_candidate import compiler_args, identity, verify
+from windows_gnu_build import compiler_args, identity, verify
 
 
 class CandidateTests(unittest.TestCase):
