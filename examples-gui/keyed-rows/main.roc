@@ -19,20 +19,33 @@ row_view = |row, selected| {
 		"",
 		|draft| {
 			Gui.panel(
-				[Gui.test_id("row-${key}"), Gui.style({ ..Gui.style_default, width: Fill, height: Px(170), padding: 12, border_width: 1, radius: 8 })],
+				[Gui.test_id("row-${key}"), Gui.selected_s(Signal.select(selected.signal(), key)), Gui.style({ ..Gui.style_default, width: Fill, padding: 12, gap: 8, border_width: 1, radius: 8, background: Rgb(0x283A47), border_color: Rgb(0x4A6272) })],
 				[
-					Gui.button("Select ${key}", selected.on_unit(|_| key)),
-					Gui.text_s(
-						Signal.select(selected.signal(), key).map(
-							|yes| if yes {
-								"Selected"
-							} else {
-								""
-							},
-						),
+					Gui.row(
+						[Gui.style({ ..Gui.style_default, gap: 12 })],
+						[
+							Gui.button("Select ${key}", selected.on_unit(|_| key)),
+							Gui.column(
+								[Gui.style({ ..Gui.style_default, padding: 6, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+								[
+									Gui.text_s(
+										Signal.select(selected.signal(), key).map(
+											|yes| if yes {
+												"Selected"
+											} else {
+												""
+											},
+										),
+									),
+								],
+							),
+						],
 					),
-					Gui.text_input({ label: "Draft ${key}", value: draft.signal() }, [], draft.on_str(|_, value| value)),
-					Gui.text_s(draft.signal().map(|text| "Saved draft: ${text}")),
+					Gui.text_input({ label: "Draft ${key}", value: draft.signal() }, [Gui.placeholder("Type a draft…"), Gui.style({ ..Gui.style_default, width: Px(240), gap: 4 })], draft.on_str(|_, value| value)),
+					Gui.column(
+						[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
+						[Gui.text_s(draft.signal().map(|text| "Saved draft: ${text}"))],
+					),
 				],
 			)
 		},
@@ -50,24 +63,42 @@ main = || Ui.state(
 					True,
 					|visible| {
 						Gui.column(
-							[Gui.style({ ..Gui.style_default, padding: 24 })],
+							[Gui.style({ ..Gui.style_default, padding: 32, gap: 16, width: Fill })],
 							[
 								Gui.heading("Roc Signals + GPUI"),
-								Gui.text("Edit a row, then move it. Hide/show creates fresh row scopes."),
-								Gui.button("Move first to end", rows.on_unit(move_first)),
-								Gui.button("Hide / show rows", visible.on_unit(|v| !v)),
+								Gui.column(
+									[Gui.style({ ..Gui.style_default, foreground: Rgb(0xA9BFCC) })],
+									[Gui.text("Edit a row, then move it. Hide/show creates fresh row scopes.")],
+								),
+								Gui.row(
+									[Gui.style({ ..Gui.style_default, gap: 8 })],
+									[
+										Gui.action_button(
+											{ label: Signal.const("Move first to end"), enabled: Signal.const(True) },
+											[Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3) })],
+											rows.on_unit(move_first),
+										),
+										Gui.button("Hide / show rows", visible.on_unit(|v| !v)),
+									],
+								),
 								Ui.when(
 									visible.signal(),
 									|| {
 										Gui.column(
-											[],
+											[Gui.style({ ..Gui.style_default, gap: 12, width: Px(520) })],
 											[
-												Gui.text_s(Signal.interval(1000).map(|tick| "Scope clock: ${tick.to_str()}")),
+												Gui.column(
+													[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
+													[Gui.text_s(Signal.interval(1000).map(|tick| "Scope clock: ${tick.to_str()}"))],
+												),
 												Ui.each(rows.signal(), |row| row_view(row, selected)),
 											],
 										)
 									},
-									|| Gui.text("Rows disposed"),
+									|| Gui.column(
+										[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
+										[Gui.text("Rows disposed")],
+									),
 								),
 							],
 						)

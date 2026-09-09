@@ -4,14 +4,16 @@
     (expect-value (label "Task title") "Sketch the welcome screen")
     (mark-metrics)
     (fill (label "Task title") "Welcome prototype")
-    (expect-text (test-id "edit-task-1") "Edit Welcome prototype")
+    (expect-text (test-id "title-task-1") "Welcome prototype")
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta scopes_created 0)
     (expect-metric-delta stream_nodes_scanned 0)
     (expect-metric-delta active_graph_records_rebuilt 0)
-    ; One edit updates the column summary, selected card, and detail fields.
-    (expect-metric-delta-at-most derived_calls_into_roc 32)
+    ; One edit updates the column summary, selected card title and its
+    ; priority-tinted metadata style, the detail fields, the shared
+    ; priority-selection key, and the reactive document-status style.
+    (expect-metric-delta-at-most derived_calls_into_roc 35)
     (fill (label "Filter tasks") "KEYBOARD")
     (expect-absent (test-id "task-1"))
     (expect-visible (test-id "task-3"))

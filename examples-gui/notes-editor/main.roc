@@ -53,7 +53,7 @@ main = || Ui.state(
 					Gui.column(
 						[
 							Gui.test_id("notes-editor"),
-							Gui.style({ ..Gui.style_default, padding: 24, gap: 16, width: Fill, height: Fill, background: Rgb(1317150), foreground: Rgb(14870247) }),
+							Gui.style({ ..Gui.style_default, padding: 24, gap: 16, width: Fill, height: Fill, background: Rgb(1317150), foreground: Rgb(0xF2F5F6) }),
 							Gui.on_shortcut({ ..chord, key: "n" }, new),
 							Gui.on_shortcut({ ..chord, key: "o" }, open),
 							Gui.on_shortcut(chord, save),
@@ -62,25 +62,60 @@ main = || Ui.state(
 						],
 						[
 							Gui.heading("Notes"),
-							Gui.text("A quiet place to collect your thoughts."),
+							Gui.column(
+								[Gui.style({ ..Gui.style_default, foreground: Rgb(0xA9BFCC) })],
+								[Gui.text("A quiet place to collect your thoughts.")],
+							),
 							Gui.row(
 								[Gui.style({ ..Gui.style_default, gap: 8 })],
 								[
 									Gui.action_button({ label: Signal.const("New"), enabled: ready }, [], new),
 									Gui.action_button({ label: Signal.const("Open…"), enabled: ready }, [], open),
-									Gui.action_button({ label: Signal.const("Save"), enabled: ready }, [], save),
+									Gui.action_button({ label: Signal.const("Save"), enabled: ready }, [Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3) })], save),
 									Gui.action_button({ label: Signal.const("Save As…"), enabled: ready }, [], save_as),
 									Gui.action_button({ label: Signal.const("Revert changes"), enabled: revert_ready }, [], revert),
 								],
 							),
-							Gui.panel([Gui.test_id("document-name")], [Gui.text_s(session.signal().map(|state| state.baseline.title))]),
+							Gui.row(
+								[Gui.style({ ..Gui.style_default, gap: 12 })],
+								[
+									Gui.column(
+										[Gui.test_id("document-name"), Gui.style({ ..Gui.style_default, font_size: 18, foreground: Rgb(0xF2F5F6) })],
+										[Gui.text_s(session.signal().map(|state| state.baseline.title))],
+									),
+									Gui.column(
+										[
+											Gui.test_id("note-status"),
+											Gui.style_s(
+												view.map(
+													|value| {
+														dirty = Document.is_dirty({ draft: Session.draft(value.state, value.body), baseline: value.state.baseline })
+														{
+															..Gui.style_default,
+															padding: 4,
+															font_size: 13,
+															foreground: if dirty {
+																Rgb(0xE8C27A)
+															} else {
+																Rgb(0xA9BFCC)
+															},
+														}
+													},
+												),
+											),
+										],
+										[Gui.text_s(view.map(Session.status))],
+									),
+								],
+							),
 							Ui.switch(
 								session.signal().map(|state| state.document_generation),
 								|_| Gui.textarea(
 									{ label: "Note text", value: body.signal() },
 									[
+										Gui.placeholder("Start writing…"),
 										Gui.disabled_s(session.signal().map(|state| !Session.can_edit(state.phase) or state.close != Session.CloseState.NoClose)),
-										Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True, padding: 12, border_width: 1, border_color: Rgb(4213592), radius: 6 }),
+										Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True, gap: 4 }),
 									],
 									body.on_str(|_, value| value),
 								),
@@ -88,12 +123,14 @@ main = || Ui.state(
 							Gui.row(
 								[Gui.style({ ..Gui.style_default, gap: 24 })],
 								[
-									Gui.panel([Gui.test_id("note-summary")], [Gui.text_s(body.signal().map(|text| Document.counts_text(Document.counts(text))))]),
-									Gui.panel([Gui.test_id("note-status")], [Gui.text_s(view.map(Session.status))]),
+									Gui.column(
+										[Gui.test_id("note-summary"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+										[Gui.text_s(body.signal().map(|text| Document.counts_text(Document.counts(text))))],
+									),
 								],
 							),
-							Gui.panel(
-								[Gui.test_id("note-problem")],
+							Gui.column(
+								[Gui.test_id("note-problem"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
 								[
 									Gui.text_s(
 										session.signal().map(

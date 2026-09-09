@@ -69,6 +69,11 @@ constrains the retained editing viewport. `Auto` keeps a 320-pixel editor. Use
 `Fill` inside a container with a defined height to grow and shrink with its space.
 `Gui.enabled_s` and `Gui.disabled_s` change availability while preserving the
 control's identity.
+`Gui.placeholder` shows an explicit empty-field hint inside `text_input` and
+`textarea` while their document is empty, for example
+`Gui.text_input({ label, value }, [Gui.placeholder("Filter tasks…")], msg)`.
+The hint is static text declared by the app; a field without the attribute
+shows an empty field, and labels are never reused as hint text.
 Tab and Shift-Tab traverse enabled controls in native layout order. Focused
 control actions and declared shortcuts run first; modal dialogs own their Tab
 navigation while open.

@@ -1,15 +1,17 @@
 # Native GUI presentation boundary
 
-The statically linked GUI boundary uses protocol version **7**. Zig exports
+The statically linked GUI boundary uses protocol version **8**. Zig exports
 `signals_protocol_version` and `signals_node_size`; Rust checks both before
-mount. Version 7 adds explicit event-detail dispatch. The node layout retains
+mount. Version 8 adds the explicit placeholder text slot to the node layout.
+Version 7 added explicit event-detail dispatch, and the node layout retains
 the close-request event ID and close-decision word introduced in version 6.
 Both sides must be rebuilt together.
 The browser protocol and its version are unchanged.
 
 `Gui` lowers native presentation through the shared scalar descriptor machinery.
 Text field **8** is `native_style`, field **9** is `native_viewport`, field **10**
-is `native_drag_key`, and field **11** is `native_window_close`; boolean fields **4** and **5** are `selected` and
+is `native_drag_key`, field **11** is `native_window_close`, and field **12** is
+`native_placeholder`; boolean fields **4** and **5** are `selected` and
 `native_drop_target`. The unused
 IDs 7 and 3 remain the existing custom text/bool field markers. Native fields
 are explicit protocol fields, not CSS, class names, test identifiers, or custom
@@ -49,6 +51,13 @@ disabled state applies reduced opacity and refuses input dispatch.
 The semantic root fills the host viewport, and apps own outer padding. Explicit
 textarea heights constrain the complete field; the retained editor fills the
 space after caption and padding. Auto presentation retains a 320-pixel editor.
+
+`Gui.placeholder` lowers static empty-field hint text through field 12. The
+hint is app-declared configuration, not host behavior: the host shows exactly
+the supplied text while a controlled field's document is empty, and a field
+without the attribute shows nothing. Labels never become placeholder text, and
+the host holds no default hint strings. The browser host rejects the field like
+every other native scalar.
 
 Ordinary Tab and Shift-Tab use GPUI's committed tab-stop index after focused
 handlers decline the key. A Runtime owns one window-filtered GPUI subscription

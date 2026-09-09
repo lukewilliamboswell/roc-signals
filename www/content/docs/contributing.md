@@ -965,7 +965,7 @@ roc build examples-gui/counter/main.roc --output=.test-out/Counter
 # Same executable, display-free semantic check:
 .test-out/Counter --run-spec-json examples-gui/counter/specs/counting.scm
 # Brief rendering/adapter integration check:
-.test-out/Counter --smoke --smoke-click Increment --smoke-expect 'Count: 1'
+.test-out/Counter --smoke --smoke-click Increment --smoke-expect '1'
 ```
 
 `python3 scripts/test.py gui --roc-bin /path/to/pinned/roc --keep-output`

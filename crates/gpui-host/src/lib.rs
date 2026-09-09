@@ -10,7 +10,7 @@ mod shortcut;
 mod timers;
 mod window_frame;
 mod window_lifecycle;
-use bridge::{Engine, Node, Payload};
+use bridge::{ControlKind, Engine, Node, Payload, Role};
 use gpui::{div, prelude::*, px, rgb, *};
 #[cfg(not(test))]
 use std::time::Duration;
@@ -47,11 +47,13 @@ impl NodeView {
                     runtime.event_if_live(id, lifetime, event, Payload::InputValue(&value), cx)
                 });
             });
-            if node.tag == "textarea" {
+            let mut input = if node.kind == ControlKind::Textarea {
                 input::TextInput::new_multiline(node.value.clone(), callback, cx)
             } else {
                 input::TextInput::new(node.value.clone(), callback, cx)
-            }
+            };
+            input.set_placeholder(&node.placeholder, cx);
+            input
         }))
     }
 }
@@ -64,7 +66,7 @@ impl Render for NodeView {
             .flex_col()
             .gap_2()
             .debug_selector(|| self.node.test_id.clone());
-        if self.node.tag == "root" {
+        if self.node.kind == ControlKind::Root {
             element = element.min_w_full().min_h_full().flex_shrink_0();
         }
         element = drag::install(element, &self.node, cx.entity_id(), self.runtime.clone());
@@ -85,12 +87,12 @@ impl Render for NodeView {
                 }
             }));
         }
-        if self.node.tag == "button" || self.node.role == "checkbox" {
+        if self.node.kind == ControlKind::Button || self.node.role == Role::Checkbox {
             let runtime = self.runtime.clone();
             let id = self.node.id;
             let view_id = cx.entity_id();
             let lifetime = self.node.lifetime;
-            let binding = if self.node.role == "checkbox" {
+            let binding = if self.node.role == Role::Checkbox {
                 self.node.check
             } else {
                 self.node.click
@@ -98,7 +100,7 @@ impl Render for NodeView {
             element = controls::install(
                 element,
                 &self.focus,
-                self.node.role == "checkbox",
+                self.node.role == Role::Checkbox,
                 self.node.disabled,
                 move |cx| {
                     runtime
@@ -134,14 +136,23 @@ impl Render for NodeView {
                 );
             }
         }
-        if self.node.tag == "button" {
-            element = element.px_3().py_1().rounded_md().bg(rgb(0x315469));
+        if self.node.kind == ControlKind::Button {
+            element = element.px_3().py_1().rounded_md().bg(rgb(0x335061));
             if !self.node.disabled {
+                let default_background = self
+                    .node
+                    .style
+                    .is_none_or(|style| style.background > 0xffffff);
+                if default_background {
+                    element = element
+                        .hover(|style| style.bg(rgb(0x3f6175)))
+                        .active(|style| style.bg(rgb(0x2b4452)));
+                }
                 let runtime = self.runtime.clone();
                 let node_id = self.node.id;
                 let view_id = cx.entity_id();
                 let lifetime = self.node.lifetime;
-                let binding = if self.node.role == "checkbox" {
+                let binding = if self.node.role == Role::Checkbox {
                     self.node.check
                 } else {
                     self.node.click
@@ -153,7 +164,7 @@ impl Render for NodeView {
                 });
             }
         }
-        if self.node.role == "checkbox" {
+        if self.node.role == Role::Checkbox {
             element = element
                 .flex_row()
                 .items_center()
@@ -164,7 +175,7 @@ impl Render for NodeView {
                 let node_id = self.node.id;
                 let view_id = cx.entity_id();
                 let lifetime = self.node.lifetime;
-                let binding = if self.node.role == "checkbox" {
+                let binding = if self.node.role == Role::Checkbox {
                     self.node.check
                 } else {
                     self.node.click
@@ -176,8 +187,8 @@ impl Render for NodeView {
                 });
             }
         }
-        if matches!(self.node.tag.as_str(), "h1" | "h2") {
-            element = element.text_2xl();
+        if self.node.kind.is_heading() {
+            element = element.text_2xl().font_weight(FontWeight::SEMIBOLD);
         }
         if let Some(style) = self.node.style {
             element = apply_style(element, style);
@@ -193,16 +204,28 @@ impl Render for NodeView {
             element = element.child(self.node.text.clone());
         }
         if let Some(input) = &self.input {
-            let constrained = self.node.tag == "textarea"
+            let constrained = self.node.kind == ControlKind::Textarea
                 && self.node.style.is_some_and(|style| style.height_kind != 0);
             if constrained {
                 element = element.min_h_0();
             }
-            element = element.child(self.node.label.clone());
+            // Multiline editors keep a visible caption above the text; the
+            // empty-field hint is the app-declared placeholder on every field.
+            if self.node.kind == ControlKind::Textarea {
+                element = element.child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(0xa9bfcc))
+                        .child(self.node.label.clone()),
+                );
+            }
             element = element.child(
                 div()
-                    .bg(rgb(0xf4f4f0))
-                    .text_color(rgb(0x151515))
+                    .bg(rgb(0x0f1b21))
+                    .text_color(rgb(0xeaf0f3))
+                    .border_1()
+                    .border_color(rgb(0x3a4f5c))
+                    .rounded_md()
                     .p_2()
                     .when(constrained, |element| {
                         element.flex().flex_col().flex_1().min_h_0()
@@ -234,7 +257,7 @@ impl Render for NodeView {
                             style.size.width = Some(relative(1.).into());
                             style.size.height = Some(height.into());
                             let row = div().id(("row", id)).h(height).w_full().overflow_hidden();
-                            if child.read(cx).node.tag == "dialog" {
+                            if child.read(cx).node.kind == ControlKind::Dialog {
                                 row
                             } else {
                                 row.child(AnyView::from(child).cached(style))
@@ -262,7 +285,7 @@ impl Render for NodeView {
             .filter_map(|rank| {
                 let id = runtime.engine.child_at(parent, rank);
                 let child = runtime.nodes.get(&id).expect("missing child identity");
-                (child.read(cx).node.tag != "dialog").then(|| AnyView::from(child.clone()))
+                (child.read(cx).node.kind != ControlKind::Dialog).then(|| AnyView::from(child.clone()))
             })
             .collect::<Vec<_>>();
         let element = element.children(children);
@@ -322,14 +345,16 @@ fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div
     if style.font_size != 0 {
         element = element.text_size(px(style.font_size as f32));
     }
+    // A clipped or scrollable region must be able to shrink below its
+    // content's intrinsic size, or the viewport can never bind it.
     element = match style.overflow_x {
-        1 => element.overflow_x_hidden(),
-        2 => element.overflow_x_scroll(),
+        1 => element.overflow_x_hidden().min_w_0(),
+        2 => element.overflow_x_scroll().min_w_0(),
         _ => element,
     };
     match style.overflow_y {
-        1 => element.overflow_y_hidden(),
-        2 => element.overflow_y_scroll(),
+        1 => element.overflow_y_hidden().min_h_0(),
+        2 => element.overflow_y_scroll().min_h_0(),
         _ => element,
     }
 }
@@ -507,20 +532,7 @@ impl Runtime {
         self.nodes.reserve(changes.len());
         for node in changes.iter().filter(|n| n.active) {
             assert!(
-                matches!(
-                    node.tag.as_str(),
-                    "root"
-                        | "div"
-                        | "dialog"
-                        | "window"
-                        | "h1"
-                        | "h2"
-                        | "p"
-                        | "button"
-                        | "input"
-                        | "textarea"
-                        | "text"
-                ),
+                node.kind != ControlKind::Unknown,
                 "unsupported spike element: {}",
                 node.tag
             );
@@ -548,7 +560,7 @@ impl Runtime {
         let mut roots_changed = false;
         for node in changes.iter().filter(|n| n.active) {
             let view = self.nodes[&node.id].clone();
-            if node.tag == "root" && !self.roots.iter().any(|r| r.entity_id() == view.entity_id()) {
+            if node.kind == ControlKind::Root && !self.roots.iter().any(|r| r.entity_id() == view.entity_id()) {
                 self.roots.push(view.clone());
                 roots_changed = true;
             }
@@ -563,9 +575,10 @@ impl Runtime {
                 if let Some(input) = &view.input {
                     input.update(cx, |input, cx| {
                         input.set_value(&node.value, cx);
+                        input.set_placeholder(&node.placeholder, cx);
                         input.set_disabled(node.disabled, cx);
                         input.set_fill_height(
-                            node.tag == "textarea"
+                            node.kind == ControlKind::Textarea
                                 && node.style.is_some_and(|style| style.height_kind != 0),
                             cx,
                         );
@@ -637,7 +650,7 @@ impl Render for Runtime {
             .size_full()
             .relative()
             .bg(rgb(0x16252c))
-            .text_color(rgb(0xeeeeea))
+            .text_color(rgb(0xf2f5f6))
             .on_key_down(cx.listener(|runtime, event: &KeyDownEvent, window, cx| {
                 if let Some(reverse) = tab_direction(&event.keystroke)
                     && runtime.dialogs.active.is_empty()
@@ -652,13 +665,17 @@ impl Render for Runtime {
                 }
             }))
             .child(scrollbars::wrap(
+                // Vertical-only window scrolling keeps the viewport width as
+                // real layout pressure: Fill and grow children shrink and wrap
+                // instead of panning the whole window sideways. Horizontal
+                // scrolling stays an explicit per-element style.
                 div()
                     .id("signals-content")
                     .flex()
                     .flex_col()
                     .items_start()
                     .size_full()
-                    .overflow_scroll()
+                    .overflow_y_scroll()
                     .track_scroll(&self.content_scroll)
                     .children(self.roots.iter().map(|root| AnyView::from(root.clone()))),
                 self.content_scroll.clone(),
@@ -804,7 +821,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                                 .values()
                                 .find(|v| {
                                     let n = &v.read(cx).node;
-                                    n.tag == "button"
+                                    n.kind == bridge::ControlKind::Button
                                         && (n.text == label
                                             || (0..n.child_count).any(|rank| {
                                                 let id = runtime.engine.child_at(n.id, rank);
@@ -920,6 +937,7 @@ mod tests {
         Engine::set_test_children(id, children.into());
         Node {
             id,
+            kind: super::ControlKind::from_tag(tag),
             tag: tag.into(),
             active: true,
             child_count: children.len(),
@@ -1052,7 +1070,7 @@ mod tests {
             let runtime = cx.new(|_| runtime());
             runtime.update(cx, |runtime, cx| {
                 let mut checkbox = node(1, "input", &[]);
-                checkbox.role = "checkbox".into();
+                checkbox.role = super::Role::Checkbox;
                 checkbox.check = 31;
                 checkbox.disabled = true;
                 runtime.apply(vec![node(0, "root", &[1]), checkbox.clone()], cx);
@@ -1201,6 +1219,54 @@ mod tests {
                 };
                 assert!(!runtime.accept_drop(current_target, &current, cx));
                 assert!(Engine::take_test_event().is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn explicit_placeholder_reaches_editors_and_labels_derive_nothing(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                let placeholder = |runtime: &Runtime, id: u64, cx: &gpui::App| {
+                    runtime.nodes[&id]
+                        .read(cx)
+                        .input
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .placeholder_for_test()
+                        .to_owned()
+                };
+                let mut field = node(1, "input", &[]);
+                field.input = 42;
+                field.label = "Filter".into();
+                field.placeholder = "Filter tasks…".into();
+                let mut editor = node(2, "textarea", &[]);
+                editor.input = 43;
+                editor.label = "Note text".into();
+                editor.placeholder = "Start writing…".into();
+                let mut unhinted = node(3, "input", &[]);
+                unhinted.input = 44;
+                unhinted.label = "Quantity".into();
+                runtime.apply(
+                    vec![
+                        node(0, "root", &[1, 2, 3]),
+                        field.clone(),
+                        editor,
+                        unhinted,
+                    ],
+                    cx,
+                );
+                assert_eq!(placeholder(runtime, 1, cx), "Filter tasks…");
+                assert_eq!(placeholder(runtime, 2, cx), "Start writing…");
+                assert_eq!(placeholder(runtime, 3, cx), "");
+                field.placeholder = "Search projects…".into();
+                runtime.apply(vec![field.clone()], cx);
+                assert_eq!(placeholder(runtime, 1, cx), "Search projects…");
+                field.placeholder = String::new();
+                runtime.apply(vec![field], cx);
+                assert_eq!(placeholder(runtime, 1, cx), "");
             });
         });
     }

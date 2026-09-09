@@ -29,6 +29,7 @@ Attribute := [
 	Presentation(Presentation),
 	PresentationSignal(Signal(Presentation)),
 	Label(Str),
+	Placeholder(Str),
 	TestId(Str),
 	Selected(Signal(Bool)),
 	Enabled(Signal(Bool)),
@@ -125,6 +126,7 @@ lower_attrs = |direction, defaults, attrs| {
 					}
 				}
 				Attribute.Label(value) => Html.aria_label(value)
+				Attribute.Placeholder(value) => Node.Attr.StaticText({ field: { id: 12 }, name: "", value })
 				Attribute.TestId(value) => Html.test_id(value)
 				Attribute.Selected(value) => match Html.bool_attr_s("", value) {
 					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: selected_field })
@@ -224,6 +226,11 @@ Gui := [].{
 	## Give a control or region a semantic name, independent of its styling.
 	label : Str -> Attr
 	label = |value| Attribute.Label(value)
+
+	## Show an empty-field hint inside a text control. The hint is explicit
+	## static text; the host never derives one from a label or a default.
+	placeholder : Str -> Attr
+	placeholder = |value| Attribute.Placeholder(value)
 
 	## Mark selection independently of checkbox state or application identity.
 	selected_s : Signal(Bool) -> Attr

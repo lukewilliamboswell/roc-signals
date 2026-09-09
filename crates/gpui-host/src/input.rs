@@ -171,7 +171,7 @@ impl TextInput {
             focus_handle: cx.focus_handle().tab_stop(true),
             content: value.clone().into(),
             engine_value: value.into(),
-            placeholder: "Type a draft…".into(),
+            placeholder: SharedString::default(),
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -199,8 +199,16 @@ impl TextInput {
     ) -> Self {
         let mut input = Self::new(value, on_change, cx);
         input.multiline = true;
-        input.placeholder = "Start writing…".into();
         input
+    }
+
+    /// Applies the app-declared empty-field hint exactly. An empty placeholder
+    /// shows nothing; the host derives no hint text from labels or defaults.
+    pub fn set_placeholder(&mut self, placeholder: &str, cx: &mut Context<Self>) {
+        if self.placeholder.as_ref() != placeholder {
+            self.placeholder = placeholder.to_owned().into();
+            cx.notify();
+        }
     }
 
     /// Uses the field's allocated height without recreating its editor. Auto
@@ -215,6 +223,11 @@ impl TextInput {
     #[cfg(test)]
     pub(crate) fn viewport_bounds_for_test(&self) -> Bounds<Pixels> {
         self.scroll.bounds()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn placeholder_for_test(&self) -> &str {
+        self.placeholder.as_ref()
     }
 
     /// Prevents user edits while retaining this editor's identity and selection.
@@ -914,7 +927,7 @@ fn shape_layout(
             len: text.len(),
             font: text_style.font(),
             color: if placeholder {
-                hsla(0., 0., 0., 0.4)
+                hsla(0., 0., 1., 0.55)
             } else {
                 text_style.color
             },
@@ -1138,7 +1151,7 @@ impl Element for TextElement {
                             point(bounds.left() + x, top),
                             size(px(2.), layout.line_height),
                         ),
-                        gpui::blue(),
+                        gpui::rgb(0x70c5e8),
                     ));
                 }
             } else if selected.start <= line.range.end && selected.end > line.range.start {
@@ -1156,7 +1169,7 @@ impl Element for TextElement {
                         point(bounds.left() + start_x, top),
                         size(end_x - start_x, layout.line_height),
                     ),
-                    rgba(0x3311ff30),
+                    rgba(0x70c5e845),
                 ));
             }
         }
@@ -1260,10 +1273,9 @@ impl Render for TextInput {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .bg(rgb(0xeeeeee))
             .line_height(px(30.))
-            .text_size(px(18.))
-            .text_color(rgb(0x151515))
+            .text_size(px(16.))
+            .text_color(rgb(0xeaf0f3))
             .child(TextElement { input: cx.entity() });
         crate::scrollbars::wrap(content, self.scroll.clone(), self.scrollbars.clone())
     }

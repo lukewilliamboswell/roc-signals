@@ -1,7 +1,7 @@
 //! Modal presentation and focus owned by explicit rendered dialog lifetimes.
 //! Reactive updates change only registrations. Bounded tree walks happen only
 //! when opening/restoring a dialog or on explicit Tab navigation.
-use crate::{Node, NodeView, Payload, Runtime};
+use crate::{ControlKind, Node, NodeView, Payload, Role, Runtime};
 use gpui::{
     App, Context, EntityId, FocusHandle, Focusable, KeyDownEvent, WeakEntity, WeakFocusHandle,
     Window,
@@ -38,8 +38,8 @@ impl NodeView {
         if let Some(input) = &self.input {
             return Some(input.focus_handle(cx));
         }
-        if self.node.tag == "button"
-            || self.node.role == "checkbox"
+        if self.node.kind == ControlKind::Button
+            || self.node.role == Role::Checkbox
             || !self.node.shortcuts.is_empty()
         {
             return Some(self.focus.clone());
@@ -67,9 +67,9 @@ impl Runtime {
         if control.node.disabled || control.node.lifetime != lifetime {
             return false;
         }
-        let (event, payload) = if control.node.role == "checkbox" {
+        let (event, payload) = if control.node.role == Role::Checkbox {
             (control.node.check, Payload::Checked(!control.node.checked))
-        } else if control.node.tag == "button" {
+        } else if control.node.kind == ControlKind::Button {
             (control.node.click, Payload::Unit)
         } else {
             return false;
@@ -113,7 +113,7 @@ impl Runtime {
         let mut depth = 0;
         for _ in 0..MAX_NODES {
             let node = &self.nodes[&id].read(cx).node;
-            if node.tag == "dialog" {
+            if node.kind == ControlKind::Dialog {
                 depth += 1;
             }
             let Some(parent) = node.parent else {
@@ -128,7 +128,7 @@ impl Runtime {
         let removed = self.dialogs.active.iter().position(|dialog| {
             self.nodes.get(&dialog.id).is_none_or(|view| {
                 let node = &view.read(cx).node;
-                node.tag != "dialog" || node.lifetime != dialog.lifetime
+                node.kind != ControlKind::Dialog || node.lifetime != dialog.lifetime
             })
         });
         if let Some(index) = removed {
@@ -139,13 +139,13 @@ impl Runtime {
         self.dialogs.active.retain(|dialog| {
             self.nodes.get(&dialog.id).is_some_and(|view| {
                 let node = &view.read(cx).node;
-                node.tag == "dialog" && node.lifetime == dialog.lifetime
+                node.kind == ControlKind::Dialog && node.lifetime == dialog.lifetime
             })
         });
         let mut changed = removed.is_some();
         for node in changes
             .iter()
-            .filter(|node| node.active && node.tag == "dialog")
+            .filter(|node| node.active && node.kind == ControlKind::Dialog)
         {
             if !self
                 .dialogs
@@ -216,11 +216,11 @@ impl Runtime {
             );
             let view = self.nodes[&id].read(cx);
             let node = &view.node;
-            if id != root && node.tag == "dialog" {
+            if id != root && node.kind == ControlKind::Dialog {
                 continue;
             }
             if !node.disabled
-                && (view.input.is_some() || node.tag == "button" || node.role == "checkbox")
+                && (view.input.is_some() || node.kind == ControlKind::Button || node.role == Role::Checkbox)
             {
                 assert!(
                     targets.len() < MAX_TARGETS,
@@ -365,6 +365,7 @@ mod tests {
             id,
             parent,
             active: true,
+            kind: ControlKind::from_tag(tag),
             tag: tag.into(),
             child_count: children.len(),
             test_id: format!("node-{id}"),
@@ -629,7 +630,7 @@ mod tests {
                         node(0, None, "root", &[1, 10]),
                         modal(10, 0, &[11]),
                         Node {
-                            role: "checkbox".into(),
+                            role: Role::Checkbox,
                             check: 111,
                             label: "Choice".into(),
                             ..node(11, Some(10), "div", &[])

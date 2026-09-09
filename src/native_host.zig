@@ -228,6 +228,7 @@ const NativeRenderPublication = struct {
             .native_viewport => &node.native_viewport,
             .native_drag_key => &node.native_drag_key,
             .native_window_close => &node.native_window_close,
+            .native_placeholder => &node.native_placeholder,
         };
         if (field == .native_viewport) if (next) |bytes| {
             _ = native_style.decodeViewport(bytes) catch failHost("invalid native viewport record");
@@ -2624,6 +2625,7 @@ fn setRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFiel
         },
         .native_drag_key => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_drag_key, value),
         .native_window_close => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_window_close, value),
+        .native_placeholder => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_placeholder, value),
         .native_viewport => {
             _ = native_style.decodeViewport(value) catch failHost("invalid native viewport record");
             sim_dom.setOwnedString(host.hostAllocator(), &elem.native_viewport, value);
@@ -2658,6 +2660,7 @@ fn clearRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFi
         .native_viewport => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_viewport),
         .native_drag_key => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_drag_key),
         .native_window_close => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_window_close),
+        .native_placeholder => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_placeholder),
     }
 }
 
@@ -10128,6 +10131,7 @@ test "signals host structural patch clears fields absent from reused DOM node" {
 
     const initial_attrs = [_]abi.NodeAttr{
         testNodeStaticTextAttr(&roc_host, .label, "Initial label"),
+        testNodeStaticTextAttr(&roc_host, .native_placeholder, "Initial hint"),
         testNodeStaticCustomTextAttr(&roc_host, "data-mode", "initial"),
         testNodeStaticBoolAttr(.disabled, true),
     };
@@ -10141,6 +10145,7 @@ test "signals host structural patch clears fields absent from reused DOM node" {
 
     const section_id = host.engine.active_stream.elements.items[0].elem_id;
     try std.testing.expectEqualStrings("Initial label", host.dom_elements.items[@intCast(section_id.raw())].label.?);
+    try std.testing.expectEqualStrings("Initial hint", host.dom_elements.items[@intCast(section_id.raw())].native_placeholder.?);
     try std.testing.expectEqualStrings("initial", elementTextAttr(&host.dom_elements.items[@intCast(section_id.raw())], "data-mode").?);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].disabled);
 
@@ -10155,9 +10160,10 @@ test "signals host structural patch clears fields absent from reused DOM node" {
 
     try std.testing.expectEqual(@as(u64, 0), patch_counts.reset_dom);
     try std.testing.expectEqual(@as(u64, 0), patch_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 2), patch_counts.set_metadata);
+    try std.testing.expectEqual(@as(u64, 3), patch_counts.set_metadata);
     try std.testing.expectEqual(@as(u64, 1), patch_counts.set_disabled);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].label == null);
+    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_placeholder == null);
     try std.testing.expect(elementTextAttr(&host.dom_elements.items[@intCast(section_id.raw())], "data-mode") == null);
     try std.testing.expect(!host.dom_elements.items[@intCast(section_id.raw())].disabled);
 }
@@ -12623,6 +12629,7 @@ const Gpui = struct {
         role: Slice,
         test_id: Slice,
         class: Slice,
+        placeholder: Slice,
         child_count: usize,
         click: u64,
         input: u64,
@@ -12669,7 +12676,7 @@ const Gpui = struct {
         }
     }
     fn protocolVersion() callconv(.c) u32 {
-        return 7;
+        return 8;
     }
     fn nodeSize() callconv(.c) usize {
         return @sizeOf(Node);
@@ -12801,6 +12808,7 @@ const Gpui = struct {
             .role = Slice.from(elem.role orelse ""),
             .test_id = Slice.from(elem.test_id orelse ""),
             .class = Slice.from(elem.class orelse ""),
+            .placeholder = Slice.from(elem.native_placeholder orelse ""),
             .child_count = child_order.count(ids.ElemId.fromRaw(elem.id)),
             .click = if (elem.event_bindings.click) |binding| binding.event_id.raw() else 0,
             .input = if (elem.event_bindings.input) |binding| binding.event_id.raw() else 0,

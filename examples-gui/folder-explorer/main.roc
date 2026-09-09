@@ -33,16 +33,22 @@ entry_row = |row, handles, selected, ready| {
 		[
 			Gui.test_id("entry:${key}"),
 			Gui.selected_s(Signal.select(selected, key)),
-			Gui.style({ ..Gui.style_default, padding: 8, gap: 12, width: Fill, border_width: 1, border_color: Rgb(0x354452) }),
+			Gui.style({ ..Gui.style_default, padding: 4, gap: 12, width: Fill, radius: 6 }),
 		],
 		[
 			Gui.action_button(
 				{ label: row.map(|entry| Explorer.file_name(entry.path)), enabled: ready },
-				[Gui.label(key), Gui.style({ ..Gui.style_default, grow: True, width: Fill, padding: 6, overflow_x: Clip })],
+				[Gui.label(key), Gui.style({ ..Gui.style_default, grow: True, padding: 6, radius: 6, overflow_x: Clip })],
 				Ui.action(row.signal(), |entry| handles.model.update_cmd(|state| Session.activate(state, entry))),
 			),
-			Gui.text_s(row.map(|entry| entry.kind.to_str())),
-			Gui.text_s(row.map(Explorer.size_text)),
+			Gui.column(
+				[Gui.style({ ..Gui.style_default, width: Px(90), padding: 6, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })],
+				[Gui.text_s(row.map(|entry| entry.kind.to_str()))],
+			),
+			Gui.column(
+				[Gui.style({ ..Gui.style_default, width: Px(90), padding: 6, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })],
+				[Gui.text_s(row.map(Explorer.size_text))],
+			),
 		],
 	)
 }
@@ -66,7 +72,7 @@ inspect_view = |handles| {
 		},
 	)
 	Gui.panel(
-		[Gui.test_id("file-details"), Gui.style({ ..Gui.style_default, width: Px(380), height: Fill, gap: 12, padding: 16, background: Rgb(0x24323E), radius: 8 })],
+		[Gui.test_id("file-details"), Gui.style({ ..Gui.style_default, width: Px(340), gap: 12, padding: 16, background: Rgb(0x283A47), radius: 8 })],
 		[
 			Gui.heading("File details"),
 			Gui.text_s(
@@ -77,49 +83,64 @@ inspect_view = |handles| {
 					},
 				),
 			),
-			Gui.text_s(
-				selection.map(
-					|value| match value {
-						NoSelection => ""
-						Selected(entry) => "Kind: ${entry.kind.to_str()}"
-					},
-				),
-			),
-			Gui.text_s(
-				selection.map(
-					|value| match value {
-						NoSelection => ""
-						Selected(entry) => "Size: ${Explorer.size_text(entry)}"
-					},
-				),
+			Gui.column(
+				[Gui.style({ ..Gui.style_default, gap: 2, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+				[
+					Gui.text_s(
+						selection.map(
+							|value| match value {
+								NoSelection => ""
+								Selected(entry) => "Kind: ${entry.kind.to_str()}"
+							},
+						),
+					),
+					Gui.text_s(
+						selection.map(
+							|value| match value {
+								NoSelection => ""
+								Selected(entry) => "Size: ${Explorer.size_text(entry)}"
+							},
+						),
+					),
+				],
 			),
 			Gui.row(
 				[Gui.style({ ..Gui.style_default, gap: 8 })],
 				[
-					Gui.action_button({ label: Signal.const("Preview text"), enabled: can_preview }, [], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.preview_selected))),
+					Gui.action_button({ label: Signal.const("Preview text"), enabled: can_preview }, [Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3) })], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.preview_selected))),
 					Gui.action_button({ label: Signal.const("Open in app"), enabled: can_open }, [], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.open_selected))),
 				],
 			),
-			Gui.text_s(
-				selection.map(
-					|value| match value {
-						Selected(entry) if entry.kind == SymbolicLink => "Symbolic links are shown but are not followed."
-						Selected(entry) if entry.kind == Other => "Special files are shown as metadata only."
-						_ => "Text previews are limited to 64 KiB. Open in app uses this computer's file associations."
-					},
-				),
+			Gui.column(
+				[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
+				[
+					Gui.text_s(
+						selection.map(
+							|value| match value {
+								Selected(entry) if entry.kind == SymbolicLink => "Symbolic links are shown but are not followed."
+								Selected(entry) if entry.kind == Other => "Special files are shown as metadata only."
+								_ => "Text previews are limited to 64 KiB. Open in app uses this computer's file associations."
+							},
+						),
+					),
+				],
 			),
-			Gui.text_s(
-				model.map(
-					|state| match state.preview {
-						NoPreview => "No preview loaded."
-						Ready(preview) => if preview.truncated {
-							"Preview: ${preview.path} · truncated"
-						} else {
-							"Preview: ${preview.path}"
-						}
-					},
-				),
+			Gui.column(
+				[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+				[
+					Gui.text_s(
+						model.map(
+							|state| match state.preview {
+								NoPreview => "No preview loaded."
+								Ready(preview) => if preview.truncated {
+									"Preview: ${preview.path} · truncated"
+								} else {
+									"Preview: ${preview.path}"
+								}
+							},
+						),
+					),
+				],
 			),
 			Gui.textarea(
 				{
@@ -131,7 +152,7 @@ inspect_view = |handles| {
 						},
 					),
 				},
-				[Gui.test_id("text-preview"), Gui.disabled_s(Signal.const(True)), Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True })],
+				[Gui.test_id("text-preview"), Gui.placeholder("Preview a file to read it here."), Gui.disabled_s(Signal.const(True)), Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True })],
 				handles.model.on_str(|state, _| state),
 			),
 		],
@@ -220,7 +241,7 @@ explorer_view = |handles| {
 	Gui.column(
 		[
 			Gui.test_id("explorer"),
-			Gui.style({ ..Gui.style_default, gap: 12, padding: 20, width: Fill, height: Fill }),
+			Gui.style({ ..Gui.style_default, gap: 10, padding: 16, width: Fill, height: Fill, overflow_y: Clip }),
 			Gui.on_shortcut({ key: "o", control: True, shift: False, alt: False, meta: False }, choose_action),
 			Gui.on_shortcut({ key: "F5", control: False, shift: False, alt: False, meta: False }, refresh_action),
 			Gui.on_shortcut({ key: "Escape", control: False, shift: False, alt: False, meta: False }, cancel_action),
@@ -230,6 +251,10 @@ explorer_view = |handles| {
 		],
 		workflow(handles, tasks).concat([
 			Gui.heading("Folder Explorer"),
+			Gui.column(
+				[Gui.style({ ..Gui.style_default, foreground: Rgb(0xA9BFCC) })],
+				[Gui.text("Browse a folder on this computer, or explore the built-in sample workspace.")],
+			),
 			Gui.row(
 				[Gui.style({ ..Gui.style_default, gap: 8 })],
 				[
@@ -237,7 +262,7 @@ explorer_view = |handles| {
 					Gui.action_button({ label: Signal.const("Forward"), enabled: model.map(|state| state.phase == Idle and !state.forward.is_empty()) }, [], forward_action),
 					Gui.action_button({ label: Signal.const("Up"), enabled: model.map(|state| state.phase == Idle and Session.path(state.source) != Explorer.parent_path(Session.path(state.source))) }, [], up_action),
 					Gui.action_button({ label: Signal.const("Refresh"), enabled: ready }, [], refresh_action),
-					Gui.action_button({ label: Signal.const("Choose folder"), enabled: ready }, [], choose_action),
+					Gui.action_button({ label: Signal.const("Choose folder"), enabled: ready }, [Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3) })], choose_action),
 					Gui.action_button({ label: Signal.const("Use sample"), enabled: ready }, [], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.load_sample))),
 					Gui.action_button({ label: Signal.const("Cancel"), enabled: ready.map(|value| !value) }, [], cancel_action),
 					Gui.action_button({ label: Signal.const("Retry"), enabled: model.map(|state| state.phase == Idle and state.retry != NoRetry) }, [], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.retry_last))),
@@ -264,28 +289,33 @@ explorer_view = |handles| {
 					),
 				],
 			),
-			Gui.panel(
-				[Gui.test_id("dataset-source")],
+			Gui.row(
+				[Gui.style({ ..Gui.style_default, gap: 16 })],
 				[
-					Gui.text_s(
-						model.map(
-							|state| match state.source {
-								Sample(path) => if path.is_empty() {
-									"Sample workspace"
-								} else {
-									"Sample workspace / ${path}"
-								}
-								Folder(path) => "Folder: ${path}"
-							},
-						),
+					Gui.column(
+						[Gui.test_id("dataset-source"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+						[
+							Gui.text_s(
+								model.map(
+									|state| match state.source {
+										Sample(path) => if path.is_empty() {
+											"Sample workspace"
+										} else {
+											"Sample workspace / ${path}"
+										}
+										Folder(path) => "Folder: ${path}"
+									},
+								),
+							),
+						],
 					),
+					Gui.column([Gui.test_id("operation-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC) })], [Gui.text_s(model.map(|state| state.notice))]),
 				],
 			),
-			Gui.panel([Gui.test_id("operation-status")], [Gui.text_s(model.map(|state| state.notice))]),
 			Gui.row(
-				[Gui.style({ ..Gui.style_default, gap: 8, width: Fill })],
+				[Gui.style({ ..Gui.style_default, gap: 8 })],
 				[
-					Gui.text_input({ label: "Filter this folder", value: model.map(|state| state.query) }, [Gui.disabled_s(ready.map(|value| !value)), Gui.style({ ..Gui.style_default, width: Fill, grow: True })], handles.model.on_str(|state, text| { ..state, query: text })),
+					Gui.text_input({ label: "Filter this folder", value: model.map(|state| state.query) }, [Gui.placeholder("Filter this folder…"), Gui.disabled_s(ready.map(|value| !value)), Gui.style({ ..Gui.style_default, width: Px(240), gap: 4 })], handles.model.on_str(|state, text| { ..state, query: text })),
 					Gui.action_button({ label: Signal.const("Clear filter"), enabled: model.map(|state| state.phase == Idle and !state.query.is_empty()) }, [], handles.model.on_unit(|state| { ..state, query: "" })),
 				],
 			),
@@ -293,24 +323,34 @@ explorer_view = |handles| {
 			Gui.row(
 				[Gui.style({ ..Gui.style_default, gap: 16 })],
 				[
-					Gui.panel([Gui.test_id("dataset-summary")], [Gui.text_s(total.map(|summary| "${summary.files.to_str()} files · ${summary.folders.to_str()} folders · ${summary.links.to_str()} links · ${summary.other.to_str()} other · ${summary.bytes.to_str()} B"))]),
-					Gui.panel([Gui.test_id("results-summary")], [Gui.text_s(visible.map(|entries| "${Rows.len(entries).to_str()} matching entries"))]),
+					Gui.column([Gui.test_id("dataset-summary"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })], [Gui.text_s(total.map(|summary| "${summary.files.to_str()} files · ${summary.folders.to_str()} folders · ${summary.links.to_str()} links · ${summary.other.to_str()} other · ${summary.bytes.to_str()} B"))]),
+					Gui.column([Gui.test_id("results-summary"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })], [Gui.text_s(visible.map(|entries| "${Rows.len(entries).to_str()} matching entries"))]),
 				],
 			),
 			Gui.row(
-				[Gui.style({ ..Gui.style_default, gap: 20, width: Fill, grow: True, height: Fill })],
+				[Gui.style({ ..Gui.style_default, gap: 16, width: Fill, grow: True })],
 				[
 					Gui.column(
-						[Gui.test_id("file-list"), Gui.style({ ..Gui.style_default, grow: True, width: Fill, height: Fill, gap: 4 })],
+						[Gui.test_id("file-list"), Gui.style({ ..Gui.style_default, grow: True, gap: 4, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip })],
 						[
-							Ui.when(visible.map(|entries| Rows.len(entries) == 0), || Gui.text("No matching entries. Clear the filter or choose another folder."), || Gui.text("")),
-							Gui.virtual_list({ row_height: 64, follow_tail: Signal.const(False) }, [Gui.test_id("file-viewport"), Gui.style({ ..Gui.style_default, height: Fill, width: Fill, grow: True })], [Ui.each(visible, |row| entry_row(row, handles, selected, ready))]),
+							Ui.when(
+								visible.map(|entries| Rows.len(entries) == 0),
+								|| Gui.column(
+									[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
+									[Gui.text("No matching entries. Clear the filter or choose another folder.")],
+								),
+								|| Gui.text(""),
+							),
+							Gui.virtual_list({ row_height: 44, follow_tail: Signal.const(False) }, [Gui.test_id("file-viewport"), Gui.style({ ..Gui.style_default, height: Fill, width: Fill, grow: True })], [Ui.each(visible, |row| entry_row(row, handles, selected, ready))]),
 						],
 					),
 					inspect_view(handles),
 				],
 			),
-			Gui.text("Alt+Left / Right: history · Alt+Up: parent · F5: refresh · Ctrl+O: choose folder · Esc: cancel"),
+			Gui.column(
+				[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
+				[Gui.text("Alt+Left / Right: history · Alt+Up: parent · F5: refresh · Ctrl+O: choose folder · Esc: cancel")],
+			),
 		]),
 	)
 }

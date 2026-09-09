@@ -2,6 +2,65 @@
 use crate::shortcut::{MAX_PER_ELEMENT, Shortcut};
 use std::{marker::PhantomData, rc::Rc};
 
+/// Element kind, derived exactly once from the published tag when a node
+/// crosses the bridge boundary. Host code branches on this enum; the raw tag
+/// string is retained only for diagnostics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ControlKind {
+    #[default]
+    Unknown,
+    Root,
+    Div,
+    Dialog,
+    Window,
+    Heading1,
+    Heading2,
+    Paragraph,
+    Button,
+    Input,
+    Textarea,
+    Text,
+}
+impl ControlKind {
+    pub fn from_tag(tag: &str) -> Self {
+        match tag {
+            "root" => Self::Root,
+            "div" => Self::Div,
+            "dialog" => Self::Dialog,
+            "window" => Self::Window,
+            "h1" => Self::Heading1,
+            "h2" => Self::Heading2,
+            "p" => Self::Paragraph,
+            "button" => Self::Button,
+            "input" => Self::Input,
+            "textarea" => Self::Textarea,
+            "text" => Self::Text,
+            _ => Self::Unknown,
+        }
+    }
+    pub fn is_heading(self) -> bool {
+        matches!(self, Self::Heading1 | Self::Heading2)
+    }
+}
+
+/// Semantic role, derived once from the published role string alongside
+/// `ControlKind`. Only the checkbox role changes host behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Role {
+    #[default]
+    Generic,
+    Checkbox,
+}
+impl Role {
+    pub fn from_role(role: &str) -> Self {
+        if role == "checkbox" {
+            Self::Checkbox
+        } else {
+            Self::Generic
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Node {
     pub id: u64,
@@ -13,10 +72,12 @@ pub struct Node {
     pub parent: Option<u64>,
     pub active: bool,
     pub tag: String,
+    pub kind: ControlKind,
     pub text: String,
     pub value: String,
     pub label: String,
-    pub role: String,
+    pub placeholder: String,
+    pub role: Role,
     pub test_id: String,
     pub style: Option<Style>,
     pub child_count: usize,
@@ -97,6 +158,7 @@ struct RawNode {
     role: Slice,
     test_id: Slice,
     class: Slice,
+    placeholder: Slice,
     child_count: usize,
     click: u64,
     input: u64,
@@ -157,7 +219,7 @@ impl Engine {
             };
             assert_eq!(
                 signals_protocol_version(),
-                7,
+                8,
                 "native GUI protocol mismatch"
             );
             assert_eq!(
@@ -199,6 +261,8 @@ impl Engine {
                         shortcut_count <= MAX_PER_ELEMENT,
                         "native shortcut count exceeded its bound"
                     );
+                    let tag = r.tag.copy();
+                    let role = r.role.copy();
                     Node {
                         id: r.id,
                         lifetime: r.lifetime,
@@ -208,11 +272,13 @@ impl Engine {
                         close_policy: r.close_policy,
                         parent: (r.parent != u64::MAX).then_some(r.parent),
                         active: r.active != 0,
-                        tag: r.tag.copy(),
+                        kind: ControlKind::from_tag(&tag),
+                        tag,
                         text: r.text.copy(),
                         value: r.value.copy(),
                         label: r.label.copy(),
-                        role: r.role.copy(),
+                        placeholder: r.placeholder.copy(),
+                        role: Role::from_role(&role),
                         test_id: r.test_id.copy(),
                         style: (r.style_present != 0).then_some(r.style),
                         child_count: r.child_count,
