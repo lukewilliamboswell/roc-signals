@@ -17,6 +17,10 @@ from dependency_artifacts import sha256, unpack_verified, verify_archive, read_l
 
 REPOSITORY = "lukewilliamboswell/roc-signals"
 KINDS = {
+    "xkbcommon": {"targets": ("x64glibc",), "files": ("libxkbcommon.so", "libxkbcommon-x11.so"),
+                  "licenses": ("LICENSE",), "workflow": "xkbcommon-dependencies.yml",
+                  "inventory_error": "dependency release must include both tested xkbcommon libraries",
+                  "validation": "The extracted candidate parsed and translated a self-contained keyboard map, and two clean builds produced identical archives."},
     "musl": {"targets": ("x64musl", "arm64musl"), "files": ("libc.a", "crt1.o"),
              "licenses": ("COPYRIGHT",), "workflow": "dependencies.yml",
              "inventory_error": "dependency release must include both tested musl architectures",

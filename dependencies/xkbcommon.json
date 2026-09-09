@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "name": "xkbcommon",
+  "version": "1.13.2",
+  "target": "x64glibc",
+  "zig_version": "0.16.0",
+  "meson_version": "1.12.0",
+  "cc_args": [
+    "cc",
+    "-target",
+    "x86_64-linux-gnu.2.39",
+    "-mcpu=baseline",
+    "-fno-sanitize=all"
+  ],
+  "source": {
+    "url": "https://codeload.github.com/xkbcommon/libxkbcommon/tar.gz/d1442aaa6b635551182e83c3b55037f4c118c962",
+    "revision": "d1442aaa6b635551182e83c3b55037f4c118c962",
+    "sha256": "9411bd02749c43bd775a9506f19dd5bc32611aef47c5830b8679d25264b859e3",
+    "size": 1245291,
+    "directory": "libxkbcommon-d1442aaa6b635551182e83c3b55037f4c118c962"
+  },
+  "meson_options": [
+    "--prefix=/usr",
+    "--libdir=lib",
+    "-Ddefault_library=shared",
+    "-Dbuildtype=release",
+    "-Dc_link_args=-L/usr/lib/x86_64-linux-gnu",
+    "-Denable-tools=false",
+    "-Denable-docs=false",
+    "-Denable-wayland=false",
+    "-Denable-xkbregistry=false",
+    "-Denable-x11=true",
+    "-Dxkb-config-root=/usr/share/X11/xkb",
+    "-Dx-locale-root=/usr/share/X11/locale"
+  ]
+}

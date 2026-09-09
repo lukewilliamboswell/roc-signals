@@ -29,6 +29,16 @@ image identity, recipe and probe hashes, source identity, and license notices.
 Two clean builds must produce identical archives, and each extracted candidate
 must parse and render the expected bitmap glyph before it can be published.
 
+`xkbcommon.json` pins the upstream keyboard-library source commit and archive.
+Its separate builder uses Zig with the checked-in Meson configuration to build
+both the core and X11 libraries. Meson's install step removes build-directory
+runtime search paths before packaging. A self-contained keyboard-map probe runs
+against the extracted candidate; publication requires identical archives from two
+clean builds and includes the upstream license. XCB build inputs come from the
+authenticated Ubuntu snapshot, and XCB runtime libraries and keyboard layout data
+remain operating-system inputs. A producer release does not adopt these libraries:
+the platform must separately pin and verify the resulting dependency lock.
+
 The FreeType shared object is a link input. Its SONAME remains
 `libfreetype.so.6`, which the operating system resolves at application runtime;
 publishing this artifact does not freeze the runtime font stack. Producer support
