@@ -1363,20 +1363,32 @@ See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
 
 ### Linux GUI release candidates
 
-`Linux GUI release candidate` (`gui-release.yml`) packages an already published
-Linux host with the independently verified FreeType, glibc, LLVM unwinder, and
-xkbcommon releases. It runs no Cargo or Zig host build. Use a fresh checkout with
+`GUI release candidate` (`gui-release.yml`) packages an already published
+host for the selected `x64glibc` or `arm64mac` target. Linux includes the independently
+verified FreeType, glibc, LLVM unwinder, and xkbcommon releases. Apple Silicon uses
+the host-owned project interface catalog; macOS supplies system implementations. It runs no Cargo or Zig host build. Use a fresh checkout with
 no `platform-gui/targets` directory and an immutable `deps-gui-host-<version>`
 release whose source fingerprint matches that checkout.
 
-Dispatch the workflow with a new `gui-X.Y.Z-rc.N` tag, the host release tag, and
-`validate_only: true` for candidate validation. The job packages the existing
+Dispatch the workflow with a new `gui-X.Y.Z-rc.N` tag, the host release tag,
+`target: x64glibc` or `target: arm64mac`, and `validate_only: true` for candidate validation. The job packages the existing
 verified inputs, serves the exact Roc archive over HTTP, builds all six maintained
 GUI applications with their pinned compiler, runs every semantic spec, and opens
-the same executables under Weston/Xvfb with Mesa software Vulkan. Rendering must
+the same executables on its native runner. Linux uses Weston/Xvfb with Mesa
+software Vulkan; Apple Silicon uses native macOS rendering. Rendering must
 report explicit success; the counter also verifies its increment interaction.
 The archive inventory check rejects missing dependency notices and receipts,
 unselected target files, and expanded payloads over Roc's 100 MiB limit.
+
+Mac archive admission regenerates the catalog's expected TBD bytes and checks
+all interface files, original provenance, generator identity, exact host hashes,
+and native validation record. Additional files under `targets/macos-sysroot` are
+rejected. The existing bundler runs the native link/spec validator before bundle
+creation; the RC gate then repeats builds/specs and rendering over fresh HTTP.
+Windows GNU target identity and native-check routing are supported by the helper,
+but RC preparation remains disabled until production header/input admission and
+verified host/runtime/import releases are adopted. Candidate CI inputs cannot
+substitute for those releases.
 
 A publishing dispatch must run on `main` with `validate_only: false`. It attests
 the exact tested platform archive, starter ZIP, original host lock, and

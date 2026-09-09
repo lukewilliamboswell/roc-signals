@@ -69,9 +69,8 @@ def require_native(target):
 
 
 def require_preparation_support(target):
-    # Candidate import/CRT links are not a production platform contract. Mac
-    # generated interface files additionally need catalog-bound RC admission.
-    if target != 'x64glibc':
+    # Candidate import/CRT links are not a production platform contract.
+    if target not in ('x64glibc', 'arm64mac'):
         raise ValueError('GUI RC preparation for ' + target + ' requires completed production input admission')
 
 
@@ -143,6 +142,39 @@ def read_manifest(directory):
     return manifest
 
 
+def macos_interfaces(observed, retained, manifest):
+    """Admit only exact project catalog outputs bound to the selected host bytes."""
+    import build_macos_stubs as stubs
+    prefix = 'targets/macos-sysroot/'
+    catalog = stubs.CATALOG.read_bytes()
+    provenance = stubs.PROVENANCE.read_bytes()
+    generated = stubs.render(stubs.validate_catalog(json.loads(catalog)))
+    generated.update({'interfaces.json': catalog, 'PROVENANCE.md': provenance})
+    record_path = prefix + 'manifest.json'
+    recorded = retained.get(record_path)
+    expected = {'schema_version': 1, 'origin': 'project-generated-macos-interfaces',
+                'target': 'arm64-macos',
+                'host_archives_sha256': {name: observed['targets/arm64mac/' + name]['sha256'] for name in stubs.ARCHIVES},
+                'catalog_sha256': stubs.digest(catalog), 'generator_sha256': stubs.digest(Path(stubs.__file__).read_bytes()),
+                'provenance_sha256': stubs.digest(provenance),
+                'files_sha256': {name: stubs.digest(data) for name, data in generated.items()
+                                 if name not in ('interfaces.json', 'PROVENANCE.md')}}
+    if recorded != expected:
+        raise ValueError('Mac interface manifest differs from project catalog or selected host')
+    validation = retained.get(prefix + 'validation.json', {})
+    if (set(validation) != {'schema_version', 'compiler_pin', 'examples', 'interface_manifest_sha256'}
+            or validation['schema_version'] != 1 or validation['compiler_pin'] != manifest['compiler_pin']
+            or validation['interface_manifest_sha256'] != observed[record_path]['sha256']
+            or set(validation['examples']) != set(manifest['examples'])
+            or any(type(count) is not int or count <= 0 for count in validation['examples'].values())):
+        raise ValueError('Mac interface native validation differs from the selected bundle')
+    expected_files = {prefix + name: {'sha256': stubs.digest(data), 'size': len(data)} for name, data in generated.items()}
+    expected_files.update({name: observed[name] for name in (record_path, prefix + 'validation.json')})
+    if any(observed.get(name) != entry for name, entry in expected_files.items()):
+        raise ValueError('Mac interface bytes differ from project-generated catalog outputs')
+    return expected_files
+
+
 def inspect_platform(path, manifest):
     """Check the expanded budget, exact receipts, and every retained dependency file."""
     target = selected_target(manifest)
@@ -160,7 +192,8 @@ def inspect_platform(path, manifest):
                             or '..' in parts or '\\' in name or total > 100 * 1024 ** 2):
                         raise ValueError('unsafe or oversized GUI platform archive')
                     with archive.extractfile(member) as source:
-                        if name == 'dependencies.lock.json' or name.startswith('dependency-manifests/'):
+                        if (name == 'dependencies.lock.json' or name.startswith('dependency-manifests/')
+                                or name in ('targets/macos-sysroot/manifest.json', 'targets/macos-sysroot/validation.json')):
                             if member.size > 4 * 1024 ** 2:
                                 raise ValueError('oversized dependency manifest')
                             data = source.read()
@@ -177,7 +210,8 @@ def inspect_platform(path, manifest):
     if retained.get('dependencies.lock.json') != manifest['dependencies']:
         raise ValueError('bundled dependency receipt differs from the release')
     identities = TARGET_EXTERNALS[target] | {'gui-host-' + target}
-    if set(retained) != {'dependencies.lock.json'} | {'dependency-manifests/' + name + '.json' for name in identities}:
+    interface_records = {'targets/macos-sysroot/manifest.json', 'targets/macos-sysroot/validation.json'} if target == 'arm64mac' else set()
+    if set(retained) != {'dependencies.lock.json'} | interface_records | {'dependency-manifests/' + name + '.json' for name in identities}:
         raise ValueError('bundled dependency manifests are incomplete')
     declared_targets = {}
     for identity in identities:
@@ -193,7 +227,10 @@ def inspect_platform(path, manifest):
                 declared_targets[name] = expected
             if observed.get(name) != expected:
                 raise ValueError('bundled dependency file or notice differs from its inventory')
-    if any(name.startswith('targets/') and name.split('/')[1] != target for name in observed):
+    if target == 'arm64mac':
+        declared_targets.update(macos_interfaces(observed, retained, manifest))
+    allowed = {target, 'macos-sysroot'} if target == 'arm64mac' else {target}
+    if any(name.startswith('targets/') and name.split('/')[1] not in allowed for name in observed):
         raise ValueError('GUI RC contains an unselected target')
     if {name for name in observed if name.startswith('targets/')} != set(declared_targets):
         raise ValueError('bundled target inputs differ from the declared dependency inventories')
@@ -217,6 +254,7 @@ def extract_starters(path, destination):
 
 def prepare(tag, host_release, output, roc, root=ROOT, target=TARGET):
     require_preparation_support(target)
+    require_native(target)
     if not VERSION.fullmatch(tag) or not re.fullmatch(r'deps-gui-host-[0-9][A-Za-z0-9.-]*', host_release):
         raise ValueError('use a new gui-X.Y.Z-rc.N tag and an independent host release')
     source = clean_sha(root)
@@ -269,9 +307,9 @@ def prepare(tag, host_release, output, roc, root=ROOT, target=TARGET):
                     data = toolchain.replace_platform(data.decode(), platform_url).encode()
                 archive.writestr(relative.as_posix(), data)
             archive.writestr('examples-gui/examples.toml', (root / 'examples-gui/examples.toml').read_bytes())
-            archive.writestr('README.md', f'Linux x86_64 GUI RC {tag}\n\nCompiler: {pin}\nPlatform: {platform_url}\n\n'
-                             'Build: roc build --target=x64glibc examples-gui/counter/main.roc\n'
-                             'The compiler and Linux desktop runtime libraries are required; Rust and Zig are not.\n'
+            archive.writestr('README.md', f'{target} GUI RC {tag}\n\nCompiler: {pin}\nPlatform: {platform_url}\n\n'
+                             f'Build: roc build --target={target} examples-gui/counter/main.roc\n'
+                             'The pinned compiler and target operating-system runtime are required; Rust and Zig are not.\n'
                              f'Original host dependency sources: {source_url(companion)}\n'
                              'The platform retains its notices and dependency lock. Preserve them when redistributing.\n')
         shutil.copyfile(lock_path, final / 'host-release.lock.json')
@@ -285,10 +323,10 @@ def prepare(tag, host_release, output, roc, root=ROOT, target=TARGET):
                            'host_lock': final / 'host-release.lock.json'}.items():
             manifest['assets'][kind] = dict(record(path), url=f'{BASE}/{tag}/{path.name}')
         (final / MANIFEST).write_text(json.dumps(manifest, indent=2) + '\n')
-        (final / 'release-notes.md').write_text(f'Linux x86_64 GUI release candidate {tag}.\n\n'
+        (final / 'release-notes.md').write_text(f'{target} GUI release candidate {tag}.\n\n'
             f'Source: {source}. Compiler: {pin}.\n\nAll six maintained GUI applications are built from the served bundle, '
-            'run their semantic specs, and confirm rendering through software Vulkan before publication. '
-            'Windows and macOS are outside this RC.\n\n'
+            'run their semantic specs, and confirm native rendering before publication. '
+            'This RC contains only its selected target.\n\n'
             f'Host sources and notices remain linked through the included lock: {source_url(companion)}\n')
         read_manifest(final)
         inspect_platform(platform, manifest)
