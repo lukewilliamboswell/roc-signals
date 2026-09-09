@@ -30,12 +30,14 @@ CI uses the official `roc-lang/setup-roc` GitHub Action. The repository does not
 build Roc itself. The site build uses standalone command-line tools only; there
 is no npm dependency or package manifest.
 
-Pull requests, pushes to `main`, and nightly validation run the source suite and
-native coverage, public examples against their committed release URLs, and the
-exact candidate archives. The required checks are `Platform source`, `Published
-examples`, and `Release archive`. The release workflow additionally validates
-archives on Linux x64/arm64 and Intel/Apple Silicon macOS. Pages deploys the
-supported release, not development builds from ordinary pushes.
+Pull requests and pushes to `main` run a bounded hosted source gate: Zig and
+browser contracts, Roc checks and tests, Wasm builds and size budgets, fuzz
+corpus replay, and ordinary native semantic specs. Change selection adds GUI,
+published-example, archive, and site jobs only when their inputs are affected.
+The required checks are `Platform source`, `Published examples`, and `Release
+archive`. The release workflow validates exact candidate archives on Linux
+x64/arm64 and Intel/Apple Silicon macOS. Pages deploys the supported release,
+not development builds from ordinary pushes.
 
 Compiler pins live in both platform headers and every web and GUI example
 header, including internal web fixtures. `.github/roc-nightly.json` selects all
@@ -47,23 +49,25 @@ preserving release URLs and automatically merges only a passing pin-only PR.
 
 ## Pre-commit CI check
 
-Run the top-level mini-CI entry point before committing:
+Run the mini-CI entry point before committing:
 
 ```sh
-./minici
+python3 scripts/minici
 ```
 
 It runs every locally reproducible CI area: selection checks, the complete web
 and shared source suite, fuzz corpus validation, coverage on macOS, GUI
 semantics and real rendering, published examples, release archive validation,
 and the documentation site. Linux requires Weston and Xvfb for the rendering
-check; macOS and Windows launch the built applications directly. CI on all
-three operating systems invokes the same named targets, so their command lists
-do not drift from the pre-commit path. Platform-specific linking and archive
-checks still run on their corresponding CI runners.
+check; macOS and Windows launch the built applications directly. Hosted CI uses
+the `hosted` mini-CI target for bounded pull-request feedback; the default local
+run additionally covers the slower fault, benchmark, bundle, and coverage
+campaigns. Platform-specific linking and archive checks still run on their
+corresponding CI runners.
 
-During investigation, pass one or more target names, such as `./minici gui
-gui-smoke`, but run the complete command before pushing.
+During investigation, pass one or more target names, such as
+`python3 scripts/minici gui gui-smoke`, but run the complete command before
+pushing.
 
 ## Test Driver
 

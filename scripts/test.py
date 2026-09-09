@@ -127,7 +127,11 @@ def load_examples() -> tuple[Example, ...]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    suites = ("all", "published", "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "wasm-bench", "native", "gui", "fault", "bundle", "bench", "size")
+    suites = (
+        "all", "published", "zig", "fuzz", "browser", "roc-check", "roc-test",
+        "wasm", "wasm-fault", "wasm-bench", "native", "gui", "fault",
+        "bundle", "bench", "size",
+    )
     parser.add_argument(
         "suites",
         nargs="*",
@@ -407,8 +411,6 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
                 ledger.record("wasm", example.slug, False, f"mount exited with {exc.returncode}")
                 continue
             ledger.record("wasm", example.slug, True)
-            if example.slug == "coordinated-writes":
-                run_coordinated_writes_wasm_faults(roc_bin)
 
 
 def add_wasm_fault_exports(source: str) -> str:
@@ -953,7 +955,10 @@ def main() -> int:
     examples = load_examples()
     suites = set(args.suites)
     if "all" in suites:
-        suites = {"zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "native", "fault", "bundle", "bench"}
+        suites = {
+            "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm",
+            "wasm-fault", "native", "fault", "bundle", "bench",
+        }
         # macOS GUI builds need full Xcode plus the optional Metal toolchain;
         # keep them explicit so the ordinary native suite works with CLT alone.
         if gui_suite.supported_host() and platform.system() == "Linux":
@@ -992,6 +997,9 @@ def main() -> int:
         raise SystemExit(str(exc)) from exc
     if "wasm" in suites:
         build_wasm_apps(roc_bin, examples, ledger)
+
+    if "wasm-fault" in suites:
+        run_coordinated_writes_wasm_faults(roc_bin)
 
     if "wasm-bench" in suites:
         run_wasm_runtime_benchmarks(roc_bin, args)

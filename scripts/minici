@@ -9,6 +9,7 @@ and hosted command lists cannot drift independently.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import platform
 import shutil
@@ -16,13 +17,35 @@ import subprocess
 import sys
 import tempfile
 
+from toolchain import validate_roots, verify_compiler
 
-ROOT = Path(__file__).resolve().parent
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def run(*command: str) -> None:
     print("==> " + " ".join(command), flush=True)
     subprocess.run(command, cwd=ROOT, check=True)
+
+
+def ensure_pinned_roc() -> None:
+    """Select one executable and reject a compiler that differs from the headers."""
+    selected = os.environ.get("ROC_BIN") or os.environ.get("ROC") or "roc"
+    path = Path(selected)
+    if len(path.parts) == 1:
+        executable = shutil.which(selected)
+    elif path.is_file() and os.access(path, os.X_OK):
+        executable = str(path.resolve())
+    else:
+        executable = None
+    if executable is None:
+        raise SystemExit(f"mini-CI requires the pinned Roc compiler; executable not found: {selected}")
+    pin = validate_roots(ROOT)
+    try:
+        verify_compiler(executable, pin)
+    except (OSError, subprocess.CalledProcessError, ValueError) as error:
+        raise SystemExit(f"mini-CI requires Roc {pin}: {error}") from error
+    os.environ["ROC_BIN"] = executable
 
 
 def shared_sources() -> None:
@@ -35,6 +58,17 @@ def smoke() -> None:
     shared_sources()
     run(sys.executable, "scripts/test.py", "zig", "browser", "roc-check", "roc-test", "wasm", "size", "--native", "never", "--bundle", "never")
     run(sys.executable, "scripts/fuzz.py", "check")
+
+
+def hosted() -> None:
+    """Run the bounded source gate used for ordinary pull requests."""
+    shared_sources()
+    run(
+        sys.executable,
+        "scripts/test.py",
+        "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "native", "size",
+        "--bundle", "never",
+    )
 
 
 def source() -> None:
@@ -57,7 +91,7 @@ def gui_smoke() -> None:
 
 
 def selection() -> None:
-    for pattern in ("test_ci_changes.py", "test_dependency_workflow_filters.py", "test_macos_*.py"):
+    for pattern in ("test_ci_changes.py", "test_dependency_workflow_filters.py", "test_macos_*.py", "test_minici.py"):
         run(sys.executable, "-m", "unittest", "discover", "-s", "scripts", "-p", pattern)
 
 
@@ -100,6 +134,7 @@ def coverage() -> None:
 TARGETS = {
     "selection": selection,
     "smoke": smoke,
+    "hosted": hosted,
     "source": source,
     "gui": gui,
     "gui-smoke": gui_smoke,
@@ -118,6 +153,8 @@ def main() -> None:
         "selection", "smoke", "source", "coverage", "gui", "gui-smoke",
         "published", "archive", "site",
     ]
+    if any(target not in {"selection", "site"} for target in targets):
+        ensure_pinned_roc()
     for target in targets:
         TARGETS[target]()
 

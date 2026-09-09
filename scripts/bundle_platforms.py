@@ -282,7 +282,7 @@ def main():
             archive = Path(created)
             if not archive.is_absolute():
                 archive = stage / archive
-            manifest[package] = str(archive.relative_to(output))
+            manifest[package] = str(archive.resolve().relative_to(output))
     (output / 'bundles.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     origin = f'http://127.0.0.1:{args.port}'
     links = '\n'.join(f'<li><a href="{path}">{name} platform</a></li>' for name, path in manifest.items())

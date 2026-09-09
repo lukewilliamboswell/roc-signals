@@ -109,16 +109,16 @@ pub type AssetReport = Vec<(String, AssetStatus)>;
 /// 32 MiB bound or an unreadable file fails the whole task with its typed error.
 pub fn verify(entries: &[(String, String)], cancel: &AtomicBool) -> Result<AssetReport, FileError> {
     let root = root();
-    let root_text = root
-        .to_str()
-        .ok_or_else(|| FileError::InvalidUtf8("assets root".into()))?;
     let mut report = Vec::with_capacity(entries.len());
     for (name, expected) in entries {
         validate_source(name).map_err(|reason| {
             FileError::InvalidPath(file_io::bounded_detail(format!("{name}: {reason}")))
         })?;
-        let path = format!("{root_text}/{name}");
-        let status = match file_io::read_bytes(&path, cancel, MAX_ASSET_BYTES) {
+        let path = root.join(name);
+        let path_text = path
+            .to_str()
+            .ok_or_else(|| FileError::InvalidUtf8("asset path".into()))?;
+        let status = match file_io::read_bytes(path_text, cancel, MAX_ASSET_BYTES) {
             Ok(bytes) => {
                 let digest = format!("{:x}", Sha256::digest(&bytes));
                 if digest == *expected {

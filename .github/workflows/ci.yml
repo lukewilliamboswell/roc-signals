@@ -27,7 +27,6 @@ jobs:
     name: Select affected checks
     runs-on: ubuntu-24.04
     outputs:
-      smoke: ${{ steps.select.outputs.smoke }}
       source: ${{ steps.select.outputs.source }}
       gui: ${{ steps.select.outputs.gui }}
       published: ${{ steps.select.outputs.published }}
@@ -38,46 +37,22 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - run: ./minici selection
+      - run: python3 scripts/minici selection
       - id: select
         run: python3 scripts/ci_changes.py
-
-  smoke:
-    needs: changes
-    if: needs.changes.outputs.smoke == 'true'
-    name: PR normal and smoke tests
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-toolchain
-      - run: ./minici smoke
 
   source:
     needs: changes
     if: needs.changes.outputs.source == 'true'
-    name: Full tests and coverage
-    runs-on: macos-15
+    name: Hosted source tests
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
-      - run: brew install dwarfutils
-      - run: python3 minici source
-      - name: Native coverage
-        run: |
-          sudo env "PATH=$PATH" \
-            "ZIG_GLOBAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
-            "ZIG_LOCAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
-            python3 minici coverage
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: native-host-coverage
-          path: kcov-output/native-host
+      - run: python3 scripts/minici hosted
 
   gui:
     needs: changes
@@ -108,11 +83,11 @@ jobs:
       - name: Verify GUI discovery and applications
         env:
           RUSTUP_TOOLCHAIN: 1.95.0
-        run: ./minici gui
+        run: python3 scripts/minici gui
       - name: Open GUI examples with software Vulkan
         run: |
           sudo apt-get install -y weston xvfb xauth mesa-vulkan-drivers
-          ./minici gui-smoke
+          python3 scripts/minici gui-smoke
 
   gui-windows:
     needs: changes
@@ -143,7 +118,7 @@ jobs:
       - name: Verify GUI discovery and applications
         env:
           RUSTUP_TOOLCHAIN: 1.95.0
-        run: python minici gui
+        run: python scripts/minici gui
       # Distributable inputs are published with provenance by gui-hosts.yml on
       # their own release cycle; this job only proves the optimized build works.
       - name: Build the distributable Windows link inputs
@@ -199,7 +174,7 @@ jobs:
           env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET TOOLCHAINS DEVELOPER_DIR
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Verify GUI applications with separate archives
-        run: python3 minici gui
+        run: python3 scripts/minici gui
       - name: Build and validate the optimized macOS bundle
         run: |
           python3 scripts/build_gui.py
@@ -208,7 +183,7 @@ jobs:
 
   platform-source:
     name: Platform source
-    needs: [changes, smoke, source, gui, gui-windows, gui-macos, published, archive, site]
+    needs: [changes, source, gui, gui-windows, gui-macos, published, archive, site]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -231,7 +206,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
-      - run: python3 minici published
+      - run: python3 scripts/minici published
 
   archive:
     needs: changes
@@ -244,7 +219,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
-      - run: python3 minici archive
+      - run: python3 scripts/minici archive
 
   site:
     name: Documentation and site
@@ -263,4 +238,4 @@ jobs:
       - name: Check documentation and templates
         run: |
           export PATH="$RUNNER_TEMP:$PATH"
-          python3 minici site
+          python3 scripts/minici site

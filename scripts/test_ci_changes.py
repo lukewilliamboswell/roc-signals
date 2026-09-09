@@ -9,7 +9,7 @@ class ChangeSelectionTests(unittest.TestCase):
         results = {"changes": {"result": "success", "outputs": {
             area: "true" if area == "gui" else "false" for area in AREAS
         }}}
-        for job in ("smoke", "source", "gui", "gui-windows", "gui-macos", "published", "archive", "site"):
+        for job in ("source", "gui", "gui-windows", "gui-macos", "published", "archive", "site"):
             results[job] = {"result": "success" if job.startswith("gui") else "skipped"}
         verify_results(results)
         for bad in ("failure", "cancelled", "skipped"):
@@ -37,7 +37,7 @@ class ChangeSelectionTests(unittest.TestCase):
         self.assertEqual(self.selected(["www/content/docs/contributing.md"]), {"site"})
 
     def test_runtime_javascript_is_not_treated_as_documentation(self):
-        self.assertIn("smoke", self.selected(["www/static/signals.mjs"]))
+        self.assertIn("source", self.selected(["www/static/signals.mjs"]))
 
     def test_multiple_areas_are_unioned(self):
         self.assertEqual(self.selected(["docs/guide.md", "examples-gui/counter/main.roc"]), {"site", "gui"})
