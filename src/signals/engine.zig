@@ -628,26 +628,31 @@ pub fn elemScopeId(stream: *const HostNodeDescriptorStream, elem_id: u64) ?u64 {
 }
 
 fn textFieldDescriptorIndexesActive(indexes: HostTextFieldDescriptorIndexes) bool {
-    return indexes.text != .none or
-        indexes.role != .none or
-        indexes.label != .none or
-        indexes.test_id != .none or
-        indexes.value != .none or
-        indexes.class != .none;
+    // Browser-scoped scalars only, matching the previous hand-written list:
+    // native metadata publishes through the typed native publication.
+    inline for (comptime std.meta.tags(render.TextField)) |field| {
+        if (comptime !field.isNative()) {
+            if (@field(indexes.indexes, @tagName(field)) != .none) return true;
+        }
+    }
+    return false;
 }
 
 fn boolFieldDescriptorIndexesActive(indexes: HostBoolFieldDescriptorIndexes) bool {
-    return indexes.checked != .none or indexes.disabled != .none;
+    // Browser-scoped scalars only, matching the previous hand-written list.
+    inline for (comptime std.meta.tags(render.BoolField)) |field| {
+        if (comptime !field.isNative()) {
+            if (@field(indexes.indexes, @tagName(field)) != .none) return true;
+        }
+    }
+    return false;
 }
 
 fn eventDescriptorIndexesActive(indexes: HostEventDescriptorIndexes) bool {
-    return indexes.click != .none or
-        indexes.input != .none or
-        indexes.check != .none or
-        indexes.pointer_down != .none or
-        indexes.pointer_up != .none or
-        indexes.pointer_enter != .none or
-        indexes.pointer_leave != .none;
+    inline for (comptime std.meta.tags(render.EventKind)) |kind| {
+        if (@field(indexes.indexes, @tagName(kind)) != .none) return true;
+    }
+    return false;
 }
 
 fn elemDescriptorIndexActive(index: HostElemDescriptorIndex) bool {

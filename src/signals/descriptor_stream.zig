@@ -3632,125 +3632,33 @@ pub const DescriptorIndex = enum(u32) {
     }
 };
 
-pub const TextFieldDescriptorIndexes = struct {
-    text: DescriptorIndex = .none,
-    role: DescriptorIndex = .none,
-    label: DescriptorIndex = .none,
-    test_id: DescriptorIndex = .none,
-    value: DescriptorIndex = .none,
-    class: DescriptorIndex = .none,
-    native_style: DescriptorIndex = .none,
-    native_viewport: DescriptorIndex = .none,
-    native_drag_key: DescriptorIndex = .none,
-    native_window_close: DescriptorIndex = .none,
-    native_placeholder: DescriptorIndex = .none,
-    native_image_source: DescriptorIndex = .none,
-    native_font_family: DescriptorIndex = .none,
-    native_fonts: DescriptorIndex = .none,
+/// Dense per-field descriptor index slots derived from a field enum, so a
+/// field added to the generated protocol table gains its slot automatically.
+pub fn FieldDescriptorIndexes(comptime Field: type) type {
+    return struct {
+        indexes: std.enums.EnumFieldStruct(Field, DescriptorIndex, DescriptorIndex.none) = .{},
 
-    /// Returns the stored value without changing its identity or ownership policy.
-    pub fn get(self: TextFieldDescriptorIndexes, field: TextField) ?usize {
-        return switch (field) {
-            .text => self.text.get(),
-            .role => self.role.get(),
-            .label => self.label.get(),
-            .test_id => self.test_id.get(),
-            .value => self.value.get(),
-            .class => self.class.get(),
-            .native_style => self.native_style.get(),
-            .native_viewport => self.native_viewport.get(),
-            .native_drag_key => self.native_drag_key.get(),
-            .native_window_close => self.native_window_close.get(),
-            .native_placeholder => self.native_placeholder.get(),
-            .native_image_source => self.native_image_source.get(),
-            .native_font_family => self.native_font_family.get(),
-            .native_fonts => self.native_fonts.get(),
-        };
-    }
+        /// Returns the stored value without changing its identity or ownership policy.
+        pub fn get(self: @This(), field: Field) ?usize {
+            return switch (field) {
+                inline else => |comptime_field| @field(self.indexes, @tagName(comptime_field)).get(),
+            };
+        }
 
-    /// Maintains slot within the indexed descriptor stream used by both hosts.
-    pub fn slot(self: *TextFieldDescriptorIndexes, field: TextField) *DescriptorIndex {
-        return switch (field) {
-            .text => &self.text,
-            .role => &self.role,
-            .label => &self.label,
-            .test_id => &self.test_id,
-            .value => &self.value,
-            .class => &self.class,
-            .native_style => &self.native_style,
-            .native_viewport => &self.native_viewport,
-            .native_drag_key => &self.native_drag_key,
-            .native_window_close => &self.native_window_close,
-            .native_placeholder => &self.native_placeholder,
-            .native_image_source => &self.native_image_source,
-            .native_font_family => &self.native_font_family,
-            .native_fonts => &self.native_fonts,
-        };
-    }
-};
+        /// Maintains slot within the indexed descriptor stream used by both hosts.
+        pub fn slot(self: *@This(), field: Field) *DescriptorIndex {
+            return switch (field) {
+                inline else => |comptime_field| &@field(self.indexes, @tagName(comptime_field)),
+            };
+        }
+    };
+}
 
-pub const BoolFieldDescriptorIndexes = struct {
-    checked: DescriptorIndex = .none,
-    disabled: DescriptorIndex = .none,
-    selected: DescriptorIndex = .none,
-    native_drop_target: DescriptorIndex = .none,
+pub const TextFieldDescriptorIndexes = FieldDescriptorIndexes(TextField);
 
-    /// Returns the stored value without changing its identity or ownership policy.
-    pub fn get(self: BoolFieldDescriptorIndexes, field: BoolField) ?usize {
-        return switch (field) {
-            .checked => self.checked.get(),
-            .disabled => self.disabled.get(),
-            .selected => self.selected.get(),
-            .native_drop_target => self.native_drop_target.get(),
-        };
-    }
+pub const BoolFieldDescriptorIndexes = FieldDescriptorIndexes(BoolField);
 
-    /// Maintains slot within the indexed descriptor stream used by both hosts.
-    pub fn slot(self: *BoolFieldDescriptorIndexes, field: BoolField) *DescriptorIndex {
-        return switch (field) {
-            .checked => &self.checked,
-            .disabled => &self.disabled,
-            .selected => &self.selected,
-            .native_drop_target => &self.native_drop_target,
-        };
-    }
-};
-
-pub const EventDescriptorIndexes = struct {
-    click: DescriptorIndex = .none,
-    input: DescriptorIndex = .none,
-    check: DescriptorIndex = .none,
-    pointer_down: DescriptorIndex = .none,
-    pointer_up: DescriptorIndex = .none,
-    pointer_enter: DescriptorIndex = .none,
-    pointer_leave: DescriptorIndex = .none,
-
-    /// Returns the stored value without changing its identity or ownership policy.
-    pub fn get(self: EventDescriptorIndexes, kind: EventKind) ?usize {
-        return switch (kind) {
-            .click => self.click.get(),
-            .input => self.input.get(),
-            .check => self.check.get(),
-            .pointer_down => self.pointer_down.get(),
-            .pointer_up => self.pointer_up.get(),
-            .pointer_enter => self.pointer_enter.get(),
-            .pointer_leave => self.pointer_leave.get(),
-        };
-    }
-
-    /// Maintains slot within the indexed descriptor stream used by both hosts.
-    pub fn slot(self: *EventDescriptorIndexes, kind: EventKind) *DescriptorIndex {
-        return switch (kind) {
-            .click => &self.click,
-            .input => &self.input,
-            .check => &self.check,
-            .pointer_down => &self.pointer_down,
-            .pointer_up => &self.pointer_up,
-            .pointer_enter => &self.pointer_enter,
-            .pointer_leave => &self.pointer_leave,
-        };
-    }
-};
+pub const EventDescriptorIndexes = FieldDescriptorIndexes(EventKind);
 
 pub const RenderElemIndex = struct {
     render_node: ?usize = null,
@@ -5879,7 +5787,14 @@ test "descriptor index mutation helpers preserve explicit slots" {
 
 test "descriptor indexes retain a cache-dense layout" {
     try std.testing.expectEqual(@as(usize, 4), @sizeOf(DescriptorIndex));
-    try std.testing.expectEqual(@as(usize, 184), @sizeOf(ElemDescriptorIndex));
+    // Three per-element slots plus static/signal text, static/signal bool, and
+    // event slots. The counts come from the generated protocol tables, so a
+    // manifest field extends this layout without retranscription.
+    const slot_count = 3 +
+        2 * render.native_protocol.text_field_count +
+        2 * render.native_protocol.bool_field_count +
+        std.meta.tags(EventKind).len;
+    try std.testing.expectEqual(@as(usize, 4 * slot_count), @sizeOf(ElemDescriptorIndex));
     try std.testing.expectEqual(@as(usize, 28), @sizeOf(NodeDescriptorIndex));
 }
 

@@ -1,22 +1,82 @@
 # Native GUI presentation boundary
 
-The statically linked GUI boundary uses protocol version **9**. Zig exports
-`signals_protocol_version` and `signals_node_size`; Rust checks both before
-mount. Version 9 adds the explicit image-source text slot together with the
-font-family and embedded-font declaration slots to the node layout. Version 8
-added the placeholder text slot, version 7 added explicit event-detail
-dispatch, and the node layout retains the close-request event ID and
-close-decision word introduced in version 6.
-Both sides must be rebuilt together.
+The tabular protocol contract - the protocol/effect/timer versions, the scalar
+text and boolean field tables, the task-kind routes, and the extern node record
+layout - has one authority: `protocol/native-protocol.json`. Running
+`python3 scripts/generate_protocol.py` regenerates the committed artifacts
+(`src/signals/native_protocol_gen.zig`, `crates/gpui-host/src/protocol_gen.rs`,
+the marked section of `platform-gui/Gui.roc`, and the tables below);
+`scripts/test.py zig` fails when any of them is stale. The prose in this
+document stays hand-written.
+
+<!-- BEGIN GENERATED PROTOCOL TABLES (scripts/generate_protocol.py; edit protocol/native-protocol.json) -->
+
+The statically linked GUI boundary uses protocol version **9**;
+the separate native effects boundary is version **2** and the
+separate timer boundary is version **1**.
+
+| Version | Change |
+| --- | --- |
+| 9 | Adds the explicit image-source text slot together with the font-family and embedded-font declaration slots to the node layout. |
+| 8 | Adds the placeholder text slot to the node layout. |
+| 7 | Adds explicit event-detail dispatch to `signals_dispatch`. |
+| 6 | Adds the close-request event ID and close-decision word to the node layout. |
+
+Scalar text fields:
+
+| Id | Field | Scope | Purpose |
+| --- | --- | --- | --- |
+| 1 | `text` | browser (`set_text`) | Element text content. |
+| 2 | `role` | browser (`set_role`) | Semantic role string. |
+| 3 | `label` | browser (`set_label`) | Visible caption and semantic name. |
+| 4 | `test_id` | browser (`set_test_id`) | Stable test selector identity. |
+| 5 | `value` | browser (`set_value`) | Controlled input value. |
+| 6 | `class` | browser (`set_class`) | CSS class list for browser presentation. |
+| 8 | `native_style` | native | Versioned native presentation record; never encoded on the browser wire. |
+| 9 | `native_viewport` | native | Fixed-row virtual list record `1,row_height,follow_tail`. |
+| 10 | `native_drag_key` | native | Bounded application key exposed by an internal drag source. |
+| 11 | `native_window_close` | native | Window close policy: `keep-open`, `await-decision`, or `close`. |
+| 12 | `native_placeholder` | native | Static empty-field hint text shown while a controlled field is empty. |
+| 13 | `native_image_source` | native | Relative image source resolved against the process-wide assets root. |
+| 14 | `native_font_family` | native | Static font family joined into the element's inherited text style. |
+| 15 | `native_fonts` | native | Versioned embedded-font registration declaration; registered once at startup. |
+| 7 | - | shared | Reserved marker for named custom text attributes. |
+
+Scalar boolean fields:
+
+| Id | Field | Scope | Purpose |
+| --- | --- | --- | --- |
+| 1 | `checked` | browser (`set_checked`) | Checkbox checked state. |
+| 2 | `disabled` | browser (`set_disabled`) | Disables input while retaining native identity. |
+| 4 | `selected` | native | Native selected presentation, independent of checkbox state. |
+| 5 | `native_drop_target` | native | Marks an internal drop target that must bind a string-detail drop event. |
+| 3 | - | shared | Reserved marker for named custom boolean attributes. |
+
+`Node.TaskKind` is an explicit closed route:
+
+| Id | Kind | Purpose |
+| --- | --- | --- |
+| 0 | `external` | App-declared external task; the only route the browser host accepts. |
+| 1 | `choose_file` | Native file chooser dialog. |
+| 2 | `choose_directory` | Native directory chooser dialog. |
+| 3 | `choose_save_path` | Native save-path chooser with location kind, directory, and suggested name. |
+| 4 | `read_text` | Bounded UTF-8 text read of one absolute path. |
+| 5 | `write_text` | Atomic bounded UTF-8 text write of one absolute path. |
+| 6 | `scan_directory` | Bounded recursive directory metadata scan. |
+| 7 | `list_directory` | Bounded direct-children directory listing. |
+| 8 | `open_path` | Hand one regular file to its associated application. |
+| 9 | `read_preview` | Bounded UTF-8 prefix read with an explicit truncation marker. |
+| 10 | `read_log` | Cursor-driven bounded log chunk read with rotation detection. |
+| 11 | `verify_assets` | Hash a bounded manifest of relative assets against expected SHA-256 digests. |
+
+<!-- END GENERATED PROTOCOL TABLES -->
+
+Zig exports `signals_protocol_version` and `signals_node_size`; Rust checks
+both before mount. Both sides must be rebuilt together.
 The browser protocol and its version are unchanged.
 
-`Gui` lowers native presentation through the shared scalar descriptor machinery.
-Text field **8** is `native_style`, field **9** is `native_viewport`, field **10**
-is `native_drag_key`, field **11** is `native_window_close`, field **12** is
-`native_placeholder`, field **13** is `native_image_source`, field **14** is
-`native_font_family`, and field **15** is `native_fonts`; boolean fields
-**4** and **5** are `selected` and
-`native_drop_target`. The unused
+`Gui` lowers native presentation through the shared scalar descriptor
+machinery using the text and boolean field ids tabled above. The reserved
 IDs 7 and 3 remain the existing custom text/bool field markers. Native fields
 are explicit protocol fields, not CSS, class names, test identifiers, or custom
 attribute conventions. The browser rejects them before reserving or staging a
@@ -260,9 +320,8 @@ This is presentation policy, not a second timer, observer, or reactive graph.
 
 `Files` declares native chooser, read, write, and recursive scan tasks. Each
 factory takes a diagnostic label; the label never selects host behavior.
-`Node.TaskKind` is an explicit closed route: external=0, choose-file=1,
-choose-directory=2, choose-save-path=3, read-text=4, write-text=5, scan-directory=6,
-list-directory=7, open-path=8, read-preview=9, read-log=10, verify-assets=11.
+`Node.TaskKind` is an explicit closed route; the generated task-kind table
+above is the authoritative numbering.
 The browser rejects non-external task routes before command publication. Its
 existing task command wire format is unchanged.
 
@@ -432,3 +491,33 @@ at EOF after validating its terminal code point (up to four bytes). An incomplet
 or invalid EOF code point refuses `end` with `InvalidUtf8`; skipped history is
 not validated. All routes use the existing 16-operation reservations, shared
 scope cancellation, stale-result rejection, and typed failure delivery.
+
+## Adding a protocol field
+
+The manifest owns the tables; the generator owns the transcription; a bounded
+amount of behavior stays hand-written. To add a native scalar field:
+
+1. Declare the field in `protocol/native-protocol.json`: append it to
+   `text_fields` (or `bool_fields`) with a fresh id, `"native": true`, a
+   `roc_const` name when `Gui` lowers it, and a one-line doc. Bump
+   `protocol_version` and prepend a `version_history` entry. If the GPUI host
+   reads the value directly, add its slot to `raw_node.fields` in the intended
+   ABI position.
+2. Run `python3 scripts/generate_protocol.py`. This regenerates the Zig/Rust
+   enums, counts, and `RawNode` layouts, the `Gui.roc` constants, and the
+   tables above. Every derived contract (metadata counts, descriptor-index
+   sizes, `signals_node_size`, version asserts) follows automatically.
+3. Write the honest residue - the behavior no table can express. The Zig
+   compiler reports each site as a compile error (`inline else` field access
+   and exhaustive switches), so the checklist is enforced, not remembered:
+   - `src/sim_dom.zig`: an `Element` slot named exactly like the field.
+   - `src/signals/render_cache.zig`: a matching `ScalarNode` slot.
+   - `src/native_host.zig`: any publication-time validation, plus the
+     `Gpui.read` expression that fills the new `RawNode` slot.
+   - `crates/gpui-host/src/bridge.rs`: copy the new `RawNode` slot into `Node`
+     (a missed slot is unused-field/`E0063`-adjacent, and the size assert plus
+     `cargo test` catch drift) and present it in the host.
+   - `platform-gui/Gui.roc`: an `Attribute` variant lowering to the generated
+     `*_field` constant.
+4. Describe the field's semantics in prose in this document, and rebuild both
+   sides together (`python3 scripts/build_gui.py`).

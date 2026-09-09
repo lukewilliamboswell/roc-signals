@@ -40,11 +40,41 @@ Attribute := [
 	DropTarget(Node.Msg),
 ]
 
+# BEGIN GENERATED PROTOCOL (scripts/generate_protocol.py; edit protocol/native-protocol.json)
+# Versioned native presentation record; never encoded on the browser wire.
 native_style_field : Node.TextField
 native_style_field = { id: 8 }
-
+# Fixed-row virtual list record `1,row_height,follow_tail`.
+native_viewport_field : Node.TextField
+native_viewport_field = { id: 9 }
+# Bounded application key exposed by an internal drag source.
+native_drag_key_field : Node.TextField
+native_drag_key_field = { id: 10 }
+# Window close policy: `keep-open`, `await-decision`, or `close`.
+native_window_close_field : Node.TextField
+native_window_close_field = { id: 11 }
+# Static empty-field hint text shown while a controlled field is empty.
+native_placeholder_field : Node.TextField
+native_placeholder_field = { id: 12 }
+# Relative image source resolved against the process-wide assets root.
+native_image_source_field : Node.TextField
+native_image_source_field = { id: 13 }
+# Static font family joined into the element's inherited text style.
+native_font_family_field : Node.TextField
+native_font_family_field = { id: 14 }
+# Versioned embedded-font registration declaration; registered once at startup.
+native_fonts_field : Node.TextField
+native_fonts_field = { id: 15 }
+# Disables input while retaining native identity.
+disabled_field : Node.BoolField
+disabled_field = { id: 2 }
+# Native selected presentation, independent of checkbox state.
 selected_field : Node.BoolField
 selected_field = { id: 4 }
+# Marks an internal drop target that must bind a string-detail drop event.
+native_drop_target_field : Node.BoolField
+native_drop_target_field = { id: 5 }
+# END GENERATED PROTOCOL
 
 dimension : Length -> { kind : U32, value : U32 }
 dimension = |length| match length {
@@ -168,7 +198,7 @@ lower_attrs = |direction, defaults, attrs| {
 	with_drop = if drop_targets.is_empty() {
 		initial
 	} else {
-		initial.append(Node.Attr.StaticBool({ field: { id: 5 }, name: "", value: True }))
+		initial.append(Node.Attr.StaticBool({ field: native_drop_target_field, name: "", value: True }))
 	}
 	with_drop.concat(
 		attrs.map(
@@ -183,19 +213,19 @@ lower_attrs = |direction, defaults, attrs| {
 					}
 				}
 				Attribute.Label(value) => Html.aria_label(value)
-				Attribute.Placeholder(value) => Node.Attr.StaticText({ field: { id: 12 }, name: "", value })
-				Attribute.FontFamily(value) => Node.Attr.StaticText({ field: { id: 14 }, name: "", value })
-				Attribute.EmbeddedFonts(fonts) => Node.Attr.StaticText({ field: { id: 15 }, name: "", value: encode_fonts(fonts) })
+				Attribute.Placeholder(value) => Node.Attr.StaticText({ field: native_placeholder_field, name: "", value })
+				Attribute.FontFamily(value) => Node.Attr.StaticText({ field: native_font_family_field, name: "", value })
+				Attribute.EmbeddedFonts(fonts) => Node.Attr.StaticText({ field: native_fonts_field, name: "", value: encode_fonts(fonts) })
 				Attribute.TestId(value) => Html.test_id(value)
 				Attribute.Selected(value) => match Html.bool_attr_s("", value) {
 					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: selected_field })
 					_ => crash "expected a signal bool descriptor"
 				}
 				Attribute.Enabled(value) => match Html.bool_attr_s("", value.map(|enabled| !enabled)) {
-					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: { id: 2 } })
+					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: disabled_field })
 					_ => crash "expected a signal bool descriptor"
 				}
-				Attribute.DragSource(key) => Node.Attr.StaticText({ field: { id: 10 }, name: "", value: key })
+				Attribute.DragSource(key) => Node.Attr.StaticText({ field: native_drag_key_field, name: "", value: key })
 				Attribute.DropTarget(msg) => Node.Attr.On({
 					kind: { id: 0 },
 					name: "drop",
@@ -347,7 +377,7 @@ Gui := [].{
 			},
 		)
 		policy_attr = match Html.attr_s("", policy) {
-			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: { id: 11 } })
+			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: native_window_close_field })
 			_ => crash "expected a signal text descriptor"
 		}
 		Elem.Element({
@@ -406,7 +436,7 @@ Gui := [].{
 			}",
 		)
 		viewport = match Html.attr_s("", encoded) {
-			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: { id: 9 } })
+			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: native_viewport_field })
 			_ => crash "expected a signal text descriptor"
 		}
 		Html.div(lower_attrs(1, { ..style_default, width: Fill, height: Px(480), grow: True }, attrs).append(viewport), children)
@@ -424,7 +454,7 @@ Gui := [].{
 		Elem.Element({
 			namespace: Html,
 			tag: "img",
-			attrs: lower_attrs(1, style_default, [Attribute.Label(props.label)].concat(attrs)).append(Node.Attr.StaticText({ field: { id: 13 }, name: "", value: props.source })),
+			attrs: lower_attrs(1, style_default, [Attribute.Label(props.label)].concat(attrs)).append(Node.Attr.StaticText({ field: native_image_source_field, name: "", value: props.source })),
 			children: [],
 		})
 	}

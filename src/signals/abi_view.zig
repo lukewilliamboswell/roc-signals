@@ -17,8 +17,8 @@ pub const HostEventReducer = retained.HostEventReducer;
 pub const HostEachOps = retained.HostEachOps;
 pub const HostWhenOps = retained.HostWhenOps;
 
-pub const node_text_field_custom: u64 = 7;
-pub const node_bool_field_custom: u64 = 3;
+pub const node_text_field_custom: u64 = render.native_protocol.custom_text_field_id;
+pub const node_bool_field_custom: u64 = render.native_protocol.custom_bool_field_id;
 
 pub const TextField = render.TextField;
 pub const BoolField = render.BoolField;

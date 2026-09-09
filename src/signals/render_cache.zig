@@ -93,20 +93,9 @@ pub const ScalarNode = struct {
     native_drop_target: ?bool = null,
 
     fn deinit(self: *ScalarNode, allocator: std.mem.Allocator) void {
-        if (self.text) |text| allocator.free(text);
-        if (self.role) |role| allocator.free(role);
-        if (self.label) |label| allocator.free(label);
-        if (self.test_id) |test_id| allocator.free(test_id);
-        if (self.value) |value| allocator.free(value);
-        if (self.class) |class| allocator.free(class);
-        if (self.native_style) |style| allocator.free(style);
-        if (self.native_viewport) |viewport| allocator.free(viewport);
-        if (self.native_drag_key) |key| allocator.free(key);
-        if (self.native_window_close) |value| allocator.free(value);
-        if (self.native_placeholder) |value| allocator.free(value);
-        if (self.native_image_source) |value| allocator.free(value);
-        if (self.native_font_family) |value| allocator.free(value);
-        if (self.native_fonts) |value| allocator.free(value);
+        inline for (comptime std.meta.tags(TextField)) |field| {
+            if (@field(self, @tagName(field))) |value| allocator.free(value);
+        }
         for (self.custom_text_attrs.items) |attr| {
             attr.deinit(allocator);
         }
@@ -150,29 +139,13 @@ pub const ScalarNode = struct {
 
     fn textSlot(self: *ScalarNode, field: TextField) *?[]const u8 {
         return switch (field) {
-            .text => &self.text,
-            .role => &self.role,
-            .label => &self.label,
-            .test_id => &self.test_id,
-            .value => &self.value,
-            .class => &self.class,
-            .native_style => &self.native_style,
-            .native_viewport => &self.native_viewport,
-            .native_drag_key => &self.native_drag_key,
-            .native_window_close => &self.native_window_close,
-            .native_placeholder => &self.native_placeholder,
-            .native_image_source => &self.native_image_source,
-            .native_font_family => &self.native_font_family,
-            .native_fonts => &self.native_fonts,
+            inline else => |comptime_field| &@field(self, @tagName(comptime_field)),
         };
     }
 
     fn boolSlot(self: *ScalarNode, field: BoolField) *?bool {
         return switch (field) {
-            .checked => &self.checked,
-            .disabled => &self.disabled,
-            .selected => &self.selected,
-            .native_drop_target => &self.native_drop_target,
+            inline else => |comptime_field| &@field(self, @tagName(comptime_field)),
         };
     }
 
@@ -1676,11 +1649,11 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             };
             for (self.text_fields.items) |field| {
                 if ((field.field.isNative()) and comptime publishes_native_fields) continue;
-                try appendText(batch, allocator, field.field.setOp(), field.elem_id, field.next orelse "");
+                try appendText(batch, allocator, render.textSetOp(field.field), field.elem_id, field.next orelse "");
             }
             for (self.bool_fields.items) |field| {
                 if (field.field.isNative() and comptime publishes_native_fields) continue;
-                try batch.staged.commands.appendRaw(allocator, field.field.setOp(), wireElem(field.elem_id).raw(), @intFromBool(field.next orelse false), 0, 0, 0);
+                try batch.staged.commands.appendRaw(allocator, render.boolSetOp(field.field), wireElem(field.elem_id).raw(), @intFromBool(field.next orelse false), 0, 0, 0);
             }
             for (self.fixed_events.items) |event| if (event.next) |binding| {
                 if (binding.canUseFixedOpcode(event.kind)) try batch.staged.commands.appendRaw(allocator, event.kind.bindOp(), wireElem(event.elem_id).raw(), (render.WireEventId.fromEngine(binding.event_id) catch unreachable).raw(), 0, 0, 0) else {

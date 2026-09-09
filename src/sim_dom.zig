@@ -99,20 +99,9 @@ pub const Element = struct {
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *Element, allocator: std.mem.Allocator) void {
         allocator.free(self.tag);
-        if (self.role) |role| allocator.free(role);
-        if (self.label) |label| allocator.free(label);
-        if (self.test_id) |test_id| allocator.free(test_id);
-        if (self.class) |class| allocator.free(class);
-        if (self.native_style) |style| allocator.free(style);
-        if (self.native_viewport) |viewport| allocator.free(viewport);
-        if (self.native_drag_key) |key| allocator.free(key);
-        if (self.native_window_close) |value| allocator.free(value);
-        if (self.native_placeholder) |value| allocator.free(value);
-        if (self.native_image_source) |value| allocator.free(value);
-        if (self.native_font_family) |value| allocator.free(value);
-        if (self.native_fonts) |value| allocator.free(value);
-        if (self.text) |text| allocator.free(text);
-        if (self.value) |value| allocator.free(value);
+        inline for (comptime std.meta.tags(render.TextField)) |field| {
+            if (@field(self, @tagName(field))) |value| allocator.free(value);
+        }
         if (self.pending_value) |pending_value| allocator.free(pending_value);
         for (self.attrs.items) |attr| {
             attr.deinit(allocator);
@@ -144,9 +133,10 @@ pub const Element = struct {
         cloned.value_update_count = self.value_update_count;
         cloned.checked_update_count = self.checked_update_count;
         cloned.disabled_update_count = self.disabled_update_count;
-        inline for (.{ "role", "label", "test_id", "class", "native_style", "native_viewport", "native_drag_key", "native_window_close", "native_placeholder", "native_image_source", "native_font_family", "native_fonts", "text", "value", "pending_value" }) |field_name| {
-            if (@field(self, field_name)) |value| @field(cloned, field_name) = try allocator.dupe(u8, value);
+        inline for (comptime std.meta.tags(render.TextField)) |field| {
+            if (@field(self, @tagName(field))) |value| @field(cloned, @tagName(field)) = try allocator.dupe(u8, value);
         }
+        if (self.pending_value) |value| cloned.pending_value = try allocator.dupe(u8, value);
         try cloned.children.appendSlice(allocator, self.children.items);
         try cloned.attrs.ensureTotalCapacity(allocator, self.attrs.items.len);
         for (self.attrs.items) |attr| {
