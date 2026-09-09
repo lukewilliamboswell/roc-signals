@@ -22,6 +22,7 @@ HOST_FILES = {
 }
 SOURCE_PATHS = (
     "src", "crates", "platform-gui", "platform-shared", "scripts", ".cargo",
+    "dependencies/gui-host-notices",
     ".github/actions/setup-toolchain", ".github/workflows/gui-hosts.yml",
     "build.zig", "build.zig.zon", "Cargo.toml", "Cargo.lock", "dependencies.lock.json", "LICENSE",
     ".gitattributes", ".gitignore",

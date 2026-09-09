@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -14,6 +15,24 @@ import rust_license_inventory as inventory
 
 
 class RustLicenseInventoryTests(unittest.TestCase):
+    def test_checked_in_notices_match_the_reviewed_hashes_and_locked_crates(self):
+        root = Path(__file__).resolve().parents[1]
+        directory = root / "dependencies/gui-host-notices"
+        manifest = json.loads((directory / "manifest.json").read_text())
+        locked = {p["name"] + "@" + p["version"]: p.get("checksum")
+                  for p in tomllib.loads((root / "Cargo.lock").read_text())["package"]}
+        referenced = set()
+        for identity, record in manifest["packages"].items():
+            with self.subTest(package=identity):
+                self.assertEqual(record["crate_sha256"], locked[identity])
+                for notice in record["notices"]:
+                    path = directory / notice["path"]
+                    self.assertFalse(path.is_symlink())
+                    self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), notice["sha256"])
+                    self.assertIn("/" + record["source_revision"] + "/", notice["source_url"])
+                    referenced.add(path.resolve())
+        self.assertEqual(referenced, {p.resolve() for p in (directory / "texts").iterdir()})
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -80,6 +99,23 @@ class RustLicenseInventoryTests(unittest.TestCase):
         output.mkdir()
         with self.assertRaises(FileExistsError):
             inventory.collect(self.about, self.lock, self.root, output)
+
+    def test_upstream_notice_requires_both_crate_hash_and_original_revision(self):
+        text = b"actual upstream notice"
+        (self.root / "LICENSE").write_bytes(text)
+        record = {"crate_sha256": "a" * 64, "source_revision": "b" * 40,
+                  "notices": [{"path": "LICENSE", "sha256": hashlib.sha256(text).hexdigest(),
+                               "source_url": "https://example.invalid/revision/LICENSE"}]}
+        vcs = {"git": {"sha1": "b" * 40}}
+        self.assertEqual(inventory.upstream_notices(record, "a" * 64, vcs, self.root), {"LICENSE": text})
+        for checksum, revision in (("c" * 64, vcs), ("a" * 64, None),
+                                   ("a" * 64, {"git": {"sha1": "c" * 40}})):
+            with self.subTest(checksum=checksum, revision=revision):
+                with self.assertRaisesRegex(ValueError, "published crate revision"):
+                    inventory.upstream_notices(record, checksum, revision, self.root)
+        (self.root / "LICENSE").write_bytes(b"modified")
+        with self.assertRaisesRegex(ValueError, "reviewed hash"):
+            inventory.upstream_notices(record, "a" * 64, vcs, self.root)
 
 
 if __name__ == "__main__":

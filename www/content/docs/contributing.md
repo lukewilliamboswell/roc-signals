@@ -372,12 +372,15 @@ report. It checks each archive against `Cargo.lock`, preserves the publisher's
 manifest separately, and reports packages without standalone notice files:
 
 ```sh
-python3 scripts/rust_license_inventory.py --about /tmp/host-about.json --lock Cargo.lock --cache /path/to/cargo/registry/cache --output /tmp/host-notices
+python3 scripts/rust_license_inventory.py --about /tmp/host-about.json --lock Cargo.lock --cache /path/to/cargo/registry/cache --supplements dependencies/gui-host-notices/manifest.json --output /tmp/host-notices
 python3 -m unittest scripts/test_rust_license_inventory.py
 ```
 
 The cache argument names the directory containing the downloaded `.crate`
-archives. The report determines the selected package set; this collector does
+archives. Supplements preserve original upstream notice files and are admitted
+only when their crate hash and Git revision match the published archive. Their
+own bytes are checked against the reviewed manifest. The report determines the
+selected package set; this collector does
 not establish that the selection covers a host binary, resolve missing upstream
 notices, or account for toolchain runtime notices. Its inventory is review
 evidence, not permission to publish an incomplete host package.

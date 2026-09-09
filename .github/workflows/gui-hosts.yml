@@ -9,6 +9,9 @@ on:
       - .github/workflows/gui-hosts.yml
       - scripts/gui_host_artifacts.py
       - scripts/test_gui_host_artifacts.py
+      - scripts/rust_license_inventory.py
+      - scripts/test_rust_license_inventory.py
+      - dependencies/gui-host-notices/**
       - scripts/release_dependencies.py
       - scripts/dependency_artifacts.py
       - scripts/dependency_archive.py
@@ -54,7 +57,9 @@ jobs:
           python-version: '3.12'
       - uses: ./.github/actions/setup-toolchain
       - name: Check host archive admission
-        run: python -m unittest discover -s scripts -p test_gui_host_artifacts.py
+        run: |
+          python -m unittest discover -s scripts -p test_gui_host_artifacts.py
+          python -m unittest discover -s scripts -p test_rust_license_inventory.py
       - name: Install GUI host build dependencies
         shell: bash
         run: |

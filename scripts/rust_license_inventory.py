@@ -56,10 +56,36 @@ def crate_notices(archive, package, expected_sha):
         declarations = {"Cargo.toml": manifest_bytes}
         if "Cargo.toml.orig" in files:
             declarations["Cargo.toml.orig"] = packed.extractfile(files["Cargo.toml.orig"]).read()
-    return manifest, notices, declarations
+        vcs = (json.load(packed.extractfile(files[".cargo_vcs_info.json"]))
+               if ".cargo_vcs_info.json" in files else None)
+    return manifest, notices, declarations, vcs
 
 
-def collect(about, lock, cache, destination):
+def upstream_notices(record, checksum, vcs, directory):
+    """Accept local upstream notices only for the original published revision."""
+    if (record["crate_sha256"] != checksum or not vcs or
+            record["source_revision"] != vcs.get("git", {}).get("sha1")):
+        raise ValueError("upstream notice does not match the published crate revision")
+    notices = {}
+    for notice in record["notices"]:
+        path = PurePosixPath(notice["path"])
+        if path.is_absolute() or ".." in path.parts or str(path) != notice["path"] or "\\" in str(path):
+            raise ValueError("unsafe upstream notice path")
+        source = directory / path
+        if source.is_symlink() or not source.is_file() or not source.resolve().is_relative_to(directory.resolve()):
+            raise ValueError("invalid upstream notice file")
+        data = source.read_bytes()
+        if hashlib.sha256(data).hexdigest() != notice["sha256"]:
+            raise ValueError("upstream notice differs from its reviewed hash")
+        if notice["path"] in notices:
+            raise ValueError("duplicate upstream notice")
+        notices[notice["path"]] = data
+    if not notices:
+        raise ValueError("empty upstream notice record")
+    return notices
+
+
+def collect(about, lock, cache, destination, supplements=None):
     """Publish a complete inventory atomically; any unknown identity stops it."""
     if destination.exists():
         raise FileExistsError(destination)
@@ -68,6 +94,10 @@ def collect(about, lock, cache, destination):
               for p in tomllib.loads(locked_bytes.decode())["package"]}
     report_bytes = about.read_bytes()
     report = json.loads(report_bytes)
+    supplement_bytes = supplements.read_bytes() if supplements else None
+    supplemental = json.loads(supplement_bytes) if supplements else {"schema_version": 1, "packages": {}}
+    if supplemental["schema_version"] != 1:
+        raise ValueError("unsupported upstream notice manifest")
     records = []
     own_packages = []
     seen = set()
@@ -93,11 +123,15 @@ def collect(about, lock, cache, destination):
                 raise ValueError("selected crate has no supported Cargo.lock identity")
             stem = package["name"] + "-" + package["version"]
             archive = cache / (stem + ".crate")
-            manifest, notices, declarations = crate_notices(archive, package, locked[identity])
+            manifest, notices, declarations, vcs = crate_notices(archive, package, locked[identity])
+            upstream = supplemental["packages"].get(package["name"] + "@" + package["version"])
+            extra = upstream_notices(upstream, locked[identity], vcs, supplements.parent) if upstream else {}
             record = {"name": package["name"], "version": package["version"],
                       "crate_sha256": locked[identity], "declared_license": manifest.get("license"),
-                      "authors": manifest.get("authors", []), "notice_files": {}, "declaration_files": {}}
-            for category, payload in (("notice_files", notices), ("declaration_files", declarations)):
+                      "authors": manifest.get("authors", []), "notice_files": {}, "declaration_files": {},
+                      "upstream_notice_files": {}, "upstream_provenance": upstream}
+            for category, payload in (("notice_files", notices), ("declaration_files", declarations),
+                                      ("upstream_notice_files", extra)):
                 for name, data in sorted(payload.items()):
                     relative = Path("crates") / stem / category / name
                     output = stage / relative
@@ -111,7 +145,9 @@ def collect(about, lock, cache, destination):
                      "about_report_sha256": hashlib.sha256(report_bytes).hexdigest(),
                      "packages": sorted(records, key=lambda p: (p["name"], p["version"])),
                      "workspace_packages": own_packages,
-                     "missing_notice_files": sorted(p["name"] + "@" + p["version"] for p in records if not p["notice_files"])}
+                     "supplements_sha256": hashlib.sha256(supplement_bytes).hexdigest() if supplements else None,
+                     "missing_notice_files": sorted(p["name"] + "@" + p["version"] for p in records
+                                                    if not p["notice_files"] and not p["upstream_notice_files"])}
         (stage / "inventory.json").write_text(json.dumps(inventory, indent=2) + "\n")
         stage.rename(destination)
     return inventory
@@ -123,6 +159,7 @@ if __name__ == "__main__":
     parser.add_argument("--lock", type=Path, required=True)
     parser.add_argument("--cache", type=Path, required=True, help="Cargo registry archive cache directory")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--supplements", type=Path, help="Reviewed, revision-bound upstream notice manifest")
     args = parser.parse_args()
-    result = collect(args.about, args.lock, args.cache, args.output)
+    result = collect(args.about, args.lock, args.cache, args.output, args.supplements)
     print(f"Verified {len(result['packages'])} crate archives; {len(result['missing_notice_files'])} lack notice files")
