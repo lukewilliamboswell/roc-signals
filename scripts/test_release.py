@@ -125,6 +125,19 @@ class ReleaseTests(unittest.TestCase):
     def test_selected_roots_cover_both_platforms_and_every_example(self):
         self.assertEqual(toolchain.validate_roots(), toolchain.development_pin())
 
+    def test_compiler_pin_reads_do_not_depend_on_windows_locale(self):
+        original = Path.read_text
+        def windows_read(path, *args, **kwargs):
+            kwargs.setdefault("encoding", "cp1252")
+            return original(path, *args, **kwargs)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "main.roc"
+            source.write_text('app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "local" }\nmain = "А"', encoding="utf-8")
+            with patch.object(Path, "read_text", windows_read):
+                self.assertEqual(toolchain.read_pin(source), "nightly-2026-09-04-c125b82")
+                self.assertIn('"А"', toolchain.local_sources(root, ["main.roc"])["main.roc"])
+
     def test_new_example_requires_a_pin_and_updater_registration(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

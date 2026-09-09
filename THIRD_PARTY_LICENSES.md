@@ -11,6 +11,7 @@ The compiler-header parser is vendored from
 https://github.com/lukewilliamboswell/roc-automation and licensed under the
 Universal Permissive License, Version 1.0. See
 [`vendor/roc-automation-LICENSE`](vendor/roc-automation-LICENSE) for its full text.
+The local copy explicitly decodes header files as UTF-8 on every operating system.
 
 ## musl libc
 
