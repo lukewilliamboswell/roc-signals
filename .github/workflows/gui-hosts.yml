@@ -78,6 +78,7 @@ jobs:
 
   publish:
     name: Attest and release
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'lukewilliamboswell/roc-signals'
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -101,7 +102,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          case "$RELEASE_TAG" in gui-hosts-*) ;; *) echo "release_tag must start with gui-hosts-"; exit 1;; esac
+          if [[ ! "$RELEASE_TAG" =~ ^gui-hosts-[0-9][A-Za-z0-9.-]*$ ]]; then
+            echo "release_tag must be a new gui-hosts-<version> identity"
+            exit 1
+          fi
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" --jq ".[] | select(.ref == \"refs/tags/$RELEASE_TAG\") | .ref")
+          if [ -n "$existing" ]; then
+            echo "tag already exists; inspect and recover the original publication"
+            exit 1
+          fi
+          for archive in "$RUNNER_TEMP"/link-inputs/*.tar; do
+            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/gui-hosts.yml" \
+              --source-digest "$GITHUB_SHA" --source-ref refs/heads/main --deny-self-hosted-runners
+          done
           gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "GUI host link inputs $RELEASE_TAG" \
-            --notes "Prebuilt app-independent GUI link inputs for platform-gui, built from $GITHUB_SHA. Verify with: gh attestation verify <file> --repo $GITHUB_REPOSITORY" \
+            --latest=false \
+            --notes "Prebuilt app-independent GUI link inputs for platform-gui, built from $GITHUB_SHA. Verify with: gh attestation verify <file> --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/gui-hosts.yml --source-digest $GITHUB_SHA --source-ref refs/heads/main --deny-self-hosted-runners" \
             "$RUNNER_TEMP"/link-inputs/*.tar "$RUNNER_TEMP"/link-inputs/*.sha256
