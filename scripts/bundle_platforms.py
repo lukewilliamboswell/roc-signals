@@ -90,8 +90,7 @@ def validate_gui_link_inputs(tree):
     required = []
     if (tree / "x64glibc").is_dir():
         names = ("crt1.o", "crti.o", "crtn.o", "libfreetype.so", "libxkbcommon.so",
-                 "libxkbcommon-x11.so", "libgcc_s.so", "libutil.so", "librt.so",
-                 "libpthread.so", "libm.so", "libdl.so", "libc.so")
+                 "libxkbcommon-x11.so", "libgcc_s.so", "libm.so", "libc.so")
         required.extend(tree / "x64glibc" / name for name in names)
     if (tree / "x64win").is_dir():
         required.extend(tree / "x64win" / name for name in ("signals.res", "advapi32.lib"))
@@ -216,9 +215,10 @@ def main():
                     windows_targets.append(tree / 'x64win')
                 hosts += [(tree, p) for p in tree.rglob('*')
                           if p.is_file() and p.relative_to(tree).parts[0] != 'x64win'
-                          and p.relative_to(tree).as_posix() != 'x64glibc/libfreetype.so'
-                          and p.relative_to(tree).as_posix() not in
-                          {'x64glibc/' + name for name in XKBCOMMON_LIBRARIES}
+                          and p.relative_to(tree).as_posix() not in {
+                              'x64glibc/libfreetype.so', 'x64glibc/libutil.so', 'x64glibc/librt.so',
+                              'x64glibc/libpthread.so', 'x64glibc/libdl.so',
+                              *('x64glibc/' + name for name in XKBCOMMON_LIBRARIES)}
                           and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json', '.tbd'}]
             if package == 'gui' and not hosts and not windows_targets:
                 raise SystemExit(f'No {package} hosts found; run without --no-build.')

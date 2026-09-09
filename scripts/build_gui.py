@@ -128,7 +128,7 @@ def build(debug=False, jobs=2):
     # Their SONAMEs retain runtime dependencies on the system's shared libraries.
     cache = subprocess.check_output(['/sbin/ldconfig', '-p'], text=True)
     provenance = {'dependencies': linux_dependencies}
-    for name in ['gcc_s', 'util', 'rt', 'pthread', 'm', 'dl', 'c']:
+    for name in ['gcc_s', 'm', 'c']:
         prefix = 'lib' + name + '.so.'
         matches = [line.split('=>')[1].strip() for line in cache.splitlines()
                    if line.strip().startswith(prefix) and 'x86-64' in line]

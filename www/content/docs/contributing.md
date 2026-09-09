@@ -301,6 +301,10 @@ outstanding.
 The artifact preserves FreeType's system SONAME; applications still use the operating
 system's runtime font libraries. The C compiler is Zig 0.16.0, targeting baseline
 x86-64 and glibc 2.39; the separate Roc compiler pin is preserved.
+The Linux link list omits the legacy `libutil`, `librt`, `libpthread`, and
+`libdl` compatibility libraries. The supported glibc provides the required
+symbols through libc; both native application specs and rendering smoke tests
+exercise this link list. xkbcommon and its X11 library remain required inputs.
 See `dependencies/README.md` for the input and
 runtime boundaries.
 
