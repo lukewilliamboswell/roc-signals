@@ -132,7 +132,9 @@ def main():
     for package in packages:
         package_out = output / package if args.package == 'all' else output
         package_out.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix='signals-bundle-') as tmp:
+        # Roc publishes its cwd-local temporary archive with rename. Keep the
+        # source staging tree on the output filesystem (upstream bug 14).
+        with tempfile.TemporaryDirectory(prefix='.signals-bundle-', dir=package_out) as tmp:
             stage = Path(tmp)
             source = ROOT / ('platform-' + package)
             prepare_platform(source, stage)

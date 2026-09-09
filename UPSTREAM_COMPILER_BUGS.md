@@ -21,6 +21,7 @@ export ROC_BIN=/path/to/pinned-roc/roc
 | 3 | markdown-editor traps with `unreachable` in the browser | [#10959](https://github.com/roc-lang/roc/issues/10959) | — | yes |
 | 11 | Native GPUI sample cannot link as Shared or PIE | not filed | `examples-gui/keyed-rows/` | normal Roc executable linkage |
 | 10 | Unit-state capability callbacks produce invalid dev Wasm | not filed | `repro/unit-state-wasm-dev/` | no; size backend validates |
+| 14 | `roc bundle --output-dir` fails across filesystems | not filed | commands below | stage on the output filesystem |
 
 For #1, camelCase field names longer than ten bytes are corrupted on wasm32 at
 byte four, while native is unaffected; `favoritesCount` exposed it. For #2, the
@@ -112,3 +113,21 @@ The original build-time assembly introduced no Roc alias, altered value layout,
 or semantic fallback. The later nested `shared/` layout also encounters hosted
 declaration lookup and re-export failures and is not yet validated. Revisit direct package
 re-exports after the compiler supports this source layout.
+
+## 14. Bundle output on another filesystem fails with CrossDevice
+
+With `nightly-2026-09-04-c125b82`, `roc bundle` creates its temporary archive
+under the current directory and renames it into `--output-dir`. When those
+directories are on different filesystems, it fails with `CrossDevice` instead
+of completing the bundle. Windows CI reproduced this with Python's temporary
+directory on C: and the requested output under `RUNNER_TEMP` on D:.
+
+To reproduce, create a directory on each of two filesystems, put `README.md`
+in the first, then run `roc bundle README.md --output-dir <second-directory>`
+from the first. No platform host or Roc application is needed. On Linux,
+`/dev/shm` and `/tmp` can provide the two filesystems when they have different
+device IDs.
+
+`scripts/bundle_platforms.py` stages inputs in a private temporary directory
+inside the requested output directory. The compiler's final rename then stays
+on one filesystem; this does not rebuild, rewrite, or replace a tested archive.
