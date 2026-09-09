@@ -15,7 +15,8 @@ from build_gui import build as build_gui
 from prepare_platforms import prepare_platform
 from gui_suite import examples as gui_examples
 from prepare_dependencies import (verified_web_dependencies, WEB_ARTIFACTS,
-                                  verified_windows_imports, WINDOWS_IMPORTS)
+                                  verified_windows_imports, WINDOWS_IMPORTS,
+                                  verified_freetype, FREETYPE)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -41,6 +42,14 @@ def stage_web_inputs(source, stage):
 
 
 def stage_dependency_inputs(inputs, identities, stage):
+    receipt = json.loads((inputs / "dependencies.lock.json").read_text())
+    receipt_path = stage / "dependencies.lock.json"
+    if receipt_path.exists():
+        existing = json.loads(receipt_path.read_text())
+        for identity, entry in existing["artifacts"].items():
+            if identity in receipt["artifacts"] and receipt["artifacts"][identity] != entry:
+                raise ValueError(f"conflicting dependency receipt: {identity}")
+            receipt["artifacts"][identity] = entry
     for identity in identities:
         for path in (inputs / identity).rglob("*"):
             if not path.is_file():
@@ -55,7 +64,7 @@ def stage_dependency_inputs(inputs, identities, stage):
                     raise ValueError(f"conflicting dependency input: {relative}")
             else:
                 shutil.copyfile(path, destination)
-    shutil.copyfile(inputs / "dependencies.lock.json", stage / "dependencies.lock.json")
+    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
 
 
 def validate_gui_archives(tree):
@@ -167,6 +176,7 @@ def main():
                     windows_targets.append(tree / 'x64win')
                 hosts += [(tree, p) for p in tree.rglob('*')
                           if p.is_file() and p.relative_to(tree).parts[0] != 'x64win'
+                          and p.relative_to(tree).as_posix() != 'x64glibc/libfreetype.so'
                           and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json', '.tbd'}]
             if package == 'gui' and not hosts and not windows_targets:
                 raise SystemExit(f'No {package} hosts found; run without --no-build.')
@@ -178,6 +188,9 @@ def main():
                 raise ValueError('select one Windows host tree; overlapping local/prebuilt hosts are ambiguous')
             if windows_targets:
                 stage_windows_inputs(windows_targets[0], stage)
+            if any((tree / 'x64glibc').is_dir() for tree in trees):
+                with verified_freetype() as inputs:
+                    stage_dependency_inputs(inputs, (FREETYPE,), stage)
             for name in ['LICENSE', 'THIRD_PARTY_LICENSES.md']:
                 if (ROOT / name).is_file():
                     shutil.copyfile(ROOT / name, stage / name)

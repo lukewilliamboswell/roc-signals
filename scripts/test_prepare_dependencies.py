@@ -17,6 +17,42 @@ import prepare_dependencies
 
 
 class DependencyStagingTests(unittest.TestCase):
+    def test_bundle_merges_dependency_receipts_and_rejects_conflicting_identity(self):
+        stage = self.root / "combined"
+        stage.mkdir()
+        for identity in ("freetype-x64glibc", "windows-imports-x64win"):
+            (self.inputs / identity).mkdir()
+            (self.inputs / "dependencies.lock.json").write_text(json.dumps({
+                "schema_version": 1, "artifacts": {identity: {"sha256": identity}},
+            }))
+            bundle_platforms.stage_dependency_inputs(self.inputs, (identity,), stage)
+        receipt = json.loads((stage / "dependencies.lock.json").read_text())
+        self.assertEqual(set(receipt["artifacts"]), {"freetype-x64glibc", "windows-imports-x64win"})
+        original = (stage / "dependencies.lock.json").read_bytes()
+        (self.inputs / "dependencies.lock.json").write_text(json.dumps({
+            "schema_version": 1, "artifacts": {"freetype-x64glibc": {"sha256": "different"}},
+        }))
+        with self.assertRaisesRegex(ValueError, "conflicting dependency receipt"):
+            bundle_platforms.stage_dependency_inputs(self.inputs, ("freetype-x64glibc",), stage)
+        self.assertEqual((stage / "dependencies.lock.json").read_bytes(), original)
+
+    def test_freetype_verification_failure_preserves_existing_input_and_prevents_build(self):
+        destination = self.root / "linux"
+        destination.mkdir()
+        library = destination / "libfreetype.so"
+        library.write_bytes(b"previous verified bytes")
+        with patch.object(prepare_dependencies, "verified_freetype", side_effect=ValueError("untrusted signer")):
+            with self.assertRaisesRegex(ValueError, "untrusted signer"):
+                prepare_dependencies.install_freetype(destination)
+        self.assertEqual(library.read_bytes(), b"previous verified bytes")
+        self.assertEqual(list(destination.iterdir()), [library])
+        with patch.object(build_gui, "host_target", return_value="x64glibc"), patch.object(
+                build_gui, "install_freetype", side_effect=ValueError("untrusted signer")), patch.object(
+                build_gui.subprocess, "run") as compiler:
+            with self.assertRaisesRegex(ValueError, "untrusted signer"):
+                build_gui.build()
+        compiler.assert_not_called()
+
     def test_windows_checkout_preserves_vendored_upstream_bytes(self):
         source = prepare_dependencies.ROOT / "vendor/unicode"
         inventory = json.loads((source / "upstream.json").read_bytes())["files_sha256"]
@@ -44,7 +80,7 @@ class DependencyStagingTests(unittest.TestCase):
         self.source = self.root / "platform"
         self.inputs = self.root / "verified"
         self.inputs.mkdir()
-        (self.inputs / "dependencies.lock.json").write_text("locked")
+        (self.inputs / "dependencies.lock.json").write_text(json.dumps({"schema_version": 1, "artifacts": {}}))
         for target in ("x64mac", "arm64mac", "x64musl", "arm64musl", "wasm32"):
             directory = self.source / "targets" / target
             directory.mkdir(parents=True)
@@ -73,7 +109,8 @@ class DependencyStagingTests(unittest.TestCase):
             bundle_platforms.stage_web_inputs(self.source, stage)
         self.assertEqual((stage / "targets/x64musl/libc.a").read_bytes(), b"verified libc")
         self.assertFalse((stage / "targets/x64mac/unexpected.a").exists())
-        self.assertEqual((stage / "dependencies.lock.json").read_text(), "locked")
+        self.assertEqual(json.loads((stage / "dependencies.lock.json").read_text()),
+                         {"schema_version": 1, "artifacts": {}})
         self.assertEqual((stage / "dependency-manifests/musl-arm64musl.json").read_text(), "arm64musl")
 
     def test_missing_host_is_not_replaced_with_a_dependency_artifact(self):

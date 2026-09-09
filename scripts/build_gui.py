@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tempfile
 
-from prepare_dependencies import install_windows_imports
+from prepare_dependencies import install_windows_imports, install_freetype
 
 ROOT = Path(__file__).resolve().parent.parent
 MACOS_FRAMEWORKS = ('AppKit', 'ApplicationServices', 'Carbon', 'CoreFoundation',
@@ -82,6 +82,8 @@ def build(debug=False, jobs=2):
         raise SystemExit('GUI build jobs must be positive.')
     windows_dependencies = (install_windows_imports(ROOT / 'platform-gui/targets/x64win')
                             if target == 'x64win' else None)
+    linux_dependencies = (install_freetype(ROOT / 'platform-gui/targets/x64glibc')
+                          if target == 'x64glibc' else None)
     subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
     subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, env=build_environment(), check=True)
     dest = ROOT / 'platform-gui/targets' / target
@@ -122,8 +124,8 @@ def build(debug=False, jobs=2):
     # Copy ELF inputs, not development linker scripts with machine-local paths.
     # Their SONAMEs retain runtime dependencies on the system's shared libraries.
     cache = subprocess.check_output(['/sbin/ldconfig', '-p'], text=True)
-    provenance = {}
-    for name in ['freetype', 'xkbcommon', 'xkbcommon-x11', 'gcc_s', 'util', 'rt', 'pthread', 'm', 'dl', 'c']:
+    provenance = {'dependencies': linux_dependencies}
+    for name in ['xkbcommon', 'xkbcommon-x11', 'gcc_s', 'util', 'rt', 'pthread', 'm', 'dl', 'c']:
         prefix = 'lib' + name + '.so.'
         matches = [line.split('=>')[1].strip() for line in cache.splitlines()
                    if line.strip().startswith(prefix) and 'x86-64' in line]
