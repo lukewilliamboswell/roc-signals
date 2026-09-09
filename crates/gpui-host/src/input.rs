@@ -5,7 +5,7 @@ use std::{ops::Range, rc::Rc};
 
 use gpui::{
     App, Application, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, Keystroke,
+    Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, Hsla, KeyBinding, Keystroke,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
     ScrollHandle, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
     WindowBounds, WindowOptions, actions, black, div, fill, hsla, opaque_grey, point, prelude::*,
@@ -145,6 +145,7 @@ pub struct TextInput {
     multiline: bool,
     fill_height: bool,
     disabled: bool,
+    style_foreground: Option<u32>,
     last_layout: Option<TextLayout>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
@@ -178,6 +179,7 @@ impl TextInput {
             multiline: false,
             fill_height: false,
             disabled: false,
+            style_foreground: None,
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
@@ -209,6 +211,34 @@ impl TextInput {
             self.placeholder = placeholder.to_owned().into();
             cx.notify();
         }
+    }
+
+    /// Applies the element's explicit style foreground, or None for the host
+    /// default. The cursor and the selection highlight tint follow it, so a
+    /// themed editor's caret contrasts with the themed field background.
+    pub fn set_style_foreground(&mut self, foreground: Option<u32>, cx: &mut Context<Self>) {
+        if self.style_foreground != foreground {
+            self.style_foreground = foreground;
+            cx.notify();
+        }
+    }
+
+    /// The cursor color: the explicit style foreground, or the host accent.
+    fn cursor_color(&self) -> Hsla {
+        self.style_foreground
+            .map_or(rgb(0x70c5e8), gpui::rgb)
+            .into()
+    }
+
+    /// The selection highlight: the cursor color at low alpha, so selected
+    /// text keeps its contrast against the tint.
+    fn selection_color(&self) -> Hsla {
+        rgba(self.style_foreground.map_or(0x70c5e845, |foreground| (foreground << 8) | 0x45)).into()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn style_foreground_for_test(&self) -> Option<u32> {
+        self.style_foreground
     }
 
     /// Uses the field's allocated height without recreating its editor. Auto
@@ -926,8 +956,11 @@ fn shape_layout(
         let run = TextRun {
             len: text.len(),
             font: text_style.font(),
+            // The placeholder derives from the effective foreground rather
+            // than a fixed white, so a light-background editor keeps a
+            // legible dark hint.
             color: if placeholder {
-                hsla(0., 0., 1., 0.55)
+                text_style.color.opacity(0.55)
             } else {
                 text_style.color
             },
@@ -1151,7 +1184,7 @@ impl Element for TextElement {
                             point(bounds.left() + x, top),
                             size(px(2.), layout.line_height),
                         ),
-                        gpui::rgb(0x70c5e8),
+                        input.cursor_color(),
                     ));
                 }
             } else if selected.start <= line.range.end && selected.end > line.range.start {
@@ -1169,7 +1202,7 @@ impl Element for TextElement {
                         point(bounds.left() + start_x, top),
                         size(end_x - start_x, layout.line_height),
                     ),
-                    rgba(0x70c5e845),
+                    input.selection_color(),
                 ));
             }
         }
@@ -1272,10 +1305,10 @@ impl Render for TextInput {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            // Text color, size, and line height are inherited from the host's
+            // editor-field wrapper, which resolves them from the element's
+            // style record (with the previous constants as defaults).
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .line_height(px(30.))
-            .text_size(px(16.))
-            .text_color(rgb(0xeaf0f3))
             .child(TextElement { input: cx.entity() });
         crate::scrollbars::wrap(content, self.scroll.clone(), self.scrollbars.clone())
     }

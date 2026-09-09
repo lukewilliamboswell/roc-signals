@@ -56,6 +56,7 @@ impl NodeView {
                 input::TextInput::new(node.value.clone(), callback, cx)
             };
             input.set_placeholder(&node.placeholder, cx);
+            input.set_style_foreground(editor_style_foreground(node.style), cx);
             input
         }))
     }
@@ -241,13 +242,19 @@ impl Render for NodeView {
                         .child(self.node.label.clone()),
                 );
             }
+            let chrome = editor_field_chrome(self.node.style);
             element = element.child(
                 div()
-                    .bg(rgb(0x0f1b21))
-                    .text_color(rgb(0xeaf0f3))
+                    .bg(rgb(chrome.background))
+                    .text_color(rgb(chrome.foreground))
+                    .text_size(px(chrome.font_size))
+                    .line_height(px(chrome.font_size * 1.875))
                     .border_1()
-                    .border_color(rgb(0x3a4f5c))
-                    .rounded_md()
+                    .border_color(rgb(chrome.border))
+                    .map(|element| match chrome.radius {
+                        Some(radius) => element.rounded(px(radius)),
+                        None => element.rounded_md(),
+                    })
                     .p_2()
                     .when(constrained, |element| {
                         element.flex().flex_col().flex_1().min_h_0()
@@ -364,6 +371,51 @@ impl NodeView {
             })
             .unwrap_or(1)
     }
+}
+
+/// Chrome for the retained editor field inside an input or textarea element.
+struct EditorFieldChrome {
+    background: u32,
+    foreground: u32,
+    border: u32,
+    /// None keeps the host's standard medium rounding; a zero radius is not
+    /// expressible, exactly as font size zero means inherit.
+    radius: Option<f32>,
+    font_size: f32,
+}
+
+/// Resolves the element's style record into the editor field. Explicit
+/// background, foreground, and border colors replace the host's dark
+/// defaults; a nonzero radius and font size replace the standard rounding
+/// and 16-pixel editor text (line height stays proportional at 1.875x).
+/// Every field at its sentinel keeps today's exact chrome. The foreground
+/// also drives the placeholder at reduced alpha and the cursor and
+/// selection tint, so a light-background editor stays legible throughout.
+fn editor_field_chrome(style: Option<bridge::Style>) -> EditorFieldChrome {
+    let color = |explicit: Option<u32>, default: u32| {
+        explicit
+            .filter(|color| *color <= 0xffffff)
+            .unwrap_or(default)
+    };
+    EditorFieldChrome {
+        background: color(style.map(|style| style.background), 0x0f1b21),
+        foreground: color(style.map(|style| style.foreground), 0xeaf0f3),
+        border: color(style.map(|style| style.border_color), 0x3a4f5c),
+        radius: style
+            .filter(|style| style.radius != 0)
+            .map(|style| style.radius as f32),
+        font_size: style
+            .filter(|style| style.font_size != 0)
+            .map_or(16., |style| style.font_size as f32),
+    }
+}
+
+/// The explicit style foreground, if any, for the editor's cursor and
+/// selection tint; the inherit sentinel keeps the host's accent constants.
+fn editor_style_foreground(style: Option<bridge::Style>) -> Option<u32> {
+    style
+        .map(|style| style.foreground)
+        .filter(|color| *color <= 0xffffff)
 }
 
 /// Resolves an enabled button's hover and active backgrounds. An explicit
@@ -695,6 +747,7 @@ impl Runtime {
                     input.update(cx, |input, cx| {
                         input.set_value(&node.value, cx);
                         input.set_placeholder(&node.placeholder, cx);
+                        input.set_style_foreground(editor_style_foreground(node.style), cx);
                         input.set_disabled(node.disabled, cx);
                         input.set_fill_height(
                             node.kind == ControlKind::Textarea
@@ -1905,6 +1958,86 @@ mod tests {
         let auto = original.read_with(cx, |input, _| input.viewport_bounds_for_test());
         assert_eq!(auto.size.height, px(320.));
         assert!(Engine::take_test_event().is_none());
+    }
+
+    #[gpui::test]
+    fn styled_editor_field_reflects_the_elements_style_record(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                // A light theme: dark text on a white field.
+                let style = bridge::Style {
+                    background: 0xffffff,
+                    foreground: 0x1b2d36,
+                    border_color: 0xc3ced4,
+                    radius: 10,
+                    font_size: 18,
+                    hover_background: 0x1000000,
+                    active_background: 0x1000000,
+                    ..Default::default()
+                };
+                let mut editor = node(1, "textarea", &[]);
+                editor.input = 42;
+                editor.style = Some(style);
+                runtime.apply(vec![node(0, "root", &[1]), editor], cx);
+                let chrome = super::editor_field_chrome(Some(style));
+                assert_eq!(chrome.background, 0xffffff);
+                assert_eq!(chrome.foreground, 0x1b2d36);
+                assert_eq!(chrome.border, 0xc3ced4);
+                assert_eq!(chrome.radius, Some(10.));
+                assert_eq!(chrome.font_size, 18.);
+                // The retained editor tints its cursor and selection from the
+                // explicit foreground, and the placeholder derives from the
+                // effective text color at reduced alpha in shape_layout.
+                let input = runtime.nodes[&1].read(cx).input.clone().unwrap();
+                assert_eq!(input.read(cx).style_foreground_for_test(), Some(0x1b2d36));
+                // Restyling the same element re-resolves without recreating it.
+                let mut restyled = runtime.nodes[&1].read(cx).node.clone();
+                restyled.style.as_mut().unwrap().foreground = 0x1000000;
+                runtime.apply(vec![restyled], cx);
+                let unchanged = runtime.nodes[&1].read(cx).input.clone().unwrap();
+                assert_eq!(unchanged.entity_id(), input.entity_id());
+                assert_eq!(unchanged.read(cx).style_foreground_for_test(), None);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn unstyled_editor_field_keeps_the_host_default_chrome(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                let mut field = node(1, "input", &[]);
+                field.input = 42;
+                // A style whose editor-relevant fields all sit at their
+                // sentinels resolves identically to no style at all.
+                let mut sized = node(2, "textarea", &[]);
+                sized.input = 43;
+                sized.style = Some(bridge::Style {
+                    height_kind: 2,
+                    height: 160,
+                    background: 0x1000000,
+                    hover_background: 0x1000000,
+                    active_background: 0x1000000,
+                    foreground: 0x1000000,
+                    border_color: 0x1000000,
+                    ..Default::default()
+                });
+                runtime.apply(vec![node(0, "root", &[1, 2]), field, sized.clone()], cx);
+                for style in [None, sized.style] {
+                    let chrome = super::editor_field_chrome(style);
+                    assert_eq!(chrome.background, 0x0f1b21);
+                    assert_eq!(chrome.foreground, 0xeaf0f3);
+                    assert_eq!(chrome.border, 0x3a4f5c);
+                    assert_eq!(chrome.radius, None);
+                    assert_eq!(chrome.font_size, 16.);
+                }
+                for id in [1, 2] {
+                    let input = runtime.nodes[&id].read(cx).input.clone().unwrap();
+                    assert_eq!(input.read(cx).style_foreground_for_test(), None);
+                }
+            });
+        });
     }
 
     #[gpui::test]
