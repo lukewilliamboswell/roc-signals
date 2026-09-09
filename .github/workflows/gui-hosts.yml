@@ -20,6 +20,7 @@ on:
       - scripts/test_toolchain_license_inventory.py
       - dependencies/gui-host-notices/**
       - scripts/release_dependencies.py
+      - scripts/release_gui_hosts.py
       - scripts/dependency_artifacts.py
       - scripts/dependency_archive.py
   workflow_dispatch:
@@ -172,4 +173,4 @@ jobs:
           IFS=',' read -ra targets <<< "$RELEASE_TARGETS"
           arguments=()
           for target in "${targets[@]}"; do arguments+=(--target "$target"); done
-          python3 scripts/release_dependencies.py --directory "$RUNNER_TEMP/link-inputs" --tag "$RELEASE_TAG" --kind gui-host "${arguments[@]}"
+          python3 scripts/release_gui_hosts.py --directory "$RUNNER_TEMP/link-inputs" --tag "$RELEASE_TAG" "${arguments[@]}"

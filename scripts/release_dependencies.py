@@ -50,16 +50,6 @@ KINDS = {
                   "licenses": ("LICENSE",), "workflow": "xkbcommon-dependencies.yml",
                   "inventory_error": "dependency release must include both tested xkbcommon libraries",
                   "validation": "The extracted candidate parsed and translated a self-contained keyboard map, and two clean builds produced identical archives."},
-    "gui-host": {"targets": ("x64glibc", "x64win"),
-                 "files_by_target": {
-                     "x64glibc": ("libsignals_gpui_host.a", "libengine.a"),
-                     "arm64mac": ("libsignals_gpui_host.a", "libengine.a"),
-                     "x64win": ("signals_gpui_host.lib", "engine.lib", "signals.res"),
-                 },
-                 "licenses": ("LICENSE", "LICENSE-GPUI", "NOTICE.md", "NOTICE.json", "third-party-notices.tar.xz"),
-                 "workflow": "gui-hosts.yml",
-                 "inventory_error": "host release must include both eligible hosts and their tested source companions",
-                 "validation": "Each extracted host candidate passed native GUI application specs with the pinned Roc compiler."},
     "musl": {"targets": ("x64musl", "arm64musl"), "files": ("libc.a", "crt1.o"),
              "licenses": ("COPYRIGHT",), "workflow": "dependencies.yml",
              "inventory_error": "dependency release must include both tested musl architectures",
@@ -76,12 +66,8 @@ KINDS = {
 }
 
 
-def prepare(directory, tag, environment, kind="musl", targets=None):
+def prepare(directory, tag, environment, kind="musl"):
     policy = KINDS[kind]
-    if targets is not None and (kind != "gui-host" or not targets or len(set(targets)) != len(targets)
-                                or not set(targets) <= set(policy["targets"])):
-        raise ValueError("explicit targets must select eligible GUI host targets exactly once")
-    selected = tuple(targets) if targets is not None else policy["targets"]
     if (environment.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
             or environment.get("GITHUB_REF") != "refs/heads/main"
             or environment.get("GITHUB_REPOSITORY") != REPOSITORY):
@@ -92,14 +78,12 @@ def prepare(directory, tag, environment, kind="musl", targets=None):
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if head != source:
         raise ValueError("dependency release checkout differs from tested source")
-    expected = {f"{kind}-{target}.tar" for target in selected}
-    if kind == "gui-host":
-        expected.update(f"gui-host-sources-{target}.tar" for target in selected)
+    expected = {f"{kind}-{target}.tar" for target in policy["targets"]}
     if {path.name for path in directory.glob("*.tar")} != expected:
         raise ValueError(policy["inventory_error"])
     artifacts = {}
     with tempfile.TemporaryDirectory(prefix="signals-release-dependencies-") as temporary:
-        for target in selected:
+        for target in policy["targets"]:
             archive = directory / f"{kind}-{target}.tar"
             entry = {
                 "name": kind, "target": target, "repository": REPOSITORY,
@@ -110,27 +94,11 @@ def prepare(directory, tag, environment, kind="musl", targets=None):
             }
             verify_archive(archive, entry)
             manifest = unpack_verified(archive, entry, Path(temporary) / target)
-            names = policy["files_by_target"][target] if "files_by_target" in policy else policy["files"]
-            required = {f"targets/{target}/{name}" for name in names}
+            required = {f"targets/{target}/{name}" for name in policy["files"]}
             required.update(f"licenses/{kind}/{name}" for name in policy["licenses"])
             required.update(policy.get("extra_files", ()))
             if set(manifest["files"]) != required:
                 raise ValueError(f"{kind} release has an incomplete or unexpected file set")
-            if kind == "gui-host":
-                from gui_host_artifacts import source_fingerprint, validate_host, validate_publication_notices
-                validate_host(Path(temporary) / target, target, source_fingerprint())
-                source_archive = directory / f"gui-host-sources-{target}.tar"
-                source_entry = dict(entry, name="gui-host-sources", asset=source_archive.name,
-                                    sha256=sha256(source_archive), size=source_archive.stat().st_size)
-                notice = json.loads((Path(temporary) / target / "licenses/gui-host/NOTICE.json").read_text())
-                if any(source_entry[k] != notice["source_companion"][k]
-                       for k in ("name", "target", "asset", "sha256", "size")):
-                    raise ValueError("host release source companion differs from the tested notice binding")
-                verify_archive(source_archive, source_entry)
-                sources = Path(temporary) / (target + "-sources")
-                unpack_verified(source_archive, source_entry, sources)
-                validate_publication_notices(Path(temporary) / target, sources)
-                artifacts[f"gui-host-sources-{target}"] = source_entry
             artifacts[f"{kind}-{target}"] = entry
     lock = directory / "dependencies.lock.json"
     with lock.open("x") as output:
@@ -139,8 +107,14 @@ def prepare(directory, tag, environment, kind="musl", targets=None):
     return source, [directory / name for name in sorted(expected)] + [lock]
 
 
-def publish(directory, tag, kind="musl", targets=None):
-    source, assets = prepare(directory, tag, os.environ, kind, targets)
+def publish(directory, tag, kind="musl"):
+    source, assets = prepare(directory, tag, os.environ, kind)
+    publish_assets(directory, tag, kind, source, assets, KINDS[kind]["validation"],
+                   "This release contains no platform host or application code.")
+
+
+def publish_assets(directory, tag, kind, source, assets, validation, scope):
+    """Publish already admitted artifacts without importing producer-specific code."""
     # The CLI refuses an existing release. Check tags too: --target alone does
     # not require a pre-existing tag to refer to the tested source.
     tags = json.loads(subprocess.check_output([
@@ -152,12 +126,11 @@ def publish(directory, tag, kind="musl", targets=None):
     notes.write_text(
         f"Dependency inputs built and tested from platform repository commit `{source}`.\n\n"
         "Each archive contains its upstream source identity, build recipe identity, exact file hashes, "
-        "and copyright notices. " + KINDS[kind]["validation"] + " "
+        "and copyright notices. " + validation + " "
         "GitHub build attestations bind the archive digests to the producer.\n\n"
         "Review and commit `dependencies.lock.json` in the consuming platform; "
         "use `scripts/dependency_artifacts.py` to verify and fetch it. "
-        + ("This release contains platform host code; external link dependencies are released separately.\n"
-           if kind == "gui-host" else "This release contains no platform host or application code.\n")
+        + scope + "\n"
     )
     subprocess.run(["gh", "release", "create", tag, *map(str, assets), "--repo", REPOSITORY,
                     "--target", source, "--latest=false", "--title", f"{kind} link inputs {tag}",
@@ -169,6 +142,5 @@ if __name__ == "__main__":
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--kind", choices=sorted(KINDS), default="musl")
-    parser.add_argument("--target", action="append", help="Eligible GUI host target (repeat to select several)")
     args = parser.parse_args()
-    publish(args.directory, args.tag, args.kind, args.target)
+    publish(args.directory, args.tag, args.kind)

@@ -79,7 +79,8 @@ class DependencyStagingTests(unittest.TestCase):
     def test_gui_bundle_replaces_stale_keyboard_libraries_with_verified_release(self):
         source = self.root / "platform-gui/targets/x64glibc"
         source.mkdir(parents=True)
-        for name in ("libsignals_gpui_host.a", "libengine.a", "libfreetype.so", *prepare_dependencies.XKBCOMMON_LIBRARIES):
+        for name in ("libsignals_gpui_host.a", "libengine.a", "libfreetype.so", "crt1.o", "crti.o", "crtn.o",
+                     "libgcc_s.so", "libm.so", "libc.so", *prepare_dependencies.XKBCOMMON_LIBRARIES):
             (source / name).write_bytes(b"checkout bytes")
 
         @contextmanager

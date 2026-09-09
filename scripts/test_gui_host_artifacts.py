@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import gui_host_artifacts
 import bundle_platforms
-import release_dependencies
+import release_gui_hosts as release_dependencies
 from dependency_archive import write_archive
 from dependency_artifacts import unpack_verified
 from gui_host_artifacts import pack_host, source_fingerprint, validate_host
@@ -45,6 +45,8 @@ class HostArtifactTests(unittest.TestCase):
                 name: b"verified host" for name in gui_host_artifacts.HOST_FILES["x64glibc"]})
             freetype = admitted("freetype-x64glibc", {"libfreetype.so": b"verified FreeType"})
 
+            keyboard = admitted("xkbcommon-x64glibc", {"libxkbcommon.so": b"verified keyboard", "libxkbcommon-x11.so": b"verified X11"})
+
             @contextmanager
             def verified(inputs):
                 yield inputs
@@ -54,7 +56,7 @@ class HostArtifactTests(unittest.TestCase):
                 self.assertEqual((cwd / "targets/x64glibc/libfreetype.so").read_bytes(), b"verified FreeType")
                 self.assertFalse((cwd / "targets/x64glibc/libutil.so").exists())
                 receipt = json.loads((cwd / "dependencies.lock.json").read_text())
-                self.assertEqual(set(receipt["artifacts"]), {"gui-host-x64glibc", "freetype-x64glibc"})
+                self.assertEqual(set(receipt["artifacts"]), {"gui-host-x64glibc", "freetype-x64glibc", "xkbcommon-x64glibc"})
                 archive = Path(command[command.index("--output-dir") + 1]) / "platform.tar.zst"
                 return subprocess.CompletedProcess(command, 0, stdout=f"Created: {archive}\n")
 
@@ -62,6 +64,7 @@ class HostArtifactTests(unittest.TestCase):
                     patch.object(bundle_platforms, "prepare_platform"), \
                     patch.object(bundle_platforms, "verified_hosts", side_effect=lambda *a: verified(host)), \
                     patch.object(bundle_platforms, "verified_freetype", side_effect=lambda: verified(freetype)), \
+                    patch.object(bundle_platforms, "verified_xkbcommon", side_effect=lambda: verified(keyboard)), \
                     patch.object(bundle_platforms, "stage_example_package"), \
                     patch.object(bundle_platforms, "gui_examples", return_value=[]), \
                     patch.object(bundle_platforms.subprocess, "run", side_effect=bundle) as compiler, \
@@ -91,7 +94,7 @@ class HostArtifactTests(unittest.TestCase):
                     companion["sha256"] = "0" * 64
                 files = {f"targets/{target}/{name}": b"tested host" for name in gui_host_artifacts.HOST_FILES[target]}
                 files.update({f"licenses/gui-host/{name}": b"notice fixture"
-                              for name in release_dependencies.KINDS["gui-host"]["licenses"]})
+                              for name in release_dependencies.POLICY["licenses"]})
                 files["licenses/gui-host/NOTICE.json"] = json.dumps({"source_companion": companion}).encode()
                 if failure == "missing-license":
                     del files["licenses/gui-host/LICENSE-GPUI"]
@@ -113,11 +116,11 @@ class HostArtifactTests(unittest.TestCase):
                         verifier.side_effect = [None, ValueError("invalid source signature")]
                     if failure:
                         with self.assertRaises(ValueError):
-                            release_dependencies.prepare(root, "deps-gui-host-1", environment, "gui-host", [target])
+                            release_dependencies.prepare(root, "deps-gui-host-1", environment, [target])
                         self.assertFalse((root / "dependencies.lock.json").exists())
                         admit.assert_not_called()
                     else:
-                        release_dependencies.prepare(root, "deps-gui-host-1", environment, "gui-host", [target])
+                        release_dependencies.prepare(root, "deps-gui-host-1", environment, [target])
                         lock = json.loads((root / "dependencies.lock.json").read_text())
                         self.assertEqual(set(lock["artifacts"]), {"gui-host-x64glibc", "gui-host-sources-x64glibc"})
                         self.assertEqual(verifier.call_count, 2)
@@ -127,7 +130,7 @@ class HostArtifactTests(unittest.TestCase):
                             self.assertEqual(entry["source_sha"], "a" * 40)
         for targets in (["arm64mac"], ["x64glibc", "x64glibc"], []):
             with self.assertRaisesRegex(ValueError, "eligible"):
-                release_dependencies.prepare(Path("unused"), "deps-gui-host-1", environment, "gui-host", targets)
+                release_dependencies.prepare(Path("unused"), "deps-gui-host-1", environment, targets)
 
     def test_host_only_target_is_not_a_complete_platform(self):
         with tempfile.TemporaryDirectory() as temporary:
