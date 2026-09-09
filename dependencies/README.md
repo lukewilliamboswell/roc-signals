@@ -153,6 +153,31 @@ input or for historical platform releases.
 | Rust crates embedded in the GUI host | Cargo uses the reviewed lockfile and CI caches compiled dependencies; cross-crate release LTO is disabled | The cache is not a separately released dependency artifact. Generic Rust code can be instantiated in the host, so separating it into a reusable binary requires an explicit ABI and compatibility policy. |
 | Prebuilt GUI host archives | The bundler verifies a host-release lock, producer provenance, exact inventory, and committed host source compatibility before staging extracted bytes | Host releases do not supply external system libraries or SDK stubs; included targets must have those inputs separately. |
 
+### Windows import and host boundaries
+
+The released `advapi32.lib` is a generated import archive, not a Windows DLL or
+an implementation library. Its 879 short-import records match the complete
+preprocessed MinGW definition bundled with the pinned Zig toolchain. The release
+includes the applicable MinGW notice and does not copy Microsoft SDK libraries.
+Future Windows dependency packages must likewise provide complete definitions
+for each selected DLL, rather than a subset derived from host symbol usage.
+
+This does not establish the provenance of every import in a GUI executable.
+Rust dependencies embed additional windows-rs and compiler-generated import
+records inside `signals_gpui_host.lib`, alongside actual open-source host
+implementation objects. Those imports need their own provenance accounting and
+must not be mistaken for Windows implementation DLLs. The host package also
+needs the transitive dependency notices; Signals and GPUI licenses alone are
+insufficient for publishing that combined archive.
+
+The pinned Roc compiler's MSVC link mode additionally searches installed SDK
+and MSVC library directories and requests default libraries. This is a final-link
+dependency, not evidence that SDK libraries were copied into our release archive.
+A Windows build passing on an SDK-equipped runner therefore does not prove that
+the platform provides every link input. Replacing these inputs requires an
+explicitly tested CRT, C++ runtime, and entry-point configuration; changing the
+target mode or renaming archives alone cannot establish compatibility.
+
 Host-owned engine objects, GUI Rust host archives, web `libhost.a`, and the Windows application
 resource remain platform build outputs. Changing their source should not change
 external dependency identities. A dependency recipe or toolchain change must
