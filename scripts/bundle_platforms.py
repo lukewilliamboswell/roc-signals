@@ -17,7 +17,6 @@ from gui_suite import examples as gui_examples
 from prepare_dependencies import (verified_web_dependencies, WEB_ARTIFACTS,
                                   verified_windows_imports, WINDOWS_IMPORTS,
                                   verified_freetype, FREETYPE,
-                                  verified_glibc, GLIBC, GLIBC_LIBRARIES,
                                   verified_xkbcommon, XKBCOMMON, XKBCOMMON_LIBRARIES)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -180,8 +179,7 @@ def main():
                           if p.is_file() and p.relative_to(tree).parts[0] != 'x64win'
                           and p.relative_to(tree).as_posix() != 'x64glibc/libfreetype.so'
                           and p.relative_to(tree).as_posix() not in
-                          {'x64glibc/' + name for name in (*XKBCOMMON_LIBRARIES, *GLIBC_LIBRARIES,
-                           'crti.o', 'crtn.o', 'libutil.so', 'librt.so', 'libpthread.so', 'libdl.so')}
+                          {'x64glibc/' + name for name in XKBCOMMON_LIBRARIES}
                           and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json', '.tbd'}]
             if package == 'gui' and not hosts and not windows_targets:
                 raise SystemExit(f'No {package} hosts found; run without --no-build.')
@@ -196,8 +194,6 @@ def main():
             if any((tree / 'x64glibc').is_dir() for tree in trees):
                 with verified_freetype() as inputs:
                     stage_dependency_inputs(inputs, (FREETYPE,), stage)
-                with verified_glibc() as inputs:
-                    stage_dependency_inputs(inputs, (GLIBC,), stage)
                 with verified_xkbcommon() as inputs:
                     stage_dependency_inputs(inputs, (XKBCOMMON,), stage)
             for name in ['LICENSE', 'THIRD_PARTY_LICENSES.md']:

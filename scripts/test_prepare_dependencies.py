@@ -18,66 +18,6 @@ import prepare_dependencies
 
 
 class DependencyStagingTests(unittest.TestCase):
-    def test_glibc_admission_requires_all_link_inputs_notices_and_sources(self):
-        expected = {"targets/x64glibc/" + name for name in prepare_dependencies.GLIBC_LIBRARIES}
-        expected.update("licenses/glibc/" + name for name in ("COPYING.LIB", "LICENSES", "LICENSE-ZIG"))
-        expected.update("sources/glibc/" + name for name in prepare_dependencies.GLIBC_SOURCE_FILES)
-        files = dict.fromkeys(expected, {})
-
-        def materialize(lock, identities, cache, destination):
-            self.assertEqual(identities, (prepare_dependencies.GLIBC,))
-            artifact = destination / prepare_dependencies.GLIBC
-            artifact.mkdir(parents=True)
-            (artifact / "dependency.json").write_text(json.dumps({"files": files}))
-
-        with patch.object(prepare_dependencies, "materialize", side_effect=materialize):
-            with prepare_dependencies.verified_glibc() as admitted:
-                self.assertTrue(admitted.is_dir())
-            for missing in sorted(expected):
-                with self.subTest(missing=missing):
-                    files = dict.fromkeys(expected - {missing}, {})
-                    with self.assertRaisesRegex(ValueError, "incomplete or unexpected glibc"):
-                        with prepare_dependencies.verified_glibc():
-                            self.fail("incomplete inventory was admitted")
-
-    def test_glibc_verification_failure_preserves_inputs_and_prevents_build(self):
-        destination = self.root / "linux"
-        destination.mkdir()
-        for name in prepare_dependencies.GLIBC_LIBRARIES:
-            (destination / name).write_bytes(b"previous verified bytes")
-        with patch.object(prepare_dependencies, "verified_glibc", side_effect=ValueError("untrusted signer")):
-            with self.assertRaisesRegex(ValueError, "untrusted signer"):
-                prepare_dependencies.install_glibc(destination)
-        for name in prepare_dependencies.GLIBC_LIBRARIES:
-            self.assertEqual((destination / name).read_bytes(), b"previous verified bytes")
-        with patch.object(build_gui, "host_target", return_value="x64glibc"), patch.object(
-                build_gui, "install_freetype", return_value={"artifacts": {}}), patch.object(
-                build_gui, "install_glibc", side_effect=ValueError("untrusted signer")), patch.object(
-                build_gui.subprocess, "run") as compiler:
-            with self.assertRaisesRegex(ValueError, "untrusted signer"):
-                build_gui.build()
-        compiler.assert_not_called()
-
-    def test_glibc_install_stages_all_files_before_replacing_any(self):
-        target = self.inputs / prepare_dependencies.GLIBC / "targets/x64glibc"
-        target.mkdir(parents=True)
-        destination = self.root / "linux"
-        destination.mkdir()
-        for name in prepare_dependencies.GLIBC_LIBRARIES:
-            (destination / name).write_bytes(b"previous")
-        for name in prepare_dependencies.GLIBC_LIBRARIES[:-1]:
-            (target / name).write_bytes(b"verified CRT")
-        with patch.object(prepare_dependencies, "verified_glibc", self.verified):
-            with self.assertRaises(FileNotFoundError):
-                prepare_dependencies.install_glibc(destination)
-            for name in prepare_dependencies.GLIBC_LIBRARIES:
-                self.assertEqual((destination / name).read_bytes(), b"previous")
-            (target / prepare_dependencies.GLIBC_LIBRARIES[-1]).write_bytes(b"verified CRT")
-            prepare_dependencies.install_glibc(destination)
-        for name in prepare_dependencies.GLIBC_LIBRARIES:
-            self.assertEqual((destination / name).read_bytes(), b"verified CRT")
-        self.assertEqual({p.name for p in destination.iterdir()}, set(prepare_dependencies.GLIBC_LIBRARIES))
-
     def test_xkbcommon_admission_requires_both_libraries_and_license(self):
         expected = {"targets/x64glibc/" + name for name in prepare_dependencies.XKBCOMMON_LIBRARIES}
         expected.add("licenses/xkbcommon/LICENSE")
@@ -111,7 +51,6 @@ class DependencyStagingTests(unittest.TestCase):
             self.assertEqual((destination / name).read_bytes(), b"previous verified bytes")
         with patch.object(build_gui, "host_target", return_value="x64glibc"), patch.object(
                 build_gui, "install_freetype", return_value={"artifacts": {}}), patch.object(
-                build_gui, "install_glibc", return_value={"artifacts": {}}), patch.object(
                 build_gui, "install_xkbcommon", side_effect=ValueError("untrusted signer")), patch.object(
                 build_gui.subprocess, "run") as compiler:
             with self.assertRaisesRegex(ValueError, "untrusted signer"):
@@ -140,7 +79,7 @@ class DependencyStagingTests(unittest.TestCase):
     def test_gui_bundle_replaces_stale_keyboard_libraries_with_verified_release(self):
         source = self.root / "platform-gui/targets/x64glibc"
         source.mkdir(parents=True)
-        for name in ("libsignals_gpui_host.a", "libengine.a", "libfreetype.so", *prepare_dependencies.XKBCOMMON_LIBRARIES, *prepare_dependencies.GLIBC_LIBRARIES, "crti.o", "crtn.o", "libdl.so"):
+        for name in ("libsignals_gpui_host.a", "libengine.a", "libfreetype.so", *prepare_dependencies.XKBCOMMON_LIBRARIES):
             (source / name).write_bytes(b"checkout bytes")
 
         @contextmanager
@@ -163,19 +102,11 @@ class DependencyStagingTests(unittest.TestCase):
             for name in prepare_dependencies.XKBCOMMON_LIBRARIES:
                 self.assertEqual((stage / "targets/x64glibc" / name).read_bytes(), b"verified " + name.encode())
             self.assertEqual((stage / "licenses/xkbcommon/LICENSE").read_bytes(), b"upstream notice")
-            for name in prepare_dependencies.GLIBC_LIBRARIES:
-                self.assertEqual((stage / "targets/x64glibc" / name).read_bytes(), b"verified CRT " + name.encode())
-            self.assertEqual((stage / "sources/glibc/source.tar.xz").read_bytes(), b"corresponding sources")
-            for name in ("crti.o", "crtn.o", "libdl.so"):
-                self.assertFalse((stage / "targets/x64glibc" / name).exists())
             receipt = json.loads((stage / "dependencies.lock.json").read_text())
-            self.assertEqual(set(receipt["artifacts"]), {prepare_dependencies.FREETYPE, prepare_dependencies.XKBCOMMON, prepare_dependencies.GLIBC})
+            self.assertEqual(set(receipt["artifacts"]), {prepare_dependencies.FREETYPE, prepare_dependencies.XKBCOMMON})
             self.assertTrue((stage / "dependency-manifests/xkbcommon-x64glibc.json").is_file())
             raise RuntimeError("bundle inputs inspected")
 
-        crt = {"targets/x64glibc/" + name: b"verified CRT " + name.encode()
-               for name in prepare_dependencies.GLIBC_LIBRARIES}
-        crt["sources/glibc/source.tar.xz"] = b"corresponding sources"
         keyboard = {"targets/x64glibc/" + name: b"verified " + name.encode()
                     for name in prepare_dependencies.XKBCOMMON_LIBRARIES}
         keyboard["licenses/xkbcommon/LICENSE"] = b"upstream notice"
@@ -183,8 +114,6 @@ class DependencyStagingTests(unittest.TestCase):
                 bundle_platforms, "prepare_platform"), patch.object(
                 bundle_platforms, "verified_freetype", side_effect=lambda: verified(
                     prepare_dependencies.FREETYPE, {"targets/x64glibc/libfreetype.so": b"verified font"})), patch.object(
-                bundle_platforms, "verified_glibc", side_effect=lambda: verified(
-                    prepare_dependencies.GLIBC, crt)), patch.object(
                 bundle_platforms, "verified_xkbcommon", side_effect=lambda: verified(
                     prepare_dependencies.XKBCOMMON, keyboard)), patch.object(
                 bundle_platforms.shutil, "copyfile", wraps=shutil.copyfile) as copy_file, patch.object(
@@ -197,7 +126,7 @@ class DependencyStagingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "bundle inputs inspected"):
                 bundle_platforms.main()
             copied_sources = {Path(call.args[0]) for call in copy_file.call_args_list}
-            for name in (*prepare_dependencies.XKBCOMMON_LIBRARIES, *prepare_dependencies.GLIBC_LIBRARIES, "crti.o", "crtn.o", "libdl.so"):
+            for name in prepare_dependencies.XKBCOMMON_LIBRARIES:
                 self.assertNotIn(source / name, copied_sources)
 
     def test_freetype_admission_requires_complete_license_inventory(self):
