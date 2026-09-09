@@ -259,6 +259,35 @@ The second command cross-links on Linux; native execution is required on Windows
 before publication. This artifact contains no Signals host or application
 manifest resource.
 
+The `FreeType dependency releases` workflow builds the pinned upstream source
+from `dependencies/freetype.json`. On Linux x86-64, Python 3.12 and Docker are
+sufficient to run the same producer:
+
+```sh
+python3 scripts/build_freetype.py --output /tmp/freetype-candidate
+python3 scripts/build_freetype.py --output /tmp/freetype-rebuild
+cmp /tmp/freetype-candidate/freetype-x64glibc.tar /tmp/freetype-rebuild/freetype-x64glibc.tar
+python3 -m unittest scripts/test_freetype_dependencies.py
+```
+
+Source downloads are cached by digest under `~/.cache/roc-signals/sources` and
+verified again before each build. Docker constructs the reviewed builder from
+its base-image digest, bootstrap CA and Zig distribution digests, and authenticated Ubuntu package
+snapshot; the actual compilation has no network access and does not mount Cargo
+or platform target directories as build inputs. Each candidate is extracted and
+tested by rendering an exact glyph bitmap. No compiler pin or platform host
+build is involved. CI repeats the build in another clean container before
+publication.
+
+Dispatch this workflow on `main` with a new `deps-freetype-<version>` tag to
+publish tested bytes and their lock through `freetype-dependencies.yml`.
+Review and merge the lock entry separately when adopting the dependency. The
+artifact preserves FreeType's system SONAME; applications still use the operating
+system's runtime font libraries. The C compiler is Zig 0.16.0, targeting baseline
+x86-64 and glibc 2.39; the separate Roc compiler pin is preserved.
+See `dependencies/README.md` for the input and
+runtime boundaries.
+
 ## Coverage
 
 Native host coverage is a diagnostic tool for finding major gaps in the Zig

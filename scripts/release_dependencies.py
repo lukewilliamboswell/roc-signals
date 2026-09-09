@@ -18,13 +18,18 @@ from dependency_artifacts import sha256, unpack_verified, verify_archive, read_l
 REPOSITORY = "lukewilliamboswell/roc-signals"
 KINDS = {
     "musl": {"targets": ("x64musl", "arm64musl"), "files": ("libc.a", "crt1.o"),
-             "license": "COPYRIGHT", "workflow": "dependencies.yml",
+             "licenses": ("COPYRIGHT",), "workflow": "dependencies.yml",
              "inventory_error": "dependency release must include both tested musl architectures",
              "validation": "Both architectures passed native linked tests and a second build comparison."},
     "windows-imports": {"targets": ("x64win",), "files": ("advapi32.lib",),
-                        "license": "COPYING", "workflow": "windows-dependencies.yml",
+                        "licenses": ("COPYING",), "workflow": "windows-dependencies.yml",
                         "inventory_error": "dependency release must include the tested Windows import archive",
                         "validation": "The candidate passed a native Windows DLL import probe and a second build comparison."},
+    "freetype": {"targets": ("x64glibc",), "files": ("libfreetype.so",),
+                 "licenses": ("LICENSE.TXT", "FTL.TXT", "GPLv2.TXT", "NOTICE"),
+                 "workflow": "freetype-dependencies.yml",
+                 "inventory_error": "dependency release must include the tested FreeType archive",
+                 "validation": "The extracted candidate rendered the expected glyph bitmap, and two clean container builds produced identical archives."},
 }
 
 
@@ -57,7 +62,7 @@ def prepare(directory, tag, environment, kind="musl"):
             verify_archive(archive, entry)
             manifest = unpack_verified(archive, entry, Path(temporary) / target)
             required = {f"targets/{target}/{name}" for name in policy["files"]}
-            required.add(f"licenses/{kind}/{policy['license']}")
+            required.update(f"licenses/{kind}/{name}" for name in policy["licenses"])
             if set(manifest["files"]) != required:
                 raise ValueError(f"{kind} release has an incomplete or unexpected file set")
             artifacts[f"{kind}-{target}"] = entry
