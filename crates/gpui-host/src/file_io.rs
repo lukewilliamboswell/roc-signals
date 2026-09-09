@@ -713,7 +713,9 @@ pub fn read_log(
     let (mut file, stat) = regular_file(path, cancel)?;
     let size = u64::try_from(stat.st_size).map_err(|_| FileError::InvalidPath(path.into()))?;
     let mut cursor = LogCursor {
-        device: stat.st_dev,
+        // Darwin uses signed 32-bit dev_t; this opaque cursor preserves its
+        // identity in u64 on both supported hosts.
+        device: stat.st_dev as u64,
         inode: stat.st_ino,
         offset: 0,
     };
