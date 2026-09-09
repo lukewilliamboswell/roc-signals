@@ -157,6 +157,28 @@ class DependencyTests(unittest.TestCase):
                     deps.fetch(self.entry, cache)
             self.assertEqual(list(cache.iterdir()), [])
 
+    def test_download_closes_temporary_file_before_verification_and_cleanup(self):
+        data = self.archive().read_bytes()
+        original_temporary = deps.tempfile.NamedTemporaryFile
+        opened = []
+
+        def temporary(*args, **kwargs):
+            handle = original_temporary(*args, **kwargs)
+            opened.append(handle)
+            return handle
+
+        def verify(*args):
+            self.assertTrue(all(handle.closed for handle in opened))
+            raise subprocess.CalledProcessError(1, "gh")
+
+        cache = self.root / "closed-cache"
+        with patch.object(deps.tempfile, "NamedTemporaryFile", side_effect=temporary), patch.object(
+                deps, "urlopen", return_value=io.BytesIO(data)), patch.object(
+                deps, "verify_archive", side_effect=verify):
+            with self.assertRaises(subprocess.CalledProcessError):
+                deps.fetch(self.entry, cache)
+        self.assertEqual(list(cache.iterdir()), [])
+
     def test_release_rejects_pr_branch_foreign_repository_and_stale_checkout(self):
         environment = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
                        "GITHUB_REPOSITORY": release_dependencies.REPOSITORY, "GITHUB_SHA": "a" * 40}

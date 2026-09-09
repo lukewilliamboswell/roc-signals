@@ -14,6 +14,10 @@ on:
 
 permissions:
   contents: read
+  attestations: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
 
 concurrency:
   group: release-${{ github.ref }}
@@ -118,11 +122,13 @@ jobs:
 
   publish:
     name: Publish tested release
-    if: ${{ !inputs.nightly_validation }}
+    if: ${{ !inputs.nightly_validation && github.ref == 'refs/heads/main' }}
     needs: [source, test-bundle, site]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      attestations: write
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -132,6 +138,15 @@ jobs:
         with:
           name: release-assets
           path: ${{ runner.temp }}/release-assets
+      - name: Verify the complete tested asset set
+        run: python3 scripts/release.py verify --directory "$RUNNER_TEMP/release-assets"
+      - name: Attest final platform, browser, starter, and site artifacts
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release-assets/*.tar.zst
+            ${{ runner.temp }}/release-assets/*.zip
+            ${{ runner.temp }}/release-assets/signals-release.json
       - env:
           GH_TOKEN: ${{ github.token }}
           NIGHTLY_VALIDATION: ${{ inputs.nightly_validation }}

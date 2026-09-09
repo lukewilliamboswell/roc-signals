@@ -33,7 +33,6 @@ __pycache__/
 plan.md
 *.mdtodo
 
-!vendor/tree-sitter-roc.wasm
 
 /target/
 *.so.*

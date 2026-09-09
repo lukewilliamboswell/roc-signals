@@ -298,6 +298,7 @@ def run_zig_suite() -> None:
         "scripts/test_known_failures.py",
         "scripts/test_release.py",
         "scripts/test_dependency_artifacts.py",
+        "scripts/test_prepare_dependencies.py",
     ])
 
 
@@ -636,6 +637,7 @@ def benchmark_run(command: list[str | Path], *, cwd: Path = ROOT) -> None:
 
 def prepare_wasm_benchmark_platform(destination: Path, host_object: Path, *, instrumented: bool) -> None:
     shutil.copytree(ROOT / "platform-web", destination, dirs_exist_ok=True)
+    (destination / "targets" / "wasm32").mkdir(parents=True, exist_ok=True)
     shutil.copy2(host_object, destination / "targets" / "wasm32" / "host.wasm")
     if not instrumented:
         return

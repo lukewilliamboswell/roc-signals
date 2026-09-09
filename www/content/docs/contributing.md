@@ -17,6 +17,7 @@ Install:
 
 - Zig 0.16.0,
 - Python 3,
+- GitHub CLI (`gh`), authenticated for dependency attestation verification,
 - Node.js,
 - Zola,
 - the Tailwind CSS 3.4.17 standalone CLI (the site uses the v3 configuration),
@@ -169,8 +170,10 @@ For focused Zig host unit work, filter Zig tests at build time:
 zig build run-test-zig -Dtest-filter="signals host"
 ```
 
-`zig build build-test-hosts` copies host artifacts into Roc's platform target
-layout:
+`zig build build-test-hosts` builds our host and installs independently released
+musl inputs from `dependencies.lock.json` into Roc's platform target layout.
+It verifies cached or downloaded dependency archives with `gh attestation verify`;
+it never rebuilds musl or accepts existing local libraries as a fallback:
 
 - `platform-web/targets/x64mac/libhost.a`
 - `platform-web/targets/arm64mac/libhost.a`
@@ -217,9 +220,20 @@ The output retains the selected lock and a directory for each artifact, containi
 its manifest, target files, and license notices. Existing output directories are
 rejected. There is no unsigned fallback or automatic dependency upgrade.
 
+The root `dependencies.lock.json` is the platform's reviewed dependency selection.
+To update it, adopt the lock emitted by a successful dependency release and run
+the native and exact-bundle tests. Ordinary host builds reuse the selected release.
+The web bundler stages dependencies from newly verified archives, includes the
+selected lock, per-target manifests and license notices, and ignores mutable
+development copies or unexpected libraries under `platform-web/targets`.
+
 Publication refuses an existing tag or release. If a run stops during publication,
 inspect the existing tag, assets, and attestations, and recover the tested bytes;
 do not overwrite the release or rebuild under its existing identity.
+Keep GitHub release immutability enabled for this repository. The publication
+command attaches all assets before publishing; publication then locks their bytes
+and the tag. Historical releases created before immutability was enabled remain
+mutable and must not be described as having that protection.
 
 GUI CI caches compiled Cargo dependencies using the lockfile, Rust environment,
 and runner image identity. Only successful pushes to `main` save the cache;
@@ -940,7 +954,13 @@ each app must have specs. Every GUI check must pass; this suite has no known-fai
 allowlist. `--spec-filter`, `--shard`, `--jobs`, and `--fail-fast` also apply.
 The default `all` suite includes GUI checks on Linux x86_64; run `gui` explicitly
 on macOS, where it requires full Xcode and the Metal toolchain. CI runs them in a
-dedicated Linux job. GUI executables remain under `.test-out/gui` when output is kept.
+dedicated Linux and Windows jobs. GUI executables remain under `.test-out/gui`
+when output is kept. Linux CI then runs `python3 scripts/gui_smoke.py` under Xvfb
+with Mesa's software Vulkan driver. It opens every maintained example, requires
+the host's explicit rendering result, checks the counter's increment action,
+and fails on a crash or a 30-second timeout. This checks the GPUI window/rendering
+path separately from the display-free specs. Run the same script on a desktop
+after the GUI suite to exercise the local graphics driver.
 
 Normal GUI launches do not print engine metrics. Pass `--host-trace-engine` to an
 app executable to log event-turn metrics to stderr; `--smoke` prints its explicit

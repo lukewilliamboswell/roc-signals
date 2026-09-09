@@ -77,26 +77,26 @@ def fetch(entry, cache):
                f"{entry['release']}/{entry['asset']}")
         with tempfile.NamedTemporaryFile(dir=cache, delete=False) as pending:
             path = Path(pending.name)
+        try:
+            with path.open("wb") as output, urlopen(url, timeout=60) as response:
+                remaining = entry["size"]
+                while remaining:
+                    chunk = response.read(min(1024 ** 2, remaining))
+                    if not chunk:
+                        raise ValueError("truncated dependency download")
+                    output.write(chunk)
+                    remaining -= len(chunk)
+                if response.read(1):
+                    raise ValueError("dependency download exceeds locked size")
+            # Close the writer before another process reads the file and before
+            # publication or cleanup: Windows does not allow unlinking it open.
+            verify_archive(path, entry)
             try:
-                with urlopen(url, timeout=60) as response:
-                    remaining = entry["size"]
-                    while remaining:
-                        chunk = response.read(min(1024 ** 2, remaining))
-                        if not chunk:
-                            raise ValueError("truncated dependency download")
-                        pending.write(chunk)
-                        remaining -= len(chunk)
-                    if response.read(1):
-                        raise ValueError("dependency download exceeds locked size")
-                pending.flush()
-                verify_archive(path, entry)
-                # An equivalent concurrent download may have won publication.
-                try:
-                    os.link(path, archive)
-                except FileExistsError:
-                    pass
-            finally:
-                path.unlink(missing_ok=True)
+                os.link(path, archive)
+            except FileExistsError:
+                pass
+        finally:
+            path.unlink(missing_ok=True)
     verify_archive(archive, entry)
     return archive
 
