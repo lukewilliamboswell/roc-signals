@@ -1169,7 +1169,8 @@ Host builds default to two Cargo workers. Use `scripts/build_gui.py --jobs N`
 or `scripts/test.py gui --gui-build-jobs N` to adjust memory pressure. Parallel
 app work should serialize substantial host builds. Cargo reuses valid cached
 artifacts without an unconditional host clean. Rebuilding and optimizing the
-Rust host can include its Rust dependency graph; external native link libraries
+Rust host uses ThinLTO across its Rust dependency graph to keep the archive
+within Roc’s package-size budget. External native link libraries
 have independent release cycles and are fetched from their verified locks.
 GUI specs validate shared
 semantics; the separate window smoke above checks rendering and adapter dispatch,
