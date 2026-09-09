@@ -10889,11 +10889,14 @@ fn testNodeEventDelivery(native: bool) abi.NodeEventDelivery {
 }
 
 fn testNodeEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind, binder_token: HostBinderToken, payload_kind: EventPayloadKind) abi.NodeAttr {
-    const extraction_plan = testExtractionPlanForKind(payload_kind);
+    return testNodeEventAttrWithPlan(roc_host, kind, binder_token, testExtractionPlanForKind(payload_kind), &testTernaryEventHostValueCallable);
+}
+
+fn testNodeEventAttrWithPlan(roc_host: *abi.RocHost, kind: RenderEventKind, binder_token: HostBinderToken, extraction_plan: EventExtractionPlanKind, transform_fn: abi.RocErasedCallableFn) abi.NodeAttr {
     const transform = writeTestErasedCallable(
         TestErasedI64Capture,
         roc_host,
-        &testTernaryEventHostValueCallable,
+        transform_fn,
         &testErasedCallableOnDrop,
         .{ .amount = 0 },
     );
@@ -12595,7 +12598,7 @@ const Gpui = struct {
         }
     }
     fn protocolVersion() callconv(.c) u32 {
-        return 6;
+        return 7;
     }
     fn nodeSize() callconv(.c) usize {
         return @sizeOf(Node);
@@ -12625,13 +12628,13 @@ const Gpui = struct {
         live = false;
         clear();
     }
-    // Unit, controlled text, and checked payloads share the event identity and
+    // Unit, controlled text, event detail, and checked payloads share event identity and
     // capability validation route used by native specs.
     fn validatePayload(kind: u32, bytes: []const u8, boolean: u32) error{InvalidGuiPayload}!void {
         if (bytes.len > 1024 * 1024) return error.InvalidGuiPayload;
         switch (kind) {
             0 => if (bytes.len != 0 or boolean != 0) return error.InvalidGuiPayload,
-            1 => if (boolean != 0 or !std.unicode.utf8ValidateSlice(bytes)) return error.InvalidGuiPayload,
+            1, 3 => if (boolean != 0 or !std.unicode.utf8ValidateSlice(bytes)) return error.InvalidGuiPayload,
             2 => if (bytes.len != 0 or boolean > 1) return error.InvalidGuiPayload,
             else => return error.InvalidGuiPayload,
         }
@@ -12642,7 +12645,7 @@ const Gpui = struct {
         clear();
         const payload = switch (kind) {
             0 => hostValueUnit(&host, &roc_host),
-            1 => hostValueStr(&host, &roc_host, ptr[0..len]),
+            1, 3 => hostValueStr(&host, &roc_host, ptr[0..len]),
             2 => if (boolean <= 1 and len == 0) hostValueBool(&host, &roc_host, boolean == 1) else failHost("invalid GUI boolean payload"),
             else => failHost("unsupported GPUI spike event kind"),
         };
@@ -12650,6 +12653,7 @@ const Gpui = struct {
             0 => RenderEventKind.click.payloadDescriptor(),
             1 => RenderEventKind.input.payloadDescriptor(),
             2 => RenderEventKind.check.payloadDescriptor(),
+            3 => BoundaryPayloadDescriptor.init(.str, .detail),
             else => unreachable,
         };
         dispatchRocEvent(&host, &roc_host, ids.EventId.fromRaw(event), descriptor, payload);
@@ -12813,7 +12817,10 @@ test "native GUI payload contract rejects unused fields and invalid UTF-8" {
     try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(1, "\xff", 0));
     try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(1, "text", 1));
     try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(2, "", 2));
-    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(3, "", 0));
+    try Gpui.validatePayload(3, "task-λ", 0);
+    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(3, "\xff", 0));
+    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(3, "task", 1));
+    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(4, "", 0));
 }
 
 test "native sparse move-before attaches a new root and repositions an existing root" {
@@ -13025,4 +13032,52 @@ test "native GUI tombstone reads do not dereference retired drop registrations" 
     try std.testing.expectEqual(@as(u64, 0), out.click);
     try std.testing.expectEqual(@as(u64, 0), out.input);
     try std.testing.expectEqual(@as(u64, 0), out.check);
+}
+
+test "native GUI drop dispatch preserves event detail through the real engine boundary" {
+    const Reducer = struct {
+        fn call(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+            const values = testErasedArgsAs(ErasedHostValueTernaryArgs, args);
+            var text = testReadHostValueStr(roc_host, values.arg2);
+            defer text.decref(roc_host);
+            if (!std.mem.eql(u8, text.asSlice(), "task-λ")) @panic("drop changed the key");
+            const current = testReadHostValueI64(roc_host, values.arg0);
+            const host = hostFromRocHost(roc_host);
+            writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, current + 1)));
+        }
+    };
+    try std.testing.expect(!Gpui.live);
+    Gpui.host = HostEnv.init();
+    Gpui.roc_host = makeSignalsRocHost(&Gpui.host);
+    Gpui.host.engine.roc_host = &Gpui.roc_host;
+    Gpui.child_order = signals.native_child_order.Tree.init(Gpui.host.hostAllocator());
+    Gpui.live = true;
+    defer {
+        Gpui.live = false;
+        Gpui.clear();
+        Gpui.child_order.deinit();
+        Gpui.host.deinit();
+        std.debug.assert(Gpui.host.gpa.deinit() == .ok);
+    }
+    const state_token = newTestBinderToken(&Gpui.roc_host);
+    var drop = testNodeEventAttrWithPlan(&Gpui.roc_host, .click, state_token, .detail, &Reducer.call);
+    drop.payload.on.kind.id = 0;
+    drop.payload.on.name = RocStr.fromSlice("drop", &Gpui.roc_host);
+    drop.payload.on.delivery = testNodeEventDelivery(true);
+    const target = testElementWith(&Gpui.roc_host, "div", &.{drop}, &.{});
+    const root = testNodeStateWithTokenAndInitial(&Gpui.roc_host, state_token, testHostValueI64(0), target);
+    defer root.decref(&Gpui.roc_host);
+    var stream: HostNodeDescriptorStream = .{};
+    Gpui.host.collectActiveElemRootDescriptors(&Gpui.roc_host, &stream, root, &.{});
+    _ = applyNodeDescriptorStream(&Gpui.host, &Gpui.roc_host, &stream);
+    Gpui.host.rebuildActiveEventsFromStream(&stream);
+    Gpui.host.engine.active_stream = stream;
+    const event = Gpui.host.engine.active_events.items[0];
+    const state_id = stream.scope_sites.items[0].node_id;
+    try std.testing.expect(event.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .detail)));
+    try std.testing.expect(!event.payload_descriptor.eql(RenderEventKind.input.payloadDescriptor()));
+    for (1..3) |expected| {
+        Gpui.dispatch(1, 3, "task-λ".ptr, "task-λ".len, 0);
+        try expectHostValueI64(Gpui.host.stateValueByNodeId(state_id), @intCast(expected));
+    }
 }

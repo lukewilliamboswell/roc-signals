@@ -1,9 +1,10 @@
 # Native GUI presentation boundary
 
-The statically linked GUI boundary uses protocol version **6**. Zig exports
+The statically linked GUI boundary uses protocol version **7**. Zig exports
 `signals_protocol_version` and `signals_node_size`; Rust checks both before
-mount. Version 6 appends a close-request event ID and close-decision word
-(two u64 fields) to the node record. Both sides must be rebuilt together.
+mount. Version 7 adds explicit event-detail dispatch. The node layout retains
+the close-request event ID and close-decision word introduced in version 6.
+Both sides must be rebuilt together.
 The browser protocol and its version are unchanged.
 
 `Gui` lowers native presentation through the shared scalar descriptor machinery.
@@ -56,11 +57,14 @@ the rendered div. The subscription is released with the Runtime and never
 handles other modified Tab chords or an active modal dialog.
 
 `signals_dispatch` accepts event ID, payload kind, UTF-8 pointer/length, and a
-boolean word. Kind 0 is unit, kind 1 is text, kind 2 is checked boolean; boolean
+boolean word. Kind 0 is unit, kind 1 is controlled input value, kind 2 is checked boolean,
+and kind 3 is event-detail text (including native drop keys); boolean
 payloads require zero text bytes and a value of 0 or 1. Unit payloads require
 zero text bytes and a zero boolean word; text payloads require valid UTF-8 and
 a zero boolean word. Each kind uses the shared
 engine's existing event extraction descriptor and capability-owned reducer path.
+Input value and event detail remain distinct even though both carry UTF-8 text.
+Version 7 adds the explicit detail kind; rebuild the host and app together.
 Deferred callbacks validate both node identity and current binding, and cannot
 update disposed or rebound controls.
 

@@ -44,7 +44,7 @@ impl NodeView {
         Some(cx.new(|cx| {
             let callback: Rc<dyn Fn(String, &mut App)> = Rc::new(move |value, cx| {
                 let _ = runtime.update(cx, |runtime, cx| {
-                    runtime.event_if_live(id, lifetime, event, Payload::Text(&value), cx)
+                    runtime.event_if_live(id, lifetime, event, Payload::InputValue(&value), cx)
                 });
             });
             if node.tag == "textarea" {
@@ -437,7 +437,7 @@ impl Runtime {
         if !self.valid_drop(target, item, cx) {
             return false;
         }
-        self.event(target.event, Payload::Text(&item.key), cx);
+        self.event(target.event, Payload::Detail(&item.key), cx);
         true
     }
     fn event_if_live(
@@ -985,11 +985,11 @@ mod tests {
                 checkbox.check = 31;
                 checkbox.disabled = true;
                 runtime.apply(vec![node(0, "root", &[1]), checkbox.clone()], cx);
-                runtime.event_if_live(1, 0, 31, Payload::Bool(true), cx);
+                runtime.event_if_live(1, 0, 31, Payload::Checked(true), cx);
                 assert!(Engine::take_test_event().is_none());
                 checkbox.disabled = false;
                 runtime.apply(vec![checkbox], cx);
-                runtime.event_if_live(1, 0, 31, Payload::Bool(true), cx);
+                runtime.event_if_live(1, 0, 31, Payload::Checked(true), cx);
                 assert_eq!(Engine::take_test_event(), Some((31, 2, String::new(), 1)));
             });
         });
@@ -1065,7 +1065,7 @@ mod tests {
         );
         cx.simulate_mouse_move(end, gpui::MouseButton::Left, gpui::Modifiers::default());
         cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::default());
-        assert_eq!(Engine::take_test_event(), Some((61, 1, "task-λ".into(), 0)));
+        assert_eq!(Engine::take_test_event(), Some((61, 3, "task-λ".into(), 0)));
     }
 
     #[gpui::test]
@@ -1100,7 +1100,7 @@ mod tests {
                     runtime: cx.entity_id(),
                 };
                 assert!(runtime.accept_drop(target, &item, cx));
-                assert_eq!(Engine::take_test_event(), Some((61, 1, "task-λ".into(), 0)));
+                assert_eq!(Engine::take_test_event(), Some((61, 3, "task-λ".into(), 0)));
                 source.lifetime = 1;
                 runtime.apply(vec![source.clone()], cx);
                 assert!(!runtime.accept_drop(target, &item, cx));
@@ -1160,7 +1160,7 @@ mod tests {
                         .entity_id(),
                     original
                 );
-                runtime.event_if_live(1, 0, 42, Payload::Text("changed"), cx);
+                runtime.event_if_live(1, 0, 42, Payload::InputValue("changed"), cx);
                 assert!(Engine::take_test_event().is_none());
                 editor.disabled = false;
                 runtime.apply(vec![editor], cx);

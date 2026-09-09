@@ -55,15 +55,17 @@ pub struct Style {
 #[derive(Clone, Copy)]
 pub enum Payload<'a> {
     Unit,
-    Text(&'a str),
-    Bool(bool),
+    InputValue(&'a str),
+    Detail(&'a str),
+    Checked(bool),
 }
 impl Node {
     pub fn event_for(&self, payload: Payload<'_>) -> u64 {
         match payload {
             Payload::Unit => self.click,
-            Payload::Text(_) => self.input,
-            Payload::Bool(_) => self.check,
+            Payload::InputValue(_) => self.input,
+            Payload::Detail(_) => self.drop,
+            Payload::Checked(_) => self.check,
         }
     }
 }
@@ -155,7 +157,7 @@ impl Engine {
             };
             assert_eq!(
                 signals_protocol_version(),
-                6,
+                7,
                 "native GUI protocol mismatch"
             );
             assert_eq!(
@@ -231,8 +233,9 @@ impl Engine {
     pub fn event(&mut self, event: u64, payload: Payload<'_>) -> Vec<Node> {
         let (kind, bytes, boolean) = match payload {
             Payload::Unit => (0, "".as_bytes(), 0),
-            Payload::Text(value) => (1, value.as_bytes(), 0),
-            Payload::Bool(value) => (2, "".as_bytes(), u32::from(value)),
+            Payload::InputValue(value) => (1, value.as_bytes(), 0),
+            Payload::Detail(value) => (3, value.as_bytes(), 0),
+            Payload::Checked(value) => (2, "".as_bytes(), u32::from(value)),
         };
         unsafe { (self.dispatch)(event, kind, bytes.as_ptr(), bytes.len(), boolean) };
         self.changes()

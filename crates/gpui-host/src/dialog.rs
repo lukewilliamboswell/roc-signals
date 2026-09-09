@@ -68,7 +68,7 @@ impl Runtime {
             return false;
         }
         let (event, payload) = if control.node.role == "checkbox" {
-            (control.node.check, Payload::Bool(!control.node.checked))
+            (control.node.check, Payload::Checked(!control.node.checked))
         } else if control.node.tag == "button" {
             (control.node.click, Payload::Unit)
         } else {
@@ -468,7 +468,7 @@ mod tests {
                 runtime.apply(vec![button(14, 10, true)], cx);
                 let background = runtime.nodes[&2].entity_id();
                 assert!(!runtime.activate_if_live(2, background, 0, 102, cx));
-                runtime.event_if_live(1, 0, 101, Payload::Text("blocked"), cx);
+                runtime.event_if_live(1, 0, 101, Payload::InputValue("blocked"), cx);
                 assert!(Engine::take_test_event().is_none());
             })
         });
