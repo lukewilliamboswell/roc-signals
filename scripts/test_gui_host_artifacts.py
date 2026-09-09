@@ -8,11 +8,24 @@ import unittest
 from unittest.mock import patch
 
 import gui_host_artifacts
+import bundle_platforms
 from dependency_artifacts import unpack_verified
 from gui_host_artifacts import pack_host, source_fingerprint, validate_host
 
 
 class HostArtifactTests(unittest.TestCase):
+    def test_host_only_target_is_not_a_complete_platform(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "x64win"
+            target.mkdir()
+            for name in gui_host_artifacts.HOST_FILES["x64win"]:
+                (target / name).write_bytes(b"host")
+            with self.assertRaisesRegex(ValueError, "link dependency"):
+                bundle_platforms.validate_gui_link_inputs(root)
+            (target / "advapi32.lib").write_bytes(b"verified import")
+            bundle_platforms.validate_gui_link_inputs(root)
+
     def test_foreign_host_producer_is_rejected_before_download(self):
         entry = {"name": "gui-host", "target": "x64glibc", "repository": "other/repository",
                  "signer_workflow": gui_host_artifacts.WORKFLOW}

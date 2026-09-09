@@ -147,7 +147,7 @@ input or for historical platform releases.
 | Other Linux GUI shared libraries and startup objects | `build_gui.py` copies the build machine's installed inputs | No independent pinned producer, signed dependency receipt, or verified bundle admission yet; recorded local paths do not establish provenance. |
 | macOS framework and system link stubs | `build_gui.py` copies the selected Xcode SDK's stubs and records SDK identifiers | No independently versioned, verified SDK artifact yet. SDK origin and redistribution rights must be established; proprietary SDK stubs cannot be described as an open-source build. |
 | Rust crates embedded in the GUI host | Cargo uses the reviewed lockfile and CI caches compiled dependencies; cross-crate release LTO is disabled | The cache is not a separately released dependency artifact. Generic Rust code can be instantiated in the host, so separating it into a reusable binary requires an explicit ABI and compatibility policy. |
-| Prebuilt GUI host target directories | The bundler accepts host archives supplied as target directories | Those host bytes are not yet bound to an expected source commit and verified producer identity at admission. A signed dependency library does not establish the host's provenance. |
+| Prebuilt GUI host archives | The bundler verifies a host-release lock, producer provenance, exact inventory, and committed host source compatibility before staging extracted bytes | Host releases do not supply external system libraries or SDK stubs; included targets must have those inputs separately. |
 
 Host-owned engine objects, GUI Rust host archives, web `libhost.a`, and the Windows application
 resource remain platform build outputs. Changing their source should not change

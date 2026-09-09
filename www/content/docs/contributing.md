@@ -1139,25 +1139,34 @@ This produces a native executable, not a desktop
 installer. The Linux prebuilt host depends on the build machine's glibc/library ABI;
 portable release packaging needs a deliberate sysroot and license inventory.
 
-Prebuilt link inputs come from CI on their own release cycle instead of a
-local host build, and no binary is committed. The `GUI host link inputs`
-workflow (`gui-hosts.yml`, dispatched with a `gui-hosts-<date>` tag) builds the
-optimized `platform-gui/targets/<target>` trees on each supported runner,
-records signed build provenance, and publishes them as a GitHub release of
-`gui-link-inputs-<target>.tar` archives. Rerun it only when the host changes.
-To bundle from a published set, verify and extract each archive, then pass the
-extracted `targets/` tree:
+Prebuilt host archives come from the `GUI host link inputs` workflow
+(`gui-hosts.yml`) on their own release cycle. Dispatch it with a new
+`deps-gui-host-<version>` tag. It builds all three native hosts, extracts each
+candidate, and uses the pinned Roc compiler to build and run the GUI application
+specs before attesting and publishing `gui-host-<target>.tar` and its lock.
+
+Set `HOST_RELEASE` to the actual published tag, verify its lock asset, and pass
+the reviewed lock directly to the bundler:
 
 ```sh
-gh release download gui-hosts-2026-09-09 --pattern 'gui-link-inputs-*.tar' --dir /tmp/hosts
-gh attestation verify /tmp/hosts/gui-link-inputs-x64win.tar --repo lukewilliamboswell/roc-signals
-mkdir -p /tmp/hosts/targets && tar -xf /tmp/hosts/gui-link-inputs-x64win.tar -C /tmp/hosts/targets
-scripts/bundle.sh --package gui --no-build --prebuilt-targets /tmp/hosts/targets
+gh release download "$HOST_RELEASE" --pattern dependencies.lock.json --dir /tmp/hosts
+gh release verify-asset "$HOST_RELEASE" /tmp/hosts/dependencies.lock.json
+scripts/bundle.sh --package gui --no-build --prebuilt-host-lock /tmp/hosts/dependencies.lock.json
 ```
 
-`--prebuilt-targets` copies the tree into the staged platform alongside any
-inputs already present locally, so one bundle can carry every operating
-system's inputs.
+The bundler downloads and verifies every selected archive, including cached
+copies, against the locked digest, source commit, main ref, and this repository's
+host-producing workflow. It extracts into private staging and checks host source
+compatibility before copying any host outputs. Host-related source must be clean
+and committed; documentation-only commits do not invalidate host compatibility.
+Overlapping local and prebuilt hosts for one target are errors.
+
+These archives contain host code and licenses, not external system libraries or
+SDK stubs. Every included target must also have its external link inputs supplied;
+the bundler rejects incomplete targets. Windows imports and FreeType are fetched
+through their independent verified locks. Other Linux inputs and macOS SDK stubs
+still need their independent producer/admission work. Raw prebuilt directories
+are no longer accepted.
 
 The bundle output also contains every registered GUI app under `examples-gui/`,
 including its supporting Roc modules and semantic specs. Those generated app

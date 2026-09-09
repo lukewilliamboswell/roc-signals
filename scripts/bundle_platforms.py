@@ -10,10 +10,12 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from contextlib import ExitStack
 
-from build_gui import build as build_gui
+from build_gui import build as build_gui, MACOS_FRAMEWORKS
 from prepare_platforms import prepare_platform
 from gui_suite import examples as gui_examples
+from gui_host_artifacts import verified_hosts, HOST_FILES
 from prepare_dependencies import (verified_web_dependencies, WEB_ARTIFACTS,
                                   verified_windows_imports, WINDOWS_IMPORTS,
                                   verified_freetype, FREETYPE,
@@ -82,6 +84,27 @@ def validate_gui_archives(tree):
                 raise ValueError(f"missing or invalid GUI archive: {path}; rebuild the target directory")
 
 
+def validate_gui_link_inputs(tree):
+    """Do not publish a host-only target as a complete platform target."""
+    validate_gui_archives(tree)
+    required = []
+    if (tree / "x64glibc").is_dir():
+        names = ("crt1.o", "crti.o", "crtn.o", "libfreetype.so", "libxkbcommon.so",
+                 "libxkbcommon-x11.so", "libgcc_s.so", "libutil.so", "librt.so",
+                 "libpthread.so", "libm.so", "libdl.so", "libc.so")
+        required.extend(tree / "x64glibc" / name for name in names)
+    if (tree / "x64win").is_dir():
+        required.extend(tree / "x64win" / name for name in ("signals.res", "advapi32.lib"))
+    if (tree / "arm64mac").is_dir():
+        sdk = tree / "macos-sysroot"
+        required.extend(sdk / "usr/lib" / name for name in ("libSystem.tbd", "libobjc.tbd", "libc++.tbd"))
+        required.extend(sdk / "System/Library/Frameworks" / (name + ".framework") / (name + ".tbd")
+                        for name in MACOS_FRAMEWORKS)
+    for path in required:
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"missing or invalid GUI link dependency: {path}")
+
+
 def stage_windows_inputs(source, stage):
     """Combine the selected Windows host outputs with newly verified imports."""
     names = ("signals_gpui_host.lib", "engine.lib", "signals.res")
@@ -135,8 +158,8 @@ def main():
     parser.add_argument('--package', choices=['all', 'web', 'gui'], default='all')
     parser.add_argument('--no-build', action='store_true')
     parser.add_argument('--debug-gui', action='store_true')
-    parser.add_argument('--prebuilt-targets', type=Path, action='append', default=[],
-                        help='A targets/ tree of CI-built GUI link inputs to include alongside local ones')
+    parser.add_argument('--prebuilt-host-lock', type=Path, action='append', default=[],
+                        help='Verified GUI host release lock to include alongside local targets')
     parser.add_argument('--output-dir', type=Path, default=Path(os.environ.get('BUNDLE_OUT_DIR', str(ROOT / '.test-out/bundles'))))
     parser.add_argument('--serve', action='store_true')
     parser.add_argument('--port', type=int, default=8000)
@@ -158,7 +181,7 @@ def main():
         package_out.mkdir(parents=True, exist_ok=True)
         # Roc publishes its cwd-local temporary archive with rename. Keep the
         # source staging tree on the output filesystem (upstream bug 14).
-        with tempfile.TemporaryDirectory(prefix='.signals-bundle-', dir=package_out) as tmp:
+        with tempfile.TemporaryDirectory(prefix='.signals-bundle-', dir=package_out) as tmp, ExitStack() as resources:
             stage = Path(tmp)
             source = ROOT / ('platform-' + package)
             prepare_platform(source, stage)
@@ -166,14 +189,30 @@ def main():
             if package == 'web':
                 stage_web_inputs(source, stage)
             if package == 'gui':
-                trees = [source / 'targets'] + [prebuilt.resolve() for prebuilt in args.prebuilt_targets]
+                trees = [source / 'targets'] if (source / 'targets').is_dir() else []
+                for lock in args.prebuilt_host_lock:
+                    inputs = resources.enter_context(verified_hosts(
+                        lock.resolve(), Path.home() / '.cache/roc-signals/dependencies', ROOT))
+                    receipt = json.loads((inputs / 'dependencies.lock.json').read_text())
+                    identities = tuple(receipt['artifacts'])
+                    trees.extend(inputs / identity / 'targets' for identity in identities)
+                    stage_dependency_inputs(inputs, identities, stage)
             hosts = []
             windows_targets = []
+            selected_targets = set()
             for tree in trees:
                 if not tree.is_dir():
                     raise SystemExit(f'Prebuilt targets directory not found: {tree}')
-                validate_gui_archives(tree)
-                if (tree / 'x64win').is_dir():
+                for target, names in HOST_FILES.items():
+                    if any((tree / target / name).exists() for name in (*names, 'libhost.a', 'host.lib')):
+                        for name in names:
+                            path = tree / target / name
+                            if not path.is_file() or path.is_symlink():
+                                raise ValueError(f'missing or invalid GUI host output: {path}')
+                        if target in selected_targets:
+                            raise ValueError(f'select one local or verified host tree for {target}')
+                        selected_targets.add(target)
+                if (tree / 'x64win/signals_gpui_host.lib').is_file():
                     windows_targets.append(tree / 'x64win')
                 hosts += [(tree, p) for p in tree.rglob('*')
                           if p.is_file() and p.relative_to(tree).parts[0] != 'x64win'
@@ -196,6 +235,8 @@ def main():
                     stage_dependency_inputs(inputs, (FREETYPE,), stage)
                 with verified_xkbcommon() as inputs:
                     stage_dependency_inputs(inputs, (XKBCOMMON,), stage)
+            if package == 'gui':
+                validate_gui_link_inputs(stage / 'targets')
             for name in ['LICENSE', 'THIRD_PARTY_LICENSES.md']:
                 if (ROOT / name).is_file():
                     shutil.copyfile(ROOT / name, stage / name)
