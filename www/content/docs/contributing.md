@@ -1307,3 +1307,28 @@ the host build fingerprint, because packaging verified archives does not alter
 host bytes. Packaging-only changes therefore reuse a compatible host release;
 changes to actual host inputs still invalidate that compatibility check. The
 existing web release workflow and supported web release are independent.
+
+### Inspect macOS shader compilation evidence
+
+The candidate-only `macOS Metal compilation evidence` workflow builds GPUI with
+Rust 1.95.0 in an empty Cargo target directory. An `xcrun` recorder delegates the
+original `metal` and `metallib` commands, retaining execution diagnostics,
+resolved tool hashes and version output, Xcode/SDK/toolchain identity fields,
+and hashes of the GPUI shader, generated header, AIR and Metal library. The
+recorded outputs must belong to the selected GPUI Cargo build script, and the
+Metal library must consume the recorded AIR output. Restored compiler artifacts
+cannot substitute for these fresh invocations.
+
+Run the same inventory on Apple Silicon with the selected Xcode/Metal component:
+
+```sh
+TOOLCHAINS=Metal python3 scripts/macos_metal_evidence.py --output /tmp/metal-evidence
+```
+
+Only JSON and Cargo evidence are uploaded. Apple SDK files, tool binaries and
+compiled shader binaries are not included. This records observed tooling and
+source identities; it does not establish a hermetic Apple compiler distribution
+or enable Mac releases. Complete target-specific crate/toolchain notice collection
+remains separate. The original objc2 SDK-derived qualification remains retained
+in the host notice review records; generated interfaces and shader evidence do
+not replace or reinterpret that upstream declaration.

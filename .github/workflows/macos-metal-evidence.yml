@@ -1,0 +1,54 @@
+name: macOS Metal compilation evidence
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/macos-metal-evidence.yml
+      - scripts/macos_metal_evidence.py
+      - scripts/test_macos_metal_evidence.py
+      - scripts/cargo_build_evidence.py
+      - scripts/host_build_identity.py
+      - crates/gpui-host/**
+      - Cargo.toml
+      - Cargo.lock
+      - .cargo/config.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-metal-evidence-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inventory:
+    name: Capture fresh native Metal and Cargo evidence
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      RUSTUP_TOOLCHAIN: 1.95.0
+      TOOLCHAINS: Metal
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install pinned Rust and selected Metal component
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          xcodebuild -downloadComponent MetalToolchain
+      - name: Check evidence rejection cases
+        run: python3 -m unittest discover -s scripts -p test_macos_metal_evidence.py
+      - name: Compile host and shaders in an empty Cargo target
+        run: python3 scripts/macos_metal_evidence.py --output "$RUNNER_TEMP/metal-evidence"
+      - name: Upload metadata and Cargo evidence only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: macos-metal-evidence
+          path: ${{ runner.temp }}/metal-evidence
+          if-no-files-found: error
+          retention-days: 30
