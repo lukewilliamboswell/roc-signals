@@ -36,3 +36,4 @@ plan.md
 
 /target/
 *.so.*
+/main
