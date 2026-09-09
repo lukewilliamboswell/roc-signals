@@ -79,6 +79,7 @@ def invoke(arguments, environment):
 
 def validate_invocations(records, metadata, target_directory):
     """Require one fresh shader compilation and its exact linked Metal library."""
+    target_directory = target_directory.resolve()
     if len(records) != 2 or sorted(r['tool'] for r in records) != ['metal', 'metallib']:
         raise ValueError('expected fresh metal and metallib invocations')
     by_tool = {record['tool']: record for record in records}
@@ -119,7 +120,7 @@ def capture(destination):
     fingerprint = source_fingerprint(ROOT)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='signals-metal-build-') as temporary:
-        work = Path(temporary)
+        work = Path(temporary).resolve()
         wrappers = work / 'bin'
         wrappers.mkdir()
         invocations = work / 'invocations'
@@ -152,7 +153,7 @@ def capture(destination):
         gpui_id = next(p['id'] for p in metadata['packages'] if p['name'] == 'gpui')
         messages = [json.loads(line) for line in (work / 'cargo-evidence/cargo.jsonl').read_text().splitlines()
                     if line.startswith('{')]
-        script_outputs = [Path(m['out_dir']) for m in messages
+        script_outputs = [Path(m['out_dir']).resolve() for m in messages
                           if m.get('reason') == 'build-script-executed' and m['package_id'] == gpui_id]
         if len(script_outputs) != 1 or any(Path(r['output']['path']).parent != script_outputs[0] for r in records):
             raise ValueError('shader outputs do not belong to the selected GPUI build script')
