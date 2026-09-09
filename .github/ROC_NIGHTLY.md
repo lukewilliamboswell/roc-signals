@@ -5,8 +5,8 @@ nightly, creates a verified signed pin-only PR, validates its exact commit, and
 automatically merges a passing update. Source fixes and release URL changes remain
 manually reviewed PRs.
 
-Literal `roc` fields in the platform and all public application headers own the
-compiler pins. `.github/roc-nightly.json` selects these roots and the validation
+Literal `roc` fields in both platforms and every web and GUI example header
+own the compiler pins, including internal web fixtures. `.github/roc-nightly.json` selects these roots and the validation
 workflows; it contains no duplicate version authority. The selected pins agree.
 The bot changes only their compiler literals, preserving all package/platform URLs.
 

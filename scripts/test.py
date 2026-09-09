@@ -297,6 +297,7 @@ def run_zig_suite() -> None:
         "scripts/test_driver_paths.py",
         "scripts/test_known_failures.py",
         "scripts/test_release.py",
+        "scripts/test_dependency_artifacts.py",
     ])
 
 

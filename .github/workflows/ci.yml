@@ -78,6 +78,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev
           rustup toolchain install 1.95.0 --profile minimal
+      - name: Restore compiled Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+        with:
+          shared-key: gui-dependencies
+          cache-workspace-crates: false
+          cache-bin: false
+          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Verify GUI discovery and applications
         env:
           RUSTUP_TOOLCHAIN: 1.95.0
@@ -99,6 +109,16 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
       - name: Install GUI host build dependencies
         run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Restore compiled Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+        with:
+          shared-key: gui-dependencies
+          cache-workspace-crates: false
+          cache-bin: false
+          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Verify GUI discovery and applications
         env:
           RUSTUP_TOOLCHAIN: 1.95.0

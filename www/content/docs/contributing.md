@@ -36,7 +36,10 @@ examples`, and `Release archive`. The release workflow additionally validates
 archives on Linux x64/arm64 and Intel/Apple Silicon macOS. Pages deploys the
 supported release, not development builds from ordinary pushes.
 
-Compiler pins live in the platform and public application headers. Run
+Compiler pins live in both platform headers and every web and GUI example
+header, including internal web fixtures. `.github/roc-nightly.json` selects all
+of them for coordinated compiler updates; adding an example requires registering
+its header there. Public web dependency URLs remain unchanged during these updates. Run
 `python3 scripts/toolchain.py --check --roc-bin /path/to/roc` to validate the
 selected roots and installed compiler. The nightly bot advances those pins while
 preserving release URLs and automatically merges only a passing pin-only PR.
@@ -181,6 +184,49 @@ layout:
 
 Roc app executables built during tests are written under `.test-out/` by
 `scripts/test.py`.
+
+## Dependency artifact releases
+
+The `Dependency releases` workflow builds musl from `dependencies/musl.json`,
+tests the exact archives on Linux x86-64 and AArch64, and checks that a second
+build produces the same bytes. Pull requests validate without publication.
+An explicit dispatch on `main` with a new `deps-musl-<version>` tag publishes
+those tested archives with signed GitHub build provenance and a consumer lock.
+The workflow does not compile the platform host or a Roc application.
+
+To exercise the producer locally on Linux x86-64 with Zig 0.16.0, Git, and Make:
+
+```sh
+python3 scripts/build_musl.py --target x64musl --output /tmp/musl-candidate
+python3 scripts/test_musl_artifact.py /tmp/musl-candidate/musl-x64musl.tar --target x64musl
+python3 -m unittest scripts/test_dependency_artifacts.py
+```
+
+Use a fresh output directory for each build. Local candidate testing establishes
+link behavior; release consumption additionally requires CI-signed provenance.
+Review the published `dependencies.lock.json` before adopting it. Fetch and verify
+a selected locked artifact with the GitHub CLI installed:
+
+```sh
+python3 scripts/dependency_artifacts.py --lock dependencies.lock.json --artifact musl-x64musl --output /tmp/verified-musl
+```
+
+The default download cache is `~/.cache/roc-signals/dependencies`; `--cache` selects
+another directory. Digest and provenance verification also run on cached bytes.
+The output retains the selected lock and a directory for each artifact, containing
+its manifest, target files, and license notices. Existing output directories are
+rejected. There is no unsigned fallback or automatic dependency upgrade.
+
+Publication refuses an existing tag or release. If a run stops during publication,
+inspect the existing tag, assets, and attestations, and recover the tested bytes;
+do not overwrite the release or rebuild under its existing identity.
+
+GUI CI caches compiled Cargo dependencies using the lockfile, Rust environment,
+and runner image identity. Only successful pushes to `main` save the cache;
+pull requests restore it without publishing entries. Workspace host code remains
+outside that dependency cache and is rebuilt from the current checkout. This is
+a build acceleration mechanism, separate from verification of release inputs.
+Published-download checks continue to use fresh Roc caches.
 
 ## Coverage
 

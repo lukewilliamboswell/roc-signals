@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 import re
 import subprocess
-import tomllib
 
 from compiler_pins import TOKEN, discover, local_sources, read_pin, version
 
@@ -63,10 +62,12 @@ def development_pin(root: Path = ROOT) -> str:
 
 def validate_roots(root: Path = ROOT) -> str:
     config = json.loads((root / ".github/roc-nightly.json").read_text())
-    examples = tomllib.loads((root / "www/data/examples.toml").read_text())["examples"]
-    expected = {"platform-web/main.roc"} | {e["source"] for e in examples if e.get("public", True)}
+    expected = {"platform-web/main.roc", "platform-gui/main.roc"}
+    for directory in ("examples-web", "examples-gui"):
+        expected.update(path.relative_to(root).as_posix()
+                        for path in (root / directory).rglob("main.roc"))
     if set(config["compiler_roots"]) != expected:
-        raise ValueError("compiler_roots must select the platform and every public application")
+        raise ValueError("compiler_roots must select both platforms and every web and GUI example")
     if (root / ".roc-version").exists():
         raise ValueError("remove competing .roc-version authority")
     return version(discover(local_sources(root, config["compiler_roots"])))

@@ -122,8 +122,28 @@ class ReleaseTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(str(Path(directory) / "example_tasks.mjs"), result.stderr)
 
-    def test_selected_roots_cover_every_public_example(self):
+    def test_selected_roots_cover_both_platforms_and_every_example(self):
         self.assertEqual(toolchain.validate_roots(), toolchain.development_pin())
+
+    def test_new_example_requires_a_pin_and_updater_registration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".github").mkdir()
+            paths = ["platform-web/main.roc", "platform-gui/main.roc",
+                     "examples-web/hello/main.roc", "examples-gui/hello/main.roc"]
+            for name in paths:
+                path = root / name
+                path.parent.mkdir(parents=True)
+                path.write_text('app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "local" }')
+            config = root / ".github/roc-nightly.json"
+            config.write_text(json.dumps({"compiler_roots": paths[:-1]}))
+            with self.assertRaisesRegex(ValueError, "every web and GUI example"):
+                toolchain.validate_roots(root)
+            config.write_text(json.dumps({"compiler_roots": paths}))
+            self.assertEqual(toolchain.validate_roots(root), "nightly-2026-09-04-c125b82")
+            (root / paths[-1]).write_text('app [main] { pf: platform "local" }')
+            with self.assertRaisesRegex(ValueError, "no literal pin"):
+                toolchain.validate_roots(root)
 
     def test_release_writes_require_explicit_tested_main_dispatch(self):
         sha = "a" * 40

@@ -1,4 +1,5 @@
 app [main] {
+	roc: "nightly-2026-09-04-c125b82",
 	pf: platform "../../../platform-web/main.roc",
 	rand: "https://github.com/kili-ilo/roc-random/releases/download/0.9.2/2ZXLX8WRqrosGu1V3VL5aXqgtfTRvJmjFPx8a26ecVmc.tar.zst",
 }
