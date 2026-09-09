@@ -53,12 +53,14 @@ Try a prebuilt release candidate with Roc `nightly-2026-09-04-c125b82`:
 | --- | --- |
 | Linux x86_64 (glibc/Wayland) | [Linux starters — rc.1](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.1/signals-gui-starters.zip) |
 | Apple Silicon macOS | [Mac starters — rc.2](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.2/signals-gui-starters.zip) |
+| Windows x86_64 | [Windows starters — rc.3](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.3/signals-gui-starters.zip) |
 
 Extract the archive and build Counter with `roc build --target=x64glibc --output=counter examples-gui/counter/main.roc`
 on Linux, or `roc build --target=arm64mac --output=counter examples-gui/counter/main.roc`
-on Apple Silicon. Run `./counter`. These starters need no Rust, Zig, or repository
+on Apple Silicon. Run `./counter`. On Windows, use
+`roc build --target=x64mingw --output=counter.exe examples-gui/counter/main.roc`
+and run `.\counter.exe` in PowerShell. These starters need no Rust, Zig, or repository
 checkout. See [Native GUI](www/content/docs/native-gui.md#try-a-release-candidate) for runtime requirements.
-Windows release validation is still in progress.
 
 Public web examples pin immutable platform/package release URLs. The nightly bot
 updates their compiler pins and the development platform pin together, tests both
