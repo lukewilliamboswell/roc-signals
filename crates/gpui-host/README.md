@@ -104,3 +104,14 @@ On macOS, use `TOOLCHAINS=Metal cargo test ...` to select Xcode's Metal componen
 These tests cover actual GPUI row layout, retained identity on reorder, removal,
 checked-payload ingress, and disabled/stale dispatch. The focused Roc fixture in
 `test/gui/presentation` covers the same shared-engine control workflow.
+
+For a real Task Board adapter-to-engine drop smoke, build the current host and
+app together, then run:
+
+```sh
+./main --smoke --smoke-drop task-1 'column-In progress'
+```
+
+This invokes the same guarded drop callback as pointer delivery, crosses the
+Rust/Zig/Roc boundary, and checks that the card is rendered under the destination.
+It does not simulate OS pointer motion; GPUI input tests cover pointer delivery.

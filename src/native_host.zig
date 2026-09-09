@@ -6820,13 +6820,13 @@ test "signals host supplies the configured native entropy seed as little endian 
 
     const cap = testHostValueCapability(&roc_host);
     defer hv.releaseHostValueCapability(cap, &roc_host);
-    const value = host.initialEntropySeedPayload(&roc_host, cap);
+    const value = NativeCtx.initialEntropySeedPayload(&host, &roc_host, cap);
     defer testDropHostValue(&roc_host, value);
     const payload = testReadHostValueU8List(&roc_host, value);
     try std.testing.expectEqualSlices(u8, &.{ 0x53, 0x63, 0x6f, 0x72 }, payload.items());
 
     host.entropy_seed = 0;
-    const deterministic = host.initialEntropySeedPayload(&roc_host, cap);
+    const deterministic = NativeCtx.initialEntropySeedPayload(&host, &roc_host, cap);
     defer testDropHostValue(&roc_host, deterministic);
     const deterministic_payload = testReadHostValueU8List(&roc_host, deterministic);
     try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, deterministic_payload.items());
@@ -13150,5 +13150,72 @@ test "native GUI drop dispatch preserves event detail through the real engine bo
     for (1..3) |expected| {
         Gpui.dispatch(1, 3, "task-λ".ptr, "task-λ".len, 0);
         try expectHostValueI64(Gpui.host.stateValueByNodeId(state_id), @intCast(expected));
+    }
+}
+
+test "native GUI unit input and checked dispatch preserve their extraction descriptors" {
+    inline for (.{ RenderEventKind.click, RenderEventKind.input, RenderEventKind.check }) |kind| {
+        const Reducer = struct {
+            fn call(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+                const values = testErasedArgsAs(ErasedHostValueTernaryArgs, args);
+                const current = testReadHostValueI64(roc_host, values.arg0);
+                switch (kind) {
+                    .click => {},
+                    .input => {
+                        var text = testReadHostValueStr(roc_host, values.arg2);
+                        defer text.decref(roc_host);
+                        if (!std.mem.eql(u8, text.asSlice(), "edited-λ")) @panic("input changed text");
+                    },
+                    .check => if (testReadHostValueBool(roc_host, values.arg2) != (current == 0)) @panic("check changed boolean"),
+                    else => unreachable,
+                }
+                const host = hostFromRocHost(roc_host);
+                writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, current + 1)));
+            }
+        };
+        try std.testing.expect(!Gpui.live);
+        Gpui.host = HostEnv.init();
+        Gpui.roc_host = makeSignalsRocHost(&Gpui.host);
+        Gpui.host.engine.roc_host = &Gpui.roc_host;
+        Gpui.child_order = signals.native_child_order.Tree.init(Gpui.host.hostAllocator());
+        Gpui.live = true;
+        defer {
+            Gpui.live = false;
+            Gpui.clear();
+            Gpui.child_order.deinit();
+            Gpui.host.deinit();
+            std.testing.expectEqual(.ok, Gpui.host.gpa.deinit()) catch @panic("GUI event dispatch leaked");
+        }
+        const plan: EventExtractionPlanKind = switch (kind) {
+            .click => .none,
+            .input => .target_value,
+            .check => .target_checked,
+            else => unreachable,
+        };
+        const state_token = newTestBinderToken(&Gpui.roc_host);
+        const attr = testNodeEventAttrWithPlan(&Gpui.roc_host, kind, state_token, plan, &Reducer.call);
+        const target = testElementWith(&Gpui.roc_host, "input", &.{attr}, &.{});
+        const root = testNodeStateWithTokenAndInitial(&Gpui.roc_host, state_token, testHostValueI64(0), target);
+        defer root.decref(&Gpui.roc_host);
+        var stream: HostNodeDescriptorStream = .{};
+        Gpui.host.collectActiveElemRootDescriptors(&Gpui.roc_host, &stream, root, &.{});
+        _ = applyNodeDescriptorStream(&Gpui.host, &Gpui.roc_host, &stream);
+        Gpui.host.rebuildActiveEventsFromStream(&stream);
+        Gpui.host.engine.active_stream = stream;
+        const event = Gpui.host.engine.active_events.items[0];
+        const state_id = stream.scope_sites.items[0].node_id;
+        try std.testing.expect(event.payload_descriptor.eql(kind.payloadDescriptor()));
+        try std.testing.expect(!event.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .detail)));
+        const wire_kind: u32 = switch (kind) {
+            .click => 0,
+            .input => 1,
+            .check => 2,
+            else => unreachable,
+        };
+        const bytes: []const u8 = if (kind == .input) "edited-λ" else "";
+        for (1..3) |expected| {
+            Gpui.dispatch(1, wire_kind, bytes.ptr, bytes.len, if (kind == .check and expected == 1) 1 else 0);
+            try expectHostValueI64(Gpui.host.stateValueByNodeId(state_id), @intCast(expected));
+        }
     }
 }

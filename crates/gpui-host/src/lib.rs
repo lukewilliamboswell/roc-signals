@@ -721,6 +721,10 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
         .windows(2)
         .find(|a| a[0] == "--smoke-click")
         .map(|a| a[1].clone());
+    let drop_request = args
+        .windows(3)
+        .find(|a| a[0] == "--smoke-drop")
+        .map(|a| (a[1].clone(), a[2].clone()));
     let expected = args
         .windows(2)
         .find(|a| a[0] == "--smoke-expect")
@@ -765,6 +769,35 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                 window
                     .update(cx, |runtime, _, cx| {
                         assert!(runtime.renders.get() > 0, "no GPUI views rendered");
+                        if let Some((key, target_id)) = drop_request.as_ref() {
+                            let source = runtime
+                                .nodes
+                                .values()
+                                .find(|view| view.read(cx).node.drag_key == *key)
+                                .expect("smoke drag source missing");
+                            let source_node = &source.read(cx).node;
+                            let item = drag::Item {
+                                key: key.clone(),
+                                source: source_node.id,
+                                lifetime: source_node.lifetime,
+                                view: source.entity_id(),
+                                runtime: cx.entity_id(),
+                            };
+                            let destination = runtime
+                                .nodes
+                                .values()
+                                .find(|view| view.read(cx).node.test_id == *target_id)
+                                .expect("smoke drop target missing");
+                            let destination_node = &destination.read(cx).node;
+                            let target = drag::Target {
+                                node: destination_node.id,
+                                event: destination_node.drop,
+                                lifetime: destination_node.lifetime,
+                                view: destination.entity_id(),
+                                runtime: cx.entity_id(),
+                            };
+                            assert!(runtime.accept_drop(target, &item, cx), "smoke drop refused");
+                        }
                         if let Some(label) = click {
                             let node = runtime
                                 .nodes
@@ -797,6 +830,44 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                     .await;
                 window
                     .update(cx, |runtime, _, cx| {
+                        if let Some((key, target_id)) = drop_request.as_ref() {
+                            let source = runtime
+                                .nodes
+                                .values()
+                                .find(|view| view.read(cx).node.drag_key == *key)
+                                .expect("smoke drag source disappeared")
+                                .read(cx)
+                                .node
+                                .id;
+                            let destination = runtime
+                                .nodes
+                                .values()
+                                .find(|view| view.read(cx).node.test_id == *target_id)
+                                .expect("smoke drop target disappeared")
+                                .read(cx)
+                                .node
+                                .id;
+                            let mut ancestor = Some(source);
+                            let mut reached = false;
+                            for _ in 0..=runtime.nodes.len() {
+                                let Some(id) = ancestor else {
+                                    break;
+                                };
+                                if id == destination {
+                                    reached = true;
+                                    break;
+                                }
+                                ancestor = runtime
+                                    .nodes
+                                    .get(&id)
+                                    .expect("smoke parent missing")
+                                    .read(cx)
+                                    .node
+                                    .parent;
+                            }
+                            assert!(reached, "smoke drop did not move {key} into {target_id}");
+                            eprintln!("PASS: dropped {key} into {target_id}");
+                        }
                         if let Some(expected) = expected {
                             assert!(
                                 runtime
