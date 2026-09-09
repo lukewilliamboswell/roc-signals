@@ -20,6 +20,42 @@ CACHE = Path.home() / ".cache/roc-signals/dependencies"
 WEB_ARTIFACTS = ("musl-x64musl", "musl-arm64musl")
 WINDOWS_IMPORTS = "windows-imports-x64win"
 FREETYPE = "freetype-x64glibc"
+GLIBC = "glibc-x64glibc"
+GLIBC_LIBRARIES = ("crt1.o", "libc.so", "libm.so", "libc_nonshared.a")
+GLIBC_SOURCE_FILES = (
+    "source.tar.xz", "dependencies/glibc.json", "dependencies/glibc/COPYING.LIB",
+    "dependencies/glibc/Dockerfile", "test/dependencies/glibc.c",
+    "scripts/build_glibc.py", "scripts/dependency_archive.py", "scripts/dependency_artifacts.py",
+)
+
+
+@contextmanager
+def verified_glibc(lock=LOCK, cache=CACHE):
+    """Require the release's startup objects, stubs, notices and reproduction sources."""
+    with tempfile.TemporaryDirectory(prefix="signals-verified-glibc-") as temporary:
+        destination = Path(temporary) / "inputs"
+        materialize(lock, (GLIBC,), cache, destination)
+        manifest = json.loads((destination / GLIBC / "dependency.json").read_text())
+        expected = {"targets/x64glibc/" + name for name in GLIBC_LIBRARIES}
+        expected.update("licenses/glibc/" + name for name in ("COPYING.LIB", "LICENSES", "LICENSE-ZIG"))
+        expected.update("sources/glibc/" + name for name in GLIBC_SOURCE_FILES)
+        if set(manifest["files"]) != expected:
+            raise ValueError("incomplete or unexpected glibc inputs")
+        yield destination
+
+
+def install_glibc(destination, lock=LOCK, cache=CACHE):
+    """Verify and stage every input before replacing development copies."""
+    with verified_glibc(lock, cache) as inputs:
+        source = inputs / GLIBC / "targets/x64glibc"
+        destination.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=destination, prefix=".glibc-") as temporary:
+            stage = Path(temporary)
+            for name in GLIBC_LIBRARIES:
+                shutil.copyfile(source / name, stage / name)
+            for name in GLIBC_LIBRARIES:
+                (stage / name).replace(destination / name)
+        return json.loads((inputs / "dependencies.lock.json").read_text())
 XKBCOMMON = "xkbcommon-x64glibc"
 XKBCOMMON_LIBRARIES = ("libxkbcommon.so", "libxkbcommon-x11.so")
 
