@@ -1,4 +1,4 @@
-"""Web bundles admit verified dependencies, never arbitrary checkout binaries."""
+"""Platform bundles admit verified dependencies, never arbitrary checkout binaries."""
 
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,6 +17,19 @@ import prepare_dependencies
 
 
 class DependencyStagingTests(unittest.TestCase):
+    def test_windows_checkout_preserves_vendored_upstream_bytes(self):
+        source = prepare_dependencies.ROOT / "vendor/unicode"
+        inventory = json.loads((source / "upstream.json").read_bytes())["files_sha256"]
+        checkout = self.root / "checkout"
+        paths = ["vendor/unicode/" + name for name in inventory]
+        subprocess.run([
+            "git", "-c", "core.autocrlf=true", "checkout-index",
+            "--prefix=" + checkout.as_posix() + "/", "--", *paths,
+        ], cwd=prepare_dependencies.ROOT, check=True)
+        for name, expected in inventory.items():
+            data = (checkout / "vendor/unicode" / name).read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(), expected, name)
+
     def test_compiled_dependency_and_host_binaries_are_not_tracked(self):
         tracked = subprocess.check_output([
             "git", "ls-files", "--", "*.a", "*.lib", "*.o", "*.obj", "*.wasm",

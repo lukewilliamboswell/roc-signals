@@ -1,0 +1,2 @@
+# The upstream receipt hashes exact vendored bytes, including line endings.
+/vendor/unicode/** -text
