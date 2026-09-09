@@ -93,6 +93,26 @@ implementation at runtime. This producer does not include the GCC unwinder or
 adopt a consumer lock. Production consumption requires a separately reviewed
 release lock and platform-header update.
 
+## LLVM unwinder producer
+
+`unwind.json` pins Zig's source distribution and compiler for an independently
+released Linux x86-64 `libunwind.a`. This replaces a dependency on ambient GCC
+unwinder packaging once a release is adopted. It is a static implementation,
+whereas the glibc producer's shared-library files are runtime link stubs.
+
+The producer builds in an offline container with private caches and fixed paths.
+It extracts the candidate and links an exception/destructor probe with explicit
+startup and C++ support inputs and no implicit standard libraries. CI also links
+Rust's panic recovery and destructor probe against the exact extracted archive.
+The private C++ support libraries are never published. A second clean container
+must produce the same archive bytes before the main-only workflow can attest
+and publish them.
+
+The archive retains the complete original libunwind source tree, its full
+`LICENSE.TXT` including LLVM exceptions and legacy notices, Zig's license, and
+standalone reproduction inputs. The consumer lock and platform header are
+reviewed separately; this producer alone does not change existing bundles.
+
 ## Coverage and remaining boundaries
 
 The artifact contract above applies to dependencies selected in the root
