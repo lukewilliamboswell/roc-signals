@@ -1,7 +1,15 @@
 # Third-Party Licenses
 
-This project bundles third-party libraries for static linking on Linux musl
-targets and release tooling.
+This project bundles third-party platform link inputs and release tooling.
+
+## FreeType
+
+Files: verified dependency release input `targets/x64glibc/libfreetype.so`.
+
+This software is based in part on the work of the FreeType Team. The dependency
+release selects the FreeType License and includes the upstream license texts and
+acknowledgment under `licenses/freetype/`. GUI bundles retain these notices,
+the dependency manifest, and the verified release lock.
 
 ## roc-automation
 

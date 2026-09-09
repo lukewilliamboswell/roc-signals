@@ -17,6 +17,60 @@ import prepare_dependencies
 
 
 class DependencyStagingTests(unittest.TestCase):
+    def test_freetype_admission_requires_complete_license_inventory(self):
+        files = {"targets/x64glibc/libfreetype.so": {}}
+        files.update({"licenses/freetype/" + name: {} for name in
+                      ("LICENSE.TXT", "FTL.TXT", "GPLv2.TXT", "NOTICE")})
+
+        def materialize(lock, identities, cache, destination):
+            artifact = destination / prepare_dependencies.FREETYPE
+            artifact.mkdir(parents=True)
+            (artifact / "dependency.json").write_text(json.dumps({"files": files}))
+
+        with patch.object(prepare_dependencies, "materialize", side_effect=materialize):
+            with prepare_dependencies.verified_freetype() as admitted:
+                self.assertTrue(admitted.is_dir())
+            files.pop("licenses/freetype/NOTICE")
+            with self.assertRaisesRegex(ValueError, "incomplete or unexpected FreeType inputs"):
+                with prepare_dependencies.verified_freetype():
+                    self.fail("incomplete inventory was admitted")
+
+    def test_bundle_merges_dependency_receipts_and_rejects_conflicting_identity(self):
+        stage = self.root / "combined"
+        stage.mkdir()
+        for identity in ("freetype-x64glibc", "windows-imports-x64win"):
+            (self.inputs / identity).mkdir()
+            (self.inputs / "dependencies.lock.json").write_text(json.dumps({
+                "schema_version": 1, "artifacts": {identity: {"sha256": identity}},
+            }))
+            bundle_platforms.stage_dependency_inputs(self.inputs, (identity,), stage)
+        receipt = json.loads((stage / "dependencies.lock.json").read_text())
+        self.assertEqual(set(receipt["artifacts"]), {"freetype-x64glibc", "windows-imports-x64win"})
+        original = (stage / "dependencies.lock.json").read_bytes()
+        (self.inputs / "dependencies.lock.json").write_text(json.dumps({
+            "schema_version": 1, "artifacts": {"freetype-x64glibc": {"sha256": "different"}},
+        }))
+        with self.assertRaisesRegex(ValueError, "conflicting dependency receipt"):
+            bundle_platforms.stage_dependency_inputs(self.inputs, ("freetype-x64glibc",), stage)
+        self.assertEqual((stage / "dependencies.lock.json").read_bytes(), original)
+
+    def test_freetype_verification_failure_preserves_existing_input_and_prevents_build(self):
+        destination = self.root / "linux"
+        destination.mkdir()
+        library = destination / "libfreetype.so"
+        library.write_bytes(b"previous verified bytes")
+        with patch.object(prepare_dependencies, "verified_freetype", side_effect=ValueError("untrusted signer")):
+            with self.assertRaisesRegex(ValueError, "untrusted signer"):
+                prepare_dependencies.install_freetype(destination)
+        self.assertEqual(library.read_bytes(), b"previous verified bytes")
+        self.assertEqual(list(destination.iterdir()), [library])
+        with patch.object(build_gui, "host_target", return_value="x64glibc"), patch.object(
+                build_gui, "install_freetype", side_effect=ValueError("untrusted signer")), patch.object(
+                build_gui.subprocess, "run") as compiler:
+            with self.assertRaisesRegex(ValueError, "untrusted signer"):
+                build_gui.build()
+        compiler.assert_not_called()
+
     def test_windows_checkout_preserves_vendored_upstream_bytes(self):
         source = prepare_dependencies.ROOT / "vendor/unicode"
         inventory = json.loads((source / "upstream.json").read_bytes())["files_sha256"]
@@ -44,7 +98,7 @@ class DependencyStagingTests(unittest.TestCase):
         self.source = self.root / "platform"
         self.inputs = self.root / "verified"
         self.inputs.mkdir()
-        (self.inputs / "dependencies.lock.json").write_text("locked")
+        (self.inputs / "dependencies.lock.json").write_text(json.dumps({"schema_version": 1, "artifacts": {}}))
         for target in ("x64mac", "arm64mac", "x64musl", "arm64musl", "wasm32"):
             directory = self.source / "targets" / target
             directory.mkdir(parents=True)
@@ -73,7 +127,8 @@ class DependencyStagingTests(unittest.TestCase):
             bundle_platforms.stage_web_inputs(self.source, stage)
         self.assertEqual((stage / "targets/x64musl/libc.a").read_bytes(), b"verified libc")
         self.assertFalse((stage / "targets/x64mac/unexpected.a").exists())
-        self.assertEqual((stage / "dependencies.lock.json").read_text(), "locked")
+        self.assertEqual(json.loads((stage / "dependencies.lock.json").read_text()),
+                         {"schema_version": 1, "artifacts": {}})
         self.assertEqual((stage / "dependency-manifests/musl-arm64musl.json").read_text(), "arm64musl")
 
     def test_missing_host_is_not_replaced_with_a_dependency_artifact(self):
@@ -123,7 +178,7 @@ class DependencyStagingTests(unittest.TestCase):
     def test_windows_bundle_ignores_checkout_imports_and_extra_libraries(self):
         source = self.source / "targets/x64win"
         source.mkdir()
-        for name in ("host.lib", "signals.res", "advapi32.lib", "injected.lib"):
+        for name in ("signals_gpui_host.lib", "engine.lib", "host.lib", "signals.res", "advapi32.lib", "injected.lib"):
             (source / name).write_bytes(name.encode())
         artifact = self.inputs / prepare_dependencies.WINDOWS_IMPORTS
         (artifact / "targets/x64win").mkdir(parents=True)
@@ -133,14 +188,32 @@ class DependencyStagingTests(unittest.TestCase):
         with patch.object(bundle_platforms, "verified_windows_imports", self.verified):
             bundle_platforms.stage_windows_inputs(source, stage)
         self.assertEqual((stage / "targets/x64win/advapi32.lib").read_bytes(), b"verified import")
-        self.assertEqual((stage / "targets/x64win/host.lib").read_bytes(), b"host.lib")
+        for name in ("signals_gpui_host.lib", "engine.lib"):
+            self.assertEqual((stage / "targets/x64win" / name).read_bytes(), name.encode())
+        self.assertFalse((stage / "targets/x64win/host.lib").exists())
         self.assertFalse((stage / "targets/x64win/injected.lib").exists())
         self.assertEqual((stage / "dependency-manifests/windows-imports-x64win.json").read_text(), "verified manifest")
+
+    def test_gui_bundle_rejects_combined_only_and_missing_engine_layouts(self):
+        for target in ("x64glibc", "arm64mac", "x64win"):
+            tree = self.root / target
+            directory = tree / target
+            directory.mkdir(parents=True)
+            (directory / ("host.lib" if target == "x64win" else "libhost.a")).write_bytes(b"old")
+            with self.assertRaisesRegex(ValueError, "missing or invalid GUI archive"):
+                bundle_platforms.validate_gui_archives(tree)
+            rust, engine = (("signals_gpui_host.lib", "engine.lib") if target == "x64win"
+                            else ("libsignals_gpui_host.a", "libengine.a"))
+            (directory / rust).write_bytes(b"rust")
+            with self.assertRaisesRegex(ValueError, "missing or invalid GUI archive"):
+                bundle_platforms.validate_gui_archives(tree)
+            (directory / engine).write_bytes(b"engine")
+            bundle_platforms.validate_gui_archives(tree)
 
     def test_windows_bundle_has_no_unsigned_fallback(self):
         source = self.source / "targets/x64win"
         source.mkdir()
-        for name in ("host.lib", "signals.res", "advapi32.lib"):
+        for name in ("signals_gpui_host.lib", "engine.lib", "signals.res", "advapi32.lib"):
             (source / name).write_bytes(b"local")
         stage = self.root / "refused-windows-bundle"
         with patch.object(bundle_platforms, "verified_windows_imports", side_effect=ValueError("untrusted signer")):

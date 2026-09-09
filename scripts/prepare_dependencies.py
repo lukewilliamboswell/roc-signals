@@ -19,6 +19,37 @@ LOCK = ROOT / "dependencies.lock.json"
 CACHE = Path.home() / ".cache/roc-signals/dependencies"
 WEB_ARTIFACTS = ("musl-x64musl", "musl-arm64musl")
 WINDOWS_IMPORTS = "windows-imports-x64win"
+FREETYPE = "freetype-x64glibc"
+
+
+@contextmanager
+def verified_freetype(lock=LOCK, cache=CACHE):
+    """Admit only the complete FreeType library and license inventory."""
+    with tempfile.TemporaryDirectory(prefix="signals-verified-freetype-") as temporary:
+        destination = Path(temporary) / "inputs"
+        materialize(lock, (FREETYPE,), cache, destination)
+        manifest = json.loads((destination / FREETYPE / "dependency.json").read_text())
+        expected = {"targets/x64glibc/libfreetype.so"}
+        expected.update("licenses/freetype/" + name for name in
+                        ("LICENSE.TXT", "FTL.TXT", "GPLv2.TXT", "NOTICE"))
+        if set(manifest["files"]) != expected:
+            raise ValueError("incomplete or unexpected FreeType inputs")
+        yield destination
+
+
+def install_freetype(destination, lock=LOCK, cache=CACHE):
+    """Replace the development link input only after release verification."""
+    with verified_freetype(lock, cache) as inputs:
+        source = inputs / FREETYPE / "targets/x64glibc/libfreetype.so"
+        destination.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=destination, delete=False) as pending:
+            path = Path(pending.name)
+        try:
+            shutil.copyfile(source, path)
+            path.replace(destination / "libfreetype.so")
+        finally:
+            path.unlink(missing_ok=True)
+        return json.loads((inputs / "dependencies.lock.json").read_text())
 
 
 @contextmanager

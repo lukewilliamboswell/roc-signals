@@ -36,6 +36,18 @@
       "source_sha": "4d89ab1b69d529a7ae7ab876945cd1d7d8f2d7e5",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/windows-dependencies.yml"
+    },
+    "freetype-x64glibc": {
+      "name": "freetype",
+      "target": "x64glibc",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-freetype-2.14.3-20260909.1",
+      "asset": "freetype-x64glibc.tar",
+      "sha256": "56dd32c08700259dfbb8323852b6f9cc5c871d508712a0276987acea56a9c98b",
+      "size": 3778560,
+      "source_sha": "496d1da376fac0feef9bd3666859521837898663",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/freetype-dependencies.yml"
     }
   }
 }

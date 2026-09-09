@@ -243,6 +243,17 @@ outside that dependency cache and is rebuilt from the current checkout. This is
 a build acceleration mechanism, separate from verification of release inputs.
 Published-download checks continue to use fresh Roc caches.
 
+Pull-request CI selects affected jobs from the complete merge-base diff using
+`scripts/ci_changes.py`. GUI-only changes run the native GUI jobs; web changes
+run browser/native checks, published examples, and release archive checks.
+Known documentation paths run the site check. Shared engine changes, build
+infrastructure, compiler/dependency locks, and unknown paths select every area.
+Renames count at both their old and new paths. Main-branch pushes and manual
+validation still run every area, and release workflows retain their full gates.
+The required `Platform source` check verifies the selection job and requires
+success from every selected job; it accepts a skip only for an unselected area.
+New commits cancel superseded PR CI runs, but do not cancel main or release runs.
+
 The `Windows dependency releases` workflow independently generates the ADVAPI32
 import library from the definition and license hashes in
 `dependencies/windows-imports.json`. It executes a probe linked against that
@@ -282,7 +293,11 @@ publication.
 Dispatch this workflow on `main` with a new `deps-freetype-<version>` tag to
 publish tested bytes and their lock through `freetype-dependencies.yml`.
 Review and merge the lock entry separately when adopting the dependency. The
-artifact preserves FreeType's system SONAME; applications still use the operating
+Linux GUI builder verifies that release before compilation; the bundler verifies
+it again in fresh staging and excludes the development copy of `libfreetype.so`.
+Combined GUI bundles retain the lock entries and notices for both FreeType and
+Windows imports. Other Linux libraries still need independent producers.
+The artifact preserves FreeType's system SONAME; applications still use the operating
 system's runtime font libraries. The C compiler is Zig 0.16.0, targeting baseline
 x86-64 and glibc 2.39; the separate Roc compiler pin is preserved.
 See `dependencies/README.md` for the input and
@@ -987,6 +1002,18 @@ The GUI builder selects `TOOLCHAINS=Metal` on macOS unless explicitly overridden
 use the same setting for direct `cargo test` commands if Xcode's default lookup
 still reports the installed Metal component as missing.
 
+The GUI platform header lists the Rust host and Zig engine as separate link
+inputs: `libsignals_gpui_host.a` and `libengine.a` on Linux and macOS, or
+`signals_gpui_host.lib` and `engine.lib` on Windows. Roc links these with the
+application object and the other declared inputs to produce the executable.
+The builder does not merge them into a combined host archive. Rebuild older
+prebuilt target directories before using them with this header.
+
+Cargo tracks the checkout identity supplied by `.cargo/config.toml` through the
+host's `build.rs`. This prevents stale host reuse when multiple checkouts share
+`CARGO_TARGET_DIR`, without cleaning the host on every build. Run direct Cargo
+commands from the workspace or crate directory so Cargo discovers that config.
+
 ```sh
 python3 scripts/build_gui.py --debug
 roc build examples-gui/counter/main.roc --output=.test-out/Counter
@@ -1006,7 +1033,7 @@ each app must have specs. Every GUI check must pass; this suite has no known-fai
 allowlist. `--spec-filter`, `--shard`, `--jobs`, and `--fail-fast` also apply.
 The default `all` suite includes GUI checks on Linux x86_64; run `gui` explicitly
 on macOS, where it requires full Xcode and the Metal toolchain. CI runs them in a
-dedicated Linux and Windows jobs. GUI executables remain under `.test-out/gui`
+dedicated Linux, Windows, and macOS jobs. GUI executables remain under `.test-out/gui`
 when output is kept. Linux CI then runs `xvfb-run -a python3 scripts/gui_smoke.py --wayland`
 with Weston and Mesa's software Vulkan driver. Weston runs on Xvfb so GPUI
 receives a Wayland input seat as well as a virtual display; Weston's headless
