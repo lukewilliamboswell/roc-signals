@@ -1,5 +1,6 @@
 mod assets;
 mod bridge;
+mod protocol_gen;
 mod controls;
 mod dialog;
 mod drag;

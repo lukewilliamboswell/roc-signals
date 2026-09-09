@@ -1,4 +1,5 @@
 //! Single-threaded owner of the experimental native ABI. No Roc layout enters Rust.
+use crate::protocol_gen::{EFFECT_VERSION, PROTOCOL_VERSION, RawNode, TIMER_VERSION};
 use crate::shortcut::{MAX_PER_ELEMENT, Shortcut};
 use std::{marker::PhantomData, rc::Rc};
 
@@ -138,9 +139,9 @@ impl Node {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Slice {
-    ptr: *const u8,
-    len: usize,
+pub(crate) struct Slice {
+    pub(crate) ptr: *const u8,
+    pub(crate) len: usize,
 }
 impl Slice {
     unsafe fn copy(self) -> String {
@@ -150,38 +151,6 @@ impl Slice {
         String::from_utf8(unsafe { std::slice::from_raw_parts(self.ptr, self.len) }.to_vec())
             .expect("invalid host UTF-8")
     }
-}
-#[repr(C)]
-struct RawNode {
-    id: u64,
-    active: u64,
-    parent: u64,
-    tag: Slice,
-    text: Slice,
-    value: Slice,
-    label: Slice,
-    role: Slice,
-    test_id: Slice,
-    class: Slice,
-    placeholder: Slice,
-    image_source: Slice,
-    font_family: Slice,
-    fonts: Slice,
-    child_count: usize,
-    click: u64,
-    input: u64,
-    check: u64,
-    checked: u64,
-    disabled: u64,
-    selected: u64,
-    style_present: u64,
-    style: Style,
-    viewport: [u32; 2],
-    lifetime: u64,
-    drag_key: Slice,
-    drop: u64,
-    close_requested: u64,
-    close_policy: u64,
 }
 #[repr(C)]
 struct RawEffect {
@@ -227,7 +196,7 @@ impl Engine {
             };
             assert_eq!(
                 signals_protocol_version(),
-                9,
+                PROTOCOL_VERSION,
                 "native GUI protocol mismatch"
             );
             assert_eq!(
@@ -237,11 +206,15 @@ impl Engine {
             );
             assert_eq!(
                 signals_effect_version(),
-                2,
+                EFFECT_VERSION,
                 "native effect protocol mismatch"
             );
             assert_eq!(signals_effect_size(), std::mem::size_of::<RawEffect>());
-            assert_eq!(signals_timer_version(), 1, "native timer protocol mismatch");
+            assert_eq!(
+                signals_timer_version(),
+                TIMER_VERSION,
+                "native timer protocol mismatch"
+            );
             assert_eq!(
                 signals_timer_size(),
                 std::mem::size_of::<crate::timers::Message>()

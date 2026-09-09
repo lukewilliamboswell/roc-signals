@@ -1,5 +1,6 @@
 //! Native service adapter. Only owned primitive requests leave the UI thread;
 //! all task identity, cancellation state, and result propagation belong to Zig.
+use crate::protocol_gen::task_kind;
 use crate::{
     Runtime,
     assets::{self, AssetStatus},
@@ -249,9 +250,9 @@ impl Request {
             return Err("unsupported codec");
         }
         let request = match kind {
-            1 => Self::ChooseFile,
-            2 => Self::ChooseDirectory,
-            3 => {
+            task_kind::CHOOSE_FILE => Self::ChooseFile,
+            task_kind::CHOOSE_DIRECTORY => Self::ChooseDirectory,
+            task_kind::CHOOSE_SAVE_PATH => {
                 let kind = reader.frame()?;
                 let path = reader.frame()?;
                 let directory = match (kind, path) {
@@ -264,16 +265,16 @@ impl Request {
                     suggested_name: reader.frame()?.into(),
                 }
             }
-            4 => Self::ReadText(reader.frame()?.into()),
-            5 => Self::WriteText {
+            task_kind::READ_TEXT => Self::ReadText(reader.frame()?.into()),
+            task_kind::WRITE_TEXT => Self::WriteText {
                 path: reader.frame()?.into(),
                 text: reader.frame()?.into(),
             },
-            6 => Self::Scan(reader.frame()?.into()),
-            7 => Self::ListDirectory(reader.frame()?.into()),
-            8 => Self::OpenPath(reader.frame()?.into()),
-            9 => Self::ReadPreview(reader.frame()?.into()),
-            10 => {
+            task_kind::SCAN_DIRECTORY => Self::Scan(reader.frame()?.into()),
+            task_kind::LIST_DIRECTORY => Self::ListDirectory(reader.frame()?.into()),
+            task_kind::OPEN_PATH => Self::OpenPath(reader.frame()?.into()),
+            task_kind::READ_PREVIEW => Self::ReadPreview(reader.frame()?.into()),
+            task_kind::READ_LOG => {
                 let path = reader.frame()?.into();
                 let position = reader.frame()?;
                 let device = reader.number()?;
@@ -291,7 +292,7 @@ impl Request {
                 };
                 Self::ReadLog { path, position }
             }
-            11 => {
+            task_kind::VERIFY_ASSETS => {
                 let count = reader.number()? as usize;
                 if count == 0 || count > assets::MAX_MANIFEST_ASSETS {
                     return Err("asset manifest count out of bounds");

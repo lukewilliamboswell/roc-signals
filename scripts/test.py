@@ -288,10 +288,12 @@ def build_hosts() -> None:
 
 def run_zig_suite() -> None:
     run(["zig", "build", "test"])
+    run([sys.executable, "scripts/generate_protocol.py", "--check"])
     run([
         sys.executable,
         "-m",
         "unittest",
+        "scripts/test_generate_protocol.py",
         "scripts/test_spec_driver.py",
         "scripts/test_benchmark_manifest.py",
         "scripts/test_driver_paths.py",
