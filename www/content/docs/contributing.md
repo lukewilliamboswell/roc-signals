@@ -296,8 +296,8 @@ Review and merge the lock entry separately when adopting the dependency. The
 Linux GUI builder verifies that release before compilation; the bundler verifies
 it again in fresh staging and excludes the development copy of `libfreetype.so`.
 Combined GUI bundles retain the lock entries and notices for FreeType,
-xkbcommon, and Windows imports. Linux CRT inputs also come from their verified release; the GCC unwinder still
-needs an independent replacement.
+xkbcommon, Windows imports, glibc link inputs, and the LLVM unwinder. Linux CRT
+and unwinder inputs come from their independent verified releases.
 The artifact preserves FreeType's system SONAME; applications still use the operating
 system's runtime font libraries. The C compiler is Zig 0.16.0, targeting baseline
 x86-64 and glibc 2.39; the separate Roc compiler pin is preserved.
@@ -1238,10 +1238,10 @@ Overlapping local and prebuilt hosts for one target are errors.
 
 These archives contain host code and licenses, not external system libraries or
 SDK stubs. Every included target must also have its external link inputs supplied;
-the bundler rejects incomplete targets. Windows imports and FreeType are fetched
-through their independent verified locks. Other Linux inputs and macOS SDK stubs
-still need their independent producer/admission work. Raw prebuilt directories
-are no longer accepted.
+the bundler rejects incomplete targets. Windows ADVAPI32 imports and all declared
+Linux external link inputs are fetched through their independent verified locks.
+Completing Windows CRT/import separation and macOS SDK stub admission remains
+separate work. Raw prebuilt directories are no longer accepted.
 
 The bundle output also contains every registered GUI app under `examples-gui/`,
 including its supporting Roc modules and semantic specs. Those generated app
