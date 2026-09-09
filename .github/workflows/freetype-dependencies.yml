@@ -10,6 +10,7 @@ on:
       - scripts/test_freetype_dependencies.py
       - scripts/dependency_archive.py
       - scripts/dependency_artifacts.py
+      - scripts/test_dependency_artifacts.py
       - scripts/release_dependencies.py
       - test/dependencies/freetype.c
       - .github/workflows/freetype-dependencies.yml

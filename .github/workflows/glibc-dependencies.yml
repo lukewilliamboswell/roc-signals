@@ -4,11 +4,20 @@ on:
   pull_request:
     paths:
       - dependencies/glibc.json
-      - dependencies/glibc/**
+      - dependencies/glibc/Dockerfile
+      - dependencies/glibc/COPYING.LIB
+      - dependencies/glibc/LICENSE-LINUX-GPL-2.0
+      - dependencies/glibc/LICENSE-LINUX-GPL-1.0
+      - dependencies/glibc/LICENSE-LINUX-LGPL-2.0
+      - dependencies/glibc/LICENSE-LINUX-LGPL-2.1
+      - dependencies/glibc/LICENSE-LINUX-Linux-syscall-note
+      - dependencies/glibc/LICENSE-LINUX-MIT
+      - dependencies/glibc/LICENSE-LINUX-BSD-3-Clause
       - scripts/build_glibc.py
       - scripts/test_glibc_dependencies.py
       - scripts/dependency_archive.py
       - scripts/dependency_artifacts.py
+      - scripts/test_dependency_artifacts.py
       - scripts/release_dependencies.py
       - test/dependencies/glibc.c
       - .github/workflows/glibc-dependencies.yml

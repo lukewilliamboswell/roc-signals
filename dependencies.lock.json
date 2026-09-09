@@ -48,6 +48,18 @@
       "source_sha": "496d1da376fac0feef9bd3666859521837898663",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/freetype-dependencies.yml"
+    },
+    "xkbcommon-x64glibc": {
+      "name": "xkbcommon",
+      "target": "x64glibc",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-xkbcommon-1.13.2-20260909.1",
+      "asset": "xkbcommon-x64glibc.tar",
+      "sha256": "4606473902e30f576a93e9103f91590351ceba7e77aef2052f8d5485b4a6a028",
+      "size": 1423360,
+      "source_sha": "d06261d13a8bf2f1155db481354510790e99054e",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/xkbcommon-dependencies.yml"
     }
   }
 }

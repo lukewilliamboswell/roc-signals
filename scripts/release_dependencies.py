@@ -17,10 +17,30 @@ from dependency_artifacts import sha256, unpack_verified, verify_archive, read_l
 
 REPOSITORY = "lukewilliamboswell/roc-signals"
 KINDS = {
+    "unwind": {"targets": ("x64glibc",), "files": ("libunwind.a",),
+               "licenses": ("LICENSE.TXT", "LICENSE-ZIG"),
+               "extra_files": tuple("sources/unwind/" + name for name in (
+                   "source.tar.xz",
+                   "dependencies/unwind.json",
+                   "dependencies/unwind/Dockerfile",
+                   "test/dependencies/unwind.cpp",
+                   "test/dependencies/unwind.rs",
+                   "test/dependencies/unwind-rust.c",
+                   "scripts/build_unwind.py",
+                   "scripts/build_glibc.py",
+                   "scripts/test_unwind_rust.py",
+                   "scripts/dependency_archive.py",
+                   "scripts/dependency_artifacts.py",
+               )),
+               "workflow": "unwind-dependencies.yml",
+               "inventory_error": "dependency release must include the tested LLVM unwinder",
+               "validation": "The extracted candidate passed C++ exception handling and Rust panic recovery with destructor tests; two clean builds produced identical archives. Original sources and reproduction inputs accompany the library."},
     "glibc": {"targets": ("x64glibc",), "files": ("crt1.o", "libc.so", "libm.so", "libc_nonshared.a"),
-              "licenses": ("COPYING.LIB", "LICENSES", "LICENSE-ZIG"),
+              "licenses": ("COPYING.LIB", "LICENSES", "LICENSE-ZIG", "LICENSE-LLVM",
+                           'LICENSE-LINUX-GPL-2.0', 'LICENSE-LINUX-GPL-1.0', 'LICENSE-LINUX-LGPL-2.0', 'LICENSE-LINUX-LGPL-2.1', 'LICENSE-LINUX-Linux-syscall-note', 'LICENSE-LINUX-MIT', 'LICENSE-LINUX-BSD-3-Clause'),
               "extra_files": tuple("sources/glibc/" + name for name in (
                   "source.tar.xz", "dependencies/glibc.json", "dependencies/glibc/COPYING.LIB",
+                  'dependencies/glibc/LICENSE-LINUX-GPL-2.0', 'dependencies/glibc/LICENSE-LINUX-GPL-1.0', 'dependencies/glibc/LICENSE-LINUX-LGPL-2.0', 'dependencies/glibc/LICENSE-LINUX-LGPL-2.1', 'dependencies/glibc/LICENSE-LINUX-Linux-syscall-note', 'dependencies/glibc/LICENSE-LINUX-MIT', 'dependencies/glibc/LICENSE-LINUX-BSD-3-Clause',
                   "dependencies/glibc/Dockerfile", "test/dependencies/glibc.c",
                   "scripts/build_glibc.py", "scripts/dependency_archive.py", "scripts/dependency_artifacts.py")),
               "workflow": "glibc-dependencies.yml",

@@ -1,24 +1,26 @@
-name: xkbcommon dependency releases
+name: LLVM unwind dependency releases
 
 on:
   pull_request:
     paths:
-      - dependencies/xkbcommon.json
-      - dependencies/xkbcommon/Dockerfile
-      - dependencies/xkbcommon/cc.sh
-      - dependencies/xkbcommon/zig.ini
-      - scripts/build_xkbcommon.py
-      - scripts/test_xkbcommon_dependencies.py
+      - dependencies/unwind.json
+      - dependencies/unwind/Dockerfile
+      - scripts/build_unwind.py
+      - scripts/build_glibc.py
+      - scripts/test_unwind_dependencies.py
+      - scripts/test_dependency_artifacts.py
       - scripts/dependency_archive.py
       - scripts/dependency_artifacts.py
-      - scripts/test_dependency_artifacts.py
       - scripts/release_dependencies.py
-      - test/dependencies/xkbcommon.c
-      - .github/workflows/xkbcommon-dependencies.yml
+      - test/dependencies/unwind.cpp
+      - test/dependencies/unwind.rs
+      - test/dependencies/unwind-rust.c
+      - scripts/test_unwind_rust.py
+      - .github/workflows/unwind-dependencies.yml
   workflow_dispatch:
     inputs:
       release_tag:
-        description: New independent xkbcommon release tag (deps-xkbcommon-<version>)
+        description: New independent unwind release tag (deps-unwind-<version>)
         type: string
         required: true
 
@@ -26,12 +28,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: xkbcommon-dependencies-${{ github.event.pull_request.number || github.ref }}
+  group: unwind-dependencies-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Build and test xkbcommon
+    name: Build and test unwind
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -39,16 +41,20 @@ jobs:
         with:
           persist-credentials: false
       - name: Check source admission and publication failures
-        run: python3 -m unittest scripts/test_dependency_artifacts.py scripts/test_xkbcommon_dependencies.py
+        run: python3 -m unittest scripts/test_dependency_artifacts.py scripts/test_unwind_dependencies.py
       - name: Build from verified source and test the extracted candidate
-        run: python3 scripts/build_xkbcommon.py --output "$RUNNER_TEMP/dependencies"
+        run: python3 scripts/build_unwind.py --output "$RUNNER_TEMP/dependencies"
       - name: Check reproducibility in another clean container
         run: |
-          python3 scripts/build_xkbcommon.py --output "$RUNNER_TEMP/rebuild"
-          cmp "$RUNNER_TEMP/dependencies/xkbcommon-x64glibc.tar" "$RUNNER_TEMP/rebuild/xkbcommon-x64glibc.tar"
+          python3 scripts/build_unwind.py --output "$RUNNER_TEMP/rebuild"
+          cmp "$RUNNER_TEMP/dependencies/unwind-x64glibc.tar" "$RUNNER_TEMP/rebuild/unwind-x64glibc.tar"
+      - name: Install the pinned Rust probe compiler
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Check Rust panic recovery against the extracted candidate
+        run: python3 scripts/test_unwind_rust.py --candidate "$RUNNER_TEMP/dependencies/unwind-x64glibc.tar"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: xkbcommon-x64glibc
+          name: unwind-x64glibc
           path: ${{ runner.temp }}/dependencies/*.tar
           retention-days: 30
 
@@ -68,7 +74,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          pattern: xkbcommon-*
+          pattern: unwind-*
           merge-multiple: true
           path: ${{ runner.temp }}/dependencies
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
@@ -78,4 +84,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: python3 scripts/release_dependencies.py --directory "$RUNNER_TEMP/dependencies" --tag "$RELEASE_TAG" --kind xkbcommon
+        run: python3 scripts/release_dependencies.py --directory "$RUNNER_TEMP/dependencies" --tag "$RELEASE_TAG" --kind unwind

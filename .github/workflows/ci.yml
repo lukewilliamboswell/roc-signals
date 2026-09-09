@@ -39,6 +39,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - run: python3 -m unittest discover -s scripts -p test_ci_changes.py
+      - run: python3 -m unittest discover -s scripts -p test_dependency_workflow_filters.py
       - id: select
         run: python3 scripts/ci_changes.py
 
@@ -170,6 +171,20 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: 1.95.0
         run: python scripts/build_gui.py
+      - name: Record Windows archive dependency declarations
+        run: |
+          python -m unittest discover -s scripts -p 'test_windows_archive_audit.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/windows-import-audit"
+          python scripts/audit_windows_archive.py platform-gui/targets/x64win/signals_gpui_host.lib > "$env:RUNNER_TEMP/windows-import-audit/host.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/audit_windows_archive.py platform-gui/targets/x64win/engine.lib > "$env:RUNNER_TEMP/windows-import-audit/engine.json"
+      - name: Upload Windows dependency review evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-import-audit
+          path: ${{ runner.temp }}/windows-import-audit
+          if-no-files-found: error
       - name: Verify Windows dependency admission and bundle the built host
         run: |
           python -m unittest scripts/test_prepare_dependencies.py scripts/test_dependency_artifacts.py

@@ -295,8 +295,9 @@ publish tested bytes and their lock through `freetype-dependencies.yml`.
 Review and merge the lock entry separately when adopting the dependency. The
 Linux GUI builder verifies that release before compilation; the bundler verifies
 it again in fresh staging and excludes the development copy of `libfreetype.so`.
-Combined GUI bundles retain the lock entries and notices for both FreeType and
-Windows imports. Other Linux libraries still need independent producers.
+Combined GUI bundles retain the lock entries and notices for FreeType,
+xkbcommon, and Windows imports. Linux CRT consumer adoption and an independent GCC runtime replacement remain
+outstanding.
 The artifact preserves FreeType's system SONAME; applications still use the operating
 system's runtime font libraries. The C compiler is Zig 0.16.0, targeting baseline
 x86-64 and glibc 2.39; the separate Roc compiler pin is preserved.
@@ -320,6 +321,46 @@ and publish the tested bytes. The archive contains corresponding source and a
 standalone reproduction tree under `sources/glibc/`; run the same build command
 from that directory to reproduce the producer. Review the resulting consumer
 lock and platform link-input changes separately before adoption.
+
+The `xkbcommon dependency releases` workflow independently builds both keyboard
+libraries from the source and tool versions pinned in `dependencies/xkbcommon.json`.
+Its native Meson configuration uses Zig. To reproduce the producer on Linux x86-64
+with Python 3.12 and Docker:
+
+```sh
+python3 scripts/build_xkbcommon.py --output /tmp/xkbcommon-candidate
+python3 scripts/build_xkbcommon.py --output /tmp/xkbcommon-rebuild
+cmp /tmp/xkbcommon-candidate/xkbcommon-x64glibc.tar /tmp/xkbcommon-rebuild/xkbcommon-x64glibc.tar
+python3 -m unittest scripts/test_xkbcommon_dependencies.py scripts/test_prepare_dependencies.py
+```
+
+Dispatch `xkbcommon-dependencies.yml` on `main` with a new
+`deps-xkbcommon-<version>` tag to publish the tested, attested archive. Review the
+resulting lock entry separately. Normal GUI builds download and verify the pinned
+release; they do not rebuild xkbcommon or copy its link libraries from the build
+machine. Bundles independently verify and stage both libraries and their license.
+The runtime still uses the operating system's xkbcommon/XCB libraries and keyboard
+layout data through the libraries' existing SONAMEs.
+
+The `LLVM unwind dependency releases` workflow independently builds Linux x86-64
+`libunwind.a` from the same checksum-pinned Zig distribution. Reproduce the two
+container builds and test Rust panic recovery with Rust 1.95.0 installed:
+
+```sh
+python3 scripts/build_unwind.py --output /tmp/unwind-candidate
+python3 scripts/build_unwind.py --output /tmp/unwind-rebuild
+cmp /tmp/unwind-candidate/unwind-x64glibc.tar /tmp/unwind-rebuild/unwind-x64glibc.tar
+python3 scripts/test_unwind_rust.py --candidate /tmp/unwind-candidate/unwind-x64glibc.tar
+python3 -m unittest scripts/test_unwind_dependencies.py scripts/test_glibc_dependencies.py
+```
+
+Each build tests C++ exception handling and destructor execution using the
+extracted candidate with explicit final link inputs. Rust's probe checks panic
+recovery and `Drop` execution. Dispatch `unwind-dependencies.yml` on `main` with a
+new `deps-unwind-<version>` tag to attest and publish the tested archive. Original
+sources, notices, and reproduction inputs accompany `libunwind.a`; C++ support
+archives used only by the producer probe are excluded. Adopting the resulting
+consumer lock and replacing the platform's GCC unwinder input is separate work.
 
 ## Coverage
 
@@ -494,8 +535,12 @@ and `gui/` directories. `BUNDLE_OUT_DIR` or `--output-dir` changes that root.
 `--package web` and `--package gui` select one platform and put its archive
 directly in the output directory. `--no-build` reuses prepared hosts;
 `--debug-gui` selects a faster development Rust build. Use the default optimized
-GUI build for distributable archives: development archives can exceed the pinned
-compiler's default 100 MiB transitive package budget. Existing web test, site,
+GUI build for distributable archives. Both development and optimized GUI archives
+can exceed the pinned compiler's 100 MiB expanded transitive package budget;
+local-file platform builds passing does not establish that a URL-bound bundle
+can be consumed. The size-limit diagnostic suggests `--max-transitive-bytes`,
+but that option is not implemented by the pinned compiler. See
+`UPSTREAM_COMPILER_BUGS.md` for the reproducible limitation. Existing web test, site,
 and release commands explicitly select the web package.
 
 For the separate browser JavaScript artifact, run `python3 scripts/bundle_browser.py`.

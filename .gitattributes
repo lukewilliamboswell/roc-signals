@@ -1,3 +1,5 @@
 # The upstream receipt hashes exact vendored bytes, including line endings.
 /vendor/unicode/** -text
 /dependencies/glibc/COPYING.LIB -text
+
+/dependencies/glibc/LICENSE-LINUX-* -text
