@@ -5,6 +5,16 @@ assets, identified by a consumer lock containing their SHA-256, byte length,
 producer source commit, source ref, and signing workflow. A dependency release
 version is independent of the platform and compiler release versions.
 
+`macos-stubs.json` pins 31 unmodified Apple SDK linker interface files, their
+install names and reexports, and the original Xcode agreement. The producer
+packages metadata without building the host or copying framework implementations.
+Its native probe links against the extracted candidate and executes system
+imports; two constructions must produce identical archives before publication.
+Apple inputs are not relicensed under Roc Signals' UPL-1.0. See
+[`macos-stubs/NOTICE`](macos-stubs/NOTICE) for provenance, the distinction between
+final linking and runtime loading, and the acknowledged redistribution position.
+The root consumer lock does not yet select this producer's release.
+
 `musl.json` pins the upstream source revision and Zig toolchain used to produce
 Linux musl startup and libc inputs. The pinned revision is a post-1.2.6 snapshot;
 the revision, rather than the upstream VERSION file alone, identifies its fixes.

@@ -2,6 +2,18 @@
 
 This project bundles third-party platform link inputs and release tooling.
 
+## Apple macOS SDK linker interfaces
+
+Files: `.tbd` interface metadata under `targets/macos-sysroot`.
+
+These originate in Apple's SDK and are not covered by Roc Signals' Universal
+Permissive License, Version 1.0. The macOS dependency producer preserves the
+original agreement under `licenses/macos-stubs/Xcode-and-Apple-SDKs-Agreement.rtf`
+and the provenance notice under `licenses/macos-stubs/NOTICE`. See
+[`dependencies/macos-stubs/NOTICE`](dependencies/macos-stubs/NOTICE) for the
+maintainer's acknowledged redistribution position. The stubs contain no Apple
+framework implementations; applications load those from macOS at runtime.
+
 ## FreeType
 
 Files: verified dependency release input `targets/x64glibc/libfreetype.so`.

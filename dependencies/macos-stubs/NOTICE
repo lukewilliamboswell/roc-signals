@@ -1,0 +1,27 @@
+Apple macOS SDK linker interfaces
+
+These unmodified text-based linker interface files originate in Apple's macOS
+26.2 SDK (build 25C58), supplied with Xcode 26.3 (build 17C529). The accompanying
+Xcode-and-Apple-SDKs-Agreement.rtf is the original agreement from that Xcode
+distribution. Apple retains any applicable rights. These files and that
+agreement are not covered by Roc Signals' Universal Permissive License (UPL),
+Version 1.0.
+
+The files contain interface metadata, not Apple's framework implementations.
+Roc performs the final application link on the user's machine when the user
+builds an application, including the build step of `roc build`. These .tbd files
+are linking stubs used in that step. Running an already-built executable does
+not perform that build-time link again; macOS loads the required system
+libraries and frameworks at runtime.
+
+Applications require the framework implementations supplied by macOS on
+Apple-branded hardware. The bundled stubs currently allow the final application
+link without a separately installed Apple SDK or Xcode. An Apple SDK is used
+to build the platform's native host and obtain these interface files; it is
+not a runtime implementation and is not currently required from end users.
+
+The project has not established an explicit redistribution grant for these
+files. The maintainer has chosen to distribute this attributed, unmodified
+interface subset on that acknowledged basis. Attribution and build attestation
+establish provenance; they do not establish redistribution permission or imply
+Apple's endorsement. Consult the accompanying agreement for Apple's terms.

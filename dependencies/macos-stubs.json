@@ -1,0 +1,413 @@
+{
+  "schema_version": 1,
+  "name": "macos-stubs",
+  "version": "26.2-25C58.1",
+  "target": "macos-sysroot",
+  "xcode_version": "26.3",
+  "xcode_build": "17C529",
+  "sdk_version": "26.2",
+  "sdk_build": "25C58",
+  "architectures": [
+    "arm64-macos"
+  ],
+  "minimum_tested_macos": "26.3.1",
+  "license_sha256": "ba9e2515fe5e709adfc1acab91677eeacb0b6f44740072a2782fba0fb844bfec",
+  "files": {
+    "System/Library/Frameworks/AppKit.framework/AppKit.tbd": {
+      "sha256": "4de0d1b0d5e1de8c49ec6e9533e2b330ffa6c954655637929818fac959bab054",
+      "install_names": [
+        "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+        "/System/Library/PrivateFrameworks/CollectionViewCore.framework/Versions/A/CollectionViewCore",
+        "/System/Library/PrivateFrameworks/UIFoundation.framework/Versions/A/UIFoundation"
+      ],
+      "reexports": [
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices",
+        "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+        "/System/Library/PrivateFrameworks/CollectionViewCore.framework/Versions/A/CollectionViewCore",
+        "/System/Library/PrivateFrameworks/UIFoundation.framework/Versions/A/UIFoundation"
+      ]
+    },
+    "System/Library/Frameworks/ApplicationServices.framework/ApplicationServices.tbd": {
+      "sha256": "5cb8a747bba57cfdf5a731a2b6f24165c12946caf0ffedaed8564d03db0498fb",
+      "install_names": [
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ATS.framework/Versions/A/ATS",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ATSUI.framework/Versions/A/ATSUI",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ColorSyncLegacy.framework/Versions/A/ColorSyncLegacy",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/Versions/A/HIServices",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/PrintCore.framework/Versions/A/PrintCore",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/QD.framework/Versions/A/QD",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/SpeechSynthesis.framework/Versions/A/SpeechSynthesis"
+      ],
+      "reexports": [
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ATS.framework/Versions/A/ATS",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ATSUI.framework/Versions/A/ATSUI",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ColorSyncLegacy.framework/Versions/A/ColorSyncLegacy",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/Versions/A/HIServices",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/PrintCore.framework/Versions/A/PrintCore",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/QD.framework/Versions/A/QD",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/SpeechSynthesis.framework/Versions/A/SpeechSynthesis",
+        "/System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync",
+        "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText",
+        "/System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO"
+      ]
+    },
+    "System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices.tbd": {
+      "sha256": "5cb8a747bba57cfdf5a731a2b6f24165c12946caf0ffedaed8564d03db0498fb",
+      "install_names": [
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ATS.framework/Versions/A/ATS",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ATSUI.framework/Versions/A/ATSUI",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ColorSyncLegacy.framework/Versions/A/ColorSyncLegacy",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/Versions/A/HIServices",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/PrintCore.framework/Versions/A/PrintCore",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/QD.framework/Versions/A/QD",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/SpeechSynthesis.framework/Versions/A/SpeechSynthesis"
+      ],
+      "reexports": [
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ATS.framework/Versions/A/ATS",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ATSUI.framework/Versions/A/ATSUI",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ColorSyncLegacy.framework/Versions/A/ColorSyncLegacy",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/Versions/A/HIServices",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/PrintCore.framework/Versions/A/PrintCore",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/QD.framework/Versions/A/QD",
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/SpeechSynthesis.framework/Versions/A/SpeechSynthesis",
+        "/System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync",
+        "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText",
+        "/System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO"
+      ]
+    },
+    "System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork.tbd": {
+      "sha256": "5ccd865b57deb228276bae728a229fcba7ae02c0d735f56f90ee497ddd478f9a",
+      "install_names": [
+        "/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/Carbon.framework/Carbon.tbd": {
+      "sha256": "28ea3dc239216d99e45c6da5b871a84612e58d7f70840b72da611c450810c6c0",
+      "install_names": [
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/CommonPanels.framework/Versions/A/CommonPanels",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/HIToolbox.framework/Versions/A/HIToolbox",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/Help.framework/Versions/A/Help",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/ImageCapture.framework/Versions/A/ImageCapture",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/Ink.framework/Versions/A/Ink",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/OpenScripting.framework/Versions/A/OpenScripting",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/SecurityHI.framework/Versions/A/SecurityHI",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/SpeechRecognition.framework/Versions/A/SpeechRecognition"
+      ],
+      "reexports": [
+        "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/CommonPanels.framework/Versions/A/CommonPanels",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/HIToolbox.framework/Versions/A/HIToolbox",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/Help.framework/Versions/A/Help",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/ImageCapture.framework/Versions/A/ImageCapture",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/Ink.framework/Versions/A/Ink",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/OpenScripting.framework/Versions/A/OpenScripting",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/SecurityHI.framework/Versions/A/SecurityHI",
+        "/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/SpeechRecognition.framework/Versions/A/SpeechRecognition"
+      ]
+    },
+    "System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync.tbd": {
+      "sha256": "1e474ec925afb735950ba81f082c927e299f0b097cde8735aad2911321e3b275",
+      "install_names": [
+        "/System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/CoreFoundation.framework/CoreFoundation.tbd": {
+      "sha256": "8c2a222cdb54259e5465356d93b847de19177767198f604e991763192d00e4ee",
+      "install_names": [
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+      ],
+      "reexports": [
+        "/usr/lib/libobjc.A.dylib"
+      ]
+    },
+    "System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation.tbd": {
+      "sha256": "8c2a222cdb54259e5465356d93b847de19177767198f604e991763192d00e4ee",
+      "install_names": [
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+      ],
+      "reexports": [
+        "/usr/lib/libobjc.A.dylib"
+      ]
+    },
+    "System/Library/Frameworks/CoreGraphics.framework/CoreGraphics.tbd": {
+      "sha256": "e4328abd4ab61183f9cfe585fb699d83042d9da6aa839102cf660e502f4742a7",
+      "install_names": [
+        "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics.tbd": {
+      "sha256": "e4328abd4ab61183f9cfe585fb699d83042d9da6aa839102cf660e502f4742a7",
+      "install_names": [
+        "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage.tbd": {
+      "sha256": "33814ac5b3fa22c01c49fb0ba474b03852cb24e08d407f7a1df3a3a5ae435399",
+      "install_names": [
+        "/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/CoreMedia.framework/CoreMedia.tbd": {
+      "sha256": "8aa0c27d103e4ef5e370ec5f851e4a67c86b8a88561c2f91ee24615794a32781",
+      "install_names": [
+        "/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices.tbd": {
+      "sha256": "56f4e027399a9c912fc9b5a84906dbddde5833e9d86ae99899b1e0be621b38fc",
+      "install_names": [
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/AE.framework/Versions/A/AE",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/CarbonCore.framework/Versions/A/CarbonCore",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/DictionaryServices.framework/Versions/A/DictionaryServices",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/FSEvents.framework/Versions/A/FSEvents",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/LaunchServices",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Metadata",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/OSServices.framework/Versions/A/OSServices",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/SearchKit.framework/Versions/A/SearchKit",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/SharedFileList.framework/Versions/A/SharedFileList"
+      ],
+      "reexports": [
+        "/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork",
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/AE.framework/Versions/A/AE",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/CarbonCore.framework/Versions/A/CarbonCore",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/DictionaryServices.framework/Versions/A/DictionaryServices",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/FSEvents.framework/Versions/A/FSEvents",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/LaunchServices",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Metadata",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/OSServices.framework/Versions/A/OSServices",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/SearchKit.framework/Versions/A/SearchKit",
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/SharedFileList.framework/Versions/A/SharedFileList"
+      ]
+    },
+    "System/Library/Frameworks/CoreText.framework/CoreText.tbd": {
+      "sha256": "3c8b396c6db313be8596b9212f4274b2ddfbfb2a93e7b662f0657273469971a5",
+      "install_names": [
+        "/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/CoreText.framework/Versions/A/CoreText.tbd": {
+      "sha256": "3c8b396c6db313be8596b9212f4274b2ddfbfb2a93e7b662f0657273469971a5",
+      "install_names": [
+        "/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/CoreVideo.framework/CoreVideo.tbd": {
+      "sha256": "67e115f353f1749e6c202c44aa1266f2c98d68aa31539f77a36ef572b105d5ef",
+      "install_names": [
+        "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo.tbd": {
+      "sha256": "67e115f353f1749e6c202c44aa1266f2c98d68aa31539f77a36ef572b105d5ef",
+      "install_names": [
+        "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/Foundation.framework/Foundation.tbd": {
+      "sha256": "5bf0dea109d7c50ac212fbf8131cec2d0fade81caf6dcb9d02e1fb355c962376",
+      "install_names": [
+        "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation"
+      ],
+      "reexports": [
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "/usr/lib/libobjc.A.dylib"
+      ]
+    },
+    "System/Library/Frameworks/Foundation.framework/Versions/C/Foundation.tbd": {
+      "sha256": "5bf0dea109d7c50ac212fbf8131cec2d0fade81caf6dcb9d02e1fb355c962376",
+      "install_names": [
+        "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation"
+      ],
+      "reexports": [
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "/usr/lib/libobjc.A.dylib"
+      ]
+    },
+    "System/Library/Frameworks/IOKit.framework/IOKit.tbd": {
+      "sha256": "4fad4034c8200907d07845c989c1364b31ec04efda62536334a60e5f42c59e08",
+      "install_names": [
+        "/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/IOSurface.framework/IOSurface.tbd": {
+      "sha256": "63d4675bbfdff38eddbe3fc976c6c4ac84394dbb2cfe05c82aff5010184d5387",
+      "install_names": [
+        "/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO.tbd": {
+      "sha256": "362c16f2bc3d52a5490334cd9eafa6a5e04c747dcfd8ed86dc44b2d193c958d4",
+      "install_names": [
+        "/System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/Metal.framework/Metal.tbd": {
+      "sha256": "a89a512a192308c6118f8f332c86a3d599ae208799eaa2ad7b9f7629012ec8ed",
+      "install_names": [
+        "/System/Library/Frameworks/Metal.framework/Versions/A/Metal"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/QuartzCore.framework/QuartzCore.tbd": {
+      "sha256": "97b947215641f237d34b7dbfecb144ccb166eabfbd383c26c9d046ca36c97f62",
+      "install_names": [
+        "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore"
+      ],
+      "reexports": [
+        "/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage",
+        "/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo",
+        "/usr/lib/libobjc.A.dylib"
+      ]
+    },
+    "System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit.tbd": {
+      "sha256": "26362e538026329a2cf82157b0b72f22783217937da1f07b0740172fddaee209",
+      "install_names": [
+        "/System/Library/Frameworks/ScreenCaptureKit.framework/Versions/A/ScreenCaptureKit"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/Security.framework/Security.tbd": {
+      "sha256": "88396567a0582b7bbd1a52de6ea79170e1e2d4c43943fcf1d804df1d30981f1c",
+      "install_names": [
+        "/System/Library/Frameworks/Security.framework/Versions/A/Security"
+      ],
+      "reexports": []
+    },
+    "System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration.tbd": {
+      "sha256": "4d2b9e27df4cfd3c94a91d4fb4e7ebd70d1e0603ba1b1f248a8515419f64265e",
+      "install_names": [
+        "/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration"
+      ],
+      "reexports": []
+    },
+    "usr/lib/libSystem.tbd": {
+      "sha256": "607d9993892c95703a0909ff06f5843058ff1ec30b08337f42ab056d9bf325ea",
+      "install_names": [
+        "/usr/lib/libSystem.B.dylib",
+        "/usr/lib/system/libcache.dylib",
+        "/usr/lib/system/libcommonCrypto.dylib",
+        "/usr/lib/system/libcompiler_rt.dylib",
+        "/usr/lib/system/libcopyfile.dylib",
+        "/usr/lib/system/libcorecrypto.dylib",
+        "/usr/lib/system/libdispatch.dylib",
+        "/usr/lib/system/libdyld.dylib",
+        "/usr/lib/system/libkeymgr.dylib",
+        "/usr/lib/system/libmacho.dylib",
+        "/usr/lib/system/libquarantine.dylib",
+        "/usr/lib/system/libremovefile.dylib",
+        "/usr/lib/system/libsystem_asl.dylib",
+        "/usr/lib/system/libsystem_blocks.dylib",
+        "/usr/lib/system/libsystem_c.dylib",
+        "/usr/lib/system/libsystem_collections.dylib",
+        "/usr/lib/system/libsystem_configuration.dylib",
+        "/usr/lib/system/libsystem_containermanager.dylib",
+        "/usr/lib/system/libsystem_coreservices.dylib",
+        "/usr/lib/system/libsystem_darwin.dylib",
+        "/usr/lib/system/libsystem_darwindirectory.dylib",
+        "/usr/lib/system/libsystem_dnssd.dylib",
+        "/usr/lib/system/libsystem_eligibility.dylib",
+        "/usr/lib/system/libsystem_featureflags.dylib",
+        "/usr/lib/system/libsystem_info.dylib",
+        "/usr/lib/system/libsystem_kernel.dylib",
+        "/usr/lib/system/libsystem_m.dylib",
+        "/usr/lib/system/libsystem_malloc.dylib",
+        "/usr/lib/system/libsystem_networkextension.dylib",
+        "/usr/lib/system/libsystem_notify.dylib",
+        "/usr/lib/system/libsystem_platform.dylib",
+        "/usr/lib/system/libsystem_pthread.dylib",
+        "/usr/lib/system/libsystem_sandbox.dylib",
+        "/usr/lib/system/libsystem_sanitizers.dylib",
+        "/usr/lib/system/libsystem_secinit.dylib",
+        "/usr/lib/system/libsystem_symptoms.dylib",
+        "/usr/lib/system/libsystem_trace.dylib",
+        "/usr/lib/system/libsystem_trial.dylib",
+        "/usr/lib/system/libunwind.dylib",
+        "/usr/lib/system/libxpc.dylib"
+      ],
+      "reexports": [
+        "/usr/lib/system/libcache.dylib",
+        "/usr/lib/system/libcommonCrypto.dylib",
+        "/usr/lib/system/libcompiler_rt.dylib",
+        "/usr/lib/system/libcopyfile.dylib",
+        "/usr/lib/system/libcorecrypto.dylib",
+        "/usr/lib/system/libdispatch.dylib",
+        "/usr/lib/system/libdyld.dylib",
+        "/usr/lib/system/libkeymgr.dylib",
+        "/usr/lib/system/libmacho.dylib",
+        "/usr/lib/system/libquarantine.dylib",
+        "/usr/lib/system/libremovefile.dylib",
+        "/usr/lib/system/libsystem_asl.dylib",
+        "/usr/lib/system/libsystem_blocks.dylib",
+        "/usr/lib/system/libsystem_c.dylib",
+        "/usr/lib/system/libsystem_collections.dylib",
+        "/usr/lib/system/libsystem_configuration.dylib",
+        "/usr/lib/system/libsystem_containermanager.dylib",
+        "/usr/lib/system/libsystem_coreservices.dylib",
+        "/usr/lib/system/libsystem_darwin.dylib",
+        "/usr/lib/system/libsystem_darwindirectory.dylib",
+        "/usr/lib/system/libsystem_dnssd.dylib",
+        "/usr/lib/system/libsystem_eligibility.dylib",
+        "/usr/lib/system/libsystem_featureflags.dylib",
+        "/usr/lib/system/libsystem_info.dylib",
+        "/usr/lib/system/libsystem_kernel.dylib",
+        "/usr/lib/system/libsystem_m.dylib",
+        "/usr/lib/system/libsystem_malloc.dylib",
+        "/usr/lib/system/libsystem_networkextension.dylib",
+        "/usr/lib/system/libsystem_notify.dylib",
+        "/usr/lib/system/libsystem_platform.dylib",
+        "/usr/lib/system/libsystem_pthread.dylib",
+        "/usr/lib/system/libsystem_sandbox.dylib",
+        "/usr/lib/system/libsystem_sanitizers.dylib",
+        "/usr/lib/system/libsystem_secinit.dylib",
+        "/usr/lib/system/libsystem_symptoms.dylib",
+        "/usr/lib/system/libsystem_trace.dylib",
+        "/usr/lib/system/libsystem_trial.dylib",
+        "/usr/lib/system/libunwind.dylib",
+        "/usr/lib/system/libxpc.dylib"
+      ]
+    },
+    "usr/lib/libc++.tbd": {
+      "sha256": "842e36fbbc4823575f1d445deaa10a32d3e52bf4532e382ce938a157e637e114",
+      "install_names": [
+        "/usr/lib/libc++.1.dylib"
+      ],
+      "reexports": []
+    },
+    "usr/lib/libobjc.A.tbd": {
+      "sha256": "2d09722851dcbf667d9b0f45bcc5cc98d9758f06b90bd7ad40facdf018407995",
+      "install_names": [
+        "/usr/lib/libobjc.A.dylib"
+      ],
+      "reexports": []
+    },
+    "usr/lib/libobjc.tbd": {
+      "sha256": "2d09722851dcbf667d9b0f45bcc5cc98d9758f06b90bd7ad40facdf018407995",
+      "install_names": [
+        "/usr/lib/libobjc.A.dylib"
+      ],
+      "reexports": []
+    }
+  }
+}

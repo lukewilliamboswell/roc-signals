@@ -190,6 +190,47 @@ Roc app executables built during tests are written under `.test-out/` by
 
 ## Dependency artifact releases
 
+### macOS linker interfaces
+
+`macos-dependencies.yml` packages the exact Apple SDK `.tbd` files pinned in
+`dependencies/macos-stubs.json`, independently of the Rust host and Zig engine.
+It preserves the original Xcode agreement and the project's
+[`NOTICE`](https://github.com/lukewilliamboswell/roc-signals/blob/main/dependencies/macos-stubs/NOTICE).
+The Apple inputs are not covered by Roc Signals' UPL-1.0 license. The notice
+records the maintainer's decision to distribute the attributed interfaces
+without an established explicit redistribution grant; attestation establishes
+provenance, not permission.
+
+On Apple Silicon macOS with Xcode 26.3 (17C529), its macOS 26.2 SDK (25C58),
+Python 3 and Zig 0.16.0, reproduce the candidate with:
+
+```sh
+export DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer
+python3 scripts/build_macos_stubs.py \
+  --sdk "$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk" \
+  --xcode-license /Applications/Xcode_26.3.app/Contents/Resources/en.lproj/License.rtf \
+  --output /tmp/macos-stubs-candidate
+python3 scripts/test_macos_stub_artifact.py /tmp/macos-stubs-candidate/macos-stubs-macos-sysroot.tar
+python3 -m unittest scripts/test_macos_dependencies.py scripts/test_dependency_artifacts.py scripts/test_dependency_workflow_filters.py
+```
+
+Adjust the application path for the local installation. The producer rejects
+missing or changed inputs, escaping SDK symlinks, and unresolved recorded
+reexports. It copies the reviewed bytes without rewriting the interfaces.
+The native probe compiles with Zig and uses Apple's linker with the extracted
+candidate as its sysroot, then exercises CoreFoundation, Objective-C and C++
+runtime imports. This validates the producer candidate, not Roc package
+consumption or the minimum macOS version supported by GPUI.
+
+Pull requests test without publishing. An explicit dispatch on `main` with a
+fresh `deps-macos-stubs-<version>` tag requires matching archives from two
+constructions and publishes the tested archive with GitHub build provenance
+and a consumer lock. Review that lock before adopting it. The ordinary GUI
+builder currently still collects SDK stubs locally; verified release reuse
+requires a separate consumer integration change.
+
+### musl
+
 The `Dependency releases` workflow builds musl from `dependencies/musl.json`,
 tests the exact archives on Linux x86-64 and AArch64, and checks that a second
 build produces the same bytes. Pull requests validate without publication.
@@ -1133,7 +1174,11 @@ and the target operating system (plus runtime GUI libraries on Linux).
 Rust, Zig, and the native SDK/toolchain are used only when
 preparing the platform bundle. On macOS, the package embeds compiled Metal shaders
 and copies the required SDK framework/library link stubs into
-`targets/macos-sysroot`; building a bundled app does not need Xcode. The macOS
+`targets/macos-sysroot`; building a bundled app does not need Xcode. The
+final application link takes place on the user's machine during `roc build`
+or the compilation step of `roc run`. The `.tbd` files supply interface metadata;
+macOS supplies the actual framework implementations at runtime. Running an
+already-built executable does not require an Apple SDK. The macOS
 build is validated on macOS 26.3; older versions are not yet validated.
 This produces a native executable, not a desktop
 installer. The Linux prebuilt host depends on the build machine's glibc/library ABI;
