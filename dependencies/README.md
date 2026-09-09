@@ -5,15 +5,10 @@ assets, identified by a consumer lock containing their SHA-256, byte length,
 producer source commit, source ref, and signing workflow. A dependency release
 version is independent of the platform and compiler release versions.
 
-`macos-stubs.json` pins 31 unmodified Apple SDK linker interface files, their
-install names and reexports, and the original Xcode agreement. The producer
-packages metadata without building the host or copying framework implementations.
-Its native probe links against the extracted candidate and executes system
-imports; two constructions must produce identical archives before publication.
-Apple inputs are not relicensed under Roc Signals' UPL-1.0. See
-[`macos-stubs/NOTICE`](macos-stubs/NOTICE) for provenance, the distinction between
-final linking and runtime loading, and the acknowledged redistribution position.
-The root consumer lock does not yet select this producer's release.
+macOS linker interfaces are generated from the reviewed symbol catalog in
+[`macos-interfaces/`](macos-interfaces/README.md). Each selected symbol has source
+URLs, and each generated package records the exact host archive and catalog
+hashes. The GUI builder and bundler generate fresh TBD files from that catalog.
 
 `musl.json` pins the upstream source revision and Zig toolchain used to produce
 Linux musl startup and libc inputs. The pinned revision is a post-1.2.6 snapshot;
@@ -155,7 +150,7 @@ input or for historical platform releases.
 | Linux GUI FreeType | Independent Zig build from pinned source, native candidate tests, reproducibility checks, and verified release consumption | Supporting build libraries still come from the authenticated builder snapshot; the operating system supplies runtime font libraries. |
 | Linux GUI xkbcommon and xkbcommon-X11 | Independent Zig/Meson source build, native candidate test, reproducibility check, and verified release consumption | XCB runtime libraries and keyboard layout data remain operating-system inputs; applications resolve the system SONAMEs at runtime. |
 | Other Linux GUI shared libraries and startup objects | `build_gui.py` copies the build machine's installed inputs | No independent pinned producer, signed dependency receipt, or verified bundle admission yet; recorded local paths do not establish provenance. |
-| macOS framework and system link stubs | `build_gui.py` copies the selected Xcode SDK's stubs and records SDK identifiers | No independently versioned, verified SDK artifact yet. SDK origin and redistribution rights must be established; proprietary SDK stubs cannot be described as an open-source build. |
+| macOS framework and system link stubs | `build_macos_stubs.py` generates minimal TBDs from the reviewed interface catalog | Bundles generate fresh interfaces and record host archive, source catalog, generator, and output hashes. |
 | Rust crates embedded in the GUI host | Cargo uses the reviewed lockfile and CI caches compiled dependencies; cross-crate release LTO is disabled | The cache is not a separately released dependency artifact. Generic Rust code can be instantiated in the host, so separating it into a reusable binary requires an explicit ABI and compatibility policy. |
 | Prebuilt GUI host target directories | The bundler accepts host archives supplied as target directories | Those host bytes are not yet bound to an expected source commit and verified producer identity at admission. A signed dependency library does not establish the host's provenance. |
 

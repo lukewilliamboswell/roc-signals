@@ -2,17 +2,17 @@
 
 This project bundles third-party platform link inputs and release tooling.
 
-## Apple macOS SDK linker interfaces
+## macOS linker interfaces
 
-Files: `.tbd` interface metadata under `targets/macos-sysroot`.
+Files: project-generated `.tbd` metadata under `targets/macos-sysroot`.
 
-These originate in Apple's SDK and are not covered by Roc Signals' Universal
-Permissive License, Version 1.0. The macOS dependency producer preserves the
-original agreement under `licenses/macos-stubs/Xcode-and-Apple-SDKs-Agreement.rtf`
-and the provenance notice under `licenses/macos-stubs/NOTICE`. See
-[`dependencies/macos-stubs/NOTICE`](dependencies/macos-stubs/NOTICE) for the
-maintainer's acknowledged redistribution position. The stubs contain no Apple
-framework implementations; applications load those from macOS at runtime.
+The generator writes minimal YAML linkage descriptions from the project's
+reviewed interface catalog. Its inputs are symbol records and compiled Signals
+host archives. Apple API documentation and identified open-source declarations
+provide the interface references; the catalog links each source. Generated
+packages include the catalog and its provenance statement. See
+[`dependencies/macos-interfaces/`](dependencies/macos-interfaces/README.md).
+Applications load the framework implementations supplied by macOS at runtime.
 
 ## FreeType
 

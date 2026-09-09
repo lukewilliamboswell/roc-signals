@@ -40,6 +40,7 @@ jobs:
           fetch-depth: 0
       - run: python3 -m unittest discover -s scripts -p test_ci_changes.py
       - run: python3 -m unittest discover -s scripts -p test_dependency_workflow_filters.py
+      - run: python3 -m unittest discover -s scripts -p 'test_macos_*.py'
       - id: select
         run: python3 scripts/ci_changes.py
 

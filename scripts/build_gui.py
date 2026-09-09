@@ -5,18 +5,13 @@ import json
 import os
 from pathlib import Path
 import platform
-import re
 import shutil
 import subprocess
-import tempfile
 
+from build_macos_stubs import install as install_macos_interfaces
 from prepare_dependencies import install_windows_imports, install_freetype, install_xkbcommon
 
 ROOT = Path(__file__).resolve().parent.parent
-MACOS_FRAMEWORKS = ('AppKit', 'ApplicationServices', 'Carbon', 'CoreFoundation',
-                    'CoreGraphics', 'CoreMedia', 'CoreText', 'CoreVideo',
-                    'Foundation', 'IOKit', 'IOSurface', 'Metal', 'QuartzCore',
-                    'ScreenCaptureKit', 'Security', 'SystemConfiguration')
 
 def host_target():
     return {('Linux', 'x86_64'): 'x64glibc',
@@ -39,39 +34,6 @@ def build_environment():
     if platform.system() == 'Darwin':
         environment.setdefault('TOOLCHAINS', 'Metal')
     return environment
-
-
-def copy_macos_sysroot(sdk, destination):
-    """Retain SDK link stubs and their reexports, never SDK headers or binaries.
-
-    Roc discovers frameworks in targets/macos-sysroot. Resolve SDK symlinks by
-    copying their contents so an extracted package has no machine-local paths.
-    """
-    pending = [Path('System/Library/Frameworks') / (name + '.framework') / (name + '.tbd')
-               for name in MACOS_FRAMEWORKS]
-    pending += [Path('usr/lib') / name for name in ['libSystem.tbd', 'libobjc.tbd', 'libc++.tbd']]
-    copied = set()
-    while pending:
-        relative = pending.pop()
-        if relative in copied:
-            continue
-        source = sdk / relative
-        content = source.read_text()
-        if not re.search(r'^tbd-version:\s+4\s*$', content, re.MULTILINE):
-            raise ValueError(f'Expected SDK TBD version 4: {source}')
-        dest = destination / relative
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, dest)
-        copied.add(relative)
-        # A TBD can contain multiple documents defining its own reexports.
-        provided = set(re.findall(r"^install-name:\s*'([^']+)'", content, re.MULTILINE))
-        for block in re.findall(r'^reexported-libraries:\n(.*?)(?=^\S|\Z)', content, re.MULTILINE | re.DOTALL):
-            for name in re.findall(r"'(/[^']+)'", block):
-                if name in provided:
-                    continue
-                path = Path(name.lstrip('/'))
-                pending.append(path.with_suffix('.tbd') if path.suffix == '.dylib'
-                               else Path(str(path) + '.tbd'))
 
 
 def build(debug=False, jobs=2):
@@ -105,18 +67,9 @@ def build(debug=False, jobs=2):
         build_windows_inputs(dest, windows_dependencies)
         return
     if platform.system() == 'Darwin':
-        sdk = Path(subprocess.check_output(['xcrun', '--show-sdk-path'], text=True).strip())
-        sysroot = dest.parent / 'macos-sysroot'
-        with tempfile.TemporaryDirectory(prefix='signals-sdk-') as tmp:
-            staged = Path(tmp) / 'macos-sysroot'
-            copy_macos_sysroot(sdk, staged)
-            if sysroot.exists():
-                shutil.rmtree(sysroot)
-            shutil.move(staged, sysroot)
+        manifest = install_macos_interfaces(dest.parent)
         (dest / 'link-inputs.json').write_text(json.dumps({
-            'sdk_version': subprocess.check_output(['xcrun', '--show-sdk-version'], text=True).strip(),
-            'sdk_build': subprocess.check_output(['xcrun', '--show-sdk-build-version'], text=True).strip(),
-            'frameworks': MACOS_FRAMEWORKS,
+            'macos_interfaces': manifest,
         }, indent=2) + '\n')
         return
     for name in ['crt1.o', 'crti.o', 'crtn.o']:

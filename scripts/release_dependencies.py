@@ -17,13 +17,6 @@ from dependency_artifacts import sha256, unpack_verified, verify_archive, read_l
 
 REPOSITORY = "lukewilliamboswell/roc-signals"
 KINDS = {
-    "macos-stubs": {"targets": ("macos-sysroot",),
-                    "files": (), "recipe": "dependencies/macos-stubs.json",
-                    "licenses": ("Xcode-and-Apple-SDKs-Agreement.rtf", "NOTICE"),
-                    "extra_files": ("sources/macos-stubs/recipe.json",),
-                    "workflow": "macos-dependencies.yml",
-                    "inventory_error": "dependency release must include the pinned macOS interfaces",
-                    "validation": "The unmodified Apple SDK interface inventory passed reexport closure and exact-input checks, and two constructions produced identical archives. See the included NOTICE for the project's acknowledged redistribution position; attestation establishes provenance, not permission."},
     "unwind": {"targets": ("x64glibc",), "files": ("libunwind.a",),
                "licenses": ("LICENSE.TXT", "LICENSE-ZIG"),
                "extra_files": tuple("sources/unwind/" + name for name in (
@@ -104,18 +97,6 @@ def prepare(directory, tag, environment, kind="musl"):
             required = {f"targets/{target}/{name}" for name in policy["files"]}
             required.update(f"licenses/{kind}/{name}" for name in policy["licenses"])
             required.update(policy.get("extra_files", ()))
-            if 'recipe' in policy:
-                recipe_path = Path(__file__).resolve().parents[1] / policy['recipe']
-                recipe = json.loads(recipe_path.read_bytes())
-                required.update(f'targets/{target}/' + name for name in recipe['files'])
-                expected_hashes = {f'targets/{target}/' + name: record['sha256']
-                                   for name, record in recipe['files'].items()}
-                expected_hashes[f'licenses/{kind}/Xcode-and-Apple-SDKs-Agreement.rtf'] = recipe['license_sha256']
-                expected_hashes[f'licenses/{kind}/NOTICE'] = sha256(recipe_path.parent / kind / 'NOTICE')
-                expected_hashes[f'sources/{kind}/recipe.json'] = sha256(recipe_path)
-                if any(manifest['files'].get(name, {}).get('sha256') != expected
-                       for name, expected in expected_hashes.items()):
-                    raise ValueError('dependency release differs from reviewed input pins')
             if set(manifest["files"]) != required:
                 raise ValueError(f"{kind} release has an incomplete or unexpected file set")
             artifacts[f"{kind}-{target}"] = entry

@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 
 from build_gui import build as build_gui
+from build_macos_stubs import generate as generate_macos_interfaces, ARCHIVES as MACOS_ARCHIVES
 from prepare_platforms import prepare_platform
 from gui_suite import examples as gui_examples
 from prepare_dependencies import (verified_web_dependencies, WEB_ARTIFACTS,
@@ -97,6 +98,18 @@ def stage_windows_inputs(source, stage):
         stage_dependency_inputs(inputs, (WINDOWS_IMPORTS,), stage)
 
 
+def stage_macos_inputs(source, stage):
+    """Generate interfaces for the selected host; never admit a copied sysroot."""
+    destination = stage / 'targets/arm64mac'
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in MACOS_ARCHIVES:
+        path = source / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f'missing or invalid macOS host archive: {path}')
+        shutil.copyfile(path, destination / name)
+    generate_macos_interfaces(destination, stage / 'targets/macos-sysroot')
+
+
 
 def stage_example_package(source, destination):
     """Include a pinned source dependency required by downloadable GUI examples.
@@ -169,19 +182,23 @@ def main():
                 trees = [source / 'targets'] + [prebuilt.resolve() for prebuilt in args.prebuilt_targets]
             hosts = []
             windows_targets = []
+            macos_targets = []
             for tree in trees:
                 if not tree.is_dir():
                     raise SystemExit(f'Prebuilt targets directory not found: {tree}')
                 validate_gui_archives(tree)
                 if (tree / 'x64win').is_dir():
                     windows_targets.append(tree / 'x64win')
+                if (tree / 'arm64mac').is_dir():
+                    macos_targets.append(tree / 'arm64mac')
                 hosts += [(tree, p) for p in tree.rglob('*')
-                          if p.is_file() and p.relative_to(tree).parts[0] != 'x64win'
+                          if p.is_file() and p.relative_to(tree).parts[0] not in
+                          {'x64win', 'arm64mac', 'macos-sysroot'}
                           and p.relative_to(tree).as_posix() != 'x64glibc/libfreetype.so'
                           and p.relative_to(tree).as_posix() not in
                           {'x64glibc/' + name for name in XKBCOMMON_LIBRARIES}
-                          and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json', '.tbd'}]
-            if package == 'gui' and not hosts and not windows_targets:
+                          and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json'}]
+            if package == 'gui' and not hosts and not windows_targets and not macos_targets:
                 raise SystemExit(f'No {package} hosts found; run without --no-build.')
             for tree, path in hosts:
                 dest = stage / 'targets' / path.relative_to(tree)
@@ -191,6 +208,10 @@ def main():
                 raise ValueError('select one Windows host tree; overlapping local/prebuilt hosts are ambiguous')
             if windows_targets:
                 stage_windows_inputs(windows_targets[0], stage)
+            if len(macos_targets) > 1:
+                raise ValueError('select one macOS host tree; overlapping local/prebuilt hosts are ambiguous')
+            if macos_targets:
+                stage_macos_inputs(macos_targets[0], stage)
             if any((tree / 'x64glibc').is_dir() for tree in trees):
                 with verified_freetype() as inputs:
                     stage_dependency_inputs(inputs, (FREETYPE,), stage)

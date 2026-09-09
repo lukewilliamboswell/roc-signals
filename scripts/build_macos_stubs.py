@@ -1,104 +1,126 @@
 #!/usr/bin/env python3
-"""Package pinned Apple linker interfaces without compiling the GUI host.
+"""Generate project-authored macOS linker interfaces from a reviewed symbol catalog.
 
-The recipe records the reviewed SDK bytes and reexport graph. Only those exact
-bytes are admitted; metadata is not inferred from a consumer's local SDK.
+Inputs are project source records and compiled host archives. No SDK headers,
+TBDs, or framework binaries are read. The generated interfaces contain names
+and linkage metadata only; macOS supplies the implementations at runtime.
 """
 
 import argparse
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
-
-import dependency_archive
-from dependency_archive import digest, write_archive
+import re
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-RECIPE = ROOT / 'dependencies/macos-stubs.json'
-NOTICE = ROOT / 'dependencies/macos-stubs/NOTICE'
-IDENTITY = 'macos-stubs-macos-sysroot'
+CATALOG = ROOT / 'dependencies/macos-interfaces/interfaces.json'
+PROVENANCE = ROOT / 'dependencies/macos-interfaces/PROVENANCE.md'
+ARCHIVES = ('libsignals_gpui_host.a', 'libengine.a')
 
 
-def read_recipe(path=RECIPE):
-    recipe = json.loads(path.read_bytes())
-    if (recipe['schema_version'] != 1 or recipe['name'] != 'macos-stubs'
-            or recipe['target'] != 'macos-sysroot' or not recipe['files']):
-        raise ValueError('invalid macOS stub recipe')
-    for name, record in recipe['files'].items():
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def read_catalog(path=CATALOG):
+    return validate_catalog(json.loads(path.read_bytes()))
+
+
+def validate_catalog(catalog):
+    if catalog['schema_version'] != 1 or catalog['target'] != 'arm64-macos':
+        raise ValueError('unsupported macOS interface catalog')
+    seen_paths, seen_symbols = set(), set()
+    for library in catalog['libraries']:
+        name = library['path']
         relative = PurePosixPath(name)
         if (relative.is_absolute() or '..' in relative.parts or str(relative) != name
-                or '\\' in name or relative.suffix != '.tbd'):
-            raise ValueError('invalid macOS stub path')
-        if not record['install_names']:
-            raise ValueError('stub must declare its install names')
-        for install_name in record['reexports']:
-            if install_name in record['install_names']:
-                continue
-            target = PurePosixPath(install_name.removeprefix('/'))
-            target = (target.with_suffix('.tbd') if target.suffix == '.dylib'
-                      else PurePosixPath(str(target) + '.tbd'))
-            provider = recipe['files'].get(str(target))
-            if provider is None or install_name not in provider['install_names']:
-                raise ValueError(f'unresolved macOS reexport from {name}: {install_name}')
-    return recipe
+                or '\\' in name or relative.suffix != '.tbd' or name in seen_paths):
+            raise ValueError('invalid or duplicate macOS interface path')
+        seen_paths.add(name)
+        if not re.fullmatch(r'/(?:usr/lib|System/Library/Frameworks)/[A-Za-z0-9_./+-]+', library['install_name']):
+            raise ValueError('invalid macOS install name')
+        if not library['path_sources']:
+            raise ValueError('macOS library requires install-path evidence')
+        for record in library['symbols']:
+            symbol = record['name']
+            if not re.fullmatch(r'[A-Za-z_$][A-Za-z0-9_$.]*', symbol) or symbol in seen_symbols:
+                raise ValueError('invalid or duplicate macOS symbol')
+            if not record['sources']:
+                raise ValueError(f'macOS symbol requires source evidence: {symbol}')
+            seen_symbols.add(symbol)
+    if 'usr/lib/libSystem.tbd' not in seen_paths:
+        raise ValueError('macOS interface catalog requires libSystem')
+    return catalog
 
 
-def expected_files(recipe):
-    return ({'targets/macos-sysroot/' + name for name in recipe['files']}
-            | {'licenses/macos-stubs/Xcode-and-Apple-SDKs-Agreement.rtf',
-               'licenses/macos-stubs/NOTICE', 'sources/macos-stubs/recipe.json'})
-
-
-def validate_contents(root, recipe):
-    """Check exact selected SDK bytes and notices after archive verification."""
-    for name, record in recipe['files'].items():
-        path = root / 'targets/macos-sysroot' / name
-        if path.is_symlink() or digest(path.read_bytes()) != record['sha256']:
-            raise ValueError(f'macOS stub differs from reviewed pin: {name}')
-    license_path = root / 'licenses/macos-stubs/Xcode-and-Apple-SDKs-Agreement.rtf'
-    if digest(license_path.read_bytes()) != recipe['license_sha256']:
-        raise ValueError('Xcode agreement differs from reviewed pin')
-    if (root / 'licenses/macos-stubs/NOTICE').read_bytes() != NOTICE.read_bytes():
-        raise ValueError('macOS provenance notice differs from reviewed selection')
-    if json.loads((root / 'sources/macos-stubs/recipe.json').read_bytes()) != recipe:
-        raise ValueError('macOS archive recipe differs from reviewed selection')
-
-
-def build(sdk, license_path, output, recipe_path=RECIPE):
-    recipe = read_recipe(recipe_path)
+def render(catalog):
+    """Emit deterministic TBD v4 YAML without SDK versions, UUIDs, or reexports."""
     files = {}
-    # Read and verify every input before the archive writer creates output.
-    for name, record in recipe['files'].items():
-        source = sdk / name
-        if not source.resolve().is_relative_to(sdk.resolve()):
-            raise ValueError(f'macOS SDK symlink escapes SDK: {name}')
-        data = source.read_bytes()
-        if digest(data) != record['sha256']:
-            raise ValueError(f'macOS stub differs from reviewed pin: {name}')
-        files['targets/macos-sysroot/' + name] = data
-    license_data = license_path.read_bytes()
-    if digest(license_data) != recipe['license_sha256']:
-        raise ValueError('Xcode agreement differs from reviewed pin')
-    files['licenses/macos-stubs/Xcode-and-Apple-SDKs-Agreement.rtf'] = license_data
-    files['licenses/macos-stubs/NOTICE'] = NOTICE.read_bytes()
-    files['sources/macos-stubs/recipe.json'] = recipe_path.read_bytes()
-    metadata = {
-        'schema_version': 1, 'name': recipe['name'], 'version': recipe['version'],
-        'target': recipe['target'],
-        'source': {key: recipe[key] for key in ('xcode_version', 'xcode_build',
-                                               'sdk_version', 'sdk_build')},
-        'build': {'recipe_sha256': digest(recipe_path.read_bytes()),
-                  'producer_sha256': digest(Path(__file__).read_bytes()),
-                  'archive_writer_sha256': digest(Path(dependency_archive.__file__).read_bytes())},
-    }
-    result = write_archive(output / (IDENTITY + '.tar'), metadata, files)
-    print(f'{digest(result.read_bytes())}  {result}')
-    return result
+    for library in catalog['libraries']:
+        lines = ['--- !tapi-tbd', 'tbd-version: 4', 'targets: [ arm64-macos ]',
+                 "install-name: '" + library['install_name'] + "'"]
+        symbols = sorted(record['name'] for record in library['symbols'])
+        if symbols:
+            lines += ['exports:', '  - targets: [ arm64-macos ]', '    symbols:']
+            lines += ["      - '" + symbol + "'" for symbol in symbols]
+        files[library['path']] = ('\n'.join(lines + ['...', ''])).encode()
+    return files
+
+
+def generate(archives, destination, catalog_path=CATALOG):
+    """Bind generated interfaces to exact host inputs in a fresh output tree."""
+    catalog_bytes = catalog_path.read_bytes()
+    catalog = validate_catalog(json.loads(catalog_bytes))
+    files = render(catalog)
+    identities = {}
+    for name in ARCHIVES:
+        path = archives / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f'missing or invalid macOS host archive: {path}')
+        identities[name] = digest(path.read_bytes())
+    provenance = PROVENANCE.read_bytes()
+    manifest = {'schema_version': 1, 'origin': 'project-generated-macos-interfaces',
+                'target': catalog['target'], 'host_archives_sha256': identities,
+                'catalog_sha256': digest(catalog_bytes),
+                'generator_sha256': digest(Path(__file__).read_bytes()),
+                'provenance_sha256': digest(provenance),
+                'files_sha256': {name: digest(data) for name, data in sorted(files.items())}}
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError(destination)
+    destination.mkdir(parents=True)
+    for name, data in files.items():
+        path = destination / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    (destination / 'interfaces.json').write_bytes(catalog_bytes)
+    (destination / 'PROVENANCE.md').write_bytes(provenance)
+    (destination / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    return manifest
+
+
+def install(targets):
+    """Replace local interface outputs only after complete generation succeeds."""
+    with tempfile.TemporaryDirectory(prefix='.generated-macos-', dir=targets) as temporary:
+        candidate = Path(temporary) / 'macos-sysroot'
+        manifest = generate(targets / 'arm64mac', candidate)
+        destination = targets / 'macos-sysroot'
+        backup = Path(temporary) / 'previous'
+        if destination.exists() or destination.is_symlink():
+            destination.rename(backup)
+        try:
+            candidate.rename(destination)
+        except OSError:
+            if backup.exists() or backup.is_symlink():
+                backup.rename(destination)
+            raise
+    return manifest
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--sdk', type=Path, required=True)
-    parser.add_argument('--xcode-license', type=Path, required=True)
+    parser.add_argument('--archives', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    build(args.sdk.resolve(), args.xcode_license.resolve(), args.output.resolve())
+    manifest = generate(args.archives.resolve(), args.output.resolve())
+    print(json.dumps({'files': len(manifest['files_sha256']), 'origin': manifest['origin']}))
