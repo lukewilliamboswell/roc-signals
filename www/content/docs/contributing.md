@@ -984,7 +984,7 @@ each app must have specs. Every GUI check must pass; this suite has no known-fai
 allowlist. `--spec-filter`, `--shard`, `--jobs`, and `--fail-fast` also apply.
 The default `all` suite includes GUI checks on Linux x86_64; run `gui` explicitly
 on macOS, where it requires full Xcode and the Metal toolchain. CI runs them in a
-dedicated Linux and Windows jobs. GUI executables remain under `.test-out/gui`
+dedicated Linux, Windows, and macOS jobs. GUI executables remain under `.test-out/gui`
 when output is kept. Linux CI then runs `xvfb-run -a python3 scripts/gui_smoke.py --wayland`
 with Weston and Mesa's software Vulkan driver. Weston runs on Xvfb so GPUI
 receives a Wayland input seat as well as a virtual display; Weston's headless
