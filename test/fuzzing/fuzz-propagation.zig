@@ -455,7 +455,7 @@ const FuzzSink = struct {
     /// Cancels the host registration for an interval whose owning scope is no longer active.
     pub fn cancelInterval(_: FuzzSink, _: signals.ids.IntervalToken) void {}
     /// Starts bounded asynchronous host work for an engine-issued task request.
-    pub fn startTask(_: FuzzSink, _: signals.ids.TaskRequestId, _: []const u8, _: []const u8) void {}
+    pub fn startTask(_: FuzzSink, _: signals.ids.TaskRequestId, _: signals.boundary.TaskKind, _: []const u8, _: []const u8) void {}
     /// Cancels host work for a task request retired by engine lifecycle policy.
     pub fn cancelTask(_: FuzzSink, _: signals.ids.TaskRequestId) void {}
     /// Applies an engine-issued storage write without deriving storage semantics.

@@ -230,7 +230,7 @@ def bundle_platform(roc_bin: str, out_dir: Path) -> Path:
     env["BUNDLE_OUT_DIR"] = str(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
-        [str(ROOT / "scripts" / "bundle.sh")],
+        [str(ROOT / "scripts" / "bundle.sh"), "--package", "web", "--no-build"],
         cwd=ROOT,
         env=env,
         text=True,

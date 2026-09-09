@@ -13,6 +13,7 @@ pub const boundary = @import("boundary.zig");
 pub const callable_roles = @import("callable_roles.zig");
 pub const collection_budget = @import("collection_budget.zig");
 pub const collection_plan = @import("collection_plan.zig");
+pub const descriptor_reindex = @import("descriptor_reindex.zig");
 pub const descriptor_stream = @import("descriptor_stream.zig");
 pub const each_runtime = @import("each_runtime.zig");
 pub const each_collection = @import("each_collection.zig");
@@ -29,6 +30,9 @@ pub const host_value_registry = @import("host_value_registry.zig");
 pub const host_values = @import("host_values.zig");
 pub const identity_table = @import("identity_table.zig");
 pub const ids = @import("ids.zig");
+pub const native_child_order = @import("native_child_order.zig");
+pub const native_style = @import("native_style.zig");
+pub const key_chord = @import("key_chord.zig");
 pub const render = @import("render_commands.zig");
 pub const render_cache = @import("render_cache.zig");
 pub const render_sink = @import("render_sink.zig");
@@ -44,15 +48,20 @@ pub const scope_tree = @import("scope_tree.zig");
 pub const signal_graph = @import("signal_graph.zig");
 pub const signal_records = @import("signal_records.zig");
 pub const selector_runtime = @import("selector_runtime.zig");
+pub const shared_buffer = @import("shared_buffer.zig");
+pub const structural_positions = @import("structural_positions.zig");
 pub const structural_splice = @import("structural_splice.zig");
 
-test {
+// Discover imported tests even when the command filters out namespace tests.
+comptime {
+    @setEvalBranchQuota(10000);
     std.testing.refAllDecls(abi_view);
     std.testing.refAllDecls(active_signal_graph);
     std.testing.refAllDecls(boundary);
     std.testing.refAllDecls(callable_roles);
     std.testing.refAllDecls(collection_budget);
     std.testing.refAllDecls(collection_plan);
+    std.testing.refAllDecls(descriptor_reindex);
     std.testing.refAllDecls(descriptor_stream);
     std.testing.refAllDecls(each_runtime);
     std.testing.refAllDecls(each_collection);
@@ -66,6 +75,9 @@ test {
     std.testing.refAllDecls(host_value_registry);
     std.testing.refAllDecls(identity_table);
     std.testing.refAllDecls(ids);
+    std.testing.refAllDecls(native_style);
+    std.testing.refAllDecls(native_child_order);
+    std.testing.refAllDecls(key_chord);
     std.testing.refAllDecls(render);
     std.testing.refAllDecls(render_cache);
     std.testing.refAllDecls(render_sink);
@@ -78,5 +90,6 @@ test {
     std.testing.refAllDecls(scope_tree);
     std.testing.refAllDecls(signal_graph);
     std.testing.refAllDecls(signal_records);
+    std.testing.refAllDecls(structural_positions);
     std.testing.refAllDecls(structural_splice);
 }

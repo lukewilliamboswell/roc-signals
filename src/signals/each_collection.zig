@@ -1,6 +1,7 @@
 //! Host-owned key storage and the allocation-free sink used by keyed collections.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const abi = @import("roc_platform_abi.zig");
 
 pub const SinkError = error{
@@ -87,7 +88,7 @@ pub const DeltaOp = union(enum) {
 /// Fully host-owned, exactly counted snapshot scratch. Preparation reserves all
 /// fixed-width and byte storage before Roc writes through the sink.
 pub const SnapshotStorage = struct {
-    rows: std.ArrayListUnmanaged(SnapshotRow) = .empty,
+    rows: shared_buffer.List(SnapshotRow) = .empty,
     keys: KeyStorage = .{},
     expected_count: usize = 0,
     complete: bool = false,
@@ -143,7 +144,7 @@ pub const PreparedSnapshotSink = struct {
 /// Fully host-owned canonical delta scratch. Key-bearing operations index the
 /// compact key arena, so no operation owns a separately allocated string.
 pub const DeltaStorage = struct {
-    ops: std.ArrayListUnmanaged(DeltaOp) = .empty,
+    ops: shared_buffer.List(DeltaOp) = .empty,
     keys: KeyStorage = .{},
     expected_ops: usize = 0,
     expected_keys: usize = 0,
@@ -242,9 +243,9 @@ const Phase = union(enum) {
 };
 
 pub const KeyStorage = struct {
-    bytes: std.ArrayListUnmanaged(u8) = .empty,
-    offsets: std.ArrayListUnmanaged(u32) = .empty,
-    hashes: std.ArrayListUnmanaged(u64) = .empty,
+    bytes: shared_buffer.List(u8) = .empty,
+    offsets: shared_buffer.List(u32) = .empty,
+    hashes: shared_buffer.List(u64) = .empty,
     expected_count: usize = 0,
     maximum_bytes: usize = 0,
     phase: Phase = .idle,
@@ -377,7 +378,7 @@ pub const PreparedKeySink = struct {
 };
 
 pub const BoolStorage = struct {
-    values: std.ArrayListUnmanaged(bool) = .empty,
+    values: shared_buffer.List(bool) = .empty,
     expected_count: usize = 0,
     complete: bool = false,
 

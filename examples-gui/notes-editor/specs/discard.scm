@@ -1,0 +1,18 @@
+(test "Discard confirmation preserves canceled drafts and restores the accepted snapshot"
+  (steps
+    (fill (label "Note text") "Take the train")
+    (click (role button :name "Revert changes"))
+    (expect-visible (test-id "discard-confirmation"))
+    (expect-disabled (label "Note text") true)
+    (click (role button :name "Keep editing"))
+    (expect-absent (test-id "discard-confirmation"))
+    (expect-value (label "Note text") "Take the train")
+    (expect-disabled (label "Note text") false)
+    (click (role button :name "Revert changes"))
+    (click (role button :name "Discard changes"))
+    (expect-absent (test-id "discard-confirmation"))
+    (expect-value (label "Note text") "")
+    (expect-text (test-id "document-name") "Untitled note")
+    (expect-text (test-id "note-summary") "0 words · 0 characters")
+    (expect-text (test-id "note-status") "No changes")
+))

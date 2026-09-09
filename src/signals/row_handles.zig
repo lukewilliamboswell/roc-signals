@@ -7,6 +7,7 @@
 //! maximum `u32` value is permanently retired instead of wrapping.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 
 const index_bits = 32;
 const max_slot_count: usize = std.math.maxInt(u32);
@@ -61,7 +62,7 @@ pub fn Registry(comptime Payload: type) type {
             state: State,
         };
 
-        slots: std.ArrayListUnmanaged(Slot) = .empty,
+        slots: shared_buffer.List(Slot) = .empty,
         free_head: ?u32 = null,
         slot_limit: usize = max_slot_count,
 

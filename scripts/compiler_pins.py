@@ -102,7 +102,7 @@ def replace(pins, pin):
 
 
 def read_pin(path):
-    found = header_pin(Path(path).read_text())
+    found = header_pin(Path(path).read_text(encoding='utf-8'))
     if found is None:
         raise ValueError('Roc root header has no compiler pin')
     return found[2]
@@ -133,13 +133,12 @@ def selected(path, paths):
 
 def local_sources(root, paths=None):
     if paths is None:
-        return {'.roc-version': (root / '.roc-version').read_text()}
+        return {'.roc-version': (root / '.roc-version').read_text(encoding='utf-8')}
     validate_paths(paths)
     sources = {}
     for path in paths:
         location = root / path
         if location.is_symlink() or not location.resolve().is_relative_to(root.resolve()):
             raise ValueError('Compiler source must be a regular file inside the repository')
-        sources[path] = location.read_text()
+        sources[path] = location.read_text(encoding='utf-8')
     return sources
-

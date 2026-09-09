@@ -1,6 +1,7 @@
 //! Host-owned index for keyed `Signal.select` members.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 
 /// Maps one selected-input record and string key to every live member record.
 /// Keys are copied into registry ownership so removing one member never leaves
@@ -8,7 +9,7 @@ const std = @import("std");
 pub fn Registry(comptime Record: type) type {
     return struct {
         const Self = @This();
-        const Members = std.ArrayListUnmanaged(*Record);
+        const Members = shared_buffer.List(*Record);
         const Group = struct {
             members_by_key: std.StringHashMapUnmanaged(Members) = .empty,
 

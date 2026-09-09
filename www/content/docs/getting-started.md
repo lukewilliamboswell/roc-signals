@@ -16,7 +16,7 @@ WebAssembly.
 For the checkout workflow on this page:
 
 - **[Roc](https://www.roc-lang.org/install)** — install the exact nightly named
-  in `platform/main.roc` (the `roc` entry under `packages`).
+  in `platform-web/main.roc` (the `roc` entry under `packages`).
 - **Zig 0.16.0** to build the platform hosts.
 - **Python 3** to run the native spec driver.
 
@@ -40,7 +40,7 @@ is needed.
 
 The rest of this page uses a checkout so you can edit and test a local example.
 Use the clone workflow below and install the nightly named in the `roc` header
-in `platform/main.roc`. When upgrading an existing app, follow the migration
+in `platform-web/main.roc`. When upgrading an existing app, follow the migration
 instructions in the target version's [release
 notes](https://github.com/lukewilliamboswell/roc-signals/releases). Changes not
 yet released are recorded in the repository's [release notes
@@ -56,11 +56,11 @@ That last command compiles the Zig host once for every target Roc can link and
 drops the results where Roc expects them:
 
 ```text
-platform/targets/arm64mac/libhost.a
-platform/targets/x64mac/libhost.a
-platform/targets/arm64musl/libhost.a
-platform/targets/x64musl/libhost.a
-platform/targets/wasm32/host.wasm
+platform-web/targets/arm64mac/libhost.a
+platform-web/targets/x64mac/libhost.a
+platform-web/targets/arm64musl/libhost.a
+platform-web/targets/x64musl/libhost.a
+platform-web/targets/wasm32/host.wasm
 ```
 
 (The `crt1.o` and `libc.a` files alongside the musl hosts ship in the repo; they
@@ -71,14 +71,14 @@ fail with `MISSING TARGET FILE`.
 
 ## Your first app
 
-Create the directories, then save the code below as `examples/hello/main.roc`:
+Create the directories, then save the code below as `examples-web/hello/main.roc`:
 
 ```sh
-mkdir -p examples/hello/specs
+mkdir -p examples-web/hello/specs
 ```
 
 ```roc
-app [main] { pf: platform "../../platform/main.roc" }
+app [main] { pf: platform "../../platform-web/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -111,7 +111,7 @@ A few details in this example:
 - `0.I64` pins the counter's numeric type. A bare `0` would default to `Dec`
   and change its text representation.
 - The platform path is relative to your app file. Two directories up from
-  `examples/hello/` is the repository root.
+  `examples-web/hello/` is the repository root.
 - `Html.section_c` takes an accessible label (`"Counter"`) as its first
   argument. Labels and roles are not decoration here — they are how tests find
   elements.
@@ -119,7 +119,7 @@ A few details in this example:
 Type-check it:
 
 ```sh
-roc check examples/hello/main.roc
+roc check examples-web/hello/main.roc
 ```
 
 Resolve any reported errors before building the app. You can run `roc check`
@@ -132,7 +132,7 @@ engine as the browser build. It can check state transitions and rendered values.
 You still need browser tests for layout, focus, input composition, and browser
 integration.
 
-Write `examples/hello/specs/increments.scm`:
+Write `examples-web/hello/specs/increments.scm`:
 
 ```lisp
 (test "increments"
@@ -148,8 +148,8 @@ Build and run it. Use the target matching your machine — `arm64mac`, `x64mac`,
 `x64musl` for your machine:
 
 ```sh
-roc build --target=x64musl --output=/tmp/hello examples/hello/main.roc
-python3 scripts/spec_driver.py /tmp/hello examples/hello/specs
+roc build --target=x64musl --output=/tmp/hello examples-web/hello/main.roc
+python3 scripts/spec_driver.py /tmp/hello examples-web/hello/specs
 ```
 
 The driver prints a result for each spec and a pass/fail summary. Exit code `0`
@@ -171,7 +171,7 @@ Your app is the same source either way; only the target changes.
 ### Build the WebAssembly module
 
 ```sh
-roc build --target=wasm32 --opt=size --output=/tmp/hello.wasm examples/hello/main.roc
+roc build --target=wasm32 --opt=size --output=/tmp/hello.wasm examples-web/hello/main.roc
 ```
 
 ### Drop it on this site
@@ -190,8 +190,8 @@ To run your app as part of the local site, register it in `www/data/examples.tom
 slug = "hello"
 title = "Hello"
 description = "My first Roc Signals app."
-source = "examples/hello/main.roc"
-specs = "examples/hello/specs"
+source = "examples-web/hello/main.roc"
+specs = "examples-web/hello/specs"
 public = true
 wasm = true
 native = true
@@ -251,7 +251,7 @@ above work without assuming that your app lives at the domain root.
 
 ## Where to put your app
 
-Nothing requires your app to live in `examples/`. That directory is just where
+Nothing requires your app to live in `examples-web/`. That directory is just where
 this repository keeps apps so its test driver can find them. An app can live in any
 directory; its `main.roc` header names a local platform path or a released
 platform archive.
@@ -279,7 +279,7 @@ Run `zig build build-test-hosts -Doptimize=ReleaseSmall`.
 
 **`EFFECTFUL FUNCTION NAME` errors pointing inside the platform** Your Roc
 compiler and the platform disagree. Check the compiler pin for your platform
-release, or the `roc` header in `platform/main.roc` when working from a clone.
+release, or the `roc` header in `platform-web/main.roc` when working from a clone.
 Rebuild the app with the matching compiler and deploy its matching browser
 runtime.
 

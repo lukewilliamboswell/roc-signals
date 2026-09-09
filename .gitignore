@@ -21,7 +21,8 @@ benchmarks/js-framework-benchmark/roc-signals-keyed/dist/
 *.tar.zst
 
 www/static/signals.css
-examples/**/__pycache__/
+examples-web/**/__pycache__/
+examples-gui/**/__pycache__/
 scripts/__pycache__/
 __pycache__/
 .DS_Store
@@ -33,3 +34,6 @@ plan.md
 *.mdtodo
 
 !vendor/tree-sitter-roc.wasm
+
+/target/
+*.so.*

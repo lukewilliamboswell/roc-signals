@@ -29,6 +29,10 @@ pub const Element = struct {
     label: ?[]const u8,
     test_id: ?[]const u8,
     class: ?[]const u8,
+    native_style: ?[]const u8,
+    native_viewport: ?[]const u8,
+    native_drag_key: ?[]const u8,
+    native_window_close: ?[]const u8,
     text: ?[]const u8,
     value: ?[]const u8,
     pending_value: ?[]const u8,
@@ -36,6 +40,8 @@ pub const Element = struct {
     composing: bool,
     checked: bool,
     disabled: bool,
+    selected: bool,
+    native_drop_target: bool,
     parent_id: ?u64,
     children: std.ArrayListUnmanaged(u64),
     event_bindings: FixedEventBindings,
@@ -56,6 +62,10 @@ pub const Element = struct {
             .label = null,
             .test_id = null,
             .class = null,
+            .native_style = null,
+            .native_viewport = null,
+            .native_drag_key = null,
+            .native_window_close = null,
             .text = null,
             .value = null,
             .pending_value = null,
@@ -63,6 +73,8 @@ pub const Element = struct {
             .composing = false,
             .checked = false,
             .disabled = false,
+            .selected = false,
+            .native_drop_target = false,
             .parent_id = null,
             .children = .empty,
             .event_bindings = .{},
@@ -83,6 +95,10 @@ pub const Element = struct {
         if (self.label) |label| allocator.free(label);
         if (self.test_id) |test_id| allocator.free(test_id);
         if (self.class) |class| allocator.free(class);
+        if (self.native_style) |style| allocator.free(style);
+        if (self.native_viewport) |viewport| allocator.free(viewport);
+        if (self.native_drag_key) |key| allocator.free(key);
+        if (self.native_window_close) |value| allocator.free(value);
         if (self.text) |text| allocator.free(text);
         if (self.value) |value| allocator.free(value);
         if (self.pending_value) |pending_value| allocator.free(pending_value);
@@ -108,13 +124,15 @@ pub const Element = struct {
         cloned.composing = self.composing;
         cloned.checked = self.checked;
         cloned.disabled = self.disabled;
+        cloned.selected = self.selected;
+        cloned.native_drop_target = self.native_drop_target;
         cloned.parent_id = self.parent_id;
         cloned.event_bindings = self.event_bindings;
         cloned.text_update_count = self.text_update_count;
         cloned.value_update_count = self.value_update_count;
         cloned.checked_update_count = self.checked_update_count;
         cloned.disabled_update_count = self.disabled_update_count;
-        inline for (.{ "role", "label", "test_id", "class", "text", "value", "pending_value" }) |field_name| {
+        inline for (.{ "role", "label", "test_id", "class", "native_style", "native_viewport", "native_drag_key", "native_window_close", "text", "value", "pending_value" }) |field_name| {
             if (@field(self, field_name)) |value| @field(cloned, field_name) = try allocator.dupe(u8, value);
         }
         try cloned.children.appendSlice(allocator, self.children.items);
@@ -143,8 +161,13 @@ pub const Element = struct {
 
     /// Resolves a named event to its cache entry without scanning unrelated bindings.
     pub fn namedEventIndex(self: *const Element, name: []const u8) ?usize {
+        return self.namedEventIndexFiltered(name, null);
+    }
+
+    /// Resolves one named registration by its complete optional key filter.
+    pub fn namedEventIndexFiltered(self: *const Element, name: []const u8, chord: ?signals.key_chord.Chord) ?usize {
         for (self.named_events.items, 0..) |event, index| {
-            if (std.mem.eql(u8, event.name, name)) return index;
+            if (std.mem.eql(u8, event.name, name) and signals.key_chord.optionalEql(event.binding.key_chord, chord)) return index;
         }
         return null;
     }
@@ -248,6 +271,7 @@ pub const PreparedPublication = struct {
 pub fn implicitRole(elem: *const Element) ?[]const u8 {
     if (elem.role) |role| return role;
     if (std.mem.eql(u8, elem.tag, "button")) return "button";
+    if (std.mem.eql(u8, elem.tag, "dialog")) return "dialog";
     if (std.mem.eql(u8, elem.tag, "a")) return "link";
     if (std.mem.eql(u8, elem.tag, "h1") or
         std.mem.eql(u8, elem.tag, "h2") or
@@ -574,6 +598,7 @@ pub fn bindEvent(allocator: std.mem.Allocator, elem: *Element, key: render_sink.
     switch (key) {
         .fixed => |kind| bindEventKind(elem, kind, binding),
         .named => |name| bindEventNameBinding(allocator, elem, name, binding),
+        .filtered => |filtered| bindEventNameBinding(allocator, elem, filtered.name, binding),
     }
 }
 
@@ -582,6 +607,11 @@ pub fn clearEvent(allocator: std.mem.Allocator, elem: *Element, key: render_sink
     switch (key) {
         .fixed => |kind| clearEventKind(elem, kind),
         .named => |name| clearEventName(allocator, elem, name),
+        .filtered => |filtered| {
+            const index = elem.namedEventIndexFiltered(filtered.name, filtered.chord) orelse return;
+            const removed = elem.named_events.orderedRemove(index);
+            removed.deinit(allocator);
+        },
     }
 }
 
@@ -597,7 +627,7 @@ pub fn bindEventName(allocator: std.mem.Allocator, elem: *Element, name: []const
 }
 
 fn bindEventNameBinding(allocator: std.mem.Allocator, elem: *Element, name: []const u8, binding: EventBinding) void {
-    if (elem.namedEventIndex(name)) |index| {
+    if (elem.namedEventIndexFiltered(name, binding.key_chord)) |index| {
         const event = &elem.named_events.items[index];
         event.binding = binding;
         return;
@@ -910,6 +940,16 @@ test "simulated DOM locator helpers cover implicit roles and name fallbacks" {
     try std.testing.expect(implicitRole(&input) == null);
     try std.testing.expectEqualStrings("draft", accessibleName(&input));
 
+    const dialog_tag = try allocator.dupe(u8, "dialog");
+    var dialog = Element.init(8, dialog_tag);
+    defer dialog.deinit(allocator);
+    dialog.label = try allocator.dupe(u8, "Confirm changes");
+    try std.testing.expect(matchesLocator(&dialog, .{
+        .kind = .role_name,
+        .role = "dialog",
+        .name = "Confirm changes",
+    }));
+
     const div_tag = try allocator.dupe(u8, "div");
     var empty = Element.init(7, div_tag);
     defer empty.deinit(allocator);
@@ -1199,4 +1239,30 @@ test "simulated DOM replaces children and deactivates removed nodes" {
     try std.testing.expect(!elements.items[3].active);
     try std.testing.expectEqual(@as(?u64, null), elements.items[3].parent_id);
     try std.testing.expectEqual(@as(usize, 0), elements.items[3].named_events.items.len);
+}
+
+test "native shortcuts clear one exact chord without disturbing sibling bindings" {
+    const allocator = std.testing.allocator;
+    var elem = Element.init(0, try allocator.dupe(u8, "div"));
+    defer elem.deinit(allocator);
+    const save = try signals.key_chord.parse("s", 1);
+    const save_as = try signals.key_chord.parse("s", 3);
+    const payload = boundary.BoundaryPayloadDescriptor.init(.unit, .none);
+    bindEvent(allocator, &elem, render_sink.EventBindingKey.fromNamed("keydown", save), .{
+        .event_id = ids.EventId.fromRaw(1),
+        .payload_descriptor = payload,
+        .key_chord = save,
+    });
+    bindEvent(allocator, &elem, render_sink.EventBindingKey.fromNamed("keydown", save_as), .{
+        .event_id = ids.EventId.fromRaw(2),
+        .payload_descriptor = payload,
+        .key_chord = save_as,
+    });
+    try std.testing.expectEqual(@as(usize, 2), elem.named_events.items.len);
+    try std.testing.expect(namedEvent(&elem, "keydown") == null);
+    clearEvent(allocator, &elem, render_sink.EventBindingKey.fromNamed("keydown", save));
+    try std.testing.expectEqual(@as(usize, 1), elem.named_events.items.len);
+    try std.testing.expectEqual(@as(u64, 2), elem.named_events.items[0].binding.event_id.raw());
+    clearEvent(allocator, &elem, render_sink.EventBindingKey.fromNamed("keydown", save));
+    try std.testing.expectEqual(@as(usize, 1), elem.named_events.items.len);
 }

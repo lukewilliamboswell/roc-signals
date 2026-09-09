@@ -129,10 +129,11 @@
 //!    modelled row label is an active DOM text node; every label the model
 //!    hides - a retired key, a when row whose predicate fails, a site in the
 //!    branch a when no longer shows - is gone.
-//!  - **The render tree reads in document order.** The committed render cache
-//!    is walked from its root and the text it holds must equal the model's
-//!    text sequence exactly, so a branch or row spliced under the right parent
-//!    at the wrong index is caught even though every count and label agrees.
+//!  - **The render tree reads in document order.** The published native tree
+//!    is walked from its root and its text must equal the model's sequence
+//!    exactly; child counts, parent links, and sibling order must also match
+//!    the committed sparse render topology. A branch or row spliced under the
+//!    right parent at the wrong index is caught even when counts and labels agree.
 //!    That is the shape a when flipping from an empty branch used to produce:
 //!    the structural pass anchored new children where the retired branch's
 //!    children stood, and a branch with none was appended after its siblings.
@@ -1048,8 +1049,8 @@ fn expectLabelHidden(host: *const Host, shown: []const []const u8, label: []cons
 }
 
 /// Asserts the committed render tree reads exactly as the model does: walking
-/// the render cache from its root visits the modelled text nodes in document
-/// order, and no parent on the way holds a child twice.
+/// the published native tree from its root visits the modelled text nodes in
+/// document order, its sibling links agree, and no parent holds a child twice.
 ///
 /// Counts and labels cannot tell a branch spliced under the right parent at
 /// the wrong index from a correct one; the order can. The duplicate check is
@@ -1062,6 +1063,7 @@ fn expectDocumentOrder(host: *const Host, program: Program, items: []const i64) 
     var expected: std.ArrayListUnmanaged([]const u8) = .empty;
     modelTexts(&expected, arena, program.children, items) catch fail("oracle arena exhausted", .{});
     var actual: std.ArrayListUnmanaged([]const u8) = .empty;
+    if (host.engine.render_cache.nodes.items[fixtures.render_root.index()].parent_id != null) fail("committed render root has a parent", .{});
     collectRenderTexts(host, arena, &actual, fixtures.render_root) catch fail("oracle arena exhausted", .{});
     const mismatch = for (0..@min(expected.items.len, actual.items.len)) |index| {
         if (!std.mem.eql(u8, expected.items[index], actual.items[index])) break index;
@@ -1075,14 +1077,27 @@ fn expectDocumentOrder(host: *const Host, program: Program, items: []const i64) 
 }
 
 fn collectRenderTexts(host: *const Host, arena: std.mem.Allocator, out: *std.ArrayListUnmanaged([]const u8), parent: signals.ids.ElemId) error{OutOfMemory}!void {
-    const children = fixtures.renderChildren(host, parent);
-    for (children, 0..) |child, index| {
+    const children = fixtures.publishedChildren(host, parent);
+    const cache = &host.engine.render_cache;
+    if (cache.childCount(parent) != children.len) fail("published parent {d} child count differs from committed topology", .{parent.raw()});
+    var sibling = cache.firstChild(parent);
+    var previous: ?signals.ids.ElemId = null;
+    for (children, 0..) |child_raw, index| {
+        const child = signals.ids.ElemId.fromRaw(child_raw);
+        if (sibling != child) fail("published parent {d} child {d} differs from committed sibling order at {d}", .{ parent.raw(), child_raw, index });
+        if (cache.previousSibling(child) != previous) fail("child {d} has an inconsistent previous sibling", .{child_raw});
+        if (cache.nodes.items[child.index()].parent_id != parent) fail("child {d} has an inconsistent render parent", .{child_raw});
+        if (host.dom_elements.items[child.index()].parent_id != parent.raw()) fail("child {d} has an inconsistent published parent", .{child_raw});
         for (children[index + 1 ..]) |other| {
-            if (child.raw() == other.raw()) fail("render parent {d} holds child {d} more than once", .{ parent.raw(), child.raw() });
+            if (child_raw == other) fail("render parent {d} holds child {d} more than once", .{ parent.raw(), child_raw });
         }
         if (fixtures.renderText(host, child)) |text| try out.append(arena, text);
         try collectRenderTexts(host, arena, out, child);
+        previous = child;
+        sibling = cache.nextSibling(child);
     }
+    if (sibling != null) fail("parent {d} has committed siblings beyond its published child list", .{parent.raw()});
+    if (cache.nodes.items[parent.index()].last_child != previous) fail("parent {d} has an inconsistent final sibling", .{parent.raw()});
 }
 
 /// Which transaction of the current run the oracles are judging, named in

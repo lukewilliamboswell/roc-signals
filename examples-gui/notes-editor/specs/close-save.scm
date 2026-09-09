@@ -1,0 +1,16 @@
+(test "Save and close waits for success without losing the submitted note"
+  (steps
+    (fill (label "Note text") "First revision")
+    (request-window-close)
+    (expect-window-closed false)
+    (expect-visible (test-id "close-confirmation"))
+    (request-window-close)
+    (click (role button :name "Save and close"))
+    (expect-absent (test-id "close-confirmation"))
+    (expect-disabled (label "Note text") true)
+    (expect-pending-task "notes-save-path" 1)
+    (resolve-file-choice "notes-save-path" (chosen "/tmp/Ideas café.txt"))
+    (expect-window-closed false)
+    (expect-disabled (label "Note text") true)
+    (resolve-file-write "notes-write" :path "/tmp/Ideas café.txt" :bytes 14)
+    (expect-window-closed true)))

@@ -16,7 +16,7 @@ import test as test_driver  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
-MANIFEST = ROOT / "examples/_fixtures/js-framework-benchmark/benchmarks.toml"
+MANIFEST = ROOT / "examples-web/_fixtures/js-framework-benchmark/benchmarks.toml"
 ADAPTER = ROOT / "benchmarks/js-framework-benchmark/roc-signals-keyed"
 
 

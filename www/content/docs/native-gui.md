@@ -1,0 +1,203 @@
++++
+title = "Native GUI"
+description = "Build native examples with typed controls, explicit signals, and scoped structure."
+weight = 12
+template = "page.html"
++++
+
+# Native GUI
+
+The native platform runs the same Signals engine behind GPUI. Application state,
+commands, equality pruning, keyed rows, and scope disposal use the APIs described
+in [State, Events, and Forms](@/docs/state-and-events.md) and
+[Dynamic Structure](@/docs/dynamic-structure.md). Import `pf.Gui` for native
+controls. The current targets are Apple Silicon macOS, Linux x86_64 with glibc and a Wayland/GPU session, and Windows x86_64;
+see [contributing](@/docs/contributing.md#native-gui-platform-spike) for the pinned
+compiler, host build, executable build, and test commands.
+
+## Controls and layout
+
+`Gui.row`, `Gui.column`, and `Gui.panel` take an attribute list followed by a
+child list. `Gui.style` accepts a complete record based on `Gui.style_default`;
+`Gui.style_s` changes that record through normal signal propagation. Each element
+accepts one style. A supplied style replaces the control's defaults, so include
+padding or borders explicitly when you want them.
+
+Styles specify logical-pixel dimensions, spacing, padding, colors, borders,
+radius, font size, and overflow. Lengths are `Auto`, `Fill`, or `Px(value)`;
+colors are `Default` or `Rgb(value)`. Zero font size and default colors inherit.
+These are native presentation properties. Semantic labels, test IDs, selected
+state, and enabled state are separate attributes.
+The initial window is 1200 × 820 logical pixels and can be moved, resized,
+minimized, and maximized. The host requests client decorations on Wayland and
+supplies a draggable title bar and resize borders when the compositor delegates
+them to the app. The title-bar Close button uses the same `Gui.window_lifecycle` close
+guard as an OS close request. The minimum window size is 360 × 240 logical pixels.
+Apps own their content padding; the frame sits outside that content.
+
+Window overflow, scrollable panels, virtual lists, and editors show draggable
+scrollbars when content exceeds the viewport. Clicking a track positions its
+thumb at the pointer; wheel and touchpad scrolling remain available. `Clip`
+does not acquire scrolling controls. Scroll offsets belong to native views and
+do not dispatch application events.
+
+| Control | Inputs |
+| --- | --- |
+| `heading`, `text` | literal string |
+| `text_s` | string signal |
+| `button` | label and unit message |
+| `action_button` | `{ label, enabled }` signals, attributes, unit message |
+| `text_input`, `textarea` | `{ label, value }`, attributes, string message |
+| `checkbox` | `{ label, checked }`, attributes, boolean message |
+
+Text controls are controlled: their value comes from a signal and committed
+edits enter the corresponding message handler. Native editors retain selection,
+clipboard behavior, and IME preedit locally. `textarea` preserves hard line
+breaks and wraps paragraphs to the available viewport width without changing
+the document text. Caret movement, pointer selection, and composition bounds use
+those visual rows. Text input is bounded at 1 MiB.
+Control+Z undoes native edits; Control+Shift+Z or Control+Y redoes them.
+Contiguous typing groups until whitespace, cursor movement, or a one-second
+pause. Paste and composition form separate edit groups. Undo restores selection
+and sends the restored text through the ordinary input handler. Each editor
+retains at most 128 history boundaries and 8 MiB of text across undo and redo;
+oldest boundaries expire first. A different authoritative document value clears
+history, while equal input echoes preserve it. Disabled editors refuse undo and
+redo.
+An explicit textarea height (`Px` or `Fill`) includes its caption and padding and
+constrains the retained editing viewport. `Auto` keeps a 320-pixel editor. Use
+`Fill` inside a container with a defined height to grow and shrink with its space.
+`Gui.enabled_s` and `Gui.disabled_s` change availability while preserving the
+control's identity.
+Tab and Shift-Tab traverse enabled controls in native layout order. Focused
+control actions and declared shortcuts run first; modal dialogs own their Tab
+navigation while open.
+
+Use `Gui.test_id` for stable spec locators and `Gui.label` for semantic names.
+Labels do not establish native screen-reader support, which is not implemented.
+
+## Modal dialogs
+
+Use `Gui.dialog({ label, on_dismiss }, attrs, children)` inside `Ui.when` so
+mounting and disposal explicitly own the modal lifetime. `label` supplies the
+semantic dialog name; `on_dismiss` is a normal unit message bound to Escape.
+Closing the dialog is the application's state transition, never hidden host
+state. Native file choosers are separate `Files` tasks.
+
+The host focuses the first enabled button, checkbox, or text control when a
+dialog opens. Tab and Shift-Tab wrap through its current child order. Buttons
+activate with Enter or Space and checkboxes with Space; native editing actions
+keep precedence over region shortcuts. Disabled controls remain mounted but
+cannot activate. The innermost dialog blocks pointer and keyboard events from
+the background, and disposal restores the prior control when it is still live
+and enabled. An empty dialog retains focus itself; if a saved focus owner was
+disposed or disabled, the parent dialog receives focus, or focus clears when no
+modal remains.
+
+Concurrent dialogs must form one nested chain, limited to eight dialogs. Each
+modal admits at most 1,024 nodes and 256 enabled focus targets. Exceeding these
+programmer limits, or 1,024 parent links during an ancestry check, terminates
+the native host. The host checks
+current child order when opening or navigating the modal, without scanning the
+application during reactive updates. Native semantic specs can locate
+`(role dialog :name "Discard your changes?")`; GPUI tests verify actual focus
+and pointer behavior. This capability is native only and does not add browser
+modal behavior or a window-close guard.
+
+## Wide lists
+
+`Gui.virtual_list({ row_height, follow_tail }, attrs, children)` lays out only
+the visible child range. Give every direct child the same fixed logical height;
+`row_height` must be between 1 and 16,384. Use `Ui.each` for keyed child rows.
+`follow_tail` is a boolean signal that keeps the final row visible as history
+changes when enabled.
+
+Virtualization bounds native child lookup and layout work. Reactive row scopes
+remain mounted, so the application still owns its data retention policy. The
+Activity Monitor example caps replay and file history at 1,000 entries and 4 MiB of text. Ordinary
+containers enumerate their direct children when rendered; choose the virtual
+list for a wide collection.
+
+## Keyboard regions
+
+`Gui.on_shortcut(chord, message)` binds a unit message within a focused region.
+A chord is `{ key, control, shift, alt, meta }`, with every modifier explicit.
+Use lowercase letters, digits, or named keys: `Enter`, `Escape`, `Tab`, `Space`,
+`ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`, `Home`, `End`, `PageUp`,
+`PageDown`, `Backspace`, `Delete`, and `F1` through `F12`. Matching is exact. The nearest matching ancestor
+receives the event; native text-editing actions take precedence.
+
+A region accepts at most 32 shortcuts. Duplicate chords are errors. Registrations
+belong to their element's scope and stop receiving events after disposal.
+See `test/gui/shortcuts` for a complete app and scoped routing spec.
+
+## Internal drag and drop
+
+Add `Gui.drag_source(key)` to a card and `Gui.drop_target(message)` to a
+destination. Keys are nonempty strings of at most 256 UTF-8 bytes. Create the
+message with `Ui.action_detail` or `Ui.State.on_detail` to receive that key and
+return the same commands used by keyboard or button alternatives. The key is
+payload data; keyed row identity remains explicit in `Ui.each`.
+
+Drops from disposed, replaced, disabled, or rebound controls are refused. This
+API supports drags inside one running application. It does not accept files or
+other external desktop drag payloads.
+
+## Scoped timers and files
+
+`Signal.interval(period_ms)` registers a native timer while its declaring scope
+is live. Every tick enters the shared engine; scope disposal cancels the native
+job and rejects any stale callback. Native transactions reserve at most 256 live
+or newly declared timers. Activity Monitor uses a 500 ms interval whose scope is
+present only while replay is running or a followed log is waiting for more data.
+
+`pf.Files` provides native file/directory choosers, UTF-8 reads, atomic text
+writes, recursive scans, direct-child directory listings, bounded previews,
+incremental log reads, and associated-application launches as typed tasks. Use `Signal.from_task` to
+observe results and `Signal.cancel` to invalidate pending work. See the
+[task reference](@/docs/reference.md#native-files) for signatures, errors, and
+bounds. A dismissed chooser returns `Choice.Canceled`; explicit task cancellation
+returns `Error.Canceled`. Keep the submitted write snapshot separate from the
+editable draft so a completed save cannot incorrectly mark later edits as saved.
+
+## Example coverage
+
+The collection in `examples-gui/` exercises platform features through ordinary
+application workflows. `counter` is the minimal starting point; `keyed-rows`
+shows retained row drafts and scoped structure.
+
+| App | Main workflow |
+| --- | --- |
+| `task-board` | Open/save board documents, create/edit/drag keyed tasks, undo changes, and protect unsaved work on close |
+| `notes-editor` | Edit wrapped multiline documents with undo, open/save real files, and wait for saves before closing |
+| `folder-explorer` | Navigate real folders with breadcrumbs/history, filter/sort, preview text, and open files in their associated application |
+| `activity-monitor` | Follow a real UTF-8 log or run explicit replay; pause, retry, filter bounded history, and inspect complete records |
+
+Activity Monitor explicitly separates simulated replay from chosen plain-text
+log files. Folder Explorer labels its sample workspace and offers an explicit
+chooser for real directory navigation.
+
+Notes uses the pinned Roc Unicode package for Unicode 17 grapheme counts and
+word segmentation. Its word count includes segments containing letters or
+numbers, excluding punctuation and emoji-only segments. Statistics preserve the
+original text and do not imply language-specific dictionary segmentation.
+
+Every registered app has native semantic specs. The GUI suite also runs GPUI
+adapter tests with simulated input and layout. A native window smoke run checks the
+linked renderer and adapter; an actual pointer, keyboard, and IME walkthrough
+remains a separate form of validation.
+
+## Window close decisions
+
+Wrap the app's top-level content in `Gui.window_lifecycle` to protect work before
+closing. Its `on_close_requested` message receives a unit event through the
+ordinary graph. Its `decision` is a `Signal(Gui.CloseDecision)`:
+`KeepOpen` cancels the request, `AwaitDecision` waits for confirmation or work,
+and `Close` completes the pending request. This lets a save result close the
+window only after the write succeeds. Close without a pending request is inert.
+
+Declare exactly one wrapper directly beneath the app root. Repeated native close
+requests while awaiting a decision are ignored. Disposing or replacing the
+wrapper cancels its pending request; the native adapter validates registration
+lifetime and binding. Apps without a wrapper close immediately. The Notes
+example demonstrates Save and close, Discard and close, and Keep editing.

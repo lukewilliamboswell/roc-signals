@@ -1,6 +1,7 @@
 //! Reusable scratch buffers for descriptor collection and structural patching.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const active_signal_graph = @import("active_signal_graph.zig");
 const descriptor_stream = @import("descriptor_stream.zig");
 const each_runtime = @import("each_runtime.zig");
@@ -9,27 +10,27 @@ const retained_values = @import("retained_values.zig");
 const structural_splice = @import("structural_splice.zig");
 
 pub const Scratch = struct {
-    debug_seen_render_nodes: std.ArrayListUnmanaged(bool) = .empty,
-    debug_expected_children: std.ArrayListUnmanaged(u64) = .empty,
-    stream_direct_children: std.ArrayListUnmanaged(u64) = .empty,
-    binder_stack: std.ArrayListUnmanaged(descriptor_stream.BinderBinding) = .empty,
-    each_keys: std.ArrayListUnmanaged(retained_values.HostValue) = .empty,
-    each_key_hashes: std.ArrayListUnmanaged(u64) = .empty,
+    debug_seen_render_nodes: shared_buffer.List(bool) = .empty,
+    debug_expected_children: shared_buffer.List(u64) = .empty,
+    stream_direct_children: shared_buffer.List(u64) = .empty,
+    binder_stack: shared_buffer.List(descriptor_stream.BinderBinding) = .empty,
+    each_keys: shared_buffer.List(retained_values.HostValue) = .empty,
+    each_key_hashes: shared_buffer.List(u64) = .empty,
     each_next_hash_heads: std.AutoHashMapUnmanaged(u64, usize) = .empty,
-    each_next_hash_links: std.ArrayListUnmanaged(usize) = .empty,
-    each_matched_existing: std.ArrayListUnmanaged(bool) = .empty,
+    each_next_hash_links: shared_buffer.List(usize) = .empty,
+    each_matched_existing: shared_buffer.List(bool) = .empty,
     each_row_ranges: std.AutoHashMapUnmanaged(ids.ScopeId, each_runtime.RenderSegment) = .empty,
-    each_removed_elem_ids: std.ArrayListUnmanaged(u64) = .empty,
-    each_touched_parent_ids: std.ArrayListUnmanaged(u64) = .empty,
-    each_replacement_elem_ids: std.ArrayListUnmanaged(u64) = .empty,
-    each_moved_event_elem_ids: std.ArrayListUnmanaged(u64) = .empty,
-    each_replacement_on_change_indices: std.ArrayListUnmanaged(usize) = .empty,
-    each_replacement_mount_indices: std.ArrayListUnmanaged(usize) = .empty,
-    replacement_target_scopes: std.ArrayListUnmanaged(bool) = .empty,
+    each_removed_elem_ids: shared_buffer.List(u64) = .empty,
+    each_touched_parent_ids: shared_buffer.List(u64) = .empty,
+    each_replacement_elem_ids: shared_buffer.List(u64) = .empty,
+    each_moved_event_elem_ids: shared_buffer.List(u64) = .empty,
+    each_replacement_on_change_indices: shared_buffer.List(usize) = .empty,
+    each_replacement_mount_indices: shared_buffer.List(usize) = .empty,
+    replacement_target_scopes: shared_buffer.List(bool) = .empty,
     dirty_active_records: active_signal_graph.DirtyRecordQueue = .{},
-    dirty_changed_record_ids: std.ArrayListUnmanaged(u64) = .empty,
+    dirty_changed_record_ids: shared_buffer.List(u64) = .empty,
     dirty_changed_record_id_set: std.AutoHashMapUnmanaged(u64, void) = .empty,
-    selector_dirty_roots: std.ArrayListUnmanaged(u64) = .empty,
+    selector_dirty_roots: shared_buffer.List(u64) = .empty,
     elem_owned_removal: structural_splice.ElemOwnedRemovalScratch = .{},
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.

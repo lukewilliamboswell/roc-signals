@@ -1,6 +1,7 @@
 //! Owned signal records and cache slots retained in the active graph.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const abi = @import("roc_platform_abi.zig");
 const boundary = @import("boundary.zig");
 const retained = @import("retained_values.zig");
@@ -149,9 +150,9 @@ pub const PreparedCacheUpdates = struct {
     };
 
     allocator: std.mem.Allocator,
-    updates: std.ArrayListUnmanaged(PreparedCacheUpdate) = .empty,
+    updates: shared_buffer.List(PreparedCacheUpdate) = .empty,
     indexes: std.AutoHashMapUnmanaged(*CacheSlot, usize) = .empty,
-    results: std.ArrayListUnmanaged(Result) = .empty,
+    results: shared_buffer.List(Result) = .empty,
     result_indexes: std.AutoHashMapUnmanaged(EvaluationKey, usize) = .empty,
     provisional_values: std.AutoHashMapUnmanaged(EvaluationKey, *const HostValueCell) = .empty,
     derived_calls: u64 = 0,
@@ -327,7 +328,7 @@ pub const OwnedSourceUpdates = struct {
 
     allocator: std.mem.Allocator,
     expected: usize,
-    entries: std.ArrayListUnmanaged(Entry) = .empty,
+    entries: shared_buffer.List(Entry) = .empty,
     indexes: std.AutoHashMapUnmanaged(*Record, void) = .empty,
 
     /// Reserves storage for exactly the declared number of source roots before
@@ -429,10 +430,13 @@ pub const KeyedSelectRecord = SelectRecord;
 
 pub const TaskSourceRecord = struct {
     name: []const u8,
+    kind: @import("boundary.zig").TaskKind = .external,
     payload_cap: HostValueCapability,
     initial: roles.Initializer,
     done: roles.Transform,
     failed: roles.Transform,
+    canceled: roles.Initializer,
+    refused: roles.Initializer,
     cap: HostValueCapability,
     reset_on_start: bool,
     cached_value: CacheSlot = .absent,
@@ -608,8 +612,10 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             abi.decrefErasedCallable(payload.initial.toAbi(), roc_host);
             abi.decrefErasedCallable(payload.done.toAbi(), roc_host);
             abi.decrefErasedCallable(payload.failed.toAbi(), roc_host);
+            abi.decrefErasedCallable(payload.canceled.toAbi(), roc_host);
+            abi.decrefErasedCallable(payload.refused.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
-            metrics.bump(.closure_releases, 3);
+            metrics.bump(.closure_releases, 5);
         },
         .interval_source => |payload| {
             var cached = payload.cached_value;
@@ -938,12 +944,12 @@ pub fn validateExistingSignalRecord(record: *Record, expected_tag: std.meta.Tag(
 }
 
 /// Appends signal record source node ids using capacity that must already satisfy the caller's transaction contract.
-pub fn appendSignalRecordSourceNodeIds(allocator: std.mem.Allocator, source_node_ids: *std.ArrayListUnmanaged(u64), record: *Record) void {
+pub fn appendSignalRecordSourceNodeIds(allocator: std.mem.Allocator, source_node_ids: *shared_buffer.List(u64), record: *Record) void {
     appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, record) catch @panic("out of memory");
 }
 
 /// Appends signal record source node ids fallible using capacity that must already satisfy the caller's transaction contract.
-pub fn appendSignalRecordSourceNodeIdsFallible(allocator: std.mem.Allocator, source_node_ids: *std.ArrayListUnmanaged(u64), record: *Record) std.mem.Allocator.Error!void {
+pub fn appendSignalRecordSourceNodeIdsFallible(allocator: std.mem.Allocator, source_node_ids: *shared_buffer.List(u64), record: *Record) std.mem.Allocator.Error!void {
     switch (record.payload) {
         .ref => |node_id| {
             if (!u64SliceContains(source_node_ids.items, node_id)) {
@@ -1062,7 +1068,7 @@ test "appendSignalRecordSourceNodeIds deduplicates source refs" {
         } },
     };
 
-    var source_node_ids: std.ArrayListUnmanaged(u64) = .empty;
+    var source_node_ids: shared_buffer.List(u64) = .empty;
     defer source_node_ids.deinit(allocator);
 
     appendSignalRecordSourceNodeIds(allocator, &source_node_ids, &combine);

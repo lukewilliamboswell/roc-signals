@@ -1,0 +1,20 @@
+# Every maintained GUI app participates in the display-free GUI suite.
+schema_version = 1
+
+[[examples]]
+slug = "counter"
+
+[[examples]]
+slug = "keyed-rows"
+
+[[examples]]
+slug = "notes-editor"
+
+[[examples]]
+slug = "activity-monitor"
+
+[[examples]]
+slug = "task-board"
+
+[[examples]]
+slug = "folder-explorer"

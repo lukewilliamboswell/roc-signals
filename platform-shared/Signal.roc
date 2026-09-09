@@ -1,0 +1,450 @@
+import HostValue exposing [HostValue]
+import Capability exposing [Capability]
+import Node
+
+## Opaque, typed signal. Wraps a boxed pure `Node.SignalExpr` descriptor
+## referencing state/source binders. The `a` lives only in Roc's type system.
+## Runtime values are opaque host-owned cells; each edge carries the exact typed
+## thunks that can read, compare, transform, and release that cell.
+Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
+
+	## Current state of a host-backed task.
+	TaskStatus(value, err) := [Loading, Done(value), Failed(err)]
+
+	## A typed effect declaration; its mutable request and value live in the engine.
+	Task(value, err) := { source : Node.TaskSource, cap : Capability(TaskStatus(value, err)) }
+
+	## Declaration-owned terminal errors for cancellation and capacity refusal.
+	TaskConfig(err) : { name : Str, reset_on_start : Bool, canceled : () -> err, refused : () -> err }
+
+	## One exact-key selector construction site shared by keyed rows.
+	Keyed(value) := {
+		input : Box(Node.SignalExpr),
+		input_read : HostValue.TextReadHandle,
+		false_init : Box((() -> HostValue)),
+		true_init : Box((() -> HostValue)),
+		cap : Capability(value),
+	}.{
+
+		## Build one ordinary keyed selector record for a stable row handle.
+		for_row : Keyed(value), U64, Str -> Signal(value)
+		for_row = |keyed, row_handle, key|
+			Signal.from_expr(
+				Node.SignalExpr.KeyedSelect(
+					row_handle,
+					keyed.false_init,
+					keyed.input,
+					key,
+					keyed.input_read,
+					keyed.false_init,
+					keyed.true_init,
+					Capability.handle(keyed.cap),
+				),
+				keyed.cap,
+			)
+	}
+
+	## Copy a boxed signal expression descriptor.
+	clone_expr : Box(Node.SignalExpr) -> Box(Node.SignalExpr)
+	clone_expr = |expr| expr
+
+	## Expose the host-readable expression descriptor for platform helpers.
+	to_expr : Signal(a) -> Box(Node.SignalExpr)
+	to_expr = |signal| signal.expr
+
+	## Build a typed signal from a host descriptor and matching capability.
+	from_expr : Node.SignalExpr, Capability(a) -> Signal(a)
+	from_expr = |expr, cap| { expr: Box.box(expr), cap }
+
+	## Read a task source as a signal of loading/done/failed status.
+	from_task : Task(a, err) -> Signal(TaskStatus(a, err))
+	from_task = |task| { expr: Box.box(Node.SignalExpr.TaskSource(task.source)), cap: task.cap }
+
+	## Fold a task status signal into display or view-model state.
+	fold_task : Task(a, err), b, (a -> b), (err -> b) -> Signal(b)
+		where [
+			b.is_eq : b, b -> Bool,
+		]
+	fold_task = |task, loading, done, failed| {
+		status = Signal.from_task(task)
+		status.map(
+			|value| match value {
+				TaskStatus.Loading => loading
+				TaskStatus.Done(done_value) => done(done_value)
+				TaskStatus.Failed(err_value) => failed(err_value)
+			},
+		)
+	}
+
+	## Create a deterministic string-payload task source for tests and examples.
+	## Explicit cancellation passes "canceled" to this fake model's error decoder;
+	## capacity refusal passes "refused". These strings belong to the fake model.
+	fake_task : Str, (Str -> a), (Str -> err) -> Task(a, err)
+		where [
+			a.is_eq : a, a -> Bool,
+			err.is_eq : err, err -> Bool,
+		]
+	fake_task = |name, to_done, to_failed|
+		Signal.task_source_with_eq(
+			{ name, reset_on_start: True, canceled: || to_failed("canceled"), refused: || to_failed("refused") },
+			to_done,
+			to_failed,
+			|left, right| left.is_eq(right),
+			|left, right| left.is_eq(right),
+		)
+
+	## Low-level host task source constructor. `reset_on_start` controls whether
+	## starting a new request publishes `Loading` or keeps the last cached value
+	## while the runtime request is pending. Starting a request for a task source
+	## cancels any older pending request for that same source; if an older host
+	## result arrives anyway, the runtime ignores it and keeps the newer request in
+	## control. This string-payload constructor retains the published calling
+	## convention used by examples. Its error decoder receives "canceled" for
+	## explicit cancellation and "too many pending requests" for capacity refusal.
+	## Typed platform services use TaskConfig through host_task_source_with_eq.
+	task_source : Str, (Str -> a), (Str -> err), Bool -> Task(a, err)
+		where [
+			a.is_eq : a, a -> Bool,
+			err.is_eq : err, err -> Bool,
+		]
+	task_source = |name, to_done, to_failed, reset_on_start|
+		Signal.task_source_with_eq(
+			{ name, reset_on_start, canceled: || to_failed("canceled"), refused: || to_failed("too many pending requests") },
+			to_done,
+			to_failed,
+			|left, right| left.is_eq(right),
+			|left, right| left.is_eq(right),
+		)
+
+	## Host task source constructor for external result types that cannot define an
+	## associated `is_eq` method in this package.
+	task_source_with_eq : TaskConfig(err), (Str -> a), (Str -> err), (a, a -> Bool), (err, err -> Bool) -> Task(a, err)
+	task_source_with_eq = |config, to_done, to_failed, done_is_eq, failed_is_eq|
+		Signal.host_task_source_with_eq(Node.TaskKind.External, config, to_done, to_failed, done_is_eq, failed_is_eq)
+
+	## Platform service constructor with an explicit closed route. Application file
+	## work uses Files helpers so request/result codecs stay owned by the platform.
+	host_task_source_with_eq : Node.TaskKind, TaskConfig(err), (Str -> a), (Str -> err), (a, a -> Bool), (err, err -> Bool) -> Task(a, err)
+	host_task_source_with_eq = |kind, config, to_done, to_failed, done_is_eq, failed_is_eq| {
+		status_cap =
+			Capability.new_with_eq(
+				|left, right|
+					match left {
+						TaskStatus.Loading => match right {
+							TaskStatus.Loading => True
+							_ => False
+						}
+						TaskStatus.Done(left_value) => match right {
+							TaskStatus.Done(right_value) => done_is_eq(left_value, right_value)
+							_ => False
+						}
+						TaskStatus.Failed(left_error) => match right {
+							TaskStatus.Failed(right_error) => failed_is_eq(left_error, right_error)
+							_ => False
+						}
+					},
+			)
+		payload_cap = Capability.new()
+
+		loading : TaskStatus(a, err)
+		loading = TaskStatus.Loading
+
+		initial : () -> HostValue
+		initial = || Capability.store(Box.box(loading), status_cap)
+		initial_box = Box.box(initial)
+
+		done : HostValue -> HostValue
+		done = |payload_hv| {
+			payload : Str
+			payload = Box.unbox(Capability.take(payload_hv, payload_cap))
+			status : TaskStatus(a, err)
+			status = TaskStatus.Done(to_done(payload))
+			Capability.store(Box.box(status), status_cap)
+		}
+
+		failed : HostValue -> HostValue
+		failed = |payload_hv| {
+			payload : Str
+			payload = Box.unbox(Capability.take(payload_hv, payload_cap))
+			status : TaskStatus(a, err)
+			status = TaskStatus.Failed(to_failed(payload))
+			Capability.store(Box.box(status), status_cap)
+		}
+
+		on_cancel = config.canceled
+		canceled : () -> HostValue
+		canceled = || Capability.store(Box.box(TaskStatus.Failed(on_cancel())), status_cap)
+
+		on_refused = config.refused
+		refused : () -> HostValue
+		refused = || Capability.store(Box.box(TaskStatus.Failed(on_refused())), status_cap)
+
+		{
+			source: {
+				token: initial_box,
+				name: config.name,
+				kind,
+				cap: Capability.handle(status_cap),
+				payload_cap: Capability.handle(payload_cap),
+				initial: initial_box,
+				done: Box.box(done),
+				failed: Box.box(failed),
+				canceled: Box.box(canceled),
+				refused: Box.box(refused),
+				reset_on_start: config.reset_on_start,
+			},
+			cap: status_cap,
+		}
+	}
+
+	## Start a string-request task.
+	start_str : Task(a, err), Str -> Node.Cmd
+	start_str = |task, request| {
+		request_cap = Capability.new()
+		request_init : () -> HostValue
+		request_init = || Capability.store(Box.box(request), request_cap)
+		request_read : HostValue -> Str
+		request_read = |value| Box.unbox(Capability.get(value, request_cap))
+		Node.Cmd.StartTask({
+			task_token: task.source.token,
+			task_name: task.source.name,
+			request_init: Box.box(request_init),
+			request_read: { capability: Capability.handle(request_cap), read: Box.box(request_read) },
+		})
+	}
+
+	## Cancel the active request and publish its declaration-owned terminal value.
+	## A source without a pending request is unchanged; late host results are stale.
+	cancel : Task(a, err) -> Node.Cmd
+	cancel = |task| Node.Cmd.CancelTask({ task_token: task.source.token })
+
+	## Command that intentionally performs no host work.
+	noop : Node.Cmd
+	noop = Node.Cmd.Noop
+
+	## Create a named cleanup command for lifecycle testing and host effects.
+	cleanup : Str -> Node.Cleanup
+	cleanup = |name| Node.Cleanup.Cleanup(name)
+
+	## Tick upward from zero every `period_ms` while mounted.
+	interval : U64 -> Signal(U64)
+	interval = |period_ms| {
+		source_from_tick :
+			a, (a -> a) -> Signal(a)
+				where [
+					a.is_eq : a, a -> Bool,
+				]
+		source_from_tick = |initial_value, next| {
+			cap = Capability.new()
+
+			initial : () -> HostValue
+			initial = || Capability.store(Box.box(initial_value), cap)
+			initial_box = Box.box(initial)
+
+			tick : HostValue -> HostValue
+			tick = |current_hv| {
+				current : a
+				current = Box.unbox(Capability.get(current_hv, cap))
+				Capability.store(Box.box(next(current)), cap)
+			}
+
+			{
+				expr: Box.box(
+					Node.SignalExpr.IntervalSource({
+						token: initial_box,
+						period_ms,
+						cap: Capability.handle(cap),
+						initial: initial_box,
+						tick: Box.box(tick),
+					}),
+				),
+				cap,
+			}
+		}
+
+		source_from_tick(0, |current| current + 1)
+	}
+
+	## A constant signal.
+	const : a -> Signal(a)
+		where [
+			a.is_eq : a, a -> Bool,
+		]
+	const = |value| {
+		cap = Capability.new()
+		init : () -> HostValue
+		init = || Capability.store(Box.box(value), cap)
+		init_box = Box.box(init)
+		{
+			expr: Box.box(
+				Node.SignalExpr.ConstValue(
+					init_box,
+					init_box,
+					Capability.handle(cap),
+				),
+			),
+			cap,
+		}
+	}
+
+	## Derived signal. The transform is a typed `a -> b`; the host passes opaque
+	## cells and this thunk is the only place that can read the `a` input and
+	## construct the `b` output cell.
+	map : Signal(a), (a -> b) -> Signal(b)
+		where [
+			b.is_eq : b, b -> Bool,
+		]
+	map = |signal, f| {
+		output_cap = Capability.new()
+		wrapped : HostValue -> HostValue
+		wrapped = |input_hv| {
+			typed_input : a
+			typed_input = Box.unbox(Capability.get(input_hv, signal.cap))
+			typed_output : b
+			typed_output = f(typed_input)
+			Capability.store(Box.box(typed_output), output_cap)
+		}
+		transform_box = Box.box(wrapped)
+
+		{
+			expr: Box.box(
+				Node.SignalExpr.Map(
+					transform_box,
+					signal.expr,
+					transform_box,
+					Capability.handle(output_cap),
+				),
+			),
+			cap: output_cap,
+		}
+	}
+
+	## Derived signal from two input signals.
+	map2 : Signal(a), Signal(b), (a, b -> c) -> Signal(c)
+		where [
+			c.is_eq : c, c -> Bool,
+		]
+	map2 = |left, right, f| {
+		output_cap = Capability.new()
+		wrapped : HostValue, HostValue -> HostValue
+		wrapped = |left_hv, right_hv| {
+			left_v : a
+			left_v = Box.unbox(Capability.get(left_hv, left.cap))
+			right_v : b
+			right_v = Box.unbox(Capability.get(right_hv, right.cap))
+			output : c
+			output = f(left_v, right_v)
+			Capability.store(Box.box(output), output_cap)
+		}
+		transform_box = Box.box(wrapped)
+
+		{
+			expr: Box.box(
+				Node.SignalExpr.Map2(
+					transform_box,
+					left.expr,
+					right.expr,
+					transform_box,
+					Capability.handle(output_cap),
+				),
+			),
+			cap: output_cap,
+		}
+	}
+
+	## Test whether a selected string equals `key`. The host groups members by
+	## their shared input and dirties only the old and new keys when it changes.
+	select : Signal(Str), Str -> Signal(Bool)
+	select = |selected, key| {
+		output_cap = Capability.new()
+
+		read_selected : HostValue -> Str
+		read_selected = |input_hv| Box.unbox(Capability.get(input_hv, selected.cap))
+
+		init_false : () -> HostValue
+		init_false = || Capability.store(Box.box(False), output_cap)
+		false_box = Box.box(init_false)
+
+		init_true : () -> HostValue
+		init_true = || Capability.store(Box.box(True), output_cap)
+
+		{
+			expr: Box.box(
+				Node.SignalExpr.Select(
+					false_box,
+					selected.expr,
+					key,
+					{ capability: Capability.handle(selected.cap), read: Box.box(read_selected) },
+					false_box,
+					Box.box(init_true),
+					Capability.handle(output_cap),
+				),
+			),
+			cap: output_cap,
+		}
+	}
+
+	## Prepare exact-key selected and unselected values once for a keyed-row site.
+	keyed : Signal(Str), value, value -> Keyed(value)
+		where [
+			value.is_eq : value, value -> Bool,
+		]
+	keyed = |selected, when_selected, otherwise| {
+		output_cap = Capability.new()
+		read_selected : HostValue -> Str
+		read_selected = |input_hv| Box.unbox(Capability.get(input_hv, selected.cap))
+		init_false : () -> HostValue
+		init_false = || Capability.store(Box.box(otherwise), output_cap)
+		init_true : () -> HostValue
+		init_true = || Capability.store(Box.box(when_selected), output_cap)
+		{
+			input: selected.expr,
+			input_read: { capability: Capability.handle(selected.cap), read: Box.box(read_selected) },
+			false_init: Box.box(init_false),
+			true_init: Box.box(init_true),
+			cap: output_cap,
+		}
+	}
+
+	## Combine a list of same-typed signals into a signal of the list of values.
+	combine : List(Signal(a)) -> Signal(List(a))
+		where [
+			a.is_eq : a, a -> Bool,
+		]
+	combine = |signals| Signal.combine_map(signals, |values| values)
+
+	## Combine same-typed signals and project their values in the same graph node.
+	## This is useful when the natural derived value is not itself a `List`, such
+	## as a keyed `Rows` generation, and avoids an otherwise redundant `map` node.
+	combine_map : List(Signal(a)), (List(a) -> b) -> Signal(b)
+		where [
+			b.is_eq : b, b -> Bool,
+		]
+	combine_map = |signals, project| {
+		# Each input signal owns its own capability, so every element has to be
+		# read back through the capability that stored it. Reading them all
+		# through the first signal's capability fails at runtime as soon as the
+		# inputs come from different call sites.
+		input_caps = signals.map(|s| s.cap)
+		output_cap = Capability.new()
+		exprs = signals.map(|s| Box.unbox(Signal.clone_expr(s.expr)))
+		transform : List(HostValue) -> HostValue
+		transform = |items| {
+			values : List(a)
+			values = List.map2(items, input_caps, |host_value, cap| Box.unbox(Capability.get(host_value, cap)))
+			Capability.store(Box.box(project(values)), output_cap)
+		}
+		transform_box = Box.box(transform)
+		{
+			expr: Box.box(
+				Node.SignalExpr.Combine(
+					transform_box,
+					exprs,
+					transform_box,
+					Capability.handle(output_cap),
+				),
+			),
+			cap: output_cap,
+		}
+	}
+}

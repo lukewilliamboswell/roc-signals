@@ -1113,81 +1113,99 @@ comptime {
     }
 }
 
-/// Element type for __AnonStruct_ecacf74f54997c48
-pub const __AnonStruct_ecacf74f54997c48 = if (@sizeOf(usize) == 4) extern struct {
+/// Element type for __AnonStruct_5fe2a3b67ba6ca28
+pub const __AnonStruct_5fe2a3b67ba6ca28 = if (@sizeOf(usize) == 4) extern struct {
+    canceled: RocErasedCallable,
     cap: HostValueCapabilityHandle,
     done: RocErasedCallable,
     failed: RocErasedCallable,
     initial: RocErasedCallable,
     name: RocStr,
     payload_cap: HostValueCapabilityHandle,
+    refused: RocErasedCallable,
     token: RocErasedCallable,
+    kind: NodeTaskKind,
     reset_on_start: bool,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
+        decrefErasedCallable(value.canceled, roc_host);
         value.cap.decref(roc_host);
         decrefErasedCallable(value.done, roc_host);
         decrefErasedCallable(value.failed, roc_host);
         decrefErasedCallable(value.initial, roc_host);
         value.name.decref(roc_host);
         value.payload_cap.decref(roc_host);
+        decrefErasedCallable(value.refused, roc_host);
         decrefErasedCallable(value.token, roc_host);
+        value.kind.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
+        increfErasedCallable(value.canceled, amount);
         value.cap.incref(amount);
         increfErasedCallable(value.done, amount);
         increfErasedCallable(value.failed, amount);
         increfErasedCallable(value.initial, amount);
         value.name.incref(amount);
         value.payload_cap.incref(amount);
+        increfErasedCallable(value.refused, amount);
         increfErasedCallable(value.token, amount);
+        value.kind.incref(amount);
     }
 } else extern struct {
+    canceled: RocErasedCallable,
     cap: HostValueCapabilityHandle,
     done: RocErasedCallable,
     failed: RocErasedCallable,
     initial: RocErasedCallable,
     name: RocStr,
     payload_cap: HostValueCapabilityHandle,
+    refused: RocErasedCallable,
     token: RocErasedCallable,
+    kind: NodeTaskKind,
     reset_on_start: bool,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
+        decrefErasedCallable(value.canceled, roc_host);
         value.cap.decref(roc_host);
         decrefErasedCallable(value.done, roc_host);
         decrefErasedCallable(value.failed, roc_host);
         decrefErasedCallable(value.initial, roc_host);
         value.name.decref(roc_host);
         value.payload_cap.decref(roc_host);
+        decrefErasedCallable(value.refused, roc_host);
         decrefErasedCallable(value.token, roc_host);
+        value.kind.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
+        increfErasedCallable(value.canceled, amount);
         value.cap.incref(amount);
         increfErasedCallable(value.done, amount);
         increfErasedCallable(value.failed, amount);
         increfErasedCallable(value.initial, amount);
         value.name.incref(amount);
         value.payload_cap.incref(amount);
+        increfErasedCallable(value.refused, amount);
         increfErasedCallable(value.token, amount);
+        value.kind.incref(amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_ecacf74f54997c48) != 112) @compileError("__AnonStruct_ecacf74f54997c48 size mismatch");
-        if (@alignOf(__AnonStruct_ecacf74f54997c48) != 8) @compileError("__AnonStruct_ecacf74f54997c48 alignment mismatch");
+        if (@sizeOf(__AnonStruct_5fe2a3b67ba6ca28) != 128) @compileError("__AnonStruct_5fe2a3b67ba6ca28 size mismatch");
+        if (@alignOf(__AnonStruct_5fe2a3b67ba6ca28) != 8) @compileError("__AnonStruct_5fe2a3b67ba6ca28 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_ecacf74f54997c48) != 56) @compileError("__AnonStruct_ecacf74f54997c48 size mismatch");
-        if (@alignOf(__AnonStruct_ecacf74f54997c48) != 4) @compileError("__AnonStruct_ecacf74f54997c48 alignment mismatch");
+        if (@sizeOf(__AnonStruct_5fe2a3b67ba6ca28) != 64) @compileError("__AnonStruct_5fe2a3b67ba6ca28 size mismatch");
+        if (@alignOf(__AnonStruct_5fe2a3b67ba6ca28) != 4) @compileError("__AnonStruct_5fe2a3b67ba6ca28 alignment mismatch");
     }
 }
 
@@ -1252,6 +1270,7 @@ comptime {
 /// Element type for Node.EventBinding
 pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     kind: NodeFixedEventKind,
+    key_chord: NoneOrSome,
     msg: NodeMsg,
     name: RocStr,
     delivery: NodeEventDelivery,
@@ -1260,6 +1279,7 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.kind.decref(roc_host);
+        value.key_chord.decref(roc_host);
         value.msg.decref(roc_host);
         value.name.decref(roc_host);
         value.delivery.decref(roc_host);
@@ -1270,6 +1290,7 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         value.kind.incref(amount);
+        value.key_chord.incref(amount);
         value.msg.incref(amount);
         value.name.incref(amount);
         value.delivery.incref(amount);
@@ -1277,6 +1298,7 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     }
 } else extern struct {
     kind: NodeFixedEventKind,
+    key_chord: NoneOrSome,
     msg: NodeMsg,
     name: RocStr,
     delivery: NodeEventDelivery,
@@ -1285,6 +1307,7 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.kind.decref(roc_host);
+        value.key_chord.decref(roc_host);
         value.msg.decref(roc_host);
         value.name.decref(roc_host);
         value.delivery.decref(roc_host);
@@ -1295,6 +1318,7 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         value.kind.incref(amount);
+        value.key_chord.incref(amount);
         value.msg.incref(amount);
         value.name.incref(amount);
         value.delivery.incref(amount);
@@ -1304,11 +1328,11 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeEventBinding) != 152) @compileError("NodeEventBinding size mismatch");
+        if (@sizeOf(NodeEventBinding) != 192) @compileError("NodeEventBinding size mismatch");
         if (@alignOf(NodeEventBinding) != 8) @compileError("NodeEventBinding alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeEventBinding) != 88) @compileError("NodeEventBinding size mismatch");
+        if (@sizeOf(NodeEventBinding) != 104) @compileError("NodeEventBinding size mismatch");
         if (@alignOf(NodeEventBinding) != 8) @compileError("NodeEventBinding alignment mismatch");
     }
 }
@@ -1354,6 +1378,54 @@ comptime {
     if (@sizeOf(usize) == 4) {
         if (@sizeOf(NodeEventDelivery) != 1) @compileError("NodeEventDelivery size mismatch");
         if (@alignOf(NodeEventDelivery) != 1) @compileError("NodeEventDelivery alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_4099dda3c41fcec7
+pub const __AnonStruct_4099dda3c41fcec7 = if (@sizeOf(usize) == 4) extern struct {
+    key: RocStr,
+    alt: bool,
+    control: bool,
+    meta: bool,
+    shift: bool,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.key.decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.key.incref(amount);
+    }
+} else extern struct {
+    key: RocStr,
+    alt: bool,
+    control: bool,
+    meta: bool,
+    shift: bool,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.key.decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.key.incref(amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_4099dda3c41fcec7) != 32) @compileError("__AnonStruct_4099dda3c41fcec7 size mismatch");
+        if (@alignOf(__AnonStruct_4099dda3c41fcec7) != 8) @compileError("__AnonStruct_4099dda3c41fcec7 alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_4099dda3c41fcec7) != 16) @compileError("__AnonStruct_4099dda3c41fcec7 size mismatch");
+        if (@alignOf(__AnonStruct_4099dda3c41fcec7) != 4) @compileError("__AnonStruct_4099dda3c41fcec7 alignment mismatch");
     }
 }
 
@@ -1496,7 +1568,7 @@ pub const __AnonStruct_1208acb69630e8 = if (@sizeOf(usize) == 4) extern struct {
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.payload_cap.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType119, roc_host);
+        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType124, roc_host);
         decrefErasedCallable(value.to_cmd, roc_host);
     }
 
@@ -1515,7 +1587,7 @@ pub const __AnonStruct_1208acb69630e8 = if (@sizeOf(usize) == 4) extern struct {
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.payload_cap.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType119, roc_host);
+        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType124, roc_host);
         decrefErasedCallable(value.to_cmd, roc_host);
     }
 
@@ -1536,6 +1608,46 @@ comptime {
     if (@sizeOf(usize) == 4) {
         if (@sizeOf(__AnonStruct_1208acb69630e8) != 20) @compileError("__AnonStruct_1208acb69630e8 size mismatch");
         if (@alignOf(__AnonStruct_1208acb69630e8) != 4) @compileError("__AnonStruct_1208acb69630e8 alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_68af42b744db93b5
+pub const __AnonStruct_68af42b744db93b5 = if (@sizeOf(usize) == 4) extern struct {
+    task_token: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        decrefErasedCallable(value.task_token, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        increfErasedCallable(value.task_token, amount);
+    }
+} else extern struct {
+    task_token: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        decrefErasedCallable(value.task_token, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        increfErasedCallable(value.task_token, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_68af42b744db93b5) != 8) @compileError("__AnonStruct_68af42b744db93b5 size mismatch");
+        if (@alignOf(__AnonStruct_68af42b744db93b5) != 8) @compileError("__AnonStruct_68af42b744db93b5 alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_68af42b744db93b5) != 4) @compileError("__AnonStruct_68af42b744db93b5 size mismatch");
+        if (@alignOf(__AnonStruct_68af42b744db93b5) != 4) @compileError("__AnonStruct_68af42b744db93b5 alignment mismatch");
     }
 }
 
@@ -1917,6 +2029,58 @@ comptime {
     }
 }
 
+/// Element type for Node.StateTransform
+pub const NodeStateTransform = if (@sizeOf(usize) == 4) extern struct {
+    binder: RocErasedCallable,
+    capability: HostValueCapabilityHandle,
+    transform: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        decrefErasedCallable(value.binder, roc_host);
+        value.capability.decref(roc_host);
+        decrefErasedCallable(value.transform, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        increfErasedCallable(value.binder, amount);
+        value.capability.incref(amount);
+        increfErasedCallable(value.transform, amount);
+    }
+} else extern struct {
+    binder: RocErasedCallable,
+    capability: HostValueCapabilityHandle,
+    transform: RocErasedCallable,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        decrefErasedCallable(value.binder, roc_host);
+        value.capability.decref(roc_host);
+        decrefErasedCallable(value.transform, roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        increfErasedCallable(value.binder, amount);
+        value.capability.incref(amount);
+        increfErasedCallable(value.transform, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeStateTransform) != 40) @compileError("NodeStateTransform size mismatch");
+        if (@alignOf(NodeStateTransform) != 8) @compileError("NodeStateTransform alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeStateTransform) != 20) @compileError("NodeStateTransform size mismatch");
+        if (@alignOf(NodeStateTransform) != 4) @compileError("NodeStateTransform alignment mismatch");
+    }
+}
+
 /// Element type for __AnonStruct_f660464d15310d0c
 pub const __AnonStruct_f660464d15310d0c = if (@sizeOf(usize) == 4) extern struct {
     binder: RocErasedCallable,
@@ -2091,7 +2255,7 @@ pub const __AnonStruct_c4502953588f5545 = if (@sizeOf(usize) == 4) extern struct
         value.field.decref(roc_host);
         value.name.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType179, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2113,7 +2277,7 @@ pub const __AnonStruct_c4502953588f5545 = if (@sizeOf(usize) == 4) extern struct
         value.field.decref(roc_host);
         value.name.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType179, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2239,7 +2403,7 @@ pub const __AnonStruct_3919d24a90aa1c30 = if (@sizeOf(usize) == 4) extern struct
         value.field.decref(roc_host);
         value.name.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType179, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2261,7 +2425,7 @@ pub const __AnonStruct_3919d24a90aa1c30 = if (@sizeOf(usize) == 4) extern struct
         value.field.decref(roc_host);
         value.name.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType179, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2443,7 +2607,7 @@ pub const __AnonStruct_dce81af82680946c = if (@sizeOf(usize) == 4) extern struct
         value.name.decref(roc_host);
         value.present.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType179, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2468,7 +2632,7 @@ pub const __AnonStruct_dce81af82680946c = if (@sizeOf(usize) == 4) extern struct
         value.name.decref(roc_host);
         value.present.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType169, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType179, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -3262,7 +3426,7 @@ pub const NodeSignalExprPayload = extern union {
     row_source: NodeSignalExprRowSourcePayload,
     select: NodeSignalExprSelectPayload,
     storage_source: NodeSignalExprStorageSourcePayload,
-    task_source: __AnonStruct_ecacf74f54997c48,
+    task_source: __AnonStruct_5fe2a3b67ba6ca28,
     visibility_source: NodeSignalExprVisibilitySourcePayload,
 };
 
@@ -3322,8 +3486,8 @@ pub const NodeSignalExpr = if (@sizeOf(usize) == 4) extern struct {
         const ptr: *const NodeSignalExprStorageSourcePayload = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_task_source(self: *const @This()) __AnonStruct_ecacf74f54997c48 {
-        const ptr: *const __AnonStruct_ecacf74f54997c48 = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_task_source(self: *const @This()) __AnonStruct_5fe2a3b67ba6ca28 {
+        const ptr: *const __AnonStruct_5fe2a3b67ba6ca28 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     pub fn payload_visibility_source(self: *const @This()) NodeSignalExprVisibilitySourcePayload {
@@ -3381,7 +3545,7 @@ pub const NodeSignalExpr = if (@sizeOf(usize) == 4) extern struct {
     pub fn payload_storage_source(self: *const @This()) NodeSignalExprStorageSourcePayload {
         return self.payload.storage_source;
     }
-    pub fn payload_task_source(self: *const @This()) __AnonStruct_ecacf74f54997c48 {
+    pub fn payload_task_source(self: *const @This()) __AnonStruct_5fe2a3b67ba6ca28 {
         return self.payload.task_source;
     }
     pub fn payload_visibility_source(self: *const @This()) NodeSignalExprVisibilitySourcePayload {
@@ -3400,14 +3564,51 @@ pub const NodeSignalExpr = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeSignalExpr) != 128) @compileError("NodeSignalExpr size mismatch");
+        if (@sizeOf(NodeSignalExpr) != 136) @compileError("NodeSignalExpr size mismatch");
         if (@alignOf(NodeSignalExpr) != 8) @compileError("NodeSignalExpr alignment mismatch");
-        if (@offsetOf(NodeSignalExpr, "tag") != 120) @compileError("NodeSignalExpr tag offset mismatch");
+        if (@offsetOf(NodeSignalExpr, "tag") != 128) @compileError("NodeSignalExpr tag offset mismatch");
     }
     if (@sizeOf(usize) == 4) {
         if (@sizeOf(NodeSignalExpr) != 72) @compileError("NodeSignalExpr size mismatch");
         if (@alignOf(NodeSignalExpr) != 8) @compileError("NodeSignalExpr alignment mismatch");
         if (@offsetOf(NodeSignalExpr, "tag") != 64) @compileError("NodeSignalExpr tag offset mismatch");
+    }
+}
+
+/// Tag union: Node.TaskKind
+pub const NodeTaskKind = enum(u8) {
+    choose_directory = 0,
+    choose_file = 1,
+    choose_save_path = 2,
+    external = 3,
+    list_directory = 4,
+    open_path = 5,
+    read_log = 6,
+    read_preview = 7,
+    read_text = 8,
+    scan_directory = 9,
+    write_text = 10,
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        _ = self;
+        _ = roc_host;
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        _ = self;
+        _ = amount;
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeTaskKind) != 1) @compileError("NodeTaskKind size mismatch");
+        if (@alignOf(NodeTaskKind) != 1) @compileError("NodeTaskKind alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeTaskKind) != 1) @compileError("NodeTaskKind size mismatch");
+        if (@alignOf(NodeTaskKind) != 1) @compileError("NodeTaskKind alignment mismatch");
     }
 }
 
@@ -3433,7 +3634,7 @@ pub const NodeAttrPayload = extern union {
 
 /// Tag union: Node.Attr
 pub const NodeAttr = if (@sizeOf(usize) == 4) extern struct {
-    payload: [88]u8 align(8),
+    payload: [104]u8 align(8),
     tag: NodeAttrTag,
     pub fn payload_on(self: *const @This()) NodeEventBinding {
         const ptr: *const NodeEventBinding = @ptrCast(@alignCast(&self.payload));
@@ -3502,14 +3703,73 @@ pub const NodeAttr = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeAttr) != 160) @compileError("NodeAttr size mismatch");
+        if (@sizeOf(NodeAttr) != 200) @compileError("NodeAttr size mismatch");
         if (@alignOf(NodeAttr) != 8) @compileError("NodeAttr alignment mismatch");
-        if (@offsetOf(NodeAttr, "tag") != 152) @compileError("NodeAttr tag offset mismatch");
+        if (@offsetOf(NodeAttr, "tag") != 192) @compileError("NodeAttr tag offset mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeAttr) != 96) @compileError("NodeAttr size mismatch");
+        if (@sizeOf(NodeAttr) != 112) @compileError("NodeAttr size mismatch");
         if (@alignOf(NodeAttr) != 8) @compileError("NodeAttr alignment mismatch");
-        if (@offsetOf(NodeAttr, "tag") != 88) @compileError("NodeAttr tag offset mismatch");
+        if (@offsetOf(NodeAttr, "tag") != 104) @compileError("NodeAttr tag offset mismatch");
+    }
+}
+
+/// Tag discriminant for NoneOrSome.
+pub const NoneOrSomeTag = enum(u8) {
+    None = 0,
+    Some = 1,
+};
+
+/// Payload union for NoneOrSome.
+pub const NoneOrSomePayload = extern union {
+    none: [0]u8,
+    some: __AnonStruct_4099dda3c41fcec7,
+};
+
+/// Tag union: NoneOrSome
+pub const NoneOrSome = if (@sizeOf(usize) == 4) extern struct {
+    payload: [16]u8 align(4),
+    tag: NoneOrSomeTag,
+    pub fn payload_some(self: *const @This()) __AnonStruct_4099dda3c41fcec7 {
+        const ptr: *const __AnonStruct_4099dda3c41fcec7 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefNoneOrSome(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfNoneOrSome(self, amount);
+    }
+} else extern struct {
+    payload: NoneOrSomePayload,
+    tag: NoneOrSomeTag,
+    pub fn payload_some(self: *const @This()) __AnonStruct_4099dda3c41fcec7 {
+        return self.payload.some;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefNoneOrSome(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfNoneOrSome(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NoneOrSome) != 40) @compileError("NoneOrSome size mismatch");
+        if (@alignOf(NoneOrSome) != 8) @compileError("NoneOrSome alignment mismatch");
+        if (@offsetOf(NoneOrSome, "tag") != 32) @compileError("NoneOrSome tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NoneOrSome) != 20) @compileError("NoneOrSome size mismatch");
+        if (@alignOf(NoneOrSome) != 4) @compileError("NoneOrSome alignment mismatch");
+        if (@offsetOf(NoneOrSome, "tag") != 16) @compileError("NoneOrSome tag offset mismatch");
     }
 }
 
@@ -3581,19 +3841,22 @@ comptime {
 
 /// Tag discriminant for Node.Cmd.
 pub const NodeCmdTag = enum(u8) {
-    Noop = 0,
-    PushState = 1,
-    RemoveStorage = 2,
-    ReplaceState = 3,
-    SetDocumentTitle = 4,
-    SetStorageText = 5,
-    StartTask = 6,
-    UpdateState = 7,
-    UpdateStates = 8,
+    CancelTask = 0,
+    Noop = 1,
+    PushState = 2,
+    RemoveStorage = 3,
+    ReplaceState = 4,
+    SetDocumentTitle = 5,
+    SetStorageText = 6,
+    StartTask = 7,
+    UpdateState = 8,
+    UpdateStates = 9,
+    UpdateTransform = 10,
 };
 
 /// Payload union for Node.Cmd.
 pub const NodeCmdPayload = extern union {
+    cancel_task: __AnonStruct_68af42b744db93b5,
     noop: [0]u8,
     push_state: __AnonStruct_f47856d36e0a8406,
     remove_storage: __AnonStruct_ec418947c360ad1e,
@@ -3603,12 +3866,17 @@ pub const NodeCmdPayload = extern union {
     start_task: __AnonStruct_d7d87ab0a59c379b,
     update_state: NodeStateWrite,
     update_states: RocList(NodeStateWrite),
+    update_transform: NodeStateTransform,
 };
 
 /// Tag union: Node.Cmd
 pub const NodeCmd = if (@sizeOf(usize) == 4) extern struct {
     payload: [36]u8 align(8),
     tag: NodeCmdTag,
+    pub fn payload_cancel_task(self: *const @This()) __AnonStruct_68af42b744db93b5 {
+        const ptr: *const __AnonStruct_68af42b744db93b5 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
     pub fn payload_push_state(self: *const @This()) __AnonStruct_f47856d36e0a8406 {
         const ptr: *const __AnonStruct_f47856d36e0a8406 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
@@ -3641,6 +3909,10 @@ pub const NodeCmd = if (@sizeOf(usize) == 4) extern struct {
         const ptr: *const RocList(NodeStateWrite) = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
+    pub fn payload_update_transform(self: *const @This()) NodeStateTransform {
+        const ptr: *const NodeStateTransform = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         decrefNodeCmd(self, roc_host);
@@ -3653,6 +3925,9 @@ pub const NodeCmd = if (@sizeOf(usize) == 4) extern struct {
 } else extern struct {
     payload: NodeCmdPayload,
     tag: NodeCmdTag,
+    pub fn payload_cancel_task(self: *const @This()) __AnonStruct_68af42b744db93b5 {
+        return self.payload.cancel_task;
+    }
     pub fn payload_push_state(self: *const @This()) __AnonStruct_f47856d36e0a8406 {
         return self.payload.push_state;
     }
@@ -3676,6 +3951,9 @@ pub const NodeCmd = if (@sizeOf(usize) == 4) extern struct {
     }
     pub fn payload_update_states(self: *const @This()) RocList(NodeStateWrite) {
         return self.payload.update_states;
+    }
+    pub fn payload_update_transform(self: *const @This()) NodeStateTransform {
+        return self.payload.update_transform;
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -3939,7 +4217,7 @@ pub const ElemEachRowsOnlineSource = HostValueCapabilityHandle;
 pub const ElemEachRowsRowSource = HostValueCapabilityHandle;
 pub const ElemEachRowsSelect = HostValueTextReadHandle;
 pub const ElemEachRowsStorageSource = HostValueCapabilityHandle;
-pub const ElemEachRowsTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const ElemEachRowsTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const ElemEachRowsVisibilitySource = HostValueCapabilityHandle;
 pub const NodeSignalExprCombine = HostValueCapabilityHandle;
 pub const NodeSignalExprConstValue = HostValueCapabilityHandle;
@@ -3953,7 +4231,7 @@ pub const NodeSignalExprOnlineSource = HostValueCapabilityHandle;
 pub const NodeSignalExprRowSource = HostValueCapabilityHandle;
 pub const NodeSignalExprSelect = HostValueTextReadHandle;
 pub const NodeSignalExprStorageSource = HostValueCapabilityHandle;
-pub const NodeSignalExprTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeSignalExprTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeSignalExprVisibilitySource = HostValueCapabilityHandle;
 pub const NodeSignalExprCombineCombine = HostValueCapabilityHandle;
 pub const NodeSignalExprCombineConstValue = HostValueCapabilityHandle;
@@ -3967,7 +4245,7 @@ pub const NodeSignalExprCombineOnlineSource = HostValueCapabilityHandle;
 pub const NodeSignalExprCombineRowSource = HostValueCapabilityHandle;
 pub const NodeSignalExprCombineSelect = HostValueTextReadHandle;
 pub const NodeSignalExprCombineStorageSource = HostValueCapabilityHandle;
-pub const NodeSignalExprCombineTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeSignalExprCombineTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeSignalExprCombineVisibilitySource = HostValueCapabilityHandle;
 pub const NodeSignalExprKeyedSelectCombine = HostValueCapabilityHandle;
 pub const NodeSignalExprKeyedSelectConstValue = HostValueCapabilityHandle;
@@ -3981,7 +4259,7 @@ pub const NodeSignalExprKeyedSelectOnlineSource = HostValueCapabilityHandle;
 pub const NodeSignalExprKeyedSelectRowSource = HostValueCapabilityHandle;
 pub const NodeSignalExprKeyedSelectSelect = HostValueTextReadHandle;
 pub const NodeSignalExprKeyedSelectStorageSource = HostValueCapabilityHandle;
-pub const NodeSignalExprKeyedSelectTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeSignalExprKeyedSelectTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeSignalExprKeyedSelectVisibilitySource = HostValueCapabilityHandle;
 pub const NodeSignalExprMapCombine = HostValueCapabilityHandle;
 pub const NodeSignalExprMapConstValue = HostValueCapabilityHandle;
@@ -3995,7 +4273,7 @@ pub const NodeSignalExprMapOnlineSource = HostValueCapabilityHandle;
 pub const NodeSignalExprMapRowSource = HostValueCapabilityHandle;
 pub const NodeSignalExprMapSelect = HostValueTextReadHandle;
 pub const NodeSignalExprMapStorageSource = HostValueCapabilityHandle;
-pub const NodeSignalExprMapTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeSignalExprMapTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeSignalExprMapVisibilitySource = HostValueCapabilityHandle;
 pub const NodeSignalExprMap2Combine = HostValueCapabilityHandle;
 pub const NodeSignalExprMap2ConstValue = HostValueCapabilityHandle;
@@ -4009,7 +4287,7 @@ pub const NodeSignalExprMap2OnlineSource = HostValueCapabilityHandle;
 pub const NodeSignalExprMap2RowSource = HostValueCapabilityHandle;
 pub const NodeSignalExprMap2Select = HostValueTextReadHandle;
 pub const NodeSignalExprMap2StorageSource = HostValueCapabilityHandle;
-pub const NodeSignalExprMap2TaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeSignalExprMap2TaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeSignalExprMap2VisibilitySource = HostValueCapabilityHandle;
 pub const NodeSignalExprSelectCombine = HostValueCapabilityHandle;
 pub const NodeSignalExprSelectConstValue = HostValueCapabilityHandle;
@@ -4023,7 +4301,7 @@ pub const NodeSignalExprSelectOnlineSource = HostValueCapabilityHandle;
 pub const NodeSignalExprSelectRowSource = HostValueCapabilityHandle;
 pub const NodeSignalExprSelectSelect = HostValueTextReadHandle;
 pub const NodeSignalExprSelectStorageSource = HostValueCapabilityHandle;
-pub const NodeSignalExprSelectTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeSignalExprSelectTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeSignalExprSelectVisibilitySource = HostValueCapabilityHandle;
 pub const ElemElementAttrs = NodeAttr;
 pub const ElemElementAttrsPayload = NodeAttrPayload;
@@ -4040,6 +4318,7 @@ pub const NodeAttrSignalText = __AnonStruct_3919d24a90aa1c30;
 pub const NodeAttrStaticBool = __AnonStruct_ac223ceb3485be80;
 pub const NodeAttrStaticText = __AnonStruct_20a3f6b65fe503ef;
 pub const NodeAttrTextOptionalSignal = __AnonStruct_dce81af82680946c;
+pub const NoneOrSomeSome = __AnonStruct_4099dda3c41fcec7;
 pub const NodeEventHandlerAction = __AnonStruct_1208acb69630e8;
 pub const NodeEventHandlerReduce = __AnonStruct_f660464d15310d0c;
 pub const NodeEventHandlerActionReads = NodeSignalExpr;
@@ -4060,7 +4339,7 @@ pub const NodeEventHandlerActionReadsCombineOnlineSource = HostValueCapabilityHa
 pub const NodeEventHandlerActionReadsCombineRowSource = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsCombineSelect = HostValueTextReadHandle;
 pub const NodeEventHandlerActionReadsCombineStorageSource = HostValueCapabilityHandle;
-pub const NodeEventHandlerActionReadsCombineTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeEventHandlerActionReadsCombineTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeEventHandlerActionReadsCombineVisibilitySource = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsConstValue = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsEntropySeedSource = HostValueCapabilityHandle;
@@ -4080,7 +4359,7 @@ pub const NodeEventHandlerActionReadsKeyedSelectOnlineSource = HostValueCapabili
 pub const NodeEventHandlerActionReadsKeyedSelectRowSource = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsKeyedSelectSelect = HostValueTextReadHandle;
 pub const NodeEventHandlerActionReadsKeyedSelectStorageSource = HostValueCapabilityHandle;
-pub const NodeEventHandlerActionReadsKeyedSelectTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeEventHandlerActionReadsKeyedSelectTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeEventHandlerActionReadsKeyedSelectVisibilitySource = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsLocationSource = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsMap = NodeSignalExpr;
@@ -4098,7 +4377,7 @@ pub const NodeEventHandlerActionReadsMapOnlineSource = HostValueCapabilityHandle
 pub const NodeEventHandlerActionReadsMapRowSource = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsMapSelect = HostValueTextReadHandle;
 pub const NodeEventHandlerActionReadsMapStorageSource = HostValueCapabilityHandle;
-pub const NodeEventHandlerActionReadsMapTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeEventHandlerActionReadsMapTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeEventHandlerActionReadsMapVisibilitySource = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsMap2 = NodeSignalExpr;
 pub const NodeEventHandlerActionReadsMap2Payload = NodeSignalExprPayload;
@@ -4115,7 +4394,7 @@ pub const NodeEventHandlerActionReadsMap2OnlineSource = HostValueCapabilityHandl
 pub const NodeEventHandlerActionReadsMap2RowSource = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsMap2Select = HostValueTextReadHandle;
 pub const NodeEventHandlerActionReadsMap2StorageSource = HostValueCapabilityHandle;
-pub const NodeEventHandlerActionReadsMap2TaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeEventHandlerActionReadsMap2TaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeEventHandlerActionReadsMap2VisibilitySource = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsOnlineSource = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsRowSource = HostValueCapabilityHandle;
@@ -4134,10 +4413,10 @@ pub const NodeEventHandlerActionReadsSelectOnlineSource = HostValueCapabilityHan
 pub const NodeEventHandlerActionReadsSelectRowSource = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsSelectSelect = HostValueTextReadHandle;
 pub const NodeEventHandlerActionReadsSelectStorageSource = HostValueCapabilityHandle;
-pub const NodeEventHandlerActionReadsSelectTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeEventHandlerActionReadsSelectTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeEventHandlerActionReadsSelectVisibilitySource = HostValueCapabilityHandle;
 pub const NodeEventHandlerActionReadsStorageSource = HostValueCapabilityHandle;
-pub const NodeEventHandlerActionReadsTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeEventHandlerActionReadsTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeEventHandlerActionReadsVisibilitySource = HostValueCapabilityHandle;
 pub const NodeEventBindingPolicy = __AnonStruct_b2fd8769c5bbb26a;
 pub const NodeAttrSignalBoolSignal = NodeSignalExpr;
@@ -4158,7 +4437,7 @@ pub const NodeAttrSignalBoolSignalCombineOnlineSource = HostValueCapabilityHandl
 pub const NodeAttrSignalBoolSignalCombineRowSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalCombineSelect = HostValueTextReadHandle;
 pub const NodeAttrSignalBoolSignalCombineStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrSignalBoolSignalCombineTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrSignalBoolSignalCombineTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrSignalBoolSignalCombineVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalConstValue = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalEntropySeedSource = HostValueCapabilityHandle;
@@ -4178,7 +4457,7 @@ pub const NodeAttrSignalBoolSignalKeyedSelectOnlineSource = HostValueCapabilityH
 pub const NodeAttrSignalBoolSignalKeyedSelectRowSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalKeyedSelectSelect = HostValueTextReadHandle;
 pub const NodeAttrSignalBoolSignalKeyedSelectStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrSignalBoolSignalKeyedSelectTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrSignalBoolSignalKeyedSelectTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrSignalBoolSignalKeyedSelectVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMap = NodeSignalExpr;
@@ -4196,7 +4475,7 @@ pub const NodeAttrSignalBoolSignalMapOnlineSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMapRowSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMapSelect = HostValueTextReadHandle;
 pub const NodeAttrSignalBoolSignalMapStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrSignalBoolSignalMapTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrSignalBoolSignalMapTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrSignalBoolSignalMapVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMap2 = NodeSignalExpr;
 pub const NodeAttrSignalBoolSignalMap2Payload = NodeSignalExprPayload;
@@ -4213,7 +4492,7 @@ pub const NodeAttrSignalBoolSignalMap2OnlineSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMap2RowSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMap2Select = HostValueTextReadHandle;
 pub const NodeAttrSignalBoolSignalMap2StorageSource = HostValueCapabilityHandle;
-pub const NodeAttrSignalBoolSignalMap2TaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrSignalBoolSignalMap2TaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrSignalBoolSignalMap2VisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalOnlineSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalRowSource = HostValueCapabilityHandle;
@@ -4232,10 +4511,10 @@ pub const NodeAttrSignalBoolSignalSelectOnlineSource = HostValueCapabilityHandle
 pub const NodeAttrSignalBoolSignalSelectRowSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalSelectSelect = HostValueTextReadHandle;
 pub const NodeAttrSignalBoolSignalSelectStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrSignalBoolSignalSelectTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrSignalBoolSignalSelectTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrSignalBoolSignalSelectVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrSignalBoolSignalTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrSignalBoolSignalTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrSignalBoolSignalVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignal = NodeSignalExpr;
 pub const NodeAttrSignalTextSignalPayload = NodeSignalExprPayload;
@@ -4255,7 +4534,7 @@ pub const NodeAttrSignalTextSignalCombineOnlineSource = HostValueCapabilityHandl
 pub const NodeAttrSignalTextSignalCombineRowSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalCombineSelect = HostValueTextReadHandle;
 pub const NodeAttrSignalTextSignalCombineStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrSignalTextSignalCombineTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrSignalTextSignalCombineTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrSignalTextSignalCombineVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalConstValue = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalEntropySeedSource = HostValueCapabilityHandle;
@@ -4275,7 +4554,7 @@ pub const NodeAttrSignalTextSignalKeyedSelectOnlineSource = HostValueCapabilityH
 pub const NodeAttrSignalTextSignalKeyedSelectRowSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalKeyedSelectSelect = HostValueTextReadHandle;
 pub const NodeAttrSignalTextSignalKeyedSelectStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrSignalTextSignalKeyedSelectTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrSignalTextSignalKeyedSelectTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrSignalTextSignalKeyedSelectVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMap = NodeSignalExpr;
@@ -4293,7 +4572,7 @@ pub const NodeAttrSignalTextSignalMapOnlineSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMapRowSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMapSelect = HostValueTextReadHandle;
 pub const NodeAttrSignalTextSignalMapStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrSignalTextSignalMapTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrSignalTextSignalMapTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrSignalTextSignalMapVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMap2 = NodeSignalExpr;
 pub const NodeAttrSignalTextSignalMap2Payload = NodeSignalExprPayload;
@@ -4310,7 +4589,7 @@ pub const NodeAttrSignalTextSignalMap2OnlineSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMap2RowSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMap2Select = HostValueTextReadHandle;
 pub const NodeAttrSignalTextSignalMap2StorageSource = HostValueCapabilityHandle;
-pub const NodeAttrSignalTextSignalMap2TaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrSignalTextSignalMap2TaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrSignalTextSignalMap2VisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalOnlineSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalRowSource = HostValueCapabilityHandle;
@@ -4329,10 +4608,10 @@ pub const NodeAttrSignalTextSignalSelectOnlineSource = HostValueCapabilityHandle
 pub const NodeAttrSignalTextSignalSelectRowSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalSelectSelect = HostValueTextReadHandle;
 pub const NodeAttrSignalTextSignalSelectStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrSignalTextSignalSelectTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrSignalTextSignalSelectTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrSignalTextSignalSelectVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrSignalTextSignalTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrSignalTextSignalTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrSignalTextSignalVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignal = NodeSignalExpr;
 pub const NodeAttrTextOptionalSignalSignalPayload = NodeSignalExprPayload;
@@ -4352,7 +4631,7 @@ pub const NodeAttrTextOptionalSignalSignalCombineOnlineSource = HostValueCapabil
 pub const NodeAttrTextOptionalSignalSignalCombineRowSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalCombineSelect = HostValueTextReadHandle;
 pub const NodeAttrTextOptionalSignalSignalCombineStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrTextOptionalSignalSignalCombineTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrTextOptionalSignalSignalCombineTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrTextOptionalSignalSignalCombineVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalConstValue = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalEntropySeedSource = HostValueCapabilityHandle;
@@ -4372,7 +4651,7 @@ pub const NodeAttrTextOptionalSignalSignalKeyedSelectOnlineSource = HostValueCap
 pub const NodeAttrTextOptionalSignalSignalKeyedSelectRowSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalKeyedSelectSelect = HostValueTextReadHandle;
 pub const NodeAttrTextOptionalSignalSignalKeyedSelectStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrTextOptionalSignalSignalKeyedSelectTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrTextOptionalSignalSignalKeyedSelectTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrTextOptionalSignalSignalKeyedSelectVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalMap = NodeSignalExpr;
@@ -4390,7 +4669,7 @@ pub const NodeAttrTextOptionalSignalSignalMapOnlineSource = HostValueCapabilityH
 pub const NodeAttrTextOptionalSignalSignalMapRowSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalMapSelect = HostValueTextReadHandle;
 pub const NodeAttrTextOptionalSignalSignalMapStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrTextOptionalSignalSignalMapTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrTextOptionalSignalSignalMapTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrTextOptionalSignalSignalMapVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalMap2 = NodeSignalExpr;
 pub const NodeAttrTextOptionalSignalSignalMap2Payload = NodeSignalExprPayload;
@@ -4407,7 +4686,7 @@ pub const NodeAttrTextOptionalSignalSignalMap2OnlineSource = HostValueCapability
 pub const NodeAttrTextOptionalSignalSignalMap2RowSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalMap2Select = HostValueTextReadHandle;
 pub const NodeAttrTextOptionalSignalSignalMap2StorageSource = HostValueCapabilityHandle;
-pub const NodeAttrTextOptionalSignalSignalMap2TaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrTextOptionalSignalSignalMap2TaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrTextOptionalSignalSignalMap2VisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalOnlineSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalRowSource = HostValueCapabilityHandle;
@@ -4426,10 +4705,10 @@ pub const NodeAttrTextOptionalSignalSignalSelectOnlineSource = HostValueCapabili
 pub const NodeAttrTextOptionalSignalSignalSelectRowSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalSelectSelect = HostValueTextReadHandle;
 pub const NodeAttrTextOptionalSignalSignalSelectStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrTextOptionalSignalSignalSelectTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrTextOptionalSignalSignalSelectTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrTextOptionalSignalSignalSelectVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalStorageSource = HostValueCapabilityHandle;
-pub const NodeAttrTextOptionalSignalSignalTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const NodeAttrTextOptionalSignalSignalTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const NodeAttrTextOptionalSignalSignalVisibilitySource = HostValueCapabilityHandle;
 pub const ElemElementChildren = Elem;
 pub const ElemElementChildrenPayload = ElemPayload;
@@ -4459,7 +4738,7 @@ pub const ElemOnChangeSignalOnlineSource = HostValueCapabilityHandle;
 pub const ElemOnChangeSignalRowSource = HostValueCapabilityHandle;
 pub const ElemOnChangeSignalSelect = HostValueTextReadHandle;
 pub const ElemOnChangeSignalStorageSource = HostValueCapabilityHandle;
-pub const ElemOnChangeSignalTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const ElemOnChangeSignalTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const ElemOnChangeSignalVisibilitySource = HostValueCapabilityHandle;
 pub const ElemOnChangeInitialSignal = NodeSignalExpr;
 pub const ElemOnChangeInitialSignalPayload = NodeSignalExprPayload;
@@ -4476,7 +4755,7 @@ pub const ElemOnChangeInitialSignalOnlineSource = HostValueCapabilityHandle;
 pub const ElemOnChangeInitialSignalRowSource = HostValueCapabilityHandle;
 pub const ElemOnChangeInitialSignalSelect = HostValueTextReadHandle;
 pub const ElemOnChangeInitialSignalStorageSource = HostValueCapabilityHandle;
-pub const ElemOnChangeInitialSignalTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const ElemOnChangeInitialSignalTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const ElemOnChangeInitialSignalVisibilitySource = HostValueCapabilityHandle;
 pub const ElemStateChild = Elem;
 pub const ElemStateChildPayload = ElemPayload;
@@ -4506,7 +4785,7 @@ pub const ElemTextSignalSignalOnlineSource = HostValueCapabilityHandle;
 pub const ElemTextSignalSignalRowSource = HostValueCapabilityHandle;
 pub const ElemTextSignalSignalSelect = HostValueTextReadHandle;
 pub const ElemTextSignalSignalStorageSource = HostValueCapabilityHandle;
-pub const ElemTextSignalSignalTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const ElemTextSignalSignalTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const ElemTextSignalSignalVisibilitySource = HostValueCapabilityHandle;
 pub const ElemWhenCondition = NodeSignalExpr;
 pub const ElemWhenConditionPayload = NodeSignalExprPayload;
@@ -4523,7 +4802,7 @@ pub const ElemWhenConditionOnlineSource = HostValueCapabilityHandle;
 pub const ElemWhenConditionRowSource = HostValueCapabilityHandle;
 pub const ElemWhenConditionSelect = HostValueTextReadHandle;
 pub const ElemWhenConditionStorageSource = HostValueCapabilityHandle;
-pub const ElemWhenConditionTaskSource = __AnonStruct_ecacf74f54997c48;
+pub const ElemWhenConditionTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const ElemWhenConditionVisibilitySource = HostValueCapabilityHandle;
 pub const ElemWhenOps = __AnonStruct_307321b22282236a;
 
@@ -4873,8 +5152,8 @@ pub const HostValueTextReadHandleRelease = struct {
     }
 };
 
-pub const __AnonStruct_ecacf74f54997c48Release = struct {
-    pub fn release(value: __AnonStruct_ecacf74f54997c48, roc_host: *RocHost) void {
+pub const __AnonStruct_5fe2a3b67ba6ca28Release = struct {
+    pub fn release(value: __AnonStruct_5fe2a3b67ba6ca28, roc_host: *RocHost) void {
         value.decref(roc_host);
     }
 };
@@ -4949,6 +5228,36 @@ pub const NodeEventDeliveryRelease = struct {
     }
 };
 
+fn decrefNoneOrSome(value: NoneOrSome, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .None => {},
+        .Some => {
+            value.payload_some().decref(roc_host);
+        },
+    }
+}
+
+fn increfNoneOrSome(value: NoneOrSome, amount: isize) void {
+    switch (value.tag) {
+        .None => {},
+        .Some => {
+            value.payload_some().incref(amount);
+        },
+    }
+}
+
+pub const NoneOrSomeRelease = struct {
+    pub fn release(value: NoneOrSome, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_4099dda3c41fcec7Release = struct {
+    pub fn release(value: __AnonStruct_4099dda3c41fcec7, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
 pub const NodeFixedEventKindRelease = struct {
     pub fn release(value: NodeFixedEventKind, roc_host: *RocHost) void {
         value.decref(roc_host);
@@ -5003,6 +5312,9 @@ pub const __AnonStruct_1208acb69630e8Release = struct {
 
 fn decrefNodeCmd(value: NodeCmd, roc_host: *RocHost) void {
     switch (value.tag) {
+        .CancelTask => {
+            value.payload_cancel_task().decref(roc_host);
+        },
         .Noop => {},
         .PushState => {
             value.payload_push_state().decref(roc_host);
@@ -5028,11 +5340,17 @@ fn decrefNodeCmd(value: NodeCmd, roc_host: *RocHost) void {
         .UpdateStates => {
             decrefListOfNodeStateWrite(value.payload_update_states(), roc_host);
         },
+        .UpdateTransform => {
+            value.payload_update_transform().decref(roc_host);
+        },
     }
 }
 
 fn increfNodeCmd(value: NodeCmd, amount: isize) void {
     switch (value.tag) {
+        .CancelTask => {
+            value.payload_cancel_task().incref(amount);
+        },
         .Noop => {},
         .PushState => {
             value.payload_push_state().incref(amount);
@@ -5058,11 +5376,20 @@ fn increfNodeCmd(value: NodeCmd, amount: isize) void {
         .UpdateStates => {
             value.payload_update_states().incref(amount);
         },
+        .UpdateTransform => {
+            value.payload_update_transform().incref(amount);
+        },
     }
 }
 
 pub const NodeCmdRelease = struct {
     pub fn release(value: NodeCmd, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_68af42b744db93b5Release = struct {
+    pub fn release(value: __AnonStruct_68af42b744db93b5, roc_host: *RocHost) void {
         value.decref(roc_host);
     }
 };
@@ -5111,6 +5438,12 @@ pub const NodeStateWriteRelease = struct {
 
 pub const HostValueStateValueHandleRelease = struct {
     pub fn release(value: HostValueStateValueHandle, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const NodeStateTransformRelease = struct {
+    pub fn release(value: NodeStateTransform, roc_host: *RocHost) void {
         value.decref(roc_host);
     }
 };
@@ -5259,12 +5592,12 @@ fn decrefBoxPayloadType71(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c
     payload.*.decref(roc_host);
 }
 
-fn decrefBoxPayloadType119(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
+fn decrefBoxPayloadType124(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
     const payload: *NodeSignalExpr = @ptrCast(@alignCast(data_ptr orelse return));
     payload.*.decref(roc_host);
 }
 
-fn decrefBoxPayloadType169(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
+fn decrefBoxPayloadType179(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
     const payload: *NodeSignalExpr = @ptrCast(@alignCast(data_ptr orelse return));
     payload.*.decref(roc_host);
 }
@@ -5285,17 +5618,20 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == RocList(NodeSignalExpr)) return RocListRelease(RocList(NodeSignalExpr), NodeSignalExprRelease);
     if (T == __AnonStruct_3343639b60ca5b0) return __AnonStruct_3343639b60ca5b0Release;
     if (T == HostValueTextReadHandle) return HostValueTextReadHandleRelease;
-    if (T == __AnonStruct_ecacf74f54997c48) return __AnonStruct_ecacf74f54997c48Release;
+    if (T == __AnonStruct_5fe2a3b67ba6ca28) return __AnonStruct_5fe2a3b67ba6ca28Release;
     if (T == __AnonStruct_b8e742f9da13c125) return __AnonStruct_b8e742f9da13c125Release;
     if (T == RocList(NodeAttr)) return RocListRelease(RocList(NodeAttr), NodeAttrRelease);
     if (T == NodeAttr) return NodeAttrRelease;
     if (T == NodeEventBinding) return NodeEventBindingRelease;
+    if (T == NoneOrSome) return NoneOrSomeRelease;
+    if (T == __AnonStruct_4099dda3c41fcec7) return __AnonStruct_4099dda3c41fcec7Release;
     if (T == NodeMsg) return NodeMsgRelease;
     if (T == NodeEventExtractionPlan) return NodeEventExtractionPlanRelease;
     if (T == RocListWith(u8, false)) return RocListSpineRelease(RocListWith(u8, false));
     if (T == NodeEventHandler) return NodeEventHandlerRelease;
     if (T == __AnonStruct_1208acb69630e8) return __AnonStruct_1208acb69630e8Release;
     if (T == NodeCmd) return NodeCmdRelease;
+    if (T == __AnonStruct_68af42b744db93b5) return __AnonStruct_68af42b744db93b5Release;
     if (T == __AnonStruct_f47856d36e0a8406) return __AnonStruct_f47856d36e0a8406Release;
     if (T == __AnonStruct_ec418947c360ad1e) return __AnonStruct_ec418947c360ad1eRelease;
     if (T == __AnonStruct_9d5ad8648ab57c4b) return __AnonStruct_9d5ad8648ab57c4bRelease;
@@ -5305,6 +5641,7 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == NodeStateWrite) return NodeStateWriteRelease;
     if (T == HostValueStateValueHandle) return HostValueStateValueHandleRelease;
     if (T == RocList(NodeStateWrite)) return RocListRelease(RocList(NodeStateWrite), NodeStateWriteRelease);
+    if (T == NodeStateTransform) return NodeStateTransformRelease;
     if (T == __AnonStruct_f660464d15310d0c) return __AnonStruct_f660464d15310d0cRelease;
     if (T == HostValueEventReducerHandle) return HostValueEventReducerHandleRelease;
     if (T == __AnonStruct_c4502953588f5545) return __AnonStruct_c4502953588f5545Release;

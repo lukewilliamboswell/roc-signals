@@ -127,7 +127,7 @@ def load_examples() -> tuple[Example, ...]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    suites = ("all", "published", "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "wasm-bench", "native", "fault", "bundle", "bench")
+    suites = ("all", "published", "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "wasm-bench", "native", "gui", "fault", "bundle", "bench", "size")
     parser.add_argument(
         "suites",
         nargs="*",
@@ -197,6 +197,7 @@ def parse_args() -> argparse.Namespace:
         help="Delete entries from the known-failures file that passed in this run. Never adds entries.",
     )
     parser.add_argument("--spec-timeout", type=float, default=30.0, metavar="SECONDS")
+    parser.add_argument("--gui-build-jobs", type=int, default=2, metavar="N", help="Concurrent Cargo jobs for the GUI host (default: 2).")
     parser.add_argument("--bench-case", action="append", default=[], metavar="GLOB", help="Select Wasm benchmark cases. Repeatable.")
     parser.add_argument("--bench-warmups", type=int, default=1, metavar="N", help="Complete warm-up passes for wasm-bench.")
     parser.add_argument("--bench-iterations", type=int, default=20, metavar="N", help="Fresh paired iterations per Wasm benchmark sample.")
@@ -296,6 +297,7 @@ def run_zig_suite() -> None:
         "scripts/test_driver_paths.py",
         "scripts/test_known_failures.py",
         "scripts/test_release.py",
+        "scripts/test_dependency_artifacts.py",
     ])
 
 
@@ -392,6 +394,8 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
                 mount_cmd.append("--exercise-event-actions")
             if example.slug == "coordinated-writes":
                 mount_cmd.append("--exercise-coordinated-writes")
+            if example.slug == "state-commands":
+                mount_cmd.append("--exercise-state-updates")
             if example.slug == "svg":
                 mount_cmd.append("--exercise-svg")
             try:
@@ -421,11 +425,11 @@ def run_coordinated_writes_wasm_faults(roc_bin: str) -> None:
     """Link test-only allocator exports without adding them to release bundles."""
     output = TEST_OUT / "coordinated-writes-faults"
     diagnostic_platform = output / "platform"
-    shutil.copytree(ROOT / "platform", diagnostic_platform, dirs_exist_ok=True)
+    shutil.copytree(ROOT / "platform-web", diagnostic_platform, dirs_exist_ok=True)
     manifest = diagnostic_platform / "main.roc"
     source = manifest.read_text(encoding="utf-8")
     manifest.write_text(add_wasm_fault_exports(source), encoding="utf-8")
-    fixture = ROOT / "examples/_fixtures/coordinated-writes/main.roc"
+    fixture = ROOT / "examples-web/_fixtures/coordinated-writes/main.roc"
     app = output / "main.roc"
     app.write_text(PLATFORM_HEADER_RE.sub(
         f'platform "{manifest.resolve()}"', fixture.read_text(encoding="utf-8"), count=1,
@@ -631,7 +635,7 @@ def benchmark_run(command: list[str | Path], *, cwd: Path = ROOT) -> None:
 
 
 def prepare_wasm_benchmark_platform(destination: Path, host_object: Path, *, instrumented: bool) -> None:
-    shutil.copytree(ROOT / "platform", destination, dirs_exist_ok=True)
+    shutil.copytree(ROOT / "platform-web", destination, dirs_exist_ok=True)
     shutil.copy2(host_object, destination / "targets" / "wasm32" / "host.wasm")
     if not instrumented:
         return
@@ -648,6 +652,15 @@ def prepare_wasm_benchmark_platform(destination: Path, host_object: Path, *, ins
     if source.count(marker) != 1:
         raise SystemExit("benchmark platform could not locate the Wasm export list")
     manifest.write_text(source.replace(marker, exports + marker), encoding="utf-8")
+
+
+def run_size_budgets(roc_bin: str) -> None:
+    """Build the size fixture set with the ReleaseSmall host and gate it.
+
+    Runs last because it leaves a ReleaseSmall browser host under
+    `platform-web/targets/wasm32/`, whereas `build_hosts` installs the default mode.
+    """
+    run([sys.executable, ROOT / "scripts" / "wasm_size.py", "--check", "--roc-bin", roc_bin, "--label", "check"])
 
 
 def run_wasm_runtime_benchmarks(roc_bin: str, args: argparse.Namespace) -> None:
@@ -725,8 +738,8 @@ def rewrite_platform_headers(root: Path, platform_ref: str) -> None:
 def rewrite_examples_for_platform(platform_ref: str, dest_root: Path) -> None:
     if dest_root.exists():
         shutil.rmtree(dest_root)
-    examples_dest = dest_root / "examples"
-    shutil.copytree(ROOT / "examples", examples_dest, dirs_exist_ok=True)
+    examples_dest = dest_root / "examples-web"
+    shutil.copytree(ROOT / "examples-web", examples_dest, dirs_exist_ok=True)
     rewrite_platform_headers(examples_dest, platform_ref)
 
 
@@ -743,7 +756,7 @@ def run_local_native_specs(
     fault_campaign: bool = False,
 ) -> None:
     source_root = TEST_OUT / "native-source"
-    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    rewrite_examples_for_platform(str((ROOT / "platform-web" / "main.roc").resolve()), source_root)
     run_native_specs(
         roc_bin,
         examples,
@@ -760,13 +773,13 @@ def run_local_native_specs(
 
 def run_local_roc_checks(roc_bin: str, examples: tuple[Example, ...]) -> None:
     source_root = TEST_OUT / "roc-check-source"
-    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    rewrite_examples_for_platform(str((ROOT / "platform-web" / "main.roc").resolve()), source_root)
     run_roc_checks(roc_bin, examples, source_root=source_root)
 
 
 def run_local_roc_tests(roc_bin: str, examples: tuple[Example, ...]) -> None:
     source_root = TEST_OUT / "roc-test-source"
-    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    rewrite_examples_for_platform(str((ROOT / "platform-web" / "main.roc").resolve()), source_root)
     run_roc_tests(roc_bin, examples, source_root=source_root)
 
 
@@ -776,7 +789,7 @@ def run_local_benchmarks(roc_bin: str, examples: tuple[Example, ...]) -> None:
     # timings measure validation machinery rather than production behavior.
     run(["zig", "build", "build-test-hosts", "-Doptimize=ReleaseFast"])
     source_root = TEST_OUT / "bench-source"
-    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    rewrite_examples_for_platform(str((ROOT / "platform-web" / "main.roc").resolve()), source_root)
     run_benchmarks(roc_bin, examples, source_root=source_root)
 
 
@@ -811,7 +824,7 @@ def bundle_platform(roc_bin: str) -> Path:
     bundle_out.mkdir(parents=True, exist_ok=True)
     env["BUNDLE_OUT_DIR"] = str(bundle_out)
     result = subprocess.run(
-        [str(ROOT / "scripts" / "bundle.sh")],
+        [str(ROOT / "scripts" / "bundle.sh"), "--package", "web", "--no-build"],
         cwd=ROOT,
         env=env,
         text=True,
@@ -930,11 +943,17 @@ def validate_args_before_build(args: argparse.Namespace, suites: set[str]) -> No
 
 
 def main() -> int:
+    import gui_suite
+
     args = parse_args()
     examples = load_examples()
     suites = set(args.suites)
     if "all" in suites:
         suites = {"zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "native", "fault", "bundle", "bench"}
+        # macOS GUI builds need full Xcode plus the optional Metal toolchain;
+        # keep them explicit so the ordinary native suite works with CLT alone.
+        if gui_suite.supported_host() and platform.system() == "Linux":
+            suites.add("gui")
 
     validate_args_before_build(args, suites)
     roc_bin = command_path(args.roc_bin)
@@ -946,7 +965,11 @@ def main() -> int:
         return 0
     ensure_clean_output(args.keep_output)
 
-    build_hosts()
+    if suites != {"gui"}:
+        build_hosts()
+
+    if "gui" in suites:
+        gui_suite.run(roc_bin, args, TEST_OUT / "gui")
 
     if "zig" in suites:
         run_zig_suite()
@@ -1022,6 +1045,9 @@ def main() -> int:
             run_local_benchmarks(roc_bin, examples)
         else:
             print("\nSkipping benchmarks: platform manifest exposes macOS and Linux musl native targets only.")
+
+    if "size" in suites:
+        run_size_budgets(roc_bin)
 
     if not args.keep_output and TEST_OUT.exists():
         shutil.rmtree(TEST_OUT)

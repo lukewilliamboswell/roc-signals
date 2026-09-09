@@ -66,7 +66,7 @@ For local platform development, build the platform archive with
 `scripts/bundle.sh` and its browser companion with
 `python3 scripts/bundle_browser.py`. The site build compiles examples against
 its freshly built archive and points downloadable sources at that same archive
-under the site's `platform/` directory unless a platform URL is explicitly
+under the site's `platform-web/` directory unless a platform URL is explicitly
 overridden.
 
 See [Getting Started](https://lukewilliamboswell.github.io/roc-signals/docs/getting-started/#mount-it-in-your-own-page)

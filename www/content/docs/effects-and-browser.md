@@ -58,6 +58,15 @@ must continue; disabling its button need not remove that scope.
 
 ### Deterministic tasks for tests
 
+`Signal.cancel(task)` cancels its active request and publishes the task
+constructor's typed cancellation error through ordinary propagation. Canceling a
+source with no pending request does nothing. A canceled request's late result is
+ignored, and a later start gets a fresh request ID. HTTP tasks publish `Canceled`;
+the string-based fake task model passes `"canceled"` to its error decoder.
+Cancellation cannot reverse external work that already committed. Native host
+capacity refusal publishes the constructor's declared resource error and
+supersedes any older request for that source; it does not start new host work.
+
 `Signal.fake_task(name, on_done, on_failed)` creates a task the native test
 runner drives directly:
 
@@ -117,7 +126,7 @@ your endpoint's contract. A validation response may need field errors; a missing
 resource may need a different page.
 
 Transport and boundary failures use `Http.HttpError`: `Network(Str)`, `Timeout`,
-`Canceled`, `Unsupported(Str)`, or `ResponseMaterialization(Str)`.
+`Canceled`, `ResourceLimit(Str)`, `Unsupported(Str)`, or `ResponseMaterialization(Str)`.
 `Http.error_text` supplies a display string when you do not need to distinguish
 those cases.
 
@@ -148,7 +157,7 @@ parse = Json.parser_camel()
 
 `Json.parser_camel()` maps `camelCase` JSON fields to `snake_case` Roc fields.
 `Json.to_str(value)` encodes. See
-[Conduit's `Api.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples/conduit/Api.roc)
+[Conduit's `Api.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples-web/conduit/Api.roc)
 for endpoint-specific decoding. That example still contains `shield_escapes`
 and `restore_text`, a workaround for an upstream JSON escape limitation. It is
 not a general JSON decoder: it does not cover all legal escaped input. Before
@@ -327,7 +336,7 @@ Ui.on_change_initial(
 ```
 
 See Conduit's
-[`Route.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples/conduit/Route.roc)
+[`Route.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples-web/conduit/Route.roc)
 and `Nav.roc` for parsing, link construction, and hash-route handling.
 
 > **Static hosting note.** Conduit uses hash-style routes (`#/article/slug`)

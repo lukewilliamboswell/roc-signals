@@ -47,6 +47,7 @@ const EventClearCommand = render_sink.EventClearCommand;
 const HostActiveEventDesc = SharedEngine.ActiveEventDesc;
 
 const WasmCtx = struct {
+    pub const supports_native_shortcuts = false;
     pub const Handle = WasmCtx;
     pub const RegistryOps = hv.RegistryOps();
     pub const Metrics = if (build_options.wasm_benchmark) engine.RuntimeMetrics else engine.NoMetrics;
@@ -55,8 +56,16 @@ const WasmCtx = struct {
 
     /// Reserves the engine-selected cancellation records and complete task
     /// payload before the engine changes live request membership.
-    pub fn prepareTaskPublication(_: Handle, request_id: ids.TaskRequestId, task_name: []const u8, request: []const u8, cancellation_count: usize) render.PreflightError!TaskPublication {
+    pub fn prepareTaskPublication(_: Handle, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8, cancellation_count: usize) render.PreflightError!TaskPublication {
+        if (kind != .external) failHostWithFmt("native task service is unsupported by the browser host", .{});
         return command_batch.prepareTaskStart(WasmCtx.allocator(.{}), request_id, task_name, request, cancellation_count);
+    }
+
+    pub const TaskCancellationPublication = render.TransactionalBatch.TaskCancellationPublication;
+
+    /// Reserves cancellation records before the terminal source value commits.
+    pub fn prepareTaskCancellation(_: Handle, count: usize) render.PreflightError!TaskCancellationPublication {
+        return command_batch.prepareTaskCancellation(WasmCtx.allocator(.{}), count);
     }
 
     /// Creates the host's zeroed metric accumulator for a new engine operation.
@@ -197,6 +206,7 @@ const WasmSink = struct {
 
     /// Applies an engine-decided text field value to one render node.
     pub fn applyTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField, value: []const u8) void {
+        if (field.isNative()) failHostWithFmt("native presentation is unsupported by the browser host", .{});
         appendStringCommand(field.setOp(), toU32(elem_id.raw()), value);
     }
 
@@ -212,6 +222,7 @@ const WasmSink = struct {
 
     /// Clears an engine-decided text field from one render node.
     pub fn clearTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField) void {
+        if (field.isNative()) failHostWithFmt("native presentation is unsupported by the browser host", .{});
         appendStringCommand(field.setOp(), toU32(elem_id.raw()), "");
     }
 
@@ -227,6 +238,7 @@ const WasmSink = struct {
 
     /// Publishes a validated canonical event binding selected by the engine.
     pub fn bindEvent(_: WasmSink, elem_id: ids.ElemId, key: EventBindingKey, binding: EventBinding) void {
+        if (binding.key_chord != null) failHostWithFmt("native keyboard shortcuts are unsupported by the browser host", .{});
         appendEventBindCommand(.{ .elem_id = elem_id, .key = key, .binding = binding });
     }
 
@@ -246,7 +258,8 @@ const WasmSink = struct {
     }
 
     /// Starts bounded asynchronous host work for an engine-issued task request.
-    pub fn startTask(_: WasmSink, request_id: ids.TaskRequestId, task_name: []const u8, request: []const u8) void {
+    pub fn startTask(_: WasmSink, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8) void {
+        if (kind != .external) failHostWithFmt("native task service is unsupported by the browser host", .{});
         command_batch.appendTaskStart(allocator(), request_id, task_name, request) catch |err| switch (err) {
             error.OutOfMemory => failHostWith("out of memory while preparing task publication"),
             error.ResourceLimit => failHostWith("task publication exceeded Wasm wire resource limit"),
@@ -770,6 +783,7 @@ fn appendEventBindCommand(command: EventBindCommand) void {
             }
         },
         .named => |name| appendDynamicBindEvent(elem_id, name, toU32(binding.event_id.raw()), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor),
+        .filtered => failHostWith("native keyboard shortcuts are unsupported by the browser host"),
     }
 }
 
@@ -778,6 +792,7 @@ fn appendEventClearCommand(command: EventClearCommand) void {
     switch (command.key) {
         .fixed => |kind| appendCommand(.clear_event, elem_id, toU32(@intFromEnum(kind)), 0, 0, 0),
         .named => |name| appendDynamicClearEvent(elem_id, name),
+        .filtered => failHostWith("native keyboard shortcuts are unsupported by the browser host"),
     }
 }
 
@@ -798,6 +813,7 @@ fn appendDynamicClearEvent(elem_id: u32, name: []const u8) void {
 }
 
 fn appendBoolFieldCommand(field: RenderBoolField, elem_id: u32, value: bool) void {
+    if (field.isNative()) failHostWithFmt("native selection is unsupported by the browser host", .{});
     appendCommand(field.setOp(), elem_id, @intFromBool(value), 0, 0, 0);
 }
 

@@ -532,7 +532,7 @@ Ui.select_of("Pan size", pan, [
 ], input_class)
 ```
 
-Implemented in `platform/Ui.roc` with a change event selecting the first option
+Implemented in `platform-web/Ui.roc` with a change event selecting the first option
 whose `wire` matches, so an unrecognised value leaves state untouched and no
 fallback has to be invented. No function parameters: two adjacent `(a -> Str)`
 arguments would be the positional blindness `style.md` now warns about, and

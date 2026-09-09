@@ -6,4 +6,4 @@ permissions:
   contents: read
 jobs:
   configuration:
-    uses: lukewilliamboswell/roc-automation/.github/workflows/check-config.yml@31e10eca5b0f7e4cacbf7864d51dfa8d224ae30f
+    uses: lukewilliamboswell/roc-automation/.github/workflows/check-config.yml@13b98f8428993bf0dcca9fbaa3b7762ec3e25d34

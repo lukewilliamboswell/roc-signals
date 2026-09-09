@@ -2,6 +2,22 @@
 
 const std = @import("std");
 
+/// Closed task service routes. Names remain diagnostics; native hosts dispatch
+/// only this value, and browser hosts reject native service requests.
+pub const TaskKind = enum(u32) {
+    external = 0,
+    choose_file = 1,
+    choose_directory = 2,
+    choose_save_path = 3,
+    read_text = 4,
+    write_text = 5,
+    scan_directory = 6,
+    list_directory = 7,
+    open_path = 8,
+    read_preview = 9,
+    read_log = 10,
+};
+
 /// Host boundary payload kind ids. These are the ABI-level containers that cross
 /// from JS/native into the retained Roc reducer; richer schemas may still encode
 /// through bytes when Roc owns the final typed decoding.

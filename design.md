@@ -130,7 +130,7 @@ failed. Tiers 2 and 3 are the externally visible outcomes the engine exists
 to deliver.
 
 **Tier 1 — Engine invariants.** The properties listed under *Measures of
-Effectiveness* below (one engine, two thin hosts; same apps in both
+Effectiveness* below (one engine, thin hosts; same apps in both
 environments; native semantic evidence; work scales with change;
 deterministic reclamation with no leaks; determinism; incompatible erased-value
 routing is rejected), with production checks and bounded transaction failure.
@@ -213,7 +213,7 @@ proposed design change that serves no goal is out of scope, however elegant;
 a goal with no section, spec, or app serving it is a gap to close, not a
 sentence to delete.
 
-## Purpose and Dual-Host Architecture
+## Purpose and Host Architecture
 
 The thesis and product goals above are the requirements; the engine described
 from here on is the means. The product is built on a **host-agnostic reactive engine**: a mutable node table,
@@ -222,7 +222,7 @@ keyed-row diff, identity tables, and structural splice/collect/apply. The engine
 owns all reactive and structural logic. It is the single source of truth for how
 a Signals app behaves.
 
-The engine is driven by **two thin hosts** that implement one contract — a
+The engine is driven by **thin hosts** that implement one contract — a
 `Ctx` (host capabilities the engine calls) plus a `sink()` (where the engine
 writes render commands). The hosts differ only in their boundary, never in their
 reactive behaviour:
@@ -240,7 +240,27 @@ reactive behaviour:
   timer/`fetch` bridges. Its job is **the JS↔WASM contract only**. It contains
   no reactive or structural logic; that all lives in the engine.
 
-The same Roc apps compile against both hosts. The native spec runner asserts
+- **GPUI host** — the native GUI boundary. A Rust static library owns windows,
+  input widgets, and retained GPUI entities. Events enter the same Zig engine;
+  GPUI consumes its committed rendering decisions. GPUI notifications invalidate
+  rendering, not a second signal graph. Roc values remain opaque to Rust.
+  Native fixed-height viewport presentation queries an indexed projection of engine-decided child order.
+  It bounds native layout to the visible range without changing reactive row
+  scope lifetime. Sparse child updates remain proportional to changed index
+  paths; ordinary full snapshot replacement retains its explicit broad cost.
+  Follow-tail is a declared native presentation policy, not a signal producer.
+
+`platform-web` exposes the browser vocabulary; `platform-gui` exposes a native
+`Gui` vocabulary over the shared signal and scope model. Platform packages can
+have different public rendering APIs without duplicating reactive semantics.
+The GUI host is prebuilt independently of application code; `roc build` links
+it, the shared engine, and the application into a native executable. Each
+platform must declare its supported effects explicitly rather than silently
+substitute browser services on native systems. The GUI boundary has the same
+ownership, atomic publication, disposal, and O(changed) obligations as the web
+boundary; these are requirements, not claims about the completeness of a spike.
+
+The same web Roc apps compile against the native spec and Wasm hosts. The native spec runner asserts
 semantics and work budgets; the browser runs the apps for real. The JS runtime
 is a thin executor of the engine's already-computed command stream — it never
 reconstructs meaning, holds reactive state, or re-decides patches.
@@ -300,10 +320,10 @@ document is meant to preserve. Every part of this design must respect them.
    monomorphized types. There is no host-authored read site that can disagree
    with the writer, and no host-side knowledge of the value's layout. See
    *Confined Erasure*.
-6. **One engine, two thin hosts.** All reactive and structural logic lives in the
+6. **One engine, thin hosts.** All reactive and structural logic lives in the
    shared engine. A host file contains only its boundary (sink, marshalling,
    spec runner / JS bridge) and its `Ctx` implementation. Reactive or structural
-   logic appearing in a host file is a defect: it lets the two hosts diverge,
+   logic appearing in a host file is a defect: it lets the hosts diverge,
    which this architecture exists to prevent.
 
 ## First Principles, Not Imitation
@@ -401,6 +421,13 @@ source does not transfer ownership or extend its lifetime. State that must
 outlive a rendered region is owned by an explicit longer-lived scope. Ordinary
 component functions accept static values, named records of signals, and typed
 action callbacks without requiring descriptor inspection.
+
+A single-state update command may declare its destination as its input as well.
+Its pure transform reads that state's settled value when the command executes,
+then proposes a replacement through the ordinary transaction. This allows a
+timer or task result to append to retained history without subscribing its
+producer to the history. The command is reusable, and preparation refusal may
+evaluate it again; it does not capture or borrow an earlier state value.
 
 ### Equality is an observation contract
 
@@ -947,8 +974,51 @@ EventBinding := {
                        # capture, passive, once, self, trusted
   delivery,            # requested/effective/reason
   payload_descriptor,
+  key_chord,           # optional exact native key + modifier filter
 }
 ```
+
+Native keyboard shortcuts bind a unit `keydown` event with an explicit key and
+all four modifiers. The binding key includes that optional filter, so multiple
+chords in one region remain distinct and duplicate chords are errors. A region
+owns at most 32 shortcuts. Their messages, reads, and disposal use the same
+scope-owned event table as other controls; the GUI adapter does not create a
+command registry or infer actions from displayed text. Focused native editing
+actions take precedence, followed by the nearest matching region on the focus
+path. Only an accepted matching binding consumes the keystroke. The browser
+host rejects this native-only filter before command publication until it has an
+explicit executor capability; it must not drop the filter and bind all keys.
+
+Native window closure is governed by one explicit root-owned declaration. A
+close request enters the ordinary unit-event graph; the committed app decision
+cancels it, holds it pending, or permits closure. Async work completes through
+ordinary task settlement before the app may permit closure. The native adapter
+retains at most one pending request, owned by the exact rendered registration
+lifetime and binding; replacement, disposal, or rebinding cancels an undecided
+request. Once permission commits, closure is a decided effect owned by the window
+and cannot be revoked by later graph changes. Repeated
+OS requests while pending do not create additional occurrences. A close decision
+without a pending request has no effect. The host never infers unsaved state or
+owns an application-specific document lifecycle.
+
+Native modal presentation belongs to the lifetime of an explicit rendered
+`dialog` element under a dynamic scope. It changes focus and pointer admission,
+not graph ownership: the element keeps its engine parent, and its Escape action
+is an ordinary scoped keyboard binding. The GUI host presents active nested
+dialogs above their logical parents, admits input only within the innermost
+modal, and restores a still-live enabled focus owner when its dialog disappears.
+Saved focus validates retained view identity, so a recycled render slot cannot
+receive focus intended for its previous occupant. Focused buttons activate with
+Enter or Space and checkboxes with Space before region shortcuts.
+
+This native capability permits one chain of at most eight nested dialogs.
+Opening a dialog or explicit focus navigation may inspect its current subtree,
+bounded to 1,024 nodes and 256 enabled controls, with ancestry checks bounded
+to 1,024 parent links; ordinary reactive updates change
+only the affected views and the bounded modal registrations. Tab and Shift-Tab
+wrap through current child order, skipping disabled controls. An empty modal
+retains focus itself. These are host presentation limits, not another reactive
+scheduler or a reason to scan the application tree on each update.
 
 `EventDelivery` is derived by the host before render-cache storage. The public
 request is `auto` or `native`. The effective delivery is `native` whenever the
@@ -1170,7 +1240,7 @@ and drives every event in-process, calling retained Roc closures directly. There
 is deliberately no per-event Roc entrypoint and no `ui_recompute` round-trip.
 
 ```roc
-# platform/main.roc
+# platform-web/main.roc
 roc_ui_init : () -> Box(Elem)
 ```
 
@@ -2124,7 +2194,7 @@ goals. Each is a property we can observe and that should hold for the life of th
 platform; each is backed by a spec, host test, or measurement that fails if the
 property regresses.
 
-1. **One engine, two thin hosts.** All reactive and structural logic lives in the
+1. **One engine, thin hosts.** All reactive and structural logic lives in the
    shared engine. Neither host file contains reactive or structural logic; each
    is a `Ctx` + `sink()` implementation plus its boundary. *We know this holds
    when:* the hosts cannot drift apart, because there is only one implementation
@@ -2425,6 +2495,7 @@ Ui.state : a, (State(a) -> Elem) -> Elem
     where [a.is_eq : a, a -> Bool]
 State.signal : State(a) -> Signal(a)
 State.on_unit : State(a), (a -> a) -> Msg
+State.update_cmd : State(a), (a -> a) -> Cmd
 State.on_str : State(a), (a, Str -> a) -> Msg
 State.on_bool : State(a), (a, Bool -> a) -> Msg
 State.on_detail : State(a), (a, Str -> a) -> Msg

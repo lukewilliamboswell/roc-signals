@@ -1,4 +1,4 @@
-app [main] { pf: platform "../../platform/main.roc" }
+app [main] { pf: platform "../../platform-web/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html

@@ -15,7 +15,7 @@ ADAPTER = Path(
     or ROOT / "benchmarks" / "js-framework-benchmark" / "roc-signals-keyed"
 ).resolve()
 OUTPUT = ADAPTER / "dist"
-FIXTURE = ROOT / "examples" / "_fixtures" / "js-framework-benchmark" / "main.roc"
+FIXTURE = ROOT / "examples-web" / "_fixtures" / "js-framework-benchmark" / "main.roc"
 RUNTIME_FILES = (
     "signals.mjs",
     "controlled_input_policy.mjs",

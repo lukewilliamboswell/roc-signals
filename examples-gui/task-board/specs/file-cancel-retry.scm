@@ -1,0 +1,18 @@
+(test "Cancel and write failures preserve unsaved data and permit a retry"
+ (steps
+  (click (role button :name "Save"))
+  (click (role button :name "Cancel operation"))
+  (expect-text (test-id "board-status") "Unsaved changes")
+  (expect-canceled-task "board-save-path" 1)
+  (resolve-stale-task "board-save-path" "6:files16:chosen23:/tmp/project.board.json")
+  (expect-pending-task "board-write" 0)
+  (click (role button :name "Save"))
+  (resolve-file-choice "board-save-path" (chosen "/tmp/project.board.json"))
+  (reject-file "board-write" :kind permission-denied :detail "/tmp/project.board.json")
+  (expect-text (test-id "board-path") "Untitled board")
+  (expect-value (label "Task title") "Sketch the welcome screen")
+  (click (role button :name "Save"))
+  (resolve-file-choice "board-save-path" (chosen "/tmp/project.board.json"))
+  (resolve-file-write "board-write" :path "/tmp/project.board.json" :bytes 1)
+  (expect-text (test-id "board-status") "Saved")
+ ))

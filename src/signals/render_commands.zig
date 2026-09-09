@@ -1,6 +1,7 @@
 //! Host-independent render command protocol and command-buffer encoders.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const boundary = @import("boundary.zig");
 const ids = @import("ids.zig");
 
@@ -247,7 +248,7 @@ comptime {
 }
 
 pub const Buffer = struct {
-    records: std.ArrayListUnmanaged(Record) = .empty,
+    records: shared_buffer.List(Record) = .empty,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *Buffer, allocator: std.mem.Allocator) void {
@@ -338,7 +339,7 @@ pub const DynamicSlice = struct {
 };
 
 pub const DynamicBuffer = struct {
-    bytes: std.ArrayListUnmanaged(u8) = .empty,
+    bytes: shared_buffer.List(u8) = .empty,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *DynamicBuffer, allocator: std.mem.Allocator) void {
@@ -537,7 +538,7 @@ pub const BatchLimits = struct {
 
 pub const BatchBuffers = struct {
     commands: Buffer = .{},
-    strings: std.ArrayListUnmanaged(u8) = .empty,
+    strings: shared_buffer.List(u8) = .empty,
     dynamic: DynamicBuffer = .{},
 
     fn deinit(self: *BatchBuffers, allocator: std.mem.Allocator) void {
@@ -685,6 +686,45 @@ pub const TransactionalBatch = struct {
         });
         return .{ .batch = self, .request_id = wire_id, .task_name = task_name, .request = request };
     }
+
+    /// Reserves only task cancellation records, joined to an optional prepared
+    /// source transaction. The caller must commit that source immediately before
+    /// publishing these records, without an intervening host operation.
+    pub fn prepareTaskCancellation(self: *TransactionalBatch, allocator: std.mem.Allocator, count: usize) PreflightError!TaskCancellationPublication {
+        if (self.hasUnsealedStaging()) @panic("task cancellation preparation interleaved with staged commands");
+        const base: BatchCapacity = if (self.isTransactionOpen()) self.reserved else .{ .commands = self.sealed.commands, .strings = self.sealed.strings, .dynamic = self.sealed.dynamic };
+        try self.preflight(allocator, .{
+            .commands = std.math.add(usize, base.commands - self.sealed.commands, count) catch return error.ResourceLimit,
+            .strings = base.strings - self.sealed.strings,
+            .dynamic = base.dynamic - self.sealed.dynamic,
+        });
+        return .{ .batch = self };
+    }
+
+    /// Owns a reserved cancellation publication until commit or abandonment.
+    pub const TaskCancellationPublication = struct {
+        batch: ?*TransactionalBatch,
+
+        /// Reopens the joined reservation after its source transaction seals.
+        pub fn beginCommit(self: *@This()) void {
+            const batch = self.batch orelse @panic("task cancellation already completed");
+            if (batch.hasUnsealedStaging()) @panic("task cancellation resumed amid unsealed commands");
+            batch.transaction_open = true;
+        }
+
+        /// Seals the cancellation records the engine staged without allocating.
+        pub fn commit(self: *@This()) void {
+            const batch = self.batch orelse @panic("task cancellation already completed");
+            batch.commit();
+            self.batch = null;
+        }
+
+        /// Discards unpublished cancellation staging and preserves earlier seals.
+        pub fn deinit(self: *@This()) void {
+            if (self.batch) |batch| batch.abort();
+            self.batch = null;
+        }
+    };
 
     /// Borrows a reserved batch and task payloads until publication completes.
     pub const TaskPublication = struct {
@@ -989,6 +1029,35 @@ test "joined task reservation applies limits to Loading and task commands togeth
     try std.testing.expectEqual(@as(usize, 0), batch.sealed.commands);
     try std.testing.expectEqual(@as(usize, 1), batch.reserved.commands);
     batch.abort();
+}
+
+test "task cancellation joins terminal rendering and can abandon without a partial seal" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(allocator);
+    try batch.preflight(allocator, .{ .commands = 1, .strings = 8 });
+    var abandoned = try batch.prepareTaskCancellation(allocator, 1);
+    batch.stageSinkCommandAssumeCapacity(.cancel_task, 10, 0, 0, 0, 0);
+    abandoned.deinit();
+    try std.testing.expectEqual(@as(usize, 0), batch.sealed.commands);
+    try std.testing.expectEqual(@as(usize, 0), batch.staged.commands.len());
+    try batch.preflight(allocator, .{ .commands = 1, .strings = 8 });
+    var cancellation = try batch.prepareTaskCancellation(allocator, 1);
+    defer cancellation.deinit();
+    fault.configure(1);
+    batch.staged.strings.appendSliceAssumeCapacity("canceled");
+    batch.stageSinkCommandAssumeCapacity(.set_text, 7, 0, 8, 0, 0);
+    batch.commit();
+    cancellation.beginCommit();
+    batch.stageSinkCommandAssumeCapacity(.cancel_task, 10, 0, 0, 0, 0);
+    cancellation.commit();
+    batch.publish();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 2), batch.published.commands.len());
+    try std.testing.expectEqualDeep(Record.initRaw(.cancel_task, 10, 0, 0, 0, 0), batch.published.commands.records.items[1]);
+    try std.testing.expectEqualStrings("canceled", batch.published.strings.items);
 }
 
 test "transaction command preflight sweeps every allocation failure" {
@@ -1323,8 +1392,22 @@ pub const TextField = enum(u64) {
     test_id = 4,
     value = 5,
     class = 6,
+    /// Versioned native presentation record; never encoded on the browser wire.
+    native_style = 8,
+    native_viewport = 9,
+    native_drag_key = 10,
+    native_window_close = 11,
 
-    /// Sets op at the narrow host or engine boundary that owns the mutation.
+    /// Identifies fields consumed only by the native presentation adapter.
+    pub fn isNative(self: TextField) bool {
+        return switch (self) {
+            .native_style, .native_viewport, .native_drag_key, .native_window_close => true,
+            else => false,
+        };
+    }
+
+    /// Returns the browser opcode for a web scalar. Native presentation has no
+    /// browser encoding and must be rejected before wire preparation.
     pub fn setOp(self: TextField) Op {
         return switch (self) {
             .text => .set_text,
@@ -1333,6 +1416,7 @@ pub const TextField = enum(u64) {
             .test_id => .set_test_id,
             .value => .set_value,
             .class => .set_class,
+            .native_style, .native_viewport, .native_drag_key, .native_window_close => @panic("native text metadata has no browser opcode"),
         };
     }
 };
@@ -1340,12 +1424,25 @@ pub const TextField = enum(u64) {
 pub const BoolField = enum(u64) {
     checked = 1,
     disabled = 2,
+    /// Native selected presentation, independent of checkbox state.
+    selected = 4,
+    native_drop_target = 5,
 
-    /// Sets op at the narrow host or engine boundary that owns the mutation.
+    /// Identifies native metadata that has no browser wire representation.
+    pub fn isNative(self: BoolField) bool {
+        return switch (self) {
+            .selected, .native_drop_target => true,
+            else => false,
+        };
+    }
+
+    /// Returns the browser opcode for a web boolean. Native selection is kept
+    /// in the native publication and may never enter a browser command batch.
     pub fn setOp(self: BoolField) Op {
         return switch (self) {
             .checked => .set_checked,
             .disabled => .set_disabled,
+            .selected, .native_drop_target => @panic("native boolean metadata has no browser opcode"),
         };
     }
 };
@@ -1459,9 +1556,10 @@ pub const Counts = struct {
         self.addOp(.move_before);
     }
 
-    /// Appends text field to the prepared, unpublished command batch.
+    /// Counts one changed scalar. Native presentation contributes a metadata
+    /// operation without claiming it has a browser opcode.
     pub fn addTextField(self: *Counts, field: TextField) void {
-        self.addOp(field.setOp());
+        if (field.isNative()) self.addOp(.extended) else self.addOp(field.setOp());
     }
 
     /// Appends text attr to the prepared, unpublished command batch.
@@ -1469,9 +1567,9 @@ pub const Counts = struct {
         self.addOp(.extended);
     }
 
-    /// Appends bool field to the prepared, unpublished command batch.
+    /// Counts one changed boolean, including native selection as metadata.
     pub fn addBoolField(self: *Counts, field: BoolField) void {
-        self.addOp(field.setOp());
+        if (field.isNative()) self.addOp(.extended) else self.addOp(field.setOp());
     }
 
     /// Appends event binding to the prepared, unpublished command batch.
@@ -1738,4 +1836,16 @@ fn readTestU32(bytes: []const u8, cursor: *usize) u32 {
     const value = std.mem.readInt(u32, bytes[cursor.*..][0..@sizeOf(u32)], .little);
     cursor.* += @sizeOf(u32);
     return value;
+}
+
+test "every native scalar counts as metadata without a browser opcode" {
+    var counts: Counts = .{};
+    inline for (std.meta.tags(TextField)) |field| {
+        if (field.isNative()) counts.addTextField(field);
+    }
+    inline for (std.meta.tags(BoolField)) |field| {
+        if (field.isNative()) counts.addBoolField(field);
+    }
+    try std.testing.expectEqual(@as(u64, 6), counts.total);
+    try std.testing.expectEqual(counts.total, counts.set_metadata);
 }

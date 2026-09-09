@@ -1,0 +1,41 @@
+# Fixed fixture set measured by `scripts/wasm_size.py`.
+#
+# Each entry builds `source` as a normal production Wasm application against
+# an isolated copy of `platform-web/`. Keep the set stable: adding or reordering
+# fixtures changes the cumulative figures that `--compare` reports, and every
+# fixture here needs a matching entry in `budgets.toml`.
+
+[[fixtures]]
+name = "static-text"
+source = "examples-web/_fixtures/stable-text/main.roc"
+shape = "one state whose derived text never changes"
+
+[[fixtures]]
+name = "counter"
+source = "examples-web/_fixtures/counter/main.roc"
+shape = "one integer state, two unit events, one signal text"
+
+[[fixtures]]
+name = "branch-replacement"
+source = "examples-web/_fixtures/branch-replacement/main.roc"
+shape = "one Ui.switch replacing whole subtrees"
+
+[[fixtures]]
+name = "keyed-row-edits"
+source = "examples-web/_fixtures/keyed-row-edits/main.roc"
+shape = "one keyed list with every Rows edit reachable"
+
+[[fixtures]]
+name = "two-row-types"
+source = "examples-web/_fixtures/two-row-types/main.roc"
+shape = "two keyed lists with distinct item types"
+
+[[fixtures]]
+name = "js-framework-benchmark"
+source = "examples-web/_fixtures/js-framework-benchmark/main.roc"
+shape = "keyed table benchmark with a package dependency"
+
+[[fixtures]]
+name = "recipe-scaler"
+source = "examples-web/recipe-scaler/main.roc"
+shape = "maintained public example with wide derived fan-out"

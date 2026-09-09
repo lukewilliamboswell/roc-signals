@@ -5,8 +5,8 @@ nightly, creates a verified signed pin-only PR, validates its exact commit, and
 automatically merges a passing update. Source fixes and release URL changes remain
 manually reviewed PRs.
 
-Literal `roc` fields in the platform and all public application headers own the
-compiler pins. `.github/roc-nightly.json` selects these roots and the validation
+Literal `roc` fields in both platforms and every web and GUI example header
+own the compiler pins, including internal web fixtures. `.github/roc-nightly.json` selects these roots and the validation
 workflows; it contains no duplicate version authority. The selected pins agree.
 The bot changes only their compiler literals, preserving all package/platform URLs.
 
@@ -17,9 +17,9 @@ dependency may require a platform patch, a new immutable release, and a reviewed
 example-URL update before retrying the nightly. Local success never substitutes
 for a passing download.
 
-The caller pins shared automation to `31e10eca5b0f7e4cacbf7864d51dfa8d224ae30f`.
+The caller pins shared automation to `13b98f8428993bf0dcca9fbaa3b7762ec3e25d34`.
 Dependabot proposes reviewed reference updates. See the shared
-[integration guide](https://github.com/lukewilliamboswell/roc-automation/blob/31e10eca5b0f7e4cacbf7864d51dfa8d224ae30f/docs/integration.md)
+[integration guide](https://github.com/lukewilliamboswell/roc-automation/blob/13b98f8428993bf0dcca9fbaa3b7762ec3e25d34/docs/integration.md)
 for the strict ruleset and signature checks. Automatic merging requires active
 pull-request and up-to-date required-check rules, Actions PR creation, and no bot
 bypass. Default token permissions stay read-only; candidate test jobs receive no

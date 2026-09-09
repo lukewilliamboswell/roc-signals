@@ -32,6 +32,13 @@ pub const NavigationKind = enum {
 pub const EventBindingKey = union(enum) {
     fixed: EventKind,
     named: []const u8,
+    filtered: struct { name: []const u8, chord: @import("key_chord.zig").Chord },
+
+    /// Includes a keyboard filter in the listener key so clearing one chord
+    /// never clears another handler for the same native keydown event.
+    pub fn fromNamed(name: []const u8, chord: ?@import("key_chord.zig").Chord) EventBindingKey {
+        return if (chord) |value| .{ .filtered = .{ .name = name, .chord = value } } else .{ .named = name };
+    }
 
     /// Derives effective event delivery and its reason from the canonical policy.
     pub fn deliveryFor(self: EventBindingKey, requested: EventDeliveryRequest, policy: EventPolicy) EventDelivery {
@@ -45,7 +52,7 @@ pub const EventBindingKey = union(enum) {
                 .pointer_up, .pointer_enter, .pointer_leave => .{ .prevent_default_for_pointer_events = true },
                 else => .{},
             },
-            .named => .{},
+            .named, .filtered => .{},
         };
     }
 };
@@ -146,6 +153,7 @@ pub const EventBinding = struct {
     policy: EventPolicy = EventPolicy.none,
     delivery: EventDelivery = .{},
     payload_descriptor: BoundaryPayloadDescriptor,
+    key_chord: ?@import("key_chord.zig").Chord = null,
 
     /// Returns the canonical binding with effective delivery derived from its policy.
     pub fn withDeliveryFor(self: EventBinding, key: EventBindingKey) EventBinding {
@@ -159,12 +167,13 @@ pub const EventBinding = struct {
         return self.event_id == other.event_id and
             self.policy.eql(other.policy) and
             self.delivery.eql(other.delivery) and
-            self.payload_descriptor.eql(other.payload_descriptor);
+            self.payload_descriptor.eql(other.payload_descriptor) and
+            @import("key_chord.zig").optionalEql(self.key_chord, other.key_chord);
     }
 
     /// Reports whether this binding exactly matches the compact fixed-event wire contract.
     pub fn canUseFixedOpcode(self: EventBinding, kind: EventKind) bool {
-        return self.policy.isNone() and self.payload_descriptor.eql(kind.payloadDescriptor());
+        return self.key_chord == null and self.policy.isNone() and self.payload_descriptor.eql(kind.payloadDescriptor());
     }
 };
 
@@ -270,8 +279,8 @@ pub fn DomSink(comptime Host: type) type {
         }
 
         /// Starts bounded asynchronous host work for an engine-issued task request.
-        pub fn startTask(self: @This(), request_id: TaskRequestId, task_name: []const u8, request: []const u8) void {
-            self.host.sinkStartTask(request_id, task_name, request);
+        pub fn startTask(self: @This(), request_id: TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8) void {
+            self.host.sinkStartTask(request_id, kind, task_name, request);
         }
 
         /// Cancels host work for a task request retired by engine lifecycle policy.
@@ -448,7 +457,7 @@ test "DomSink forwards every render seam method to the host" {
             self.last_event_descriptor = command.binding.payload_descriptor;
             switch (command.key) {
                 .fixed => self.saw_fixed_bind = true,
-                .named => self.saw_named_bind = true,
+                .named, .filtered => self.saw_named_bind = true,
             }
         }
 
@@ -457,7 +466,7 @@ test "DomSink forwards every render seam method to the host" {
             self.mark(11);
             switch (command.key) {
                 .fixed => self.saw_fixed_clear = true,
-                .named => self.saw_named_clear = true,
+                .named, .filtered => self.saw_named_clear = true,
             }
         }
 
@@ -472,7 +481,7 @@ test "DomSink forwards every render seam method to the host" {
         }
 
         /// Adapts the shared engine's start task command to this host without re-deciding reactive meaning.
-        pub fn sinkStartTask(self: *@This(), _: TaskRequestId, task_name: []const u8, request: []const u8) void {
+        pub fn sinkStartTask(self: *@This(), _: TaskRequestId, _: boundary.TaskKind, task_name: []const u8, request: []const u8) void {
             self.mark(14);
             self.last_task_name = task_name;
             self.last_task_request = request;
@@ -557,7 +566,7 @@ test "DomSink forwards every render seam method to the host" {
     sink.clearEvent(elem, .{ .named = "keydown" });
     sink.startInterval(IntervalToken.fromRaw(8), 1000);
     sink.cancelInterval(IntervalToken.fromRaw(8));
-    sink.startTask(TaskRequestId.fromRaw(9), "lookup", "roc");
+    sink.startTask(TaskRequestId.fromRaw(9), .external, "lookup", "roc");
     sink.cancelTask(TaskRequestId.fromRaw(9));
     sink.setStorageText(.local, "checkout:draft", "saved");
     sink.removeStorage(.session, "checkout:flash");

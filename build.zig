@@ -1,6 +1,7 @@
 //! Build graph for Signals hosts, checks, tests, and generated platform artifacts.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const OptimizeMode = std.builtin.OptimizeMode;
 const ResolvedTarget = std.Build.ResolvedTarget;
@@ -44,6 +45,7 @@ pub fn build(b: *std.Build) void {
     const native_target = b.standardTargetOptions(.{});
     const metrics = b.option(bool, "metrics", "Enable runtime telemetry counters") orelse true;
     const profile = b.option(bool, "profile", "Preserve native host symbols for profiling") orelse false;
+    const strip = b.option(bool, "strip", "Strip the wasm32 browser host object (default: strip unless Debug); -Dstrip=false keeps names for size attribution");
     const test_filters = b.option([]const []const u8, "test-filter", "Skip Zig unit tests that do not match any filter") orelse &.{};
     const fuzz = b.option(bool, "fuzz", "Build AFL++ fuzz executables alongside the repro executables") orelse false;
     const use_system_afl = b.option(bool, "system-afl", "Link fuzz executables with the system AFL++ instead of the vendored one") orelse true;
@@ -63,6 +65,14 @@ pub fn build(b: *std.Build) void {
     fuzz_build_options.addOption(bool, "wasm_allocation_ledger", true);
     const fuzz_build_options_module = fuzz_build_options.createModule();
 
+    // Windows installs Python as `python`; the `python3` name there is often a
+    // Microsoft Store shortcut that only prints installation advice.
+    const python_names: []const []const u8 = if (builtin.os.tag == .windows) &.{ "python", "python3" } else &.{ "python3", "python" };
+    const python = b.findProgram(python_names, &.{}) catch "python3";
+    const check_platform_sources = b.addSystemCommand(&.{ python, "scripts/prepare_platforms.py", "--check" });
+    const check_platform_sources_step = b.step("run-check-platform-sources", "Verify shared platform copies by content hash");
+    check_platform_sources_step.dependOn(&check_platform_sources.step);
+    const prepare_platforms = b.addSystemCommand(&.{ python, "scripts/prepare_platforms.py" });
     const build_hosts_step = b.step("build-test-hosts", "Build platform host artifacts");
     const build_wasm_host_step = b.step("build-wasm-host", "Build the wasm32 browser host artifact");
     const build_wasm_benchmark_host_step = b.step("build-wasm-benchmark-host", "Build the instrumented ReleaseFast wasm32 benchmark host artifact");
@@ -79,6 +89,29 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run Zig-only checks and tests");
     const build_fuzz_step = b.step("build-fuzz", "Build every fuzz target and its repro executable");
 
+    // Experimental native shared-library boundary; never included in release hosts.
+    const gpui_options = b.addOptions();
+    gpui_options.addOption(bool, "metrics", true);
+    gpui_options.addOption(bool, "fuzz_fixtures", false);
+    gpui_options.addOption(bool, "gpui_spike", true);
+    // Roc links x64win executables against the MSVC ABI and the UCRT, so the
+    // engine must not carry mingw runtime references. Rust's compiler builtins
+    // already provide the shared runtime helpers in that link, and COFF has no
+    // weak symbols to reconcile a second copy, so Zig's compiler-rt stays out.
+    const gpui_windows = native_target.result.os.tag == .windows;
+    const gpui_target = if (gpui_windows)
+        b.resolveTargetQuery(.{ .cpu_arch = native_target.result.cpu.arch, .os_tag = .windows, .abi = .msvc })
+    else
+        native_target;
+    const gpui_host = buildNativeHostLib(b, gpui_target, .ReleaseSafe, gpui_options.createModule(), true);
+    gpui_host.bundle_compiler_rt = !gpui_windows;
+    const gpui_install = b.addInstallFile(gpui_host.getEmittedBin(), "gui/libengine.a");
+    b.step("build-gui-engine", "Build the experimental GPUI native bridge").dependOn(&gpui_install.step);
+
+    build_hosts_step.dependOn(&prepare_platforms.step);
+    build_wasm_host_step.dependOn(&prepare_platforms.step);
+    gpui_install.step.dependOn(&prepare_platforms.step);
+
     const install_step = b.getInstallStep();
     install_step.dependOn(build_hosts_step);
 
@@ -89,7 +122,7 @@ pub fn build(b: *std.Build) void {
     }
 
     const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding, .abi = .none });
-    const wasm_host_step = buildAndCopyWasmHostObject(b, wasm_target, optimize, build_options_module);
+    const wasm_host_step = buildAndCopyWasmHostObject(b, wasm_target, optimize, build_options_module, strip);
     build_hosts_step.dependOn(wasm_host_step);
     build_wasm_host_step.dependOn(wasm_host_step);
 
@@ -239,6 +272,7 @@ pub fn build(b: *std.Build) void {
     const run_test_wiring = b.addRunArtifact(test_wiring);
     run_check_test_wiring_step.dependOn(&run_test_wiring.step);
 
+    test_step.dependOn(check_platform_sources_step);
     test_step.dependOn(run_check_zig_format_step);
     test_step.dependOn(run_check_zig_lints_step);
     test_step.dependOn(run_check_tidy_step);
@@ -536,7 +570,7 @@ fn buildAndCopyNativeHostLib(
     const copy = b.addUpdateSourceFiles();
     copy.addCopyFileToSource(
         host_lib.getEmittedBin(),
-        b.pathJoin(&.{ "platform", "targets", roc_target.targetDir(), "libhost.a" }),
+        b.pathJoin(&.{ "platform-web", "targets", roc_target.targetDir(), "libhost.a" }),
     );
     return &copy.step;
 }
@@ -546,11 +580,15 @@ fn buildAndCopyWasmHostObject(
     target: ResolvedTarget,
     optimize: OptimizeMode,
     build_options: *std.Build.Module,
+    strip: ?bool,
 ) *Step {
     const obj = buildWasmHostObject(b, target, optimize, build_options);
+    // The production artifact is always stripped. `-Dstrip=false` produces the
+    // named companion used for size attribution; it is never the shipped host.
+    if (strip) |explicit| obj.root_module.strip = explicit;
 
     const copy = b.addUpdateSourceFiles();
-    copy.addCopyFileToSource(obj.getEmittedBin(), "platform/targets/wasm32/host.wasm");
+    copy.addCopyFileToSource(obj.getEmittedBin(), "platform-web/targets/wasm32/host.wasm");
     return &copy.step;
 }
 

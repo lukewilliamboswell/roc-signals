@@ -22,8 +22,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Verify shared platform sources
+        run: |
+          python3 scripts/prepare_platforms.py
+          python3 scripts/prepare_platforms.py --check
+          python3 -m unittest discover -s scripts -p 'test_prepare_platforms.py'
       - uses: ./.github/actions/setup-toolchain
-      - run: python3 scripts/test.py zig browser roc-check roc-test wasm --native never --bundle never
+      - run: python3 scripts/test.py zig browser roc-check roc-test wasm size --native never --bundle never
       - run: python3 scripts/fuzz.py check
 
   source:
@@ -34,6 +39,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Verify shared platform sources
+        run: |
+          python3 scripts/prepare_platforms.py
+          python3 scripts/prepare_platforms.py --check
+          python3 -m unittest discover -s scripts -p 'test_prepare_platforms.py'
       - uses: ./.github/actions/setup-toolchain
       - run: brew install dwarfutils
       - run: python3 scripts/test.py
@@ -54,9 +64,77 @@ jobs:
           name: native-host-coverage
           path: kcov-output/native-host
 
+  gui:
+    name: Native GUI build and specs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-toolchain
+      - name: Install GUI host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev
+          rustup toolchain install 1.95.0 --profile minimal
+      - name: Restore compiled Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+        with:
+          shared-key: gui-dependencies
+          cache-workspace-crates: false
+          cache-bin: false
+          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Verify GUI discovery and applications
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_gui_suite.py'
+          python3 scripts/test.py gui --keep-output
+
+  gui-windows:
+    name: Native GUI build and specs (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/setup-toolchain
+      - name: Install GUI host build dependencies
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Restore compiled Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+        with:
+          shared-key: gui-dependencies
+          cache-workspace-crates: false
+          cache-bin: false
+          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Verify GUI discovery and applications
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+        run: |
+          python -m unittest discover -s scripts -p 'test_gui_suite.py'
+          python scripts/test.py gui --keep-output
+      # Distributable inputs are published with provenance by gui-hosts.yml on
+      # their own release cycle; this job only proves the optimized build works.
+      - name: Build the distributable Windows link inputs
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+        run: python scripts/build_gui.py
+
   platform-source:
     name: Platform source
-    needs: [smoke, source]
+    needs: [smoke, source, gui, gui-windows]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -73,6 +151,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Verify shared platform sources
+        run: |
+          python3 scripts/prepare_platforms.py
+          python3 scripts/prepare_platforms.py --check
+          python3 -m unittest discover -s scripts -p 'test_prepare_platforms.py'
       - uses: ./.github/actions/setup-toolchain
       - run: python3 scripts/test.py published
 
@@ -84,6 +167,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Verify shared platform sources
+        run: |
+          python3 scripts/prepare_platforms.py
+          python3 scripts/prepare_platforms.py --check
+          python3 -m unittest discover -s scripts -p 'test_prepare_platforms.py'
       - uses: ./.github/actions/setup-toolchain
       - run: python3 scripts/release.py prepare --version 0.2.0-rc1 --directory "$RUNNER_TEMP/candidate"
       - run: python3 scripts/release.py check --directory "$RUNNER_TEMP/candidate"

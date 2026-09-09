@@ -9,6 +9,7 @@ const ids = signals.ids;
 const render = signals.render;
 const runtime_limits = signals.runtime_limits;
 const spec_parser = @import("spec_parser.zig");
+const file_fixtures = @import("file_fixtures.zig");
 
 const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
 const RuntimeMetrics = engine.RuntimeMetrics;
@@ -649,6 +650,49 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
+                    .request_window_close => {
+                        if (@hasDecl(Ctx, "requestWindowClose")) {
+                            Ctx.requestWindowClose(host, roc_host);
+                        } else {
+                            writeLocatorFailure(cmd.line_num, "window close requires the native GUI semantic host");
+                            return 1;
+                        }
+                    },
+                    .expect_window_closed => {
+                        if (@hasDecl(Ctx, "windowClosed")) {
+                            if (Ctx.windowClosed(host) != cmd.expected_bool.?) {
+                                writeLocatorFailure(cmd.line_num, "window closed state differs from expected");
+                                return 1;
+                            }
+                        } else {
+                            writeLocatorFailure(cmd.line_num, "window close requires the native GUI semantic host");
+                            return 1;
+                        }
+                    },
+                    .shortcut => {
+                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                            writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
+                            return 1;
+                        };
+                        if (elem.disabled) {
+                            writeLocatorFailure(cmd.line_num, "target is disabled");
+                            return 1;
+                        }
+                        const chord = cmd.shortcut orelse {
+                            writeLocatorFailure(cmd.line_num, "shortcut command is missing its validated chord");
+                            return 1;
+                        };
+                        const event = Ctx.shortcutEvent(elem, chord) orelse {
+                            writeLocatorFailure(cmd.line_num, "target has no binding for this exact shortcut");
+                            return 1;
+                        };
+                        if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
+                            writeLocatorFailure(cmd.line_num, "shortcut binding does not use a unit payload descriptor");
+                            return 1;
+                        }
+                        Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host));
+                    },
+
                     .focus, .blur, .composition_start, .composition_end => {
                         const event_name = namedUnitEventNameForCommand(cmd.cmd_type) orelse {
                             writeLocatorFailure(cmd.line_num, "unsupported named unit event command");
@@ -788,6 +832,7 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "task command had no task name");
                             return 1;
                         };
+                        if (!validateTaskFixture(Ctx, host, cmd)) return 1;
                         const payload = cmd.expected_text orelse "";
                         if (cmd.cmd_type == .resolve_stale_task) {
                             _ = Ctx.resolveStalePendingTask(host, roc_host, task_name, payload, false);
@@ -1276,9 +1321,9 @@ test "spec runner real_click dispatch honors capture bubble and stop policies" {
             return elem;
         }
 
-        /// Returns the dense id of the selected fixed event binding for spec dispatch.
-        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
-            return sim_dom.fixedEventId(elem, kind);
+        /// Adapts the simulated DOM binding to the nominal engine event identity.
+        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?ids.EventId {
+            return if (sim_dom.fixedEventId(elem, kind)) |value| ids.EventId.fromRaw(value) else null;
         }
 
         /// Returns the canonical named-event binding used by the spec or simulated DOM.
@@ -1286,8 +1331,9 @@ test "spec runner real_click dispatch honors capture bubble and stop policies" {
             return sim_dom.namedEvent(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: anytype) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: anytype) void {
+            const event_id = binding_id.raw();
             _ = payload;
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 @panic("test expected a unit payload descriptor");
@@ -1330,7 +1376,7 @@ test "spec runner real_click dispatch honors capture bubble and stop policies" {
 
     host.dispatches.clearRetainingCapacity();
     sim_dom.bindEventKind(&host.elements.items[2], .click, .{
-        .event_id = 15,
+        .event_id = ids.EventId.fromRaw(15),
         .payload_descriptor = unit_descriptor,
     });
     sim_dom.bindEventName(allocator, &host.elements.items[2], "click", 20, render.EventPolicy.fromBits(render.listener_option_stop_propagation), unit_descriptor);
@@ -1409,9 +1455,9 @@ test "spec runner real_click applies form button default actions" {
             return elem;
         }
 
-        /// Returns the dense id of the selected fixed event binding for spec dispatch.
-        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
-            return sim_dom.fixedEventId(elem, kind);
+        /// Adapts the simulated DOM binding to the nominal engine event identity.
+        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?ids.EventId {
+            return if (sim_dom.fixedEventId(elem, kind)) |value| ids.EventId.fromRaw(value) else null;
         }
 
         /// Returns the canonical named-event binding used by the spec or simulated DOM.
@@ -1424,8 +1470,9 @@ test "spec runner real_click applies form button default actions" {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+            const event_id = binding_id.raw();
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 @panic("test expected a unit payload descriptor");
             }
@@ -1471,7 +1518,7 @@ test "spec runner real_click applies form button default actions" {
 
     const unit_descriptor = BoundaryPayloadDescriptor.init(.unit, .none);
     sim_dom.bindEventKind(&host.elements.items[2], .click, .{
-        .event_id = 10,
+        .event_id = ids.EventId.fromRaw(10),
         .payload_descriptor = unit_descriptor,
     });
     sim_dom.bindEventName(allocator, &host.elements.items[1], "submit", 20, render.EventPolicy.fromBits(render.listener_option_prevent_default), unit_descriptor);
@@ -1562,9 +1609,9 @@ test "spec runner real_click applies checkbox default action" {
             return elem;
         }
 
-        /// Returns the dense id of the selected fixed event binding for spec dispatch.
-        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
-            return sim_dom.fixedEventId(elem, kind);
+        /// Adapts the simulated DOM binding to the nominal engine event identity.
+        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?ids.EventId {
+            return if (sim_dom.fixedEventId(elem, kind)) |value| ids.EventId.fromRaw(value) else null;
         }
 
         /// Returns the canonical named-event binding used by the spec or simulated DOM.
@@ -1577,12 +1624,13 @@ test "spec runner real_click applies checkbox default action" {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+            const event_id = binding_id.raw();
             if (payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 switch (payload) {
                     .unit => {},
-                    .bool => @panic("test expected a unit payload"),
+                    .bool, .str => @panic("test expected a unit payload"),
                 }
                 host.unit_dispatches.append(host.allocator, event_id) catch @panic("test dispatch log allocation failed");
                 return;
@@ -1641,7 +1689,7 @@ test "spec runner real_click applies checkbox default action" {
 
     host.elements.items[1].checked = false;
     sim_dom.bindEventKind(&host.elements.items[1], .check, .{
-        .event_id = 40,
+        .event_id = ids.EventId.fromRaw(40),
         .payload_descriptor = bool_descriptor,
     });
     const bound_click = dispatchBubblingUnitEventById(TestCtx, &host, &roc_host, 1, .click, "click", 301);
@@ -1701,9 +1749,9 @@ test "spec runner real_click applies radio default action" {
             return elem;
         }
 
-        /// Returns the dense id of the selected fixed event binding for spec dispatch.
-        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
-            return sim_dom.fixedEventId(elem, kind);
+        /// Adapts the simulated DOM binding to the nominal engine event identity.
+        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?ids.EventId {
+            return if (sim_dom.fixedEventId(elem, kind)) |value| ids.EventId.fromRaw(value) else null;
         }
 
         /// Returns the canonical named-event binding used by the spec or simulated DOM.
@@ -1716,8 +1764,9 @@ test "spec runner real_click applies radio default action" {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+            const event_id = binding_id.raw();
             if (payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 switch (payload) {
                     .unit => {},
@@ -1845,8 +1894,9 @@ test "spec runner select_option applies select default action" {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
+            const event_id = binding_id.raw();
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .target_value))) {
                 @panic("test expected a target-value payload descriptor");
             }
@@ -1944,8 +1994,9 @@ test "spec runner Enter key applies text-input submit default action" {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, _: void) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, _: void) void {
+            const event_id = binding_id.raw();
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 @panic("test expected a unit payload descriptor");
             }
@@ -2017,8 +2068,9 @@ test "spec runner submit dispatches enabled unit bindings" {
             return sim_dom.namedEvent(elem, name);
         }
 
-        /// Dispatches roc event through validated routing and dependency-ordered propagation.
-        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, _: void) void {
+        /// Records the routed event for assertions and rejects unexpected payload shapes.
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, binding_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, _: void) void {
+            const event_id = binding_id.raw();
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 @panic("test expected a unit payload descriptor");
             }
@@ -2079,4 +2131,39 @@ test "spec runner resolves runtime metric names" {
     try std.testing.expectEqual(@as(?i64, 7), TestRunner.runtimeMetricValue(metrics, "rows_reused"));
     try std.testing.expectEqual(@as(?i64, -2), TestRunner.runtimeMetricValue(metrics, "retained_alloc_delta"));
     try std.testing.expectEqual(@as(?i64, null), TestRunner.runtimeMetricValue(metrics, "missing_metric"));
+}
+
+/// Rejects a fixture aimed at a missing request or a different typed service
+/// before constructing a Roc payload. Raw task commands intentionally bypass it.
+pub fn validateTaskFixture(comptime Ctx: type, host: *Ctx.Host, cmd: SpecCommand) bool {
+    if (cmd.expected_task_kinds == 0) return true;
+    const name = cmd.task_name orelse "";
+    const kind = if (comptime @hasDecl(Ctx, "pendingTaskKind")) Ctx.pendingTaskKind(host, name) else null;
+    if (kind) |actual| {
+        if (file_fixtures.admits(cmd.expected_task_kinds, actual)) return true;
+    }
+    var buffer: [512]u8 = undefined;
+    const message = std.fmt.bufPrint(&buffer, "TEST FAILED at line {d}: file fixture for task \"{s}\" expected: {s}; actual: {s}\n", .{ cmd.line_num, name[0..@min(name.len, 200)], file_fixtures.expectedService(cmd.expected_task_kinds), if (kind) |actual| @tagName(actual) else "no pending request" }) catch "TEST FAILED: file fixture task-kind mismatch\n";
+    Ctx.writeStderr(message);
+    return false;
+}
+
+test "file fixture admission rejects wrong kinds and missing requests before decoding" {
+    const TestCtx = struct {
+        pub const Host = struct { kind: ?boundary.TaskKind };
+        /// Supplies the declared test route independently of a task's label.
+        pub fn pendingTaskKind(host: *Host, _: []const u8) ?boundary.TaskKind {
+            return host.kind;
+        }
+        /// Keeps expected rejection diagnostics out of the unit-test console.
+        pub fn writeStderr(_: []const u8) void {}
+    };
+    var parsed = try spec_parser.parseSExprTestSpec(std.testing.allocator, "(test \"typed\" (steps (resolve-file-read \"save\" :path \"/tmp/a\" :text \"abc\")))");
+    defer parsed.deinit(std.testing.allocator);
+    var host = TestCtx.Host{ .kind = .write_text };
+    try std.testing.expect(!validateTaskFixture(TestCtx, &host, parsed.commands[0]));
+    host.kind = null;
+    try std.testing.expect(!validateTaskFixture(TestCtx, &host, parsed.commands[0]));
+    host.kind = .read_text;
+    try std.testing.expect(validateTaskFixture(TestCtx, &host, parsed.commands[0]));
 }

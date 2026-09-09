@@ -20,15 +20,15 @@ more background.
 Create a directory for the app and its specs:
 
 ```sh
-mkdir -p examples/reading-list/specs
+mkdir -p examples-web/reading-list/specs
 ```
 
-Save each complete example in `examples/reading-list/main.roc`. Later steps show
+Save each complete example in `examples-web/reading-list/main.roc`. Later steps show
 additions to that file; the finished app below includes them all. After each
 step, run:
 
 ```sh
-roc check examples/reading-list/main.roc
+roc check examples-web/reading-list/main.roc
 ```
 
 ## Step 1 — Static structure
@@ -36,7 +36,7 @@ roc check examples/reading-list/main.roc
 Start with no reactivity at all.
 
 ```roc
-app [main] { pf: platform "../../platform/main.roc" }
+app [main] { pf: platform "../../platform-web/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -68,7 +68,7 @@ stylesheet or replace them with your own classes.
 Add a text input whose value echoes back as you type.
 
 ```roc
-app [main] { pf: platform "../../platform/main.roc" }
+app [main] { pf: platform "../../platform-web/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -124,7 +124,7 @@ helper when the displayed text should change.
 Real state is more than a string. Define the domain types and render a list.
 
 ```roc
-app [main] { pf: platform "../../platform/main.roc" }
+app [main] { pf: platform "../../platform-web/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -405,7 +405,7 @@ the same updated model.
 ## The finished app
 
 ```roc
-app [main] { pf: platform "../../platform/main.roc" }
+app [main] { pf: platform "../../platform-web/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -541,7 +541,7 @@ main = ||
 
 ## Step 7 — Test it
 
-Write `examples/reading-list/specs/reading-list.scm`:
+Write `examples-web/reading-list/specs/reading-list.scm`:
 
 ```lisp
 (test "reading list workflow"
@@ -563,14 +563,14 @@ Build and run using your machine's target (`x64musl` below is Linux x64;
 use `arm64musl`, `arm64mac`, or `x64mac` as appropriate):
 
 ```sh
-roc build --target=x64musl --output=/tmp/reading-list examples/reading-list/main.roc
-python3 scripts/spec_driver.py /tmp/reading-list examples/reading-list/specs
+roc build --target=x64musl --output=/tmp/reading-list examples-web/reading-list/main.roc
+python3 scripts/spec_driver.py /tmp/reading-list examples-web/reading-list/specs
 ```
 
 The driver prints per-spec results and a summary; exit code `0` means the
 assertions passed. Each spec file runs in a fresh app process.
 
-Now assert something stronger. Add `examples/reading-list/specs/toggle.scm`:
+Now assert something stronger. Add `examples-web/reading-list/specs/toggle.scm`:
 
 ```lisp
 (test "toggle reuses its row"
@@ -592,13 +592,13 @@ filtering or counting is constant-time, or that browser focus is preserved. If
 a refactor recreates rows on this path, the test fails.
 
 ```sh
-python3 scripts/spec_driver.py /tmp/reading-list examples/reading-list/specs
+python3 scripts/spec_driver.py /tmp/reading-list examples-web/reading-list/specs
 ```
 
 ## See it in a browser
 
 ```sh
-roc build --target=wasm32 --opt=size --output=/tmp/reading-list.wasm examples/reading-list/main.roc
+roc build --target=wasm32 --opt=size --output=/tmp/reading-list.wasm examples-web/reading-list/main.roc
 ```
 
 Use the matching browser runtime as described in

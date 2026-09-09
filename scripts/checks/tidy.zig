@@ -124,12 +124,17 @@ fn shouldSkipName(name: []const u8) bool {
 }
 
 fn shouldSkipDir(path: []const u8) bool {
-    return std.mem.eql(u8, repoRelativePath(path), "platform/targets");
+    const relative = repoRelativePath(path);
+    return std.mem.eql(u8, relative, "platform-web/targets") or
+        std.mem.eql(u8, relative, "platform-gui/targets") or
+        std.mem.eql(u8, relative, "target") or
+        std.mem.eql(u8, relative, ".test-out") or
+        std.mem.eql(u8, relative, "crates/gpui-host/generated");
 }
 
 fn shouldCheckFile(path: []const u8) bool {
     const repo_path = repoRelativePath(path);
-    if (std.mem.startsWith(u8, repo_path, "platform/targets/")) return false;
+    if (std.mem.startsWith(u8, repo_path, "platform-web/targets/")) return false;
 
     // Fuzz regression inputs are arbitrary byte strings by definition: a corpus
     // that held only text would be a corpus that stopped reaching the parsers'

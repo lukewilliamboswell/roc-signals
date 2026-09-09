@@ -1,10 +1,12 @@
 //! Runtime tables for pending tasks, intervals, and cleanup effects.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const abi = @import("roc_platform_abi.zig");
 const retained_values = @import("retained_values.zig");
 const signal_records = @import("signal_records.zig");
 const ids = @import("ids.zig");
+const boundary = @import("boundary.zig");
 
 pub const HostSignalToken = retained_values.HostSignalToken;
 pub const HostSignalRecord = signal_records.Record;
@@ -18,6 +20,7 @@ pub const PendingTask = struct {
     task_token: HostSignalToken,
     task_name: []const u8,
     request: []const u8,
+    kind: boundary.TaskKind = .external,
 };
 
 pub const ActiveInterval = struct {
@@ -27,7 +30,54 @@ pub const ActiveInterval = struct {
     reconciliation: enum { pending, confirmed } = .confirmed,
 };
 
-pub const CleanupEvents = std.ArrayListUnmanaged([]const u8);
+/// Owns the dense interval lane and both identity indexes. Registration growth
+/// is reserved before publication; retirement updates a displaced slot in O(1).
+pub const IntervalRegistry = struct {
+    entries: shared_buffer.List(ActiveInterval) = .empty,
+    by_runtime: std.AutoHashMapUnmanaged(ids.IntervalToken, usize) = .empty,
+    by_source: std.AutoHashMapUnmanaged(HostSignalToken, usize) = .empty,
+    pub const empty: IntervalRegistry = .{};
+
+    /// Reserves lane and index growth without publishing a registration.
+    pub fn ensureUnusedCapacity(self: *IntervalRegistry, allocator: std.mem.Allocator, additional: usize) error{OutOfMemory}!void {
+        const count = std.math.cast(u32, additional) orelse return error.OutOfMemory;
+        try self.entries.ensureUnusedCapacity(allocator, additional);
+        try self.by_runtime.ensureUnusedCapacity(allocator, count);
+        try self.by_source.ensureUnusedCapacity(allocator, count);
+    }
+
+    /// Inserts an owned registration after all three stores were preflighted.
+    pub fn appendAssumeCapacity(self: *IntervalRegistry, value: ActiveInterval) void {
+        if (self.by_runtime.contains(value.token) or self.by_source.contains(value.source_token)) @panic("duplicate interval identity");
+        const index = self.entries.items.len;
+        self.entries.appendAssumeCapacity(value);
+        self.by_runtime.putAssumeCapacity(value.token, index);
+        self.by_source.putAssumeCapacity(value.source_token, index);
+    }
+
+    /// Reserves and transfers one registration; refusal leaves ownership with
+    /// the caller and does not expose a partially indexed interval.
+    pub fn append(self: *IntervalRegistry, allocator: std.mem.Allocator, value: ActiveInterval) error{OutOfMemory}!void {
+        try self.ensureUnusedCapacity(allocator, 1);
+        self.appendAssumeCapacity(value);
+    }
+
+    /// Clears indexes after the caller has canceled and released every token.
+    pub fn clearRetainingCapacity(self: *IntervalRegistry) void {
+        self.entries.clearRetainingCapacity();
+        self.by_runtime.clearRetainingCapacity();
+        self.by_source.clearRetainingCapacity();
+    }
+
+    /// Frees empty registry storage after interval ownership has been released.
+    pub fn deinit(self: *IntervalRegistry, allocator: std.mem.Allocator) void {
+        self.entries.deinit(allocator);
+        self.by_runtime.deinit(allocator);
+        self.by_source.deinit(allocator);
+    }
+};
+
+pub const CleanupEvents = shared_buffer.List([]const u8);
 
 /// Appends cleanup event using capacity that must already satisfy the caller's transaction contract.
 pub fn appendCleanupEvent(allocator: std.mem.Allocator, events: *CleanupEvents, name: []const u8) void {
@@ -78,7 +128,8 @@ pub fn activeTaskRecordByName(active_signal_graph: anytype, name: []const u8) ?*
     return found;
 }
 
-/// Returns active interval record count by period from the maintained active-runtime indexes.
+/// Counts matching interval declarations for native semantic-spec queries.
+/// Production timer delivery uses the runtime identity index.
 pub fn activeIntervalRecordCountByPeriod(active_signal_graph: anytype, period_ms: u64) u64 {
     var count: u64 = 0;
     for (active_signal_graph) |node| {
@@ -89,7 +140,8 @@ pub fn activeIntervalRecordCountByPeriod(active_signal_graph: anytype, period_ms
     return count;
 }
 
-/// Returns active interval record by token from the maintained active-runtime indexes.
+/// Searches a supplied graph snapshot for focused lifecycle tests.
+/// Live engine delivery uses the published descriptor token index.
 pub fn activeIntervalRecordByToken(active_signal_graph: anytype, source_token: HostSignalToken) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
@@ -101,7 +153,8 @@ pub fn activeIntervalRecordByToken(active_signal_graph: anytype, source_token: H
     return found;
 }
 
-/// Returns active interval record by period from the maintained active-runtime indexes.
+/// Resolves an unambiguous period for native semantic-spec tick commands.
+/// Runtime callbacks use token identity and never scan this graph.
 pub fn activeIntervalRecordByPeriod(active_signal_graph: anytype, period_ms: u64) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
@@ -125,12 +178,13 @@ pub const PreparedPendingTask = struct {
     /// preparation owns independent buffers and one token reference.
     pub fn prepare(
         allocator: std.mem.Allocator,
-        tasks: *std.ArrayListUnmanaged(PendingTask),
+        tasks: *shared_buffer.List(PendingTask),
         next_task_request_id: u64,
         owner_scope_id: ids.ScopeId,
         task_token: HostSignalToken,
         task_name: []const u8,
         request: []const u8,
+        kind: boundary.TaskKind,
     ) std.mem.Allocator.Error!PreparedPendingTask {
         if (next_task_request_id == std.math.maxInt(u64)) @panic("host task request id overflowed");
         const task_name_copy = try allocator.dupe(u8, task_name);
@@ -144,12 +198,13 @@ pub const PreparedPendingTask = struct {
             .task_token = retained_values.retainHostSignalToken(task_token),
             .task_name = task_name_copy,
             .request = request_copy,
+            .kind = kind,
         } };
     }
 
     /// Transfers the complete registration into the reserved slot without
     /// allocation. No intervening task start may consume the prepared id.
-    pub fn commit(self: *PreparedPendingTask, tasks: *std.ArrayListUnmanaged(PendingTask), next_task_request_id: *u64) ids.TaskRequestId {
+    pub fn commit(self: *PreparedPendingTask, tasks: *shared_buffer.List(PendingTask), next_task_request_id: *u64) ids.TaskRequestId {
         const task = self.task orelse @panic("prepared task committed twice");
         if (task.request_id.raw() != next_task_request_id.*) @panic("prepared task request id changed before commit");
         tasks.appendAssumeCapacity(task);
@@ -182,7 +237,7 @@ pub const PreparedPendingTask = struct {
 /// registration unpublished until their other fallible preparation succeeds.
 pub fn appendPendingTask(
     allocator: std.mem.Allocator,
-    tasks: *std.ArrayListUnmanaged(PendingTask),
+    tasks: *shared_buffer.List(PendingTask),
     next_task_request_id: *u64,
     roc_host: *abi.RocHost,
     owner_scope_id: ids.ScopeId,
@@ -190,7 +245,7 @@ pub fn appendPendingTask(
     task_name: []const u8,
     request: []const u8,
 ) u64 {
-    var prepared = PreparedPendingTask.prepare(allocator, tasks, next_task_request_id.*, owner_scope_id, task_token, task_name, request) catch @panic("out of memory");
+    var prepared = PreparedPendingTask.prepare(allocator, tasks, next_task_request_id.*, owner_scope_id, task_token, task_name, request, .external) catch @panic("out of memory");
     defer prepared.deinit(allocator, roc_host);
     return prepared.commit(tasks, next_task_request_id).raw();
 }
@@ -200,7 +255,7 @@ pub fn appendAndStartPendingTask(
     comptime Ctx: type,
     ctx: Ctx.Handle,
     allocator: std.mem.Allocator,
-    tasks: *std.ArrayListUnmanaged(PendingTask),
+    tasks: *shared_buffer.List(PendingTask),
     next_task_request_id: *u64,
     roc_host: *abi.RocHost,
     owner_scope_id: ids.ScopeId,
@@ -209,7 +264,7 @@ pub fn appendAndStartPendingTask(
     request: []const u8,
 ) u64 {
     const request_id = appendPendingTask(allocator, tasks, next_task_request_id, roc_host, owner_scope_id, task_token, task_name, request);
-    Ctx.sink(ctx).startTask(ids.TaskRequestId.fromRaw(request_id), task_name, request);
+    Ctx.sink(ctx).startTask(ids.TaskRequestId.fromRaw(request_id), .external, task_name, request);
     return request_id;
 }
 
@@ -228,7 +283,7 @@ pub fn cancelPendingTask(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem
 }
 
 /// Clears pending tasks while retaining bounded storage where the type promises reuse.
-pub fn clearPendingTasks(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *std.ArrayListUnmanaged(PendingTask), roc_host: ?*abi.RocHost) void {
+pub fn clearPendingTasks(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *shared_buffer.List(PendingTask), roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
         if (tasks.items.len != 0) @panic("pending tasks cannot release tokens without a Roc host");
         return;
@@ -271,7 +326,7 @@ pub fn pendingTaskIndexByRequestId(tasks: []const PendingTask, request_id: ids.T
 }
 
 /// Removes pending task at and releases the ownership attached to that live entry.
-pub fn removePendingTaskAt(tasks: *std.ArrayListUnmanaged(PendingTask), index: usize) PendingTask {
+pub fn removePendingTaskAt(tasks: *shared_buffer.List(PendingTask), index: usize) PendingTask {
     if (index >= tasks.items.len) @panic("pending task index is out of bounds");
     const task = tasks.items[index];
     const last_index = tasks.items.len - 1;
@@ -283,7 +338,7 @@ pub fn removePendingTaskAt(tasks: *std.ArrayListUnmanaged(PendingTask), index: u
 }
 
 /// Cancels pending tasks by task token and releases its bounded host-retained work.
-pub fn cancelPendingTasksByTaskToken(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *std.ArrayListUnmanaged(PendingTask), roc_host: ?*abi.RocHost, task_token: HostSignalToken) void {
+pub fn cancelPendingTasksByTaskToken(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *shared_buffer.List(PendingTask), roc_host: ?*abi.RocHost, task_token: HostSignalToken) void {
     const host = roc_host orelse {
         for (tasks.items) |task| {
             if (task.task_token == task_token) @panic("pending task cannot release token without a Roc host");
@@ -304,7 +359,7 @@ pub fn cancelPendingTasksByTaskToken(comptime Ctx: type, ctx: Ctx.Handle, alloca
 }
 
 /// Cancels pending tasks in scope subtree and releases its bounded host-retained work.
-pub fn cancelPendingTasksInScopeSubtree(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *std.ArrayListUnmanaged(PendingTask), roc_host: ?*abi.RocHost, scope_id: ids.ScopeId, scope_lookup: anytype) void {
+pub fn cancelPendingTasksInScopeSubtree(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *shared_buffer.List(PendingTask), roc_host: ?*abi.RocHost, scope_id: ids.ScopeId, scope_lookup: anytype) void {
     const host = roc_host orelse {
         for (tasks.items) |task| {
             if (scope_lookup.descendantOrSelf(task.owner_scope_id, scope_id)) @panic("pending task cannot release token without a Roc host");
@@ -324,37 +379,21 @@ pub fn cancelPendingTasksInScopeSubtree(comptime Ctx: type, ctx: Ctx.Handle, all
     tasks.items.len = write_index;
 }
 
-/// Returns active interval source token by runtime token from the maintained active-runtime indexes.
-pub fn activeIntervalSourceTokenByRuntimeToken(intervals: []const ActiveInterval, token: ids.IntervalToken) ?HostSignalToken {
-    var found: ?HostSignalToken = null;
-    for (intervals) |interval| {
-        if (interval.token != token) continue;
-        if (found != null) @panic("runtime interval token matched more than one active interval");
-        found = interval.source_token;
-    }
-    return found;
+/// Resolves a timer callback by its runtime identity without visiting other intervals.
+pub fn activeIntervalSourceTokenByRuntimeToken(intervals: *const IntervalRegistry, token: ids.IntervalToken) ?HostSignalToken {
+    const index = intervals.by_runtime.get(token) orelse return null;
+    return intervals.entries.items[index].source_token;
 }
 
-/// Returns active interval by source token from the maintained active-runtime indexes.
-pub fn activeIntervalBySourceToken(intervals: []ActiveInterval, source_token: HostSignalToken) ?*ActiveInterval {
-    var found: ?*ActiveInterval = null;
-    for (intervals) |*interval| {
-        if (interval.source_token != source_token) continue;
-        if (found != null) @panic("interval source token matched more than one runtime interval");
-        found = interval;
-    }
-    return found;
+/// Finds a live registration by the capability-owned source identity.
+pub fn activeIntervalBySourceToken(intervals: *IntervalRegistry, source_token: HostSignalToken) ?*ActiveInterval {
+    const index = intervals.by_source.get(source_token) orelse return null;
+    return &intervals.entries.items[index];
 }
 
-/// Returns active interval index by source token from the maintained active-runtime indexes.
-pub fn activeIntervalIndexBySourceToken(intervals: []const ActiveInterval, source_token: HostSignalToken) ?usize {
-    var found_index: ?usize = null;
-    for (intervals, 0..) |interval, index| {
-        if (interval.source_token != source_token) continue;
-        if (found_index != null) @panic("interval source token matched more than one runtime interval");
-        found_index = index;
-    }
-    return found_index;
+/// Locates the exact slot that scope retirement must remove.
+pub fn activeIntervalIndexBySourceToken(intervals: *const IntervalRegistry, source_token: HostSignalToken) ?usize {
+    return intervals.by_source.get(source_token);
 }
 
 /// Marks existing intervals unseen before reconciling declarations from the active graph.
@@ -364,26 +403,31 @@ pub fn markActiveIntervalsInactive(intervals: []ActiveInterval) void {
     }
 }
 
-/// Removes active interval at and releases the ownership attached to that live entry.
-pub fn removeActiveIntervalAt(intervals: *std.ArrayListUnmanaged(ActiveInterval), index: usize) ActiveInterval {
-    if (index >= intervals.items.len) @panic("active interval index is out of bounds");
-    const interval = intervals.items[index];
-    const last_index = intervals.items.len - 1;
+/// Removes one indexed registration and returns its ownership to the caller.
+/// The caller must cancel its host timer and release the source token.
+pub fn removeActiveIntervalAt(intervals: *IntervalRegistry, index: usize) ActiveInterval {
+    if (index >= intervals.entries.items.len) @panic("active interval index is out of bounds");
+    const interval = intervals.entries.items[index];
+    const last_index = intervals.entries.items.len - 1;
+    if (!intervals.by_runtime.remove(interval.token) or !intervals.by_source.remove(interval.source_token)) @panic("interval identity index was missing during retirement");
     if (index != last_index) {
-        intervals.items[index] = intervals.items[last_index];
+        const moved = intervals.entries.items[last_index];
+        intervals.entries.items[index] = moved;
+        intervals.by_runtime.getPtr(moved.token).?.* = index;
+        intervals.by_source.getPtr(moved.source_token).?.* = index;
     }
-    intervals.items.len = last_index;
+    intervals.entries.items.len = last_index;
     return interval;
 }
 
 /// Clears active intervals while retaining bounded storage where the type promises reuse.
-pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: ?*abi.RocHost) void {
+pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *IntervalRegistry, roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
-        if (intervals.items.len != 0) @panic("active intervals cannot release tokens without a Roc host");
-        intervals.items.len = 0;
+        if (intervals.entries.items.len != 0) @panic("active intervals cannot release tokens without a Roc host");
+        intervals.entries.items.len = 0;
         return;
     };
-    for (intervals.items) |interval| {
+    for (intervals.entries.items) |interval| {
         Ctx.sink(ctx).cancelInterval(interval.token);
         retained_values.releaseHostSignalToken(interval.source_token, host);
     }
@@ -391,8 +435,8 @@ pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std
 }
 
 /// Ensures active interval capacity or state before publication can begin.
-pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, intervals: *std.ArrayListUnmanaged(ActiveInterval), next_interval_token: *u64, roc_host: *abi.RocHost, source_token: HostSignalToken, period_ms: u64) void {
-    if (activeIntervalBySourceToken(intervals.items, source_token)) |interval| {
+pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, intervals: *IntervalRegistry, next_interval_token: *u64, roc_host: *abi.RocHost, source_token: HostSignalToken, period_ms: u64) void {
+    if (activeIntervalBySourceToken(intervals, source_token)) |interval| {
         if (interval.period_ms != period_ms) @panic("interval source token changed period");
         interval.reconciliation = .confirmed;
         return;
@@ -416,7 +460,7 @@ pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.
 /// Reserves registry room for `additional` interval registrations before a
 /// transaction publishes, so `ensureActiveIntervalAssumeCapacity` never grows
 /// the registry on the commit path.
-pub fn reserveActiveIntervals(allocator: std.mem.Allocator, intervals: *std.ArrayListUnmanaged(ActiveInterval), additional: usize) error{OutOfMemory}!void {
+pub fn reserveActiveIntervals(allocator: std.mem.Allocator, intervals: *IntervalRegistry, additional: usize) error{OutOfMemory}!void {
     intervals.ensureUnusedCapacity(allocator, additional) catch return error.OutOfMemory;
 }
 
@@ -424,15 +468,15 @@ pub fn reserveActiveIntervals(allocator: std.mem.Allocator, intervals: *std.Arra
 /// `reserveActiveIntervals` already secured. A source token that is already
 /// registered is confirmed rather than duplicated, exactly as
 /// `ensureActiveInterval` does on the preparation path.
-pub fn ensureActiveIntervalAssumeCapacity(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), next_interval_token: *u64, source_token: HostSignalToken, period_ms: u64) void {
-    if (activeIntervalBySourceToken(intervals.items, source_token)) |interval| {
+pub fn ensureActiveIntervalAssumeCapacity(comptime Ctx: type, ctx: Ctx.Handle, intervals: *IntervalRegistry, next_interval_token: *u64, source_token: HostSignalToken, period_ms: u64) void {
+    if (activeIntervalBySourceToken(intervals, source_token)) |interval| {
         if (interval.period_ms != period_ms) @panic("interval source token changed period");
         interval.reconciliation = .confirmed;
         return;
     }
 
     if (next_interval_token.* == std.math.maxInt(u64)) @panic("host interval token overflowed");
-    if (intervals.items.len == intervals.capacity) @panic("interval registration exceeded its reserved capacity");
+    if (intervals.entries.items.len == intervals.entries.capacity) @panic("interval registration exceeded its reserved capacity");
     const token = next_interval_token.*;
     next_interval_token.* += 1;
     intervals.appendAssumeCapacity(.{
@@ -445,33 +489,30 @@ pub fn ensureActiveIntervalAssumeCapacity(comptime Ctx: type, ctx: Ctx.Handle, i
 }
 
 /// Removes active interval by source token and releases the ownership attached to that live entry.
-pub fn removeActiveIntervalBySourceToken(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: *abi.RocHost, source_token: HostSignalToken) void {
-    const index = activeIntervalIndexBySourceToken(intervals.items, source_token) orelse @panic("active interval removal missed its source token");
+pub fn removeActiveIntervalBySourceToken(comptime Ctx: type, ctx: Ctx.Handle, intervals: *IntervalRegistry, roc_host: *abi.RocHost, source_token: HostSignalToken) void {
+    const index = activeIntervalIndexBySourceToken(intervals, source_token) orelse @panic("active interval removal missed its source token");
     const interval = removeActiveIntervalAt(intervals, index);
     Ctx.sink(ctx).cancelInterval(interval.token);
     retained_values.releaseHostSignalToken(interval.source_token, roc_host);
 }
 
 /// Cancels intervals not rediscovered and commits the current bounded registration set.
-pub fn finishActiveIntervalSync(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: ?*abi.RocHost) void {
+pub fn finishActiveIntervalSync(comptime Ctx: type, ctx: Ctx.Handle, intervals: *IntervalRegistry, roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
-        for (intervals.items) |interval| {
+        for (intervals.entries.items) |interval| {
             if (interval.reconciliation == .pending) @panic("unconfirmed interval cannot release token without a Roc host");
         }
         return;
     };
 
-    var write_index: usize = 0;
-    for (intervals.items) |interval| {
-        if (interval.reconciliation == .pending) {
-            Ctx.sink(ctx).cancelInterval(interval.token);
-            retained_values.releaseHostSignalToken(interval.source_token, host);
-            continue;
-        }
-        intervals.items[write_index] = interval;
-        write_index += 1;
+    var index = intervals.entries.items.len;
+    while (index > 0) {
+        index -= 1;
+        if (intervals.entries.items[index].reconciliation != .pending) continue;
+        const interval = removeActiveIntervalAt(intervals, index);
+        Ctx.sink(ctx).cancelInterval(interval.token);
+        retained_values.releaseHostSignalToken(interval.source_token, host);
     }
-    intervals.items.len = write_index;
 }
 
 /// Reconciles interval registrations from active graph declarations after propagation.
@@ -479,13 +520,13 @@ pub fn syncActiveIntervalsFromGraph(
     comptime Ctx: type,
     ctx: Ctx.Handle,
     allocator: std.mem.Allocator,
-    intervals: *std.ArrayListUnmanaged(ActiveInterval),
+    intervals: *IntervalRegistry,
     next_interval_token: *u64,
     roc_host: ?*abi.RocHost,
     active_signal_graph: anytype,
     metrics: anytype,
 ) void {
-    markActiveIntervalsInactive(intervals.items);
+    markActiveIntervalsInactive(intervals.entries.items);
     metrics.bump(.active_intervals_synced, @intCast(active_signal_graph.len));
 
     for (active_signal_graph) |node| {
@@ -523,7 +564,7 @@ const TestIntervalSink = struct {
     host: *TestIntervalHost,
 
     /// Starts bounded asynchronous host work for an engine-issued task request.
-    pub fn startTask(self: @This(), request_id: ids.TaskRequestId, _: []const u8, _: []const u8) void {
+    pub fn startTask(self: @This(), request_id: ids.TaskRequestId, _: boundary.TaskKind, _: []const u8, _: []const u8) void {
         self.host.start_task_count += 1;
         self.host.last_started_task = request_id.raw();
     }
@@ -574,6 +615,8 @@ fn testTaskRecord(token: HostSignalToken, name: []const u8) HostSignalRecord {
             .initial = .fromAbi(token),
             .done = undefined,
             .failed = undefined,
+            .canceled = undefined,
+            .refused = undefined,
             .cap = undefined,
             .reset_on_start = false,
         } },
@@ -610,7 +653,7 @@ test "pending tasks and active intervals retain callable tokens for their full l
     var roc_host = abi.makeRocHost(&env);
     var host = TestIntervalHost{};
 
-    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    var tasks: shared_buffer.List(PendingTask) = .empty;
     defer tasks.deinit(std.testing.allocator);
     var next_request_id: u64 = 1;
     const task_token = testSignalToken(&roc_host, 1);
@@ -620,7 +663,7 @@ test "pending tasks and active intervals retain callable tokens for their full l
     clearPendingTasks(TestIntervalCtx, &host, std.testing.allocator, &tasks, &roc_host);
     try std.testing.expectEqual(@as(u64, 1), test_signal_token_drop_count);
 
-    var intervals: std.ArrayListUnmanaged(ActiveInterval) = .empty;
+    var intervals: IntervalRegistry = .empty;
     defer intervals.deinit(std.testing.allocator);
     var next_interval_token: u64 = 1;
     const interval_token = testSignalToken(&roc_host, 2);
@@ -636,7 +679,7 @@ test "effects runtime finds and removes pending tasks" {
     var second_token_storage = [_]u8{0};
     const first_token = first_token_storage[0..].ptr;
     const second_token = second_token_storage[0..].ptr;
-    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    var tasks: shared_buffer.List(PendingTask) = .empty;
     defer tasks.deinit(std.testing.allocator);
 
     tasks.append(std.testing.allocator, .{
@@ -708,7 +751,7 @@ test "pending task membership is the active lifecycle state" {
     var second_token_storage = [_]u8{0};
     const first_token = first_token_storage[0..].ptr;
     const second_token = second_token_storage[0..].ptr;
-    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    var tasks: shared_buffer.List(PendingTask) = .empty;
     defer tasks.deinit(std.testing.allocator);
 
     tasks.append(std.testing.allocator, .{
@@ -743,18 +786,18 @@ test "pending task preparation refusal preserves membership and request ids" {
     for (1..4) |failure_number| {
         var fault = FaultAllocator.init(std.testing.allocator);
         const allocator = fault.allocator();
-        var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+        var tasks: shared_buffer.List(PendingTask) = .empty;
         defer tasks.deinit(allocator);
         defer for (tasks.items) |*task| deinitPendingTask(allocator, &roc_host, task);
         var next_request_id: u64 = 100;
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload"));
+        try std.testing.expectError(error.OutOfMemory, PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload", .external));
         try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
         try std.testing.expectEqual(@as(usize, 0), tasks.items.len);
         try std.testing.expectEqual(@as(u64, 100), next_request_id);
 
         fault.configure(null);
-        var aborted = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload");
+        var aborted = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload", .external);
         fault.configure(1);
         aborted.deinit(allocator, &roc_host);
         try std.testing.expectEqual(@as(usize, 0), fault.attempts);
@@ -762,7 +805,7 @@ test "pending task preparation refusal preserves membership and request ids" {
         try std.testing.expectEqual(@as(u64, 100), next_request_id);
 
         fault.configure(null);
-        var retry = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload");
+        var retry = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload", .external);
         fault.configure(1);
         try std.testing.expectEqual(ids.TaskRequestId.fromRaw(100), retry.commit(&tasks, &next_request_id));
         retry.deinit(allocator, &roc_host);
@@ -778,12 +821,12 @@ test "aborting a replacement task leaves the old request live" {
     const token = testSignalToken(&roc_host, 1);
     defer retained_values.releaseHostSignalToken(token, &roc_host);
     const allocator = std.testing.allocator;
-    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    var tasks: shared_buffer.List(PendingTask) = .empty;
     defer tasks.deinit(allocator);
     var next_request_id: u64 = 100;
     _ = appendPendingTask(allocator, &tasks, &next_request_id, &roc_host, ids.ScopeId.fromRaw(10), token, "load", "old");
     defer deinitPendingTask(allocator, &roc_host, &tasks.items[0]);
-    var replacement = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "new");
+    var replacement = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "new", .external);
     try std.testing.expectEqual(@as(usize, 1), tasks.items.len);
     try std.testing.expectEqualStrings("old", tasks.items[0].request);
     replacement.deinit(allocator, &roc_host);
@@ -804,7 +847,7 @@ test "effects runtime starts clears and cancels pending tasks by token" {
     defer retained_values.releaseHostSignalToken(missing_token, &roc_host);
 
     var host = TestIntervalHost{};
-    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    var tasks: shared_buffer.List(PendingTask) = .empty;
     defer tasks.deinit(std.testing.allocator);
     var next_request_id: u64 = 100;
 
@@ -840,7 +883,7 @@ test "effects runtime cancels pending tasks in a scope subtree" {
     defer retained_values.releaseHostSignalToken(outside_token, &roc_host);
 
     var host = TestIntervalHost{};
-    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    var tasks: shared_buffer.List(PendingTask) = .empty;
     defer tasks.deinit(std.testing.allocator);
     var next_request_id: u64 = 200;
 
@@ -866,7 +909,7 @@ test "effects runtime updates active interval table" {
     var second_token_storage = [_]u8{0};
     const first_token = first_token_storage[0..].ptr;
     const second_token = second_token_storage[0..].ptr;
-    var intervals: std.ArrayListUnmanaged(ActiveInterval) = .empty;
+    var intervals: IntervalRegistry = .empty;
     defer intervals.deinit(std.testing.allocator);
 
     intervals.append(std.testing.allocator, .{
@@ -882,14 +925,14 @@ test "effects runtime updates active interval table" {
         .reconciliation = .confirmed,
     }) catch @panic("out of memory");
 
-    try std.testing.expectEqual(@as(?HostSignalToken, first_token), activeIntervalSourceTokenByRuntimeToken(intervals.items, ids.IntervalToken.fromRaw(10)));
-    markActiveIntervalsInactive(intervals.items);
-    try std.testing.expectEqual(.pending, intervals.items[0].reconciliation);
-    try std.testing.expectEqual(@as(?*ActiveInterval, &intervals.items[1]), activeIntervalBySourceToken(intervals.items, second_token));
+    try std.testing.expectEqual(@as(?HostSignalToken, first_token), activeIntervalSourceTokenByRuntimeToken(&intervals, ids.IntervalToken.fromRaw(10)));
+    markActiveIntervalsInactive(intervals.entries.items);
+    try std.testing.expectEqual(.pending, intervals.entries.items[0].reconciliation);
+    try std.testing.expectEqual(@as(?*ActiveInterval, &intervals.entries.items[1]), activeIntervalBySourceToken(&intervals, second_token));
     const removed = removeActiveIntervalAt(&intervals, 0);
     try std.testing.expectEqual(@as(u64, 10), removed.token.raw());
-    try std.testing.expectEqual(@as(usize, 1), intervals.items.len);
-    try std.testing.expectEqual(@as(u64, 11), intervals.items[0].token.raw());
+    try std.testing.expectEqual(@as(usize, 1), intervals.entries.items.len);
+    try std.testing.expectEqual(@as(u64, 11), intervals.entries.items[0].token.raw());
 }
 
 test "effects runtime manages interval lifecycle transitions" {
@@ -901,19 +944,19 @@ test "effects runtime manages interval lifecycle transitions" {
     defer retained_values.releaseHostSignalToken(second_token, &roc_host);
 
     var host = TestIntervalHost{};
-    var intervals: std.ArrayListUnmanaged(ActiveInterval) = .empty;
+    var intervals: IntervalRegistry = .empty;
     defer intervals.deinit(std.testing.allocator);
     var next_interval_token: u64 = 10;
 
     ensureActiveInterval(TestIntervalCtx, &host, std.testing.allocator, &intervals, &next_interval_token, &roc_host, first_token, 250);
     ensureActiveInterval(TestIntervalCtx, &host, std.testing.allocator, &intervals, &next_interval_token, &roc_host, second_token, 500);
-    try std.testing.expectEqual(@as(usize, 2), intervals.items.len);
+    try std.testing.expectEqual(@as(usize, 2), intervals.entries.items.len);
     try std.testing.expectEqual(@as(u64, 12), next_interval_token);
     try std.testing.expectEqual(@as(u64, 2), host.start_interval_count);
-    try std.testing.expectEqual(@as(?usize, 1), activeIntervalIndexBySourceToken(intervals.items, second_token));
+    try std.testing.expectEqual(@as(?usize, 1), activeIntervalIndexBySourceToken(&intervals, second_token));
 
     clearActiveIntervals(TestIntervalCtx, &host, &intervals, &roc_host);
-    try std.testing.expectEqual(@as(usize, 0), intervals.items.len);
+    try std.testing.expectEqual(@as(usize, 0), intervals.entries.items.len);
     try std.testing.expectEqual(@as(u64, 2), host.cancel_interval_count);
 
     ensureActiveInterval(TestIntervalCtx, &host, std.testing.allocator, &intervals, &next_interval_token, &roc_host, first_token, 250);
@@ -921,12 +964,12 @@ test "effects runtime manages interval lifecycle transitions" {
     try std.testing.expectEqual(@as(u64, 4), host.start_interval_count);
 
     removeActiveIntervalBySourceToken(TestIntervalCtx, &host, &intervals, &roc_host, second_token);
-    try std.testing.expectEqual(@as(usize, 1), intervals.items.len);
+    try std.testing.expectEqual(@as(usize, 1), intervals.entries.items.len);
     try std.testing.expectEqual(@as(u64, 3), host.cancel_interval_count);
 
-    markActiveIntervalsInactive(intervals.items);
+    markActiveIntervalsInactive(intervals.entries.items);
     finishActiveIntervalSync(TestIntervalCtx, &host, &intervals, &roc_host);
-    try std.testing.expectEqual(@as(usize, 0), intervals.items.len);
+    try std.testing.expectEqual(@as(usize, 0), intervals.entries.items.len);
     try std.testing.expectEqual(@as(u64, 4), host.cancel_interval_count);
 
     const no_host_token = testSignalToken(&roc_host, 300);
@@ -937,7 +980,7 @@ test "effects runtime manages interval lifecycle transitions" {
         .reconciliation = .confirmed,
     }) catch @panic("out of memory");
     finishActiveIntervalSync(TestIntervalCtx, &host, &intervals, null);
-    try std.testing.expectEqual(@as(usize, 1), intervals.items.len);
+    try std.testing.expectEqual(@as(usize, 1), intervals.entries.items.len);
     var removed = removeActiveIntervalAt(&intervals, 0);
     retained_values.releaseHostSignalToken(removed.source_token, &roc_host);
     removed = undefined;
@@ -951,7 +994,7 @@ test "effects runtime syncs existing active intervals from graph" {
         .{ .record = &interval_record },
     };
 
-    var intervals: std.ArrayListUnmanaged(ActiveInterval) = .empty;
+    var intervals: IntervalRegistry = .empty;
     defer intervals.deinit(std.testing.allocator);
     intervals.append(std.testing.allocator, .{
         .token = ids.IntervalToken.fromRaw(10),
@@ -967,11 +1010,54 @@ test "effects runtime syncs existing active intervals from graph" {
 
     syncActiveIntervalsFromGraph(TestIntervalCtx, &host, std.testing.allocator, &intervals, &next_interval_token, &roc_host, active_nodes[0..], &metrics);
 
-    try std.testing.expectEqual(@as(usize, 1), intervals.items.len);
-    try std.testing.expectEqual(.confirmed, intervals.items[0].reconciliation);
-    try std.testing.expectEqual(@as(u64, 10), intervals.items[0].token.raw());
+    try std.testing.expectEqual(@as(usize, 1), intervals.entries.items.len);
+    try std.testing.expectEqual(.confirmed, intervals.entries.items[0].reconciliation);
+    try std.testing.expectEqual(@as(u64, 10), intervals.entries.items[0].token.raw());
     try std.testing.expectEqual(@as(u64, 11), next_interval_token);
     try std.testing.expectEqual(@as(u64, 1), metrics.active_intervals_synced);
     try std.testing.expectEqual(@as(u64, 0), host.start_interval_count);
     try std.testing.expectEqual(@as(u64, 0), host.cancel_interval_count);
+}
+
+test "interval identity indexes survive wide-table retirement and source reuse without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var intervals: IntervalRegistry = .empty;
+    defer intervals.deinit(fault.allocator());
+    const tokens = try std.testing.allocator.alloc(u8, 10000);
+    defer std.testing.allocator.free(tokens);
+    try intervals.ensureUnusedCapacity(fault.allocator(), tokens.len);
+    fault.configure(1);
+    for (tokens, 0..) |_, index| intervals.appendAssumeCapacity(.{
+        .token = ids.IntervalToken.fromRaw(index + 1),
+        .source_token = tokens[index..].ptr,
+        .period_ms = 500,
+    });
+    const removed = removeActiveIntervalAt(&intervals, 0);
+    try std.testing.expectEqual(null, activeIntervalSourceTokenByRuntimeToken(&intervals, removed.token));
+    try std.testing.expectEqual(null, activeIntervalBySourceToken(&intervals, removed.source_token));
+    try std.testing.expectEqual(@as(?usize, 0), activeIntervalIndexBySourceToken(&intervals, tokens[9999..].ptr));
+    intervals.appendAssumeCapacity(.{ .token = ids.IntervalToken.fromRaw(10001), .source_token = removed.source_token, .period_ms = 250 });
+    try std.testing.expectEqual(@as(?HostSignalToken, removed.source_token), activeIntervalSourceTokenByRuntimeToken(&intervals, ids.IntervalToken.fromRaw(10001)));
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    intervals.clearRetainingCapacity();
+    try std.testing.expectEqual(@as(usize, 0), intervals.by_runtime.count());
+    try std.testing.expectEqual(@as(usize, 0), intervals.by_source.count());
+    fault.configure(null);
+}
+
+fn checkIntervalReservationRefusal(allocator: std.mem.Allocator) !void {
+    var intervals: IntervalRegistry = .empty;
+    defer intervals.deinit(allocator);
+    var token: [1]u8 = undefined;
+    try intervals.append(allocator, .{ .token = ids.IntervalToken.fromRaw(1), .source_token = &token, .period_ms = 500 });
+    intervals.ensureUnusedCapacity(allocator, 100) catch |err| {
+        try std.testing.expectEqual(@as(?HostSignalToken, &token), activeIntervalSourceTokenByRuntimeToken(&intervals, ids.IntervalToken.fromRaw(1)));
+        try std.testing.expectEqual(@as(?usize, 0), activeIntervalIndexBySourceToken(&intervals, &token));
+        return err;
+    };
+}
+
+test "interval registry preflight refusal preserves committed identity indexes" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkIntervalReservationRefusal, .{});
 }

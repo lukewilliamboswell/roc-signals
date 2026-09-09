@@ -8,11 +8,20 @@
 //! writes the overlay into the committed table without allocating.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const RowId = @import("rows_ids.zig").RowId;
 
 /// Builds a site-local order index for a durable row span type. `Span` must
 /// expose `first_root: ?u64`, `last_root: ?u64`, and `root_count` fields.
 pub fn OrderIndex(comptime Span: type) type {
+    return StableOrderIndex(RowId, Span);
+}
+
+/// Reuses the prepared order index for another engine-owned identity domain.
+/// `Id.raw()` must provide a stable unsigned integer; identities stay nominal rather than
+/// converting element handles into row handles. The caller owns all lifetime
+/// validation, and must retire an identity before publishing its replacement.
+pub fn StableOrderIndex(comptime Id: type, comptime Span: type) type {
     comptime {
         const span: Span = undefined;
         if (@TypeOf(span.first_root) != ?u64 or @TypeOf(span.last_root) != ?u64) {
@@ -27,9 +36,9 @@ pub fn OrderIndex(comptime Span: type) type {
         const Self = @This();
 
         const Node = struct {
-            left: ?RowId = null,
-            right: ?RowId = null,
-            parent: ?RowId = null,
+            left: ?Id = null,
+            right: ?Id = null,
+            parent: ?Id = null,
             priority: u64,
             subtree_rows: usize = 1,
             subtree_roots: usize,
@@ -40,13 +49,13 @@ pub fn OrderIndex(comptime Span: type) type {
 
         /// One row used to seed a snapshot-built site in committed order.
         pub const Entry = struct {
-            row_id: RowId,
+            row_id: Id,
             span: Span,
         };
 
         /// A direct root together with the stable row whose span owns it.
         pub const RootAnchor = struct {
-            row_id: RowId,
+            row_id: Id,
             root_id: u64,
         };
 
@@ -87,8 +96,8 @@ pub fn OrderIndex(comptime Span: type) type {
         };
 
         allocator: std.mem.Allocator,
-        nodes: std.AutoHashMapUnmanaged(RowId, Node) = .empty,
-        root: ?RowId = null,
+        nodes: std.AutoHashMapUnmanaged(Id, Node) = .empty,
+        root: ?Id = null,
 
         /// Creates an empty committed index. All storage remains owned by the
         /// caller-supplied allocator until `deinit`.
@@ -122,7 +131,7 @@ pub fn OrderIndex(comptime Span: type) type {
 
         /// Reports whether a generation-checked row participates in this
         /// committed render order.
-        pub fn contains(self: *const Self, row_id: RowId) bool {
+        pub fn contains(self: *const Self, row_id: Id) bool {
             return self.nodes.contains(row_id);
         }
 
@@ -130,7 +139,7 @@ pub fn OrderIndex(comptime Span: type) type {
         /// used only when an enclosing scope retires a row outside a Rows
         /// generation transition; ordinary collection edits use
         /// `PreparedEdits` so abort can preserve the committed topology.
-        pub fn removeCommitted(self: *Self, row_id: RowId) error{InvalidRow}!void {
+        pub fn removeCommitted(self: *Self, row_id: Id) error{InvalidRow}!void {
             const removed = self.nodes.get(row_id) orelse return error.InvalidRow;
             const parent = removed.parent;
             const replacement = self.mergeCommitted(removed.left, removed.right, parent);
@@ -154,7 +163,7 @@ pub fn OrderIndex(comptime Span: type) type {
         }
 
         /// Returns the row occupying `index` in committed order.
-        pub fn rowAt(self: *const Self, index: usize) error{InvalidRange}!RowId {
+        pub fn rowAt(self: *const Self, index: usize) error{InvalidRange}!Id {
             if (index >= self.len()) return error.InvalidRange;
             var current = self.root.?;
             var remaining = index;
@@ -174,7 +183,7 @@ pub fn OrderIndex(comptime Span: type) type {
 
         /// Resolves the committed rank of a stable row in logarithmic expected
         /// time without scanning preceding rows.
-        pub fn rank(self: *const Self, row_id: RowId) error{InvalidRow}!usize {
+        pub fn rank(self: *const Self, row_id: Id) error{InvalidRow}!usize {
             const start = self.nodes.get(row_id) orelse return error.InvalidRow;
             var result = self.nodeRows(start.left);
             var current = row_id;
@@ -194,13 +203,13 @@ pub fn OrderIndex(comptime Span: type) type {
 
         /// Finds the first committed direct root owned by `row_id` or a later
         /// row. Aggregates skip arbitrarily long runs of zero-root rows.
-        pub fn firstRootAtOrAfter(self: *const Self, row_id: RowId) error{InvalidRow}!?RootAnchor {
+        pub fn firstRootAtOrAfter(self: *const Self, row_id: Id) error{InvalidRow}!?RootAnchor {
             const target = try self.rank(row_id);
             return self.findFirstRoot(self.root, 0, target);
         }
 
         /// Returns the durable span associated with a committed row.
-        pub fn span(self: *const Self, row_id: RowId) error{InvalidRow}!Span {
+        pub fn span(self: *const Self, row_id: Id) error{InvalidRow}!Span {
             return (self.nodes.get(row_id) orelse return error.InvalidRow).span;
         }
 
@@ -212,7 +221,7 @@ pub fn OrderIndex(comptime Span: type) type {
             defer prepared.deinit();
 
             try prepared.overlay.ensureUnusedCapacity(self.allocator, std.math.cast(u32, entries.len) orelse return error.ResourceLimit);
-            var stack: std.ArrayListUnmanaged(RowId) = .empty;
+            var stack: shared_buffer.List(Id) = .empty;
             defer stack.deinit(self.allocator);
             try stack.ensureTotalCapacity(self.allocator, entries.len);
             var total_roots: usize = 0;
@@ -222,7 +231,7 @@ pub fn OrderIndex(comptime Span: type) type {
                 total_roots = std.math.add(usize, total_roots, spanRoots(entry.span)) catch return error.ResourceLimit;
                 prepared.overlay.putAssumeCapacity(entry.row_id, nodeFromSpan(entry.row_id, entry.span));
 
-                var left: ?RowId = null;
+                var left: ?Id = null;
                 while (stack.items.len != 0) {
                     const top_id = stack.items[stack.items.len - 1];
                     const current_node = prepared.overlay.get(entry.row_id).?;
@@ -259,15 +268,15 @@ pub fn OrderIndex(comptime Span: type) type {
             };
         }
 
-        fn nodeRows(self: *const Self, row_id: ?RowId) usize {
+        fn nodeRows(self: *const Self, row_id: ?Id) usize {
             return if (row_id) |id| (self.nodes.get(id) orelse unreachable).subtree_rows else 0;
         }
 
-        fn nodeRoots(self: *const Self, row_id: ?RowId) usize {
+        fn nodeRoots(self: *const Self, row_id: ?Id) usize {
             return if (row_id) |id| (self.nodes.get(id) orelse unreachable).subtree_roots else 0;
         }
 
-        fn findFirstRoot(self: *const Self, row_id: ?RowId, base_rank: usize, target: usize) ?RootAnchor {
+        fn findFirstRoot(self: *const Self, row_id: ?Id, base_rank: usize, target: usize) ?RootAnchor {
             const id = row_id orelse return null;
             const node = self.nodes.get(id) orelse unreachable;
             if (node.subtree_roots == 0) return null;
@@ -282,7 +291,7 @@ pub fn OrderIndex(comptime Span: type) type {
             return self.findFirstRoot(node.right, node_rank + 1, target);
         }
 
-        fn mergeCommitted(self: *Self, left_id: ?RowId, right_id: ?RowId, parent: ?RowId) ?RowId {
+        fn mergeCommitted(self: *Self, left_id: ?Id, right_id: ?Id, parent: ?Id) ?Id {
             if (left_id == null) {
                 if (right_id) |id| self.nodes.getPtr(id).?.parent = parent;
                 return right_id;
@@ -307,7 +316,7 @@ pub fn OrderIndex(comptime Span: type) type {
             return right_id;
         }
 
-        fn refreshCommitted(self: *Self, row_id: RowId) void {
+        fn refreshCommitted(self: *Self, row_id: Id) void {
             const node = self.nodes.getPtr(row_id) orelse unreachable;
             const left = if (node.left) |id| self.nodes.get(id).? else null;
             const right = if (node.right) |id| self.nodes.get(id).? else null;
@@ -331,17 +340,20 @@ pub fn OrderIndex(comptime Span: type) type {
                 null;
         }
 
-        fn priorityFor(row_id: RowId) u64 {
+        fn priorityFor(row_id: Id) u64 {
             // Row ids are host-minted rather than app-controlled. SplitMix64
             // removes their sequential slot pattern while remaining exactly
             // deterministic across hosts and runs.
-            var value = row_id.raw() +% 0x9e37_79b9_7f4a_7c15;
+            const raw = row_id.raw();
+            var identity_word: u64 = @truncate(raw);
+            if (@bitSizeOf(@TypeOf(raw)) > 64) identity_word ^= @truncate(raw >> 64);
+            var value = identity_word +% 0x9e37_79b9_7f4a_7c15;
             value = (value ^ (value >> 30)) *% 0xbf58_476d_1ce4_e5b9;
             value = (value ^ (value >> 27)) *% 0x94d0_49bb_1331_11eb;
             return value ^ (value >> 31);
         }
 
-        fn precedes(left_id: RowId, left: Node, right_id: RowId, right: Node) bool {
+        fn precedes(left_id: Id, left: Node, right_id: Id, right: Node) bool {
             return left.priority < right.priority or
                 (left.priority == right.priority and left_id.raw() < right_id.raw());
         }
@@ -353,9 +365,9 @@ pub fn OrderIndex(comptime Span: type) type {
 
             base: *Self,
             allocator: std.mem.Allocator,
-            overlay: std.AutoHashMapUnmanaged(RowId, Node) = .empty,
-            removed: std.AutoHashMapUnmanaged(RowId, void) = .empty,
-            root: ?RowId,
+            overlay: std.AutoHashMapUnmanaged(Id, Node) = .empty,
+            removed: std.AutoHashMapUnmanaged(Id, void) = .empty,
+            root: ?Id,
             roots_moved: usize = 0,
             effective_moves: usize = 0,
             commit_preflighted: bool = false,
@@ -402,7 +414,7 @@ pub fn OrderIndex(comptime Span: type) type {
             }
 
             /// Returns the row occupying `index` in candidate order.
-            pub fn rowAt(self: *const Prepared, index: usize) error{InvalidRange}!RowId {
+            pub fn rowAt(self: *const Prepared, index: usize) error{InvalidRange}!Id {
                 if (index >= self.len()) return error.InvalidRange;
                 var current = self.root.?;
                 var remaining = index;
@@ -421,7 +433,7 @@ pub fn OrderIndex(comptime Span: type) type {
             }
 
             /// Resolves a stable row's rank against the final candidate order.
-            pub fn rank(self: *const Prepared, row_id: RowId) error{InvalidRow}!usize {
+            pub fn rank(self: *const Prepared, row_id: Id) error{InvalidRow}!usize {
                 const start = self.get(row_id) orelse return error.InvalidRow;
                 var result = self.nodeRows(start.left);
                 var current = row_id;
@@ -441,20 +453,20 @@ pub fn OrderIndex(comptime Span: type) type {
 
             /// Finds the first candidate direct root owned by `row_id` or a
             /// later row without visiting intervening zero-root rows.
-            pub fn firstRootAtOrAfter(self: *const Prepared, row_id: RowId) error{InvalidRow}!?RootAnchor {
+            pub fn firstRootAtOrAfter(self: *const Prepared, row_id: Id) error{InvalidRow}!?RootAnchor {
                 const target = try self.rank(row_id);
                 return self.findFirstRoot(self.root, 0, target);
             }
 
             /// Returns the candidate durable span for a stable row.
-            pub fn span(self: *const Prepared, row_id: RowId) error{InvalidRow}!Span {
+            pub fn span(self: *const Prepared, row_id: Id) error{InvalidRow}!Span {
                 return (self.get(row_id) orelse return error.InvalidRow).span;
             }
 
             /// Resolves direct-root endpoints for a touched row range without
             /// walking rows outside that range. This is preparation metadata
             /// for sparse render publication, not a second order authority.
-            pub fn rootsInRange(self: *const Prepared, first: RowId, count: usize) error{ InvalidRow, InvalidRange, ResourceLimit }!RootRange {
+            pub fn rootsInRange(self: *const Prepared, first: Id, count: usize) error{ InvalidRow, InvalidRange, ResourceLimit }!RootRange {
                 if (count == 0) return error.InvalidRange;
                 const first_rank = try self.rank(first);
                 if (count > self.len() - first_rank) return error.InvalidRange;
@@ -472,7 +484,7 @@ pub fn OrderIndex(comptime Span: type) type {
 
             /// Inserts a new stable row before `before`, or at the end for
             /// null. Only provisional storage can allocate.
-            pub fn insertBefore(self: *Prepared, row_id: RowId, before: ?RowId, span_value: Span) Error!void {
+            pub fn insertBefore(self: *Prepared, row_id: Id, before: ?Id, span_value: Span) Error!void {
                 self.invalidatePreflight();
                 if (!spanValid(span_value)) return error.InvalidSpan;
                 const resurrecting = self.removed.contains(row_id);
@@ -499,7 +511,7 @@ pub fn OrderIndex(comptime Span: type) type {
             /// Removes `count` rows beginning at `first`. Removed rows remain
             /// readable only inside preparation long enough to finish the
             /// detach; candidate queries reject them afterward.
-            pub fn removeRange(self: *Prepared, first: RowId, count: usize) Error!RemoveResult {
+            pub fn removeRange(self: *Prepared, first: Id, count: usize) Error!RemoveResult {
                 self.invalidatePreflight();
                 if (count == 0) return error.InvalidRange;
                 const first_rank = try self.rank(first);
@@ -518,7 +530,7 @@ pub fn OrderIndex(comptime Span: type) type {
             /// Moves a contiguous range before `before` in the post-removal
             /// order, or to the end for null. Exact already-positioned moves
             /// leave the overlay and work counters unchanged.
-            pub fn moveRange(self: *Prepared, first: RowId, count: usize, before: ?RowId) Error!MoveResult {
+            pub fn moveRange(self: *Prepared, first: Id, count: usize, before: ?Id) Error!MoveResult {
                 self.invalidatePreflight();
                 if (count == 0) return error.InvalidRange;
                 const source_rank = try self.rank(first);
@@ -546,7 +558,7 @@ pub fn OrderIndex(comptime Span: type) type {
             /// not invalidate committed-table capacity preflight because it
             /// cannot introduce a new row id; all path-copy allocation occurs
             /// synchronously before this function returns.
-            pub fn updateSpan(self: *Prepared, row_id: RowId, span_value: Span) Error!bool {
+            pub fn updateSpan(self: *Prepared, row_id: Id, span_value: Span) Error!bool {
                 if (self.committed) @panic("Rows render-order overlay edited after commit");
                 const old = (self.get(row_id) orelse return error.InvalidRow).span;
                 if (!spanValid(span_value)) return error.InvalidSpan;
@@ -556,7 +568,7 @@ pub fn OrderIndex(comptime Span: type) type {
 
                 const node = try self.mutable(row_id);
                 node.span = span_value;
-                var current: ?RowId = row_id;
+                var current: ?Id = row_id;
                 while (current) |id| {
                     const parent = (self.get(id) orelse unreachable).parent;
                     try self.refresh(id);
@@ -606,13 +618,13 @@ pub fn OrderIndex(comptime Span: type) type {
                 self.commit_preflighted = false;
             }
 
-            fn get(self: *const Prepared, row_id: RowId) ?Node {
+            fn get(self: *const Prepared, row_id: Id) ?Node {
                 if (self.removed.contains(row_id)) return null;
                 if (self.overlay.get(row_id)) |node| return node;
                 return self.base.nodes.get(row_id);
             }
 
-            fn mutable(self: *Prepared, row_id: RowId) Error!*Node {
+            fn mutable(self: *Prepared, row_id: Id) Error!*Node {
                 if (self.removed.contains(row_id)) return error.InvalidRow;
                 if (self.overlay.getPtr(row_id)) |node| return node;
                 const committed = self.base.nodes.get(row_id) orelse return error.InvalidRow;
@@ -620,31 +632,31 @@ pub fn OrderIndex(comptime Span: type) type {
                 return self.overlay.getPtr(row_id).?;
             }
 
-            fn nodeRows(self: *const Prepared, row_id: ?RowId) usize {
+            fn nodeRows(self: *const Prepared, row_id: ?Id) usize {
                 return if (row_id) |id| (self.get(id) orelse unreachable).subtree_rows else 0;
             }
 
-            fn nodeRoots(self: *const Prepared, row_id: ?RowId) usize {
+            fn nodeRoots(self: *const Prepared, row_id: ?Id) usize {
                 return if (row_id) |id| (self.get(id) orelse unreachable).subtree_roots else 0;
             }
 
-            fn setParent(self: *Prepared, row_id: ?RowId, parent: ?RowId) Error!void {
+            fn setParent(self: *Prepared, row_id: ?Id, parent: ?Id) Error!void {
                 const id = row_id orelse return;
                 if ((self.get(id) orelse unreachable).parent == parent) return;
                 (try self.mutable(id)).parent = parent;
             }
 
-            fn setLeft(self: *Prepared, row_id: RowId, child: ?RowId) Error!void {
+            fn setLeft(self: *Prepared, row_id: Id, child: ?Id) Error!void {
                 if ((self.get(row_id) orelse unreachable).left != child) (try self.mutable(row_id)).left = child;
                 try self.setParent(child, row_id);
             }
 
-            fn setRight(self: *Prepared, row_id: RowId, child: ?RowId) Error!void {
+            fn setRight(self: *Prepared, row_id: Id, child: ?Id) Error!void {
                 if ((self.get(row_id) orelse unreachable).right != child) (try self.mutable(row_id)).right = child;
                 try self.setParent(child, row_id);
             }
 
-            fn refresh(self: *Prepared, row_id: RowId) Error!void {
+            fn refresh(self: *Prepared, row_id: Id) Error!void {
                 const snapshot = self.get(row_id) orelse return error.InvalidRow;
                 const left = if (snapshot.left) |id| self.get(id).? else null;
                 const right = if (snapshot.right) |id| self.get(id).? else null;
@@ -678,9 +690,9 @@ pub fn OrderIndex(comptime Span: type) type {
                 node.subtree_last_root = subtree_last_root;
             }
 
-            const Split = struct { left: ?RowId, right: ?RowId };
+            const Split = struct { left: ?Id, right: ?Id };
 
-            fn split(self: *Prepared, root_id: ?RowId, left_count: usize) Error!Split {
+            fn split(self: *Prepared, root_id: ?Id, left_count: usize) Error!Split {
                 const id = root_id orelse return .{ .left = null, .right = null };
                 const snapshot = self.get(id) orelse unreachable;
                 const existing_left = self.nodeRows(snapshot.left);
@@ -701,7 +713,7 @@ pub fn OrderIndex(comptime Span: type) type {
                 return .{ .left = id, .right = halves.right };
             }
 
-            fn merge(self: *Prepared, left_id: ?RowId, right_id: ?RowId) Error!?RowId {
+            fn merge(self: *Prepared, left_id: ?Id, right_id: ?Id) Error!?Id {
                 if (left_id == null) {
                     try self.setParent(right_id, null);
                     return right_id;
@@ -728,21 +740,21 @@ pub fn OrderIndex(comptime Span: type) type {
                 return right_id;
             }
 
-            fn markRemovedSubtree(self: *Prepared, row_id: RowId) void {
+            fn markRemovedSubtree(self: *Prepared, row_id: Id) void {
                 const node = self.get(row_id) orelse unreachable;
                 if (node.left) |left| self.markRemovedSubtree(left);
                 if (node.right) |right| self.markRemovedSubtree(right);
                 self.removed.putAssumeCapacity(row_id, {});
             }
 
-            fn rebuildAggregates(self: *Prepared, row_id: RowId) Error!void {
+            fn rebuildAggregates(self: *Prepared, row_id: Id) Error!void {
                 const node = self.overlay.get(row_id) orelse unreachable;
                 if (node.left) |left| try self.rebuildAggregates(left);
                 if (node.right) |right| try self.rebuildAggregates(right);
                 try self.refresh(row_id);
             }
 
-            fn findFirstRoot(self: *const Prepared, row_id: ?RowId, base_rank: usize, target: usize) ?RootAnchor {
+            fn findFirstRoot(self: *const Prepared, row_id: ?Id, base_rank: usize, target: usize) ?RootAnchor {
                 const id = row_id orelse return null;
                 const node = self.get(id) orelse unreachable;
                 if (node.subtree_roots == 0) return null;
@@ -768,7 +780,7 @@ pub fn OrderIndex(comptime Span: type) type {
             return has_first == has_last and has_first == (span_value.root_count != 0);
         }
 
-        fn nodeFromSpan(row_id: RowId, span_value: Span) Node {
+        fn nodeFromSpan(row_id: Id, span_value: Span) Node {
             const roots = spanRoots(span_value);
             return .{
                 .priority = priorityFor(row_id),

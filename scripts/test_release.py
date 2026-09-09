@@ -29,7 +29,7 @@ class ReleaseTests(unittest.TestCase):
                 self.assertIsNone(serve.config_release_platform_url())
 
     def test_release_source_identity_rejects_uncommitted_changes(self):
-        with patch.object(release.subprocess, "check_output", return_value=" M platform/main.roc\n"), self.assertRaisesRegex(ValueError, "clean committed"):
+        with patch.object(release.subprocess, "check_output", return_value=" M platform-web/main.roc\n"), self.assertRaisesRegex(ValueError, "clean committed"):
             release.clean_source_sha()
         with patch.object(release.subprocess, "check_output", side_effect=["", "a" * 40 + "\n"]):
             self.assertEqual(release.clean_source_sha(), "a" * 40)
@@ -52,7 +52,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(replace_pin(source, "nightly-2026-09-07-14d9829"), source.replace("nightly-2026-09-04-c125b82", "nightly-2026-09-07-14d9829"))
 
     def test_published_urls_reject_local_floating_and_unrelated_downloads(self):
-        for url in ["../../platform/main.roc", "http://127.0.0.1/a.tar.zst", release.RELEASE_BASE + "/latest/a.tar.zst",
+        for url in ["../../platform-web/main.roc", "http://127.0.0.1/a.tar.zst", release.RELEASE_BASE + "/latest/a.tar.zst",
                     release.RELEASE_BASE + "/0.2.0-rc1/../a.tar.zst", "https://example.com/0.2.0/a.tar.zst"]:
             with self.subTest(url=url), self.assertRaises(ValueError):
                 release.release_base(url)
@@ -62,7 +62,7 @@ class ReleaseTests(unittest.TestCase):
     def test_unpublished_examples_cannot_fall_back_to_local_bundle(self):
         with patch.object(release.driver, "bundle_platform") as bundle, patch.object(release, "verify_compiler"), self.assertRaises(ValueError):
             # This remains a local URL even after the repository publishes its baseline.
-            with patch.object(release, "platform_url", return_value="../../platform/main.roc"):
+            with patch.object(release, "platform_url", return_value="../../platform-web/main.roc"):
                 release.check_published("roc")
         bundle.assert_not_called()
 
@@ -122,8 +122,61 @@ class ReleaseTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(str(Path(directory) / "example_tasks.mjs"), result.stderr)
 
-    def test_selected_roots_cover_every_public_example(self):
+    def test_selected_roots_cover_both_platforms_and_every_example(self):
         self.assertEqual(toolchain.validate_roots(), toolchain.development_pin())
+
+    def test_compiler_pin_reads_do_not_depend_on_windows_locale(self):
+        original = Path.read_text
+        def windows_read(path, *args, **kwargs):
+            kwargs.setdefault("encoding", "cp1252")
+            return original(path, *args, **kwargs)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "main.roc"
+            source.write_text('app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "local" }\nmain = "А"', encoding="utf-8")
+            with patch.object(Path, "read_text", windows_read):
+                self.assertEqual(toolchain.read_pin(source), "nightly-2026-09-04-c125b82")
+                self.assertIn('"А"', toolchain.local_sources(root, ["main.roc"])["main.roc"])
+
+    def test_ci_compiler_relocation_preserves_checkout_and_refuses_external_tools(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            compiler = workspace / "download/roc"
+            compiler.parent.mkdir(parents=True)
+            compiler.write_bytes(b"compiler")
+            envfile = root / "path"
+            environment = {"GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(root),
+                           "GITHUB_PATH": str(envfile)}
+            with patch.dict(os.environ, environment), patch.object(toolchain.shutil, "which", return_value=str(compiler)):
+                toolchain.relocate_for_ci()
+            self.assertTrue(workspace.is_dir())
+            self.assertFalse(compiler.parent.exists())
+            self.assertEqual((root / "roc-toolchain/roc").read_bytes(), b"compiler")
+            self.assertEqual(envfile.read_text().strip(), str(root / "roc-toolchain"))
+            with patch.dict(os.environ, environment), patch.object(toolchain.shutil, "which", return_value=str(root / "roc-toolchain/roc")):
+                with self.assertRaisesRegex(ValueError, "immediate child"):
+                    toolchain.relocate_for_ci()
+
+    def test_new_example_requires_a_pin_and_updater_registration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".github").mkdir()
+            paths = ["platform-web/main.roc", "platform-gui/main.roc",
+                     "examples-web/hello/main.roc", "examples-gui/hello/main.roc"]
+            for name in paths:
+                path = root / name
+                path.parent.mkdir(parents=True)
+                path.write_text('app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "local" }')
+            config = root / ".github/roc-nightly.json"
+            config.write_text(json.dumps({"compiler_roots": paths[:-1]}))
+            with self.assertRaisesRegex(ValueError, "every web and GUI example"):
+                toolchain.validate_roots(root)
+            config.write_text(json.dumps({"compiler_roots": paths}))
+            self.assertEqual(toolchain.validate_roots(root), "nightly-2026-09-04-c125b82")
+            (root / paths[-1]).write_text('app [main] { pf: platform "local" }')
+            with self.assertRaisesRegex(ValueError, "no literal pin"):
+                toolchain.validate_roots(root)
 
     def test_release_writes_require_explicit_tested_main_dispatch(self):
         sha = "a" * 40

@@ -644,10 +644,10 @@ const World = struct {
     mode: Mode,
     hash_buckets: u32,
 
-    scopes: std.ArrayListUnmanaged(Scope) = .empty,
-    sites: std.ArrayListUnmanaged(each.Site) = .empty,
+    scopes: signals.shared_buffer.List(Scope) = .empty,
+    sites: signals.shared_buffer.List(each.Site) = .empty,
     site_indexes: each.SiteIndexMap = .empty,
-    memberships: std.ArrayListUnmanaged(?each.Membership) = .empty,
+    memberships: signals.shared_buffer.List(?each.Membership) = .empty,
     /// Row-owned values indexed by scope index, parallel to `scopes`.
     row_values: std.ArrayListUnmanaged(?RowValues) = .empty,
 
@@ -2071,7 +2071,7 @@ fn checkBarrier(gpa: std.mem.Allocator, reader: *FuzzReader, debug: bool) void {
         setPhase("probing the reuse barrier at generation {d} for a slot retired at {d}", .{ raw_barrier, retired.raw() });
         if (debug) std.debug.print("barrier probe: retired {d}, barrier {d}\n", .{ retired.raw(), raw_barrier });
 
-        var scopes: std.ArrayListUnmanaged(Scope) = .empty;
+        var scopes: signals.shared_buffer.List(Scope) = .empty;
         defer scopes.deinit(gpa);
 
         const root = (scope_tree.internRoot(Row, gpa, &scopes) catch fail("root intern failed", .{})).scope_id;

@@ -8,6 +8,7 @@ const render = @import("render_commands.zig");
 const render_sink = @import("render_sink.zig");
 const retained = @import("retained_values.zig");
 const roles = @import("callable_roles.zig");
+const key_chord = @import("key_chord.zig");
 
 pub const HostValueCapability = retained.HostValueCapability;
 pub const HostTextRead = retained.HostTextRead;
@@ -121,11 +122,14 @@ pub const KeyedSelectSignal = struct {
 
 pub const TaskSourceSignal = struct {
     token: SignalToken,
+    kind: boundary.TaskKind,
     name: RocStrView,
     payload_capability: HostValueCapability,
     initial: roles.Initializer,
     done: roles.Transform,
     failed: roles.Transform,
+    canceled: roles.Initializer,
+    refused: roles.Initializer,
     capability: HostValueCapability,
     reset_on_start: bool,
 };
@@ -284,10 +288,25 @@ pub const SignalExpr = union(enum) {
                 break :blk .{ .task_source = .{
                     .token = token,
                     .name = RocStrView.fromAbi(payload.name),
+                    .kind = switch (payload.kind) {
+                        .external => .external,
+                        .choose_file => .choose_file,
+                        .choose_directory => .choose_directory,
+                        .choose_save_path => .choose_save_path,
+                        .read_text => .read_text,
+                        .write_text => .write_text,
+                        .scan_directory => .scan_directory,
+                        .list_directory => .list_directory,
+                        .open_path => .open_path,
+                        .read_preview => .read_preview,
+                        .read_log => .read_log,
+                    },
                     .payload_capability = payload.payload_cap,
                     .initial = .fromAbi(payload.initial),
                     .done = .fromAbi(payload.done),
                     .failed = .fromAbi(payload.failed),
+                    .canceled = .fromAbi(payload.canceled),
+                    .refused = .fromAbi(payload.refused),
                     .capability = payload.cap,
                     .reset_on_start = payload.reset_on_start,
                 } };
@@ -490,6 +509,7 @@ pub const NamedEventAttr = struct {
     name: RocStrView,
     policy: EventPolicy,
     delivery_request: EventDeliveryRequest,
+    key_chord: ?key_chord.Chord,
     msg: EventMessage,
 };
 
@@ -567,12 +587,25 @@ pub const NodeAttr = union(enum) {
                 const payload = attr.payload_on();
                 const kind_id = payload.kind.id;
                 const policy = eventPolicyFromAbi(payload.policy);
+                const chord: ?key_chord.Chord = switch (payload.key_chord.tag) {
+                    .None => null,
+                    .Some => filtered: {
+                        const raw = payload.key_chord.payload_some();
+                        const modifiers = @as(u32, @intFromBool(raw.control)) * key_chord.control |
+                            @as(u32, @intFromBool(raw.shift)) * key_chord.shift |
+                            @as(u32, @intFromBool(raw.alt)) * key_chord.alt |
+                            @as(u32, @intFromBool(raw.meta)) * key_chord.meta;
+                        break :filtered key_chord.parse(raw.key.asSlice(), modifiers) catch @panic("native shortcut descriptor used an invalid key chord");
+                    },
+                };
+                if (chord != null and (kind_id != 0 or !std.mem.eql(u8, payload.name.asSlice(), "keydown"))) @panic("native shortcut filter requires a named keydown event");
                 if (kind_id == 0) {
                     if (payload.name.asSlice().len == 0) @panic("named event descriptor used an empty name");
                     break :blk .{ .named_event = .{
                         .name = RocStrView.fromAbi(payload.name),
                         .policy = policy,
                         .delivery_request = eventDeliveryRequestFromAbi(payload.delivery),
+                        .key_chord = chord,
                         .msg = EventMessage.fromAbi(payload.msg),
                     } };
                 }
@@ -979,10 +1012,13 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
         .payload = .{ .task_source = .{
             .token = task_token,
             .name = borrowedRocStr("load-user"),
+            .kind = .read_text,
             .payload_cap = capability,
             .initial = task_token,
             .done = null,
             .failed = null,
+            .canceled = task_token,
+            .refused = task_token,
             .cap = capability,
             .reset_on_start = true,
         } },
@@ -993,6 +1029,8 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
             try std.testing.expectEqual(task_token, payload.token.callable);
             try std.testing.expectEqualStrings("load-user", payload.name.asSlice());
             try std.testing.expect(payload.reset_on_start);
+            try std.testing.expectEqual(boundary.TaskKind.read_text, payload.kind);
+            try std.testing.expectEqual(task_token, payload.canceled.toAbi());
             try std.testing.expectEqual(capability, payload.payload_capability);
             try std.testing.expectEqual(capability, payload.capability);
         },
@@ -1220,6 +1258,7 @@ test "NodeAttr.fromAbi decodes static bool attrs and events" {
     const reducer = std.mem.zeroes(HostEventReducer);
     const event = abi.NodeAttr{
         .payload = .{ .on = .{
+            .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
             .kind = .{ .id = @intFromEnum(EventKind.pointer_down) },
             .msg = .{
                 .event_extraction_plan = testEventExtractionPlan(.record_key_shift),
@@ -1252,6 +1291,7 @@ test "NodeAttr.fromAbi decodes named events" {
     const reducer = std.mem.zeroes(HostEventReducer);
     const attr = abi.NodeAttr{
         .payload = .{ .on = .{
+            .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
             .kind = .{ .id = 0 },
             .msg = .{
                 .event_extraction_plan = testEventExtractionPlan(.none),

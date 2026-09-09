@@ -4,6 +4,7 @@ const std = @import("std");
 const signals = @import("signals");
 const boundary = signals.boundary;
 const sexpr = @import("sexpr.zig");
+const file_fixtures = @import("file_fixtures.zig");
 
 pub const SpecCommandType = enum {
     click,
@@ -13,6 +14,9 @@ pub const SpecCommandType = enum {
     pointer_enter,
     pointer_leave,
     key_down,
+    shortcut,
+    request_window_close,
+    expect_window_closed,
     focus,
     blur,
     change,
@@ -97,8 +101,10 @@ pub const SpecCommand = struct {
     cmd_type: SpecCommandType,
     locator: Locator,
     task_name: ?[]const u8 = null,
+    expected_task_kinds: u64 = 0,
     expected_attr: ?[]const u8 = null,
     interval_ms: ?u64 = null,
+    shortcut: ?signals.key_chord.Chord = null,
     expected_text: ?[]const u8,
     expected_count: ?u64,
     expected_metric_delta: ?i64 = null,
@@ -379,6 +385,19 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             const key_copy = try dupeUnescapedQuoted(allocator, key_split.quoted);
             errdefer allocator.free(key_copy);
             try appendSpecCommand(&commands, allocator, .key_down, try parseLocator(allocator, key_split.head), key_copy, null, try parseBoolToken(shift_split.token), line_num);
+        } else if (std.mem.eql(u8, trimmed, "request_window_close")) {
+            try appendSpecCommand(&commands, allocator, .request_window_close, emptyLocator(), null, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "expect_window_closed ")) {
+            try appendSpecCommand(&commands, allocator, .expect_window_closed, emptyLocator(), null, null, try parseBoolToken(trimmed["expect_window_closed ".len..]), line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "shortcut ")) {
+            const modifier_split = try splitTrailingToken(trimmed["shortcut ".len..]);
+            const modifiers = std.fmt.parseInt(u32, modifier_split.token, 10) catch return ParseError.InvalidFormat;
+            const key_split = try splitTrailingQuoted(modifier_split.head);
+            const key = try dupeUnescapedQuoted(allocator, key_split.quoted);
+            defer allocator.free(key);
+            const chord = signals.key_chord.parse(key, modifiers) catch return ParseError.InvalidFormat;
+            try appendSpecCommand(&commands, allocator, .shortcut, try parseLocator(allocator, key_split.head), null, null, null, line_num);
+            commands.items[commands.items.len - 1].shortcut = chord;
         } else if (std.mem.startsWith(u8, trimmed, "focus ")) {
             try appendSpecCommand(&commands, allocator, .focus, try parseLocator(allocator, trimmed["focus ".len..]), null, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "blur ")) {
@@ -675,6 +694,23 @@ fn appendDecodedForm(
     if (items.len == 0) return ParseError.InvalidFormat;
     const head = exprSymbol(items[0]) orelse return ParseError.InvalidFormat;
 
+    if (!is_setup and file_fixtures.recognizes(head)) {
+        const fixture = try file_fixtures.parse(allocator, head, items[1..]);
+        errdefer allocator.free(fixture.task_name);
+        errdefer allocator.free(fixture.payload);
+        try commands.append(allocator, .{
+            .cmd_type = if (fixture.failed) .reject_task else .resolve_task,
+            .locator = emptyLocator(),
+            .task_name = fixture.task_name,
+            .expected_task_kinds = fixture.kinds,
+            .expected_text = fixture.payload,
+            .expected_count = null,
+            .expected_bool = null,
+            .line_num = form.span.line,
+        });
+        return;
+    }
+
     var line: std.Io.Writer.Allocating = .init(allocator);
     defer line.deinit();
     const writer = &line.writer;
@@ -875,22 +911,23 @@ test "S-expression spec parser rejects executable setup and empty steps" {
 
 test "all checked-in S-expression specs parse" {
     const io = std.Io.Threaded.global_single_threaded.io();
-    const examples = try std.Io.Dir.cwd().openDir(io, "examples", .{ .iterate = true });
-    defer examples.close(io);
-    var walker = try examples.walk(std.testing.allocator);
-    defer walker.deinit();
-
     var count: usize = 0;
-    while (try walker.next(io)) |entry| {
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".scm")) continue;
-        const path = try std.fs.path.join(std.testing.allocator, &.{ "examples", entry.path });
-        defer std.testing.allocator.free(path);
-        var parsed = parseTestSpecFile(std.testing.allocator, path) catch |err| {
-            std.debug.print("failed to parse {s}: {s}\n", .{ path, @errorName(err) });
-            return err;
-        };
-        parsed.deinit(std.testing.allocator);
-        count += 1;
+    for ([_][]const u8{ "examples-web", "examples-gui", "test/gui" }) |directory| {
+        const examples = try std.Io.Dir.cwd().openDir(io, directory, .{ .iterate = true });
+        defer examples.close(io);
+        var walker = try examples.walk(std.testing.allocator);
+        defer walker.deinit();
+        while (try walker.next(io)) |entry| {
+            if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".scm")) continue;
+            const path = try std.fs.path.join(std.testing.allocator, &.{ directory, entry.path });
+            defer std.testing.allocator.free(path);
+            var parsed = parseTestSpecFile(std.testing.allocator, path) catch |err| {
+                std.debug.print("failed to parse {s}: {s}\n", .{ path, @errorName(err) });
+                return err;
+            };
+            parsed.deinit(std.testing.allocator);
+            count += 1;
+        }
     }
     try std.testing.expect(count > 100);
 }
@@ -1158,4 +1195,143 @@ test "splitTrailingQuoted skips escaped quotes" {
     const unescaped = try dupeUnescapedQuoted(std.testing.allocator, split.quoted);
     defer std.testing.allocator.free(unescaped);
     try std.testing.expectEqualStrings("he said \"hi\"", unescaped);
+}
+
+test "spec parser validates exact native shortcut keys and modifiers" {
+    const commands = try parseTestSpec(std.testing.allocator,
+        \\shortcut test_id:"editor" "s" 1
+        \\shortcut test_id:"editor" "s" 3
+        \\shortcut test_id:"editor" "Escape" 0
+    );
+    defer freeSpecCommands(std.testing.allocator, commands);
+    try std.testing.expectEqual(@as(usize, 3), commands.len);
+    try std.testing.expectEqual(SpecCommandType.shortcut, commands[0].cmd_type);
+    try std.testing.expectEqualStrings("editor", commands[0].locator.test_id.?);
+    try std.testing.expect(commands[0].shortcut.?.eql(try signals.key_chord.parse("s", 1)));
+    try std.testing.expect(commands[1].shortcut.?.eql(try signals.key_chord.parse("s", 3)));
+    try std.testing.expect(commands[2].shortcut.?.eql(try signals.key_chord.parse("Escape", 0)));
+    for ([_][]const u8{
+        "shortcut test_id:\"editor\" \"S\" 1",
+        "shortcut test_id:\"editor\" \"ctrl-s\" 1",
+        "shortcut test_id:\"editor\" \"s\" 16",
+        "shortcut test_id:\"editor\" \"s\" -1",
+        "shortcut test_id:\"editor\" \"s\" true",
+    }) |invalid| {
+        try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, invalid));
+    }
+}
+
+test "S-expression spec parser decodes native shortcuts" {
+    const spec = try parseSExprTestSpec(std.testing.allocator,
+        \\(test "save" (steps (shortcut (test-id "editor") "s" 3)))
+    );
+    defer spec.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), spec.commands.len);
+    try std.testing.expectEqual(SpecCommandType.shortcut, spec.commands[0].cmd_type);
+    try std.testing.expect(spec.commands[0].shortcut.?.eql(try signals.key_chord.parse("s", 3)));
+}
+
+test "file fixture forms reject malformed values and release partial allocations" {
+    const invalid = [_][]const u8{
+        "(resolve-file-choice \"open\" (chosen \"relative\"))",
+        "(resolve-file-choice \"open\" (canceled \"extra\"))",
+        "(resolve-file-choice \"open\" (chosen \"/tmp/a\") \"extra\")",
+        "(resolve-file-read \"read\" :path \"/tmp/a\" :path \"duplicate\")",
+        "(resolve-file-read \"read\" :path \"/tmp/a\" :wrong \"value\")",
+        "(resolve-file-read \"read\" :path \"/tmp/a\" :text false)",
+        "(resolve-file-write \"write\" :path \"/tmp/a\" :bytes -1)",
+        "(resolve-file-write \"write\" :path \"/tmp/a\" :bytes 1048577)",
+        "(reject-file \"read\" :kind invented :detail \"no\")",
+        "(reject-file \"read\" :kind canceled :detail \"not empty\")",
+    };
+    for (invalid) |form| {
+        const content = try std.fmt.allocPrint(std.testing.allocator, "(test \"invalid\" (steps {s}))", .{form});
+        defer std.testing.allocator.free(content);
+        try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, content));
+    }
+}
+
+fn parseFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
+    var parsed = try parseSExprTestSpec(allocator,
+        \\(test "file workflow"
+        \\  (steps
+        \\    (resolve-file-choice "open" (chosen "/tmp/λ:note.txt"))
+        \\    (resolve-file-choice "save" (canceled))
+        \\    (resolve-file-read "read" :path "/tmp/a" :text "first\nλ")
+        \\    (resolve-file-write "write" :bytes 0 :path "/tmp/a")
+        \\    (reject-file "read" :detail "not allowed" :kind permission-denied)))
+    );
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 5), parsed.commands.len);
+    try std.testing.expectEqualStrings("6:files18:canceled", parsed.commands[1].expected_text.?);
+    try std.testing.expectEqualStrings("6:files16:/tmp/a1:0", parsed.commands[3].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.reject_task, parsed.commands[4].cmd_type);
+    try std.testing.expectEqual(@as(usize, 4), parsed.commands[1].line_num);
+}
+
+test "file fixture parsing owns every allocation on success and refusal" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseFileFixtureAllocationCase, .{});
+}
+
+test "window close requests and assertions decode without locators" {
+    const spec = try parseSExprTestSpec(std.testing.allocator,
+        \\(test "closing" (steps (request-window-close) (expect-window-closed false)))
+    );
+    defer spec.deinit(std.testing.allocator);
+    try std.testing.expectEqual(SpecCommandType.request_window_close, spec.commands[0].cmd_type);
+    try std.testing.expectEqual(false, spec.commands[1].expected_bool.?);
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "request_window_close extra"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "expect_window_closed yes"));
+}
+
+fn parseExtendedFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
+    var parsed = try parseSExprTestSpec(allocator,
+        \\(test "native content"
+        \\ (steps
+        \\  (resolve-file-log "tail" :path "/tmp/log" :text "λ\n" :device 18446744073709551615 :inode 13 :offset 3 :change rotated :state partial-utf8)
+        \\  (resolve-file-directory "folder" :path "/tmp" :entries ((file "/tmp/λ" 18446744073709551615) (directory "/tmp/child" 0) (symbolic-link "/tmp/link" 9)))
+        \\  (resolve-file-preview "preview" :path "/tmp/λ" :text "first\nsecond" :truncated true)
+        \\  (resolve-file-open "launch" :path "/tmp/λ")))
+    );
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqualStrings("6:files18:/tmp/log3:λ\n20:184467440737095516152:131:37:rotated12:partial-utf8", parsed.commands[0].expected_text.?);
+    try std.testing.expect(file_fixtures.admits(parsed.commands[0].expected_task_kinds, .read_log));
+    try std.testing.expect(!file_fixtures.admits(parsed.commands[0].expected_task_kinds, .read_text));
+    try std.testing.expect(file_fixtures.admits(parsed.commands[1].expected_task_kinds, .list_directory));
+    try std.testing.expect(!file_fixtures.admits(parsed.commands[1].expected_task_kinds, .scan_directory));
+    try std.testing.expectEqualStrings("6:files17:/tmp/λ12:first\nsecond4:true", parsed.commands[2].expected_text.?);
+    try std.testing.expectEqualStrings("6:files17:/tmp/λ", parsed.commands[3].expected_text.?);
+}
+
+test "extended file fixtures preserve full unsigned cursors under allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseExtendedFileFixtureAllocationCase, .{});
+}
+
+test "extended file fixtures reject noncanonical unsigned numbers and unknown tags" {
+    for ([_][]const u8{ "-1", "+1", "00", "01", "18446744073709551616", "\"123\"" }) |number| {
+        const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"bad cursor\" (steps (resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device {s} :inode 1 :offset 0 :change initial :state at-end)))", .{number});
+        defer std.testing.allocator.free(text);
+        try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
+    }
+    for ([_][]const u8{
+        "(resolve-file-preview \"preview\" :path \"/tmp/a\" :text \"x\" :truncated \"true\")",
+        "(resolve-file-directory \"folder\" :path \"/tmp\" :entries ((imaginary \"/tmp/a\" 1)))",
+        "(resolve-file-directory \"folder\" :path \"/tmp\" :entries ((file \"/tmp/a\" +1)))",
+        "(resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change replaced :state at-end)",
+        "(resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change initial :state finished)",
+        "(resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change initial :change at-end)",
+    }) |form| {
+        const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"bad native content\" (steps {s}))", .{form});
+        defer std.testing.allocator.free(text);
+        try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
+    }
+}
+
+test "extended file fixtures reject oversized preview text before settlement" {
+    const oversized = try std.testing.allocator.alloc(u8, 65537);
+    defer std.testing.allocator.free(oversized);
+    @memset(oversized, 'a');
+    const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"too large\" (steps (resolve-file-preview \"preview\" :path \"/tmp/a\" :text \"{s}\" :truncated false)))", .{oversized});
+    defer std.testing.allocator.free(text);
+    try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
 }

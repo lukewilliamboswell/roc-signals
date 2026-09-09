@@ -36,7 +36,10 @@ examples`, and `Release archive`. The release workflow additionally validates
 archives on Linux x64/arm64 and Intel/Apple Silicon macOS. Pages deploys the
 supported release, not development builds from ordinary pushes.
 
-Compiler pins live in the platform and public application headers. Run
+Compiler pins live in both platform headers and every web and GUI example
+header, including internal web fixtures. `.github/roc-nightly.json` selects all
+of them for coordinated compiler updates; adding an example requires registering
+its header there. Public web dependency URLs remain unchanged during these updates. Run
 `python3 scripts/toolchain.py --check --roc-bin /path/to/roc` to validate the
 selected roots and installed compiler. The nightly bot advances those pins while
 preserving release URLs and automatically merges only a passing pin-only PR.
@@ -64,11 +67,22 @@ python3 scripts/test.py roc-test
 python3 scripts/test.py wasm
 python3 scripts/test.py wasm-bench --roc-bin /path/to/roc
 python3 scripts/test.py native --native always
+python3 scripts/test.py gui
 python3 scripts/test.py fault --native always
 python3 scripts/test.py bundle --bundle always
 python3 scripts/test.py bench --native always
+python3 scripts/test.py size --roc-bin /path/to/roc
 python3 scripts/test.py published
 ```
+
+`size` builds the ReleaseSmall browser host and the fixed fixture set in
+`test/size/fixtures.toml` as production Wasm, then fails if any fixture's raw
+or gzip size exceeds `test/size/budgets.toml`. It requires the selected
+compiler pin, because a different compiler produces different sizes. The
+budgets are explicit reviewed numbers; do not regenerate them to absorb a
+regression. `scripts/wasm_size.py` also compares two reports
+(`--compare before.json after.json`) and records attribution companions
+(`--symbols`); see `docs/profiling.md` for the measurement practice.
 
 `wasm-bench` is the manual Node/V8 performance workflow for the complete
 production-controlled path from a DOM-double event through Wasm and command
@@ -158,18 +172,61 @@ zig build run-test-zig -Dtest-filter="signals host"
 `zig build build-test-hosts` copies host artifacts into Roc's platform target
 layout:
 
-- `platform/targets/x64mac/libhost.a`
-- `platform/targets/arm64mac/libhost.a`
-- `platform/targets/x64musl/libhost.a`
-- `platform/targets/x64musl/crt1.o`
-- `platform/targets/x64musl/libc.a`
-- `platform/targets/arm64musl/libhost.a`
-- `platform/targets/arm64musl/crt1.o`
-- `platform/targets/arm64musl/libc.a`
-- `platform/targets/wasm32/host.wasm`
+- `platform-web/targets/x64mac/libhost.a`
+- `platform-web/targets/arm64mac/libhost.a`
+- `platform-web/targets/x64musl/libhost.a`
+- `platform-web/targets/x64musl/crt1.o`
+- `platform-web/targets/x64musl/libc.a`
+- `platform-web/targets/arm64musl/libhost.a`
+- `platform-web/targets/arm64musl/crt1.o`
+- `platform-web/targets/arm64musl/libc.a`
+- `platform-web/targets/wasm32/host.wasm`
 
 Roc app executables built during tests are written under `.test-out/` by
 `scripts/test.py`.
+
+## Dependency artifact releases
+
+The `Dependency releases` workflow builds musl from `dependencies/musl.json`,
+tests the exact archives on Linux x86-64 and AArch64, and checks that a second
+build produces the same bytes. Pull requests validate without publication.
+An explicit dispatch on `main` with a new `deps-musl-<version>` tag publishes
+those tested archives with signed GitHub build provenance and a consumer lock.
+The workflow does not compile the platform host or a Roc application.
+
+To exercise the producer locally on Linux x86-64 with Zig 0.16.0, Git, and Make:
+
+```sh
+python3 scripts/build_musl.py --target x64musl --output /tmp/musl-candidate
+python3 scripts/test_musl_artifact.py /tmp/musl-candidate/musl-x64musl.tar --target x64musl
+python3 -m unittest scripts/test_dependency_artifacts.py
+```
+
+Use a fresh output directory for each build. Local candidate testing establishes
+link behavior; release consumption additionally requires CI-signed provenance.
+Review the published `dependencies.lock.json` before adopting it. Fetch and verify
+a selected locked artifact with the GitHub CLI installed:
+
+```sh
+python3 scripts/dependency_artifacts.py --lock dependencies.lock.json --artifact musl-x64musl --output /tmp/verified-musl
+```
+
+The default download cache is `~/.cache/roc-signals/dependencies`; `--cache` selects
+another directory. Digest and provenance verification also run on cached bytes.
+The output retains the selected lock and a directory for each artifact, containing
+its manifest, target files, and license notices. Existing output directories are
+rejected. There is no unsigned fallback or automatic dependency upgrade.
+
+Publication refuses an existing tag or release. If a run stops during publication,
+inspect the existing tag, assets, and attestations, and recover the tested bytes;
+do not overwrite the release or rebuild under its existing identity.
+
+GUI CI caches compiled Cargo dependencies using the lockfile, Rust environment,
+and runner image identity. Only successful pushes to `main` save the cache;
+pull requests restore it without publishing entries. Workspace host code remains
+outside that dependency cache and is rebuilt from the current checkout. This is
+a build acceleration mechanism, separate from verification of release inputs.
+Published-download checks continue to use fresh Roc caches.
 
 ## Coverage
 
@@ -330,18 +387,25 @@ only finished once the invariant it violated is asserted somewhere permanent.
 
 ## Bundles
 
-Build host artifacts first, then create a platform bundle:
+Build both app-independent hosts and create both platform bundles:
 
 ```sh
-zig build build-test-hosts -Doptimize=ReleaseSmall
 scripts/bundle.sh
-python3 scripts/bundle_browser.py
+# Build and serve web/ and gui/ bundles plus URL-bound GUI example sources:
+scripts/bundle.sh --serve --port 8000
 ```
 
-The bundle script uses `ROC_BIN`, `ROC`, or `roc` from `PATH`. By default it
-writes the archive to the repository root. Set `BUNDLE_OUT_DIR` to choose a
-different output directory. The Python bundle test writes archives under
-`.test-out/bundles`.
+The script uses `ROC_BIN`, `ROC`, or `roc` from `PATH`; use the pinned compiler.
+Archives and `bundles.json` default to `.test-out/bundles`, with separate `web/`
+and `gui/` directories. `BUNDLE_OUT_DIR` or `--output-dir` changes that root.
+`--package web` and `--package gui` select one platform and put its archive
+directly in the output directory. `--no-build` reuses prepared hosts;
+`--debug-gui` selects a faster development Rust build. Use the default optimized
+GUI build for distributable archives: development archives can exceed the pinned
+compiler's default 100 MiB transitive package budget. Existing web test, site,
+and release commands explicitly select the web package.
+
+For the separate browser JavaScript artifact, run `python3 scripts/bundle_browser.py`.
 
 To test an existing bundle archive instead of rebuilding one:
 
@@ -521,7 +585,7 @@ value mismatch. Prefer a `test-id` locator with the value as the expectation.
 every interaction no matter how deep the graph. Use `derived_calls_into_roc`
 (one per `map`/`map2`/`combine` evaluation) as the fine-grained budget, and
 `propagation_prunes` to show an equality cutoff fired. See
-`examples/_fixtures/metric-semantics/`.
+`examples-web/_fixtures/metric-semantics/`.
 
 **Assert structural metrics exactly; bound engine-internal ones.** `rows_created`,
 `rows_reused`, `rows_removed`, `scopes_created` and `scopes_disposed` are
@@ -561,12 +625,21 @@ Supported action commands:
 - `(pointer-down <locator>)`, `(pointer-up <locator>)`
 - `(pointer-enter <locator>)`, `(pointer-leave <locator>)`
 - `(key-down <locator> "<key>" true|false)`
+- `(shortcut <locator> "<key>" <modifier-mask>)` (native GUI)
 - `(focus <locator>)`, `(blur <locator>)`
 - `(composition-start <locator>)`, `(composition-end <locator>)`
 - `(change <locator> "<value>")`, `(select-option <locator> "<value>")`
 - `(custom-event <locator> "<event-name>" "<detail>")`
 - `(submit <locator>)`, `(fill <locator> "<text>")`
 - `(check <locator>)` and `(uncheck <locator>)`
+
+`shortcut` dispatches the exact `Gui.on_shortcut` binding declared on the located
+region through the shared engine. Keys use the public canonical vocabulary;
+modifier bits are Control `1`, Shift `2`, Alt `4`, and Meta `8` (add them for a
+combination). For example, `(shortcut (test-id "editor") "s" 3)` invokes
+Control+Shift+S. Missing bindings, invalid keys, and masks outside `0..15` fail.
+This command checks application semantics and scope disposal. GPUI interaction
+tests cover focused routing, native editor precedence, and event propagation.
 
 Supported assertions:
 
@@ -582,16 +655,97 @@ Supported assertions:
 - `(expect-disabled <locator> true|false)`
 - `(expect-updates <locator> <count>)`
 
+### Readable native file fixtures
+
+Use structured Files settlements for application workflows so specs do not need
+hand-counted UTF-8 frames or knowledge of the private `files1` payload:
+
+```lisp
+(click (role button :name "Open…"))
+(expect-pending-task "notes-open" 1)
+(resolve-file-choice "notes-open" (chosen "/tmp/meeting.txt"))
+(resolve-file-read "notes-read" :path "/tmp/meeting.txt" :text "First line\nSecond line: λ")
+(expect-value (label "Note text") "First line\nSecond line: λ")
+```
+
+The complete initial vocabulary is:
+
+```lisp
+(resolve-file-choice "save-path" (canceled))
+(resolve-file-choice "save-path" (chosen "/tmp/project.board.json"))
+(resolve-file-read "read" :path "/tmp/note.txt" :text "Contents")
+(resolve-file-write "write" :path "/tmp/note.txt" :bytes 8)
+(reject-file "read" :kind permission-denied :detail "/tmp/note.txt")
+```
+
+Directory browsing, previews, native launch, and incremental logs use the same
+structured vocabulary:
+
+```lisp
+(resolve-file-directory "folder" :path "/tmp" :entries
+  ((file "/tmp/readme.txt" 123) (directory "/tmp/project" 0)
+   (symbolic-link "/tmp/latest" 12) (other "/tmp/socket" 0)))
+(resolve-file-preview "preview" :path "/tmp/readme.txt" :text "First page" :truncated true)
+(resolve-file-open "launch" :path "/tmp/readme.txt")
+(resolve-file-log "tail" :path "/tmp/app.log" :text "Ready\n"
+  :device 7 :inode 13 :offset 6 :change initial :state at-end)
+```
+
+Log changes are `initial`, `continued`, `rotated`, or `truncated`; states are
+`more`, `at-end`, or `partial-utf8`. Cursor numbers and directory file sizes are
+canonical unsigned decimal U64 values, including values above signed I64's
+maximum. Signs, leading zeros, quoted numbers, and overflow are refused. Preview
+and log text are bounded to 64 KiB. Direct directory fixtures accept up to
+10,000 entries and four MiB of combined root/entry path bytes. Directory fixtures
+settle `list_directory` tasks, not recursive scans; preview, log, and launch
+fixtures each require their corresponding declared service.
+
+Fields may appear in any order; each documented field is required exactly once. Choice tags
+are `chosen` and `canceled`. Error kinds are `canceled`, `not-found`,
+`permission-denied`, `invalid-utf8`, `invalid-path`, `resource-limit`, `io`, and
+`unavailable`; canceled errors require empty detail. Paths must be absolute,
+valid UTF-8, and at most 4096 bytes. Read text and write byte counts have the
+native one-MiB bound, and error detail is bounded to 4096 UTF-8 bytes. Unknown
+fields, duplicate fields, invalid types, and oversized values reject the spec.
+
+A fixture checks the pending task's declared service before calling its Roc
+result decoder. Read fixtures cannot settle write tasks; choice fixtures accept
+file, directory, and save choosers; error fixtures accept native Files tasks.
+A mismatch reports the source line, task label, expected service, and actual
+service or missing request. A task label locates a request for the harness; it
+does not determine service semantics. Settlements still use ordinary engine
+propagation and task ownership.
+
+These commands simulate results and perform no filesystem IO. They establish
+application response, cancellation, and state behavior; real filesystem and
+native chooser behavior need host tests and a native walkthrough. Keep raw
+`resolve-task`, `reject-task`, and `resolve-stale-task` when deliberately testing
+malformed payloads or stale delivery. The Board and Notes journeys demonstrate
+save snapshots, failed loads, cancellation, retries, and retained drafts.
+
+A supplied result does not assert the request payload the app emitted. For
+example, resolving a write with `:bytes 14` does not prove that the app submitted
+those fourteen bytes. Test snapshot construction as pure application logic and
+check real submitted data through focused native IO workflows. The harness
+currently exposes pending/canceled counts, not request-body assertions.
+
 Supported async and lifecycle commands:
 
 - `(resolve-task "<task-name>" "<payload>")`
 - `(resolve-stale-task "<task-name>" "<payload>")`
 - `(reject-task "<task-name>" "<payload>")`
 - `(tick-interval <period-ms>)`, `(tick-interval-if-active <period-ms>)`
+- `(request-window-close)`, `(expect-window-closed true|false)` (native GUI lifecycle)
 - `(expect-pending-task "<task-name>" <count>)`
 - `(expect-canceled-task "<task-name>" <count>)`
 - `(expect-interval <period-ms> <count>)`
 - `(expect-cleanup "<cleanup-name>" <count>)`
+
+A window-close assertion records the committed close decision. The harness
+keeps the final semantic tree available for inspection; it does not simulate
+an OS window or automatically reject subsequent interactions with that tree.
+End the interaction journey at closure and use GPUI lifecycle tests to verify
+native removal and teardown.
 
 Supported metric commands:
 
@@ -639,7 +793,7 @@ hosts; use `python3 scripts/test.py bench --native always` to force the focused
 bench gate. A built app binary also accepts benchmark flags directly:
 
 ```sh
-.test-out/bench-bin/signals-data-grid-bench --bench-app --bench-name signals-data-grid --bench-iterations 100 --bench-samples 3 examples/data-grid/specs/initial-mount.scm
+.test-out/bench-bin/signals-data-grid-bench --bench-app --bench-name signals-data-grid --bench-iterations 100 --bench-samples 3 examples-web/data-grid/specs/initial-mount.scm
 ```
 
 The host initializes a fresh app per iteration, applies the initial command
@@ -717,10 +871,144 @@ from full snapshot reconciliation when testing update costs.
 Regenerate glue after changing exposed platform types or provided entrypoints:
 
 ```sh
-roc glue <path-to-roc>/src/glue/src/ZigGlue.roc src/signals platform/main.roc
+roc glue <path-to-roc>/src/glue/src/ZigGlue.roc src/signals platform-web/main.roc
 zig fmt src/signals/roc_platform_abi.zig
 ```
 
-Use the `ZigGlue.roc` from the same Roc commit named by the `roc` header in `platform/main.roc`. The host
+Use the `ZigGlue.roc` from the same Roc commit named by the `roc` header in `platform-web/main.roc`. The host
 uses the generated types' public `incref` and `decref` methods; generated helper
 functions are implementation details and must not be made public by hand.
+
+## Native GUI platform spike
+
+`platform-shared/` owns common signal, scope, descriptor, ownership, and render
+construction modules. `scripts/prepare_platforms.py` copies its Roc files into
+`platform-web/` and `platform-gui/`. These flat generated copies are individually
+gitignored. The fixed repository layout needs no per-platform source configuration.
+
+Run `python3 scripts/prepare_platforms.py --check` or
+`zig build run-check-platform-sources` to compare SHA-256 hashes without changing
+any files. Missing, modified, and stale shared-module entries fail the check.
+The check runs with `zig build test`, and CI exercises deliberate drift detection.
+Refresh copies after editing canonical sources with
+`python3 scripts/prepare_platforms.py`. Bundle staging always reads the canonical
+shared sources, even when local generated copies are stale.
+
+The flat layout is intentional: nested `shared/` imports and hosted declarations
+currently fail with the pinned compiler, including when compiled from bundles.
+See `UPSTREAM_COMPILER_BUGS.md` for the observed limitations.
+
+The GUI targets are Apple Silicon macOS, Linux x86_64 with glibc and a
+Wayland/GPU session, and Windows x86_64. Host development needs Rust (tested
+with 1.94 on macOS, 1.95 on Linux, and 1.89 on Windows) and Zig 0.16. Linux also
+needs a C toolchain/CRT, FreeType and
+xkbcommon development packages, and the xkbcommon-X11 runtime. macOS needs Xcode
+with its Metal compiler component (`xcodebuild -downloadComponent MetalToolchain`).
+If Xcode reports mismatched support frameworks, complete
+`xcodebuild -runFirstLaunch` first. Windows needs the `x86_64-pc-windows-msvc`
+Rust toolchain; the optimized host build also compiles GPUI's shaders with the
+Windows SDK's `fxc.exe` (set `GPUI_FXC_PATH` if it is not discovered), and a
+development build compiles them at runtime instead. Zig supplies the archiver
+and resource compiler, Roc's own `x64win` link supplies the C runtime, and the
+one import library still needed is generated from the MinGW-w64 definitions
+Zig bundles, so no MSVC link step or Windows SDK libraries are involved. Use
+`python` rather than
+`python3` in the commands below on Windows, where `python3` is often a Store
+shortcut; `build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
+Other native targets, including Intel macOS and Windows on Arm, are not
+implemented.
+The GUI builder selects `TOOLCHAINS=Metal` on macOS unless explicitly overridden;
+use the same setting for direct `cargo test` commands if Xcode's default lookup
+still reports the installed Metal component as missing.
+
+```sh
+python3 scripts/build_gui.py --debug
+roc build examples-gui/counter/main.roc --output=.test-out/Counter
+.test-out/Counter
+# Same executable, display-free semantic check:
+.test-out/Counter --run-spec-json examples-gui/counter/specs/counting.scm
+# Brief rendering/adapter integration check:
+.test-out/Counter --smoke --smoke-click Increment --smoke-expect 'Count: 1'
+```
+
+`python3 scripts/test.py gui --roc-bin /path/to/pinned/roc --keep-output`
+checks the compiler identity, prepares shared sources, builds the development
+GUI host, runs focused GPUI adapter/editor tests, then `roc check` and `roc test` for each registered GUI app and internal fixture under `test/gui/`,
+builds fresh executables, and runs their native semantic specs without a display.
+The manifest at `examples-gui/examples.toml` must list every app directory, and
+each app must have specs. Every GUI check must pass; this suite has no known-failure
+allowlist. `--spec-filter`, `--shard`, `--jobs`, and `--fail-fast` also apply.
+The default `all` suite includes GUI checks on Linux x86_64; run `gui` explicitly
+on macOS, where it requires full Xcode and the Metal toolchain. CI runs them in a
+dedicated Linux job. GUI executables remain under `.test-out/gui` when output is kept.
+
+Normal GUI launches do not print engine metrics. Pass `--host-trace-engine` to an
+app executable to log event-turn metrics to stderr; `--smoke` prints its explicit
+validation result. Host errors remain visible without tracing.
+
+Host builds default to two Cargo workers. Use `scripts/build_gui.py --jobs N`
+or `scripts/test.py gui --gui-build-jobs N` to adjust memory pressure. Parallel
+app work should serialize substantial host builds. The builder cleans the local
+Rust host crate before compiling so a shared Cargo target cannot reuse another
+worktree's host implementation; dependency artifacts remain cached.
+Release builds retain Rust's optimized per-crate compilation and local ThinLTO,
+with cross-crate LTO disabled so rebuilding the host does not optimize the full
+dependency graph again. This policy makes no claim about runtime performance
+relative to a whole-program LTO build.
+GUI specs validate shared
+semantics; the separate window smoke above checks rendering and adapter dispatch,
+and does not establish OS keyboard, pointer, or IME behavior. GPUI adapter tests
+exercise simulated input and layout; they also do not replace a native desktop walkthrough.
+
+After `scripts/bundle.sh --package gui --serve`, download `http://127.0.0.1:8000/Counter.roc`
+and run `roc build Counter.roc`. Alternatively, `roc run Counter.roc --opt=speed`
+compiles and opens the window directly. Plain `roc run` currently encounters the
+required-`main` shim collision documented in `UPSTREAM_COMPILER_BUGS.md`, case 12. The app author needs the pinned Roc compiler
+and the target operating system (plus runtime GUI libraries on Linux).
+Rust, Zig, and the native SDK/toolchain are used only when
+preparing the platform bundle. On macOS, the package embeds compiled Metal shaders
+and copies the required SDK framework/library link stubs into
+`targets/macos-sysroot`; building a bundled app does not need Xcode. The macOS
+build is validated on macOS 26.3; older versions are not yet validated.
+This produces a native executable, not a desktop
+installer. The Linux prebuilt host depends on the build machine's glibc/library ABI;
+portable release packaging needs a deliberate sysroot and license inventory.
+
+Prebuilt link inputs come from CI on their own release cycle instead of a
+local host build, and no binary is committed. The `GUI host link inputs`
+workflow (`gui-hosts.yml`, dispatched with a `gui-hosts-<date>` tag) builds the
+optimized `platform-gui/targets/<target>` trees on each supported runner,
+records signed build provenance, and publishes them as a GitHub release of
+`gui-link-inputs-<target>.tar` archives. Rerun it only when the host changes.
+To bundle from a published set, verify and extract each archive, then pass the
+extracted `targets/` tree:
+
+```sh
+gh release download gui-hosts-2026-09-09 --pattern 'gui-link-inputs-*.tar' --dir /tmp/hosts
+gh attestation verify /tmp/hosts/gui-link-inputs-x64win.tar --repo lukewilliamboswell/roc-signals
+mkdir -p /tmp/hosts/targets && tar -xf /tmp/hosts/gui-link-inputs-x64win.tar -C /tmp/hosts/targets
+scripts/bundle.sh --package gui --no-build --prebuilt-targets /tmp/hosts/targets
+```
+
+`--prebuilt-targets` copies the tree into the staged platform alongside any
+inputs already present locally, so one bundle can carry every operating
+system's inputs.
+
+The bundle output also contains every registered GUI app under `examples-gui/`,
+including its supporting Roc modules and semantic specs. Those generated app
+headers refer to the served bundle URL. With the server still running, build an
+app directly from the output directory:
+
+```sh
+roc build .test-out/bundles/examples-gui/notes-editor/main.roc --output=.test-out/Notes
+.test-out/Notes
+```
+
+`Gui` offers typed rows, columns, panels, native styles, headings/text, enabled
+buttons, labeled inputs, and checkboxes. See the native presentation protocol in
+`docs/native-gui-protocol.md` for field compatibility and limits. Signals, keyed
+rows, scopes, and ownership remain in the shared engine.
+Wide collections use `Gui.virtual_list` to bound child lookup and layout to the
+visible range; ordinary containers enumerate direct children when rendered.
+See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
+`crates/gpui-host/README.md` for the boundary limits.

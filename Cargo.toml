@@ -1,0 +1,14 @@
+[workspace]
+members = ["crates/gpui-host"]
+resolver = "3"
+
+[profile.dev]
+debug = 0
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+# Keep optimization within each cached crate. Cross-crate LTO reprocesses the
+# dependency graph whenever our host changes, defeating that build boundary.
+lto = false
+strip = "debuginfo"

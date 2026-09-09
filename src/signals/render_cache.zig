@@ -1,6 +1,7 @@
 //! Render-state cache that suppresses duplicate host commands for stable DOM nodes.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const builtin = @import("builtin");
 const boundary = @import("boundary.zig");
 const render = @import("render_commands.zig");
@@ -62,7 +63,7 @@ pub const ScalarNode = struct {
         active: render.NodeShape,
     } = .vacant,
     parent_id: ?ids.ElemId = null,
-    children: std.ArrayListUnmanaged(ids.ElemId) = .empty,
+    children: shared_buffer.List(ids.ElemId) = .empty,
     children_snapshot_valid: bool = true,
     first_child: ?ids.ElemId = null,
     last_child: ?ids.ElemId = null,
@@ -76,10 +77,16 @@ pub const ScalarNode = struct {
     test_id: ?[]const u8 = null,
     value: ?[]const u8 = null,
     class: ?[]const u8 = null,
-    custom_text_attrs: std.ArrayListUnmanaged(CustomTextAttr) = .empty,
-    named_events: std.ArrayListUnmanaged(NamedEvent) = .empty,
+    native_style: ?[]const u8 = null,
+    native_viewport: ?[]const u8 = null,
+    native_drag_key: ?[]const u8 = null,
+    native_window_close: ?[]const u8 = null,
+    custom_text_attrs: shared_buffer.List(CustomTextAttr) = .empty,
+    named_events: shared_buffer.List(NamedEvent) = .empty,
     checked: ?bool = null,
     disabled: ?bool = null,
+    selected: ?bool = null,
+    native_drop_target: ?bool = null,
 
     fn deinit(self: *ScalarNode, allocator: std.mem.Allocator) void {
         if (self.text) |text| allocator.free(text);
@@ -88,6 +95,10 @@ pub const ScalarNode = struct {
         if (self.test_id) |test_id| allocator.free(test_id);
         if (self.value) |value| allocator.free(value);
         if (self.class) |class| allocator.free(class);
+        if (self.native_style) |style| allocator.free(style);
+        if (self.native_viewport) |viewport| allocator.free(viewport);
+        if (self.native_drag_key) |key| allocator.free(key);
+        if (self.native_window_close) |value| allocator.free(value);
         for (self.custom_text_attrs.items) |attr| {
             attr.deinit(allocator);
         }
@@ -137,6 +148,10 @@ pub const ScalarNode = struct {
             .test_id => &self.test_id,
             .value => &self.value,
             .class => &self.class,
+            .native_style => &self.native_style,
+            .native_viewport => &self.native_viewport,
+            .native_drag_key => &self.native_drag_key,
+            .native_window_close => &self.native_window_close,
         };
     }
 
@@ -144,6 +159,8 @@ pub const ScalarNode = struct {
         return switch (field) {
             .checked => &self.checked,
             .disabled => &self.disabled,
+            .selected => &self.selected,
+            .native_drop_target => &self.native_drop_target,
         };
     }
 
@@ -157,8 +174,13 @@ pub const ScalarNode = struct {
 
     /// Resolves a named event to its cache entry without scanning unrelated bindings.
     pub fn namedEventIndex(self: *const ScalarNode, name: []const u8) ?usize {
+        return self.namedEventIndexFiltered(name, null);
+    }
+
+    /// Resolves one exact named binding, including its optional keyboard filter.
+    pub fn namedEventIndexFiltered(self: *const ScalarNode, name: []const u8, chord: ?@import("key_chord.zig").Chord) ?usize {
         for (self.named_events.items, 0..) |event, index| {
-            if (std.mem.eql(u8, event.name, name)) return index;
+            if (std.mem.eql(u8, event.name, name) and @import("key_chord.zig").optionalEql(event.binding.key_chord, chord)) return index;
         }
         return null;
     }
@@ -203,8 +225,8 @@ pub const PreparedSparseChildren = struct {
     last_child: ?ids.ElemId,
     child_count: usize,
     shadow_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
-    shadows: std.ArrayListUnmanaged(Shadow) = .empty,
-    wire_edits: std.ArrayListUnmanaged(WireEdit) = .empty,
+    shadows: shared_buffer.List(Shadow) = .empty,
+    wire_edits: shared_buffer.List(WireEdit) = .empty,
     phase: JournalPhase = .prepared,
     links_read: usize = 0,
 
@@ -225,6 +247,52 @@ pub const PreparedSparseChildren = struct {
         try self.shadows.ensureTotalCapacity(allocator, touched_roots);
         try self.wire_edits.ensureTotalCapacity(allocator, wire_edit_count);
         return self;
+    }
+
+    /// Reserves another changed site's contribution to this parent journal.
+    /// Several structural sites may share a parent; they compose into one
+    /// candidate child order before any cache or host publication occurs.
+    pub fn reserveAdditional(self: *PreparedSparseChildren, touched_roots: usize, wire_edit_count: usize) (std.mem.Allocator.Error || error{ResourceLimit})!void {
+        try self.shadow_indexes.ensureUnusedCapacity(self.allocator, std.math.cast(u32, touched_roots) orelse return error.ResourceLimit);
+        try self.shadows.ensureUnusedCapacity(self.allocator, touched_roots);
+        try self.wire_edits.ensureUnusedCapacity(self.allocator, wire_edit_count);
+    }
+
+    /// Encodes the final changed child order after several sites compose.
+    /// Earlier moves may name roots retired later in the same transaction;
+    /// final-link segments omit those roots and never use retired anchors.
+    fn finishWireEdits(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx)) (std.mem.Allocator.Error || error{InvalidRange})!void {
+        var moved: std.AutoHashMapUnmanaged(ids.ElemId, void) = .empty;
+        defer moved.deinit(self.allocator);
+        try moved.ensureUnusedCapacity(self.allocator, @intCast(self.wire_edits.items.len));
+        for (self.wire_edits.items) |edit| {
+            const child = switch (edit) {
+                .append => |id| id,
+                .move_before => |move| move.child,
+            };
+            const index = self.shadow_indexes.get(child.raw()) orelse return error.InvalidRange;
+            if (self.shadows.items[index].parent_id == self.parent_elem_id) moved.putAssumeCapacity(child, {});
+        }
+        self.wire_edits.clearRetainingCapacity();
+        var iterator = moved.keyIterator();
+        var emitted: usize = 0;
+        while (iterator.next()) |last| {
+            const tail = self.shadows.items[self.shadow_indexes.get(last.raw()).?];
+            if (tail.next) |next| if (moved.contains(next)) continue;
+            var child: ?ids.ElemId = last.*;
+            var before = tail.next;
+            while (child) |id| {
+                if (!moved.contains(id)) break;
+                const current = self.shadows.items[self.shadow_indexes.get(id.raw()).?];
+                const active = id.index() < cache.nodes.items.len and cache.nodes.items[id.index()].isActive();
+                self.wire_edits.appendAssumeCapacity(if (before == null and !active) .{ .append = id } else .{ .move_before = .{ .child = id, .before = before } });
+                emitted += 1;
+                if (emitted > moved.count()) return error.InvalidRange;
+                before = id;
+                child = current.previous;
+            }
+        }
+        if (emitted != moved.count()) return error.InvalidRange;
     }
 
     fn shadow(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx), elem_id: ids.ElemId, allow_missing: bool) error{ MissingNode, ResourceLimit }!*Shadow {
@@ -341,9 +409,10 @@ pub const PreparedSparseChildren = struct {
         }
     }
 
-    /// Inserts newly-created detached roots before a sibling or at the end.
+    /// Inserts roots detached in this candidate before a sibling or at the end.
     /// Missing cache slots are allowed because creation and link publication
-    /// are separate journals in the same prepared structural transaction.
+    /// are separate journals. A reused active root may remain host-attached,
+    /// so its wire operation explicitly moves or attaches the retained identity.
     pub fn insertRootsBefore(self: *PreparedSparseChildren, comptime Ctx: type, cache: *const Cache(Ctx), roots: []const ids.ElemId, before: ?ids.ElemId) error{ InvalidAnchor, InvalidRange, MissingNode, ResourceLimit }!void {
         if (roots.len == 0) return;
         if (self.wire_edits.capacity - self.wire_edits.items.len < roots.len) return error.ResourceLimit;
@@ -355,10 +424,13 @@ pub const PreparedSparseChildren = struct {
             entry.next = if (index + 1 == roots.len) null else roots[index + 1];
         }
         try self.attach(Ctx, cache, roots[0], roots[roots.len - 1], roots.len, before);
-        for (roots) |elem_id| self.wire_edits.appendAssumeCapacity(if (before) |anchor|
-            .{ .move_before = .{ .child = elem_id, .before = anchor } }
-        else
-            .{ .append = elem_id });
+        for (roots) |elem_id| {
+            const active = elem_id.index() < cache.nodes.items.len and cache.nodes.items[elem_id.index()].isActive();
+            self.wire_edits.appendAssumeCapacity(if (before != null or active)
+                .{ .move_before = .{ .child = elem_id, .before = before } }
+            else
+                .{ .append = elem_id });
+        }
     }
 
     /// Detaches one contiguous root range. Node-retirement journals own the
@@ -477,7 +549,7 @@ pub const PreparedChildrenReplacement = struct {
     next: []ids.ElemId,
     wire_edit_offset: usize = 0,
     wire_edit_len: usize = 0,
-    retired: std.ArrayListUnmanaged(ids.ElemId) = .empty,
+    retired: shared_buffer.List(ids.ElemId) = .empty,
     phase: JournalPhase = .prepared,
 
     /// Copies the next child order without mutating the active cache.
@@ -722,7 +794,7 @@ pub const PreparedCustomTextAttrsReplacement = struct {
     next: []CustomTextAttr,
     wire_edit_offset: usize = 0,
     wire_edit_len: usize = 0,
-    retired: std.ArrayListUnmanaged(CustomTextAttr) = .empty,
+    retired: shared_buffer.List(CustomTextAttr) = .empty,
     phase: JournalPhase = .prepared,
 
     /// Copies final names and values without changing the active cache.
@@ -774,7 +846,7 @@ pub const PreparedNamedEventsReplacement = struct {
     next: []NamedEvent,
     wire_edit_offset: usize = 0,
     wire_edit_len: usize = 0,
-    retired: std.ArrayListUnmanaged(NamedEvent) = .empty,
+    retired: shared_buffer.List(NamedEvent) = .empty,
     phase: JournalPhase = .prepared,
 
     /// Copies final event names and canonicalizes bindings without cache mutation.
@@ -851,12 +923,12 @@ pub const PreparedRenderCounts = struct {
 /// `clearUnsetReusedFields` can retire every field the old subtree carried
 /// and the new one no longer declares.
 const ReusedNodeFields = struct {
-    text: u8 = 0,
+    text: u16 = 0,
     bools: u8 = 0,
     events: u8 = 0,
 
-    fn textBit(field: TextField) u8 {
-        return @as(u8, 1) << @intCast(@intFromEnum(field));
+    fn textBit(field: TextField) u16 {
+        return @as(u16, 1) << @intCast(@intFromEnum(field));
     }
 
     fn boolBit(field: BoolField) u8 {
@@ -876,25 +948,26 @@ pub const reused_node_max_clears: usize = std.enums.values(TextField).len + std.
 pub fn PreparedRenderSplice(comptime Ctx: type) type {
     return struct {
         const Self = @This();
+        const publishes_native_fields = @hasDecl(Ctx, "native_presentation") and Ctx.native_presentation;
 
         allocator: std.mem.Allocator,
         tags: PreparedTagOverlay,
-        removals: std.ArrayListUnmanaged(PreparedNodeRemoval) = .empty,
-        creations: std.ArrayListUnmanaged(PreparedNodeCreation) = .empty,
-        children: std.ArrayListUnmanaged(PreparedChildrenReplacement) = .empty,
-        sparse_children: std.ArrayListUnmanaged(PreparedSparseChildren) = .empty,
-        child_wire_edits: std.ArrayListUnmanaged(PreparedChildrenReplacement.WireEdit) = .empty,
-        text_fields: std.ArrayListUnmanaged(PreparedTextFieldUpdate) = .empty,
-        bool_fields: std.ArrayListUnmanaged(PreparedBoolFieldUpdate) = .empty,
-        fixed_events: std.ArrayListUnmanaged(PreparedFixedEventUpdate) = .empty,
-        custom_attrs: std.ArrayListUnmanaged(PreparedCustomTextAttrsReplacement) = .empty,
-        custom_attr_wire_edits: std.ArrayListUnmanaged(PreparedCustomTextAttrsReplacement.WireEdit) = .empty,
-        named_events: std.ArrayListUnmanaged(PreparedNamedEventsReplacement) = .empty,
-        named_event_wire_edits: std.ArrayListUnmanaged(PreparedNamedEventsReplacement.WireEdit) = .empty,
+        removals: shared_buffer.List(PreparedNodeRemoval) = .empty,
+        creations: shared_buffer.List(PreparedNodeCreation) = .empty,
+        children: shared_buffer.List(PreparedChildrenReplacement) = .empty,
+        sparse_children: shared_buffer.List(PreparedSparseChildren) = .empty,
+        child_wire_edits: shared_buffer.List(PreparedChildrenReplacement.WireEdit) = .empty,
+        text_fields: shared_buffer.List(PreparedTextFieldUpdate) = .empty,
+        bool_fields: shared_buffer.List(PreparedBoolFieldUpdate) = .empty,
+        fixed_events: shared_buffer.List(PreparedFixedEventUpdate) = .empty,
+        custom_attrs: shared_buffer.List(PreparedCustomTextAttrsReplacement) = .empty,
+        custom_attr_wire_edits: shared_buffer.List(PreparedCustomTextAttrsReplacement.WireEdit) = .empty,
+        named_events: shared_buffer.List(PreparedNamedEventsReplacement) = .empty,
+        named_event_wire_edits: shared_buffer.List(PreparedNamedEventsReplacement.WireEdit) = .empty,
         provisional_nodes: std.DynamicBitSetUnmanaged = .{},
         reused_nodes: std.AutoHashMapUnmanaged(u64, ReusedNodeFields) = .empty,
         parent_intent_indexes: []usize = &.{},
-        parent_intents: std.ArrayListUnmanaged(ParentIntent) = .empty,
+        parent_intents: shared_buffer.List(ParentIntent) = .empty,
         cache: *const Cache(Ctx),
         sink_command_count: usize = 0,
         reset_dom: bool = false,
@@ -1273,6 +1346,19 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             journal.* = undefined;
         }
 
+        /// Completes final parent links after all sites sharing sparse child
+        /// journals have contributed. Call once before publication preflight;
+        /// this also validates newly inserted roots against provisional nodes.
+        pub fn finishSparseParents(self: *Self) (std.mem.Allocator.Error || error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit, InvalidRange })!void {
+            for (self.sparse_children.items) |*journal| try journal.finishWireEdits(Ctx, self.cache);
+            var additional: usize = 0;
+            for (self.sparse_children.items) |journal| additional = std.math.add(usize, additional, journal.shadows.items.len) catch return error.ResourceLimit;
+            try self.reserveAdditionalChildren(0, additional);
+            for (self.sparse_children.items) |journal| for (journal.shadows.items) |entry| {
+                try self.setParentIntent(self.cache, entry.elem_id.raw(), if (entry.parent_id) |parent| parent.raw() else null);
+            };
+        }
+
         fn childWireEdits(self: *const Self, children: PreparedChildrenReplacement) []const PreparedChildrenReplacement.WireEdit {
             return self.child_wire_edits.items[children.wire_edit_offset..][0..children.wire_edit_len];
         }
@@ -1402,7 +1488,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) {
                 for (cache.nodes.items[cache_index].named_events.items, 0..) |old, old_index| {
                     var found = false;
-                    for (prepared.next) |next| if (std.mem.eql(u8, old.name, next.name)) {
+                    for (prepared.next) |next| if (std.mem.eql(u8, old.name, next.name) and @import("key_chord.zig").optionalEql(old.binding.key_chord, next.binding.key_chord)) {
                         found = true;
                         break;
                     };
@@ -1415,7 +1501,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (prepared.next, 0..) |next, next_index| {
                 var unchanged = false;
                 if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) {
-                    if (cache.nodes.items[cache_index].namedEventIndex(next.name)) |old_index| unchanged = cache.nodes.items[cache_index].named_events.items[old_index].binding.eql(next.binding);
+                    if (cache.nodes.items[cache_index].namedEventIndexFiltered(next.name, next.binding.key_chord)) |old_index| unchanged = cache.nodes.items[cache_index].named_events.items[old_index].binding.eql(next.binding);
                 }
                 if (!unchanged) {
                     self.named_event_wire_edits.appendAssumeCapacity(.{ .bind_next = next_index });
@@ -1448,8 +1534,14 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             }
             for (self.children.items) |children| for (self.childWireEdits(children)) |_| try result.addFixed(0);
             for (self.sparse_children.items) |children| for (children.wireEdits()) |_| try result.addFixed(0);
-            for (self.text_fields.items) |field| try result.addFixed(if (field.next) |bytes| bytes.len else 0);
-            for (self.bool_fields.items) |_| try result.addFixed(0);
+            for (self.text_fields.items) |field| {
+                if ((field.field.isNative()) and comptime publishes_native_fields) continue;
+                try result.addFixed(if (field.next) |bytes| bytes.len else 0);
+            }
+            for (self.bool_fields.items) |field| {
+                if (field.field.isNative() and comptime publishes_native_fields) continue;
+                try result.addFixed(0);
+            }
             for (self.fixed_events.items) |event| if (event.next) |binding| {
                 if (binding.canUseFixedOpcode(event.kind)) try result.addFixed(0) else try result.addBindEvent(event.kind.domEventName().len, binding.payload_descriptor.extractionBytes().len);
             } else try result.addFixed(0);
@@ -1463,8 +1555,15 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (self.named_events.items) |replacement| {
                 const old = if (self.oldNode(replacement.elem_id)) |node| node.named_events.items else &.{};
                 for (self.namedEventWireEdits(replacement)) |edit| switch (edit) {
-                    .clear_old => |index| try result.addClearEvent(old[index].name.len),
-                    .bind_next => |index| try result.addBindEvent(replacement.next[index].name.len, replacement.next[index].binding.payload_descriptor.extractionBytes().len),
+                    .clear_old => |index| {
+                        if (old[index].binding.key_chord != null and comptime publishes_native_fields) continue;
+                        try result.addClearEvent(old[index].name.len);
+                    },
+                    .bind_next => |index| {
+                        const next = replacement.next[index];
+                        if (next.binding.key_chord != null and comptime publishes_native_fields) continue;
+                        try result.addBindEvent(next.name.len, next.binding.payload_descriptor.extractionBytes().len);
+                    },
                 };
             }
             return result;
@@ -1501,10 +1600,28 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             self.sink_command_count = std.math.add(usize, self.sink_command_count, count) catch return error.ResourceLimit;
         }
 
-        /// Reserves the unpublished destination batch from exact canonical requirements.
+        fn validateBrowserFields(self: *const Self) error{ UnsupportedNativePresentation, UnsupportedNativeKeyboard }!void {
+            for (self.text_fields.items) |field| if (field.field.isNative()) return error.UnsupportedNativePresentation;
+            for (self.bool_fields.items) |field| if (field.field.isNative()) return error.UnsupportedNativePresentation;
+            for (self.named_events.items) |replacement| {
+                for (replacement.next) |event| if (event.binding.key_chord != null) return error.UnsupportedNativeKeyboard;
+                if (self.oldNode(replacement.elem_id)) |node| {
+                    for (node.named_events.items) |event| if (event.binding.key_chord != null) return error.UnsupportedNativeKeyboard;
+                }
+            }
+        }
+
+        /// Reserves exact canonical wire storage. Browser contexts reject native
+        /// fields; native contexts publish them through their typed preparation.
         pub fn preflight(self: *const Self, batch: *render.TransactionalBatch, allocator: std.mem.Allocator) render.PreflightError!void {
             if (!batch.isPublishedDrained()) return error.ResourceLimit;
             errdefer batch.abort();
+            if (comptime !publishes_native_fields) {
+                self.validateBrowserFields() catch |err| switch (err) {
+                    error.UnsupportedNativePresentation => @panic("native presentation is unsupported by the browser host"),
+                    error.UnsupportedNativeKeyboard => @panic("native keyboard shortcuts are unsupported by the browser host"),
+                };
+            }
             try batch.preflight(allocator, try self.capacity());
         }
 
@@ -1517,6 +1634,12 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
 
         /// Encodes canonical journals into the already-reserved transaction buffers.
         pub fn stageAssumeCapacity(self: *const Self, batch: *render.TransactionalBatch, allocator: std.mem.Allocator) render.PreflightError!void {
+            if (comptime !publishes_native_fields) {
+                self.validateBrowserFields() catch |err| switch (err) {
+                    error.UnsupportedNativePresentation => @panic("native presentation is unsupported by the browser host"),
+                    error.UnsupportedNativeKeyboard => @panic("native keyboard shortcuts are unsupported by the browser host"),
+                };
+            }
             if (self.reset_dom) try batch.staged.commands.appendRaw(allocator, .reset_dom, 0, 0, 0, 0, 0);
             for (self.removals.items) |removal| if (removal.publication == .subtree_root) try batch.staged.commands.appendRaw(allocator, .remove_node, wireElem(removal.elem_id).raw(), 0, 0, 0, 0);
             for (self.creations.items) |creation| {
@@ -1539,8 +1662,14 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 .append => |child| try batch.staged.commands.appendRaw(allocator, .append_child, wireElem(children.parent_elem_id).raw(), wireElem(child).raw(), 0, 0, 0),
                 .move_before => |move| try batch.staged.commands.appendRaw(allocator, .move_before, wireElem(children.parent_elem_id).raw(), wireElem(move.child).raw(), if (move.before) |before| wireElem(before).raw() else 0, 0, 0),
             };
-            for (self.text_fields.items) |field| try appendText(batch, allocator, field.field.setOp(), field.elem_id, field.next orelse "");
-            for (self.bool_fields.items) |field| try batch.staged.commands.appendRaw(allocator, field.field.setOp(), wireElem(field.elem_id).raw(), @intFromBool(field.next orelse false), 0, 0, 0);
+            for (self.text_fields.items) |field| {
+                if ((field.field.isNative()) and comptime publishes_native_fields) continue;
+                try appendText(batch, allocator, field.field.setOp(), field.elem_id, field.next orelse "");
+            }
+            for (self.bool_fields.items) |field| {
+                if (field.field.isNative() and comptime publishes_native_fields) continue;
+                try batch.staged.commands.appendRaw(allocator, field.field.setOp(), wireElem(field.elem_id).raw(), @intFromBool(field.next orelse false), 0, 0, 0);
+            }
             for (self.fixed_events.items) |event| if (event.next) |binding| {
                 if (binding.canUseFixedOpcode(event.kind)) try batch.staged.commands.appendRaw(allocator, event.kind.bindOp(), wireElem(event.elem_id).raw(), (render.WireEventId.fromEngine(binding.event_id) catch unreachable).raw(), 0, 0, 0) else {
                     const slice = try batch.staged.dynamic.appendBindEvent(allocator, wireElem(event.elem_id), render.WireEventId.fromEngine(binding.event_id) catch unreachable, event.kind.domEventName(), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor);
@@ -1571,12 +1700,14 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 for (self.namedEventWireEdits(replacement)) |edit| switch (edit) {
                     .clear_old => |index| {
                         const event = old[index];
+                        if (event.binding.key_chord != null and comptime publishes_native_fields) continue;
                         const slice = try batch.staged.dynamic.appendClearEvent(allocator, wireElem(replacement.elem_id), event.name);
                         try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
                     },
                     .bind_next => |index| {
                         const next = replacement.next[index];
                         const binding = next.binding;
+                        if (binding.key_chord != null and comptime publishes_native_fields) continue;
                         const slice = try batch.staged.dynamic.appendBindEvent(allocator, wireElem(replacement.elem_id), render.WireEventId.fromEngine(binding.event_id) catch unreachable, next.name, binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor);
                         try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
                     },
@@ -1671,11 +1802,11 @@ pub fn Cache(comptime Ctx: type) type {
     return struct {
         const Self = @This();
 
-        nodes: std.ArrayListUnmanaged(ScalarNode) = .empty,
+        nodes: shared_buffer.List(ScalarNode) = .empty,
         interned_tags: std.StringHashMapUnmanaged([]const u8) = .empty,
         move_child_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
-        move_old_indexes: std.ArrayListUnmanaged(usize) = .empty,
-        move_stable_subsequence: std.ArrayListUnmanaged(usize) = .empty,
+        move_old_indexes: shared_buffer.List(usize) = .empty,
+        move_stable_subsequence: shared_buffer.List(usize) = .empty,
 
         /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
         pub fn deinit(self: *Self, ctx: Ctx.Handle) void {
@@ -1972,6 +2103,13 @@ pub fn Cache(comptime Ctx: type) type {
             return events[index].name;
         }
 
+        /// Borrows one complete named binding for targeted structural refresh.
+        pub fn namedEventAt(self: *Self, elem_id: ids.ElemId, index: usize) ?NamedEvent {
+            const node = self.activeNode(elem_id);
+            if (index >= node.named_events.items.len) return null;
+            return node.named_events.items[index];
+        }
+
         /// Returns the owned name for an indexed custom-attribute cache entry.
         pub fn customTextAttrNameAt(self: *Self, elem_id: ids.ElemId, index: usize) ?[]const u8 {
             const attrs = self.activeNode(elem_id).custom_text_attrs.items;
@@ -2074,9 +2212,15 @@ pub fn Cache(comptime Ctx: type) type {
 
         /// Applies named event binding after preparation has fixed semantics and reserved fallible growth.
         pub fn applyNamedEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, name: []const u8, binding: ?EventBinding, counts: *render.Counts) void {
+            self.applyNamedEventBindingFiltered(ctx, elem_id, name, if (binding) |value| value.key_chord else null, binding, counts);
+        }
+
+        /// Replaces or clears exactly one named listener and its optional chord.
+        /// The caller has already reserved its descriptor and host publication.
+        pub fn applyNamedEventBindingFiltered(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, name: []const u8, chord: ?@import("key_chord.zig").Chord, binding: ?EventBinding, counts: *render.Counts) void {
             const allocator = Ctx.allocator(ctx);
             const node = self.activeNode(elem_id);
-            const existing_index = node.namedEventIndex(name);
+            const existing_index = node.namedEventIndexFiltered(name, chord);
 
             if (binding) |raw_next| {
                 const next = raw_next.withDeliveryFor(.{ .named = name });
@@ -2096,14 +2240,14 @@ pub fn Cache(comptime Ctx: type) type {
                     };
                 }
 
-                Ctx.sink(ctx).bindEvent(elem_id, .{ .named = name }, next);
+                Ctx.sink(ctx).bindEvent(elem_id, EventBindingKey.fromNamed(name, chord), next);
                 counts.addEventBinding();
                 return;
             }
 
             const index = existing_index orelse return;
             const removed = node.named_events.orderedRemove(index);
-            Ctx.sink(ctx).clearEvent(elem_id, .{ .named = removed.name });
+            Ctx.sink(ctx).clearEvent(elem_id, EventBindingKey.fromNamed(removed.name, chord));
             removed.deinit(allocator);
             counts.addEventBinding();
         }
@@ -2293,14 +2437,14 @@ const TestSink = struct {
         self.host.last_event_binding = binding;
         switch (key) {
             .fixed => self.host.bind_event_count += 1,
-            .named => self.host.bind_named_event_count += 1,
+            .named, .filtered => self.host.bind_named_event_count += 1,
         }
     }
     /// Removes a host event registration whose engine-owned binding is no longer active.
     pub fn clearEvent(self: TestSink, _: ids.ElemId, key: EventBindingKey) void {
         switch (key) {
             .fixed => self.host.clear_event_count += 1,
-            .named => self.host.clear_named_event_count += 1,
+            .named, .filtered => self.host.clear_named_event_count += 1,
         }
     }
     /// Checks that the host render surface matches the engine's committed node metadata.
@@ -2355,6 +2499,27 @@ test "sparse child journal inserts and removes a complete root set" {
     try std.testing.expectEqual(@as(?ids.ElemId, null), cache.firstChild(ids.root_elem));
     try std.testing.expectEqual(@as(?ids.ElemId, null), cache.nodes.items[1].parent_id);
     try std.testing.expectEqualSlices(ids.ElemId, &.{}, try cache.materializeChildrenSnapshot(allocator, ids.root_elem));
+}
+
+test "sparse child journal reinserts retained roots with an explicit move" {
+    var host = TestHost{};
+    var cache = try initTestChildCache(3);
+    defer cache.deinit(&host);
+    const retained = ids.ElemId.fromRaw(2);
+    var journal = try PreparedSparseChildren.init(TestCtx, std.testing.allocator, &cache, ids.root_elem, 4, 1);
+    defer journal.deinit();
+    try journal.removeRange(TestCtx, &cache, retained, retained, 1);
+    try journal.insertRootsBefore(TestCtx, &cache, &.{retained}, null);
+    try std.testing.expectEqualDeep(PreparedChildrenReplacement.WireEdit{ .move_before = .{ .child = retained, .before = null } }, journal.wireEdits()[0]);
+    journal.apply(TestCtx, &cache);
+    const expected = [_]ids.ElemId{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(3), retained };
+    try std.testing.expectEqualSlices(ids.ElemId, &expected, try cache.materializeChildrenSnapshot(std.testing.allocator, ids.root_elem));
+
+    var fresh = try PreparedSparseChildren.init(TestCtx, std.testing.allocator, &cache, ids.root_elem, 3, 1);
+    defer fresh.deinit();
+    const new_root = ids.ElemId.fromRaw(4);
+    try fresh.insertRootsBefore(TestCtx, &cache, &.{new_root}, null);
+    try std.testing.expectEqualDeep(PreparedChildrenReplacement.WireEdit{ .append = new_root }, fresh.wireEdits()[0]);
 }
 
 test "sparse child journal moves a multi-root range and refreshes dense fallback" {
@@ -3625,4 +3790,94 @@ test "named event replacement and clear are idempotent" {
     cache.applyNamedEventBinding(&host, ids.ElemId.fromRaw(1), "submit", null, &counts);
     try std.testing.expectEqual(@as(u64, 1), host.clear_named_event_count);
     try std.testing.expectEqual(@as(u64, 3), counts.bind_event);
+}
+
+test "browser presentation preparation rejects native fields before staging" {
+    const allocator = std.testing.allocator;
+    var host = TestHost{};
+    var cache: Cache(TestCtx) = .{};
+    defer cache.deinit(&host);
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 1,
+        .new_tags = 1,
+        .creations = 1,
+        .text_fields = 1,
+        .bool_fields = 1,
+        .wire_commands = 3,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.root_elem, "div");
+    try plan.validateBrowserFields();
+    try plan.addBoolField(&cache, ids.root_elem, .selected, true);
+    try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
+    plan.bool_fields.items.len = 0;
+    try plan.addTextField(&cache, ids.root_elem, .native_style, "1,1,8,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0");
+    try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
+}
+
+test "browser keyboard preparation rejects native filters before staging" {
+    const allocator = std.testing.allocator;
+    var host = TestHost{};
+    var cache: Cache(TestCtx) = .{};
+    defer cache.deinit(&host);
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 1,
+        .new_tags = 1,
+        .creations = 1,
+        .named_events = 1,
+        .named_event_wire_edits = 1,
+        .wire_commands = 2,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.root_elem, "div");
+    try plan.validateBrowserFields();
+    const chord = try @import("key_chord.zig").parse("s", 1);
+    try plan.addNamedEvents(&cache, ids.root_elem, &.{.{ .name = "keydown", .binding = .{
+        .event_id = ids.EventId.fromRaw(1),
+        .key_chord = chord,
+        .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
+    } }});
+    try std.testing.expectError(error.UnsupportedNativeKeyboard, plan.validateBrowserFields());
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 1), plan.named_events.items.len);
+}
+
+test "browser refuses native viewport metadata before staging" {
+    var host = TestHost{};
+    var cache: Cache(TestCtx) = .{};
+    defer cache.deinit(&host);
+    var plan = try PreparedRenderSplice(TestCtx).init(std.testing.allocator, &cache, .{
+        .node_capacity = 1,
+        .new_tags = 1,
+        .creations = 1,
+        .text_fields = 1,
+        .wire_commands = 2,
+    });
+    defer plan.deinit();
+    try plan.addCreation(&cache, ids.root_elem, "div");
+    try plan.addTextField(&cache, ids.root_elem, .native_viewport, "1,44,1");
+    try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
+}
+
+test "browser rejects both native drag fields before publication" {
+    var host = TestHost{};
+    var cache: Cache(TestCtx) = .{};
+    defer cache.deinit(&host);
+    for ([_]bool{ false, true }) |target| {
+        var plan = try PreparedRenderSplice(TestCtx).init(std.testing.allocator, &cache, .{
+            .node_capacity = 1,
+            .new_tags = 1,
+            .creations = 1,
+            .text_fields = 1,
+            .bool_fields = 1,
+            .wire_commands = 2,
+        });
+        defer plan.deinit();
+        try plan.addCreation(&cache, ids.root_elem, "div");
+        if (target) try plan.addBoolField(&cache, ids.root_elem, .native_drop_target, true) else try plan.addTextField(&cache, ids.root_elem, .native_drag_key, "task-1");
+        try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
+        try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
+    }
 }

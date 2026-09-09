@@ -15,8 +15,8 @@ so a test does not need a network connection or a delay to exercise those paths.
 For a checkout-based app, build for your machine and run its specs:
 
 ```sh
-roc build --target=arm64mac --output=/tmp/app examples/my-app/main.roc
-python3 scripts/spec_driver.py /tmp/app examples/my-app/specs
+roc build --target=arm64mac --output=/tmp/app examples-web/my-app/main.roc
+python3 scripts/spec_driver.py /tmp/app examples-web/my-app/specs
 ```
 
 The driver prints a result for each case and a summary. Exit code `0` means
@@ -273,7 +273,7 @@ For a retained-allocation delta that should not be there, rerun the built native
 app with `--trace-allocations`:
 
 ```sh
-.test-out/bin/signals-my-example --trace-allocations examples/my-example/specs/case.scm
+.test-out/bin/signals-my-example --trace-allocations examples-web/my-example/specs/case.scm
 ```
 
 The host writes an allocation checkpoint after mount and after every spec
@@ -333,8 +333,8 @@ A native pass establishes behaviour within the native model only.
 Individual app:
 
 ```sh
-roc build --target=arm64mac --output=/tmp/app examples/my-app/main.roc
-python3 scripts/spec_driver.py /tmp/app examples/my-app/specs
+roc build --target=arm64mac --output=/tmp/app examples-web/my-app/main.roc
+python3 scripts/spec_driver.py /tmp/app examples-web/my-app/specs
 ```
 
 Repository suites:

@@ -3,10 +3,11 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
-import tomllib
 
 from compiler_pins import TOKEN, discover, local_sources, read_pin, version
 
@@ -58,15 +59,17 @@ def replace_platform(source: str, reference: str) -> str:
 
 
 def development_pin(root: Path = ROOT) -> str:
-    return read_pin(root / "platform/main.roc")
+    return read_pin(root / "platform-web/main.roc")
 
 
 def validate_roots(root: Path = ROOT) -> str:
     config = json.loads((root / ".github/roc-nightly.json").read_text())
-    examples = tomllib.loads((root / "www/data/examples.toml").read_text())["examples"]
-    expected = {"platform/main.roc"} | {e["source"] for e in examples if e.get("public", True)}
+    expected = {"platform-web/main.roc", "platform-gui/main.roc"}
+    for directory in ("examples-web", "examples-gui"):
+        expected.update(path.relative_to(root).as_posix()
+                        for path in (root / directory).rglob("main.roc"))
     if set(config["compiler_roots"]) != expected:
-        raise ValueError("compiler_roots must select the platform and every public application")
+        raise ValueError("compiler_roots must select both platforms and every web and GUI example")
     if (root / ".roc-version").exists():
         raise ValueError("remove competing .roc-version authority")
     return version(discover(local_sources(root, config["compiler_roots"])))
@@ -80,12 +83,37 @@ def verify_compiler(roc: str, pin: str) -> None:
         raise ValueError(f"compiler does not match {pin}: {actual}")
 
 
+def relocate_for_ci():
+    """Move setup-roc's download out of the checkout without shell path comparisons.
+
+    Windows Git Bash and native environment variables spell the same path
+    differently. Native Path resolution keeps the containment check consistent.
+    """
+    executable = shutil.which("roc")
+    if executable is None:
+        raise ValueError("setup-roc did not install a compiler on PATH")
+    directory = Path(executable).resolve().parent
+    workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+    if directory.parent != workspace:
+        raise ValueError("downloaded compiler must be an immediate child of the checkout")
+    destination = Path(os.environ["RUNNER_TEMP"]) / "roc-toolchain"
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("compiler relocation destination already exists")
+    shutil.move(str(directory), str(destination))
+    with Path(os.environ["GITHUB_PATH"]).open("a", encoding="utf-8") as output:
+        output.write(str(destination) + "\n")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--roc-bin")
+    parser.add_argument("--relocate-for-ci", action="store_true")
     args = parser.parse_args()
-    pin = validate_roots() if args.check else development_pin()
-    if args.roc_bin:
-        verify_compiler(args.roc_bin, pin)
-    print(pin)
+    if args.relocate_for_ci:
+        relocate_for_ci()
+    else:
+        pin = validate_roots() if args.check else development_pin()
+        if args.roc_bin:
+            verify_compiler(args.roc_bin, pin)
+        print(pin)

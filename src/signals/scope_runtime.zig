@@ -1,6 +1,7 @@
 //! Runtime-owned scope payloads for state binders and keyed rows.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const semantic_ids = @import("ids.zig");
 const row_handles = @import("row_handles.zig");
 const scope_tree = @import("scope_tree.zig");
@@ -36,8 +37,8 @@ const ClaimsPhase = enum {
 pub const PreparedScopeClaims = struct {
     allocator: std.mem.Allocator,
     original_scope_len: usize,
-    rows: std.ArrayListUnmanaged(Scope) = .empty,
-    inactive_scope_ids: std.ArrayListUnmanaged(semantic_ids.ScopeId) = .empty,
+    rows: shared_buffer.List(Scope) = .empty,
+    inactive_scope_ids: shared_buffer.List(semantic_ids.ScopeId) = .empty,
     inactive_cursor: usize = 0,
     candidates_prepared: bool = false,
     new_scope_count: usize = 0,
@@ -49,7 +50,7 @@ pub const PreparedScopeClaims = struct {
     }
 
     /// Claims one provisional row and cumulatively reserves its final scope slot.
-    pub fn prepareRow(self: *PreparedEachRowScopes, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, row_handle: row_handles.RowHandleId) (std.mem.Allocator.Error || error{ResourceLimit})!semantic_ids.ScopeId {
+    pub fn prepareRow(self: *PreparedEachRowScopes, scopes: *shared_buffer.List(Scope), parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, row_handle: row_handles.RowHandleId) (std.mem.Allocator.Error || error{ResourceLimit})!semantic_ids.ScopeId {
         if (self.phase.isCommitted() or scopes.items.len != self.original_scope_len) @panic("invalid provisional each-row scope state");
         scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id) catch @panic("scope id has no host scope descriptor");
         if (!self.candidates_prepared) {
@@ -83,7 +84,7 @@ pub const PreparedScopeClaims = struct {
     }
 
     /// Publishes all provisional rows without allocation.
-    pub fn commit(self: *PreparedEachRowScopes, scopes: *std.ArrayListUnmanaged(Scope)) void {
+    pub fn commit(self: *PreparedEachRowScopes, scopes: *shared_buffer.List(Scope)) void {
         if (self.phase.isCommitted() or scopes.items.len != self.original_scope_len) @panic("invalid provisional each-row scope commit");
         for (self.rows.items) |scope| {
             scope_tree.publishScopeAssumeCapacity(EachRowScopeStep, scopes, self.original_scope_len, scope);
@@ -122,7 +123,7 @@ pub fn deinitScopeStep(step: *ScopeStep) void {
 }
 
 /// Appends each row using capacity that must already satisfy the caller's transaction contract.
-pub fn appendEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, row_handle: row_handles.RowHandleId, reuse_barrier: scope_tree.Generation) scope_tree.Error!scope_tree.InternResult {
+pub fn appendEachRow(allocator: std.mem.Allocator, scopes: *shared_buffer.List(Scope), parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, row_handle: row_handles.RowHandleId, reuse_barrier: scope_tree.Generation) scope_tree.Error!scope_tree.InternResult {
     try scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id);
 
     return scope_tree.appendEachRow(EachRowScopeStep, allocator, scopes, parent_scope_id, .{
@@ -133,7 +134,7 @@ pub fn appendEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanag
 }
 
 /// Appends fresh each row using capacity that must already satisfy the caller's transaction contract.
-pub fn appendFreshEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, row_handle: row_handles.RowHandleId) scope_tree.Error!scope_tree.InternResult {
+pub fn appendFreshEachRow(allocator: std.mem.Allocator, scopes: *shared_buffer.List(Scope), parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, row_handle: row_handles.RowHandleId) scope_tree.Error!scope_tree.InternResult {
     try scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id);
 
     return scope_tree.appendFreshEachRow(EachRowScopeStep, allocator, scopes, parent_scope_id, .{
@@ -178,7 +179,7 @@ test "shared prepared scope claims assign distinct ids and retry after every OOM
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {
             var fault = FaultAllocator.init(std.testing.allocator);
-            var scopes: std.ArrayListUnmanaged(Scope) = .empty;
+            var scopes: shared_buffer.List(Scope) = .empty;
             defer scopes.deinit(std.testing.allocator);
             _ = try scope_tree.internRoot(EachRowScopeStep, std.testing.allocator, &scopes);
             var claims = PreparedScopeClaims.init(fault.allocator(), scopes.items);
@@ -226,7 +227,7 @@ test "shared prepared scope claims assign distinct ids and retry after every OOM
 }
 
 test "prepared scope claims publish dense reused rows into child topology" {
-    var scopes: std.ArrayListUnmanaged(Scope) = .empty;
+    var scopes: shared_buffer.List(Scope) = .empty;
     defer scopes.deinit(std.testing.allocator);
     _ = try scope_tree.internRoot(EachRowScopeStep, std.testing.allocator, &scopes);
     const retired = (try appendFreshEachRow(
@@ -412,12 +413,12 @@ const TestRow = struct {
 };
 
 const TestDisposeHooks = struct {
-    node_deactivations: std.ArrayListUnmanaged(semantic_ids.ScopeId) = .empty,
-    cleanup_events: std.ArrayListUnmanaged(semantic_ids.ScopeId) = .empty,
-    task_cancellations: std.ArrayListUnmanaged(semantic_ids.ScopeId) = .empty,
-    dom_deactivations: std.ArrayListUnmanaged(semantic_ids.ScopeId) = .empty,
-    removed_rows: std.ArrayListUnmanaged(u64) = .empty,
-    removed_handles: std.ArrayListUnmanaged(row_handles.RowHandleId) = .empty,
+    node_deactivations: shared_buffer.List(semantic_ids.ScopeId) = .empty,
+    cleanup_events: shared_buffer.List(semantic_ids.ScopeId) = .empty,
+    task_cancellations: shared_buffer.List(semantic_ids.ScopeId) = .empty,
+    dom_deactivations: shared_buffer.List(semantic_ids.ScopeId) = .empty,
+    removed_rows: shared_buffer.List(u64) = .empty,
+    removed_handles: shared_buffer.List(row_handles.RowHandleId) = .empty,
     deinit_steps: u64 = 0,
     disposed_scopes: u64 = 0,
 
@@ -472,7 +473,7 @@ const TestDisposeHooks = struct {
 };
 
 test "scope runtime disposes active subtrees through explicit hooks" {
-    var scopes: std.ArrayListUnmanaged(scope_tree.Scope(TestRow)) = .empty;
+    var scopes: shared_buffer.List(scope_tree.Scope(TestRow)) = .empty;
     defer scopes.deinit(std.testing.allocator);
 
     _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
@@ -503,7 +504,7 @@ test "scope runtime disposes active subtrees through explicit hooks" {
 
 test "prepared scope retirement sweeps allocation failures and applies without allocation" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    var scopes: std.ArrayListUnmanaged(scope_tree.Scope(TestRow)) = .empty;
+    var scopes: shared_buffer.List(scope_tree.Scope(TestRow)) = .empty;
     defer scopes.deinit(std.testing.allocator);
     _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
     _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(1), semantic_ids.initial_generation);
@@ -539,7 +540,7 @@ test "prepared scope retirement sweeps allocation failures and applies without a
 
 test "prepared disjoint scope retirement unions roots and rejects overlap" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    var scopes: std.ArrayListUnmanaged(scope_tree.Scope(TestRow)) = .empty;
+    var scopes: shared_buffer.List(scope_tree.Scope(TestRow)) = .empty;
     defer scopes.deinit(std.testing.allocator);
     _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
     _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(1), semantic_ids.initial_generation);
@@ -571,7 +572,7 @@ test "prepared disjoint scope retirement unions roots and rejects overlap" {
 
 test "scope subtree work ignores ten thousand unrelated scopes and retries after OOM" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    var scopes: std.ArrayListUnmanaged(scope_tree.Scope(TestRow)) = .empty;
+    var scopes: shared_buffer.List(scope_tree.Scope(TestRow)) = .empty;
     defer scopes.deinit(std.testing.allocator);
     _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
 
@@ -623,11 +624,11 @@ test "scope subtree work ignores ten thousand unrelated scopes and retries after
 
 test "ten thousand flat retirement roots validate with linear indexed work and retry after every allocation failure" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    var scopes: std.ArrayListUnmanaged(scope_tree.Scope(TestRow)) = .empty;
+    var scopes: shared_buffer.List(scope_tree.Scope(TestRow)) = .empty;
     defer scopes.deinit(std.testing.allocator);
     _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
 
-    var roots: std.ArrayListUnmanaged(semantic_ids.ScopeId) = .empty;
+    var roots: shared_buffer.List(semantic_ids.ScopeId) = .empty;
     defer roots.deinit(std.testing.allocator);
     try roots.ensureTotalCapacity(std.testing.allocator, 10_000);
     for (0..10_000) |index| {
@@ -664,7 +665,7 @@ test "ten thousand flat retirement roots validate with linear indexed work and r
 }
 
 test "measured immediate subtree disposal follows only descendant links" {
-    var scopes: std.ArrayListUnmanaged(scope_tree.Scope(TestRow)) = .empty;
+    var scopes: shared_buffer.List(scope_tree.Scope(TestRow)) = .empty;
     defer scopes.deinit(std.testing.allocator);
     _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
     const target = (try scope_tree.appendFreshEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, .{
@@ -693,7 +694,7 @@ test "measured immediate subtree disposal follows only descendant links" {
 }
 
 test "scope runtime owns stable each-row handle and key hash" {
-    var scopes: std.ArrayListUnmanaged(Scope) = .empty;
+    var scopes: shared_buffer.List(Scope) = .empty;
     defer scopes.deinit(std.testing.allocator);
 
     _ = try scope_tree.internRoot(EachRowScopeStep, std.testing.allocator, &scopes);

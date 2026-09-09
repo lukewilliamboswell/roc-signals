@@ -6,6 +6,7 @@
 //! identities; lookup and neighbor edits therefore never scan the site.
 
 const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
 const rows_ids = @import("rows_ids.zig");
 const rows_render_order = @import("rows_render_order.zig");
 
@@ -41,7 +42,7 @@ fn SlotPool(comptime Id: type, comptime Payload: type) type {
             state: State,
         };
 
-        slots: std.ArrayListUnmanaged(Slot) = .empty,
+        slots: shared_buffer.List(Slot) = .empty,
         free_head: ?u32 = null,
         free_count: usize = 0,
         reserved_free: std.AutoHashMapUnmanaged(u32, u32) = .empty,

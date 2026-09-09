@@ -479,7 +479,7 @@ function stage(script, index) {
 // number comes from a per-name counter, so each service tells its own part of
 // the same story even though the five tasks are independent.
 //
-// Wire formats (see parse_check / parse_feed in examples/status-page/main.roc):
+// Wire formats (see parse_check / parse_feed in examples-web/status-page/main.roc):
 //   check      "operational|99.98"          health | uptime percent
 //   incidents  "id~severity~title~hh:mm@body^hh:mm@body#…"   "#" separates incidents
 //

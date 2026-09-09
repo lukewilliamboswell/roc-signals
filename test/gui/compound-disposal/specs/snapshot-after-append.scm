@@ -1,0 +1,15 @@
+(test "Snapshot filtering remains valid after a sparse append"
+  (steps
+    (click (role button :name "Add"))
+    (expect-text (test-id "rows") "abc")
+    (mark-metrics)
+    (click (role button :name "Empty list"))
+    (expect-text (test-id "rows") "")
+    (expect-metric-delta rows_removed 3)
+    (expect-metric-delta rows_created 0)
+    (click (role button :name "Restore list"))
+    (expect-text (test-id "rows") "ab")
+    (click (role button :name "Empty list"))
+    (expect-text (test-id "rows") "")
+    (click (role button :name "Restore list"))
+    (expect-text (test-id "rows") "ab")))

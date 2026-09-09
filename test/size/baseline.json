@@ -1,0 +1,262 @@
+{
+  "schema": 1,
+  "label": "gpui-spike-baseline",
+  "revision": "2e3d484d830bca20ff4da0f5c1c6d6f680cac714",
+  "dirty": [],
+  "tools": {
+    "roc": "Roc compiler version nightly-2026-09-04-c125b82",
+    "roc_pin": "nightly-2026-09-04-c125b82",
+    "zig": "0.16.0",
+    "node": "v23.9.0"
+  },
+  "flags": {
+    "host": [
+      "build",
+      "build-wasm-host",
+      "-Doptimize=ReleaseSmall"
+    ],
+    "app": [
+      "--target=wasm32",
+      "--opt=size",
+      "--no-cache"
+    ]
+  },
+  "compression": {
+    "implementation": "node-zlib",
+    "gzip_level": 9,
+    "brotli_quality": 11
+  },
+  "host": {
+    "raw": 1152500,
+    "sha256": "25716d16f9cddd6335aab7547218c9f36a8e4623cab6922708d955d4b965f105",
+    "stripped": true
+  },
+  "host_symbols": null,
+  "fixtures": [
+    {
+      "name": "static-text",
+      "source": "examples-web/_fixtures/stable-text/main.roc",
+      "shape": "one state whose derived text never changes",
+      "raw": 750160,
+      "code": 698206,
+      "data": 48495,
+      "sections": {
+        "type": 1028,
+        "function": 1286,
+        "table": 5,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 112,
+        "datacount": 2,
+        "code": 698206,
+        "data": 48495
+      },
+      "gzip": 283811,
+      "brotli": 222987,
+      "sha256": "78287b94f25704dce4653a19b26be386a6b59fc1228eaa906214103e8a1b76e5",
+      "delivered": {
+        "raw": 874792,
+        "gzip": 308748,
+        "brotli": 244373
+      }
+    },
+    {
+      "name": "counter",
+      "source": "examples-web/_fixtures/counter/main.roc",
+      "shape": "one integer state, two unit events, one signal text",
+      "raw": 757550,
+      "code": 705211,
+      "data": 48870,
+      "sections": {
+        "type": 1028,
+        "function": 1292,
+        "table": 5,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 116,
+        "datacount": 2,
+        "code": 705211,
+        "data": 48870
+      },
+      "gzip": 286764,
+      "brotli": 225286,
+      "sha256": "3d9c2573a0be6d10133b6481e343645a4dc7bfacdcfaabdb9a8de690e4bfce10",
+      "delivered": {
+        "raw": 882182,
+        "gzip": 311701,
+        "brotli": 246672
+      }
+    },
+    {
+      "name": "branch-replacement",
+      "source": "examples-web/_fixtures/branch-replacement/main.roc",
+      "shape": "one Ui.switch replacing whole subtrees",
+      "raw": 764720,
+      "code": 711622,
+      "data": 49586,
+      "sections": {
+        "type": 1028,
+        "function": 1308,
+        "table": 5,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 142,
+        "datacount": 2,
+        "code": 711622,
+        "data": 49586
+      },
+      "gzip": 288796,
+      "brotli": 227061,
+      "sha256": "24db11243dde06b143b2f2bdc1ec1536d86c76a1f5b02c1268b0699f299eb4dc",
+      "delivered": {
+        "raw": 889352,
+        "gzip": 313733,
+        "brotli": 248447
+      }
+    },
+    {
+      "name": "keyed-row-edits",
+      "source": "examples-web/_fixtures/keyed-row-edits/main.roc",
+      "shape": "one keyed list with every Rows edit reachable",
+      "raw": 1450575,
+      "code": 1371376,
+      "data": 75172,
+      "sections": {
+        "type": 1091,
+        "function": 1647,
+        "table": 7,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 253,
+        "datacount": 2,
+        "code": 1371376,
+        "data": 75172
+      },
+      "gzip": 507197,
+      "brotli": 386996,
+      "sha256": "33afedb80107be116749713bce1e3fa26f8ae9aee8baac116c4e375eee7bcb94",
+      "delivered": {
+        "raw": 1575207,
+        "gzip": 532134,
+        "brotli": 408382
+      }
+    },
+    {
+      "name": "two-row-types",
+      "source": "examples-web/_fixtures/two-row-types/main.roc",
+      "shape": "two keyed lists with distinct item types",
+      "raw": 1457787,
+      "code": 1378039,
+      "data": 75600,
+      "sections": {
+        "type": 1144,
+        "function": 1679,
+        "table": 7,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 289,
+        "datacount": 2,
+        "code": 1378039,
+        "data": 75600
+      },
+      "gzip": 502388,
+      "brotli": 376558,
+      "sha256": "e455e760a380935425d3f6f04b3727e25ac407b9f25c7556b0265036b4617155",
+      "delivered": {
+        "raw": 1582419,
+        "gzip": 527325,
+        "brotli": 397944
+      }
+    },
+    {
+      "name": "js-framework-benchmark",
+      "source": "examples-web/_fixtures/js-framework-benchmark/main.roc",
+      "shape": "keyed table benchmark with a package dependency",
+      "raw": 1457778,
+      "code": 1374364,
+      "data": 79332,
+      "sections": {
+        "type": 1074,
+        "function": 1673,
+        "table": 7,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 299,
+        "datacount": 2,
+        "code": 1374364,
+        "data": 79332
+      },
+      "gzip": 509981,
+      "brotli": 389333,
+      "sha256": "a4d1658b66bb65922646b60dd90353a23c2b6b1e55c28acc9bcb767612312047",
+      "delivered": {
+        "raw": 1582410,
+        "gzip": 534918,
+        "brotli": 410719
+      }
+    },
+    {
+      "name": "recipe-scaler",
+      "source": "examples-web/recipe-scaler/main.roc",
+      "shape": "maintained public example with wide derived fan-out",
+      "raw": 1301347,
+      "code": 1210091,
+      "data": 86915,
+      "sections": {
+        "type": 1148,
+        "function": 1694,
+        "table": 7,
+        "memory": 4,
+        "global": 9,
+        "export": 978,
+        "element": 463,
+        "datacount": 2,
+        "code": 1210091,
+        "data": 86915
+      },
+      "gzip": 456672,
+      "brotli": 347331,
+      "sha256": "9df2d8c39c5cd16fcf7a0b0c1a087e2d15d084b0c8b3c643a781c1559f165f3e",
+      "delivered": {
+        "raw": 1425979,
+        "gzip": 481609,
+        "brotli": 368717
+      }
+    }
+  ],
+  "bridge": {
+    "note": "browser runtime modules shipped alongside the Wasm; kept separate from the Wasm figures",
+    "files": [
+      {
+        "name": "controlled_input_policy.mjs",
+        "raw": 2486,
+        "gzip": 619,
+        "brotli": 522,
+        "sha256": "0428ee2b633f2ce3605013e1996e596df09a48c46a09e8369a69ef3d61211be3"
+      },
+      {
+        "name": "signals.mjs",
+        "raw": 118443,
+        "gzip": 23199,
+        "brotli": 19862,
+        "sha256": "1a296b9a046ec3af405bca8e589bf3634198706085be0af0abcfd9992927e0e5"
+      },
+      {
+        "name": "wasm_memory_views.mjs",
+        "raw": 3703,
+        "gzip": 1119,
+        "brotli": 1002,
+        "sha256": "dc6a637e3c74e043f7281b549285d2e8df0e12504ea0ea4455ea93842cd6272d"
+      }
+    ],
+    "raw": 124632,
+    "gzip": 24937,
+    "brotli": 21386
+  }
+}
