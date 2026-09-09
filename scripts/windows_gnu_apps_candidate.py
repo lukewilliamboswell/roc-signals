@@ -83,7 +83,7 @@ def check_apps(stage, output, roc, url=None):
         spec_driver.print_summary(specs)
         if not specs or any(not result.passed for result in specs):
             raise ValueError('native candidate spec failure: ' + app.name)
-        arguments = ('--smoke-click', 'Increment', '--smoke-expect', 'Count: 1') if app.name == 'counter' else ()
+        arguments = gui_smoke.COUNTER_ARGUMENTS if app.name == 'counter' else ()
         gui_smoke.check(executable, arguments, env)
         results[app.name] = {'executable': identity(executable.read_bytes()), 'specs': len(specs), 'render': True}
     return results

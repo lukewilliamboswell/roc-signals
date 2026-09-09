@@ -11,6 +11,12 @@ import gui_smoke
 
 
 class GuiSmokeTests(unittest.TestCase):
+    def test_counter_smoke_checks_the_rendered_value(self):
+        self.assertEqual(
+            gui_smoke.COUNTER_ARGUMENTS,
+            ("--smoke-click", "Increment", "--smoke-expect", "1"),
+        )
+
     def test_requires_success_and_explicit_render_result(self):
         for code, stderr, expected in (
             (0, "", ValueError),

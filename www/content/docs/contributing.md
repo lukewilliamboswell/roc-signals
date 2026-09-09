@@ -45,6 +45,26 @@ its header there. Public web dependency URLs remain unchanged during these updat
 selected roots and installed compiler. The nightly bot advances those pins while
 preserving release URLs and automatically merges only a passing pin-only PR.
 
+## Pre-commit CI check
+
+Run the top-level mini-CI entry point before committing:
+
+```sh
+./minici
+```
+
+It runs every locally reproducible CI area: selection checks, the complete web
+and shared source suite, fuzz corpus validation, coverage on macOS, GUI
+semantics and real rendering, published examples, release archive validation,
+and the documentation site. Linux requires Weston and Xvfb for the rendering
+check; macOS and Windows launch the built applications directly. CI on all
+three operating systems invokes the same named targets, so their command lists
+do not drift from the pre-commit path. Platform-specific linking and archive
+checks still run on their corresponding CI runners.
+
+During investigation, pass one or more target names, such as `./minici gui
+gui-smoke`, but run the complete command before pushing.
+
 ## Test Driver
 
 Run the full suite from the repository root:

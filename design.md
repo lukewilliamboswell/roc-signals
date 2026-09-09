@@ -267,11 +267,18 @@ reconstructs meaning, holds reactive state, or re-decides patches.
 
 ```mermaid
 flowchart LR
-    App["Roc application"] --> Platform["Roc platform<br/>descriptor tree · typed retained closures"]
+    App["Roc application"] --> WebPlatform["platform-web<br/>Html · Ui"]
+    App --> GuiPlatform["platform-gui<br/>Gui"]
+    WebPlatform --> Platform["shared descriptor tree<br/>signals · scopes · typed retained closures"]
+    GuiPlatform --> Platform
     Platform -->|"roc_ui_init once;<br/>direct closure calls thereafter"| Engine["shared Engine(Ctx)<br/>reactivity · structure · ownership · rendering decisions"]
 
-    Engine <-->|"Ctx + sink contract"| Native["native host"]
+    Engine <-->|"Ctx + sink contract"| Native["native spec host"]
     Native --> NativeSurface["simulated DOM<br/>spec runner · metrics · allocation ledger"]
+
+    Engine <-->|"Ctx + sink contract"| Gui["GPUI boundary host<br/>Zig adapter"]
+    Gui -->|"committed rendering decisions"| GuiSurface["Rust static library<br/>windows · input widgets · retained GPUI entities"]
+    GuiSurface -->|"native input events"| Gui
 
     Engine <-->|"Ctx + sink contract"| Wasm["Wasm boundary host"]
     Wasm --> Wire["atomic command and payload buffers<br/>in linear memory"]
