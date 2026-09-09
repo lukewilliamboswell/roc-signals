@@ -13,6 +13,10 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 TRIPLE = "x86_64-pc-windows-gnullvm"
 SDK = "10.0.26100.0"
+# Reviewed inventory run 34343278660: Microsoft-signed 10.0.26100.8249.
+FXC_SHA = "005eff830845789c7efb2831a0b41950ee6954e9bcd93baf50de67ad537728b2"
+COMPILER_SHA = "1557adab24404308657d7902fdac82ce07a120987a849acab690ab402fecf449"
+SIGNER = "F6EECCC7FF116889C2D5466AE7243D7AA7698689"
 ZIG_SHA = "68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e"
 
 
@@ -51,8 +55,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("inventory", "build"))
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--fxc-sha256", default="")
-    parser.add_argument("--compiler-dll-sha256", default="")
     args = parser.parse_args()
     if sys.platform != "win32":
         raise ValueError("native Windows is required for GPUI release shader compilation")
@@ -85,10 +87,11 @@ def main():
     (output / "tools-inventory.json").write_text(json.dumps(inventory, indent=2) + "\n")
     if args.mode == "inventory":
         return
-    if any(record["Status"] != 0 for record in inventory["authenticode"]):
+    if any(record["Status"] != 0 or record["Thumbprint"] != SIGNER
+           for record in inventory["authenticode"]):
         raise ValueError("candidate FXC tools require valid Authenticode signatures")
-    verify(fxc, args.fxc_sha256)
-    verify(dll, args.compiler_dll_sha256)
+    verify(fxc, FXC_SHA)
+    verify(dll, COMPILER_SHA)
     # Fixed copies prevent GPUI's PATH/SDK fallback selecting another compiler.
     tool_dir = output / "tools"
     tool_dir.mkdir()

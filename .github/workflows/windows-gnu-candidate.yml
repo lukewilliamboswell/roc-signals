@@ -12,12 +12,6 @@ on:
         type: choice
         options: [inventory, build]
         default: inventory
-      fxc_sha256:
-        type: string
-        default: ''
-      compiler_dll_sha256:
-        type: string
-        default: ''
 permissions:
   contents: read
 jobs:
@@ -37,13 +31,9 @@ jobs:
       - name: Capture tool inventory or build raw candidate archives
         env:
           CANDIDATE_MODE: ${{ inputs.mode || 'inventory' }}
-          FXC_SHA256: ${{ inputs.fxc_sha256 }}
-          COMPILER_SHA256: ${{ inputs.compiler_dll_sha256 }}
         run: >-
           python scripts/windows_gnu_candidate.py $env:CANDIDATE_MODE
           --output "$env:RUNNER_TEMP/windows-gnu-candidate"
-          "--fxc-sha256=$env:FXC_SHA256"
-          "--compiler-dll-sha256=$env:COMPILER_SHA256"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:

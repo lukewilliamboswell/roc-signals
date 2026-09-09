@@ -1120,7 +1120,9 @@ shortcut; `build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
 The `Windows GNU host candidate` workflow is an isolated toolchain
 experiment, with inventory checks on its pull requests and manual build dispatches. Its inventory mode records the fixed Windows SDK 10.0.26100.0 FXC
 executable, its actual loaded D3DCompiler DLL, file versions, signatures and
-hashes. Review those identities before using build mode with matching hashes.
+hashes. Build mode requires the committed hashes and Microsoft signer reviewed from
+inventory run `34343278660` (file version `10.0.26100.8249`); dispatch inputs
+cannot override them.
 Build mode captures an optimized Rust 1.95.0 gnullvm host, a GNU Zig engine,
 shader outputs and raw Cargo evidence. These candidate artifacts neither change
 the production Windows platform target nor constitute a dependency release.
