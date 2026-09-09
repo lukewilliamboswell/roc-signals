@@ -107,6 +107,44 @@ def derive(metadata_bytes, messages_bytes, lock_bytes, target, host_bytes, host_
     return evidence, {"crates": report}
 
 
+def macos_toolchain(environment):
+    """Identify the selected shader tools without copying Apple distribution files."""
+    def query(*arguments):
+        return subprocess.check_output(arguments, env=environment, text=True).strip()
+    tools = {}
+    for name in ("metal", "metallib"):
+        path = Path(query("xcrun", "-sdk", "macosx", "--find", name))
+        version = subprocess.run([str(path), "--version"], env=environment, capture_output=True, text=True, timeout=30)
+        tools[name] = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                       "version_status": version.returncode, "version_output": version.stdout + version.stderr}
+    return {"xcode": query("xcodebuild", "-version"),
+            "sdk_version": query("xcrun", "-sdk", "macosx", "--show-sdk-version"),
+            "sdk_build": query("xcrun", "-sdk", "macosx", "--show-sdk-build-version"),
+            "tools": tools}
+
+
+def macos_shaders(metadata, messages, target_directory, toolchain, host_digest):
+    """Bind fresh GPUI shader outputs to their Cargo package and resulting host."""
+    packages = [p for p in metadata["packages"] if p["name"] == "gpui"]
+    if len(packages) != 1 or packages[0]["version"] != "0.2.2":
+        raise ValueError("review Mac shader inputs for the selected GPUI version")
+    package = packages[0]
+    records = [json.loads(line) for line in messages.splitlines() if line.startswith(b"{")]
+    outputs = [Path(m["out_dir"]).resolve() for m in records
+               if m.get("reason") == "build-script-executed" and m["package_id"] == package["id"]]
+    if len(outputs) != 1 or not outputs[0].is_relative_to(target_directory.resolve()):
+        raise ValueError("missing fresh GPUI shader output directory")
+    def record(path):
+        data = path.read_bytes()
+        if not data:
+            raise ValueError("empty GPUI shader input or output")
+        return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+    return {"toolchain": toolchain, "gpui_package_id": package["id"],
+            "cargo_host_sha256": host_digest, "fresh_cargo_target": True,
+            "shader_source": record(Path(package["manifest_path"]).parent / "src/platform/mac/shaders.metal"),
+            "outputs": {name: record(outputs[0] / name) for name in ("scene.h", "shaders.air", "shaders.metallib")}}
+
+
 def capture(root, target, output, jobs, environment, expected_fingerprint=None):
     """Build once and atomically retain the exact messages used for selection."""
     if output.exists():
@@ -119,6 +157,11 @@ def capture(root, target, output, jobs, environment, expected_fingerprint=None):
         raise ValueError("host notice evidence requires native Rust 1.95.0")
     lock = (root / "Cargo.lock").read_bytes()
     output.parent.mkdir(parents=True, exist_ok=True)
+    apple_tools = macos_toolchain(environment) if target == "arm64mac" else None
+    if apple_tools is not None:
+        # A release receipt cannot attribute cached shaders to today's tools.
+        # Keep this target alive until build_gui has copied the resulting host.
+        environment = dict(environment, CARGO_TARGET_DIR=tempfile.mkdtemp(prefix=".macos-cargo-", dir=output.parent))
     with tempfile.TemporaryDirectory(dir=output.parent, prefix=".cargo-evidence-") as temporary:
         stage = Path(temporary) / "evidence"
         stage.mkdir()
@@ -151,6 +194,12 @@ def capture(root, target, output, jobs, environment, expected_fingerprint=None):
         if source_fingerprint(root) != fingerprint:
             raise ValueError("host source changed during Cargo build")
         evidence, selection = derive(metadata, (stage / "cargo.jsonl").read_bytes(), lock, target, host.read_bytes(), fingerprint=fingerprint)
+        if apple_tools is not None:
+            if macos_toolchain(environment) != apple_tools:
+                raise ValueError("Mac shader toolchain changed during compilation")
+            shaders = macos_shaders(json.loads(metadata), (stage / "cargo.jsonl").read_bytes(),
+                                    Path(json.loads(metadata)["target_directory"]), apple_tools, evidence["host"]["sha256"])
+            (stage / "macos.json").write_text(json.dumps(shaders, indent=2) + "\n")
         (stage / "metadata.json").write_bytes(metadata)
         (stage / "Cargo.lock").write_bytes(lock)
         (stage / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")

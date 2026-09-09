@@ -119,9 +119,10 @@ jobs:
         run: |
           python scripts/prepare_platforms.py
           if [ "${{ matrix.target }}" = arm64mac ]; then
-            python scripts/build_gui.py
+            python scripts/build_gui.py --cargo-evidence "$RUNNER_TEMP/cargo-evidence"
             mkdir host-candidate
             python scripts/gui_host_artifacts.py --target arm64mac --output host-candidate/gui-host-arm64mac.tar --roc roc
+            cp -R "$RUNNER_TEMP/cargo-evidence" host-candidate/cargo-evidence
           else
             python scripts/build_gui.py --cargo-evidence "$RUNNER_TEMP/cargo-evidence"
             python scripts/prepare_gui_host_release.py --target "${{ matrix.target }}" --cargo-evidence "$RUNNER_TEMP/cargo-evidence" --output host-candidate --roc roc
@@ -129,7 +130,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: gui-host-${{ matrix.target }}
-          path: host-candidate/*.tar
+          path: host-candidate/
           retention-days: 30
 
   publish:

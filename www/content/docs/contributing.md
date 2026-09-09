@@ -1199,13 +1199,24 @@ The `GUI host link inputs` workflow (`gui-hosts.yml`) builds native candidates
 and runs all GUI application specs with the pinned Roc compiler against their
 extracted archives. Candidate tests populate empty target directories from the
 independently verified Linux or Windows releases; development target copies are
-not admitted as dependency evidence. Linux and Windows producers capture the actual Cargo build
+not admitted as dependency evidence. All native producers capture the actual Cargo build
 stream, filtered metadata, and unchanged lock with `build_gui.py --cargo-evidence`.
 The notice composer selects the conservative set of compiled packages, retains
 original notices and source declarations, and supplies pinned canonical SPDX
 terms under an explicit expression policy. These reference terms are labeled
 separately from upstream notices; template copyright placeholders are not
 attributed to crates. Unknown expressions and incomplete evidence are rejected.
+
+Mac `--cargo-evidence` builds use a fresh Cargo target beneath the evidence output's
+parent directory so cached shaders cannot be attributed to different tools.
+The existing host build receipt records the selected Metal/metallib executable
+hashes and version diagnostics, Xcode/SDK identities, and GPUI shader/header/AIR/
+metallib hashes bound to the resulting host. Ordinary development builds retain
+normal Cargo caching. CI retains this Cargo evidence beside the Mac candidate
+for target-specific source/notice collection; Mac publication eligibility remains
+unchanged. No Apple SDK or tool binaries are added to the receipt. The original
+objc2 SDK-derived qualification remains preserved as an upstream declaration,
+not treated as an inferred distribution prohibition.
 
 Each eligible candidate comprises `gui-host-<target>.tar` plus
 `gui-host-sources-<target>.tar`. The host contains a hash-indexed compressed notice

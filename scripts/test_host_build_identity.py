@@ -11,6 +11,37 @@ import host_build_identity as identity
 
 
 class HostBuildIdentityTests(unittest.TestCase):
+    def test_mac_shader_receipt_binds_selected_gpui_outputs_and_host(self):
+        from cargo_build_evidence import macos_shaders
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "gpui/src/platform/mac/shaders.metal"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"original shader")
+            target = root / "target"
+            out = target / "build/gpui/out"
+            out.mkdir(parents=True)
+            for name in ("scene.h", "shaders.air", "shaders.metallib"):
+                (out / name).write_bytes(name.encode())
+            metadata = {"packages": [{"name": "gpui", "version": "0.2.2", "id": "gpui-id",
+                                      "manifest_path": str(root / "gpui/Cargo.toml")}]}
+            messages = json.dumps({"reason": "build-script-executed", "package_id": "gpui-id", "out_dir": str(out)}).encode()
+            tools = {"tools": {name: {"sha256": "1" * 64} for name in ("metal", "metallib")}}
+            shader = macos_shaders(metadata, messages, target, tools, "2" * 64)
+            files = {name: {"sha256": "2" * 64, "size": 1} for name in identity.HOST_FILES["arm64mac"]}
+            receipt = {"schema_version": 1, "target": "arm64mac", "source_fingerprint": "source",
+                       "outputs": files, "macos": shader}
+            host = {"sha256": "2" * 64, "size": 1}
+            identity.validate_outputs(receipt, "arm64mac", "source", host)
+            shader["cargo_host_sha256"] = "3" * 64
+            with self.assertRaisesRegex(ValueError, "captured host"):
+                identity.validate_outputs(receipt, "arm64mac", "source", host)
+            with self.assertRaisesRegex(ValueError, "fresh GPUI"):
+                macos_shaders(metadata, b"", target, tools, host["sha256"])
+            (out / "shaders.metallib").unlink()
+            with self.assertRaises(FileNotFoundError):
+                macos_shaders(metadata, messages, target, tools, host["sha256"])
+
     def test_every_native_output_is_bound_before_packaging(self):
         for target in ("x64glibc", "x64win"):
             with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
