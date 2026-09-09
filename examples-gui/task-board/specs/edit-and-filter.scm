@@ -12,8 +12,9 @@
     (expect-metric-delta active_graph_records_rebuilt 0)
     ; One edit updates the column summary, selected card title and its
     ; priority-tinted metadata style, the detail fields, the shared
-    ; priority-selection key, and the reactive document-status style.
-    (expect-metric-delta-at-most derived_calls_into_roc 35)
+    ; priority-selection key, the reactive document-status style, and the
+    ; card and detail avatar selectors derived from the task's assignee.
+    (expect-metric-delta-at-most derived_calls_into_roc 37)
     (fill (label "Filter tasks") "KEYBOARD")
     (expect-absent (test-id "task-1"))
     (expect-visible (test-id "task-3"))

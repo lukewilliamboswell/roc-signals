@@ -1,0 +1,12 @@
+{
+ "assets": [
+  {
+   "name": "glyphs/folder.png",
+   "sha256": "54a467e1f1da195edf51144beaeb6112f4bfab7040db9728a4879c692207754e"
+  },
+  {
+   "name": "glyphs/file.png",
+   "sha256": "d8e6aad30f5d85c4c3c1f94311810f3e0a54d773f0f119346c7a0ff2ec87d83f"
+  }
+ ]
+}

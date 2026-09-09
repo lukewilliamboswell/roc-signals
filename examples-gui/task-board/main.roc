@@ -2,12 +2,46 @@ app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui
 
 import Board
 import Codec
+import Manifest
 import pf.Files
+import "assets/manifest.json" as manifest_json : Str
 import pf.Elem exposing [Elem]
 import pf.Gui
 import pf.Rows
 import pf.Signal
 import pf.Ui
+
+## Parsing the ingested manifest at the top level runs at compile time, so a
+## malformed assets/manifest.json fails the build instead of the running app.
+asset_entries : List(Files.AssetEntry)
+asset_entries = Manifest.entries(manifest_json)
+
+## A missing avatar file renders the host's neutral placeholder box; an
+## assignee without a generated avatar simply shows no picture.
+avatar : Str, U32 -> Elem
+avatar = |assignee, size| match Board.avatar_source(assignee) {
+	Some(source) => Gui.image({ source, label: "${assignee} avatar" }, [Gui.style({ ..Gui.style_default, width: Px(size), height: Px(size), radius: size })])
+	None => Gui.text("")
+}
+
+asset_status_text : Files.AssetStatus -> Str
+asset_status_text = |status| match status {
+	Files.AssetStatus.Ok => "ok"
+	Files.AssetStatus.Missing => "missing"
+	Files.AssetStatus.Mismatch => "altered"
+}
+
+## All-ok verification reports render as an empty (invisible) status line.
+asset_problem_text : List(Files.AssetCheck) -> Str
+asset_problem_text = |report| {
+	bad = report.keep_if(|check| check.status != Files.AssetStatus.Ok)
+	if bad.is_empty() {
+		""
+	} else {
+		names = bad.map(|check| "${check.name} (${asset_status_text(check.status)})")
+		"Problem assets: ${Str.join_with(names, ", ")}. Cards show placeholder boxes until the assets are restored."
+	}
+}
 
 ## The detail panel owns its current editing value independently of card scopes.
 ## Each edit writes this value and its column row atomically, so filtering a
@@ -39,7 +73,7 @@ Close := [KeepEditing, Confirm, Saving, Closing].{
 
 DocumentState : { path : [None, Some(Str)], baseline : [None, Some(BoardSnapshot)], phase : Phase, problem : Str }
 
-Tasks : { open : Signal.Task(Files.Choice, Files.Error), save : Signal.Task(Files.Choice, Files.Error), read : Signal.Task(Files.TextFile, Files.Error), write : Signal.Task(Files.Written, Files.Error) }
+Tasks : { open : Signal.Task(Files.Choice, Files.Error), save : Signal.Task(Files.Choice, Files.Error), read : Signal.Task(Files.TextFile, Files.Error), write : Signal.Task(Files.Written, Files.Error), verify : Signal.Task(List(Files.AssetCheck), Files.Error) }
 
 Context : { board : BoardSnapshot, history : History, document : DocumentState }
 
@@ -58,6 +92,7 @@ Handles : {
 	history : Ui.State(History),
 	bytes : Ui.State(U64),
 	document : Ui.State(DocumentState),
+	asset_problem : Ui.State(Str),
 	tasks : Tasks,
 	close : Ui.State(Close),
 	editable : Signal.Signal(Bool),
@@ -172,23 +207,29 @@ task_card = |row, column, handles, selected| {
 					[Gui.test_id("title-${key}"), Gui.style({ ..Gui.style_default, font_size: 15, foreground: Rgb(0xF2F5F6) })],
 					[Gui.text_s(row.map(|task| task.title))],
 				),
-				Gui.column(
+				Gui.row(
+					[Gui.style({ ..Gui.style_default, gap: 8 })],
 					[
-						Gui.style_s(
-							row.map(
-								|task| {
-									..Gui.style_default,
-									font_size: 13,
-									foreground: match task.priority {
-										High => Rgb(0xF09A93)
-										Low => Rgb(0x8FD4A8)
-										_ => Rgb(0xA9BFCC)
-									},
-								},
-							),
+						Ui.switch(row.map(|task| task.assignee), |assignee| avatar(assignee, 24)),
+						Gui.column(
+							[
+								Gui.style_s(
+									row.map(
+										|task| {
+											..Gui.style_default,
+											font_size: 13,
+											foreground: match task.priority {
+												High => Rgb(0xF09A93)
+												Low => Rgb(0x8FD4A8)
+												_ => Rgb(0xA9BFCC)
+											},
+										},
+									),
+								),
+							],
+							[Gui.text_s(row.map(|task| "${task.priority.to_str()} priority · ${task.assignee}"))],
 						),
 					],
-					[Gui.text_s(row.map(|task| "${task.priority.to_str()} priority · ${task.assignee}"))],
 				),
 				Gui.row([], [
 					Gui.action_button(
@@ -366,7 +407,16 @@ detail_view = |handles|
 								),
 								Gui.column(
 									[Gui.style({ ..Gui.style_default, gap: 4, font_size: 13, foreground: Rgb(0xA9BFCC) })],
-									[Gui.text("Assignee"), edit_field(Gui.text_input, handles, column, "Assignee", [Gui.style({ ..Gui.style_default, width: Fill })], |task, assignee| { ..task, assignee }, |task| task.assignee)],
+									[
+										Gui.text("Assignee"),
+										Gui.row(
+											[Gui.style({ ..Gui.style_default, gap: 8 })],
+											[
+												Ui.switch(handles.editor.signal().map(|editor| editor.task.assignee), |assignee| avatar(assignee, 32)),
+												edit_field(Gui.text_input, handles, column, "Assignee", [Gui.style({ ..Gui.style_default, width: Fill, grow: True })], |task, assignee| { ..task, assignee }, |task| task.assignee),
+											],
+										),
+									],
 								),
 								edit_field(Gui.textarea, handles, column, "Task notes", [Gui.style({ ..Gui.style_default, height: Px(150) })], |task, notes| { ..task, notes }, |task| task.notes),
 								Gui.text_s(handles.editor.signal().map(|editor| "Priority: ${editor.task.priority.to_str()}")),
@@ -477,6 +527,10 @@ board_view = |handles| {
 						[Gui.text("A small team's workspace for the next release.")],
 					),
 					document_toolbar(handles, actions),
+					Gui.column(
+						[Gui.test_id("asset-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
+						[Gui.text_s(handles.asset_problem.signal())],
+					),
 					close_dialog(handles),
 					Gui.row(
 						[Gui.style({ ..Gui.style_default, gap: 16 })],
@@ -543,14 +597,17 @@ main = || Ui.state(
 																						{ path: None, baseline: None, phase: Phase.Idle, problem: "" },
 																						|document| {
 																							context = { board: movement, history: history.signal(), document: document.signal() }.Signal
-																							tasks = { open: Files.choose_file_task("board-open"), save: Files.choose_save_path_task("board-save-path"), read: Files.read_text_task("board-read"), write: Files.write_text_task("board-write") }
+																							tasks = { open: Files.choose_file_task("board-open"), save: Files.choose_save_path_task("board-save-path"), read: Files.read_text_task("board-read"), write: Files.write_text_task("board-write"), verify: Files.verify_assets_task("asset-verify") }
 																							Ui.state(
 																								Close.KeepEditing,
-																								|close| {
-																									editable = document.signal().map(|doc| can_edit(doc.phase))
-																									edit_disabled = editable.map(|value| !value)
-																									board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete, movement, context, history, bytes, document, tasks, close, editable, edit_disabled })
-																								},
+																								|close| Ui.state(
+																									"",
+																									|asset_problem| {
+																										editable = document.signal().map(|doc| can_edit(doc.phase))
+																										edit_disabled = editable.map(|value| !value)
+																										board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete, movement, context, history, bytes, document, asset_problem, tasks, close, editable, edit_disabled })
+																									},
+																								),
 																							)
 																						},
 																					)
@@ -845,6 +902,15 @@ load_document = |handles, file| match Codec.decode(file.text) {
 
 document_bindings : Handles -> List(Elem)
 document_bindings = |handles| [
+	Ui.on_mount(|| Files.verify_assets(handles.tasks.verify, asset_entries)),
+	Ui.on_change(
+		Signal.from_task(handles.tasks.verify),
+		|status| match status {
+			Signal.TaskStatus.Loading => Signal.noop
+			Signal.TaskStatus.Failed(error) => handles.asset_problem.set_cmd("Asset verification failed: ${Files.error_text(error)}")
+			Signal.TaskStatus.Done(report) => handles.asset_problem.set_cmd(asset_problem_text(report))
+		},
+	),
 	Ui.on_change(
 		handles.document.signal().map(|doc| doc.phase),
 		|phase| match phase {

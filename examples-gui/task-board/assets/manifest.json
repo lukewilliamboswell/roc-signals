@@ -1,0 +1,16 @@
+{
+ "assets": [
+  {
+   "name": "avatars/maya.png",
+   "sha256": "aeb17694a3f988d07ce16b5adbb4f9b56599f0f3589bbbb11eee7be388c9000c"
+  },
+  {
+   "name": "avatars/jon.png",
+   "sha256": "2bdb053c4fd1be23692f5bd41adff385ace3dad0a4f9ddc9b211ccc5c0fc8aec"
+  },
+  {
+   "name": "avatars/sam.png",
+   "sha256": "ff81a96e7f666a199f814d95e9028bd7ae6fb46ea53d9a67a1dff96ab8b971a5"
+  }
+ ]
+}
