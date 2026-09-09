@@ -6,7 +6,15 @@ import pf.Signal
 import pf.Ui
 import Document
 import Session
+import Theme
 import Workflow
+
+import "theme.json" as theme_json : Str
+
+## Parsed while the compiler evaluates top-level definitions, so a bad
+## theme.json fails `roc build` with a message naming the file and key.
+theme : Theme.Palette
+theme = Theme.from_json("examples-gui/notes-editor/theme.json", theme_json)
 
 main : () -> Elem
 main = || Ui.state(
@@ -53,7 +61,7 @@ main = || Ui.state(
 					Gui.column(
 						[
 							Gui.test_id("notes-editor"),
-							Gui.style({ ..Gui.style_default, padding: 24, gap: 16, width: Fill, height: Fill, background: Rgb(1317150), foreground: Rgb(0xF2F5F6) }),
+							Gui.style({ ..Gui.style_default, padding: 24, gap: 16, width: Fill, height: Fill, background: Rgb(theme.background), foreground: Rgb(theme.text_primary) }),
 							Gui.on_shortcut({ ..chord, key: "n" }, new),
 							Gui.on_shortcut({ ..chord, key: "o" }, open),
 							Gui.on_shortcut(chord, save),
@@ -63,7 +71,7 @@ main = || Ui.state(
 						[
 							Gui.heading("Notes"),
 							Gui.column(
-								[Gui.style({ ..Gui.style_default, foreground: Rgb(0xA9BFCC) })],
+								[Gui.style({ ..Gui.style_default, foreground: Rgb(theme.text_secondary) })],
 								[Gui.text("A quiet place to collect your thoughts.")],
 							),
 							Gui.row(
@@ -71,7 +79,7 @@ main = || Ui.state(
 								[
 									Gui.action_button({ label: Signal.const("New"), enabled: ready }, [], new),
 									Gui.action_button({ label: Signal.const("Open…"), enabled: ready }, [], open),
-									Gui.action_button({ label: Signal.const("Save"), enabled: ready }, [Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3) })], save),
+									Gui.action_button({ label: Signal.const("Save"), enabled: ready }, [Gui.style({ ..Gui.style_default, padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent) })], save),
 									Gui.action_button({ label: Signal.const("Save As…"), enabled: ready }, [], save_as),
 									Gui.action_button({ label: Signal.const("Revert changes"), enabled: revert_ready }, [], revert),
 								],
@@ -80,7 +88,7 @@ main = || Ui.state(
 								[Gui.style({ ..Gui.style_default, gap: 12 })],
 								[
 									Gui.column(
-										[Gui.test_id("document-name"), Gui.style({ ..Gui.style_default, font_size: 18, foreground: Rgb(0xF2F5F6) })],
+										[Gui.test_id("document-name"), Gui.style({ ..Gui.style_default, font_size: 18, foreground: Rgb(theme.text_primary) })],
 										[Gui.text_s(session.signal().map(|state| state.baseline.title))],
 									),
 									Gui.column(
@@ -95,9 +103,9 @@ main = || Ui.state(
 															padding: 4,
 															font_size: 13,
 															foreground: if dirty {
-																Rgb(0xE8C27A)
+																Rgb(theme.warning)
 															} else {
-																Rgb(0xA9BFCC)
+																Rgb(theme.text_secondary)
 															},
 														}
 													},
@@ -124,13 +132,13 @@ main = || Ui.state(
 								[Gui.style({ ..Gui.style_default, gap: 24 })],
 								[
 									Gui.column(
-										[Gui.test_id("note-summary"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+										[Gui.test_id("note-summary"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(theme.text_secondary) })],
 										[Gui.text_s(body.signal().map(|text| Document.counts_text(Document.counts(text))))],
 									),
 								],
 							),
 							Gui.column(
-								[Gui.test_id("note-problem"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
+								[Gui.test_id("note-problem"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(theme.danger) })],
 								[
 									Gui.text_s(
 										session.signal().map(
@@ -163,7 +171,7 @@ main = || Ui.state(
 									{ label: "Discard your changes?", on_dismiss: session.on_unit(Session.cancel) },
 									[
 										Gui.test_id("discard-confirmation"),
-										Gui.style({ ..Gui.style_default, padding: 16, gap: 8, background: Rgb(3354153), radius: 6 }),
+										Gui.style({ ..Gui.style_default, padding: 16, gap: theme.gap, background: Rgb(theme.card), radius: theme.radius }),
 									],
 									[
 										Gui.heading("Discard your changes?"),
