@@ -142,6 +142,7 @@ def inspect_platform(path, manifest):
     identities = EXTERNALS | {'gui-host-x64glibc'}
     if set(retained) != {'dependencies.lock.json'} | {'dependency-manifests/' + name + '.json' for name in identities}:
         raise ValueError('bundled dependency manifests are incomplete')
+    declared_targets = {}
     for identity in identities:
         dependency = retained['dependency-manifests/' + identity + '.json']
         if dependency['name'] + '-' + dependency['target'] != identity:
@@ -149,10 +150,16 @@ def inspect_platform(path, manifest):
         if identity == 'gui-host-x64glibc' and dependency['source_fingerprint'] != manifest['host_source_fingerprint']:
             raise ValueError('bundled host source mismatch')
         for name, expected in dependency['files'].items():
+            if name.startswith('targets/'):
+                if name in declared_targets and declared_targets[name] != expected:
+                    raise ValueError('bundled dependency target inventories conflict')
+                declared_targets[name] = expected
             if observed.get(name) != expected:
                 raise ValueError('bundled dependency file or notice differs from its inventory')
     if any(name.startswith('targets/') and name.split('/')[1] != TARGET for name in observed):
         raise ValueError('Linux GUI RC contains an unselected target')
+    if {name for name in observed if name.startswith('targets/')} != set(declared_targets):
+        raise ValueError('bundled target inputs differ from the declared dependency inventories')
 
 
 def extract_starters(path, destination):

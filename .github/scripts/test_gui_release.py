@@ -194,6 +194,9 @@ class GuiReleaseTests(unittest.TestCase):
             files[path] = data
             dependency = {'name': name, 'target': 'x64glibc', 'source_fingerprint': 'fingerprint',
                           'files': {path: {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)}}}
+            native = f'targets/x64glibc/{name}.a'
+            files[native] = b'declared native input'
+            dependency['files'][native] = {'sha256': hashlib.sha256(files[native]).hexdigest(), 'size': len(files[native])}
             files['dependency-manifests/' + identity + '.json'] = json.dumps(dependency).encode()
         def pack():
             raw = io.BytesIO()
@@ -207,6 +210,17 @@ class GuiReleaseTests(unittest.TestCase):
             path.write_bytes(compressed)
             return path
         release.inspect_platform(pack(), self.manifest)
+        for extra, error in (('targets/x64glibc/unverified.a', 'declared dependency inventories'),
+                             ('targets/x64win/unverified.lib', 'unselected target')):
+            with self.subTest(extra=extra):
+                files[extra] = b'unverified input'
+                with self.assertRaisesRegex(ValueError, error):
+                    release.inspect_platform(pack(), self.manifest)
+                del files[extra]
+        missing = files.pop('targets/x64glibc/gui-host.a')
+        with self.assertRaisesRegex(ValueError, 'inventory'):
+            release.inspect_platform(pack(), self.manifest)
+        files['targets/x64glibc/gui-host.a'] = missing
         del files['licenses/gui-host/NOTICE']
         with self.assertRaisesRegex(ValueError, 'notice differs'):
             release.inspect_platform(pack(), self.manifest)
