@@ -9,6 +9,7 @@ import tempfile
 
 import dependency_archive
 import windows_imports
+import windows_import_validation
 from dependency_archive import digest, write_archive
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +41,7 @@ def build(output):
             "build": {"zig_version": version, "recipe_sha256": digest(recipe_bytes),
                       "producer_sha256": digest(Path(__file__).read_bytes()),
                       "generator_sha256": digest(Path(windows_imports.__file__).read_bytes()),
+                      "validator_sha256": digest(Path(windows_import_validation.__file__).read_bytes()),
                       "archive_writer_sha256": digest(Path(dependency_archive.__file__).read_bytes())},
         }
         archive = write_archive(output / "windows-imports-x64win.tar", metadata, files)

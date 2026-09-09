@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "spdx_revision": "d46e94e2c78ceede1cfc63cfa0396472d2798d4c",
+  "terms": {
+    "MIT": {
+      "path": "standard-terms/MIT.txt",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+      "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt"
+    },
+    "Apache-2.0": {
+      "path": "standard-terms/Apache-2.0.txt",
+      "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+      "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/Apache-2.0.txt"
+    },
+    "BSD-2-Clause": {
+      "path": "standard-terms/BSD-2-Clause.txt",
+      "sha256": "f32fb3b417a194167cfad068223fc975ba96c5960513a10f66a3c28720aec1df",
+      "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/BSD-2-Clause.txt"
+    },
+    "BSD-3-Clause": {
+      "path": "standard-terms/BSD-3-Clause.txt",
+      "sha256": "5a93d5831e1297ab10fe643e1a631e83be392896da14ee2951285a79012df69d",
+      "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/BSD-3-Clause.txt"
+    },
+    "CC0-1.0": {
+      "path": "standard-terms/CC0-1.0.txt",
+      "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
+      "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/CC0-1.0.txt"
+    },
+    "ISC": {
+      "path": "standard-terms/ISC.txt",
+      "sha256": "f2ec607f67bb0dd3053b49835b02110d5cd0f8eb6da3aac4dc0b142a6b299be9",
+      "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/ISC.txt"
+    },
+    "MPL-2.0": {
+      "path": "standard-terms/MPL-2.0.txt",
+      "sha256": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
+      "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MPL-2.0.txt"
+    },
+    "Unicode-3.0": {
+      "path": "standard-terms/Unicode-3.0.txt",
+      "sha256": "f7db81051789b729fea528a63ec4c938fdcb93d9d61d97dc8cc2e9df6d47f2a1",
+      "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/Unicode-3.0.txt"
+    },
+    "Zlib": {
+      "path": "standard-terms/Zlib.txt",
+      "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+      "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/Zlib.txt"
+    },
+    "LLVM-exception": {
+      "path": "standard-terms/LLVM-exception.txt",
+      "sha256": "e34c58338bd89d43e709e226610d8f32b3e3c47f4ad9a99a8dc1d4ac7842488e",
+      "source_url": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/LLVM-exception.txt"
+    }
+  },
+  "expressions": {
+    "(Apache-2.0 OR MIT) AND BSD-3-Clause": [
+      "MIT",
+      "BSD-3-Clause"
+    ],
+    "(MIT OR Apache-2.0) AND Unicode-3.0": [
+      "MIT",
+      "Unicode-3.0"
+    ],
+    "0BSD OR MIT OR Apache-2.0": [
+      "MIT"
+    ],
+    "Apache-2.0": [
+      "Apache-2.0"
+    ],
+    "Apache-2.0 / MIT": [
+      "MIT"
+    ],
+    "Apache-2.0 AND ISC": [
+      "Apache-2.0",
+      "ISC"
+    ],
+    "Apache-2.0 OR BSL-1.0": [
+      "Apache-2.0"
+    ],
+    "Apache-2.0 OR GPL-2.0-only": [
+      "Apache-2.0"
+    ],
+    "Apache-2.0 OR ISC OR MIT": [
+      "MIT"
+    ],
+    "Apache-2.0 OR MIT": [
+      "MIT"
+    ],
+    "Apache-2.0 WITH LLVM-exception": [
+      "Apache-2.0",
+      "LLVM-exception"
+    ],
+    "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT": [
+      "MIT"
+    ],
+    "Apache-2.0/MIT": [
+      "MIT"
+    ],
+    "BSD-2-Clause": [
+      "BSD-2-Clause"
+    ],
+    "BSD-2-Clause OR Apache-2.0 OR MIT": [
+      "MIT"
+    ],
+    "BSD-3-Clause": [
+      "BSD-3-Clause"
+    ],
+    "BSD-3-Clause OR Apache-2.0": [
+      "Apache-2.0"
+    ],
+    "CC0-1.0": [
+      "CC0-1.0"
+    ],
+    "CC0-1.0 OR Apache-2.0": [
+      "Apache-2.0"
+    ],
+    "CC0-1.0 OR MIT-0 OR Apache-2.0": [
+      "CC0-1.0"
+    ],
+    "ISC": [
+      "ISC"
+    ],
+    "MIT": [
+      "MIT"
+    ],
+    "MIT / Apache-2.0": [
+      "MIT"
+    ],
+    "MIT OR Apache-2.0": [
+      "MIT"
+    ],
+    "MIT OR Apache-2.0 OR Zlib": [
+      "MIT"
+    ],
+    "MIT OR Zlib OR Apache-2.0": [
+      "MIT"
+    ],
+    "MIT/Apache-2.0": [
+      "MIT"
+    ],
+    "MPL-2.0": [
+      "MPL-2.0"
+    ],
+    "Unicode-3.0": [
+      "Unicode-3.0"
+    ],
+    "Unlicense OR MIT": [
+      "MIT"
+    ],
+    "Unlicense/MIT": [
+      "MIT"
+    ],
+    "Zlib": [
+      "Zlib"
+    ],
+    "Zlib OR Apache-2.0 OR MIT": [
+      "MIT"
+    ]
+  },
+  "excluded_targets": {
+    "arm64mac": "Apple SDK-derived crate and bundled SDK-stub scope require separate review."
+  }
+}

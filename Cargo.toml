@@ -8,7 +8,7 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
-# Keep optimization within each cached crate. Cross-crate LTO reprocesses the
-# dependency graph whenever our host changes, defeating that build boundary.
-lto = false
+# Optimize the Rust host together; external platform libraries retain their
+# independent releases and remain separate inputs to Roc's final link.
+lto = "thin"
 strip = "debuginfo"

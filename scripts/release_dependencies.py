@@ -109,6 +109,12 @@ def prepare(directory, tag, environment, kind="musl"):
 
 def publish(directory, tag, kind="musl"):
     source, assets = prepare(directory, tag, os.environ, kind)
+    publish_assets(directory, tag, kind, source, assets, KINDS[kind]["validation"],
+                   "This release contains no platform host or application code.")
+
+
+def publish_assets(directory, tag, kind, source, assets, validation, scope):
+    """Publish already admitted artifacts without importing producer-specific code."""
     # The CLI refuses an existing release. Check tags too: --target alone does
     # not require a pre-existing tag to refer to the tested source.
     tags = json.loads(subprocess.check_output([
@@ -120,11 +126,11 @@ def publish(directory, tag, kind="musl"):
     notes.write_text(
         f"Dependency inputs built and tested from platform repository commit `{source}`.\n\n"
         "Each archive contains its upstream source identity, build recipe identity, exact file hashes, "
-        "and copyright notices. " + KINDS[kind]["validation"] + " "
+        "and copyright notices. " + validation + " "
         "GitHub build attestations bind the archive digests to the producer.\n\n"
         "Review and commit `dependencies.lock.json` in the consuming platform; "
         "use `scripts/dependency_artifacts.py` to verify and fetch it. "
-        "This release contains no platform host or application code.\n"
+        + scope + "\n"
     )
     subprocess.run(["gh", "release", "create", tag, *map(str, assets), "--repo", REPOSITORY,
                     "--target", source, "--latest=false", "--title", f"{kind} link inputs {tag}",
