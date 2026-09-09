@@ -1,6 +1,5 @@
 """Package and admit host-owned archives separately from external dependencies."""
 
-import hashlib
 import argparse
 import json
 from pathlib import Path
@@ -16,39 +15,7 @@ from host_notice_payload import NOTICE_FILES, SOURCE_KIND, validate_notices, val
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "lukewilliamboswell/roc-signals"
 WORKFLOW = REPOSITORY + "/.github/workflows/gui-hosts.yml"
-HOST_FILES = {
-    "x64glibc": ("libsignals_gpui_host.a", "libengine.a"),
-    "arm64mac": ("libsignals_gpui_host.a", "libengine.a"),
-    "x64win": ("signals_gpui_host.lib", "engine.lib", "signals.res"),
-}
-SOURCE_PATHS = (
-    "src", "crates", "platform-gui", "platform-shared", "scripts", ".cargo",
-    "dependencies/gui-host-notices",
-    ".github/actions/setup-toolchain", ".github/workflows/gui-hosts.yml",
-    "build.zig", "build.zig.zon", "Cargo.toml", "Cargo.lock", "dependencies.lock.json", "LICENSE",
-    ".gitattributes", ".gitignore",
-)
-
-
-def source_fingerprint(root=ROOT):
-    """Bind admission to clean committed inputs across checkout line endings."""
-    changed = subprocess.run([
-        "git", "diff", "--quiet", "HEAD", "--", *SOURCE_PATHS,
-    ], cwd=root).returncode
-    untracked = subprocess.check_output([
-        "git", "ls-files", "--others", "--exclude-standard", "-z", "--", *SOURCE_PATHS,
-    ], cwd=root)
-    if changed or untracked:
-        raise ValueError("prebuilt hosts require clean committed host source inputs")
-    tree = subprocess.check_output([
-        "git", "ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", *SOURCE_PATHS,
-    ], cwd=root)
-    if not tree:
-        raise ValueError("host source inventory is empty")
-    for record in tree.split(b"\0"):
-        if record and not record.startswith((b"100644 blob ", b"100755 blob ")):
-            raise ValueError("host source inventory must contain regular files")
-    return hashlib.sha256(tree).hexdigest()
+from host_build_identity import HOST_FILES, SOURCE_PATHS, source_fingerprint
 
 
 def pack_host(target, source, output, root=ROOT, notices=None):

@@ -9,11 +9,13 @@ import sys
 import tempfile
 import tomllib
 
+from host_build_identity import source_fingerprint
+
 TARGETS = {"x64glibc": "x86_64-unknown-linux-gnu", "x64win": "x86_64-pc-windows-msvc",
            "arm64mac": "aarch64-apple-darwin"}
 
 
-def derive(metadata_bytes, messages_bytes, lock_bytes, target, host_bytes, host_record=None):
+def derive(metadata_bytes, messages_bytes, lock_bytes, target, host_bytes, host_record=None, *, fingerprint):
     """Select all compiled packages, including build tools, from complete output.
 
     The filtered metadata graph bounds package membership; original Cargo.lock
@@ -96,6 +98,7 @@ def derive(metadata_bytes, messages_bytes, lock_bytes, target, host_bytes, host_
                          "declared_license": package["license"]})
         report.append({"package": package})
     evidence = {"schema_version": 1, "target": target, "rust_target": TARGETS[target],
+                "source_fingerprint": fingerprint,
                 "cargo_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
                 "metadata_sha256": hashlib.sha256(metadata_bytes).hexdigest(),
                 "messages_sha256": hashlib.sha256(messages_bytes).hexdigest(),
@@ -104,10 +107,13 @@ def derive(metadata_bytes, messages_bytes, lock_bytes, target, host_bytes, host_
     return evidence, {"crates": report}
 
 
-def capture(root, target, output, jobs, environment):
+def capture(root, target, output, jobs, environment, expected_fingerprint=None):
     """Build once and atomically retain the exact messages used for selection."""
     if output.exists():
         raise FileExistsError(output)
+    fingerprint = source_fingerprint(root)
+    if expected_fingerprint is not None and fingerprint != expected_fingerprint:
+        raise ValueError("host source changed before Cargo build")
     version = subprocess.check_output(["rustc", "--version", "--verbose"], env=environment, text=True)
     if not version.startswith("rustc 1.95.0 ") or "host: " + TARGETS[target] not in version.splitlines():
         raise ValueError("host notice evidence requires native Rust 1.95.0")
@@ -142,7 +148,9 @@ def capture(root, target, output, jobs, environment):
                     emitted.update(Path(name).resolve() for name in message["filenames"])
         if host.resolve() not in emitted:
             raise ValueError("Cargo emitted a different host path; explicit target overrides require review")
-        evidence, selection = derive(metadata, (stage / "cargo.jsonl").read_bytes(), lock, target, host.read_bytes())
+        if source_fingerprint(root) != fingerprint:
+            raise ValueError("host source changed during Cargo build")
+        evidence, selection = derive(metadata, (stage / "cargo.jsonl").read_bytes(), lock, target, host.read_bytes(), fingerprint=fingerprint)
         (stage / "metadata.json").write_bytes(metadata)
         (stage / "Cargo.lock").write_bytes(lock)
         (stage / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")

@@ -82,6 +82,10 @@ def build(debug=False, jobs=2, cargo_evidence=None):
         raise SystemExit('GUI build jobs must be positive.')
     if debug and cargo_evidence is not None:
         raise SystemExit('Cargo release evidence requires an optimized build.')
+    fingerprint = None
+    if cargo_evidence is not None:
+        from host_build_identity import source_fingerprint
+        fingerprint = source_fingerprint(ROOT)
     windows_dependencies = (install_windows_imports(ROOT / 'platform-gui/targets/x64win')
                             if target == 'x64win' else None)
     linux_dependencies = (install_freetype(ROOT / 'platform-gui/targets/x64glibc')
@@ -99,7 +103,7 @@ def build(debug=False, jobs=2, cargo_evidence=None):
     rust_name = 'signals_gpui_host.lib' if target == 'x64win' else 'libsignals_gpui_host.a'
     if cargo_evidence is not None:
         from cargo_build_evidence import capture
-        rust_host = capture(ROOT, target, cargo_evidence, jobs, build_environment())
+        rust_host = capture(ROOT, target, cargo_evidence, jobs, build_environment(), fingerprint)
     else:
         subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, env=build_environment(), check=True)
         metadata = json.loads(subprocess.check_output(
@@ -113,6 +117,7 @@ def build(debug=False, jobs=2, cargo_evidence=None):
     (dest / host_archive(target)).unlink(missing_ok=True)
     if target == 'x64win':
         build_windows_inputs(dest, windows_dependencies)
+        finish_evidence(target, dest, cargo_evidence, fingerprint)
         return
     if platform.system() == 'Darwin':
         sdk = Path(subprocess.check_output(['xcrun', '--show-sdk-path'], text=True).strip())
@@ -128,9 +133,18 @@ def build(debug=False, jobs=2, cargo_evidence=None):
             'sdk_build': subprocess.check_output(['xcrun', '--show-sdk-build-version'], text=True).strip(),
             'frameworks': MACOS_FRAMEWORKS,
         }, indent=2) + '\n')
+        finish_evidence(target, dest, cargo_evidence, fingerprint)
         return
     provenance = {'dependencies': linux_dependencies}
     (dest / 'link-inputs.json').write_text(json.dumps(provenance, indent=2) + '\n')
+    finish_evidence(target, dest, cargo_evidence, fingerprint)
+
+
+def finish_evidence(target, destination, evidence_root, fingerprint):
+    """Seal every host-owned output after the complete native build succeeds."""
+    if evidence_root is not None:
+        from host_build_identity import record_outputs
+        record_outputs(ROOT, target, destination, evidence_root, fingerprint)
 
 
 def build_windows_inputs(dest, dependencies):

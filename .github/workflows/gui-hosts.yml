@@ -9,6 +9,8 @@ on:
       - .github/workflows/gui-hosts.yml
       - scripts/build_gui.py
       - scripts/cargo_build_evidence.py
+      - scripts/host_build_identity.py
+      - scripts/test_host_build_identity.py
       - scripts/host_notice_payload.py
       - scripts/prepare_gui_host_release.py
       - scripts/test_host_notice_payload.py
@@ -58,13 +60,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-2025
-            target: x64win
-          - os: ubuntu-24.04
-            target: x64glibc
-          - os: macos-15
-            target: arm64mac
+        # PRs validate all native hosts; a release builds only its selected targets.
+        include: >-
+          ${{ fromJSON(github.event_name != 'workflow_dispatch'
+            && '[{"os":"windows-2025","target":"x64win"},{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"macos-15","target":"arm64mac"}]'
+            || inputs.release_targets == 'x64glibc'
+            && '[{"os":"ubuntu-24.04","target":"x64glibc"}]'
+            || inputs.release_targets == 'x64win'
+            && '[{"os":"windows-2025","target":"x64win"}]'
+            || '[{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"windows-2025","target":"x64win"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -76,6 +80,7 @@ jobs:
       - name: Check host archive admission
         run: |
           python -m unittest discover -s scripts -p test_host_notice_payload.py
+          python -m unittest discover -s scripts -p test_host_build_identity.py
           python -m unittest discover -s scripts -p test_gui_host_artifacts.py
           python -m unittest discover -s scripts -p test_rust_license_inventory.py
           python -m unittest discover -s scripts -p test_toolchain_license_inventory.py

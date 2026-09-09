@@ -14,6 +14,7 @@ from gui_host_artifacts import ROOT, HOST_FILES, check_candidate, pack_host, sou
 from host_notice_payload import compose
 import rust_license_inventory
 import toolchain_license_inventory
+from host_build_identity import validate_outputs
 
 
 def verified_download(url, checksum, destination, size=None):
@@ -97,6 +98,10 @@ def prepare(target, source, evidence_root, output, cache, roc, root=ROOT):
         raise ValueError("host source evidence uses a different checkout lock")
     fingerprint = source_fingerprint(root)
     evidence = json.loads((evidence_root / "evidence.json").read_text())
+    if evidence["source_fingerprint"] != fingerprint:
+        raise ValueError("Cargo build evidence has different source inputs")
+    validate_outputs(json.loads((evidence_root / "build.json").read_text()), target, fingerprint, evidence["host"],
+                     {name: (source / name).read_bytes() for name in HOST_FILES[target]})
     crates = crate_cache(evidence, cache)
     toolchains = json.loads((policy / "toolchains.json").read_text())
     rust = toolchains["rust"]["targets"][target]

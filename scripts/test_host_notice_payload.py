@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tarfile
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -50,10 +51,14 @@ class NoticePayloadTests(unittest.TestCase):
         self.evidence.mkdir()
         metadata_bytes = json.dumps(self.metadata).encode()
         messages_bytes = self.stream()
-        evidence, selection = cargo.derive(metadata_bytes, messages_bytes, self.lock, "x64glibc", self.host)
+        evidence, selection = cargo.derive(metadata_bytes, messages_bytes, self.lock, "x64glibc", self.host, fingerprint="source-fingerprint")
         for name, data in {"metadata.json": metadata_bytes, "cargo.jsonl": messages_bytes, "Cargo.lock": self.lock,
                            "evidence.json": json.dumps(evidence).encode(), "selection.json": json.dumps(selection).encode()}.items():
             (self.evidence / name).write_bytes(data)
+        (self.evidence / "build.json").write_text(json.dumps({
+            "schema_version": 1, "target": "x64glibc", "source_fingerprint": "source-fingerprint",
+            "outputs": {"libsignals_gpui_host.a": {"sha256": payload.digest(self.host), "size": len(self.host)},
+                        "libengine.a": {"sha256": payload.digest(b"engine"), "size": 6}}}))
         for name in ("manifest.json", "review.json"):
             (self.policy / name).write_text(json.dumps({"schema_version": 1, "packages": {}}))
         self.crates = self.root / "crates"
@@ -117,6 +122,53 @@ class NoticePayloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "differs from its inventory"):
             payload.validate_sources(source_root, manifest, notice_data, self.host, self.lock)
 
+    def test_capture_refuses_source_drift_across_cargo_execution(self):
+        (self.root / "Cargo.lock").write_bytes(self.lock)
+        target = self.root / "target"
+        host = target / "release/libsignals_gpui_host.a"
+        host.parent.mkdir(parents=True)
+        host.write_bytes(self.host)
+        self.metadata["target_directory"] = str(target)
+        self.messages[1]["target"]["name"] = "signals_gpui_host"
+        self.messages[1]["filenames"] = [str(host)]
+
+        def checked(command, **kwargs):
+            if command[0] == "rustc":
+                return "rustc 1.95.0 (test)\nhost: x86_64-unknown-linux-gnu\n"
+            return json.dumps(self.metadata).encode()
+
+        def build(command, **kwargs):
+            kwargs["stdout"].write(self.stream())
+            return subprocess.CompletedProcess(command, 0)
+
+        output = self.root / "capture"
+        with patch.object(cargo, "source_fingerprint", side_effect=["old", "new"]), \
+                patch.object(cargo.subprocess, "check_output", side_effect=checked), \
+                patch.object(cargo.subprocess, "run", side_effect=build):
+            with self.assertRaisesRegex(ValueError, "changed during Cargo"):
+                cargo.capture(self.root, "x64glibc", output, 2, {}, "old")
+        self.assertFalse(output.exists())
+        with patch.object(cargo, "source_fingerprint", return_value="new"), \
+                patch.object(cargo.subprocess, "run") as process:
+            with self.assertRaisesRegex(ValueError, "changed before Cargo"):
+                cargo.capture(self.root, "x64glibc", output, 2, {}, "old")
+            process.assert_not_called()
+
+    def test_old_build_cannot_be_relabelled_as_new_source(self):
+        with self.assertRaisesRegex(ValueError, "different source inputs"):
+            payload.compose("x64glibc", self.evidence, self.crates, self.toolchains, self.policy,
+                            self.host, self.root / "gui-host-sources-x64glibc.tar", "new-source-fingerprint")
+
+    def test_replacement_engine_rejected_at_notice_admission(self):
+        result = self.compose()
+        notice_root = self.root / "composed"
+        notice_root.mkdir()
+        for name, data in result.items():
+            (notice_root / name).write_bytes(data)
+        with self.assertRaisesRegex(ValueError, "captured build receipt"):
+            payload.validate_notices(notice_root, "x64glibc", self.host, "source-fingerprint", self.policy,
+                                     {"libsignals_gpui_host.a": self.host, "libengine.a": b"replacement"})
+
     def test_cached_notice_downloads_are_verified_and_failed_downloads_leave_no_input(self):
         destination = self.root / "download"
         content = b"pinned original"
@@ -143,10 +195,10 @@ class NoticePayloadTests(unittest.TestCase):
     def test_failed_or_incomplete_build_cannot_select_notices(self):
         self.messages.pop()
         with self.assertRaisesRegex(ValueError, "incomplete"):
-            cargo.derive(json.dumps(self.metadata).encode(), self.stream(), self.lock, "x64glibc", self.host)
+            cargo.derive(json.dumps(self.metadata).encode(), self.stream(), self.lock, "x64glibc", self.host, fingerprint="source-fingerprint")
         self.messages.append({"reason": "build-finished", "success": False})
         with self.assertRaisesRegex(ValueError, "unsuccessful"):
-            cargo.derive(json.dumps(self.metadata).encode(), self.stream(), self.lock, "x64glibc", self.host)
+            cargo.derive(json.dumps(self.metadata).encode(), self.stream(), self.lock, "x64glibc", self.host, fingerprint="source-fingerprint")
 
     def test_wrong_host_or_changed_notice_refuses_source_publication(self):
         self.host = b"different host"

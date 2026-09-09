@@ -416,6 +416,10 @@ evidence; it does not identify which runtime components a particular host links
 or cover SDK inputs. Both inventories still need to be incorporated into the
 host archive with a reviewed dependency selection and publication validation.
 
+Explicit GUI host release dispatches build only the selected Linux and/or Windows
+host targets. Pull requests still validate all three native candidates, including
+macOS; macOS publication remains excluded while its SDK boundary is unresolved.
+
 ## Coverage
 
 Native host coverage is a diagnostic tool for finding major gaps in the Zig

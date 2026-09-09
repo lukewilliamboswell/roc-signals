@@ -8,6 +8,7 @@ import re
 import tarfile
 
 from cargo_build_evidence import derive
+from host_build_identity import validate_outputs
 from dependency_archive import write_archive
 from rust_license_inventory import EMBEDDED_NOTICE
 
@@ -127,6 +128,9 @@ def validate_notices(directory, target, host_bytes, fingerprint, policy_root, ou
         raise ValueError("notice payload does not match host bytes, source, or policy")
     data = checked_file(directory, "third-party-notices.tar.xz", manifest["notice_archive"])
     index = validate_notice_archive(data)
+    if index.get("build.json") != manifest["build_receipt"]:
+        raise ValueError("notice archive omits captured host build receipt")
+    validate_outputs(notice_json(data, "build.json"), target, fingerprint, manifest["cargo_host"], outputs)
     if manifest.get("normalization") is not None:
         if index.get("normalization.json") != manifest["normalization"]:
             raise ValueError("notice archive omits the normalization receipt")
@@ -194,10 +198,15 @@ def validate_sources(source_tree, manifest, notice_data, host_bytes, lock_bytes)
         raise ValueError("source companion uses a different Cargo.lock")
     evidence, selection = derive((evidence_root / "metadata.json").read_bytes(),
                                  (evidence_root / "cargo.jsonl").read_bytes(), lock_bytes,
-                                 manifest["target"], None, manifest["cargo_host"])
+                                 manifest["target"], None, manifest["cargo_host"],
+                                 fingerprint=manifest["source_fingerprint"])
     if (evidence != json.loads((evidence_root / "evidence.json").read_text())
             or selection != json.loads((evidence_root / "selection.json").read_text())):
         raise ValueError("source companion build evidence is inconsistent")
+    build_bytes = checked_file(source_tree, prefix + "evidence/build.json", manifest["build_receipt"])
+    if json.loads(build_bytes) != notice_json(notice_data, "build.json"):
+        raise ValueError("source companion has different host build receipt")
+    validate_outputs(json.loads(build_bytes), manifest["target"], manifest["source_fingerprint"], manifest["cargo_host"])
     expected_packages = {p["id"]: p for p in evidence["packages"] if p["source"] is not None}
     observed = {p["id"]: {k: v for k, v in p.items() if k != "referenced_standard_terms"}
                 for p in manifest["packages"]}
@@ -206,7 +215,7 @@ def validate_sources(source_tree, manifest, notice_data, host_bytes, lock_bytes)
     crates = notice_json(notice_data, "crate-inventory.json")
     tools = notice_json(notice_data, "toolchain-inventory.json")
     expected_files = {prefix + "evidence/" + name for name in
-                      ("metadata.json", "cargo.jsonl", "Cargo.lock", "evidence.json", "selection.json")}
+                      ("metadata.json", "cargo.jsonl", "Cargo.lock", "evidence.json", "selection.json", "build.json")}
     if manifest.get("normalization") is not None:
         receipt_bytes = checked_file(source_tree, prefix + "evidence/normalization.json", manifest["normalization"])
         validate_normalization(json.loads(receipt_bytes), manifest["target"], manifest["cargo_host"], host_bytes)
@@ -246,12 +255,17 @@ def compose(target, evidence_root, crate_root, toolchain_root, policy_root, host
     messages = (evidence_root / "cargo.jsonl").read_bytes()
     lock = (evidence_root / "Cargo.lock").read_bytes()
     recorded_evidence = json.loads((evidence_root / "evidence.json").read_text())
+    if recorded_evidence["source_fingerprint"] != fingerprint:
+        raise ValueError("Cargo build evidence has different source inputs")
+    build_bytes = (evidence_root / "build.json").read_bytes()
+    validate_outputs(json.loads(build_bytes), target, fingerprint, recorded_evidence["host"])
     normalization_bytes = normalization.read_bytes() if normalization is not None else None
     if normalization_bytes is not None:
         validate_normalization(json.loads(normalization_bytes), target, recorded_evidence["host"], host_bytes)
     evidence, selection = derive(metadata, messages, lock, target,
                                  host_bytes if normalization_bytes is None else None,
-                                 recorded_evidence["host"] if normalization_bytes is not None else None)
+                                 recorded_evidence["host"] if normalization_bytes is not None else None,
+                                 fingerprint=fingerprint)
     if evidence != recorded_evidence:
         raise ValueError("Cargo build evidence changed before notice composition")
     if selection != json.loads((evidence_root / "selection.json").read_text()):
@@ -265,7 +279,7 @@ def compose(target, evidence_root, crate_root, toolchain_root, policy_root, host
     expected = {(p["name"], p["version"]): p for p in evidence["packages"] if p["source"] is not None}
     if len(crates["packages"]) != len(expected) or {(p["name"], p["version"]) for p in crates["packages"]} != set(expected):
         raise ValueError("notice inventory does not cover the compiled package set")
-    files = {}
+    files = {"build.json": build_bytes}
     sources = {}
     if normalization_bytes is not None:
         files["normalization.json"] = normalization_bytes
@@ -322,7 +336,7 @@ def compose(target, evidence_root, crate_root, toolchain_root, policy_root, host
     files["crate-inventory.json"] = (crate_root / "inventory.json").read_bytes()
     files["toolchain-inventory.json"] = (toolchain_root / "inventory.json").read_bytes()
     files["referenced-standard-terms/policy.json"] = policy_bytes
-    for name in ("metadata.json", "cargo.jsonl", "Cargo.lock", "evidence.json", "selection.json"):
+    for name in ("metadata.json", "cargo.jsonl", "Cargo.lock", "evidence.json", "selection.json", "build.json"):
         sources["licenses/gui-host-sources/evidence/" + name] = (evidence_root / name).read_bytes()
     notice_bytes = pack_notices(files)
     validate_notice_archive(notice_bytes)
@@ -334,6 +348,7 @@ def compose(target, evidence_root, crate_root, toolchain_root, policy_root, host
                 "cargo_lock_sha256": digest(lock), "policy_sha256": digest(policy_bytes),
                 "host": {"name": evidence["host"]["name"], "sha256": digest(host_bytes), "size": len(host_bytes)},
                 "cargo_host": evidence["host"],
+                "build_receipt": {"sha256": digest(build_bytes), "size": len(build_bytes)},
                 "normalization": {"sha256": digest(normalization_bytes), "size": len(normalization_bytes)} if normalization_bytes is not None else None,
                 "packages": selected, "toolchains": toolchains["toolchains"],
                 "source_companion": {"name": SOURCE_KIND, "target": target, "asset": source_output.name,
