@@ -1124,7 +1124,9 @@ hashes. Build mode requires the committed hashes and Microsoft signer reviewed f
 inventory run `34343278660` (file version `10.0.26100.8249`); dispatch inputs
 cannot override them.
 Build mode captures an optimized Rust 1.95.0 gnullvm host, a GNU Zig engine,
-shader outputs and raw Cargo evidence. These candidate artifacts neither change
+shader outputs, the Windows resource, and Cargo evidence for both the compiler
+host and GNU target. A source fingerprint captured before compilation binds every
+raw host output after the build. These candidate artifacts neither change
 the production Windows platform target nor constitute a dependency release.
 The shader compiler remains a Windows build tool; the separate experiment aims
 to remove SDK library discovery from Roc's final application link.
@@ -1135,9 +1137,12 @@ reviewed runtime run/source/archive hash. It structurally validates COFF import
 records and descriptors before separating them, preserves implementation members
 byte-for-byte, and records the transformation. Native builds, semantic specs and
 rendering checks run for all six examples, followed by fresh-cache HTTP bundle
-consumption. This is a candidate test, not signed dependency admission. Its
-receipt explicitly identifies the still-pending complete GNU host notice payload;
-measured candidate size must not be reported as the complete release bundle size.
+consumption. Each Roc build explicitly selects `--target=x64mingw`; this does not
+prove automatic Windows target selection. Complete original host notices are
+composed against the captured build source and included in the measured bundle,
+with the validated source companion retained as a separate artifact. The raw host
+transformation receipt preserves the engine and resource identities. This remains
+a candidate test, not signed dependency admission.
 
 Other native targets, including Intel macOS and Windows on Arm, are not
 implemented.

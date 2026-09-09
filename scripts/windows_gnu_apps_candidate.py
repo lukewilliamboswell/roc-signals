@@ -20,7 +20,7 @@ from windows_gnu_coff import identity, separate
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = 'lukewilliamboswell/roc-signals'
-HOST = (34343495264, 'fc01727239acc641fa77ec4edbba7c7bcecabaa1', 'windows-gnu-build')
+HOST = (34349654208, '457188029f74c44ef3a3a6cdff340bdf7f3a096c', 'windows-gnu-build')
 IMPORTS = (34339580699, 'a1867b046fa2d4e83b6e2f2d2c512b93b3890652', 'windows-system-imports-candidate')
 IMPORT_SHA = '6038a2993557f50c84ce818b72a7abe9cd70260d05668003cc21ea6da8caccd0'
 
@@ -106,6 +106,15 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     identities = {'host': download(*HOST, output / 'host'), 'imports': download(*IMPORTS, output / 'imports'),
                   'runtime': download(args.runtime_run, args.runtime_source, 'windows-gnu-runtime-candidate', output / 'runtime')}
+    host_source = output / 'host-source'
+    subprocess.run(['git', 'fetch', '--depth=1', 'origin', HOST[1]], cwd=ROOT, check=True)
+    subprocess.run(['git', 'worktree', 'add', '--detach', str(host_source), HOST[1]], cwd=ROOT, check=True)
+    from host_build_identity import HOST_FILES, source_fingerprint, validate_outputs
+    fingerprint = source_fingerprint(host_source)
+    evidence = json.loads((output / 'host/evidence.json').read_text())
+    build = json.loads((output / 'host/build.json').read_text())
+    raw_outputs = {name: (output / 'host/payload' / name).read_bytes() for name in HOST_FILES['x64mingw']}
+    validate_outputs(build, 'x64mingw', fingerprint, evidence['host'], raw_outputs)
     stage = output / 'platform-gui'
     from bundle_platforms import prepare_platform
     subprocess.run([sys.executable, ROOT / 'scripts/prepare_platforms.py'], check=True)
@@ -121,10 +130,11 @@ def main():
     destination = stage / 'targets/x64mingw'
     raw = output / 'host/payload/libsignals_gpui_host.a'
     engine = output / 'host/payload/libengine.a'
+    resource = output / 'host/payload/signals.res'
     host_receipt = json.loads((output / 'host/candidate.json').read_text())
     if host_receipt['source_commit'] != HOST[1] or host_receipt['rust_target'] != 'x86_64-pc-windows-gnullvm':
         raise ValueError('host candidate source/target mismatch')
-    for path in (raw, engine):
+    for path in (raw, engine, resource):
         if identity(path.read_bytes()) != host_receipt['outputs'][path.name]:
             raise ValueError('raw host candidate output mismatch')
     zig = shutil.which('zig')
@@ -133,9 +143,31 @@ def main():
     normalization = separate(raw, destination / raw.name, inventory, zig)
     normalization['inventory_sha256'] = hashlib.sha256(json.dumps(inventory, sort_keys=True).encode()).hexdigest()
     normalization['transformer'] = identity((ROOT / 'scripts/windows_gnu_coff.py').read_bytes())
-    (stage / 'normalization.json').write_text(json.dumps(normalization, indent=2) + '\n')
+    normalization = {
+        'schema_version': 1, 'target': 'x64mingw',
+        'tools': {'zig': dict(identity(Path(zig).read_bytes()),
+                              version=subprocess.check_output([zig, 'version'], text=True).strip()),
+                  'windows_gnu_coff.py': dict(normalization['transformer'], version='separate-coff-imports-v1')},
+        'archives': {raw.name: {
+            'operation': 'separate-coff-imports-v1', 'input': normalization['input'],
+            'output': normalization['output'], 'separation': normalization,
+            'steps': [{'tool': 'windows_gnu_coff.py',
+                       'args': ['separate($INPUT, $OUTPUT, $INVENTORY, $ZIG)']},
+                      {'tool': 'zig', 'args': ['ar', 's', '$OUTPUT']}],
+        }},
+    }
+    (destination / 'normalization.json').write_text(json.dumps(normalization, indent=2) + '\n')
+    shutil.copyfile(destination / 'normalization.json', stage / 'normalization.json')
     shutil.copyfile(engine, destination / engine.name)
-    subprocess.run([zig, 'rc', 'signals.rc', str(destination / 'signals.res')], cwd=ROOT / 'crates/gpui-host/windows', check=True)
+    shutil.copyfile(resource, destination / resource.name)
+    from prepare_gui_host_release import compose_notices
+    notice_output = compose_notices('x64mingw', destination, output / 'host',
+                                    output / 'host-notices', output / 'notice-cache', root=host_source)
+    (destination / 'normalization.json').unlink()
+    notice_destination = stage / 'licenses/gui-host'
+    notice_destination.mkdir(parents=True, exist_ok=True)
+    for notice in (notice_output / 'notices').iterdir():
+        shutil.copyfile(notice, notice_destination / notice.name)
     providers = sorted(n.removeprefix('targets/x64mingw/') for n in imports_manifest['files'] if n.startswith('targets/x64mingw/'))
     if len(providers) != 340:
         raise ValueError('complete provider inventory changed; review required')
@@ -151,7 +183,7 @@ def main():
     line = next(line for line in contents.splitlines() if 'x64win: { inputs:' in line)
     header.write_text(contents.replace(line, '        x64mingw: { inputs: [' + ', '.join('app' if n == 'APP' else json.dumps(n) for n in inputs) + '] },'))
     (stage / 'CANDIDATE.json').write_text(json.dumps({
-        'candidate_only': True, 'complete_host_notices': False,
+        'candidate_only': True, 'complete_host_notices': True,
         'consumer_source': source_commit, 'inputs': identities,
         'runtime_sha256': args.runtime_sha256, 'imports_sha256': IMPORT_SHA,
         'note': 'Native test candidate; no release attestations or production dependency lock.'
@@ -160,9 +192,9 @@ def main():
     proof = {'candidate_only': True, 'consumer_source': source_commit, 'inputs': identities,
              'runtime_archive_sha256': args.runtime_sha256, 'imports_archive_sha256': IMPORT_SHA,
              'host_source': HOST[1], 'link_order': inputs, 'native': check_apps(stage, output, args.roc)}
-    # Full native dependencies/notices are retained. Rust host notice composition
-    # is a separate pending release gate; this archive is explicitly a candidate.
-    proof['complete_host_notices'] = False
+    # Full original notices are bundled; paired sources remain a separate artifact.
+    proof['complete_host_notices'] = True
+    proof['host_source_companion'] = identity((notice_output / 'gui-host-sources-x64mingw.tar').read_bytes())
     files = sorted(p.relative_to(stage).as_posix() for p in stage.rglob('*') if p.is_file())
     proof['candidate_expanded_bytes'] = sum((stage / n).stat().st_size for n in files)
     if proof['candidate_expanded_bytes'] >= 100 * 1024 * 1024:

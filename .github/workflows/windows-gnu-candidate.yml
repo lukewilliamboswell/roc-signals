@@ -87,6 +87,7 @@ jobs:
             ${{ runner.temp }}/windows-gnu-apps/platform-gui/normalization.json
             ${{ runner.temp }}/windows-gnu-apps/platform-gui/CANDIDATE.json
             ${{ runner.temp }}/windows-gnu-apps/bundle/
+            ${{ runner.temp }}/windows-gnu-apps/host-notices/
             ${{ runner.temp }}/windows-gnu-apps/local-apps/*.exe
             ${{ runner.temp }}/windows-gnu-apps/http-apps/*.exe
           retention-days: 7
