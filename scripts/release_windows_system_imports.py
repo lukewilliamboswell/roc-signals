@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 
 from build_windows_system_imports import RECIPE, REPRODUCTION
-from dependency_artifacts import read_lock, sha256, unpack_verified
+from dependency_artifacts import read_lock, sha256, unpack_verified, verify_archive
 from release_dependencies import REPOSITORY, publish_assets
 
 KIND = 'windows-system-imports'
@@ -33,6 +33,7 @@ def prepare(directory, tag, environment):
              'asset': archive.name, 'sha256': sha256(archive), 'size': archive.stat().st_size,
              'source_sha': source, 'source_ref': 'refs/heads/main',
              'signer_workflow': REPOSITORY + '/.github/workflows/windows-system-imports.yml'}
+    verify_archive(archive, entry)
     with tempfile.TemporaryDirectory() as temporary:
         stage = Path(temporary) / "candidate"
         manifest = unpack_verified(archive, entry, stage)

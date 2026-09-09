@@ -103,11 +103,25 @@ class PublicationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             prepare(Path('/missing'), 'deps-windows-system-imports-1', {})
 
-    def test_incomplete_payload_is_refused(self):
+    def test_signature_failure_prevents_extraction_and_lock_creation(self):
         sha = '1' * 40
         environment = {'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_REF': 'refs/heads/main',
                        'GITHUB_REPOSITORY': 'lukewilliamboswell/roc-signals', 'GITHUB_SHA': sha}
         with tempfile.TemporaryDirectory() as temporary, patch('release_windows_system_imports.subprocess.check_output', return_value=sha):
+            root = Path(temporary)
+            (root / 'windows-system-imports-x64mingw.tar').write_bytes(b'unattested')
+            with patch('release_windows_system_imports.verify_archive', side_effect=ValueError('signature rejected')) as verifier, patch('release_windows_system_imports.unpack_verified') as unpack:
+                with self.assertRaisesRegex(ValueError, 'signature rejected'):
+                    prepare(root, 'deps-windows-system-imports-1', environment)
+                verifier.assert_called_once()
+                unpack.assert_not_called()
+            self.assertFalse((root / 'dependencies.lock.json').exists())
+
+    def test_incomplete_payload_is_refused(self):
+        sha = '1' * 40
+        environment = {'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_REF': 'refs/heads/main',
+                       'GITHUB_REPOSITORY': 'lukewilliamboswell/roc-signals', 'GITHUB_SHA': sha}
+        with tempfile.TemporaryDirectory() as temporary, patch('release_windows_system_imports.subprocess.check_output', return_value=sha), patch('release_windows_system_imports.verify_archive'):
             root = Path(temporary)
             write_archive(root / 'windows-system-imports-x64mingw.tar',
                           {'schema_version': 1, 'name': 'windows-system-imports', 'version': '1', 'target': 'x64mingw', 'source': {}},
