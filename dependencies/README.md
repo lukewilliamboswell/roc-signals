@@ -49,10 +49,14 @@ update and integration tests. Other Linux GUI link inputs remain outside this
 producer's scope.
 
 Every archive contains `dependency.json`, its exact target files, and license
-notices. The manifest records upstream identity, producer/recipe hashes, compiler
+notices. External dependency manifests record upstream identity, producer/recipe hashes, compiler
 configuration, and every payload file's size and digest. Tar metadata and paths
-are normalized. Release CI compares independent build directories and executes a
+are normalized. External dependency release CI compares independent build directories and executes a
 test linked against the extracted inputs on each supported architecture.
+Host archives instead record a committed-source fingerprint and payload hashes;
+their producer builds each maintained GUI app against the extracted candidate
+and runs its native specs. Host publication currently does not require a second
+build comparison.
 
 The consumer verifies signed GitHub build provenance against the locked repository,
 workflow, main ref, and exact source commit before extraction. It performs these
