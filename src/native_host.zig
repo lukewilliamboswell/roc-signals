@@ -4774,6 +4774,77 @@ test "native prepared render publication keeps DOM unchanged until armed apply" 
     host.configureAllocationFailure(null);
 }
 
+test "native drag publication rejects incomplete handlers without exposing metadata" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("drag publication leaked");
+    }
+    const allocator = host.hostAllocator();
+    host.engine.resetRenderTree(&host);
+    const elem_id = ids.ElemId.fromRaw(1);
+    host.engine.appendRenderNode(&host, elem_id, ids.ElemId.fromRaw(0), "div");
+    var splice = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{
+        .node_capacity = 2,
+        .text_fields = 2,
+        .bool_fields = 1,
+        .named_events = 1,
+        .named_event_wire_edits = 1,
+        .wire_commands = 4,
+    });
+    defer splice.deinit();
+    try splice.addTextField(&host.engine.render_cache, elem_id, .native_drag_key, "task-λ");
+    try splice.addTextField(&host.engine.render_cache, elem_id, .native_viewport, "1,24,0");
+    try splice.addBoolField(&host.engine.render_cache, elem_id, .native_drop_target, true);
+    // The drop flag and its detail handler must publish together. Refusal must
+    // release the prepared strings and leave every live field untouched.
+    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.prepare(&host, &splice));
+    try std.testing.expectEqual(@as(?[]const u8, null), host.dom_elements.items[1].native_drag_key);
+    try std.testing.expectEqual(@as(?[]const u8, null), host.dom_elements.items[1].native_viewport);
+    try std.testing.expect(!host.dom_elements.items[1].native_drop_target);
+    try std.testing.expectEqual(@as(usize, 0), host.dom_elements.items[1].named_events.items.len);
+    try splice.addNamedEvents(&host.engine.render_cache, elem_id, &.{.{
+        .name = "drop",
+        .binding = .{
+            .event_id = ids.EventId.fromRaw(17),
+            .delivery = .{ .requested = .native },
+            .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .detail),
+        },
+    }});
+    var publication = try NativeRenderPublication.prepare(&host, &splice);
+    defer publication.deinit();
+    try std.testing.expect(!host.dom_elements.items[1].native_drop_target);
+    host.configureAllocationFailure(1);
+    publication.apply(&host);
+    try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
+    try std.testing.expectEqualStrings("task-λ", host.dom_elements.items[1].native_drag_key.?);
+    try std.testing.expectEqualStrings("1,24,0", host.dom_elements.items[1].native_viewport.?);
+    try std.testing.expect(host.dom_elements.items[1].native_drop_target);
+    const drop = sim_dom.namedEvent(&host.dom_elements.items[1], "drop").?;
+    try std.testing.expectEqual(@as(u64, 17), drop.binding.event_id.raw());
+    host.configureAllocationFailure(null);
+}
+
+test "native task retired during publication owns one cancellation and no pending start" {
+    var host = HostEnv.init();
+    defer {
+        host.deinitTaskRecords();
+        std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("retired task leaked");
+    }
+    var publication = try NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), .external, "retired", "request", 1);
+    defer publication.deinit();
+    try std.testing.expectEqual(@as(usize, 0), host.started_tasks.items.len);
+    try std.testing.expectEqual(@as(usize, 0), host.canceled_tasks.items.len);
+    host.configureAllocationFailure(1);
+    publication.commitRetired();
+    try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
+    try std.testing.expectEqual(@as(usize, 0), host.started_tasks.items.len);
+    try std.testing.expectEqual(@as(usize, 1), host.canceled_tasks.items.len);
+    try std.testing.expectEqualStrings("retired", host.canceled_tasks.items[0].name);
+}
+
 test "native prepared render publication applies sparse child moves atomically" {
     var host = HostEnv.init();
     var roc_host = makeSignalsRocHost(&host);
