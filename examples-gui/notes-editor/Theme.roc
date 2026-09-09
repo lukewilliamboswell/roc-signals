@@ -14,6 +14,8 @@ Theme := [].{
 		text_secondary : U32,
 		text_tertiary : U32,
 		accent : U32,
+		accent_hover : U32,
+		accent_active : U32,
 		danger : U32,
 		warning : U32,
 		success : U32,
@@ -42,6 +44,8 @@ Theme := [].{
 			text_secondary: color(entries, file, "text_secondary"),
 			text_tertiary: color(entries, file, "text_tertiary"),
 			accent: color(entries, file, "accent"),
+			accent_hover: color(entries, file, "accent_hover"),
+			accent_active: color(entries, file, "accent_active"),
 			danger: color(entries, file, "danger"),
 			warning: color(entries, file, "warning"),
 			success: color(entries, file, "success"),
@@ -219,10 +223,12 @@ Theme := [].{
 
 ## A complete theme parses to the exact color and layout values it spells out.
 expect {
-	json = "{\n\t\"background\": \"#16252C\",\n\t\"surface\": \"#1B2A33\",\n\t\"card\": \"#283A47\",\n\t\"border\": \"#3A4F5C\",\n\t\"text_primary\": \"#F2F5F6\",\n\t\"text_secondary\": \"#A9BFCC\",\n\t\"text_tertiary\": \"#93A9B6\",\n\t\"accent\": \"#2E6FA3\",\n\t\"danger\": \"#F09A93\",\n\t\"warning\": \"#E8C27A\",\n\t\"success\": \"#8FD4A8\",\n\t\"radius\": 6,\n\t\"control_padding\": 10,\n\t\"gap\": 8\n}\n"
+	json = "{\n\t\"background\": \"#16252C\",\n\t\"surface\": \"#1B2A33\",\n\t\"card\": \"#283A47\",\n\t\"border\": \"#3A4F5C\",\n\t\"text_primary\": \"#F2F5F6\",\n\t\"text_secondary\": \"#A9BFCC\",\n\t\"text_tertiary\": \"#93A9B6\",\n\t\"accent\": \"#2E6FA3\",\n\t\"accent_hover\": \"#3A80B8\",\n\t\"accent_active\": \"#265D89\",\n\t\"danger\": \"#F09A93\",\n\t\"warning\": \"#E8C27A\",\n\t\"success\": \"#8FD4A8\",\n\t\"radius\": 6,\n\t\"control_padding\": 10,\n\t\"gap\": 8\n}\n"
 	theme = Theme.from_json("test/theme.json", json)
 	theme.background == 0x16252C
 	and theme.accent == 0x2E6FA3
+	and theme.accent_hover == 0x3A80B8
+	and theme.accent_active == 0x265D89
 	and theme.success == 0x8FD4A8
 	and theme.radius == 6
 	and theme.control_padding == 10

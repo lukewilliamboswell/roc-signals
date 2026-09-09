@@ -18,7 +18,7 @@ theme = Theme.from_json("examples-gui/counter/theme.json", theme_json)
 accent_button : Str, Gui.Msg -> Elem
 accent_button = |label, message| Gui.action_button(
 	{ label: Signal.const(label), enabled: Signal.const(True) },
-	[Gui.style({ ..Gui.style_default, padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent) })],
+	[Gui.style({ ..Gui.style_default, padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent), hover_background: Rgb(theme.accent_hover), active_background: Rgb(theme.accent_active) })],
 	message,
 )
 

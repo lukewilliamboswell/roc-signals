@@ -7,6 +7,8 @@
 	"text_secondary": "#D4E2EA",
 	"text_tertiary": "#B4C6D0",
 	"accent": "#1F6FB8",
+	"accent_hover": "#3A80B8",
+	"accent_active": "#265D89",
 	"danger": "#FFB3AC",
 	"warning": "#FFD590",
 	"success": "#A5EBBE",

@@ -121,7 +121,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 				[
 					Gui.action_button(
 						{ label: Signal.const("Open log…"), enabled: busy.map(|value| !value) },
-						[Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3) })],
+						[Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3), hover_background: Rgb(0x3A80B8), active_background: Rgb(0x265D89) })],
 						Ui.action(
 							model.signal(),
 							|value| Ui.update_states([
@@ -228,7 +228,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 				],
 			),
 			Gui.row(
-				[Gui.style({ ..Gui.style_default, gap: 16, grow: True, width: Fill })],
+				[Gui.style({ ..Gui.style_default, gap: 16, grow: True, width: Fill, height: Fill })],
 				[
 					Gui.column(
 						[Gui.style({ ..Gui.style_default, grow: True, gap: 0, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip })],
@@ -241,7 +241,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 								),
 								|| Gui.text(""),
 							),
-							Gui.virtual_list({ row_height: 44, follow_tail: follow_tail.signal() }, [Gui.test_id("activity-list")], [Ui.each(visible, |row| entry_view(row, selected))]),
+							Gui.virtual_list({ row_height: 44, follow_tail: follow_tail.signal() }, [Gui.test_id("activity-list"), Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True })], [Ui.each(visible, |row| entry_view(row, selected))]),
 						],
 					),
 					Gui.panel(

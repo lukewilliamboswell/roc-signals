@@ -79,7 +79,7 @@ main = || Ui.state(
 								[
 									Gui.action_button({ label: Signal.const("New"), enabled: ready }, [], new),
 									Gui.action_button({ label: Signal.const("Open…"), enabled: ready }, [], open),
-									Gui.action_button({ label: Signal.const("Save"), enabled: revert_ready }, [Gui.style({ ..Gui.style_default, padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent) })], save),
+									Gui.action_button({ label: Signal.const("Save"), enabled: revert_ready }, [Gui.style({ ..Gui.style_default, padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent), hover_background: Rgb(theme.accent_hover), active_background: Rgb(theme.accent_active) })], save),
 									Gui.action_button({ label: Signal.const("Save As…"), enabled: ready }, [], save_as),
 									Gui.action_button({ label: Signal.const("Revert changes"), enabled: revert_ready }, [], revert),
 								],

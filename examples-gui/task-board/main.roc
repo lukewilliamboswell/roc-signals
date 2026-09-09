@@ -765,7 +765,7 @@ document_toolbar = |handles, actions| {
 				[Gui.style({ ..Gui.style_default, gap: 8 })],
 				[
 					Gui.action_button({ label: Signal.const("Open…"), enabled: ready }, [], actions.open),
-					Gui.action_button({ label: Signal.const("Save"), enabled: ready }, [Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3) })], actions.save),
+					Gui.action_button({ label: Signal.const("Save"), enabled: ready }, [Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3), hover_background: Rgb(0x3A80B8), active_background: Rgb(0x265D89) })], actions.save),
 					Gui.action_button({ label: Signal.const("Save As…"), enabled: ready }, [], actions.save_as),
 					history_button(handles, False),
 					history_button(handles, True),

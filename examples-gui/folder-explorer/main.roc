@@ -313,7 +313,7 @@ explorer_view = |handles| {
 					Gui.action_button({ label: Signal.const("Forward"), enabled: model.map(|state| state.phase == Idle and !state.forward.is_empty()) }, [], forward_action),
 					Gui.action_button({ label: Signal.const("Up"), enabled: model.map(|state| state.phase == Idle and Session.path(state.source) != Explorer.parent_path(Session.path(state.source))) }, [], up_action),
 					Gui.action_button({ label: Signal.const("Refresh"), enabled: ready }, [], refresh_action),
-					Gui.action_button({ label: Signal.const("Choose folder"), enabled: ready }, [Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3) })], choose_action),
+					Gui.action_button({ label: Signal.const("Choose folder"), enabled: ready }, [Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3), hover_background: Rgb(0x3A80B8), active_background: Rgb(0x265D89) })], choose_action),
 					Gui.action_button({ label: Signal.const("Use sample"), enabled: ready }, [], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.load_sample))),
 					# Cancel and Retry are rare-phase controls: they render only in
 					# the phases where they apply instead of resting disabled.
