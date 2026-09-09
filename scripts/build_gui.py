@@ -10,15 +10,9 @@ import shutil
 import subprocess
 import tempfile
 
-from windows_imports import windows_import_library
+from prepare_dependencies import install_windows_imports
 
 ROOT = Path(__file__).resolve().parent.parent
-# Windows DLLs that the host still binds through conventional import libraries.
-# The Rust host and the `windows` crates use raw-dylib, which needs none, but
-# GPUI's `winsafe` dependency declares these with ordinary `#[link]` and a
-# development build retains the references. Roc's x64win link supplies only
-# kernel32, ntdll, and the UCRT itself.
-WINDOWS_IMPORT_LIBS = ('advapi32',)
 MACOS_FRAMEWORKS = ('AppKit', 'ApplicationServices', 'Carbon', 'CoreFoundation',
                     'CoreGraphics', 'CoreMedia', 'CoreText', 'CoreVideo',
                     'Foundation', 'IOKit', 'IOSurface', 'Metal', 'QuartzCore',
@@ -100,6 +94,8 @@ def build(debug=False, jobs=2):
         raise SystemExit('GUI builds require Linux x86_64 with glibc, Apple Silicon macOS, or Windows x86_64.')
     if jobs < 1:
         raise SystemExit('GUI build jobs must be positive.')
+    windows_dependencies = (install_windows_imports(ROOT / 'platform-gui/targets/x64win')
+                            if target == 'x64win' else None)
     subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
     # Worktrees may share dependencies, but Cargo can reuse the identically named
     # local crate from another checkout. Rebuild this small crate explicitly.
@@ -124,7 +120,7 @@ def build(debug=False, jobs=2):
     for obsolete in ['libgpui_host.a', 'libengine.a']:
         (dest / obsolete).unlink(missing_ok=True)
     if target == 'x64win':
-        build_windows_inputs(dest)
+        build_windows_inputs(dest, windows_dependencies)
         return
     if platform.system() == 'Darwin':
         sdk = Path(subprocess.check_output(['xcrun', '--show-sdk-path'], text=True).strip())
@@ -162,23 +158,20 @@ def build(debug=False, jobs=2):
     (dest / 'link-inputs.json').write_text(json.dumps(provenance, indent=2) + '\n')
 
 
-def build_windows_inputs(dest):
+def build_windows_inputs(dest, dependencies):
     """Produce the x64win inputs beyond the host archive itself.
 
     The application manifest is embedded into every executable Roc links: GPUI
     imports TaskDialogIndirect at load time, which only the Common Controls 6
     side-by-side comctl32 exports, and the manifest also declares per-monitor
-    DPI awareness. The import libraries cover the DLLs in WINDOWS_IMPORT_LIBS.
+    DPI awareness. External import libraries come from their verified release.
     """
     dest = dest.resolve()
     resources = ROOT / 'crates/gpui-host/windows'
     subprocess.run(['zig', 'rc', 'signals.rc', str(dest / 'signals.res')], cwd=resources, check=True)
-    for name in WINDOWS_IMPORT_LIBS:
-        windows_import_library(name, dest)
     (dest / 'link-inputs.json').write_text(json.dumps({
         'manifest': 'crates/gpui-host/windows/signals.manifest.xml',
-        'import_libraries': {name: 'zig ' + subprocess.check_output(['zig', 'version'], text=True).strip()
-                             + ' lib/libc/mingw/lib-common' for name in WINDOWS_IMPORT_LIBS},
+        'dependencies': dependencies,
         'rust_target': 'x86_64-pc-windows-msvc',
         'engine_target': 'x86_64-windows-msvc',
     }, indent=2) + '\n')

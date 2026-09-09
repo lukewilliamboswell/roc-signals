@@ -7,6 +7,7 @@ mutable development copies as evidence of a dependency's origin.
 
 import argparse
 from contextlib import contextmanager
+import json
 from pathlib import Path
 import shutil
 import tempfile
@@ -17,6 +18,32 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "dependencies.lock.json"
 CACHE = Path.home() / ".cache/roc-signals/dependencies"
 WEB_ARTIFACTS = ("musl-x64musl", "musl-arm64musl")
+WINDOWS_IMPORTS = "windows-imports-x64win"
+
+
+@contextmanager
+def verified_windows_imports(lock=LOCK, cache=CACHE):
+    with tempfile.TemporaryDirectory(prefix="signals-verified-imports-") as temporary:
+        destination = Path(temporary) / "inputs"
+        materialize(lock, (WINDOWS_IMPORTS,), cache, destination)
+        manifest = json.loads((destination / WINDOWS_IMPORTS / "dependency.json").read_text())
+        if set(manifest["files"]) != {"targets/x64win/advapi32.lib", "licenses/windows-imports/COPYING"}:
+            raise ValueError("incomplete or unexpected Windows import inputs")
+        yield destination
+
+
+def install_windows_imports(destination, lock=LOCK, cache=CACHE):
+    with verified_windows_imports(lock, cache) as inputs:
+        source = inputs / WINDOWS_IMPORTS / "targets/x64win/advapi32.lib"
+        destination.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=destination, delete=False) as pending:
+            path = Path(pending.name)
+        try:
+            shutil.copyfile(source, path)
+            path.replace(destination / "advapi32.lib")
+        finally:
+            path.unlink(missing_ok=True)
+        return json.loads((inputs / "dependencies.lock.json").read_text())
 
 
 @contextmanager

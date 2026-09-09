@@ -1,4 +1,4 @@
-"""Web bundles admit verified dependencies, never arbitrary checkout binaries."""
+"""Platform bundles admit verified dependencies, never arbitrary checkout binaries."""
 
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,10 +12,24 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bundle_platforms
+import build_gui
 import prepare_dependencies
 
 
 class DependencyStagingTests(unittest.TestCase):
+    def test_windows_checkout_preserves_vendored_upstream_bytes(self):
+        source = prepare_dependencies.ROOT / "vendor/unicode"
+        inventory = json.loads((source / "upstream.json").read_bytes())["files_sha256"]
+        checkout = self.root / "checkout"
+        paths = ["vendor/unicode/" + name for name in inventory]
+        subprocess.run([
+            "git", "-c", "core.autocrlf=true", "checkout-index",
+            "--prefix=" + checkout.as_posix() + "/", "--", *paths,
+        ], cwd=prepare_dependencies.ROOT, check=True)
+        for name, expected in inventory.items():
+            data = (checkout / "vendor/unicode" / name).read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(), expected, name)
+
     def test_compiled_dependency_and_host_binaries_are_not_tracked(self):
         tracked = subprocess.check_output([
             "git", "ls-files", "--", "*.a", "*.lib", "*.o", "*.obj", "*.wasm",
@@ -81,6 +95,58 @@ class DependencyStagingTests(unittest.TestCase):
             prepare_dependencies.install_web_dependencies(platform=self.source)
         self.assertEqual((self.source / "targets/arm64musl/crt1.o").read_bytes(), b"verified startup")
         self.assertEqual((self.source / "targets/arm64musl/libhost.a").read_bytes(), b"current host")
+
+    def test_windows_install_replaces_only_the_external_import_and_returns_its_lock(self):
+        target = self.inputs / prepare_dependencies.WINDOWS_IMPORTS / "targets/x64win"
+        target.mkdir(parents=True)
+        (target / "advapi32.lib").write_bytes(b"verified import")
+        lock = {"schema_version": 1, "artifacts": {"windows-imports-x64win": "reviewed entry"}}
+        (self.inputs / "dependencies.lock.json").write_text(json.dumps(lock))
+        destination = self.source / "targets/x64win"
+        destination.mkdir()
+        (destination / "host.lib").write_bytes(b"own host")
+        (destination / "advapi32.lib").write_bytes(b"stale import")
+        with patch.object(prepare_dependencies, "verified_windows_imports", self.verified):
+            actual = prepare_dependencies.install_windows_imports(destination)
+        self.assertEqual(actual, lock)
+        self.assertEqual((destination / "host.lib").read_bytes(), b"own host")
+        self.assertEqual((destination / "advapi32.lib").read_bytes(), b"verified import")
+
+    def test_windows_verification_failure_prevents_compilation(self):
+        with patch.object(build_gui, "host_target", return_value="x64win"), patch.object(
+                build_gui, "install_windows_imports", side_effect=ValueError("untrusted signer")), patch.object(
+                build_gui.subprocess, "run") as compiler:
+            with self.assertRaisesRegex(ValueError, "untrusted signer"):
+                build_gui.build()
+        compiler.assert_not_called()
+
+    def test_windows_bundle_ignores_checkout_imports_and_extra_libraries(self):
+        source = self.source / "targets/x64win"
+        source.mkdir()
+        for name in ("host.lib", "signals.res", "advapi32.lib", "injected.lib"):
+            (source / name).write_bytes(name.encode())
+        artifact = self.inputs / prepare_dependencies.WINDOWS_IMPORTS
+        (artifact / "targets/x64win").mkdir(parents=True)
+        (artifact / "targets/x64win/advapi32.lib").write_bytes(b"verified import")
+        (artifact / "dependency.json").write_text("verified manifest")
+        stage = self.root / "windows-bundle"
+        with patch.object(bundle_platforms, "verified_windows_imports", self.verified):
+            bundle_platforms.stage_windows_inputs(source, stage)
+        self.assertEqual((stage / "targets/x64win/advapi32.lib").read_bytes(), b"verified import")
+        self.assertEqual((stage / "targets/x64win/host.lib").read_bytes(), b"host.lib")
+        self.assertFalse((stage / "targets/x64win/injected.lib").exists())
+        self.assertEqual((stage / "dependency-manifests/windows-imports-x64win.json").read_text(), "verified manifest")
+
+    def test_windows_bundle_has_no_unsigned_fallback(self):
+        source = self.source / "targets/x64win"
+        source.mkdir()
+        for name in ("host.lib", "signals.res", "advapi32.lib"):
+            (source / name).write_bytes(b"local")
+        stage = self.root / "refused-windows-bundle"
+        with patch.object(bundle_platforms, "verified_windows_imports", side_effect=ValueError("untrusted signer")):
+            with self.assertRaisesRegex(ValueError, "untrusted signer"):
+                bundle_platforms.stage_windows_inputs(source, stage)
+        self.assertFalse(stage.exists())
 
     def test_gui_example_package_includes_only_pinned_sources_and_rejects_drift(self):
         source = self.root / "package"

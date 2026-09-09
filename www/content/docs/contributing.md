@@ -931,7 +931,7 @@ See `UPSTREAM_COMPILER_BUGS.md` for the observed limitations.
 
 The GUI targets are Apple Silicon macOS, Linux x86_64 with glibc and a
 Wayland/GPU session, and Windows x86_64. Host development needs Rust (tested
-with 1.94 on macOS, 1.95 on Linux, and 1.89 on Windows) and Zig 0.16. Linux also
+with 1.94 on macOS, and 1.95.0 in Linux and Windows CI) and Zig 0.16. Linux also
 needs a C toolchain/CRT, FreeType and
 xkbcommon development packages, and the xkbcommon-X11 runtime. macOS needs Xcode
 with its Metal compiler component (`xcodebuild -downloadComponent MetalToolchain`).
@@ -941,8 +941,14 @@ Rust toolchain; the optimized host build also compiles GPUI's shaders with the
 Windows SDK's `fxc.exe` (set `GPUI_FXC_PATH` if it is not discovered), and a
 development build compiles them at runtime instead. Zig supplies the archiver
 and resource compiler, Roc's own `x64win` link supplies the C runtime, and the
-one import library still needed is generated from the MinGW-w64 definitions
-Zig bundles, so no MSVC link step or Windows SDK libraries are involved. Use
+one additional import library is fetched from the independently signed Windows
+dependency release pinned in `dependencies.lock.json`. Its producer uses Zig's
+MinGW-w64 definitions. Source host builds require authenticated GitHub CLI access
+and verify that dependency before compiling the host; there is no local import
+generation fallback. Windows bundle staging verifies it again and includes the
+selected lock, manifest, and license. The host build still compiles its own
+application manifest resource. No MSVC link step or Windows SDK libraries are
+involved. Use
 `python` rather than
 `python3` in the commands below on Windows, where `python3` is often a Store
 shortcut; `build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
