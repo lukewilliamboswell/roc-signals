@@ -74,12 +74,14 @@ def copy_macos_sysroot(sdk, destination):
                                else Path(str(path) + '.tbd'))
 
 
-def build(debug=False, jobs=2):
+def build(debug=False, jobs=2, cargo_evidence=None):
     target = host_target()
     if target is None:
         raise SystemExit('GUI builds require Linux x86_64 with glibc, Apple Silicon macOS, or Windows x86_64.')
     if jobs < 1:
         raise SystemExit('GUI build jobs must be positive.')
+    if debug and cargo_evidence is not None:
+        raise SystemExit('Cargo release evidence requires an optimized build.')
     windows_dependencies = (install_windows_imports(ROOT / 'platform-gui/targets/x64win')
                             if target == 'x64win' else None)
     linux_dependencies = (install_freetype(ROOT / 'platform-gui/targets/x64glibc')
@@ -88,14 +90,18 @@ def build(debug=False, jobs=2):
         keyboard_dependencies = install_xkbcommon(ROOT / 'platform-gui/targets/x64glibc')
         linux_dependencies['artifacts'].update(keyboard_dependencies['artifacts'])
     subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
-    subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, env=build_environment(), check=True)
     dest = ROOT / 'platform-gui/targets' / target
     dest.mkdir(parents=True, exist_ok=True)
-    metadata = json.loads(subprocess.check_output(
-        ['cargo', 'metadata', '--locked', '--no-deps', '--format-version=1'], cwd=ROOT, text=True,
-    ))
     rust_name = 'signals_gpui_host.lib' if target == 'x64win' else 'libsignals_gpui_host.a'
-    rust_host = Path(metadata['target_directory']) / ('debug' if debug else 'release') / rust_name
+    if cargo_evidence is not None:
+        from cargo_build_evidence import capture
+        rust_host = capture(ROOT, target, cargo_evidence, jobs, build_environment())
+    else:
+        subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, env=build_environment(), check=True)
+        metadata = json.loads(subprocess.check_output(
+            ['cargo', 'metadata', '--locked', '--no-deps', '--format-version=1'], cwd=ROOT, text=True,
+        ))
+        rust_host = Path(metadata['target_directory']) / ('debug' if debug else 'release') / rust_name
     engine = ROOT / 'zig-out/gui/libengine.a'
     # Roc's platform header lists both archives for its final application link.
     shutil.copyfile(rust_host, dest / rust_name)
@@ -163,5 +169,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--debug', action='store_true', help='Use the faster development Rust build')
     parser.add_argument('--jobs', type=int, default=2, help='Concurrent Cargo build jobs (default: 2)')
+    parser.add_argument('--cargo-evidence', type=Path, help='New directory for exact Cargo release evidence')
     args = parser.parse_args()
-    build(args.debug, args.jobs)
+    build(args.debug, args.jobs, args.cargo_evidence)

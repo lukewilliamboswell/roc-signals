@@ -75,44 +75,59 @@ class HostArtifactTests(unittest.TestCase):
                     bundle_platforms.main()
                 self.assertEqual(compiler.call_count, 1)
 
-    def test_release_requires_every_target_and_matching_source(self):
+    def test_release_requires_selected_target_and_attested_source_pair(self):
         environment = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
                        "GITHUB_REPOSITORY": release_dependencies.REPOSITORY, "GITHUB_SHA": "a" * 40}
-        for failure in ("missing-target", "wrong-source", "missing-license", "signature", "incomplete-notices", None):
+        for failure in ("missing-source", "wrong-source", "missing-license", "signature", "source-signature", None):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                for target, names in gui_host_artifacts.HOST_FILES.items():
-                    if failure == "missing-target" and target == "arm64mac":
-                        continue
-                    files = {f"targets/{target}/{name}": b"tested host" for name in names}
-                    files["licenses/gui-host/LICENSE"] = b"platform license"
-                    if failure != "missing-license":
-                        files["licenses/gui-host/LICENSE-GPUI"] = b"GPUI license"
-                    write_archive(root / f"gui-host-{target}.tar", {
-                        "schema_version": 1, "name": "gui-host", "target": target,
-                        "source_fingerprint": "wrong" if failure == "wrong-source" else "expected",
-                    }, files)
+                target = "x64glibc"
+                source = root / f"gui-host-sources-{target}.tar"
+                write_archive(source, {"schema_version": 1, "name": "gui-host-sources", "target": target},
+                              {"licenses/gui-host-sources/source.txt": b"original source"})
+                companion = {"name": "gui-host-sources", "target": target, "asset": source.name,
+                             "sha256": release_dependencies.sha256(source), "size": source.stat().st_size}
+                if failure == "wrong-source":
+                    companion["sha256"] = "0" * 64
+                files = {f"targets/{target}/{name}": b"tested host" for name in gui_host_artifacts.HOST_FILES[target]}
+                files.update({f"licenses/gui-host/{name}": b"notice fixture"
+                              for name in release_dependencies.KINDS["gui-host"]["licenses"]})
+                files["licenses/gui-host/NOTICE.json"] = json.dumps({"source_companion": companion}).encode()
+                if failure == "missing-license":
+                    del files["licenses/gui-host/LICENSE-GPUI"]
+                write_archive(root / f"gui-host-{target}.tar", {
+                    "schema_version": 1, "name": "gui-host", "target": target,
+                    "source_fingerprint": "expected"}, files)
+                if failure == "missing-source":
+                    source.unlink()
+                # Composition/admission tests validate actual notice contents. Here the
+                # seam is exact candidate pairing and independent signature admission.
                 with patch.object(release_dependencies.subprocess, "check_output", return_value="a" * 40), \
                         patch.object(gui_host_artifacts, "source_fingerprint", return_value="expected"), \
-                        patch.object(gui_host_artifacts, "validate_publication_notices",
-                                     wraps=gui_host_artifacts.validate_publication_notices
-                                     if failure == "incomplete-notices" else lambda tree: None), \
+                        patch.object(gui_host_artifacts, "validate_host"), \
+                        patch.object(gui_host_artifacts, "validate_publication_notices") as admit, \
                         patch.object(release_dependencies, "verify_archive") as verifier:
                     if failure == "signature":
                         verifier.side_effect = ValueError("invalid signature")
+                    elif failure == "source-signature":
+                        verifier.side_effect = [None, ValueError("invalid source signature")]
                     if failure:
                         with self.assertRaises(ValueError):
-                            release_dependencies.prepare(root, "deps-gui-host-1", environment, "gui-host")
+                            release_dependencies.prepare(root, "deps-gui-host-1", environment, "gui-host", [target])
                         self.assertFalse((root / "dependencies.lock.json").exists())
+                        admit.assert_not_called()
                     else:
-                        release_dependencies.prepare(root, "deps-gui-host-1", environment, "gui-host")
+                        release_dependencies.prepare(root, "deps-gui-host-1", environment, "gui-host", [target])
                         lock = json.loads((root / "dependencies.lock.json").read_text())
-                        self.assertEqual(set(lock["artifacts"]), {
-                            "gui-host-" + target for target in gui_host_artifacts.HOST_FILES})
-                        self.assertEqual(verifier.call_count, 3)
+                        self.assertEqual(set(lock["artifacts"]), {"gui-host-x64glibc", "gui-host-sources-x64glibc"})
+                        self.assertEqual(verifier.call_count, 2)
+                        admit.assert_called_once()
                         for entry in lock["artifacts"].values():
                             self.assertEqual(entry["signer_workflow"], gui_host_artifacts.WORKFLOW)
                             self.assertEqual(entry["source_sha"], "a" * 40)
+        for targets in (["arm64mac"], ["x64glibc", "x64glibc"], []):
+            with self.assertRaisesRegex(ValueError, "eligible"):
+                release_dependencies.prepare(Path("unused"), "deps-gui-host-1", environment, "gui-host", targets)
 
     def test_host_only_target_is_not_a_complete_platform(self):
         with tempfile.TemporaryDirectory() as temporary:

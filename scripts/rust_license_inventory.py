@@ -15,10 +15,11 @@ import tempfile
 import tomllib
 
 NOTICE = re.compile(r"^(?:licen[cs]e|copying|copyright|notice|authors)(?:$|[._-])", re.I)
+EMBEDDED_NOTICE = re.compile(rb"copyright|licen[cs]e|SPDX|public.domain|source.code.form|same.terms", re.I)
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 
 
-def crate_notices(archive, package, expected_sha):
+def crate_notices(archive, package, expected_sha, include_embedded=False):
     """Check the published archive before reading declarations and notice bytes."""
     if archive.is_symlink() or not archive.is_file():
         raise ValueError("missing or symlinked crate archive")
@@ -56,9 +57,17 @@ def crate_notices(archive, package, expected_sha):
         declarations = {"Cargo.toml": manifest_bytes}
         if "Cargo.toml.orig" in files:
             declarations["Cargo.toml.orig"] = packed.extractfile(files["Cargo.toml.orig"]).read()
+        embedded = {}
+        if include_embedded:
+            for name, member in files.items():
+                if name in notices or name in declarations:
+                    continue
+                data = packed.extractfile(member).read()
+                if EMBEDDED_NOTICE.search(data):
+                    embedded[name] = data
         vcs = (json.load(packed.extractfile(files[".cargo_vcs_info.json"]))
                if ".cargo_vcs_info.json" in files else None)
-    return manifest, notices, declarations, vcs
+    return manifest, notices, declarations, vcs, embedded
 
 
 def upstream_notices(record, checksum, vcs, directory):
@@ -111,7 +120,7 @@ def reviewed_source_files(archive, record, checksum, vcs):
     return selected
 
 
-def collect(about, lock, cache, destination, supplements=None, include_sources=False, review=None):
+def collect(about, lock, cache, destination, supplements=None, include_sources=False, review=None, include_embedded=False):
     """Publish a complete inventory atomically; any unknown identity stops it."""
     if destination.exists():
         raise FileExistsError(destination)
@@ -153,7 +162,7 @@ def collect(about, lock, cache, destination, supplements=None, include_sources=F
                 raise ValueError("selected crate has no supported Cargo.lock identity")
             stem = package["name"] + "-" + package["version"]
             archive = cache / (stem + ".crate")
-            manifest, notices, declarations, vcs = crate_notices(archive, package, locked[identity])
+            manifest, notices, declarations, vcs, embedded = crate_notices(archive, package, locked[identity], include_embedded)
             upstream = supplemental["packages"].get(package["name"] + "@" + package["version"])
             extra = upstream_notices(upstream, locked[identity], vcs, supplements.parent) if upstream else {}
             record = {"name": package["name"], "version": package["version"],
@@ -168,9 +177,10 @@ def collect(about, lock, cache, destination, supplements=None, include_sources=F
             record["review"] = review_record
             record["reviewed_source_files"] = {}
             record["reviewed_upstream_files"] = {}
+            record["embedded_notice_files"] = {}
             for category, payload in (("notice_files", notices), ("declaration_files", declarations),
                                       ("upstream_notice_files", extra), ("reviewed_source_files", source_review),
-                                      ("reviewed_upstream_files", upstream_review)):
+                                      ("reviewed_upstream_files", upstream_review), ("embedded_notice_files", embedded)):
                 for name, data in sorted(payload.items()):
                     relative = Path("crates") / stem / category / name
                     output = stage / relative
@@ -193,6 +203,7 @@ def collect(about, lock, cache, destination, supplements=None, include_sources=F
         if not records:
             raise ValueError("no third-party crates selected for notice review")
         inventory = {"schema_version": 1, "cargo_lock_sha256": hashlib.sha256(locked_bytes).hexdigest(),
+                     "embedded_notice_scan": include_embedded,
                      "about_report_sha256": hashlib.sha256(report_bytes).hexdigest(),
                      "packages": sorted(records, key=lambda p: (p["name"], p["version"])),
                      "workspace_packages": own_packages,
@@ -214,6 +225,7 @@ if __name__ == "__main__":
     parser.add_argument("--supplements", type=Path, help="Reviewed, revision-bound upstream notice manifest")
     parser.add_argument("--include-sources", action="store_true", help="Retain every selected original crate source archive")
     parser.add_argument("--review", type=Path, help="Hash-bound review selecting original source notice evidence")
+    parser.add_argument("--include-embedded", action="store_true", help="Preserve complete files containing license/copyright markers")
     args = parser.parse_args()
-    result = collect(args.about, args.lock, args.cache, args.output, args.supplements, args.include_sources, args.review)
+    result = collect(args.about, args.lock, args.cache, args.output, args.supplements, args.include_sources, args.review, args.include_embedded)
     print(f"Verified {len(result['packages'])} crate archives; {len(result['missing_notice_files'])} lack notice files")

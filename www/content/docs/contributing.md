@@ -1086,7 +1086,7 @@ See `UPSTREAM_COMPILER_BUGS.md` for the observed limitations.
 
 The GUI targets are Apple Silicon macOS, Linux x86_64 with glibc and a
 Wayland/GPU session, and Windows x86_64. Host development needs Rust (tested
-with 1.94 on macOS, and 1.95.0 in Linux and Windows CI) and Zig 0.16. Linux also
+with 1.95.0 on macOS, Linux, and Windows CI) and Zig 0.16. Linux also
 needs a C toolchain/CRT, FreeType and
 xkbcommon development packages, and the xkbcommon-X11 runtime. macOS needs Xcode
 with its Metal compiler component (`xcodebuild -downloadComponent MetalToolchain`).
@@ -1161,13 +1161,10 @@ validation result. Host errors remain visible without tracing.
 
 Host builds default to two Cargo workers. Use `scripts/build_gui.py --jobs N`
 or `scripts/test.py gui --gui-build-jobs N` to adjust memory pressure. Parallel
-app work should serialize substantial host builds. The builder cleans the local
-Rust host crate before compiling so a shared Cargo target cannot reuse another
-worktree's host implementation; dependency artifacts remain cached.
-Release builds retain Rust's optimized per-crate compilation and local ThinLTO,
-with cross-crate LTO disabled so rebuilding the host does not optimize the full
-dependency graph again. This policy makes no claim about runtime performance
-relative to a whole-program LTO build.
+app work should serialize substantial host builds. Cargo reuses valid cached
+artifacts without an unconditional host clean. Rebuilding and optimizing the
+Rust host can include its Rust dependency graph; external native link libraries
+have independent release cycles and are fetched from their verified locks.
 GUI specs validate shared
 semantics; the separate window smoke above checks rendering and adapter dispatch,
 and does not establish OS keyboard, pointer, or IME behavior. GPUI adapter tests
@@ -1187,15 +1184,32 @@ This produces a native executable, not a desktop
 installer. The Linux prebuilt host depends on the build machine's glibc/library ABI;
 portable release packaging needs a deliberate sysroot and license inventory.
 
-The `GUI host link inputs` workflow (`gui-hosts.yml`) builds all three native
-host candidates, extracts each candidate, and uses the pinned Roc compiler to
-build and run the GUI application specs. Publication is disabled until complete
-transitive and toolchain notices are packaged and validated. A manual release
-dispatch fails before attestation; the release helper also refuses to create a
-consumer lock. Native candidate CI continues to run during this review.
+The `GUI host link inputs` workflow (`gui-hosts.yml`) builds native candidates
+and runs all GUI application specs with the pinned Roc compiler against their
+extracted archives. Linux and Windows producers capture the actual Cargo build
+stream, filtered metadata, and unchanged lock with `build_gui.py --cargo-evidence`.
+The notice composer selects the conservative set of compiled packages, retains
+original notices and source declarations, and supplies pinned canonical SPDX
+terms under an explicit expression policy. These reference terms are labeled
+separately from upstream notices; template copyright placeholders are not
+attributed to crates. Unknown expressions and incomplete evidence are rejected.
 
-After publication is enabled, independent host releases will provide
-`gui-host-<target>.tar` and a consumer lock under a `deps-gui-host-<version>` tag.
+Each eligible candidate comprises `gui-host-<target>.tar` plus
+`gui-host-sources-<target>.tar`. The host contains a hash-indexed compressed notice
+archive; the companion retains exact locked crate sources, Zig sources, and
+Cargo evidence. Rust distribution notices include its standard-library copyright
+report. The host manifest binds the companion digest, and both exact tested
+artifacts receive build attestations and appear in the release lock. Source
+companions remain accessible through that lock without occupying the Roc platform
+bundle or being downloaded for each app build. Preserve the notice archive and
+linked source access when redistributing the bundle.
+
+A main-branch manual dispatch selects Linux, Windows, or both for an independent
+`deps-gui-host-<version>` release. macOS continues native candidate tests but is
+excluded from publication while the Apple SDK-derived material needs a separate
+redistribution decision. Missing standalone license files alone are not a blanket
+publication prohibition: original source evidence and declarations remain visible
+in the package inventory and reviewed expression policy.
 
 Set `HOST_RELEASE` to the actual published tag, verify its lock asset, and pass
 the reviewed lock directly to the bundler:

@@ -193,7 +193,8 @@ def main():
                     inputs = resources.enter_context(verified_hosts(
                         lock.resolve(), Path.home() / '.cache/roc-signals/dependencies', ROOT))
                     receipt = json.loads((inputs / 'dependencies.lock.json').read_text())
-                    identities = tuple(receipt['artifacts'])
+                    identities = tuple(identity for identity, entry in receipt['artifacts'].items()
+                                       if entry.get('name') != 'gui-host-sources')
                     trees.extend(inputs / identity / 'targets' for identity in identities)
                     stage_dependency_inputs(inputs, identities, stage)
             hosts = []

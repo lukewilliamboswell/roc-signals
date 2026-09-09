@@ -7,6 +7,11 @@ on:
   pull_request:
     paths:
       - .github/workflows/gui-hosts.yml
+      - scripts/build_gui.py
+      - scripts/cargo_build_evidence.py
+      - scripts/host_notice_payload.py
+      - scripts/prepare_gui_host_release.py
+      - scripts/test_host_notice_payload.py
       - scripts/gui_host_artifacts.py
       - scripts/test_gui_host_artifacts.py
       - scripts/rust_license_inventory.py
@@ -23,6 +28,15 @@ on:
         description: New independent host release tag (deps-gui-host-<version>)
         type: string
         required: true
+
+      release_targets:
+        description: Eligible host targets to publish (macOS remains candidate-only)
+        type: choice
+        default: x64glibc
+        options:
+          - x64glibc
+          - x64win
+          - x64glibc,x64win
 
 permissions:
   contents: read
@@ -60,6 +74,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
       - name: Check host archive admission
         run: |
+          python -m unittest discover -s scripts -p test_host_notice_payload.py
           python -m unittest discover -s scripts -p test_gui_host_artifacts.py
           python -m unittest discover -s scripts -p test_rust_license_inventory.py
           python -m unittest discover -s scripts -p test_toolchain_license_inventory.py
@@ -97,12 +112,18 @@ jobs:
         shell: bash
         run: |
           python scripts/prepare_platforms.py
-          python scripts/build_gui.py
-          python scripts/gui_host_artifacts.py --target "${{ matrix.target }}" --output "gui-host-${{ matrix.target }}.tar" --roc roc
+          if [ "${{ matrix.target }}" = arm64mac ]; then
+            python scripts/build_gui.py
+            mkdir host-candidate
+            python scripts/gui_host_artifacts.py --target arm64mac --output host-candidate/gui-host-arm64mac.tar --roc roc
+          else
+            python scripts/build_gui.py --cargo-evidence "$RUNNER_TEMP/cargo-evidence"
+            python scripts/prepare_gui_host_release.py --target "${{ matrix.target }}" --cargo-evidence "$RUNNER_TEMP/cargo-evidence" --output host-candidate --roc roc
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: gui-host-${{ matrix.target }}
-          path: gui-host-${{ matrix.target }}.tar
+          path: host-candidate/*.tar
           retention-days: 30
 
   publish:
@@ -122,9 +143,23 @@ jobs:
         with:
           pattern: gui-host-*
           merge-multiple: true
-          path: ${{ runner.temp }}/link-inputs
-      - name: Require complete host notice coverage before attestation
-        run: python3 -c 'import sys; sys.path.insert(0, "scripts"); from gui_host_artifacts import validate_publication_notices; validate_publication_notices(None)'
+          path: ${{ runner.temp }}/candidates
+      - name: Select the exact tested host and source pairs
+        env:
+          RELEASE_TARGETS: ${{ inputs.release_targets }}
+        run: |
+          python3 - <<'PYTHON'
+          import os, pathlib, shutil
+          targets = os.environ["RELEASE_TARGETS"].split(",")
+          assert targets and len(set(targets)) == len(targets) and set(targets) <= {"x64glibc", "x64win"}
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          output = root / "link-inputs"
+          output.mkdir()
+          for target in targets:
+              for kind in ("gui-host", "gui-host-sources"):
+                  source = root / "candidates" / f"{kind}-{target}.tar"
+                  shutil.copyfile(source, output / source.name)
+          PYTHON
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: ${{ runner.temp }}/link-inputs/*.tar
@@ -132,4 +167,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: python3 scripts/release_dependencies.py --directory "$RUNNER_TEMP/link-inputs" --tag "$RELEASE_TAG" --kind gui-host
+          RELEASE_TARGETS: ${{ inputs.release_targets }}
+        run: |
+          IFS=',' read -ra targets <<< "$RELEASE_TARGETS"
+          arguments=()
+          for target in "${targets[@]}"; do arguments+=(--target "$target"); done
+          python3 scripts/release_dependencies.py --directory "$RUNNER_TEMP/link-inputs" --tag "$RELEASE_TAG" --kind gui-host "${arguments[@]}"

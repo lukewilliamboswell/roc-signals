@@ -13,7 +13,8 @@
           "LICENSE-APACHE",
           "LICENSE-MIT",
           "rustc/share/doc/rust/COPYRIGHT-library.html"
-        ]
+        ],
+        "size": 80351960
       },
       "arm64mac": {
         "source_url": "https://static.rust-lang.org/dist/2026-04-16/rustc-1.95.0-aarch64-apple-darwin.tar.xz",
@@ -24,7 +25,8 @@
           "LICENSE-APACHE",
           "LICENSE-MIT",
           "rustc/share/doc/rust/COPYRIGHT-library.html"
-        ]
+        ],
+        "size": 67652240
       },
       "x64win": {
         "source_url": "https://static.rust-lang.org/dist/2026-04-16/rustc-1.95.0-x86_64-pc-windows-msvc.tar.xz",
@@ -35,7 +37,8 @@
           "LICENSE-APACHE",
           "LICENSE-MIT",
           "rustc/share/doc/rust/COPYRIGHT-library.html"
-        ]
+        ],
+        "size": 71577136
       }
     }
   },
@@ -46,7 +49,8 @@
     "size": 22503260,
     "prefix": "zig-0.16.0",
     "notices": [
-      "LICENSE"
+      "LICENSE",
+      "lib/libunwind/LICENSE.TXT"
     ]
   }
 }
