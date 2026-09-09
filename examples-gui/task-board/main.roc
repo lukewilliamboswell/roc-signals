@@ -211,40 +211,54 @@ task_card = |row, column, handles, selected| {
 					[Gui.style({ ..Gui.style_default, gap: 8 })],
 					[
 						Ui.switch(row.map(|task| task.assignee), |assignee| avatar(assignee, 24)),
-						Gui.column(
+						# The status color belongs to the priority word alone; the
+						# assignee stays in the muted secondary grey.
+						Gui.row(
+							[Gui.test_id("meta-${key}"), Gui.style({ ..Gui.style_default, gap: 0 })],
 							[
-								Gui.style_s(
-									row.map(
-										|task| {
-											..Gui.style_default,
-											font_size: 13,
-											foreground: match task.priority {
-												High => Rgb(0xF09A93)
-												Low => Rgb(0x8FD4A8)
-												_ => Rgb(0xA9BFCC)
-											},
-										},
-									),
+								Gui.column(
+									[
+										Gui.style_s(
+											row.map(
+												|task| {
+													..Gui.style_default,
+													font_size: 13,
+													foreground: match task.priority {
+														High => Rgb(0xF09A93)
+														Low => Rgb(0x8FD4A8)
+														_ => Rgb(0xA9BFCC)
+													},
+												},
+											),
+										),
+									],
+									[Gui.text_s(row.map(|task| "${task.priority.to_str()} priority"))],
+								),
+								Gui.column(
+									[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+									[Gui.text_s(row.map(|task| " · ${task.assignee}"))],
 								),
 							],
-							[Gui.text_s(row.map(|task| "${task.priority.to_str()} priority · ${task.assignee}"))],
 						),
 					],
 				),
-				Gui.row([], [
-					Gui.action_button(
-					{ label: Signal.const("Edit"), enabled: Signal.const(True) },
-					[Gui.test_id("edit-${key}")],
-					Ui.action(
-						row.signal(),
-						|task| Ui.update_states([
-							handles.editor.write({ column, task }),
-							handles.editing.write(True),
-							handles.confirm_delete.write(False),
-						]),
-					),
-					),
-				]),
+				Gui.row(
+					[],
+					[
+						Gui.action_button(
+							{ label: Signal.const("Edit"), enabled: Signal.const(True) },
+							[Gui.test_id("edit-${key}")],
+							Ui.action(
+								row.signal(),
+								|task| Ui.update_states([
+									handles.editor.write({ column, task }),
+									handles.editing.write(True),
+									handles.confirm_delete.write(False),
+								]),
+							),
+						),
+					],
+				),
 			],
 		),
 	)
@@ -259,9 +273,12 @@ column_view = |handles, column, selected| {
 		[
 			Gui.heading(column.to_str()),
 			Gui.column(
-				[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
+				[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC) })],
 				[Gui.text_s(rows.map(|items| "${Rows.len(items).to_str()} tasks"))],
 			),
+			Ui.each(visible, |row| task_card(row, column, handles, selected)),
+			# Trailing so the hidden branch's empty text costs no gap slot
+			# between the count line and the first card.
 			Ui.when(
 				visible.map(|items| Rows.len(items) == 0),
 				|| Gui.column(
@@ -270,7 +287,6 @@ column_view = |handles, column, selected| {
 				),
 				|| Gui.text(""),
 			),
-			Ui.each(visible, |row| task_card(row, column, handles, selected)),
 		],
 	)
 }
@@ -449,7 +465,7 @@ new_task_form = |handles| {
 			Gui.text_input({ label: "New task title", value: handles.draft.signal() }, [Gui.placeholder("New task title…"), Gui.disabled_s(handles.edit_disabled), Gui.style({ ..Gui.style_default, width: Px(260), gap: 4 })], handles.draft.on_str(|_, value| value)),
 			Gui.action_button(
 				{ label: Signal.const("Add task"), enabled: Signal.map2(handles.draft.signal(), handles.editable, |title, editable| editable and !title.trim().is_empty()) },
-				[Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3) })],
+				[],
 				Ui.action(
 					reads,
 					|current| {
@@ -519,7 +535,7 @@ board_view = |handles| {
 		},
 		[
 			Gui.column(
-				[Gui.style({ ..Gui.style_default, padding: 20, gap: 14, width: Fill }), Gui.test_id("launch-board"), Gui.on_shortcut(chord, actions.save), Gui.on_shortcut({ ..chord, shift: True }, actions.save_as), Gui.on_shortcut({ ..chord, key: "o" }, actions.open), Gui.on_shortcut({ ..chord, key: "z" }, history_message(handles, False)), Gui.on_shortcut({ ..chord, key: "z", shift: True }, history_message(handles, True))],
+				[Gui.style({ ..Gui.style_default, padding: 24, gap: 12, width: Fill }), Gui.test_id("launch-board"), Gui.on_shortcut(chord, actions.save), Gui.on_shortcut({ ..chord, shift: True }, actions.save_as), Gui.on_shortcut({ ..chord, key: "o" }, actions.open), Gui.on_shortcut({ ..chord, key: "z" }, history_message(handles, False)), Gui.on_shortcut({ ..chord, key: "z", shift: True }, history_message(handles, True))],
 				[
 					Gui.heading("Launch Board"),
 					Gui.column(
@@ -527,11 +543,6 @@ board_view = |handles| {
 						[Gui.text("A small team's workspace for the next release.")],
 					),
 					document_toolbar(handles, actions),
-					Gui.column(
-						[Gui.test_id("asset-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
-						[Gui.text_s(handles.asset_problem.signal())],
-					),
-					close_dialog(handles),
 					Gui.row(
 						[Gui.style({ ..Gui.style_default, gap: 16 })],
 						[
@@ -745,8 +756,10 @@ document_toolbar : Handles, DocumentActions -> Elem
 document_toolbar = |handles, actions| {
 	ready = handles.document.signal().map(|doc| doc.phase == Phase.Idle)
 
+	# gap 0: everything below the button row is a conditional problem line or
+	# dialog, so the toolbar's empty states pay no vertical rhythm.
 	Gui.column(
-		[Gui.test_id("board-document")],
+		[Gui.test_id("board-document"), Gui.style({ ..Gui.style_default, gap: 0 })],
 		[
 			Gui.row(
 				[Gui.style({ ..Gui.style_default, gap: 8 })],
@@ -757,7 +770,7 @@ document_toolbar = |handles, actions| {
 					history_button(handles, False),
 					history_button(handles, True),
 					Gui.column(
-						[Gui.test_id("board-path"), Gui.style({ ..Gui.style_default, padding: 6, foreground: Rgb(0xF2F5F6) })],
+						[Gui.test_id("board-path"), Gui.style({ ..Gui.style_default, padding: 8, foreground: Rgb(0xF2F5F6) })],
 						[
 							Gui.text_s(
 								handles.document.signal().map(
@@ -776,7 +789,7 @@ document_toolbar = |handles, actions| {
 								handles.context.map(
 									|context| {
 										..Gui.style_default,
-										padding: 7,
+										padding: 8,
 										font_size: 13,
 										foreground: match context.document.phase {
 											Phase.Idle => if dirty(context) {
@@ -792,23 +805,23 @@ document_toolbar = |handles, actions| {
 						],
 						[
 							Gui.text_s(
-						handles.context.map(
-							|context| match context.document.phase {
-								Phase.Idle => if dirty(context) {
-									"Unsaved changes"
-								} else {
-									"Saved"
-								}
-								Phase.ConfirmOpen => "Waiting for confirmation"
-								Phase.ChoosingOpen => "Choose a board document"
-								Phase.Reading(_) => "Opening board…"
-								Phase.ChoosingSave(_) => "Choose a save destination"
-								Phase.Writing(_) => "Saving board snapshot…"
-							},
-						),
+								handles.context.map(
+									|context| match context.document.phase {
+										Phase.Idle => if dirty(context) {
+											"Unsaved changes"
+										} else {
+											"Saved"
+										}
+										Phase.ConfirmOpen => "Waiting for confirmation"
+										Phase.ChoosingOpen => "Choose a board document"
+										Phase.Reading(_) => "Opening board…"
+										Phase.ChoosingSave(_) => "Choose a save destination"
+										Phase.Writing(_) => "Saving board snapshot…"
+									},
+								),
+							),
+						],
 					),
-				],
-			),
 				],
 			),
 			Gui.column(
@@ -830,6 +843,11 @@ document_toolbar = |handles, actions| {
 				|| Gui.text(""),
 			),
 			Ui.when(handles.document.signal().map(|doc| doc.phase != Phase.Idle and doc.phase != Phase.ConfirmOpen), || Gui.button("Cancel operation", actions.cancel), || Gui.text("")),
+			Gui.column(
+				[Gui.test_id("asset-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
+				[Gui.text_s(handles.asset_problem.signal())],
+			),
+			close_dialog(handles),
 		],
 	)
 }

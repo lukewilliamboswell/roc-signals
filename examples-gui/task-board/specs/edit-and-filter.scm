@@ -14,7 +14,9 @@
     ; priority-tinted metadata style, the detail fields, the shared
     ; priority-selection key, the reactive document-status style, and the
     ; card and detail avatar selectors derived from the task's assignee.
-    (expect-metric-delta-at-most derived_calls_into_roc 37)
+    ; The card meta line is two text nodes (tinted priority word, muted
+    ; assignee), so each row change re-derives one extra text signal: +1.
+    (expect-metric-delta-at-most derived_calls_into_roc 38)
     (fill (label "Filter tasks") "KEYBOARD")
     (expect-absent (test-id "task-1"))
     (expect-visible (test-id "task-3"))

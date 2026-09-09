@@ -61,7 +61,7 @@ main = || Ui.state(
 					Gui.column(
 						[
 							Gui.test_id("notes-editor"),
-							Gui.style({ ..Gui.style_default, padding: 24, gap: 16, width: Fill, height: Fill, background: Rgb(theme.background), foreground: Rgb(theme.text_primary) }),
+							Gui.style({ ..Gui.style_default, padding: 24, gap: 12, width: Fill, height: Fill, background: Rgb(theme.background), foreground: Rgb(theme.text_primary) }),
 							Gui.on_shortcut({ ..chord, key: "n" }, new),
 							Gui.on_shortcut({ ..chord, key: "o" }, open),
 							Gui.on_shortcut(chord, save),
@@ -79,7 +79,7 @@ main = || Ui.state(
 								[
 									Gui.action_button({ label: Signal.const("New"), enabled: ready }, [], new),
 									Gui.action_button({ label: Signal.const("Open…"), enabled: ready }, [], open),
-									Gui.action_button({ label: Signal.const("Save"), enabled: ready }, [Gui.style({ ..Gui.style_default, padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent) })], save),
+									Gui.action_button({ label: Signal.const("Save"), enabled: revert_ready }, [Gui.style({ ..Gui.style_default, padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent) })], save),
 									Gui.action_button({ label: Signal.const("Save As…"), enabled: ready }, [], save_as),
 									Gui.action_button({ label: Signal.const("Revert changes"), enabled: revert_ready }, [], revert),
 								],
@@ -116,17 +116,29 @@ main = || Ui.state(
 									),
 								],
 							),
-							Ui.switch(
-								session.signal().map(|state| state.document_generation),
-								|_| Gui.textarea(
-									{ label: "Note text", value: body.signal() },
-									[
-										Gui.placeholder("Start writing…"),
-										Gui.disabled_s(session.signal().map(|state| !Session.can_edit(state.phase) or state.close != Session.CloseState.NoClose)),
-										Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True, gap: 4 }),
-									],
-									body.on_str(|_, value| value),
-								),
+							Gui.row(
+								[Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True, gap: 0 })],
+								[
+									Gui.column([Gui.style({ ..Gui.style_default, grow: True })], []),
+									Gui.column(
+										[Gui.style({ ..Gui.style_default, width: Px(740), height: Fill })],
+										[
+											Ui.switch(
+												session.signal().map(|state| state.document_generation),
+												|_| Gui.textarea(
+													{ label: "Note text", value: body.signal() },
+													[
+														Gui.placeholder("Start writing…"),
+														Gui.disabled_s(session.signal().map(|state| !Session.can_edit(state.phase) or state.close != Session.CloseState.NoClose)),
+														Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True, gap: 4 }),
+													],
+													body.on_str(|_, value| value),
+												),
+											),
+										],
+									),
+									Gui.column([Gui.style({ ..Gui.style_default, grow: True })], []),
+								],
 							),
 							Gui.row(
 								[Gui.style({ ..Gui.style_default, gap: 24 })],
@@ -137,86 +149,93 @@ main = || Ui.state(
 									),
 								],
 							),
+							# Conditional problem/dialog rows live in one trailing gap-0
+							# wrapper so their empty states cost no vertical rhythm.
 							Gui.column(
-								[Gui.test_id("note-problem"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(theme.danger) })],
+								[Gui.style({ ..Gui.style_default, gap: 0 })],
 								[
-									Gui.text_s(
-										session.signal().map(
-											|state| match state.problem {
-												None => ""
-												Some(problem) => problem
+									Gui.column(
+										[Gui.test_id("note-problem"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(theme.danger) })],
+										[
+											Gui.text_s(
+												session.signal().map(
+													|state| match state.problem {
+														None => ""
+														Some(problem) => problem
+													},
+												),
+											),
+										],
+									),
+									Ui.when(
+										phase.map(
+											|value| match value {
+												Session.Phase.ChoosingOpen | Session.Phase.ChoosingSave(_) | Session.Phase.Reading(_) | Session.Phase.Writing(_) => True
+												_ => False
 											},
 										),
+										|| Gui.button("Cancel operation", cancel),
+										|| Gui.text(""),
 									),
-								],
-							),
-							Ui.when(
-								phase.map(
-									|value| match value {
-										Session.Phase.ChoosingOpen | Session.Phase.ChoosingSave(_) | Session.Phase.Reading(_) | Session.Phase.Writing(_) => True
-										_ => False
-									},
-								),
-								|| Gui.button("Cancel operation", cancel),
-								|| Gui.text(""),
-							),
-							Ui.when(
-								phase.map(
-									|value| match value {
-										Session.Phase.ConfirmDiscard(_) => True
-										_ => False
-									},
-								),
-								|| Gui.dialog(
-									{ label: "Discard your changes?", on_dismiss: session.on_unit(Session.cancel) },
-									[
-										Gui.test_id("discard-confirmation"),
-										Gui.style({ ..Gui.style_default, padding: 16, gap: theme.gap, background: Rgb(theme.card), radius: theme.radius }),
-									],
-									[
-										Gui.heading("Discard your changes?"),
-										Gui.text("Your unsaved text will be replaced. Keep editing to return to this draft."),
-										Gui.row(
-											[],
+									Ui.when(
+										phase.map(
+											|value| match value {
+												Session.Phase.ConfirmDiscard(_) => True
+												_ => False
+											},
+										),
+										|| Gui.dialog(
+											{ label: "Discard your changes?", on_dismiss: session.on_unit(Session.cancel) },
 											[
-												Gui.button("Keep editing", session.on_unit(Session.cancel)),
-												Gui.button(
-													"Discard changes",
-													Ui.action(
-														session.signal(),
-														|state| match state.phase {
-															Session.Phase.ConfirmDiscard(Session.Destination.NewDocument) => Ui.update_states([session.write(Session.new_document(state)), body.write("")])
-															Session.Phase.ConfirmDiscard(Session.Destination.OpenDocument) => session.set_cmd({ ..state, phase: Session.Phase.ChoosingOpen })
-															Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument) => Ui.update_states([session.write({ ..Session.cancel(state), document_generation: Session.next_generation(state) }), body.write(state.baseline.body)])
-															_ => Signal.noop
-														},
-													),
+												Gui.test_id("discard-confirmation"),
+												Gui.style({ ..Gui.style_default, padding: 16, gap: theme.gap, background: Rgb(theme.card), radius: theme.radius }),
+											],
+											[
+												Gui.heading("Discard your changes?"),
+												Gui.text("Your unsaved text will be replaced. Keep editing to return to this draft."),
+												Gui.row(
+													[],
+													[
+														Gui.button("Keep editing", session.on_unit(Session.cancel)),
+														Gui.button(
+															"Discard changes",
+															Ui.action(
+																session.signal(),
+																|state| match state.phase {
+																	Session.Phase.ConfirmDiscard(Session.Destination.NewDocument) => Ui.update_states([session.write(Session.new_document(state)), body.write("")])
+																	Session.Phase.ConfirmDiscard(Session.Destination.OpenDocument) => session.set_cmd({ ..state, phase: Session.Phase.ChoosingOpen })
+																	Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument) => Ui.update_states([session.write({ ..Session.cancel(state), document_generation: Session.next_generation(state) }), body.write(state.baseline.body)])
+																	_ => Signal.noop
+																},
+															),
+														),
+													],
 												),
 											],
 										),
-									],
-								),
-								|| Gui.text(""),
-							),
-							Ui.when(
-								session.signal().map(|state| state.close == Session.CloseState.ConfirmClose),
-								|| Gui.dialog(
-									{ label: "Save before closing?", on_dismiss: session.on_unit(Session.cancel) },
-									[Gui.test_id("close-confirmation")],
-									[
-										Gui.heading("Save before closing?"),
-										Gui.text("Your note has unsaved changes. Save them, discard them, or keep editing."),
-										Gui.row(
-											[],
+										|| Gui.text(""),
+									),
+									Ui.when(
+										session.signal().map(|state| state.close == Session.CloseState.ConfirmClose),
+										|| Gui.dialog(
+											{ label: "Save before closing?", on_dismiss: session.on_unit(Session.cancel) },
+											[Gui.test_id("close-confirmation")],
 											[
-												Gui.button("Keep editing", session.on_unit(Session.cancel)),
-												Gui.button("Discard and close", session.on_unit(|state| { ..state, close: Session.CloseState.AllowClose })),
-												Gui.button("Save and close", session.on_unit_with(body, Session.save_and_close)),
+												Gui.heading("Save before closing?"),
+												Gui.text("Your note has unsaved changes. Save them, discard them, or keep editing."),
+												Gui.row(
+													[],
+													[
+														Gui.button("Keep editing", session.on_unit(Session.cancel)),
+														Gui.button("Discard and close", session.on_unit(|state| { ..state, close: Session.CloseState.AllowClose })),
+														Gui.button("Save and close", session.on_unit_with(body, Session.save_and_close)),
+													],
+												),
 											],
 										),
-									],
-								),
-								|| Gui.text(""),
+										|| Gui.text(""),
+									),
+								],
 							),
 						].concat(Workflow.bindings(session, body, tasks)),
 					),

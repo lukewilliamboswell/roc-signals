@@ -77,18 +77,18 @@ entry_row = |row, handles, selected, ready| {
 		[
 			Gui.action_button(
 				{ label: row.map(|entry| Explorer.file_name(entry.path)), enabled: ready },
-				[Gui.label(key), Gui.style({ ..Gui.style_default, grow: True, padding: 6, radius: 6, overflow_x: Clip })],
+				[Gui.label(key), Gui.style({ ..Gui.style_default, grow: True, padding: 4, radius: 4, background: Rgb(0x1B2A33), overflow_x: Clip })],
 				Ui.action(row.signal(), |entry| handles.model.update_cmd(|state| Session.activate(state, entry))),
 			),
 			Gui.row(
-				[Gui.style({ ..Gui.style_default, width: Px(90), padding: 6, gap: 6, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })],
+				[Gui.style({ ..Gui.style_default, width: Px(90), padding: 4, gap: 6, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })],
 				[
 					Ui.switch(row.map(|entry| entry.kind), kind_glyph),
 					Gui.text_s(row.map(|entry| entry.kind.to_str())),
 				],
 			),
 			Gui.column(
-				[Gui.style({ ..Gui.style_default, width: Px(90), padding: 6, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })],
+				[Gui.style({ ..Gui.style_default, width: Px(90), padding: 4, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })],
 				[Gui.text_s(row.map(Explorer.size_text))],
 			),
 		],
@@ -292,7 +292,7 @@ explorer_view = |handles| {
 	Gui.column(
 		[
 			Gui.test_id("explorer"),
-			Gui.style({ ..Gui.style_default, gap: 10, padding: 16, width: Fill, height: Fill, overflow_y: Clip }),
+			Gui.style({ ..Gui.style_default, gap: 12, padding: 24, width: Fill, height: Fill, overflow_y: Clip }),
 			Gui.on_shortcut({ key: "o", control: True, shift: False, alt: False, meta: False }, choose_action),
 			Gui.on_shortcut({ key: "F5", control: False, shift: False, alt: False, meta: False }, refresh_action),
 			Gui.on_shortcut({ key: "Escape", control: False, shift: False, alt: False, meta: False }, cancel_action),
@@ -306,10 +306,6 @@ explorer_view = |handles| {
 				[Gui.style({ ..Gui.style_default, foreground: Rgb(0xA9BFCC) })],
 				[Gui.text("Browse a folder on this computer, or explore the built-in sample workspace.")],
 			),
-			Gui.column(
-				[Gui.test_id("asset-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
-				[Gui.text_s(handles.asset_problem.signal())],
-			),
 			Gui.row(
 				[Gui.style({ ..Gui.style_default, gap: 8 })],
 				[
@@ -319,8 +315,18 @@ explorer_view = |handles| {
 					Gui.action_button({ label: Signal.const("Refresh"), enabled: ready }, [], refresh_action),
 					Gui.action_button({ label: Signal.const("Choose folder"), enabled: ready }, [Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3) })], choose_action),
 					Gui.action_button({ label: Signal.const("Use sample"), enabled: ready }, [], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.load_sample))),
-					Gui.action_button({ label: Signal.const("Cancel"), enabled: ready.map(|value| !value) }, [], cancel_action),
-					Gui.action_button({ label: Signal.const("Retry"), enabled: model.map(|state| state.phase == Idle and state.retry != NoRetry) }, [], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.retry_last))),
+					# Cancel and Retry are rare-phase controls: they render only in
+					# the phases where they apply instead of resting disabled.
+					Ui.when(
+						ready.map(|value| !value),
+						|| Gui.action_button({ label: Signal.const("Cancel"), enabled: ready.map(|value| !value) }, [], cancel_action),
+						|| Gui.text(""),
+					),
+					Ui.when(
+						model.map(|state| state.phase == Idle and state.retry != NoRetry),
+						|| Gui.action_button({ label: Signal.const("Retry"), enabled: model.map(|state| state.phase == Idle and state.retry != NoRetry) }, [], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.retry_last))),
+						|| Gui.text(""),
+					),
 				],
 			),
 			Gui.row(
@@ -386,7 +392,7 @@ explorer_view = |handles| {
 				[Gui.style({ ..Gui.style_default, gap: 16, width: Fill, grow: True })],
 				[
 					Gui.column(
-						[Gui.test_id("file-list"), Gui.style({ ..Gui.style_default, grow: True, gap: 4, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip })],
+						[Gui.test_id("file-list"), Gui.style({ ..Gui.style_default, grow: True, gap: 0, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip })],
 						[
 							Ui.when(
 								visible.map(|entries| Rows.len(entries) == 0),
@@ -405,6 +411,12 @@ explorer_view = |handles| {
 			Gui.column(
 				[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
 				[Gui.text("Alt+Left / Right: history · Alt+Up: parent · F5: refresh · Ctrl+O: choose folder · Esc: cancel")],
+			),
+			# Trailing problem line: empty on healthy runs, so it pays no gap
+			# rhythm between the always-visible bands above.
+			Gui.column(
+				[Gui.test_id("asset-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
+				[Gui.text_s(handles.asset_problem.signal())],
 			),
 		]),
 	)

@@ -23,7 +23,25 @@ entry_view = |row, selected| {
 		[
 			Gui.button("Inspect ${key}", selected.on_unit(|_| key)),
 			Gui.column(
-				[Gui.style({ ..Gui.style_default, width: Px(70), height: Fill, overflow_x: Clip, overflow_y: Clip, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+				[
+					Gui.style_s(
+						row.signal().map(
+							|entry| {
+								..Gui.style_default,
+								width: Px(70),
+								height: Fill,
+								overflow_x: Clip,
+								overflow_y: Clip,
+								font_size: 13,
+								foreground: match entry.severity {
+									Feed.Severity.Error => Rgb(0xF09A93)
+									Feed.Severity.Warning => Rgb(0xE8C27A)
+									_ => Rgb(0xA9BFCC)
+								},
+							},
+						),
+					),
+				],
 				[Gui.text_s(row.signal().map(|entry| entry.severity.to_str()))],
 			),
 			Gui.column(
@@ -150,6 +168,14 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							running.on_unit(|active| !active),
 						),
 						Gui.action_button({ label: Signal.const("Step replay"), enabled: busy.map(|value| !value) }, [], Ui.action(Signal.const({}), |_| append)),
+						Ui.when(
+							running.signal(),
+							|| Gui.text(""),
+							|| Gui.column(
+								[Gui.style({ ..Gui.style_default, padding: 8, font_size: 13, foreground: Rgb(0xE8C27A) })],
+								[Gui.text("Replay paused")],
+							),
+						),
 					],
 				),
 				|| Gui.row(
@@ -184,11 +210,11 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 				[
 					Gui.button("Clear history", model.on_unit(|value| { ..value, history: Feed.clear(value.history) })),
 					Gui.column(
-						[Gui.style({ ..Gui.style_default, padding: 7, font_size: 13, foreground: Rgb(0x7FC9E8) })],
+						[Gui.style({ ..Gui.style_default, padding: 8, font_size: 13, foreground: Rgb(0xA9BFCC) })],
 						[Gui.text_s(history.map(|value| "Retained: ${value.rows.len().to_str()} / 1000"))],
 					),
 					Gui.column(
-						[Gui.style({ ..Gui.style_default, padding: 7, font_size: 13, foreground: Rgb(0x93A9B6) })],
+						[Gui.style({ ..Gui.style_default, padding: 8, font_size: 13, foreground: Rgb(0x93A9B6) })],
 						[Gui.text_s(history.map(|value| "Text: ${value.bytes.to_str()} / 4194304 bytes · Evicted: ${value.discarded.to_str()}"))],
 					),
 				],
@@ -201,29 +227,11 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 					Gui.checkbox({ label: "Follow latest", checked: follow_tail.signal() }, [], follow_tail.on_bool(|_, value| value)),
 				],
 			),
-			Ui.when(
-				{ running: running.signal(), replay }.Signal.map(|value| value.running and value.replay),
-				|| Ui.on_change(Signal.interval(500), |_| append),
-				|| Gui.column(
-					[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xE8C27A) })],
-					[
-						Gui.text_s(
-							replay.map(
-								|is_replay| if is_replay {
-									"Replay paused"
-								} else {
-									""
-								},
-							),
-						),
-					],
-				),
-			),
 			Gui.row(
 				[Gui.style({ ..Gui.style_default, gap: 16, grow: True, width: Fill })],
 				[
 					Gui.column(
-						[Gui.style({ ..Gui.style_default, grow: True, gap: 8, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip })],
+						[Gui.style({ ..Gui.style_default, grow: True, gap: 0, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip })],
 						[
 							Ui.when(
 								visible.map(|rows| rows.len() == 0),
@@ -240,6 +248,23 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 						[Gui.style({ ..Gui.style_default, width: Px(340), padding: 16, gap: 12, radius: 8, background: Rgb(0x283A47), overflow_x: Scroll, overflow_y: Scroll })],
 						[
 							Gui.heading("Event inspector"),
+							Gui.column(
+								[Gui.font_family(feed_font), Gui.test_id("inspector-detail")],
+								[
+									Gui.text_s(
+										inspection.map(
+											|value| if value.selected.is_empty() {
+												"Select an event to inspect its details."
+											} else {
+												match value.history.rows.get_key(value.selected) {
+													Ok(entry) => "Event ${entry.id.to_str()} · ${entry.severity.to_str()} · ${entry.component} · ${entry.message}"
+													Err(_) => "This event is no longer in retained history."
+												}
+											},
+										),
+									),
+								],
+							),
 							Ui.when(
 								session.map(|state| !state.lines.partial.is_empty()),
 								|| Gui.column(
@@ -254,26 +279,14 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 								),
 								|| Gui.text(""),
 							),
-							Gui.column(
-								[Gui.font_family(feed_font), Gui.test_id("inspector-detail")],
-								[
-									Gui.text_s(
-								inspection.map(
-									|value| if value.selected.is_empty() {
-										"Select an event to inspect its details."
-									} else {
-										match value.history.rows.get_key(value.selected) {
-											Ok(entry) => "Event ${entry.id.to_str()} · ${entry.severity.to_str()} · ${entry.component} · ${entry.message}"
-											Err(_) => "This event is no longer in retained history."
-										}
-									},
-								),
-							),
-								],
-							),
 						],
 					),
 				],
+			),
+			Ui.when(
+				{ running: running.signal(), replay }.Signal.map(|value| value.running and value.replay),
+				|| Ui.on_change(Signal.interval(500), |_| append),
+				|| Gui.text(""),
 			),
 		].concat(Workflow.bindings(model, tasks)),
 	)
