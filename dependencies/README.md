@@ -249,3 +249,10 @@ input to the captured build receipt. Engine and Windows resource files must
 remain byte-identical to that receipt. These checks support candidate evidence;
 production adoption still requires verified release provenance and a reviewed
 consumer lock.
+
+`prepare_gui_host_release.compose_notices` composes and re-admits the notice
+and source pair without requiring an adopted platform header. It verifies the
+source checkout against captured evidence and checks the paired payload before
+retaining it. Candidate native-link workflows can use this step independently;
+normal release preparation additionally packages and runs the native candidate.
+Composition alone does not establish native compatibility or release provenance.

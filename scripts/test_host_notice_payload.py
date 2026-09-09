@@ -7,6 +7,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import subprocess
+import shutil
 import unittest
 from unittest.mock import patch
 
@@ -260,6 +261,67 @@ class NoticePayloadTests(unittest.TestCase):
         altered["archives"][name]["separation"]["retained"][0]["sha256"] = "0" * 64
         with self.assertRaises(ValueError):
             validate(altered)
+
+    def test_compose_only_admits_pair_without_native_header_and_is_atomic(self):
+        import prepare_gui_host_release as preparation
+        policy = self.root / "dependencies/gui-host-notices"
+        policy.parent.mkdir()
+        shutil.copytree(self.policy, policy)
+        recipe = json.loads((policy / "toolchains.json").read_text())
+        recipe["zig"]["size"] = (self.root / "zig.tar.xz").stat().st_size
+        (policy / "toolchains.json").write_text(json.dumps(recipe))
+        (self.root / "Cargo.lock").write_bytes(self.lock)
+        source = self.root / "host"
+        source.mkdir()
+        (source / "libsignals_gpui_host.a").write_bytes(self.host)
+        (source / "libengine.a").write_bytes(b"engine")
+        cache = self.root / "cache"
+        cache.mkdir()
+        for kind in ("rust", "zig"):
+            data = (self.root / (kind + ".tar.xz")).read_bytes()
+            (cache / (payload.digest(data) + ".tar.xz")).write_bytes(data)
+        output = self.root / "composed-pair"
+        with patch.object(preparation, "source_fingerprint", return_value="source-fingerprint"), \
+                patch.object(preparation, "crate_cache", return_value=self.root), \
+                patch.object(preparation, "pack_host") as pack, \
+                patch.object(preparation, "check_candidate") as native:
+            result = preparation.compose_notices("x64glibc", source, self.evidence, output, cache, self.root)
+            self.assertEqual(result, output)
+            self.assertEqual({item.name for item in output.iterdir()}, {"notices", "gui-host-sources-x64glibc.tar"})
+            self.assertEqual({item.name for item in (output / "notices").iterdir()}, set(payload.NOTICE_FILES))
+            pack.assert_not_called()
+            native.assert_not_called()
+            rejected = self.root / "rejected-pair"
+            with patch.object(preparation, "validate_sources", side_effect=ValueError("rejected pair")):
+                with self.assertRaisesRegex(ValueError, "rejected pair"):
+                    preparation.compose_notices("x64glibc", source, self.evidence, rejected, cache, self.root)
+            self.assertFalse(rejected.exists())
+            with patch.object(preparation, "source_fingerprint", side_effect=["source-fingerprint", "changed"]):
+                with self.assertRaisesRegex(ValueError, "changed during notice"):
+                    preparation.compose_notices("x64glibc", source, self.evidence, rejected, cache, self.root)
+            self.assertFalse(rejected.exists())
+
+    def test_prepare_keeps_native_gate_after_shared_composition(self):
+        import prepare_gui_host_release as preparation
+        def composed(target, source, evidence, output, cache, root):
+            (output / "notices").mkdir(parents=True)
+            (output / f"gui-host-sources-{target}.tar").write_bytes(b"source companion")
+            return output
+        def packed(target, source, archive, root, notices):
+            self.assertTrue(notices.is_dir())
+            archive.write_bytes(b"candidate host")
+        output = self.root / "release"
+        with patch.object(preparation, "compose_notices", side_effect=composed), \
+                patch.object(preparation, "pack_host", side_effect=packed), \
+                patch.object(preparation, "check_candidate", side_effect=ValueError("native failed")) as native:
+            with self.assertRaisesRegex(ValueError, "native failed"):
+                preparation.prepare("x64glibc", self.root, self.evidence, output, self.root, "roc", self.root)
+            self.assertFalse(output.exists())
+            native.side_effect = None
+            preparation.prepare("x64glibc", self.root, self.evidence, output, self.root, "roc", self.root)
+            self.assertEqual({item.name for item in output.iterdir()},
+                             {"gui-host-x64glibc.tar", "gui-host-sources-x64glibc.tar"})
+            self.assertEqual(native.call_count, 2)
 
     def test_capture_refuses_source_drift_across_cargo_execution(self):
         (self.root / "Cargo.lock").write_bytes(self.lock)

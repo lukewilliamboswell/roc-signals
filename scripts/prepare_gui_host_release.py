@@ -11,7 +11,8 @@ import tempfile
 import urllib.request
 
 from gui_host_artifacts import ROOT, HOST_FILES, check_candidate, pack_host, source_fingerprint
-from host_notice_payload import compose, validate_packaged_outputs
+from host_notice_payload import compose, validate_packaged_outputs, validate_notices, validate_sources, SOURCE_KIND
+from dependency_artifacts import unpack_verified
 import rust_license_inventory
 import toolchain_license_inventory
 from cargo_build_evidence import same_checkout_lock
@@ -86,8 +87,14 @@ def crate_cache(evidence, cache):
     return destination
 
 
-def prepare(target, source, evidence_root, output, cache, roc, root=ROOT):
-    """Publish a local candidate directory only after extracted native tests pass."""
+def compose_notices(target, source, evidence_root, output, cache, root=ROOT):
+    """Retain a verified notice/source pair without requiring a platform header.
+
+    Source contains captured host outputs and any normalization receipt. Root
+    must be the clean build-source checkout matching the original evidence.
+    Output is created atomically with notices/ and gui-host-sources-TARGET.tar;
+    it is candidate evidence, not release provenance or a native execution test.
+    """
     if output.exists():
         raise FileExistsError(output)
     policy = root / "dependencies/gui-host-notices"
@@ -128,12 +135,36 @@ def prepare(target, source, evidence_root, output, cache, roc, root=ROOT):
         notices = compose(target, evidence_root, stage / "crate-notices", stage / "toolchain-notices", policy,
                           (source / HOST_FILES[target][0]).read_bytes(), source_archive, fingerprint,
                           normalization if normalization.exists() else None)
-        notice_root = stage / "notices"
+        notice_root = candidate / "notices"
         notice_root.mkdir()
         for name, data in notices.items():
             (notice_root / name).write_bytes(data)
+        outputs = {name: (source / name).read_bytes() for name in HOST_FILES[target]}
+        host = outputs[HOST_FILES[target][0]]
+        manifest, notice_data = validate_notices(notice_root, target, host, fingerprint, policy, outputs)
+        source_tree = stage / "source-tree"
+        unpack_verified(source_archive, {"name": SOURCE_KIND, "target": target}, source_tree)
+        validate_sources(source_tree, manifest, notice_data, host, (root / "Cargo.lock").read_bytes())
+        if source_fingerprint(root) != fingerprint:
+            raise ValueError("host source inputs changed during notice composition")
+        candidate.rename(output)
+    return output
+
+
+def prepare(target, source, evidence_root, output, cache, roc, root=ROOT):
+    """Publish a local candidate directory only after extracted native tests pass."""
+    if output.exists():
+        raise FileExistsError(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=output.parent, prefix=".host-release-") as temporary:
+        stage = Path(temporary)
+        composition = compose_notices(target, source, evidence_root, stage / "composition", cache, root)
+        candidate = stage / "candidate"
+        candidate.mkdir()
+        source_archive = candidate / f"gui-host-sources-{target}.tar"
+        (composition / source_archive.name).rename(source_archive)
         host_archive = candidate / f"gui-host-{target}.tar"
-        pack_host(target, source, host_archive, root, notice_root)
+        pack_host(target, source, host_archive, root, composition / "notices")
         check_candidate(host_archive, target, roc, root, source_archive)
         candidate.rename(output)
 
