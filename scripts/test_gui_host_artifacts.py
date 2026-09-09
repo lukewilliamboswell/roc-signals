@@ -1,8 +1,10 @@
 """Host archives bind exact owned outputs to the source used by consumers."""
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -16,6 +18,62 @@ from gui_host_artifacts import pack_host, source_fingerprint, validate_host
 
 
 class HostArtifactTests(unittest.TestCase):
+    def test_bundle_combines_verified_host_with_external_only_local_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            local = root / "platform-gui/targets/x64glibc"
+            local.mkdir(parents=True)
+            for name in ("crt1.o", "crti.o", "crtn.o", "libxkbcommon.so", "libxkbcommon-x11.so",
+                         "libgcc_s.so", "libm.so", "libc.so", "libutil.so", "libfreetype.so"):
+                (local / name).write_bytes(b"local external input")
+            (root / "crates/gpui-host").mkdir(parents=True)
+            (root / "crates/gpui-host/LICENSE-GPUI").write_text("license")
+            (root / "examples-gui/counter").mkdir(parents=True)
+            (root / "examples-gui/counter/main.roc").write_text("fixture")
+
+            def admitted(identity, files):
+                inputs = root / identity
+                for name, data in files.items():
+                    path = inputs / identity / "targets/x64glibc" / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(data)
+                (inputs / "dependencies.lock.json").write_text(json.dumps({
+                    "schema_version": 1, "artifacts": {identity: {"sha256": identity}}}))
+                return inputs
+
+            host = admitted("gui-host-x64glibc", {
+                name: b"verified host" for name in gui_host_artifacts.HOST_FILES["x64glibc"]})
+            freetype = admitted("freetype-x64glibc", {"libfreetype.so": b"verified FreeType"})
+
+            @contextmanager
+            def verified(inputs):
+                yield inputs
+
+            def bundle(command, *, cwd, **kwargs):
+                self.assertEqual((cwd / "targets/x64glibc/libengine.a").read_bytes(), b"verified host")
+                self.assertEqual((cwd / "targets/x64glibc/libfreetype.so").read_bytes(), b"verified FreeType")
+                self.assertFalse((cwd / "targets/x64glibc/libutil.so").exists())
+                receipt = json.loads((cwd / "dependencies.lock.json").read_text())
+                self.assertEqual(set(receipt["artifacts"]), {"gui-host-x64glibc", "freetype-x64glibc"})
+                return subprocess.CompletedProcess(command, 0, stdout=f"Created: {root / 'out/platform.tar.zst'}\n")
+
+            with patch.object(bundle_platforms, "ROOT", root), \
+                    patch.object(bundle_platforms, "prepare_platform"), \
+                    patch.object(bundle_platforms, "verified_hosts", side_effect=lambda *a: verified(host)), \
+                    patch.object(bundle_platforms, "verified_freetype", side_effect=lambda: verified(freetype)), \
+                    patch.object(bundle_platforms, "stage_example_package"), \
+                    patch.object(bundle_platforms, "gui_examples", return_value=[]), \
+                    patch.object(bundle_platforms.subprocess, "run", side_effect=bundle) as compiler, \
+                    patch.object(sys, "argv", ["bundle", "--package", "gui", "--no-build",
+                                              "--prebuilt-host-lock", str(root / "host.lock"),
+                                              "--output-dir", str(root / "out")]):
+                bundle_platforms.main()
+                self.assertEqual(compiler.call_count, 1)
+                (local / "libengine.a").write_bytes(b"ambiguous local host")
+                with self.assertRaisesRegex(ValueError, "missing or invalid GUI host output"):
+                    bundle_platforms.main()
+                self.assertEqual(compiler.call_count, 1)
+
     def test_release_requires_every_target_and_matching_source(self):
         environment = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
                        "GITHUB_REPOSITORY": release_dependencies.REPOSITORY, "GITHUB_SHA": "a" * 40}
