@@ -141,7 +141,7 @@ class MacosInterfacesTests(unittest.TestCase):
     def test_committed_catalog_has_reviewed_provider_structure(self):
         catalog = stubs.read_catalog()
         self.assertEqual(len(catalog['libraries']), 19)
-        self.assertEqual(sum(len(library['symbols']) for library in catalog['libraries']), 403)
+        self.assertEqual(sum(len(library['symbols']) for library in catalog['libraries']), 406)
         for library in catalog['libraries']:
             if library['name'].startswith('lib'):
                 self.assertEqual(library['path'], 'usr/lib/' + library['name'] + '.tbd')
@@ -154,6 +154,9 @@ class MacosInterfacesTests(unittest.TestCase):
         carbon = next(l for l in catalog['libraries'] if l['name'] == 'Carbon')
         key = next(s for s in carbon['symbols'] if s['name'] == '_UCKeyTranslate')
         self.assertTrue(any(s.get('framework') == 'Carbon' and s.get('provider_line') == 1549 for s in key['sources']))
+        system = next(l for l in catalog['libraries'] if l['name'] == 'libSystem')
+        system_symbols = {symbol['name'] for symbol in system['symbols']}
+        self.assertTrue({'_acos', '_lstat', '_pthread_cond_broadcast'} <= system_symbols)
 
     def test_complete_bundler_excludes_stale_sdk_and_requires_compatibility(self):
         root = self.root / 'repo'
