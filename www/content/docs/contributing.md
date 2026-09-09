@@ -537,8 +537,12 @@ and `gui/` directories. `BUNDLE_OUT_DIR` or `--output-dir` changes that root.
 `--package web` and `--package gui` select one platform and put its archive
 directly in the output directory. `--no-build` reuses prepared hosts;
 `--debug-gui` selects a faster development Rust build. Use the default optimized
-GUI build for distributable archives: development archives can exceed the pinned
-compiler's default 100 MiB transitive package budget. Existing web test, site,
+GUI build for distributable archives. Both development and optimized GUI archives
+can exceed the pinned compiler's 100 MiB expanded transitive package budget;
+local-file platform builds passing does not establish that a URL-bound bundle
+can be consumed. The size-limit diagnostic suggests `--max-transitive-bytes`,
+but that option is not implemented by the pinned compiler. See
+`UPSTREAM_COMPILER_BUGS.md` for the reproducible limitation. Existing web test, site,
 and release commands explicitly select the web package.
 
 For the separate browser JavaScript artifact, run `python3 scripts/bundle_browser.py`.

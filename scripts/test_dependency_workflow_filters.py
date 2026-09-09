@@ -12,6 +12,7 @@ WORKFLOWS = {
     "freetype": "freetype-dependencies.yml",
     "xkbcommon": "xkbcommon-dependencies.yml",
     "glibc": "glibc-dependencies.yml",
+    "unwind": "unwind-dependencies.yml",
 }
 
 
@@ -70,6 +71,9 @@ class DependencyWorkflowFilterTests(unittest.TestCase):
             "xkbcommon": {"dependencies/xkbcommon.json", "dependencies/xkbcommon/Dockerfile",
                           "dependencies/xkbcommon/cc.sh", "dependencies/xkbcommon/zig.ini",
                           "test/dependencies/xkbcommon.c"},
+            "unwind": {"dependencies/unwind.json", "dependencies/unwind/Dockerfile",
+                       "test/dependencies/unwind.cpp", "test/dependencies/unwind.rs",
+                       "test/dependencies/unwind-rust.c"},
             "glibc": {"dependencies/glibc.json", "dependencies/glibc/Dockerfile",
                       "dependencies/glibc/COPYING.LIB", "test/dependencies/glibc.c"},
         }

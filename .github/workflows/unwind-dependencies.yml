@@ -4,10 +4,12 @@ on:
   pull_request:
     paths:
       - dependencies/unwind.json
-      - dependencies/unwind/**
+      - dependencies/unwind/Dockerfile
       - scripts/build_unwind.py
       - scripts/build_glibc.py
       - scripts/test_unwind_dependencies.py
+      - scripts/test_glibc_dependencies.py
+      - scripts/test_dependency_artifacts.py
       - scripts/dependency_archive.py
       - scripts/dependency_artifacts.py
       - scripts/release_dependencies.py
