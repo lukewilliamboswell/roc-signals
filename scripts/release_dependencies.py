@@ -110,8 +110,9 @@ def prepare(directory, tag, environment, kind="musl"):
             if set(manifest["files"]) != required:
                 raise ValueError(f"{kind} release has an incomplete or unexpected file set")
             if kind == "gui-host":
-                from gui_host_artifacts import source_fingerprint, validate_host
+                from gui_host_artifacts import source_fingerprint, validate_host, validate_publication_notices
                 validate_host(Path(temporary) / target, target, source_fingerprint())
+                validate_publication_notices(Path(temporary) / target)
             artifacts[f"{kind}-{target}"] = entry
     lock = directory / "dependencies.lock.json"
     with lock.open("x") as output:

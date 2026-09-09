@@ -372,7 +372,7 @@ report. It checks each archive against `Cargo.lock`, preserves the publisher's
 manifest separately, and reports packages without standalone notice files:
 
 ```sh
-python3 scripts/rust_license_inventory.py --about /tmp/host-about.json --lock Cargo.lock --cache /path/to/cargo/registry/cache --supplements dependencies/gui-host-notices/manifest.json --output /tmp/host-notices
+python3 scripts/rust_license_inventory.py --about /tmp/host-about.json --lock Cargo.lock --cache /path/to/cargo/registry/cache --supplements dependencies/gui-host-notices/manifest.json --include-sources --output /tmp/host-notices
 python3 -m unittest scripts/test_rust_license_inventory.py
 ```
 
@@ -384,6 +384,28 @@ selected package set; this collector does
 not establish that the selection covers a host binary, resolve missing upstream
 notices, or account for toolchain runtime notices. Its inventory is review
 evidence, not permission to publish an incomplete host package.
+
+`--include-sources` also retains each selected original `.crate` archive with
+its locked hash. This preserves notices embedded in source comments and makes
+the published source available for review. Retaining source does not establish
+that an absent license grant exists; packages without standalone notices remain
+explicit in `missing_notice_files`.
+
+Collect toolchain notice evidence separately from the distributions pinned in
+`dependencies/gui-host-notices/toolchains.json`:
+
+```sh
+python3 scripts/toolchain_license_inventory.py --target x64glibc --rust-archive /path/to/rustc-1.95.0-x86_64-unknown-linux-gnu.tar.xz --zig-source-archive /path/to/zig-0.16.0.tar.xz --output /tmp/host-toolchain-notices
+python3 -m unittest discover -s scripts -p test_toolchain_license_inventory.py
+```
+
+The collector verifies archive hashes before reading notice files. It retains
+Rust's standard-library copyright report and license texts, plus Zig's license
+and complete original source archive so source-level notices are preserved.
+Use the recipe's Rust distribution for the selected target. This is review
+evidence; it does not identify which runtime components a particular host links
+or cover SDK inputs. Both inventories still need to be incorporated into the
+host archive with a reviewed dependency selection and publication validation.
 
 ## Coverage
 
@@ -1162,11 +1184,15 @@ This produces a native executable, not a desktop
 installer. The Linux prebuilt host depends on the build machine's glibc/library ABI;
 portable release packaging needs a deliberate sysroot and license inventory.
 
-Prebuilt host archives come from the `GUI host link inputs` workflow
-(`gui-hosts.yml`) on their own release cycle. Dispatch it with a new
-`deps-gui-host-<version>` tag. It builds all three native hosts, extracts each
-candidate, and uses the pinned Roc compiler to build and run the GUI application
-specs before attesting and publishing `gui-host-<target>.tar` and its lock.
+The `GUI host link inputs` workflow (`gui-hosts.yml`) builds all three native
+host candidates, extracts each candidate, and uses the pinned Roc compiler to
+build and run the GUI application specs. Publication is disabled until complete
+transitive and toolchain notices are packaged and validated. A manual release
+dispatch fails before attestation; the release helper also refuses to create a
+consumer lock. Native candidate CI continues to run during this review.
+
+After publication is enabled, independent host releases will provide
+`gui-host-<target>.tar` and a consumer lock under a `deps-gui-host-<version>` tag.
 
 Set `HOST_RELEASE` to the actual published tag, verify its lock asset, and pass
 the reviewed lock directly to the bundler:

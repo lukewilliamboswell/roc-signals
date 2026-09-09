@@ -78,7 +78,7 @@ class HostArtifactTests(unittest.TestCase):
     def test_release_requires_every_target_and_matching_source(self):
         environment = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
                        "GITHUB_REPOSITORY": release_dependencies.REPOSITORY, "GITHUB_SHA": "a" * 40}
-        for failure in ("missing-target", "wrong-source", "missing-license", "signature", None):
+        for failure in ("missing-target", "wrong-source", "missing-license", "signature", "incomplete-notices", None):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 for target, names in gui_host_artifacts.HOST_FILES.items():
@@ -94,6 +94,9 @@ class HostArtifactTests(unittest.TestCase):
                     }, files)
                 with patch.object(release_dependencies.subprocess, "check_output", return_value="a" * 40), \
                         patch.object(gui_host_artifacts, "source_fingerprint", return_value="expected"), \
+                        patch.object(gui_host_artifacts, "validate_publication_notices",
+                                     wraps=gui_host_artifacts.validate_publication_notices
+                                     if failure == "incomplete-notices" else lambda tree: None), \
                         patch.object(release_dependencies, "verify_archive") as verifier:
                     if failure == "signature":
                         verifier.side_effect = ValueError("invalid signature")

@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rust_license_inventory as inventory
@@ -75,12 +76,36 @@ class RustLicenseInventoryTests(unittest.TestCase):
         self.assertEqual(result["missing_notice_files"], ["example@1.0.0"])
         self.assertEqual(result["packages"][0]["notice_files"], {})
 
+    def test_source_retention_preserves_archive_and_does_not_resolve_missing_notice(self):
+        archive, checksum = self.archive(notice=False)
+        output = self.root / "notices"
+        result = inventory.collect(self.about, self.lock, self.root, output, include_sources=True)
+        source = result["packages"][0]["source_archive"]
+        self.assertEqual((output / source["path"]).read_bytes(), archive.read_bytes())
+        self.assertEqual(source["sha256"], checksum)
+        self.assertEqual(result["missing_notice_files"], ["example@1.0.0"])
+
     def test_modified_download_publishes_no_inventory(self):
         archive, _ = self.archive()
         archive.write_bytes(archive.read_bytes() + b"tampered")
         output = self.root / "notices"
         with self.assertRaisesRegex(ValueError, "differs from Cargo.lock"):
             inventory.collect(self.about, self.lock, self.root, output)
+        self.assertFalse(output.exists())
+
+    def test_source_changed_after_notice_read_publishes_no_inventory(self):
+        archive, _ = self.archive()
+        read_notices = inventory.crate_notices
+
+        def changed_archive(*args):
+            notices = read_notices(*args)
+            archive.write_bytes(archive.read_bytes() + b"changed after verification")
+            return notices
+
+        output = self.root / "notices"
+        with patch.object(inventory, "crate_notices", side_effect=changed_archive):
+            with self.assertRaisesRegex(ValueError, "changed during collection"):
+                inventory.collect(self.about, self.lock, self.root, output, include_sources=True)
         self.assertFalse(output.exists())
 
     def test_archive_path_escape_is_rejected_even_with_valid_checksum(self):

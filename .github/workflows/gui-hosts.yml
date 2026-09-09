@@ -11,6 +11,8 @@ on:
       - scripts/test_gui_host_artifacts.py
       - scripts/rust_license_inventory.py
       - scripts/test_rust_license_inventory.py
+      - scripts/toolchain_license_inventory.py
+      - scripts/test_toolchain_license_inventory.py
       - dependencies/gui-host-notices/**
       - scripts/release_dependencies.py
       - scripts/dependency_artifacts.py
@@ -60,6 +62,7 @@ jobs:
         run: |
           python -m unittest discover -s scripts -p test_gui_host_artifacts.py
           python -m unittest discover -s scripts -p test_rust_license_inventory.py
+          python -m unittest discover -s scripts -p test_toolchain_license_inventory.py
       - name: Install GUI host build dependencies
         shell: bash
         run: |
@@ -120,6 +123,8 @@ jobs:
           pattern: gui-host-*
           merge-multiple: true
           path: ${{ runner.temp }}/link-inputs
+      - name: Require complete host notice coverage before attestation
+        run: python3 -c 'import sys; sys.path.insert(0, "scripts"); from gui_host_artifacts import validate_publication_notices; validate_publication_notices(None)'
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: ${{ runner.temp }}/link-inputs/*.tar

@@ -85,7 +85,7 @@ def upstream_notices(record, checksum, vcs, directory):
     return notices
 
 
-def collect(about, lock, cache, destination, supplements=None):
+def collect(about, lock, cache, destination, supplements=None, include_sources=False):
     """Publish a complete inventory atomically; any unknown identity stops it."""
     if destination.exists():
         raise FileExistsError(destination)
@@ -138,6 +138,18 @@ def collect(about, lock, cache, destination, supplements=None):
                     output.parent.mkdir(parents=True, exist_ok=True)
                     output.write_bytes(data)
                     record[category][name] = {"path": relative.as_posix(), "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+            if include_sources:
+                # Retain the exact published source archive, including copyright
+                # notices embedded in source comments. This does not resolve a
+                # missing grant or establish the selected binary dependency set.
+                data = archive.read_bytes()
+                if hashlib.sha256(data).hexdigest() != locked[identity]:
+                    raise ValueError("crate source archive changed during collection")
+                relative = Path("sources") / archive.name
+                (stage / relative).parent.mkdir(exist_ok=True)
+                (stage / relative).write_bytes(data)
+                record["source_archive"] = {"path": relative.as_posix(), "sha256": locked[identity],
+                                            "size": len(data)}
             records.append(record)
         if not records:
             raise ValueError("no third-party crates selected for notice review")
@@ -160,6 +172,7 @@ if __name__ == "__main__":
     parser.add_argument("--cache", type=Path, required=True, help="Cargo registry archive cache directory")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--supplements", type=Path, help="Reviewed, revision-bound upstream notice manifest")
+    parser.add_argument("--include-sources", action="store_true", help="Retain every selected original crate source archive")
     args = parser.parse_args()
-    result = collect(args.about, args.lock, args.cache, args.output, args.supplements)
+    result = collect(args.about, args.lock, args.cache, args.output, args.supplements, args.include_sources)
     print(f"Verified {len(result['packages'])} crate archives; {len(result['missing_notice_files'])} lack notice files")

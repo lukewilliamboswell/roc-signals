@@ -77,6 +77,18 @@ def validate_host(tree, target, expected_fingerprint):
         raise ValueError("GUI host archive does not match this checkout's source inputs")
 
 
+def validate_publication_notices(tree):
+    """Refuse release while candidate archives omit transitive runtime notices.
+
+    Native candidate tests remain useful, but the current two-license inventory
+    is not a publishable host payload. Replace this refusal with complete payload
+    validation when crate selection, upstream notices, and toolchain coverage
+    have been reviewed and incorporated into the archive.
+    """
+    raise ValueError("GUI host publication is disabled: complete transitive and toolchain "
+                     "notices must be packaged and validated")
+
+
 @contextmanager
 def verified_hosts(lock_path, cache, root=ROOT):
     """Verify provenance and compatibility before exposing any prebuilt host."""

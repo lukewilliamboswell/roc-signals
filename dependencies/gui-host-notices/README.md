@@ -15,5 +15,12 @@ an older notice record.
 These supplements are part of the host-source fingerprint. They support notice
 review but are not a complete license inventory for the combined host. Packages
 without notice files, notices embedded in source comments, and toolchain/runtime
-notices still require their own accounting. Contributor commands are documented
-in `www/content/docs/contributing.md`.
+notices still require their own accounting. Optional source retention preserves
+all selected original crate archives without clearing unresolved notice cases.
+
+`toolchains.json` pins official Rust compiler distributions for their
+standard-library copyright report and license texts, and the original Zig source
+distribution for its license and source-level notices. These are notice-review
+inputs, not a declaration of the components linked into a host. The toolchain
+collector verifies the distribution hashes and retains exact notice bytes.
+Contributor commands are documented in `www/content/docs/contributing.md`.
