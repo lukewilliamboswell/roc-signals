@@ -1275,3 +1275,45 @@ Wide collections use `Gui.virtual_list` to bound child lookup and layout to the
 visible range; ordinary containers enumerate direct children when rendered.
 See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
 `crates/gpui-host/README.md` for the boundary limits.
+
+### Linux GUI release candidates
+
+`Linux GUI release candidate` (`gui-release.yml`) packages an already published
+Linux host with the independently verified FreeType, glibc, LLVM unwinder, and
+xkbcommon releases. It runs no Cargo or Zig host build. Use a fresh checkout with
+no `platform-gui/targets` directory and an immutable `deps-gui-host-<version>`
+release whose source fingerprint matches that checkout.
+
+Dispatch the workflow with a new `gui-X.Y.Z-rc.N` tag, the host release tag, and
+`validate_only: true` for candidate validation. The job packages the existing
+verified inputs, serves the exact Roc archive over HTTP, builds all six maintained
+GUI applications with their pinned compiler, runs every semantic spec, and opens
+the same executables under Weston/Xvfb with Mesa software Vulkan. Rendering must
+report explicit success; the counter also verifies its increment interaction.
+The archive inventory check rejects missing dependency notices and receipts,
+unselected target files, and expanded payloads over Roc's 100 MiB limit.
+
+A publishing dispatch must run on `main` with `validate_only: false`. It attests
+the exact tested platform archive, starter ZIP, original host lock, and
+`signals-gui-release.json`, then creates a new immutable prerelease. Repository
+[release immutability](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/establish-provenance-and-integrity/prevent-release-changes)
+must already be enabled. Existing tags or releases are never overwritten; a
+partial publication requires inspecting and recovering those original bytes.
+The workflow verifies the published release and every asset, then rebuilds and
+runs all six applications from their unchanged public release URLs with a fresh
+Roc cache. A post-publication failure does not replace or silently repair assets.
+
+The starter ZIP contains all app sources/specs, the six-app registry, and the
+pinned Unicode source dependency. Compiler pins are preserved and platform URLs
+name the immutable GUI release. Host notices remain inside the platform; the
+original source companion remains at its independently attested host release,
+with its exact digest, size, and URL retained in the GUI manifest and embedded
+dependency lock. Candidate and published checks verify that source is available.
+Windows and macOS are outside this Linux RC and retain their separate release
+completion work.
+
+The CI-only GUI release helper and its tests live under `.github/scripts`, outside
+the host build fingerprint, because packaging verified archives does not alter
+host bytes. Packaging-only changes therefore reuse a compatible host release;
+changes to actual host inputs still invalidate that compatibility check. The
+existing web release workflow and supported web release are independent.
