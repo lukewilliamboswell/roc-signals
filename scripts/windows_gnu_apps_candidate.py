@@ -75,7 +75,7 @@ def check_apps(stage, output, roc, url=None):
     results = {}
     for app in gui_suite.examples(apps_root):
         source = app / 'main.roc'
-        source.write_text(toolchain.replace_platform(source.read_text(), url or str(stage / 'main.roc')))
+        source.write_text(toolchain.replace_platform(source.read_text(), url or (stage / 'main.roc').as_posix()))
         executable = apps_root / (app.name + '.exe')
         subprocess.run([roc, 'build', '--no-cache', '--target=x64mingw', str(source), f'--output={executable}'],
                        cwd=apps_root, env=env, check=True, timeout=180)
