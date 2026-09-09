@@ -83,9 +83,6 @@ def build(debug=False, jobs=2):
     windows_dependencies = (install_windows_imports(ROOT / 'platform-gui/targets/x64win')
                             if target == 'x64win' else None)
     subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
-    # Worktrees may share dependencies, but Cargo can reuse the identically named
-    # local crate from another checkout. Rebuild this small crate explicitly.
-    subprocess.run(['cargo', 'clean', '-p', 'signals-gpui-host'], cwd=ROOT, check=True)
     subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, env=build_environment(), check=True)
     dest = ROOT / 'platform-gui/targets' / target
     dest.mkdir(parents=True, exist_ok=True)

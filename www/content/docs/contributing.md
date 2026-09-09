@@ -994,6 +994,11 @@ application object and the other declared inputs to produce the executable.
 The builder does not merge them into a combined host archive. Rebuild older
 prebuilt target directories before using them with this header.
 
+Cargo tracks the checkout identity supplied by `.cargo/config.toml` through the
+host's `build.rs`. This prevents stale host reuse when multiple checkouts share
+`CARGO_TARGET_DIR`, without cleaning the host on every build. Run direct Cargo
+commands from the workspace or crate directory so Cargo discovers that config.
+
 ```sh
 python3 scripts/build_gui.py --debug
 roc build examples-gui/counter/main.roc --output=.test-out/Counter
