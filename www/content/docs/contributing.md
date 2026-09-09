@@ -293,7 +293,11 @@ publication.
 Dispatch this workflow on `main` with a new `deps-freetype-<version>` tag to
 publish tested bytes and their lock through `freetype-dependencies.yml`.
 Review and merge the lock entry separately when adopting the dependency. The
-artifact preserves FreeType's system SONAME; applications still use the operating
+Linux GUI builder verifies that release before compilation; the bundler verifies
+it again in fresh staging and excludes the development copy of `libfreetype.so`.
+Combined GUI bundles retain the lock entries and notices for both FreeType and
+Windows imports. Other Linux libraries still need independent producers.
+The artifact preserves FreeType's system SONAME; applications still use the operating
 system's runtime font libraries. The C compiler is Zig 0.16.0, targeting baseline
 x86-64 and glibc 2.39; the separate Roc compiler pin is preserved.
 See `dependencies/README.md` for the input and
