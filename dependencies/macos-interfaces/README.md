@@ -12,10 +12,27 @@ binding the outputs to the exact archive, catalog, and generator hashes. It
 reads no Apple SDK headers, TBDs, or framework binaries. The GUI build and
 platform bundler both use this generator.
 
+Symbol names reach the host archives through GPUI and community-maintained FFI
+bindings. Those upstream declarations can themselves originate in Apple headers.
+The catalog retains the exact names needed for binary linkage as interoperability
+facts; the generator does not reproduce the declarations, comments, or
+implementation code from those headers.
+
+The output uses Apple's TAPI text-based stub format, with the `!tapi-tbd` YAML
+tag and `tbd-version: 4`. The format is openly implemented by
+[LLVM's TextAPI reader and writer](https://www.llvm.org/docs/doxygen/TextStub_8cpp_source.html).
+Our generator writes the format's target, install-name, and symbol fields directly
+from the catalog.
+
 Apple's publicly available developer documentation supplies most interface
 references. The catalog also identifies open-source declarations used for runtime ABI symbols and GPUI's
 additional framework imports. [`PROVENANCE.md`](PROVENANCE.md) accompanies the
 generated files.
+
+Source references establish where an interface is declared; they do not imply
+that every selected symbol is a supported public API. In particular, GPUI's
+`CGSMainConnectionID` and `CGSSetWindowBackgroundBlurRadius` declarations are
+private API dependencies. Their compatibility remains an upstream host concern.
 
 The final application link occurs during `roc build` or the compilation step of
 `roc run`. The generated TBDs supply linking metadata; macOS supplies the actual
@@ -72,8 +89,9 @@ outside the developer documentation, record the exact open-source declaration,
 revision, and library evidence, as the existing runtime and GPUI records do.
 
 The Rust host uses community-maintained FFI crates and GPUI's framework
-declarations. The interface generator consumes compiled imports and source
-records; building the upstream host has its own native toolchain requirements.
+declarations. The separate archive audit inspects compiled imports; the interface
+generator reads source records and hashes the archives. Building the upstream
+host has its own native toolchain requirements.
 
 Regenerate and review the ledger when adopting different host archive bytes.
 For a released platform, also inventory the matching engine and validate final
