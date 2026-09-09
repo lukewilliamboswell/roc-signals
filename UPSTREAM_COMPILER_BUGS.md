@@ -22,6 +22,8 @@ export ROC_BIN=/path/to/pinned-roc/roc
 | 11 | Native GPUI sample cannot link as Shared or PIE | not filed | `examples-gui/keyed-rows/` | normal Roc executable linkage |
 | 10 | Unit-state capability callbacks produce invalid dev Wasm | not filed | `repro/unit-state-wasm-dev/` | no; size backend validates |
 | 14 | `roc bundle --output-dir` fails across filesystems | not filed | commands below | stage on the output filesystem |
+| 16 | Recursive keyed row rendering segfaults during code generation | not filed | `repro/recursive-each-codegen/` | no |
+| 17 | Markdown Editor retains Roc allocations after native specs | not filed | commands below | no |
 
 For #1, camelCase field names longer than ten bytes are corrupted on wasm32 at
 byte four, while native is unaffected; `favoritesCount` exposed it. For #2, the
@@ -151,3 +153,46 @@ Do not interpret a successful local-file build or compressed archive size as
 proof of URL consumption. Package layout and host size still need to satisfy
 the expanded transitive budget; there is no validated CLI workaround for this
 compiler pin. No compiler change is made here.
+
+## 16. Recursive keyed row rendering segfaults during code generation
+
+Reproduced with `nightly-2026-09-09-7dadc35` on Apple Silicon macOS.
+`roc check` and `roc test` succeed, but native and Wasm builds terminate with
+`SIGSEGV` at fault address `0x3f8` before producing an artifact. The failure
+is deterministic with the compiler cache disabled and one worker. The reduced
+case retains a recursive nominal tree, `Ui.each`, and the row builder's call
+back into the group renderer:
+
+```sh
+roc build -j1 --target=wasm32 --opt=size --no-cache \
+  repro/recursive-each-codegen/main.roc
+```
+
+Replacing the recursive row-builder call with a static element compiles.
+Preserving its zero-argument thunk shape by wrapping the call in
+`Ui.component(|| ...)` still crashes. The same nightly also reproduces a
+code-generation crash for `pomodoro-tracker`, `form-builder`,
+`split-the-bill`, `conduit`, GUI `keyed-rows`, and the GUI
+`compound-disposal` fixture; smaller examples and the size-fixture set still
+build. Those applications have not all been reduced to this exact construct.
+Changing Query Builder's recursive editor would remove supported behavior
+rather than work around the compiler. No source workaround or known-failure
+entry is applied.
+
+## 17. Markdown Editor retains Roc allocations after native specs
+
+Reproduced with `nightly-2026-09-09-7dadc35` on Linux x64 in hosted CI.
+Markdown Editor builds and every semantic assertion reports success, but each
+spec process exits with the native host's allocation ledger still holding Roc
+allocations. The initial-render spec retains 30 allocations and 2176 bytes;
+other specs retain different nonzero sets.
+
+```sh
+python3 scripts/test.py native --native always \
+  --spec-filter 'markdown-editor/*' --roc-bin /path/to/pinned/roc
+```
+
+The same specs release all allocations with `nightly-2026-09-04-c125b82`.
+The ledger failure remains a hard test failure: passing visible behavior does
+not make ownership imbalance acceptable. No known-failure entry or host cleanup
+workaround is applied.
