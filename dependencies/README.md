@@ -161,6 +161,12 @@ preprocessed MinGW definition bundled with the pinned Zig toolchain. The release
 includes the applicable MinGW notice and does not copy Microsoft SDK libraries.
 Future Windows dependency packages must likewise provide complete definitions
 for each selected DLL, rather than a subset derived from host symbol usage.
+The producer checks the generated COFF archive before packaging: short imports
+must match every export and hint in the preprocessed definition, refer only to
+the selected DLL, and contain only the expected import descriptor sections.
+Executable sections, extra or missing imports, and unfamiliar definition syntax
+are rejected. This validator deliberately supports the reviewed x64 definition
+format; adding other DLLs or updating the toolchain may require extending it.
 
 This does not establish the provenance of every import in a GUI executable.
 Rust dependencies embed additional windows-rs and compiler-generated import

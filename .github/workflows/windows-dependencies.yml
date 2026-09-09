@@ -6,12 +6,14 @@ on:
       - dependencies/windows-imports.json
       - scripts/build_windows_imports.py
       - scripts/windows_imports.py
+      - scripts/windows_import_validation.py
       - scripts/dependency_archive.py
       - scripts/dependency_artifacts.py
       - scripts/release_dependencies.py
       - scripts/test_dependency_artifacts.py
       - scripts/test_windows_import_artifact.py
       - scripts/test_windows_dependencies.py
+      - scripts/test_windows_import_validation.py
       - test/dependencies/windows_imports.c
       - .github/workflows/windows-dependencies.yml
   workflow_dispatch:
@@ -45,7 +47,7 @@ jobs:
           version: 0.16.0
           use-cache: false
       - name: Check dependency admission failures
-        run: python -m unittest scripts/test_dependency_artifacts.py scripts/test_windows_dependencies.py
+        run: python -m unittest scripts/test_dependency_artifacts.py scripts/test_windows_dependencies.py scripts/test_windows_import_validation.py
       - name: Build from pinned MinGW definitions
         run: python scripts/build_windows_imports.py --output '${{ runner.temp }}/dependencies'
       - name: Execute the exact candidate on Windows
