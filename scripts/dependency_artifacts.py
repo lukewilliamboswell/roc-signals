@@ -136,8 +136,9 @@ def unpack_verified(archive, entry, destination):
             raise ValueError("dependency file inventory differs from archive")
         for name, record in files.items():
             if not (name.startswith(f"targets/{entry['target']}/")
-                    or name.startswith(f"licenses/{entry['name']}/")):
-                raise ValueError("dependency file is outside its target or license directory")
+                    or name.startswith(f"licenses/{entry['name']}/")
+                    or name.startswith(f"sources/{entry['name']}/")):
+                raise ValueError("dependency file is outside its target, license, or source directory")
             if (set(record) != {"size", "sha256"} or record["size"] != members[name].size
                     or not HEX256.fullmatch(record["sha256"])):
                 raise ValueError("invalid dependency file record")

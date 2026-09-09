@@ -17,6 +17,15 @@ from dependency_artifacts import sha256, unpack_verified, verify_archive, read_l
 
 REPOSITORY = "lukewilliamboswell/roc-signals"
 KINDS = {
+    "glibc": {"targets": ("x64glibc",), "files": ("crt1.o", "libc.so", "libm.so", "libc_nonshared.a"),
+              "licenses": ("COPYING.LIB", "LICENSES", "LICENSE-ZIG"),
+              "extra_files": tuple("sources/glibc/" + name for name in (
+                  "source.tar.xz", "dependencies/glibc.json", "dependencies/glibc/COPYING.LIB",
+                  "dependencies/glibc/Dockerfile", "test/dependencies/glibc.c",
+                  "scripts/build_glibc.py", "scripts/dependency_archive.py", "scripts/dependency_artifacts.py")),
+              "workflow": "glibc-dependencies.yml",
+              "inventory_error": "dependency release must include the tested glibc link inputs",
+              "validation": "The extracted candidate passed startup, termination, math, allocation, and thread tests; two clean builds produced identical archives. Corresponding bundled sources and reproduction inputs accompany the binaries."},
     "xkbcommon": {"targets": ("x64glibc",), "files": ("libxkbcommon.so", "libxkbcommon-x11.so"),
                   "licenses": ("LICENSE",), "workflow": "xkbcommon-dependencies.yml",
                   "inventory_error": "dependency release must include both tested xkbcommon libraries",
@@ -67,6 +76,7 @@ def prepare(directory, tag, environment, kind="musl"):
             manifest = unpack_verified(archive, entry, Path(temporary) / target)
             required = {f"targets/{target}/{name}" for name in policy["files"]}
             required.update(f"licenses/{kind}/{name}" for name in policy["licenses"])
+            required.update(policy.get("extra_files", ()))
             if set(manifest["files"]) != required:
                 raise ValueError(f"{kind} release has an incomplete or unexpected file set")
             artifacts[f"{kind}-{target}"] = entry

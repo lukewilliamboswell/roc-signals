@@ -303,6 +303,24 @@ x86-64 and glibc 2.39; the separate Roc compiler pin is preserved.
 See `dependencies/README.md` for the input and
 runtime boundaries.
 
+The `glibc dependency releases` workflow generates Linux x86-64 startup and
+glibc link inputs from the checksum-pinned Zig distribution. Reproduce it with
+Python 3.12 and Docker:
+
+```sh
+python3 scripts/build_glibc.py --output /tmp/glibc-candidate
+python3 scripts/build_glibc.py --output /tmp/glibc-rebuild
+cmp /tmp/glibc-candidate/glibc-x64glibc.tar /tmp/glibc-rebuild/glibc-x64glibc.tar
+python3 -m unittest scripts/test_glibc_dependencies.py scripts/test_dependency_artifacts.py
+```
+
+Both builds run the native probe against their extracted candidate. Dispatch
+`glibc-dependencies.yml` on `main` with a new `deps-glibc-<version>` tag to attest
+and publish the tested bytes. The archive contains corresponding source and a
+standalone reproduction tree under `sources/glibc/`; run the same build command
+from that directory to reproduce the producer. Review the resulting consumer
+lock and platform link-input changes separately before adoption.
+
 ## Coverage
 
 Native host coverage is a diagnostic tool for finding major gaps in the Zig
