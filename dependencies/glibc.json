@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "glibc",
-  "version": "zig-0.16.0-glibc-2.39-1",
+  "version": "zig-0.16.0-glibc-2.39-2",
   "target": "x64glibc",
   "zig_version": "0.16.0",
   "cc_args": [
@@ -20,5 +20,42 @@
   "license": {
     "url": "https://raw.githubusercontent.com/bminor/glibc/glibc-2.42/COPYING.LIB",
     "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551"
+  },
+  "header_directories": [
+    "lib/include",
+    "lib/libc/include/x86-linux-gnu",
+    "lib/libc/include/generic-glibc",
+    "lib/libc/include/x86-linux-any",
+    "lib/libc/include/any-linux-any"
+  ],
+  "linux_licenses": {
+    "LICENSE-LINUX-GPL-2.0": {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/adc218676eef25575469234709c2d87185ca223a/LICENSES/preferred/GPL-2.0",
+      "sha256": "f6b78c087c3ebdf0f3c13415070dd480a3f35d8fc76f3d02180a407c1c812f79"
+    },
+    "LICENSE-LINUX-GPL-1.0": {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/adc218676eef25575469234709c2d87185ca223a/LICENSES/deprecated/GPL-1.0",
+      "sha256": "79270bf7a89e1c6bee5d578f920f330b61db2ff3b800cf095a1cc5cb34367ccd"
+    },
+    "LICENSE-LINUX-LGPL-2.0": {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/adc218676eef25575469234709c2d87185ca223a/LICENSES/preferred/LGPL-2.0",
+      "sha256": "b62fa9feac8de9899cd1738f5845cedbad9ca2acd8056513b77666c9ba1ef600"
+    },
+    "LICENSE-LINUX-LGPL-2.1": {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/adc218676eef25575469234709c2d87185ca223a/LICENSES/preferred/LGPL-2.1",
+      "sha256": "efbaee946ac92a48b89eae36f655844042370d2f0e04eadea1e2998efae24ebd"
+    },
+    "LICENSE-LINUX-Linux-syscall-note": {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/adc218676eef25575469234709c2d87185ca223a/LICENSES/exceptions/Linux-syscall-note",
+      "sha256": "8e378ab93586eb55135d3bc119cce787f7324f48394777d00c34fa3d0be3303f"
+    },
+    "LICENSE-LINUX-MIT": {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/adc218676eef25575469234709c2d87185ca223a/LICENSES/preferred/MIT",
+      "sha256": "323c587d0ccf10e376f8bf9a7f31fb4ca6078105194b42e0b1e0ee2bc9bde71f"
+    },
+    "LICENSE-LINUX-BSD-3-Clause": {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/adc218676eef25575469234709c2d87185ca223a/LICENSES/preferred/BSD-3-Clause",
+      "sha256": "7a83b1aeb460458db9a4bd521d7f237c45b1650f6e60ea5ffc71e49472454de3"
+    }
   }
 }

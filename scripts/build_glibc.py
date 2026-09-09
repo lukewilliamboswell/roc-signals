@@ -61,16 +61,30 @@ def verified_toolchain(source, cache):
     return destination
 
 
-def corresponding_source(distribution):
+def verified_header_search(compiler, distribution, expected, environment, work):
+    """Refuse a compiler header search that differs from the reviewed target."""
+    result = subprocess.run([*compiler, "-E", "-v", "-xc", "/dev/null"],
+                            cwd=work, env=environment, check=True, capture_output=True, text=True)
+    try:
+        search = result.stderr.split("#include <...> search starts here:\n", 1)[1].split("End of search list.", 1)[0]
+        actual = [(work / line.strip()).resolve().relative_to(distribution.resolve()).as_posix()
+                  for line in search.splitlines() if line.strip()]
+    except (IndexError, ValueError) as error:
+        raise ValueError("unrecognized or external compiler header search") from error
+    if actual != expected:
+        raise ValueError("compiler header search differs from the reviewed target")
+
+
+def corresponding_source(distribution, header_directories):
     """Preserve source bytes and notices with normalized archive metadata.
 
-    Include all glibc sources and C headers rather than inferring a minimum
-    include closure. Zig's compiler is a separately pinned build tool.
+    Keep complete glibc sources and each verified target header directory,
+    including original per-file notices, without unrelated operating systems.
     """
     stream = io.BytesIO()
     with tarfile.open(fileobj=stream, mode="w:xz", format=tarfile.PAX_FORMAT) as archive:
-        paths = [distribution / "LICENSE"]
-        for name in ("lib/libc/glibc", "lib/libc/include", "lib/include"):
+        paths = [distribution / "LICENSE", distribution / "lib/libunwind/LICENSE.TXT"]
+        for name in ("lib/libc/glibc", *header_directories):
             paths.extend(sorted((distribution / name).rglob("*")))
         for path in paths:
             if path.is_symlink():
@@ -96,6 +110,12 @@ def inside_builder(output, toolchain, image_id):
     license_text = (ROOT / "dependencies/glibc/COPYING.LIB").read_bytes()
     if digest(license_text) != recipe["license"]["sha256"]:
         raise ValueError("glibc license differs from the reviewed pin")
+    linux_licenses = {}
+    for name, identity in recipe["linux_licenses"].items():
+        data = (ROOT / "dependencies/glibc" / name).read_bytes()
+        if digest(data) != identity["sha256"]:
+            raise ValueError("Linux license differs from the reviewed pin: " + name)
+        linux_licenses[name] = data
     if toolchain.stat().st_size != recipe["toolchain"]["size"] or sha256(toolchain) != recipe["toolchain"]["sha256"]:
         raise ValueError("Zig distribution differs from its reviewed pin")
     # /work is a new private tmpfs for each container, with stable debug paths.
@@ -111,6 +131,7 @@ def inside_builder(output, toolchain, image_id):
         for name in ("ZIG_LIB_DIR", "ZIG_LIBC", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "LIBRARY_PATH", "LD_LIBRARY_PATH", "LD_PRELOAD"):
             environment.pop(name, None)
         compiler = [zig, "cc", *recipe["cc_args"]]
+        verified_header_search(compiler, distribution, recipe["header_directories"], environment, work)
         subprocess.run([*compiler, str(PROBE), "-o", str(work / "bootstrap")],
                        cwd=work, env=environment, check=True, timeout=180)
         inputs = work / "inputs"
@@ -124,7 +145,8 @@ def inside_builder(output, toolchain, image_id):
         files.update({"licenses/glibc/COPYING.LIB": license_text,
                       "licenses/glibc/LICENSES": (distribution / "lib/libc/glibc/LICENSES").read_bytes(),
                       "licenses/glibc/LICENSE-ZIG": (distribution / "LICENSE").read_bytes(),
-                      "sources/glibc/source.tar.xz": corresponding_source(distribution),
+                      "licenses/glibc/LICENSE-LLVM": (distribution / "lib/libunwind/LICENSE.TXT").read_bytes(),
+                      "sources/glibc/source.tar.xz": corresponding_source(distribution, recipe["header_directories"]),
                       "sources/glibc/dependencies/glibc.json": recipe_bytes,
                       "sources/glibc/dependencies/glibc/COPYING.LIB": license_text,
                       "sources/glibc/dependencies/glibc/Dockerfile": BUILDER.read_bytes(),
@@ -132,12 +154,16 @@ def inside_builder(output, toolchain, image_id):
                       "sources/glibc/scripts/build_glibc.py": Path(__file__).read_bytes(),
                       "sources/glibc/scripts/dependency_archive.py": (ROOT / "scripts/dependency_archive.py").read_bytes(),
                       "sources/glibc/scripts/dependency_artifacts.py": (ROOT / "scripts/dependency_artifacts.py").read_bytes()})
+        for name, data in linux_licenses.items():
+            files["licenses/glibc/" + name] = data
+            files["sources/glibc/dependencies/glibc/" + name] = data
         archive = write_archive(work / "glibc-x64glibc.tar", {
             "schema_version": 1, "name": "glibc", "version": recipe["version"], "target": recipe["target"],
             "source": recipe["toolchain"], "build": {"builder_image": image_id,
             "builder_recipe_sha256": sha256(BUILDER), "recipe_sha256": digest(recipe_bytes),
             "producer_sha256": sha256(Path(__file__)), "probe_sha256": sha256(PROBE),
-            "cc_args": recipe["cc_args"], "zig_version": recipe["zig_version"]},
+            "cc_args": recipe["cc_args"], "zig_version": recipe["zig_version"],
+            "header_directories": recipe["header_directories"]},
         }, files)
         admitted = work / "candidate"
         unpack_verified(archive, {"name": "glibc", "target": "x64glibc"}, admitted)

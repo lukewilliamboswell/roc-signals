@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -56,6 +57,39 @@ class GlibcDependencyTests(unittest.TestCase):
         download.assert_not_called()
         self.assertEqual(candidate.read_bytes(), b"original tested bytes")
 
+    def test_source_payload_retains_target_headers_and_original_notices_only(self):
+        headers = ["lib/include", "lib/libc/include/generic-glibc"]
+        wanted = {"LICENSE": b"zig notice", "lib/libunwind/LICENSE.TXT": b"LLVM notice",
+                  "lib/libc/glibc/start.S": b"glibc startup", "lib/include/header.h": b"clang header",
+                  "lib/libc/include/generic-glibc/stdio.h": b"original header notice"}
+        for name, data in {**wanted, "lib/libc/include/any-windows-any/stdio.h": b"unrelated"}.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        data = build_glibc.corresponding_source(self.root, headers)
+        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+            self.assertEqual({member.name: archive.extractfile(member).read() for member in archive}, wanted)
+        self.assertEqual(data, build_glibc.corresponding_source(self.root, headers))
+
+    def test_compiler_header_search_refuses_ambient_and_changed_paths(self):
+        expected = ["lib/include", "lib/libc/include/generic-glibc"]
+        for actual in (expected, expected[::-1], ["/usr/include"]):
+            report = "#include <...> search starts here:\n" + "\n".join(
+                " " + str(self.root / path) for path in actual) + "\nEnd of search list.\n"
+            with patch.object(build_glibc.subprocess, "run") as run:
+                run.return_value.stderr = report
+                if actual == expected:
+                    build_glibc.verified_header_search(["zig", "cc"], self.root, expected, {}, self.root)
+                else:
+                    with self.assertRaises(ValueError):
+                        build_glibc.verified_header_search(["zig", "cc"], self.root, expected, {}, self.root)
+
+    def test_retained_linux_license_bytes_match_their_source_pins(self):
+        recipe = json.loads(build_glibc.RECIPE.read_text())
+        for name, identity in recipe["linux_licenses"].items():
+            self.assertEqual(digest((build_glibc.ROOT / "dependencies/glibc" / name).read_bytes()), identity["sha256"])
+            self.assertIn("/adc218676eef25575469234709c2d87185ca223a/LICENSES/", identity["url"])
+
     def test_publication_requires_sources_and_records_the_glibc_signer(self):
         policy = release_dependencies.KINDS["glibc"]
         files = {"targets/x64glibc/" + name: b"generated input" for name in policy["files"]}
@@ -63,7 +97,7 @@ class GlibcDependencyTests(unittest.TestCase):
         files.update({name: b"corresponding source" for name in policy["extra_files"]})
         environment = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
                        "GITHUB_REPOSITORY": release_dependencies.REPOSITORY, "GITHUB_SHA": "a" * 40}
-        for missing in (None, "sources/glibc/source.tar.xz", "licenses/glibc/COPYING.LIB"):
+        for missing in (None, "sources/glibc/source.tar.xz", *("licenses/glibc/" + name for name in policy["licenses"])):
             with self.subTest(missing=missing):
                 directory = self.root / ("complete" if missing is None else Path(missing).name)
                 payload = {name: data for name, data in files.items() if name != missing}

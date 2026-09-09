@@ -90,6 +90,23 @@ solely by Zig's MIT license. Files under `sources/glibc/` are preserved as
 ordinary, hash-verified payloads, not automatically unpacked or executed by the
 consumer.
 
+The source payload keeps complete glibc sources and the five header directories
+reported by the pinned compiler for `x86_64-linux-gnu.2.39`: Clang's `lib/include`
+and libc's `x86-linux-gnu`, `generic-glibc`, `x86-linux-any`, and `any-linux-any`.
+The producer checks that search list before building. It excludes unrelated
+musl, Windows and Darwin header trees instead of redistributing their sources
+without their component notices.
+
+Original header notices remain in the source payload. Full LLVM license terms
+and exceptions come from the pinned distribution's `lib/libunwind/LICENSE.TXT`.
+Linux UAPI license texts and the syscall exception are retained byte-for-byte
+from the Linux source revision pinned in the recipe, alongside the original
+SPDX declarations and copyright notices in each header. This includes GPL 1/2,
+LGPL 2/2.1, MIT and BSD-3-Clause terms. For dual-licensed UAPI declarations, the
+GPL alternative with its syscall exception is selected; separately applicable
+MIT and BSD notices remain applicable. These header licenses are distinct from
+the generated glibc link inputs' own licenses.
+
 The stubs retain system SONAMEs: the operating system supplies the actual glibc
 implementation at runtime. This producer does not include the GCC unwinder or
 adopt a consumer lock. Production consumption requires a separately reviewed
