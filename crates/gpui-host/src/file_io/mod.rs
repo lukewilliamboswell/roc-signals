@@ -16,11 +16,11 @@ use std::{
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-pub use unix::{list_directory, open_path, read_log, read_preview, read_text, scan, write_text};
+pub use unix::{list_directory, open_path, read_bytes, read_log, read_preview, read_text, scan, write_text};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{list_directory, open_path, read_log, read_preview, read_text, scan, write_text};
+pub use windows::{list_directory, open_path, read_bytes, read_log, read_preview, read_text, scan, write_text};
 
 pub const MAX_PATH_BYTES: usize = 4096;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4096;

@@ -20,6 +20,7 @@ pub enum ControlKind {
     Input,
     Textarea,
     Text,
+    Image,
 }
 impl ControlKind {
     pub fn from_tag(tag: &str) -> Self {
@@ -35,6 +36,7 @@ impl ControlKind {
             "input" => Self::Input,
             "textarea" => Self::Textarea,
             "text" => Self::Text,
+            "img" => Self::Image,
             _ => Self::Unknown,
         }
     }
@@ -77,6 +79,7 @@ pub struct Node {
     pub value: String,
     pub label: String,
     pub placeholder: String,
+    pub image_source: String,
     pub role: Role,
     pub test_id: String,
     pub style: Option<Style>,
@@ -159,6 +162,7 @@ struct RawNode {
     test_id: Slice,
     class: Slice,
     placeholder: Slice,
+    image_source: Slice,
     child_count: usize,
     click: u64,
     input: u64,
@@ -219,7 +223,7 @@ impl Engine {
             };
             assert_eq!(
                 signals_protocol_version(),
-                8,
+                9,
                 "native GUI protocol mismatch"
             );
             assert_eq!(
@@ -278,6 +282,7 @@ impl Engine {
                         value: r.value.copy(),
                         label: r.label.copy(),
                         placeholder: r.placeholder.copy(),
+                        image_source: r.image_source.copy(),
                         role: Role::from_role(&role),
                         test_id: r.test_id.copy(),
                         style: (r.style_present != 0).then_some(r.style),

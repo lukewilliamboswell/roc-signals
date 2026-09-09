@@ -82,6 +82,7 @@ pub const ScalarNode = struct {
     native_drag_key: ?[]const u8 = null,
     native_window_close: ?[]const u8 = null,
     native_placeholder: ?[]const u8 = null,
+    native_image_source: ?[]const u8 = null,
     custom_text_attrs: shared_buffer.List(CustomTextAttr) = .empty,
     named_events: shared_buffer.List(NamedEvent) = .empty,
     checked: ?bool = null,
@@ -101,6 +102,7 @@ pub const ScalarNode = struct {
         if (self.native_drag_key) |key| allocator.free(key);
         if (self.native_window_close) |value| allocator.free(value);
         if (self.native_placeholder) |value| allocator.free(value);
+        if (self.native_image_source) |value| allocator.free(value);
         for (self.custom_text_attrs.items) |attr| {
             attr.deinit(allocator);
         }
@@ -155,6 +157,7 @@ pub const ScalarNode = struct {
             .native_drag_key => &self.native_drag_key,
             .native_window_close => &self.native_window_close,
             .native_placeholder => &self.native_placeholder,
+            .native_image_source => &self.native_image_source,
         };
     }
 

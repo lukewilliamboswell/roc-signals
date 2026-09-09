@@ -100,8 +100,15 @@ const NativeTaskPublication = struct {
                 .write_text => 2,
                 .choose_save_path => 3,
                 .read_log => 5,
+                // Asset manifests carry a count frame plus two frames per
+                // asset; the dedicated validator owns that variable shape.
+                .verify_assets => 0,
             };
-            native_files_codec.validateRequest(request, arguments) catch failHost("malformed native Files request");
+            if (kind == .verify_assets) {
+                native_files_codec.validateAssetsRequest(request) catch failHost("malformed native asset manifest request");
+            } else {
+                native_files_codec.validateRequest(request, arguments) catch failHost("malformed native Files request");
+            }
             if (kind == .read_log) native_files_codec.validateLogRequest(request) catch failHost("malformed native Files log cursor");
             return .{
                 .host = host,
@@ -229,6 +236,7 @@ const NativeRenderPublication = struct {
             .native_drag_key => &node.native_drag_key,
             .native_window_close => &node.native_window_close,
             .native_placeholder => &node.native_placeholder,
+            .native_image_source => &node.native_image_source,
         };
         if (field == .native_viewport) if (next) |bytes| {
             _ = native_style.decodeViewport(bytes) catch failHost("invalid native viewport record");
@@ -2626,6 +2634,7 @@ fn setRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFiel
         .native_drag_key => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_drag_key, value),
         .native_window_close => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_window_close, value),
         .native_placeholder => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_placeholder, value),
+        .native_image_source => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_image_source, value),
         .native_viewport => {
             _ = native_style.decodeViewport(value) catch failHost("invalid native viewport record");
             sim_dom.setOwnedString(host.hostAllocator(), &elem.native_viewport, value);
@@ -2661,6 +2670,7 @@ fn clearRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFi
         .native_drag_key => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_drag_key),
         .native_window_close => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_window_close),
         .native_placeholder => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_placeholder),
+        .native_image_source => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_image_source),
     }
 }
 
@@ -10132,6 +10142,7 @@ test "signals host structural patch clears fields absent from reused DOM node" {
     const initial_attrs = [_]abi.NodeAttr{
         testNodeStaticTextAttr(&roc_host, .label, "Initial label"),
         testNodeStaticTextAttr(&roc_host, .native_placeholder, "Initial hint"),
+        testNodeStaticTextAttr(&roc_host, .native_image_source, "avatars/initial.png"),
         testNodeStaticCustomTextAttr(&roc_host, "data-mode", "initial"),
         testNodeStaticBoolAttr(.disabled, true),
     };
@@ -10146,6 +10157,7 @@ test "signals host structural patch clears fields absent from reused DOM node" {
     const section_id = host.engine.active_stream.elements.items[0].elem_id;
     try std.testing.expectEqualStrings("Initial label", host.dom_elements.items[@intCast(section_id.raw())].label.?);
     try std.testing.expectEqualStrings("Initial hint", host.dom_elements.items[@intCast(section_id.raw())].native_placeholder.?);
+    try std.testing.expectEqualStrings("avatars/initial.png", host.dom_elements.items[@intCast(section_id.raw())].native_image_source.?);
     try std.testing.expectEqualStrings("initial", elementTextAttr(&host.dom_elements.items[@intCast(section_id.raw())], "data-mode").?);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].disabled);
 
@@ -10160,10 +10172,11 @@ test "signals host structural patch clears fields absent from reused DOM node" {
 
     try std.testing.expectEqual(@as(u64, 0), patch_counts.reset_dom);
     try std.testing.expectEqual(@as(u64, 0), patch_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 3), patch_counts.set_metadata);
+    try std.testing.expectEqual(@as(u64, 4), patch_counts.set_metadata);
     try std.testing.expectEqual(@as(u64, 1), patch_counts.set_disabled);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].label == null);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_placeholder == null);
+    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_image_source == null);
     try std.testing.expect(elementTextAttr(&host.dom_elements.items[@intCast(section_id.raw())], "data-mode") == null);
     try std.testing.expect(!host.dom_elements.items[@intCast(section_id.raw())].disabled);
 }
@@ -12630,6 +12643,7 @@ const Gpui = struct {
         test_id: Slice,
         class: Slice,
         placeholder: Slice,
+        image_source: Slice,
         child_count: usize,
         click: u64,
         input: u64,
@@ -12676,7 +12690,7 @@ const Gpui = struct {
         }
     }
     fn protocolVersion() callconv(.c) u32 {
-        return 8;
+        return 9;
     }
     fn nodeSize() callconv(.c) usize {
         return @sizeOf(Node);
@@ -12809,6 +12823,7 @@ const Gpui = struct {
             .test_id = Slice.from(elem.test_id orelse ""),
             .class = Slice.from(elem.class orelse ""),
             .placeholder = Slice.from(elem.native_placeholder orelse ""),
+            .image_source = Slice.from(elem.native_image_source orelse ""),
             .child_count = child_order.count(ids.ElemId.fromRaw(elem.id)),
             .click = if (elem.event_bindings.click) |binding| binding.event_id.raw() else 0,
             .input = if (elem.event_bindings.input) |binding| binding.event_id.raw() else 0,

@@ -2,6 +2,7 @@
 //! all task identity, cancellation state, and result propagation belong to Zig.
 use crate::{
     Runtime,
+    assets::{self, AssetStatus},
     bridge::Effect,
     file_io::{self, FileError, Kind, LogChange, LogCursor, LogPosition, LogState},
 };
@@ -139,6 +140,9 @@ impl Manager {
                                     file_io::read_log(&path, position, &worker_cancel)
                                         .map(log_packet)
                                 }
+                                Request::VerifyAssets(entries) => {
+                                    assets::verify(&entries, &worker_cancel).map(assets_packet)
+                                }
                                 _ => unreachable!(),
                             }
                         });
@@ -216,6 +220,7 @@ enum Request {
         path: String,
         position: LogPosition,
     },
+    VerifyAssets(Vec<(String, String)>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -285,6 +290,27 @@ impl Request {
                     _ => return Err("invalid log cursor"),
                 };
                 Self::ReadLog { path, position }
+            }
+            11 => {
+                let count = reader.number()? as usize;
+                if count == 0 || count > assets::MAX_MANIFEST_ASSETS {
+                    return Err("asset manifest count out of bounds");
+                }
+                let mut entries = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let name = reader.frame()?;
+                    if name.is_empty() || name.len() > assets::MAX_SOURCE_BYTES {
+                        return Err("asset name out of bounds");
+                    }
+                    let digest = reader.frame()?;
+                    let hex = digest.len() == 64
+                        && digest.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+                    if !hex {
+                        return Err("asset digest is not lowercase hex SHA-256");
+                    }
+                    entries.push((name.into(), digest.into()));
+                }
+                Self::VerifyAssets(entries)
             }
             _ => return Err("unknown task kind"),
         };
@@ -358,6 +384,22 @@ fn entries_packet(path: &str, entries: Vec<file_io::Entry>) -> String {
             },
         );
         append_frame(&mut output, &entry.bytes.to_string());
+    }
+    output
+}
+
+fn assets_packet(report: assets::AssetReport) -> String {
+    let mut output = packet(&[&report.len().to_string()]);
+    for (name, status) in report {
+        append_frame(&mut output, &name);
+        append_frame(
+            &mut output,
+            match status {
+                AssetStatus::Ok => "ok",
+                AssetStatus::Missing => "missing",
+                AssetStatus::Mismatch => "mismatch",
+            },
+        );
     }
     output
 }
@@ -506,6 +548,36 @@ mod tests {
         assert_eq!(
             log_packet(chunk),
             packet(&["/tmp/log", "λ\n", "7", "13", "3", "rotated", "partial-utf8"])
+        );
+    }
+
+    #[test]
+    fn asset_verification_requests_and_reports_are_strictly_framed() {
+        let digest = "a".repeat(64);
+        assert_eq!(
+            Request::decode(11, &packet(&["2", "avatars/maya.png", &digest, "glyphs/λ.png", &digest])).unwrap(),
+            Request::VerifyAssets(vec![
+                ("avatars/maya.png".into(), digest.clone()),
+                ("glyphs/λ.png".into(), digest.clone()),
+            ])
+        );
+        for fields in [
+            vec!["0"],
+            vec!["257"],
+            vec!["1", "", &digest],
+            vec!["1", "x.png", "A"],
+            vec!["2", "x.png", &digest],
+            vec!["1", "x.png", &digest[..63]],
+        ] {
+            assert!(Request::decode(11, &packet(&fields)).is_err(), "accepted {fields:?}");
+        }
+        assert_eq!(
+            assets_packet(vec![
+                ("avatars/maya.png".into(), AssetStatus::Ok),
+                ("glyphs/λ.png".into(), AssetStatus::Missing),
+                ("x.png".into(), AssetStatus::Mismatch),
+            ]),
+            packet(&["3", "avatars/maya.png", "ok", "glyphs/λ.png", "missing", "x.png", "mismatch"])
         );
     }
 

@@ -3644,6 +3644,7 @@ pub const TextFieldDescriptorIndexes = struct {
     native_drag_key: DescriptorIndex = .none,
     native_window_close: DescriptorIndex = .none,
     native_placeholder: DescriptorIndex = .none,
+    native_image_source: DescriptorIndex = .none,
 
     /// Returns the stored value without changing its identity or ownership policy.
     pub fn get(self: TextFieldDescriptorIndexes, field: TextField) ?usize {
@@ -3659,6 +3660,7 @@ pub const TextFieldDescriptorIndexes = struct {
             .native_drag_key => self.native_drag_key.get(),
             .native_window_close => self.native_window_close.get(),
             .native_placeholder => self.native_placeholder.get(),
+            .native_image_source => self.native_image_source.get(),
         };
     }
 
@@ -3676,6 +3678,7 @@ pub const TextFieldDescriptorIndexes = struct {
             .native_drag_key => &self.native_drag_key,
             .native_window_close => &self.native_window_close,
             .native_placeholder => &self.native_placeholder,
+            .native_image_source => &self.native_image_source,
         };
     }
 };
@@ -5870,7 +5873,7 @@ test "descriptor index mutation helpers preserve explicit slots" {
 
 test "descriptor indexes retain a cache-dense layout" {
     try std.testing.expectEqual(@as(usize, 4), @sizeOf(DescriptorIndex));
-    try std.testing.expectEqual(@as(usize, 160), @sizeOf(ElemDescriptorIndex));
+    try std.testing.expectEqual(@as(usize, 168), @sizeOf(ElemDescriptorIndex));
     try std.testing.expectEqual(@as(usize, 28), @sizeOf(NodeDescriptorIndex));
 }
 

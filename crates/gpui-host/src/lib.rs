@@ -1,3 +1,4 @@
+mod assets;
 mod bridge;
 mod controls;
 mod dialog;
@@ -200,6 +201,22 @@ impl Render for NodeView {
             element = element.opacity(0.45);
         }
 
+        if self.node.kind == ControlKind::Image {
+            let radius = self.node.style.map_or(0, |style| style.radius);
+            element = element.flex_shrink_0().overflow_hidden();
+            element = match assets::resolve(&self.node.image_source) {
+                Some(path) => element.child(
+                    img(path)
+                        .size_full()
+                        .rounded(px(radius as f32))
+                        .object_fit(ObjectFit::Cover)
+                        .with_fallback(move || missing_image(radius).into_any_element()),
+                ),
+                // An invalid or unresolvable source renders a neutral surface
+                // sized by the element's style, never a filesystem access.
+                None => element.child(missing_image(radius)),
+            };
+        }
         if !self.node.text.is_empty() {
             element = element.child(self.node.text.clone());
         }
@@ -308,6 +325,16 @@ impl Render for NodeView {
         }
     }
 }
+/// Neutral stand-in for a missing or undecodable image, on theme surfaces.
+fn missing_image(radius: u32) -> Div {
+    div()
+        .size_full()
+        .bg(rgb(0x1b2a33))
+        .border_1()
+        .border_color(rgb(0x3a4f5c))
+        .rounded(px(radius as f32))
+}
+
 fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div> {
     element = if style.direction == 0 {
         element.flex_row()
@@ -730,6 +757,14 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--run-spec-json") {
         return unsafe { signals_spec_main(argc, argv) };
+    }
+    let assets_root = args
+        .windows(2)
+        .find(|pair| pair[0] == "--assets-root")
+        .map(|pair| std::path::PathBuf::from(&pair[1]))
+        .or_else(|| std::env::var_os("ROC_SIGNALS_ASSETS_ROOT").map(std::path::PathBuf::from));
+    if let Some(root) = assets_root {
+        assets::set_root(root);
     }
     let trace_engine = args.iter().any(|arg| arg == "--host-trace-engine");
     let smoke = args.iter().any(|arg| arg == "--smoke");
@@ -1221,6 +1256,54 @@ mod tests {
                 assert!(Engine::take_test_event().is_none());
             });
         });
+    }
+
+    #[gpui::test]
+    fn unresolvable_image_sources_render_a_placeholder_box_of_the_styled_size(
+        cx: &mut TestAppContext,
+    ) {
+        let cx = cx.add_empty_window();
+        let runtime = cx.new(|cx| {
+            let mut runtime = runtime();
+            let sources = [
+                "avatars/absent.png",
+                "../../../etc/passwd",
+                "/etc/passwd",
+                "https://example.com/x.png",
+            ];
+            let mut nodes: Vec<_> = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    let id = index as u64 + 1;
+                    let mut image = node(id, "img", &[]);
+                    image.test_id = format!("image-{id}");
+                    image.image_source = (*source).into();
+                    image.style = Some(bridge::Style {
+                        width_kind: 2,
+                        width: 32,
+                        height_kind: 2,
+                        height: 32,
+                        radius: 16,
+                        ..Default::default()
+                    });
+                    image
+                })
+                .collect();
+            nodes.push(node(0, "root", &[1, 2, 3, 4]));
+            runtime.apply(nodes, cx);
+            runtime
+        });
+        cx.draw(point(px(0.), px(0.)), size(px(400.), px(240.)), |_, _| {
+            runtime.clone()
+        });
+        for selector in ["image-1", "image-2", "image-3", "image-4"] {
+            let bounds = cx
+                .debug_bounds(selector)
+                .expect("image node must render its placeholder box");
+            assert_eq!(bounds.size, size(px(32.), px(32.)));
+        }
+        assert!(Engine::take_test_event().is_none());
     }
 
     #[gpui::test]

@@ -4953,6 +4953,7 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "libc",
+ "sha2 0.10.9",
  "unicode-segmentation",
  "windows-sys 0.61.2",
 ]

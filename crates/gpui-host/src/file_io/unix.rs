@@ -167,6 +167,36 @@ fn regular_file(path: &str, cancel: &AtomicBool) -> Result<(File, libc::stat), F
     Ok((file, stat))
 }
 
+/// Reads one regular file's complete bytes up to the caller's bound, checking
+/// cancellation between chunks. Symbolic links (including parent components)
+/// and special files are refused exactly like read_text.
+pub fn read_bytes(path: &str, cancel: &AtomicBool, max: usize) -> Result<Vec<u8>, FileError> {
+    let (mut file, stat) = regular_file(path, cancel)?;
+    if stat.st_size > max as i64 {
+        return Err(FileError::ResourceLimit(path.into()));
+    }
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; CHUNK_BYTES];
+    loop {
+        canceled(cancel)?;
+        let count = file
+            .read(&mut chunk)
+            .map_err(|error| io_error(path, error))?;
+        if count == 0 {
+            break;
+        }
+        if bytes.len() + count > max {
+            return Err(FileError::ResourceLimit(path.into()));
+        }
+        bytes
+            .try_reserve(count)
+            .map_err(|_| FileError::ResourceLimit(path.into()))?;
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+    canceled(cancel)?;
+    Ok(bytes)
+}
+
 /// Reads one regular UTF-8 file, checking cancellation between bounded chunks.
 /// Symbolic links (including parent components) and special files are refused.
 pub fn read_text(path: &str, cancel: &AtomicBool) -> Result<TextFile, FileError> {
