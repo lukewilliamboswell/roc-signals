@@ -1194,7 +1194,8 @@ unchanged. Complete original notices are bundled and the validated source
 companion remains a separate release asset.
 
 Roc's final Windows link explicitly selects `--target=x64mingw` and uses all
-released inputs from the platform header. It does not discover installed MSVC/SDK
+released inputs from the platform header. For a direct Windows build, run
+`roc build --target=x64mingw examples-gui/counter/main.roc --output=Counter.exe`. It does not discover installed MSVC/SDK
 libraries. FXC remains a build-time SDK tool. Use `python` instead of `python3`
 in the commands below on Windows, where `python3` can be a Store shortcut.
 `build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
