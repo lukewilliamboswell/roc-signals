@@ -1,0 +1,120 @@
+name: Windows GNU runtime releases
+
+on:
+  pull_request:
+    paths:
+      - dependencies/windows-gnu-runtime.json
+      - dependencies/windows-gnu-runtime/Dockerfile
+      - dependencies/windows-gnu-runtime/DISCLAIMER.PD
+      - dependencies/windows-gnu-runtime/ucrt-inventory.json
+      - scripts/build_windows_gnu_runtime.py
+      - scripts/windows_runtime_validation.py
+      - scripts/release_windows_gnu_runtime.py
+      - scripts/test_windows_gnu_runtime.py
+      - scripts/test_windows_gnu_runtime_artifact.py
+      - scripts/audit_windows_archive.py
+      - scripts/build_glibc.py
+      - scripts/dependency_archive.py
+      - scripts/dependency_artifacts.py
+      - scripts/release_dependencies.py
+      - scripts/test_dependency_artifacts.py
+      - test/dependencies/windows_gnu_runtime.cpp
+      - test/dependencies/windows_gnu_runtime.rs
+      - test/dependencies/windows_gnu_ubsan.c
+      - test/dependencies/windows_gnu_compiler_rt.c
+      - .github/workflows/windows-gnu-runtime.yml
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: New deps-windows-gnu-runtime-<version> release tag
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-gnu-runtime-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build complete GNU runtime twice in offline containers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Check malformed archives and publication guards
+        run: python3 -m unittest scripts/test_dependency_artifacts.py scripts/test_windows_gnu_runtime.py
+      - name: Build full pinned Zig runtime in an offline container
+        run: python3 scripts/build_windows_gnu_runtime.py --output "$RUNNER_TEMP/candidate" --cache "$RUNNER_TEMP/downloads"
+      - name: Compare a second fresh offline build
+        run: |
+          python3 scripts/build_windows_gnu_runtime.py --output "$RUNNER_TEMP/rebuild" --cache "$RUNNER_TEMP/downloads"
+          cmp "$RUNNER_TEMP/candidate/windows-gnu-runtime-x64mingw.tar" "$RUNNER_TEMP/rebuild/windows-gnu-runtime-x64mingw.tar"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-gnu-runtime-candidate
+          path: ${{ runner.temp }}/candidate/*.tar
+          retention-days: 30
+
+  native:
+    name: Execute startup TLS unwinding and UBSan failure checks
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+          use-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: windows-gnu-runtime-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Install the pinned Rust panic probe compiler
+        run: rustup toolchain install 1.95.0 --profile minimal --target x86_64-pc-windows-gnullvm
+      - name: Execute the exact runtime candidate with OS-only DLL search
+        run: python scripts/test_windows_gnu_runtime_artifact.py '${{ runner.temp }}/candidate/windows-gnu-runtime-x64mingw.tar' --require-native --evidence '${{ runner.temp }}/runtime-evidence'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-gnu-runtime-provider-evidence
+          path: ${{ runner.temp }}/runtime-evidence
+
+  publish:
+    name: Attest and publish the tested bytes
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: [build, native]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: windows-gnu-runtime-candidate
+          path: ${{ runner.temp }}/candidate
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: ${{ runner.temp }}/candidate/*.tar
+      - name: Publish without replacing an existing tag or rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python3 scripts/release_windows_gnu_runtime.py --directory "$RUNNER_TEMP/candidate" --tag "$RELEASE_TAG"
