@@ -60,6 +60,18 @@
       "source_sha": "d06261d13a8bf2f1155db481354510790e99054e",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/xkbcommon-dependencies.yml"
+    },
+    "glibc-x64glibc": {
+      "name": "glibc",
+      "target": "x64glibc",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-glibc-0.16.0-20260909.1",
+      "asset": "glibc-x64glibc.tar",
+      "sha256": "b6ce02955bb6d83dbb98613a46b988d060da8fc203b7368465a91b6a8d2cdb42",
+      "size": 13864960,
+      "source_sha": "3c70361971b90a13b5a56a0a919a27e58f358d8e",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/glibc-dependencies.yml"
     }
   }
 }

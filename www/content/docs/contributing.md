@@ -296,8 +296,8 @@ Review and merge the lock entry separately when adopting the dependency. The
 Linux GUI builder verifies that release before compilation; the bundler verifies
 it again in fresh staging and excludes the development copy of `libfreetype.so`.
 Combined GUI bundles retain the lock entries and notices for FreeType,
-xkbcommon, and Windows imports. Linux CRT consumer adoption and an independent GCC runtime replacement remain
-outstanding.
+xkbcommon, and Windows imports. Linux CRT inputs also come from their verified release; the GCC unwinder still
+needs an independent replacement.
 The artifact preserves FreeType's system SONAME; applications still use the operating
 system's runtime font libraries. The C compiler is Zig 0.16.0, targeting baseline
 x86-64 and glibc 2.39; the separate Roc compiler pin is preserved.
@@ -324,7 +324,9 @@ Both builds run the native probe against their extracted candidate. Dispatch
 and publish the tested bytes. The archive contains corresponding source and a
 standalone reproduction tree under `sources/glibc/`; run the same build command
 from that directory to reproduce the producer. Review the resulting consumer
-lock and platform link-input changes separately before adoption.
+lock and platform link-input changes separately before adoption. Normal GUI
+builds reuse this pinned release, and bundles retain its complete source and
+notice payload alongside the link inputs.
 
 The `xkbcommon dependency releases` workflow independently builds both keyboard
 libraries from the source and tool versions pinned in `dependencies/xkbcommon.json`.
