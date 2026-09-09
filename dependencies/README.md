@@ -24,6 +24,39 @@ against only the candidate ADVAPI32 import library and Zig's KERNEL32 imports,
 then calls an imported function before publication. The Windows dependency
 workflow has a separate release tag and signing identity from musl.
 
+`windows-gnu-runtime.json` independently builds the x86-64 GNU runtime from
+checksum-pinned Zig sources. Its six implementation inputs supply MinGW startup,
+Zig libc support, compiler runtime, LLVM unwinding and UBSan. Fifteen complete
+UCRT import archives contain DLL mappings and validated zero-payload weak aliases;
+Windows supplies those DLL implementations. The package contains no Microsoft SDK
+libraries and no Signals host or engine code. It is separate from the complete
+Windows system-import package and does not change the production host ABI.
+
+The source companion preserves the full selected MinGW, libunwind, compiler_rt,
+std and lib/c trees, their root Zig entry points, and exactly the two header
+directories selected by the pinned compiler. Original Zig, LLVM exception,
+MinGW, musl and per-file notices remain intact. MinGW's referenced DISCLAIMER.PD
+is supplied from an independently pinned upstream original; that notice revision
+does not assert a revision for Zig's entire MinGW tree.
+
+The producer selects runtime inputs from the compiler's actual final-link
+invocation, checks every UCRT import and alias against the complete inventory,
+and requires identical archives from two fresh offline builds. Zig's `-s` option suppresses debug metadata when compiling the CRT inputs;
+`-g0` does not set this compiler-wide option. All CRT objects remain exactly as
+produced by the compiler, including address-significance metadata. The explicit
+UBSan build uses `-fstrip` while retaining ReleaseSafe checks, and Zig ar gives
+its complete implementation object a stable archive member name. Its native Windows
+probe links through both Zig and the pinned Roc compiler and tests startup and teardown, thread-local destruction, C++ and Rust panic
+unwinding, compiler-runtime division, and an intentional UBSan failure with an
+OS-only DLL search path. A separate arithmetic executable prevents Rust's embedded
+compiler builtins from satisfying the compiler-runtime test. Diagnostic maps replay
+the exact Zig-selected link with Rust 1.95's bundled LLD and check archive providers;
+the native tests execute the original Zig-linked executables. Negative links
+using the original Zig command must fail when the candidate unwinder, UBSan or
+compiler runtime is omitted, proving those inputs are required. Publication requires
+both native success and main-workflow provenance verification. Adopting the runtime
+in a platform bundle requires a separate verified release lock and consumer change.
+
 `freetype.json` pins the upstream FreeType source archive and explicitly requires
 zlib, bzip2, PNG, HarfBuzz, and Brotli support. Its Linux producer uses the Ubuntu
 container digest and authenticated package snapshot in `linux/Dockerfile` for
