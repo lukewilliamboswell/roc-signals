@@ -26,8 +26,23 @@ padding or borders explicitly when you want them.
 Styles specify logical-pixel dimensions, spacing, padding, colors, borders,
 radius, font size, and overflow. Lengths are `Auto`, `Fill`, or `Px(value)`;
 colors are `Default` or `Rgb(value)`. Zero font size and default colors inherit.
-These are native presentation properties. Semantic labels, test IDs, selected
-state, and enabled state are separate attributes.
+`Fill` means the parent's content box: a Fill child stays inside the parent's
+padding and shares the remaining space with its siblings, and its own content
+never grows the allocation - give a Fill region `Scroll` or `Clip` overflow
+when its content can exceed it. These are native presentation properties.
+Semantic labels, test IDs, selected state, and enabled state are separate
+attributes.
+
+`hover_background` and `active_background` color an enabled button while the
+pointer rests on or presses it. Default state colors keep the host's standard
+feedback on default-background buttons and leave explicitly colored buttons
+unchanged, so declare them alongside an explicit `background` - typically as
+theme knobs next to the accent color. Text inputs and textareas render their
+inner field from the same style record: explicit `background`, `foreground`,
+`border_color`, `radius`, and `font_size` replace the host's dark field
+defaults, the placeholder derives from the foreground at reduced alpha, and
+an explicit foreground also tints the cursor and selection, so a
+light-background editor is fully legible.
 The initial window is 1200 × 820 logical pixels and can be moved, resized,
 minimized, and maximized. The host requests client decorations on Wayland and
 supplies a draggable title bar and resize borders when the compositor delegates
@@ -46,6 +61,7 @@ do not dispatch application events.
 | `heading`, `text` | literal string |
 | `text_s` | string signal |
 | `button` | label and unit message |
+| `button_attrs` | label, attributes, unit message |
 | `action_button` | `{ label, enabled }` signals, attributes, unit message |
 | `text_input`, `textarea` | `{ label, value }`, attributes, string message |
 | `checkbox` | `{ label, checked }`, attributes, boolean message |

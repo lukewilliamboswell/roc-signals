@@ -85,26 +85,26 @@ Controls with no styling route at all:
 
 | Control | Gap |
 | --- | --- |
-| `Gui.button` ([platform-gui/Gui.roc](../platform-gui/Gui.roc) line 347) | Takes label and message only; no attribute list, so no theme-derived style. `action_button` is the only styleable button. |
-| `Gui.heading`, `Gui.text`, `Gui.text_s` (lines 335–344) | No attributes. Foreground and font size inherit from a styled wrapper, so a wrapping `Gui.column` is a workaround, not a gap of the same severity. |
+| `Gui.button` | **Resolved:** `Gui.button_attrs` takes the full native attribute list with `action_button`'s default record; `Gui.button` stays as the zero-attribute shorthand. |
+| `Gui.heading`, `Gui.text`, `Gui.text_s` | No attributes. Foreground and font size inherit from a styled wrapper, so a wrapping `Gui.column` is a workaround, not a gap of the same severity. |
 
 Host chrome that ignores application styles entirely:
 
 | Chrome | Location | Constant |
 | --- | --- | --- |
 | Button default background, padding, radius | crates/gpui-host/src/lib.rs:140 | `rgb(0x315469)`, `px_3 py_1 rounded_md` |
-| Button hover / active backgrounds | crates/gpui-host/src/lib.rs:148–149 | `rgb(0x3d6480)` / `rgb(0x2a4a5e)` |
+| Button hover / active backgrounds | **Resolved:** style-v2 `hover_background`/`active_background` | host constants remain the default-background fallback |
 | Checkbox glyphs | crates/gpui-host/src/lib.rs:171 | `"☑"` / `"☐"` literals |
 | Selected ring | crates/gpui-host/src/lib.rs:197 | `border_2`, `rgb(0x70c5e8)` |
 | Disabled treatment | crates/gpui-host/src/lib.rs:200 | `opacity(0.45)` |
 | Textarea caption color | crates/gpui-host/src/lib.rs:218 | `rgb(0x9db4c0)` |
-| Editor field background / text / border | crates/gpui-host/src/lib.rs:224–227 | `rgb(0x101d24)` / `rgb(0xe6ebee)` / `rgb(0x33505e)` |
+| Editor field background / text / border | **Resolved:** flows from the element style record | host constants remain the sentinel defaults |
 | Root window background / text | crates/gpui-host/src/lib.rs:663–664 | `rgb(0x16252c)` / `rgb(0xeeeeea)` |
 | Dialog scrim | crates/gpui-host/src/lib.rs:702 | `rgba(0x00000088)` |
-| Editor placeholder text | crates/gpui-host/src/input.rs:930 | `hsla(0., 0., 1., 0.35)` |
-| Editor cursor | crates/gpui-host/src/input.rs:1154 | `rgb(0x70c5e8)` |
-| Editor selection highlight | crates/gpui-host/src/input.rs:1172 | `rgba(0x70c5e845)` |
-| Editor text color, line height, size | crates/gpui-host/src/input.rs:1276–1278 | `px(30.)`, `px(16.)`, `rgb(0xe6ebee)` |
+| Editor placeholder text | **Resolved:** derives from the effective foreground at reduced alpha | - |
+| Editor cursor | **Resolved:** explicit style foreground tints it | `rgb(0x70c5e8)` remains the default |
+| Editor selection highlight | **Resolved:** cursor color at low alpha | `rgba(0x70c5e845)` remains the default |
+| Editor text color, line height, size | **Resolved:** style foreground/font_size; line height proportional | old constants remain the sentinel defaults |
 | Titlebar background / text | crates/gpui-host/src/window_frame.rs:32–33 | `rgb(0x243842)` / `rgb(0xeeeeea)` |
 | Window frame border | crates/gpui-host/src/window_frame.rs:74 | `rgb(0x526874)` |
 | Frame button hover | crates/gpui-host/src/window_frame.rs:178 | `rgb(0x45616f)` |
@@ -112,16 +112,23 @@ Host chrome that ignores application styles entirely:
 | Drag ghost background / text | crates/gpui-host/src/drag.rs:28–29 | `rgb(0x315b85)` / `rgb(0xffffff)` |
 | Drop-target highlight | crates/gpui-host/src/drag.rs:73 | `rgb(0x294962)` |
 
-Two of these interact badly with the working pattern:
+Two of these interacted badly with the working pattern; both are resolved:
 
-- A button with an explicit background loses hover and active feedback
-  outright: crates/gpui-host/src/lib.rs:143–149 applies the hover/active
-  constants only when the style leaves the background at its default sentinel.
-  A themed light button is therefore inert-looking, and the app has no field
-  to supply replacements.
-- The editor draws an inner field (crates/gpui-host/src/lib.rs:222–231) with
-  its own background, text, and border constants; the app's style lands on the
-  outer element, so a light theme surrounds a permanently dark editor.
+- **Resolved:** style version 2 adds `hover_background` and
+  `active_background`. An explicit state color always wins on enabled
+  buttons; the sentinels preserve the old behavior (host feedback for
+  default-background buttons, none for explicitly colored ones), so themed
+  buttons declare their own state colors - see the accent buttons across
+  [examples-gui](../examples-gui).
+- **Resolved:** the editor's inner field, placeholder, cursor, and selection
+  now resolve from the element's style record (background, foreground,
+  border color, radius, font size), with the old constants as sentinels; a
+  light-background editor derives a dark placeholder from its foreground.
+
+A third gap from the same review - `height: Fill` overshooting padded
+parents and panels kissing the exact window bottom - is **resolved** in
+`apply_style`: Fill now means the parent's content box (main-axis flex
+distribution of free space instead of a border-box percentage).
 
 The root background is reachable in practice — a `Fill`/`Fill` styled root
 column covers it — but window frame, scrollbars, dialog scrim, and drag ghost
@@ -137,11 +144,11 @@ table above.
 
 ### 1. Attributes for the remaining controls
 
-Give `Gui.button` an attribute list (`button : Str, List(Attr), Msg`), matching
-every other control. This is a small source-breaking change with a mechanical
-migration across [examples-gui](../examples-gui). Leave `heading`, `text`, and
-`text_s` alone initially; wrapping in a styled container already themes them
-through inheritance, and adding attributes there can follow demand.
+**Shipped** as the non-breaking `Gui.button_attrs : Str, List(Attr), Msg`;
+`Gui.button` keeps its two-argument shape so no call site moved. Leave
+`heading`, `text`, and `text_s` alone initially; wrapping in a styled
+container already themes them through inheritance, and adding attributes
+there can follow demand.
 
 ### 2. Style record version 2
 
@@ -152,9 +159,10 @@ fields is the anticipated evolution, not a format break. Propose a version 2
 with a small set of state and role colors, each defaulting to the inherit
 sentinel so `..Gui.style_default` continues to mean "host behavior":
 
-- `hover_background`, `active_background` — used by buttons and drop-target
-  highlight; an explicit value always wins, and an explicit `background` with
-  `Default` hover no longer silently disables feedback (resolution rule below).
+- `hover_background`, `active_background` — **shipped** in style v2 (protocol
+  10) for buttons; an explicit value always wins, sentinels preserve the old
+  behavior exactly, and checkboxes deliberately ignore the state slots. The
+  drop-target highlight still uses its constant.
 - `accent` — cursor, selection highlight (host derives the alpha), selected
   ring, and scrollbar thumb within that element's scroll region.
 - `muted` — placeholder text, textarea caption, scrollbar track.
@@ -167,10 +175,11 @@ background is also default — from the current host constants. Whether a
 default hover over an explicit background should derive a shade or do nothing
 is an open question below.
 
-Editor chrome stops being special: the inner field uses the element's
-`background`, `foreground`, and `border_color` when supplied, and the version-2
-fields for cursor, selection, placeholder, and caption. This closes the entire
-editor row-group of the table without any editor-specific API.
+Editor chrome stops being special — **shipped**: the inner field uses the
+element's `background`, `foreground`, `border_color`, `radius`, and
+`font_size` when supplied; the foreground drives placeholder, cursor, and
+selection tint, so no dedicated `accent`/`muted` fields were needed for the
+editor rows. The textarea caption color remains a host constant for now.
 
 ### 3. Window-level chrome
 

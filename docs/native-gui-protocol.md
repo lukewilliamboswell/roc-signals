@@ -124,9 +124,25 @@ this validated record along with primitive fields and borrowed UTF-8 data before
 any next engine operation. Rust applies the supplied layout and presentation
 properties with GPUI. Selected state adds the standard selection border, and
 disabled state applies reduced opacity and refuses input dispatch.
-The semantic root fills the host viewport, and apps own outer padding. Explicit
-textarea heights constrain the complete field; the retained editor fills the
-space after caption and padding. Auto presentation retains a 320-pixel editor.
+The semantic root fills the host viewport, and apps own outer padding.
+
+Fill means the parent's content box. On the parent's main axis the host maps
+Fill to flex distribution of the free space (zero preferred size, grow, zero
+minimum), so a Fill element stays inside the parent's padding, shares the
+remaining space with its siblings, and never grows with its own content; a
+Fill region that can overflow declares its own `Clip` or `Scroll`. On the
+cross axis Fill is a percentage of the parent's content box. The committed
+parent's direction decides which axis is which.
+
+Text inputs and textareas resolve their inner field from the same record:
+explicit `background`, `foreground`, and `border_color` replace the host's
+dark field defaults, a nonzero `radius` replaces the standard rounding, and a
+nonzero `font_size` sizes the editor text with a proportional line height.
+The placeholder derives from the effective foreground at reduced alpha, and
+an explicit foreground also tints the cursor and the selection highlight.
+Explicit textarea heights constrain the complete field; the retained editor
+fills the space after caption and padding. Auto presentation retains a
+320-pixel editor.
 
 `Gui.placeholder` lowers static empty-field hint text through field 12. The
 hint is app-declared configuration, not host behavior: the host shows exactly
