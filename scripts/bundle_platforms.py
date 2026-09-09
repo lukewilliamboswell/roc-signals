@@ -60,7 +60,7 @@ def stage_dependency_inputs(inputs, identities, stage):
 
 def stage_windows_inputs(source, stage):
     """Combine the selected Windows host outputs with newly verified imports."""
-    names = ("host.lib", "signals.res")
+    names = ("signals_gpui_host.lib", "engine.lib", "signals.res")
     for name in names:
         path = source / name
         if not path.is_file() or path.is_symlink():

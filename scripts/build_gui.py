@@ -74,20 +74,6 @@ def copy_macos_sysroot(sdk, destination):
                                else Path(str(path) + '.tbd'))
 
 
-def merge_archives(stage, output, members):
-    """Merge object members, not archives-as-members: Roc consumes one host archive.
-
-    Zig's bundled llvm-ar reads the same MRI script everywhere, so Windows needs
-    neither MSVC's lib.exe nor a separate binutils installation.
-    """
-    if platform.system() == 'Darwin':
-        subprocess.run(['libtool', '-static', '-o', output] + members, cwd=stage, check=True)
-        return
-    script = f'CREATE {output}\n' + ''.join(f'ADDLIB {member}\n' for member in members) + 'SAVE\nEND\n'
-    tool = ['zig', 'ar'] if platform.system() == 'Windows' else ['ar']
-    subprocess.run(tool + ['-M'], input=script, text=True, cwd=stage, check=True)
-
-
 def build(debug=False, jobs=2):
     target = host_target()
     if target is None:
@@ -103,22 +89,16 @@ def build(debug=False, jobs=2):
     subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, env=build_environment(), check=True)
     dest = ROOT / 'platform-gui/targets' / target
     dest.mkdir(parents=True, exist_ok=True)
-    # Merge object members, not archives-as-members: Roc consumes one host archive.
     metadata = json.loads(subprocess.check_output(
         ['cargo', 'metadata', '--locked', '--no-deps', '--format-version=1'], cwd=ROOT, text=True,
     ))
     rust_name = 'signals_gpui_host.lib' if target == 'x64win' else 'libsignals_gpui_host.a'
     rust_host = Path(metadata['target_directory']) / ('debug' if debug else 'release') / rust_name
     engine = ROOT / 'zig-out/gui/libengine.a'
-    archive = host_archive(target)
-    with tempfile.TemporaryDirectory(prefix='signals-host-') as tmp:
-        stage = Path(tmp)
-        shutil.copyfile(rust_host, stage / 'rust.a')
-        shutil.copyfile(engine, stage / 'engine.a')
-        merge_archives(stage, archive, ['rust.a', 'engine.a'])
-        shutil.copyfile(stage / archive, dest / archive)
-    for obsolete in ['libgpui_host.a', 'libengine.a']:
-        (dest / obsolete).unlink(missing_ok=True)
+    # Roc's platform header lists both archives for its final application link.
+    shutil.copyfile(rust_host, dest / rust_name)
+    shutil.copyfile(engine, dest / ('engine.lib' if target == 'x64win' else 'libengine.a'))
+    (dest / host_archive(target)).unlink(missing_ok=True)
     if target == 'x64win':
         build_windows_inputs(dest, windows_dependencies)
         return
