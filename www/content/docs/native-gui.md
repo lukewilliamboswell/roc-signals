@@ -15,29 +15,56 @@ controls. The current targets are Apple Silicon macOS, Linux x86_64 with glibc a
 see [contributing](@/docs/contributing.md#native-gui-platform-spike) for the pinned
 compiler, host build, executable build, and test commands.
 
-## Try the Linux release candidate
+## Try a release candidate
 
-Download and extract [signals-gui-starters.zip](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.1/signals-gui-starters.zip)
-from [gui-0.1.0-rc.1](https://github.com/lukewilliamboswell/roc-signals/releases/tag/gui-0.1.0-rc.1).
+Download and extract the starter archive for your operating system:
+
+| Native target | Starter archive | Release |
+| --- | --- | --- |
+| Linux x86_64 (glibc/Wayland) | [signals-gui-starters.zip](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.1/signals-gui-starters.zip) | [gui-0.1.0-rc.1](https://github.com/lukewilliamboswell/roc-signals/releases/tag/gui-0.1.0-rc.1) |
+| Apple Silicon macOS | [signals-gui-starters.zip](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.2/signals-gui-starters.zip) | [gui-0.1.0-rc.2](https://github.com/lukewilliamboswell/roc-signals/releases/tag/gui-0.1.0-rc.2) |
+| Windows x86_64 | [signals-gui-starters.zip](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.3/signals-gui-starters.zip) | [gui-0.1.0-rc.3](https://github.com/lukewilliamboswell/roc-signals/releases/tag/gui-0.1.0-rc.3) |
+
 Install Roc `nightly-2026-09-04-c125b82`, the compiler named in each app's header.
-From the extracted directory, build and run Counter:
+From the extracted directory, build Counter for your target:
 
 ```sh
+# Linux x86_64
 roc build --target=x64glibc --output=counter examples-gui/counter/main.roc
-./counter
+
+# Apple Silicon macOS
+roc build --target=arm64mac --output=counter examples-gui/counter/main.roc
 ```
 
-The download includes all six example apps and their companion files. Roc fetches
-the pinned platform archive, which contains the compiled host and its link inputs;
-building these apps requires no Rust, Zig, or repository checkout. Preserve the
-bundled notices when redistributing the platform.
+Then run `./counter`. On Windows, use PowerShell:
 
-This RC supports Linux x86_64 with glibc, a Wayland desktop and a working graphics
-driver. The operating system supplies runtime libraries, including FreeType and
-xkbcommon. CI validated Ubuntu 24.04 using software Vulkan, built every downloaded
-app, ran all 39 example specs, and checked rendering for all six apps. macOS and
-Windows are development targets; their downloadable release validation remains
-in progress.
+```powershell
+roc build --target=x64mingw --output=counter.exe examples-gui/counter/main.roc
+.\counter.exe
+```
+
+Each download includes all six example apps and their
+companion files. Roc fetches the pinned platform archive, which contains the
+compiled host and its link inputs; building these apps requires no Rust, Zig,
+or repository checkout. Preserve the bundled notices when redistributing the
+platform.
+
+Linux requires glibc, a Wayland desktop and a working graphics driver. The
+operating system supplies runtime libraries, including FreeType and xkbcommon.
+CI validated Ubuntu 24.04 using software Vulkan, built every downloaded app,
+ran all 39 example specs, and checked rendering for all six apps.
+
+The Mac download targets Apple Silicon, not Intel Macs. macOS supplies its
+system frameworks and runtime libraries. Native CI rebuilt all six apps from
+their unchanged published URLs with a fresh Roc cache, passed all 39 specs, and
+confirmed rendering for every app.
+
+The Windows download targets x86_64 and requires a native Windows desktop with
+working graphics support. It bundles GNU runtime link inputs and complete DLL
+import libraries; Windows supplies the system DLL implementations. Building the
+starters does not require a Windows SDK or a C/C++ compiler. Native CI rebuilt
+all six apps from their unchanged published URLs with a fresh Roc cache, passed
+all 39 specs, and confirmed rendering for every app.
 
 ## Controls and layout
 
