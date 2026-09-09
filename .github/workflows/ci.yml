@@ -222,6 +222,11 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Verify GUI applications with separate archives
         run: python3 scripts/test.py gui --keep-output
+      - name: Build and validate the optimized macOS bundle
+        run: |
+          python3 scripts/build_gui.py
+          python3 scripts/bundle_platforms.py --package gui --no-build --output-dir "$RUNNER_TEMP/macos-bundle"
+          python3 scripts/check_macos_interfaces.py --bundle "$RUNNER_TEMP/macos-bundle"
 
   platform-source:
     name: Platform source

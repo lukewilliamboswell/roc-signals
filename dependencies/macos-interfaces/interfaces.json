@@ -251,6 +251,16 @@
               "evidence_kind": "exact_C_identifier",
               "retrieved_at": "2026-09-09T10:06:03.281469+00:00",
               "response_sha256": "bae48f79f84dc0d965508df7aca31acfee638375a116cedbb4149d6a4875a60d"
+            },
+            {
+              "url": "https://docs.rs/crate/gpui/0.2.2/source/src/platform/mac/platform.rs",
+              "evidence_kind": "public_open_source_framework_declaration",
+              "identifier": "UCKeyTranslate",
+              "source_license": "Apache-2.0",
+              "framework": "Carbon",
+              "line": 1557,
+              "provider_line": 1549,
+              "note": "GPUI 0.2.2 declares UCKeyTranslate within its Carbon framework extern block."
             }
           ]
         },

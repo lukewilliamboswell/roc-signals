@@ -8,6 +8,11 @@ on:
     paths:
       - .github/workflows/gui-hosts.yml
       - scripts/build_gui.py
+      - scripts/build_macos_stubs.py
+      - scripts/check_macos_interfaces.py
+      - scripts/bundle_platforms.py
+      - scripts/test_macos_stubs.py
+      - dependencies/macos-interfaces/**
       - scripts/cargo_build_evidence.py
       - scripts/host_build_identity.py
       - scripts/test_host_build_identity.py

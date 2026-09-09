@@ -1361,3 +1361,23 @@ the host build fingerprint, because packaging verified archives does not alter
 host bytes. Packaging-only changes therefore reuse a compatible host release;
 changes to actual host inputs still invalidate that compatibility check. The
 existing web release workflow and supported web release are independent.
+
+### Validate generated macOS bundles
+
+Local macOS bundles, including `--no-build`, require native Apple Silicon.
+Before creating the bundle, admission links every maintained GUI example with
+the selected host archives and generated interfaces, then runs its native specs.
+The generated validation record binds these exact inputs; regeneration alone
+is not accepted as compatibility evidence. Mac CI repeats this with the Rust
+1.95.0 optimized host and consumes the resulting archive over HTTP with an empty
+Roc cache:
+
+```sh
+python3 scripts/build_gui.py
+python3 scripts/bundle_platforms.py --package gui --no-build --output-dir /tmp/macos-bundle
+python3 scripts/check_macos_interfaces.py --bundle /tmp/macos-bundle
+```
+
+These are candidate checks. Mac host source/notice eligibility and signed
+publication remain separate requirements. Cross-platform bundling of future
+Mac prebuilts will require a verified compatibility receipt.

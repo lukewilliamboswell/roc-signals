@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,27 @@ import host_build_identity as identity
 
 
 class HostBuildIdentityTests(unittest.TestCase):
+    def test_macos_catalog_changes_invalidate_clean_source_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def git(*args):
+                return subprocess.run(['git', *args], cwd=root, check=True, capture_output=True)
+            git('init')
+            git('config', 'user.email', 'fixture@example.invalid')
+            git('config', 'user.name', 'Fixture')
+            catalog = root / 'dependencies/macos-interfaces/interfaces.json'
+            catalog.parent.mkdir(parents=True)
+            catalog.write_text('original')
+            git('add', '.')
+            git('-c', 'commit.gpgsign=false', 'commit', '-m', 'Original catalog')
+            before = identity.source_fingerprint(root)
+            catalog.write_text('changed')
+            with self.assertRaisesRegex(ValueError, 'clean committed'):
+                identity.source_fingerprint(root)
+            git('add', '.')
+            git('-c', 'commit.gpgsign=false', 'commit', '-m', 'Changed catalog')
+            self.assertNotEqual(before, identity.source_fingerprint(root))
+
     def test_every_native_output_is_bound_before_packaging(self):
         for target in ("x64glibc", "x64win"):
             with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:

@@ -97,3 +97,21 @@ Regenerate and review the ledger when adopting different host archive bytes.
 For a released platform, also inventory the matching engine and validate final
 links with the supported Roc compiler. Archive hashes, rather than a platform
 version label alone, identify the inputs actually inspected.
+
+## Bundle admission
+
+Mac interfaces are host-owned generated outputs. Local and `--no-build` macOS
+bundling requires native Apple Silicon: the bundler links all maintained examples
+with the pinned Roc compiler and executes their semantic specs before creating
+an archive. A changed host is revalidated even when the catalog is unchanged.
+The bundled `validation.json` identifies the compiler and successful example
+counts and binds the interface manifest, including host, catalog, generator,
+and output hashes. Cross-platform aggregation of a future signed Mac host will
+need a separately verified matching validation receipt; it is not currently
+accepted by this native admission path.
+
+Mac CI builds the optimized host with Rust 1.95.0, performs this admission, then
+serves the resulting archive over HTTP and builds all six examples with a fresh
+Roc package cache. The HTTP check executes their native semantic specs too.
+This evidence covers generated interfaces; it does not remove the separate Mac
+host notice eligibility and publication gates.
