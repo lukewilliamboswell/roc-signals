@@ -987,6 +987,13 @@ The GUI builder selects `TOOLCHAINS=Metal` on macOS unless explicitly overridden
 use the same setting for direct `cargo test` commands if Xcode's default lookup
 still reports the installed Metal component as missing.
 
+The GUI platform header lists the Rust host and Zig engine as separate link
+inputs: `libsignals_gpui_host.a` and `libengine.a` on Linux and macOS, or
+`signals_gpui_host.lib` and `engine.lib` on Windows. Roc links these with the
+application object and the other declared inputs to produce the executable.
+The builder does not merge them into a combined host archive. Rebuild older
+prebuilt target directories before using them with this header.
+
 ```sh
 python3 scripts/build_gui.py --debug
 roc build examples-gui/counter/main.roc --output=.test-out/Counter

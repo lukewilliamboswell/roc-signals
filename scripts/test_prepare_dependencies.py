@@ -123,7 +123,7 @@ class DependencyStagingTests(unittest.TestCase):
     def test_windows_bundle_ignores_checkout_imports_and_extra_libraries(self):
         source = self.source / "targets/x64win"
         source.mkdir()
-        for name in ("host.lib", "signals.res", "advapi32.lib", "injected.lib"):
+        for name in ("signals_gpui_host.lib", "engine.lib", "host.lib", "signals.res", "advapi32.lib", "injected.lib"):
             (source / name).write_bytes(name.encode())
         artifact = self.inputs / prepare_dependencies.WINDOWS_IMPORTS
         (artifact / "targets/x64win").mkdir(parents=True)
@@ -133,14 +133,16 @@ class DependencyStagingTests(unittest.TestCase):
         with patch.object(bundle_platforms, "verified_windows_imports", self.verified):
             bundle_platforms.stage_windows_inputs(source, stage)
         self.assertEqual((stage / "targets/x64win/advapi32.lib").read_bytes(), b"verified import")
-        self.assertEqual((stage / "targets/x64win/host.lib").read_bytes(), b"host.lib")
+        for name in ("signals_gpui_host.lib", "engine.lib"):
+            self.assertEqual((stage / "targets/x64win" / name).read_bytes(), name.encode())
+        self.assertFalse((stage / "targets/x64win/host.lib").exists())
         self.assertFalse((stage / "targets/x64win/injected.lib").exists())
         self.assertEqual((stage / "dependency-manifests/windows-imports-x64win.json").read_text(), "verified manifest")
 
     def test_windows_bundle_has_no_unsigned_fallback(self):
         source = self.source / "targets/x64win"
         source.mkdir()
-        for name in ("host.lib", "signals.res", "advapi32.lib"):
+        for name in ("signals_gpui_host.lib", "engine.lib", "signals.res", "advapi32.lib"):
             (source / name).write_bytes(b"local")
         stage = self.root / "refused-windows-bundle"
         with patch.object(bundle_platforms, "verified_windows_imports", side_effect=ValueError("untrusted signer")):
