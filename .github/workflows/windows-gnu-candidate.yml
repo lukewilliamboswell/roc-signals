@@ -1,0 +1,59 @@
+name: Windows GNU host candidate
+on:
+  pull_request:
+    paths:
+      - .github/workflows/windows-gnu-candidate.yml
+      - scripts/windows_fxc_inventory.ps1
+      - scripts/windows_gnu_candidate.py
+      - scripts/test_windows_gnu_candidate.py
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [inventory, build]
+        default: inventory
+      fxc_sha256:
+        type: string
+        default: ''
+      compiler_dll_sha256:
+        type: string
+        default: ''
+permissions:
+  contents: read
+jobs:
+  candidate:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install native build toolchain
+        if: inputs.mode == 'build'
+        run: rustup toolchain install 1.95.0 --profile minimal --target x86_64-pc-windows-gnullvm
+      - name: Capture tool inventory or build raw candidate archives
+        env:
+          CANDIDATE_MODE: ${{ inputs.mode || 'inventory' }}
+          FXC_SHA256: ${{ inputs.fxc_sha256 }}
+          COMPILER_SHA256: ${{ inputs.compiler_dll_sha256 }}
+        run: >-
+          python scripts/windows_gnu_candidate.py $env:CANDIDATE_MODE
+          --output "$env:RUNNER_TEMP/windows-gnu-candidate"
+          "--fxc-sha256=$env:FXC_SHA256"
+          "--compiler-dll-sha256=$env:COMPILER_SHA256"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: windows-gnu-${{ inputs.mode || 'inventory' }}
+          path: |
+            ${{ runner.temp }}/windows-gnu-candidate/*.json
+            ${{ runner.temp }}/windows-gnu-candidate/*.jsonl
+            ${{ runner.temp }}/windows-gnu-candidate/fxc.stdout
+            ${{ runner.temp }}/windows-gnu-candidate/fxc.stderr
+            ${{ runner.temp }}/windows-gnu-candidate/Cargo.lock
+            ${{ runner.temp }}/windows-gnu-candidate/payload/
+            ${{ runner.temp }}/windows-gnu-candidate/shaders/
+          retention-days: 7
