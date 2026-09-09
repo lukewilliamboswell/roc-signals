@@ -100,12 +100,8 @@ jobs:
           python3 scripts/test.py gui --keep-output
       - name: Open GUI examples with software Vulkan
         run: |
-          sudo apt-get install -y xvfb xauth mesa-vulkan-drivers
-          export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          test -f "$VK_DRIVER_FILES"
-          export XDG_RUNTIME_DIR="$RUNNER_TEMP/gui-runtime"
-          mkdir -m 700 "$XDG_RUNTIME_DIR"
-          xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/gui_smoke.py
+          sudo apt-get install -y weston xvfb xauth mesa-vulkan-drivers
+          xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/gui_smoke.py --wayland
 
   gui-windows:
     name: Native GUI build and specs (Windows)
