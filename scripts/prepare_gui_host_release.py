@@ -11,10 +11,10 @@ import tempfile
 import urllib.request
 
 from gui_host_artifacts import ROOT, HOST_FILES, check_candidate, pack_host, source_fingerprint
-from host_notice_payload import compose
+from host_notice_payload import compose, validate_packaged_outputs
 import rust_license_inventory
 import toolchain_license_inventory
-from host_build_identity import validate_outputs
+from cargo_build_evidence import same_checkout_lock
 
 
 def verified_download(url, checksum, destination, size=None):
@@ -94,20 +94,27 @@ def prepare(target, source, evidence_root, output, cache, roc, root=ROOT):
     exclusions = json.loads((policy / "standard-terms.json").read_text())["excluded_targets"]
     if target in exclusions:
         raise ValueError(exclusions[target])
-    if (evidence_root / "Cargo.lock").read_bytes() != (root / "Cargo.lock").read_bytes():
+    if not same_checkout_lock((evidence_root / "Cargo.lock").read_bytes(), (root / "Cargo.lock").read_bytes()):
         raise ValueError("host source evidence uses a different checkout lock")
     fingerprint = source_fingerprint(root)
     evidence = json.loads((evidence_root / "evidence.json").read_text())
     if evidence["source_fingerprint"] != fingerprint:
         raise ValueError("Cargo build evidence has different source inputs")
-    validate_outputs(json.loads((evidence_root / "build.json").read_text()), target, fingerprint, evidence["host"],
-                     {name: (source / name).read_bytes() for name in HOST_FILES[target]})
+    normalization_path = source / "normalization.json"
+    normalization = json.loads(normalization_path.read_text()) if normalization_path.exists() else None
+    validate_packaged_outputs(json.loads((evidence_root / "build.json").read_text()), target, fingerprint, evidence["host"],
+                              {name: (source / name).read_bytes() for name in HOST_FILES[target]}, normalization)
     crates = crate_cache(evidence, cache)
     toolchains = json.loads((policy / "toolchains.json").read_text())
     rust = toolchains["rust"]["targets"][target]
     zig = toolchains["zig"]
     rust_archive = verified_download(rust["source_url"], rust["sha256"], cache / (rust["sha256"] + ".tar.xz"), rust.get("size"))
     zig_archive = verified_download(zig["source_url"], zig["sha256"], cache / (zig["sha256"] + ".tar.xz"), zig["size"])
+    rust_target_archive = None
+    if target == "x64mingw":
+        target_pin = toolchain_license_inventory.selected_toolchains(toolchains, target)["rust-target"]
+        rust_target_archive = verified_download(target_pin["source_url"], target_pin["sha256"],
+                                                cache / (target_pin["sha256"] + ".tar.xz"), target_pin["size"])
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output.parent, prefix=".host-release-") as temporary:
         stage = Path(temporary)
@@ -115,7 +122,7 @@ def prepare(target, source, evidence_root, output, cache, roc, root=ROOT):
         candidate.mkdir()
         rust_license_inventory.collect(evidence_root / "selection.json", evidence_root / "Cargo.lock", crates,
                                        stage / "crate-notices", policy / "manifest.json", True, policy / "review.json", True)
-        toolchain_license_inventory.collect(policy / "toolchains.json", target, rust_archive, zig_archive, stage / "toolchain-notices")
+        toolchain_license_inventory.collect(policy / "toolchains.json", target, rust_archive, zig_archive, stage / "toolchain-notices", rust_target_archive)
         source_archive = candidate / f"gui-host-sources-{target}.tar"
         normalization = source / "normalization.json"
         notices = compose(target, evidence_root, stage / "crate-notices", stage / "toolchain-notices", policy,

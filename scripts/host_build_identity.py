@@ -10,6 +10,7 @@ HOST_FILES = {
     "x64glibc": ("libsignals_gpui_host.a", "libengine.a"),
     "arm64mac": ("libsignals_gpui_host.a", "libengine.a"),
     "x64win": ("signals_gpui_host.lib", "engine.lib", "signals.res"),
+    "x64mingw": ("libsignals_gpui_host.a", "libengine.a", "signals.res"),
 }
 SOURCE_PATHS = (
     "src", "crates", "platform-gui", "platform-shared", "scripts", ".cargo",

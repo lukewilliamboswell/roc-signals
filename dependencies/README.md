@@ -228,3 +228,24 @@ list, along with recipe/probe isolation and ordinary consumer-change examples:
 ```sh
 python3 -m unittest discover -s scripts -p test_dependency_workflow_filters.py
 ```
+
+## Cross-target GUI host notice evidence
+
+The Windows GNU host uses an MSVC-hosted Rust compiler to compile the
+`x86_64-pc-windows-gnullvm` target. Notice evidence records these two identities
+separately and retains Cargo metadata filtered for each. The selected package
+set follows actual compiler messages within their combined dependency graphs,
+including compiled build tools. The original compiler archive and GNU target
+standard-library component each have independent checksums and original notices.
+
+Captured Cargo.lock bytes remain unchanged in the evidence and source companion.
+Comparison with another checkout permits only CRLF-to-LF conversion; comments,
+ordering and package changes still invalidate the comparison.
+
+A GNU host import-separation receipt retains the original Cargo archive identity
+and the final archive identity, with the structural member ledger. Notice
+admission checks the retained members against the final archive and binds the
+input to the captured build receipt. Engine and Windows resource files must
+remain byte-identical to that receipt. These checks support candidate evidence;
+production adoption still requires verified release provenance and a reviewed
+consumer lock.

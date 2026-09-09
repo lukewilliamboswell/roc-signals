@@ -39,6 +39,31 @@
           "rustc/share/doc/rust/COPYRIGHT-library.html"
         ],
         "size": 71577136
+      },
+      "x64mingw": {
+        "source_url": "https://static.rust-lang.org/dist/2026-04-16/rustc-1.95.0-x86_64-pc-windows-msvc.tar.xz",
+        "sha256": "4cb1f3b578adc6541cbe13a6f85f1fd8c0ce643d90b506a36dee24c680864c67",
+        "prefix": "rustc-1.95.0-x86_64-pc-windows-msvc",
+        "notices": [
+          "COPYRIGHT",
+          "LICENSE-APACHE",
+          "LICENSE-MIT",
+          "rustc/share/doc/rust/COPYRIGHT-library.html"
+        ],
+        "size": 71577136,
+        "compiler_host": "x86_64-pc-windows-msvc",
+        "rust_target": "x86_64-pc-windows-gnullvm",
+        "target_component": {
+          "source_url": "https://static.rust-lang.org/dist/2026-04-16/rust-std-1.95.0-x86_64-pc-windows-gnullvm.tar.xz",
+          "sha256": "3c52a0e34e0b4abe4439cabd77383408f5f9c80b6e249fbc0855df424b45008d",
+          "size": 26894564,
+          "prefix": "rust-std-1.95.0-x86_64-pc-windows-gnullvm",
+          "notices": [
+            "COPYRIGHT",
+            "LICENSE-APACHE",
+            "LICENSE-MIT"
+          ]
+        }
       }
     }
   },
