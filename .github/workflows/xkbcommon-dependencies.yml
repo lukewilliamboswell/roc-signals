@@ -4,11 +4,14 @@ on:
   pull_request:
     paths:
       - dependencies/xkbcommon.json
-      - dependencies/xkbcommon/**
+      - dependencies/xkbcommon/Dockerfile
+      - dependencies/xkbcommon/cc.sh
+      - dependencies/xkbcommon/zig.ini
       - scripts/build_xkbcommon.py
       - scripts/test_xkbcommon_dependencies.py
       - scripts/dependency_archive.py
       - scripts/dependency_artifacts.py
+      - scripts/test_dependency_artifacts.py
       - scripts/release_dependencies.py
       - test/dependencies/xkbcommon.c
       - .github/workflows/xkbcommon-dependencies.yml

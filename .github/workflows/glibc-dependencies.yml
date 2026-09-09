@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - dependencies/glibc.json
-      - dependencies/glibc/**
+      - dependencies/glibc/Dockerfile
+      - dependencies/glibc/COPYING.LIB
       - scripts/build_glibc.py
       - scripts/test_glibc_dependencies.py
       - scripts/dependency_archive.py
       - scripts/dependency_artifacts.py
+      - scripts/test_dependency_artifacts.py
       - scripts/release_dependencies.py
       - test/dependencies/glibc.c
       - .github/workflows/glibc-dependencies.yml

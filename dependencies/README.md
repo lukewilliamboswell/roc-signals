@@ -146,3 +146,30 @@ An attestation identifies who produced particular bytes and from which workflow
 and source revision. The pinned upstream inputs, recipe review, candidate tests,
 and immutable release are separate controls; an attestation alone does not prove
 that an ambient system library was built from reviewed source.
+
+## Producer CI selection
+
+Ordinary platform, host, engine, example, consumer-lock and documentation changes
+reuse released dependencies; they do not select a dependency producer workflow.
+Each producer's pull-request filter names its recipe, probe, producer and tests,
+local imported helpers, and workflow. FreeType additionally names its CMake
+configuration; xkbcommon names its Meson configuration and compiler adapter;
+glibc names its retained license source.
+
+The container producers build with their own recipe directory as Docker context.
+Their Dockerfiles currently fetch pinned remote inputs and do not copy local
+context files. Exact Dockerfile filters therefore cover the image build inputs;
+the separately mounted toolchain/probe files are listed individually. When adding
+a local `COPY` or `ADD`, include the newly consumed context files in that
+producer's filter as part of the change.
+
+Changes to shared archive, admission, publication or admission-test code
+intentionally select all producers. Even musl's admission tests import the shared
+archive writer. This validates the affected release path; publication remains a
+separate manual dispatch on main. The lightweight CI selection job checks each
+workflow's executed Python scripts and transitive local imports against its path
+list, along with recipe/probe isolation and ordinary consumer-change examples:
+
+```sh
+python3 -m unittest discover -s scripts -p test_dependency_workflow_filters.py
+```
