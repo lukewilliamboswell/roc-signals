@@ -68,6 +68,31 @@ for consumers pinned to them; a security replacement receives a new identity.
 For commands and release operation, see the
 [contributor guide](../www/content/docs/contributing.md#dependency-artifact-releases).
 
+## glibc startup and link-input producer
+
+`glibc.json` pins the complete Zig distribution used to generate the Linux GUI
+startup object, libc/libm link stubs, and `libc_nonshared.a`. These are produced
+in a container with fixed build paths and private compiler caches. The container
+has no network access during compilation and receives no platform target tree
+or system development libraries. Its pinned Ubuntu image and authenticated
+package snapshot supply Python and the operating system used by the native
+probe; Zig supplies the compiler, source, and headers.
+
+The candidate probe links explicitly against the extracted inputs and checks C
+constructors and destructors, `atexit`, allocation, mathematics, and threads.
+Publication requires a second clean build to produce an identical archive.
+The archive includes glibc notices and LGPL terms, the bundled glibc source and
+C headers, and the scripts and recipe needed to reproduce it. Glibc source
+licenses and startup-file linking exceptions apply; these files are not covered
+solely by Zig's MIT license. Files under `sources/glibc/` are preserved as
+ordinary, hash-verified payloads, not automatically unpacked or executed by the
+consumer.
+
+The stubs retain system SONAMEs: the operating system supplies the actual glibc
+implementation at runtime. This producer does not include the GCC unwinder or
+adopt a consumer lock. Production consumption requires a separately reviewed
+release lock and platform-header update.
+
 ## Coverage and remaining boundaries
 
 The artifact contract above applies to dependencies selected in the root

@@ -14,9 +14,26 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dependency_artifacts as deps
 import release_dependencies
+from dependency_archive import write_archive
 
 
 class DependencyTests(unittest.TestCase):
+    def test_corresponding_sources_must_belong_to_the_dependency(self):
+        for index, name in enumerate(("sources/musl/source.tar.xz", "sources/glibc/source.tar.xz",
+                                      "sources/musl-other/source.tar.xz")):
+            with self.subTest(name=name):
+                archive = write_archive(self.root / f"source-{index}.tar", {
+                    "schema_version": 1, "name": "musl", "target": "x64musl",
+                }, {name: b"opaque source archive bytes"})
+                destination = self.root / f"source-{index}"
+                if index == 0:
+                    deps.unpack_verified(archive, self.entry, destination)
+                    self.assertEqual((destination / name).read_bytes(), b"opaque source archive bytes")
+                else:
+                    with self.assertRaisesRegex(ValueError, "outside its target, license, or source"):
+                        deps.unpack_verified(archive, self.entry, destination)
+                    self.assertFalse(destination.exists())
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
