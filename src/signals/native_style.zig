@@ -2,7 +2,7 @@
 //! This is a boundary codec, independent of Roc value layouts and browser CSS.
 const std = @import("std");
 
-pub const version: u32 = 1;
+pub const version: u32 = 2;
 pub const default_color: u32 = 0x1000000;
 pub const max_dimension: u32 = 16384;
 
@@ -18,6 +18,8 @@ pub const Style = extern struct {
     height: u32 = 0,
     grow: u32 = 0,
     background: u32 = default_color,
+    hover_background: u32 = default_color,
+    active_background: u32 = default_color,
     foreground: u32 = default_color,
     border_color: u32 = default_color,
     border_width: u32 = 0,
@@ -29,10 +31,12 @@ pub const Style = extern struct {
 
 pub const DecodeError = error{InvalidNativeStyle};
 
-/// Decodes the exact v1 decimal record without allocation. Noncanonical numbers,
+/// Decodes the exact v2 decimal record without allocation. Noncanonical numbers,
 /// unknown enum values, excessive dimensions, and extra fields are rejected.
+/// Platform and host ship together, so retired v1 records are refused outright
+/// rather than widened; the failure is the ordinary invalid-record host error.
 pub fn decode(bytes: []const u8) DecodeError!Style {
-    if (bytes.len > 192) return error.InvalidNativeStyle;
+    if (bytes.len > 224) return error.InvalidNativeStyle;
     var fields = std.mem.splitScalar(u8, bytes, ',');
     if (try number(fields.next()) != version) return error.InvalidNativeStyle;
     var style: Style = undefined;
@@ -41,7 +45,7 @@ pub fn decode(bytes: []const u8) DecodeError!Style {
     if (style.direction > 1 or style.width_kind > 2 or style.height_kind > 2 or style.grow > 1 or style.overflow_x > 2 or style.overflow_y > 2) return error.InvalidNativeStyle;
     inline for (.{ "gap", "padding", "width", "height", "border_width", "radius", "font_size" }) |field| if (@field(style, field) > max_dimension) return error.InvalidNativeStyle;
     if ((style.width_kind != 2 and style.width != 0) or (style.height_kind != 2 and style.height != 0)) return error.InvalidNativeStyle;
-    inline for (.{ "background", "foreground", "border_color" }) |field| if (@field(style, field) > default_color) return error.InvalidNativeStyle;
+    inline for (.{ "background", "hover_background", "active_background", "foreground", "border_color" }) |field| if (@field(style, field) > default_color) return error.InvalidNativeStyle;
     return style;
 }
 
@@ -53,19 +57,31 @@ fn number(field: ?[]const u8) DecodeError!u32 {
 }
 
 test "native style decodes the public default and explicit presentation" {
-    try std.testing.expectEqualDeep(Style{}, try decode("1,1,8,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0"));
-    const style = try decode("1,0,12,16,1,0,2,120,1,1193046,16777215,0,1,8,18,0,2");
+    try std.testing.expectEqualDeep(Style{}, try decode("2,1,8,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0"));
+    const style = try decode("2,0,12,16,1,0,2,120,1,1193046,3834040,2514313,16777215,0,1,8,18,0,2");
     try std.testing.expectEqual(@as(u32, 0), style.direction);
     try std.testing.expectEqual(@as(u32, 120), style.height);
     try std.testing.expectEqual(@as(u32, 0x123456), style.background);
+    try std.testing.expectEqual(@as(u32, 0x3A80B8), style.hover_background);
+    try std.testing.expectEqual(@as(u32, 0x265D89), style.active_background);
     try std.testing.expectEqual(@as(u32, 2), style.overflow_y);
 }
 
 test "native style refuses unknown versions malformed records and invalid values" {
     for ([_][]const u8{
-        "",                                                       "1",                                                          "2,1,8,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0",
-        "1,2,8,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0", "1,1,08,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0",    "1,1,8,0,0,1,0,0,0,16777216,16777216,16777216,0,0,0,0,0",
-        "1,1,8,0,0,0,0,0,0,16777217,16777216,16777216,0,0,0,0,0", "1,1,8,16385,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0", "1,1,8,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0,0",
+        "",
+        "2",
+        // Retired v1 records are rejected: platform and host ship together.
+        "1,1,8,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0",
+        "3,1,8,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0",
+        "2,2,8,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0",
+        "2,1,08,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0",
+        "2,1,8,0,0,1,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0",
+        "2,1,8,0,0,0,0,0,0,16777217,16777216,16777216,16777216,16777216,0,0,0,0,0",
+        "2,1,8,0,0,0,0,0,0,16777216,16777217,16777216,16777216,16777216,0,0,0,0,0",
+        "2,1,8,0,0,0,0,0,0,16777216,16777216,16777217,16777216,16777216,0,0,0,0,0",
+        "2,1,8,16385,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0",
+        "2,1,8,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0,0",
     }) |bytes| try std.testing.expectError(error.InvalidNativeStyle, decode(bytes));
 }
 

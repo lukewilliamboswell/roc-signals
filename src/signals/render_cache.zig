@@ -3796,7 +3796,7 @@ test "browser presentation preparation rejects native fields before staging" {
     try plan.addBoolField(&cache, ids.root_elem, .selected, true);
     try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
     plan.bool_fields.items.len = 0;
-    try plan.addTextField(&cache, ids.root_elem, .native_style, "1,1,8,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0");
+    try plan.addTextField(&cache, ids.root_elem, .native_style, "2,1,8,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0");
     try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
     try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
 }

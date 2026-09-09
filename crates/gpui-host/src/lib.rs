@@ -142,14 +142,12 @@ impl Render for NodeView {
         if self.node.kind == ControlKind::Button {
             element = element.px_3().py_1().rounded_md().bg(rgb(0x335061));
             if !self.node.disabled {
-                let default_background = self
-                    .node
-                    .style
-                    .is_none_or(|style| style.background > 0xffffff);
-                if default_background {
-                    element = element
-                        .hover(|style| style.bg(rgb(0x3f6175)))
-                        .active(|style| style.bg(rgb(0x2b4452)));
+                let (hover, active) = button_state_backgrounds(self.node.style);
+                if let Some(color) = hover {
+                    element = element.hover(move |style| style.bg(rgb(color)));
+                }
+                if let Some(color) = active {
+                    element = element.active(move |style| style.bg(rgb(color)));
                 }
                 let runtime = self.runtime.clone();
                 let node_id = self.node.id;
@@ -340,6 +338,26 @@ fn missing_image(radius: u32) -> Div {
         .border_1()
         .border_color(rgb(0x3a4f5c))
         .rounded(px(radius as f32))
+}
+
+/// Resolves an enabled button's hover and active backgrounds. An explicit
+/// style-v2 state color always wins. With both state fields at their inherit
+/// sentinel, a default-background button keeps the host's standard feedback,
+/// and an explicitly colored button changes nothing on hover or press -
+/// exactly the pre-v2 behavior. Checkboxes deliberately take no state
+/// backgrounds: their feedback is the glyph and cursor, and a row-wide
+/// highlight would misstate their hit area.
+fn button_state_backgrounds(style: Option<bridge::Style>) -> (Option<u32>, Option<u32>) {
+    let default_background = style.is_none_or(|style| style.background > 0xffffff);
+    let resolve = |explicit: Option<u32>, host_default: u32| {
+        explicit
+            .filter(|color| *color <= 0xffffff)
+            .or_else(|| default_background.then_some(host_default))
+    };
+    (
+        resolve(style.map(|style| style.hover_background), 0x3f6175),
+        resolve(style.map(|style| style.active_background), 0x2b4452),
+    )
 }
 
 fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div> {
@@ -1012,6 +1030,68 @@ mod tests {
             child_count: children.len(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn button_state_backgrounds_prefer_explicit_colors_and_preserve_host_defaults() {
+        // The inherit sentinel is 0x1000000; the engine never publishes zeros
+        // for absent colors, so the record spells every field out.
+        let sentinel = 0x1000000;
+        let inherit_all = super::bridge::Style {
+            background: sentinel,
+            hover_background: sentinel,
+            active_background: sentinel,
+            foreground: sentinel,
+            border_color: sentinel,
+            ..Default::default()
+        };
+        // No style, or a style leaving the background default, keeps the
+        // host's standard hover and active feedback.
+        assert_eq!(
+            super::button_state_backgrounds(None),
+            (Some(0x3f6175), Some(0x2b4452))
+        );
+        assert_eq!(
+            super::button_state_backgrounds(Some(inherit_all)),
+            (Some(0x3f6175), Some(0x2b4452))
+        );
+        // An explicit background with default state colors changes nothing on
+        // hover or press - the pre-v2 behavior.
+        let explicit_background = super::bridge::Style {
+            background: 0x2e6fa3,
+            ..inherit_all
+        };
+        assert_eq!(
+            super::button_state_backgrounds(Some(explicit_background)),
+            (None, None)
+        );
+        // Explicit state colors always win, over both the host defaults and
+        // the explicit-background suppression, independently per state.
+        let explicit_states = super::bridge::Style {
+            hover_background: 0x3a80b8,
+            active_background: 0x265d89,
+            ..explicit_background
+        };
+        assert_eq!(
+            super::button_state_backgrounds(Some(explicit_states)),
+            (Some(0x3a80b8), Some(0x265d89))
+        );
+        let hover_only = super::bridge::Style {
+            hover_background: 0x3a80b8,
+            ..explicit_background
+        };
+        assert_eq!(
+            super::button_state_backgrounds(Some(hover_only)),
+            (Some(0x3a80b8), None)
+        );
+        let hover_on_default_background = super::bridge::Style {
+            hover_background: 0x3a80b8,
+            ..inherit_all
+        };
+        assert_eq!(
+            super::button_state_backgrounds(Some(hover_on_default_background)),
+            (Some(0x3a80b8), Some(0x2b4452))
+        );
     }
 
     #[gpui::test]

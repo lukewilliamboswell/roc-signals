@@ -12851,7 +12851,7 @@ test "native presentation and selection publish together after validation" {
         .wire_commands = 2,
     });
     defer splice.deinit();
-    const encoded = "1,0,12,16,1,0,2,120,1,1193046,16777215,0,1,8,18,0,2";
+    const encoded = "2,0,12,16,1,0,2,120,1,1193046,16777216,16777216,16777215,0,1,8,18,0,2";
     try splice.addTextField(&host.engine.render_cache, ids.root_elem, .native_style, encoded);
     try splice.addBoolField(&host.engine.render_cache, ids.root_elem, .selected, true);
     var publication = try NativeRenderPublication.prepare(&host, &splice);

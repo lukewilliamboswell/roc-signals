@@ -7,7 +7,7 @@
 use crate::bridge::{Slice, Style};
 
 /// Version of the statically linked native GUI presentation boundary.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Version of the separate native effects (task transport) boundary.
 pub const EFFECT_VERSION: u32 = 2;

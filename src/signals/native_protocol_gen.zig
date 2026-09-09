@@ -5,7 +5,7 @@
 //! that this committed artifact matches the manifest.
 
 /// Version of the statically linked native GUI presentation boundary.
-pub const protocol_version: u32 = 9;
+pub const protocol_version: u32 = 10;
 
 /// Version of the separate native effects (task transport) boundary.
 pub const effect_version: u32 = 2;

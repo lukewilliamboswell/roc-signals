@@ -11,12 +11,13 @@ document stays hand-written.
 
 <!-- BEGIN GENERATED PROTOCOL TABLES (scripts/generate_protocol.py; edit protocol/native-protocol.json) -->
 
-The statically linked GUI boundary uses protocol version **9**;
+The statically linked GUI boundary uses protocol version **10**;
 the separate native effects boundary is version **2** and the
 separate timer boundary is version **1**.
 
 | Version | Change |
 | --- | --- |
+| 10 | Extends the presentation record to style version 2 with hover and active background slots (18 u32 style record); style version 1 records are no longer accepted. |
 | 9 | Adds the explicit image-source text slot together with the font-family and embedded-font declaration slots to the node layout. |
 | 8 | Adds the placeholder text slot to the node layout. |
 | 7 | Adds explicit event-detail dispatch to `signals_dispatch`. |
@@ -88,16 +89,27 @@ publication and never acquire invented browser opcodes.
 The style field contains a canonical ASCII decimal record separated by commas:
 
 ```
-version,direction,gap,padding,width_kind,width,height_kind,height,grow,background,foreground,border_color,border_width,radius,font_size,overflow_x,overflow_y
+version,direction,gap,padding,width_kind,width,height_kind,height,grow,background,hover_background,active_background,foreground,border_color,border_width,radius,font_size,overflow_x,overflow_y
 ```
 
-Version 1 has exactly these 17 fields. Numbers have no signs, whitespace, or
+Version 2 has exactly these 19 fields. Numbers have no signs, whitespace, or
 leading zeroes. Direction is row=0 or column=1. Length kind is auto=0, fill=1,
 pixels=2; auto/fill must have a zero value. Grow is 0 or 1. Overflow is
 visible=0, clip=1, scroll=2. Colors are 24-bit RGB or 16777216 for inherited/default.
 Lengths, spacing, radius, borders, and font size are logical pixels, bounded at
 16384. Font size zero inherits. Invalid records are programmer-contract errors,
-not a request to substitute defaults. Records are bounded at 192 bytes.
+not a request to substitute defaults. Records are bounded at 224 bytes.
+Retired version-1 records (17 fields, without the state backgrounds) are
+refused like any other invalid record: platform and host are statically linked
+and ship together, so no compatibility window exists.
+
+`hover_background` and `active_background` color enabled buttons while the
+pointer rests on or presses them. An explicit state color always wins; with
+both at the inherit sentinel, a default-background button keeps the host's
+standard hover/active feedback, and an explicitly colored button shows no state
+change. Checkboxes and non-interactive elements ignore the state slots: a
+checkbox's feedback is its glyph and cursor, and a row-wide highlight would
+misstate its hit area.
 
 The public `Gui.Style` contains typed lengths, colors and overflow tags. Only the
 platform encoder creates records. `Gui.row`/`column`/`panel` choose direction;
@@ -107,7 +119,7 @@ The style signal is an ordinary typed, equality-pruned signal; there is no
 native styling observer graph.
 
 Zig validates the style during native publication preparation and exports an
-`extern` struct of 16 `u32` fields in the order after `version` above. Rust copies
+`extern` struct of 18 `u32` fields in the order after `version` above. Rust copies
 this validated record along with primitive fields and borrowed UTF-8 data before
 any next engine operation. Rust applies the supplied layout and presentation
 properties with GPUI. Selected state adds the standard selection border, and

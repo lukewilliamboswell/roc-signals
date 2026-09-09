@@ -16,6 +16,8 @@ Presentation : {
 	height : Length,
 	grow : Bool,
 	background : Color,
+	hover_background : Color,
+	active_background : Color,
 	foreground : Color,
 	border_color : Color,
 	border_width : U32,
@@ -100,7 +102,7 @@ overflow_number = |overflow| match overflow {
 	Scroll => 2
 }
 
-# Native presentation protocol v1: fixed, canonical decimal fields. The host
+# Native presentation protocol v2: fixed, canonical decimal fields. The host
 # validates the complete record before publication; these are not CSS strings.
 encode_style : U32, Presentation -> Str
 encode_style = |direction, style| {
@@ -111,7 +113,7 @@ encode_style = |direction, style| {
 	} else {
 		0.U32
 	}
-	"1,${direction.to_str()},${style.gap.to_str()},${style.padding.to_str()},${width.kind.to_str()},${width.value.to_str()},${height.kind.to_str()},${height.value.to_str()},${grow.to_str()},${color_number(style.background).to_str()},${color_number(style.foreground).to_str()},${color_number(style.border_color).to_str()},${style.border_width.to_str()},${style.radius.to_str()},${style.font_size.to_str()},${overflow_number(style.overflow_x).to_str()},${overflow_number(style.overflow_y).to_str()}"
+	"2,${direction.to_str()},${style.gap.to_str()},${style.padding.to_str()},${width.kind.to_str()},${width.value.to_str()},${height.kind.to_str()},${height.value.to_str()},${grow.to_str()},${color_number(style.background).to_str()},${color_number(style.hover_background).to_str()},${color_number(style.active_background).to_str()},${color_number(style.foreground).to_str()},${color_number(style.border_color).to_str()},${style.border_width.to_str()},${style.radius.to_str()},${style.font_size.to_str()},${overflow_number(style.overflow_x).to_str()},${overflow_number(style.overflow_y).to_str()}"
 }
 
 base64_table : List(U8)
@@ -291,6 +293,8 @@ Gui := [].{
 		height: Auto,
 		grow: False,
 		background: Default,
+		hover_background: Default,
+		active_background: Default,
 		foreground: Default,
 		border_color: Default,
 		border_width: 0,
@@ -475,10 +479,18 @@ Gui := [].{
 	button : Str, Msg -> Elem
 	button = |value, message| Html.button(value, message)
 
+	## Create a static-label button that accepts native attributes: a style,
+	## test id, label, selected and enabled signals, and shortcuts, like every
+	## other control. A supplied style replaces the button's complete default
+	## record, including its hover and active backgrounds.
+	button_attrs : Str, List(Attr), Msg -> Elem
+	button_attrs = |value, attrs, message|
+		Html.button_attrs(value, lower_attrs(1, { ..style_default, padding: 8, radius: 6, background: Rgb(3232873), hover_background: Rgb(0x3F6175), active_background: Rgb(0x2B4452) }, attrs), message)
+
 	## Create a button whose label and availability change independently.
 	action_button : { label : Signal(Str), enabled : Signal(Bool) }, List(Attr), Msg -> Elem
 	action_button = |props, attrs, message|
-		Html.action_button_attrs(props.label, props.enabled.map(|enabled| !enabled), lower_attrs(1, { ..style_default, padding: 8, radius: 6, background: Rgb(3232873) }, attrs), message)
+		Html.action_button_attrs(props.label, props.enabled.map(|enabled| !enabled), lower_attrs(1, { ..style_default, padding: 8, radius: 6, background: Rgb(3232873), hover_background: Rgb(0x3F6175), active_background: Rgb(0x2B4452) }, attrs), message)
 
 	## Edit one controlled line; the label is a semantic name, not placeholder text.
 	text_input : { label : Str, value : Signal(Str) }, List(Attr), Msg -> Elem
@@ -498,8 +510,8 @@ Gui := [].{
 		Html.checkbox_attrs(props.label, props.checked, lower_attrs(0, style_default, attrs), message)
 }
 
-## The native default encoding is a canonical v1 record shared with the Zig decoder.
-expect encode_style(1, Gui.style_default) == "1,1,8,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0"
+## The native default encoding is a canonical v2 record shared with the Zig decoder.
+expect encode_style(1, Gui.style_default) == "2,1,8,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0"
 
 ## Base64 matches the canonical RFC 4648 vectors at every padding length.
 expect encode_base64("foo".to_utf8()) == "Zm9v"

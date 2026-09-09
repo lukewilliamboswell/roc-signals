@@ -97,7 +97,7 @@ pub struct Node {
     pub disabled: bool,
     pub shortcuts: Vec<Shortcut>,
 }
-/// Validated native presentation v1, copied from the committed C boundary.
+/// Validated native presentation v2, copied from the committed C boundary.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Style {
@@ -110,6 +110,8 @@ pub struct Style {
     pub height: u32,
     pub grow: u32,
     pub background: u32,
+    pub hover_background: u32,
+    pub active_background: u32,
     pub foreground: u32,
     pub border_color: u32,
     pub border_width: u32,

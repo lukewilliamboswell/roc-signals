@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "comment": "Single authority for the native GUI protocol tables. Edit this file, then run `python3 scripts/generate_protocol.py` to regenerate the committed Zig, Rust, Roc, and docs artifacts. `docs/native-gui-protocol.md` documents the add-a-field procedure.",
-  "protocol_version": 9,
+  "protocol_version": 10,
   "effect_version": 2,
   "timer_version": 1,
   "custom_text_field_id": 7,
@@ -43,7 +43,7 @@
     { "id": 11, "name": "verify_assets", "doc": "Hash a bounded manifest of relative assets against expected SHA-256 digests." }
   ],
   "raw_node": {
-    "comment": "Field order is ABI: Zig writes and Rust reads this extern record byte-for-byte. Types: u64, usize, slice (pointer+length borrowed UTF-8), style (16 u32 presentation record), viewport (2 u32 record).",
+    "comment": "Field order is ABI: Zig writes and Rust reads this extern record byte-for-byte. Types: u64, usize, slice (pointer+length borrowed UTF-8), style (18 u32 presentation record), viewport (2 u32 record).",
     "fields": [
       { "name": "id", "type": "u64", "doc": "Committed element id." },
       { "name": "active", "type": "u64", "doc": "Nonzero while the element is mounted." },
@@ -77,6 +77,7 @@
     ]
   },
   "version_history": [
+    { "version": 10, "summary": "Extends the presentation record to style version 2 with hover and active background slots (18 u32 style record); style version 1 records are no longer accepted." },
     { "version": 9, "summary": "Adds the explicit image-source text slot together with the font-family and embedded-font declaration slots to the node layout." },
     { "version": 8, "summary": "Adds the placeholder text slot to the node layout." },
     { "version": 7, "summary": "Adds explicit event-detail dispatch to `signals_dispatch`." },
