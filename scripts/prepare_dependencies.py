@@ -20,6 +20,85 @@ CACHE = Path.home() / ".cache/roc-signals/dependencies"
 WEB_ARTIFACTS = ("musl-x64musl", "musl-arm64musl")
 WINDOWS_IMPORTS = "windows-imports-x64win"
 FREETYPE = "freetype-x64glibc"
+GLIBC = "glibc-x64glibc"
+GLIBC_LIBRARIES = ("crt1.o", "libc.so", "libm.so", "libc_nonshared.a")
+GLIBC_LINUX_LICENSES = tuple("LICENSE-LINUX-" + name for name in (
+    "GPL-2.0", "GPL-1.0", "LGPL-2.0", "LGPL-2.1", "Linux-syscall-note", "MIT", "BSD-3-Clause",
+))
+GLIBC_LICENSES = ("COPYING.LIB", "LICENSES", "LICENSE-ZIG", "LICENSE-LLVM", *GLIBC_LINUX_LICENSES)
+GLIBC_SOURCE_FILES = (
+    "source.tar.xz", "dependencies/glibc.json", "dependencies/glibc/COPYING.LIB",
+    "dependencies/glibc/Dockerfile", "test/dependencies/glibc.c",
+    "scripts/build_glibc.py", "scripts/dependency_archive.py", "scripts/dependency_artifacts.py",
+    *("dependencies/glibc/" + name for name in GLIBC_LINUX_LICENSES),
+)
+
+
+UNWIND = "unwind-x64glibc"
+UNWIND_SOURCE_FILES = (
+    "source.tar.xz", "dependencies/unwind.json", "dependencies/unwind/Dockerfile",
+    "test/dependencies/unwind.cpp", "test/dependencies/unwind.rs", "test/dependencies/unwind-rust.c",
+    "scripts/build_unwind.py", "scripts/build_glibc.py", "scripts/test_unwind_rust.py",
+    "scripts/dependency_archive.py", "scripts/dependency_artifacts.py",
+)
+
+
+@contextmanager
+def verified_unwind(lock=LOCK, cache=CACHE):
+    """Admit the complete independently released LLVM unwinder and source payload."""
+    with tempfile.TemporaryDirectory(prefix="signals-verified-unwind-") as temporary:
+        destination = Path(temporary) / "inputs"
+        materialize(lock, (UNWIND,), cache, destination)
+        manifest = json.loads((destination / UNWIND / "dependency.json").read_text())
+        expected = {"targets/x64glibc/libunwind.a", "licenses/unwind/LICENSE.TXT", "licenses/unwind/LICENSE-ZIG"}
+        expected.update("sources/unwind/" + name for name in UNWIND_SOURCE_FILES)
+        if set(manifest["files"]) != expected:
+            raise ValueError("incomplete or unexpected LLVM unwinder inputs")
+        yield destination
+
+
+def install_unwind(destination, lock=LOCK, cache=CACHE):
+    """Replace the development unwinder only after verifying its release identity."""
+    with verified_unwind(lock, cache) as inputs:
+        source = inputs / UNWIND / "targets/x64glibc/libunwind.a"
+        destination.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=destination, delete=False) as pending:
+            path = Path(pending.name)
+        try:
+            shutil.copyfile(source, path)
+            path.replace(destination / "libunwind.a")
+        finally:
+            path.unlink(missing_ok=True)
+        return json.loads((inputs / "dependencies.lock.json").read_text())
+
+
+@contextmanager
+def verified_glibc(lock=LOCK, cache=CACHE):
+    """Require the release's startup objects, stubs, notices and reproduction sources."""
+    with tempfile.TemporaryDirectory(prefix="signals-verified-glibc-") as temporary:
+        destination = Path(temporary) / "inputs"
+        materialize(lock, (GLIBC,), cache, destination)
+        manifest = json.loads((destination / GLIBC / "dependency.json").read_text())
+        expected = {"targets/x64glibc/" + name for name in GLIBC_LIBRARIES}
+        expected.update("licenses/glibc/" + name for name in GLIBC_LICENSES)
+        expected.update("sources/glibc/" + name for name in GLIBC_SOURCE_FILES)
+        if set(manifest["files"]) != expected:
+            raise ValueError("incomplete or unexpected glibc inputs")
+        yield destination
+
+
+def install_glibc(destination, lock=LOCK, cache=CACHE):
+    """Verify and stage every input before replacing development copies."""
+    with verified_glibc(lock, cache) as inputs:
+        source = inputs / GLIBC / "targets/x64glibc"
+        destination.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=destination, prefix=".glibc-") as temporary:
+            stage = Path(temporary)
+            for name in GLIBC_LIBRARIES:
+                shutil.copyfile(source / name, stage / name)
+            for name in GLIBC_LIBRARIES:
+                (stage / name).replace(destination / name)
+        return json.loads((inputs / "dependencies.lock.json").read_text())
 XKBCOMMON = "xkbcommon-x64glibc"
 XKBCOMMON_LIBRARIES = ("libxkbcommon.so", "libxkbcommon-x11.so")
 

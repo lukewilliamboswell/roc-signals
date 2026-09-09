@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "rust": {
+    "version": "1.95.0",
+    "release_manifest": "https://static.rust-lang.org/dist/channel-rust-1.95.0.toml",
+    "targets": {
+      "x64glibc": {
+        "source_url": "https://static.rust-lang.org/dist/2026-04-16/rustc-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+        "sha256": "8426a3d170a5879f5682f5fbdd024a1779b3951e7baba685af2d6dc32a6dfc15",
+        "prefix": "rustc-1.95.0-x86_64-unknown-linux-gnu",
+        "notices": [
+          "COPYRIGHT",
+          "LICENSE-APACHE",
+          "LICENSE-MIT",
+          "rustc/share/doc/rust/COPYRIGHT-library.html"
+        ],
+        "size": 80351960
+      },
+      "arm64mac": {
+        "source_url": "https://static.rust-lang.org/dist/2026-04-16/rustc-1.95.0-aarch64-apple-darwin.tar.xz",
+        "sha256": "149e85a285b6eba58eb6c8bdf7deb1b93763890598e62cb635a712e3a8454f04",
+        "prefix": "rustc-1.95.0-aarch64-apple-darwin",
+        "notices": [
+          "COPYRIGHT",
+          "LICENSE-APACHE",
+          "LICENSE-MIT",
+          "rustc/share/doc/rust/COPYRIGHT-library.html"
+        ],
+        "size": 67652240
+      },
+      "x64win": {
+        "source_url": "https://static.rust-lang.org/dist/2026-04-16/rustc-1.95.0-x86_64-pc-windows-msvc.tar.xz",
+        "sha256": "4cb1f3b578adc6541cbe13a6f85f1fd8c0ce643d90b506a36dee24c680864c67",
+        "prefix": "rustc-1.95.0-x86_64-pc-windows-msvc",
+        "notices": [
+          "COPYRIGHT",
+          "LICENSE-APACHE",
+          "LICENSE-MIT",
+          "rustc/share/doc/rust/COPYRIGHT-library.html"
+        ],
+        "size": 71577136
+      }
+    }
+  },
+  "zig": {
+    "version": "0.16.0",
+    "source_url": "https://ziglang.org/download/0.16.0/zig-0.16.0.tar.xz",
+    "sha256": "43186959edc87d5c7a1be7b7d2a25efffd22ce5807c7af99067f86f99641bfdf",
+    "size": 22503260,
+    "prefix": "zig-0.16.0",
+    "notices": [
+      "LICENSE",
+      "lib/libunwind/LICENSE.TXT"
+    ]
+  }
+}

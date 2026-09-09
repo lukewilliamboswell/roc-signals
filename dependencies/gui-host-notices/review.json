@@ -1,0 +1,460 @@
+{
+  "schema_version": 1,
+  "packages": {
+    "block@0.1.6": {
+      "crate_sha256": "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a",
+      "source_revision": null,
+      "category": "metadata_only_in_reviewed_archive",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "24df2f33b48c9e756a4f864f882c1ab07a159b6c2b790f45af2e8162499b6719"
+        }
+      },
+      "upstream_files": []
+    },
+    "block2@0.6.2": {
+      "crate_sha256": "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5",
+      "source_revision": "b4167b582b2f75f9a1be75495c41b765344fd03c",
+      "category": "upstream_apple_sdk_caveat",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "e325c51f01145af3e11f2ee5ce7c47f10697d936c1d90b9ee81a0cf4f700f6d7"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "d18aec0c39956f1a29b6d157c13ec51ce53d7c2a2982c307528215f8870720ac"
+        }
+      },
+      "upstream_files": [
+        {
+          "path": "declarations/7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54.txt",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/LICENSE.md"
+        }
+      ]
+    },
+    "convert_case@0.4.0": {
+      "crate_sha256": "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e",
+      "source_revision": "300d9eef9e8c970e15f324afbc3df8b6a4ebbf71",
+      "category": "metadata_only_in_reviewed_archive",
+      "source_files": {
+        "Cargo.toml.orig": {
+          "sha256": "5f821f7641c67da8a4e0eb2ebf994f5ba88ad811a3529cb91017d26c8075aea2"
+        },
+        "Cargo.toml": {
+          "sha256": "bbd8c27bde074b1c78539307cc2f1770efdaf890253cce4b9557cfdc32d4e605"
+        }
+      },
+      "upstream_files": []
+    },
+    "dwrote@0.11.5": {
+      "crate_sha256": "9e1b35532432acc8b19ceed096e35dfa088d3ea037fe4f3c085f1f97f33b4d02",
+      "source_revision": "5bbe910f7156213cdbaca4e1addfe85ea8b421ef",
+      "category": "original_source_notices",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "f5f002712c93e06fe939d826188415c75532d52d1b84520f1530f21052cb1d28"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "f71ed51f120184738c76e471822ac051dfc66fc5a77053dac1b80fe40199955e"
+        },
+        "src/bitmap_render_target.rs": {
+          "sha256": "f677fa828e7466b7e8f9e5feaba7e97bd7512a2f8ee8920e5a4afad9984a9050"
+        },
+        "src/font.rs": {
+          "sha256": "0bdf750d94a99b197a35d0ebff80760542b6047e3af6f9be91cf79664d35fcb7"
+        },
+        "src/font_collection.rs": {
+          "sha256": "0fce4cc6271169030a2cf56cff5c725c9486791f0fc4008f929e549d77cfec4b"
+        },
+        "src/font_collection_impl.rs": {
+          "sha256": "3e7d5ecf3139c118024946ac5067d22fbf2ec3770de745c18728e095b37507ae"
+        },
+        "src/font_face.rs": {
+          "sha256": "445948cbc973c389264883db224347b5dabffccedc711cef8c7feeb9d978a898"
+        },
+        "src/font_fallback.rs": {
+          "sha256": "c0c39fffdcc6747ed7513e60cbc16510515bf5b6e38d90ca9f5647bfe7c9471c"
+        },
+        "src/font_family.rs": {
+          "sha256": "85e703cc1c8dc9f8e1f684928c0d2ecdd978eb8fd00d016a7811b168136dac1f"
+        },
+        "src/font_file.rs": {
+          "sha256": "c6ae3f4a9ddeece3095ef35c3b1382e29b974e93ad40c45fa65d3e10f886a672"
+        },
+        "src/gdi_interop.rs": {
+          "sha256": "7d33373f8b5af1e0ffac035b0093d72857624a5ab8696658172cd5c8b11edb2a"
+        },
+        "src/glyph_run_analysis.rs": {
+          "sha256": "c3ad300f601f50a6b7fc8534e8b5a15c36f99c8ac495310d5e7d804e573d9c95"
+        },
+        "src/helpers.rs": {
+          "sha256": "0a701ad3ffece42ecc0a4371683471d982473de0f34b964987911b429f0b1bd3"
+        },
+        "src/lib.rs": {
+          "sha256": "766d05ab96b05bf60a8aeb4fba86ffa05e87a8954dec23e4b52f7eaa6f92eb50"
+        },
+        "src/rendering_params.rs": {
+          "sha256": "b04db3a35fb762d8d7b2a2d660a2fd452597b3b7c522b09279d93ce889c117cd"
+        },
+        "src/test.rs": {
+          "sha256": "d76c49720469936d0cf93dcc805349b7980072cd3c2e7db3f5ecdc219fc90bc3"
+        },
+        "src/text_analysis_source.rs": {
+          "sha256": "11e86056a2d4d74810758e59e70862ca624bfb84739334f099ccb567c8b41d01"
+        },
+        "src/text_analysis_source_impl.rs": {
+          "sha256": "caf8018faf505ea2f9f4af609eb82cc2baaf43fc3ccba1e20d6ff724cdd04431"
+        },
+        "src/types.rs": {
+          "sha256": "fedbb2227d11655d2399015b3132b523be5aff80efa1ee6928491afc3bbf5a8b"
+        }
+      },
+      "upstream_files": []
+    },
+    "gpu-alloc@0.6.2": {
+      "crate_sha256": "45cf04b2726f02df5508c6de726acdc90cdf97ac771a9a0ffd8ba10a6e696bf9",
+      "source_revision": "61020bdcb4eb04fca6bbf748aeb9570e859236e0",
+      "category": "original_license_reference",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "94ce474d1051e0dcd688277d28f1e6803e667645b8998c016d6e30055d1ea2f5"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "5c9a324870b38b37deca2de624a477ce63b9a46212c53d344dcab120b75d0ce0"
+        },
+        "README.md": {
+          "sha256": "5a96b135d18e172f090bd6147830ab3a1b5cefac5f02be28f06cf88eea61b64f"
+        }
+      },
+      "upstream_files": [
+        {
+          "path": "declarations/12121dfa588677007848ab922a45a1e3248868f6ff063598fceb3141d7897314.txt",
+          "sha256": "12121dfa588677007848ab922a45a1e3248868f6ff063598fceb3141d7897314",
+          "source_url": "https://raw.githubusercontent.com/zakarumych/gpu-alloc/61020bdcb4eb04fca6bbf748aeb9570e859236e0/COPYING"
+        }
+      ]
+    },
+    "gpu-alloc-ash@0.7.1": {
+      "crate_sha256": "643756f08ef6def813c776199e4766596395a4c6530373c9a4374a64de2f53a1",
+      "source_revision": "7ddd1fe576fcfc503347eb97e476a47581479f22",
+      "category": "original_license_reference",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "b0d20744fda94afc642a28deb15cfd400976adabf57ad2731cc90e55b64eba77"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "1cc016f2ebbc21df00422a0e0daa15f19650dd387ec81913ed06fc260fef9089"
+        },
+        "README.md": {
+          "sha256": "5a96b135d18e172f090bd6147830ab3a1b5cefac5f02be28f06cf88eea61b64f"
+        }
+      },
+      "upstream_files": [
+        {
+          "path": "declarations/12121dfa588677007848ab922a45a1e3248868f6ff063598fceb3141d7897314.txt",
+          "sha256": "12121dfa588677007848ab922a45a1e3248868f6ff063598fceb3141d7897314",
+          "source_url": "https://raw.githubusercontent.com/zakarumych/gpu-alloc/7ddd1fe576fcfc503347eb97e476a47581479f22/COPYING"
+        }
+      ]
+    },
+    "gpu-alloc-types@0.3.1": {
+      "crate_sha256": "b2bbed164dd10ed526c2e4fe3e721ca4a71c61730e5aafac6844b417b3227058",
+      "source_revision": "7ddd1fe576fcfc503347eb97e476a47581479f22",
+      "category": "original_license_reference",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "34a3c36524ab156db79ebcf76a878995365eca34c7975c3316ab528a1eeb60b7"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "1b01a661d9e5ed74a93f264d5d5455921570e9bb25f679c8d6d2263133267f62"
+        },
+        "README.md": {
+          "sha256": "5a96b135d18e172f090bd6147830ab3a1b5cefac5f02be28f06cf88eea61b64f"
+        }
+      },
+      "upstream_files": [
+        {
+          "path": "declarations/12121dfa588677007848ab922a45a1e3248868f6ff063598fceb3141d7897314.txt",
+          "sha256": "12121dfa588677007848ab922a45a1e3248868f6ff063598fceb3141d7897314",
+          "source_url": "https://raw.githubusercontent.com/zakarumych/gpu-alloc/7ddd1fe576fcfc503347eb97e476a47581479f22/COPYING"
+        }
+      ]
+    },
+    "hexf-parse@0.2.1": {
+      "crate_sha256": "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df",
+      "source_revision": "4225763d744183d720f575ae96d04161b4d08ea0",
+      "category": "metadata_only_in_reviewed_archive",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "dd7274968556f3f3309df5615d94437ec4e4823777cc440f91177b2170cbe2a7"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "4a56dbdbc12054fd33b7a2634a45cbbe6fe12f5e6f4081002cbfa527f7220c70"
+        }
+      },
+      "upstream_files": []
+    },
+    "leak@0.1.2": {
+      "crate_sha256": "bd100e01f1154f2908dfa7d02219aeab25d0b9c7fa955164192e3245255a0c73",
+      "source_revision": null,
+      "category": "metadata_only_in_reviewed_archive",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "8800b6172da0ce015fdc69cbe3fdc48c22f4223babe254e207255c681c83e8dd"
+        }
+      },
+      "upstream_files": []
+    },
+    "leaky-cow@0.1.1": {
+      "crate_sha256": "40a8225d44241fd324a8af2806ba635fc7c8a7e9a7de4d5cf3ef54e71f5926fc",
+      "source_revision": null,
+      "category": "original_license_reference",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "cd5e595a4b4eede02b0c1b96bb86eb3860bf660fafd7ca6eb0f92b96d9e733f5"
+        },
+        "src/lib.rs": {
+          "sha256": "5c34776cad80147e94ce1c4af40135d645b478276abf16dc44265cd57da77ea0"
+        }
+      },
+      "upstream_files": []
+    },
+    "mac@0.1.1": {
+      "crate_sha256": "c41e0c4fef86961ac6d6f8a82609f55f31b05e4fce149ac5710e439df7619ba4",
+      "source_revision": null,
+      "category": "original_license_reference",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "6d465c5e5a4b3e197049e9fb7393b2f996c1c654e6ded700afce046fac2f7969"
+        },
+        "README.md": {
+          "sha256": "8edb7a912d295acf1e1cfeafdd19a6813a63b301c7bbfda3c67f65509bd8d8cc"
+        }
+      },
+      "upstream_files": []
+    },
+    "malloc_buf@0.0.6": {
+      "crate_sha256": "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb",
+      "source_revision": null,
+      "category": "metadata_only_in_reviewed_archive",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "d87624d9d117489bd49dbaeb70077a0721e00ac2a76eb371faec818a92da5661"
+        }
+      },
+      "upstream_files": []
+    },
+    "objc2@0.6.4": {
+      "crate_sha256": "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f",
+      "source_revision": "8852b424193ca41602281b3d7540d7c8ed51e49a",
+      "category": "upstream_apple_sdk_caveat",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "74bfa13bee2c7362432f22886f9749743c78d32eed5916e26a06ff56ae84c901"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "edff06609a6f76ba4aa4ead2f6219826f6c4fd82075fa178029085f37f931536"
+        }
+      },
+      "upstream_files": [
+        {
+          "path": "declarations/7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54.txt",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md"
+        }
+      ]
+    },
+    "objc2-app-kit@0.3.2": {
+      "crate_sha256": "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c",
+      "source_revision": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "category": "upstream_apple_sdk_caveat",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "11a761a52774ed9738fb854ba3eecb48fa360b6ce43dddc00c338346853717b5"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "a15eb82815ce282d59a2f5be179556695ce678790129c30e1d86567c1e2c684e"
+        }
+      },
+      "upstream_files": [
+        {
+          "path": "declarations/7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54.txt",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+        }
+      ]
+    },
+    "objc2-core-foundation@0.3.2": {
+      "crate_sha256": "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536",
+      "source_revision": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "category": "upstream_apple_sdk_caveat",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "c0f54260fa1396923f2db4edf1e2d54e8ab09dea214af4b8ce37aaefa7185e60"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "44cd6a4440c3ea1ba85df240ab9b9e7a95da3a5873ce623ac426ac5acfbe507f"
+        }
+      },
+      "upstream_files": [
+        {
+          "path": "declarations/7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54.txt",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+        }
+      ]
+    },
+    "objc2-encode@4.1.0": {
+      "crate_sha256": "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33",
+      "source_revision": "8d214f5477365ffcbcbb7de058c86ed9a518efb7",
+      "category": "upstream_apple_sdk_caveat",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "cf9a8cc812710344d7fe618a5e615530baeeceae5c2826b9d5bb557dc419f159"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "12972b1faf213492f9e78226f23642c461284b739f7be5437d9401465a2869a6"
+        }
+      },
+      "upstream_files": [
+        {
+          "path": "declarations/7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54.txt",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md"
+        }
+      ]
+    },
+    "objc2-metal@0.3.2": {
+      "crate_sha256": "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794",
+      "source_revision": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "category": "upstream_apple_sdk_caveat",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "8ea9d2d00d2e462d2f1e0a5bb242ccc8753c2bcd3441edd1d2cf05cba69092ff"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "aeaa98ce9f8fb6e92e995b794f49f3a5d0c2a40f443dc2427154b356f5a1b8f8"
+        }
+      },
+      "upstream_files": [
+        {
+          "path": "declarations/7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54.txt",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+        }
+      ]
+    },
+    "objc2-quartz-core@0.3.2": {
+      "crate_sha256": "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f",
+      "source_revision": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "category": "upstream_apple_sdk_caveat",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "7af27150fadd5ac0b3e86ec173b4e3e2b0dd42d614de963a0c9f0bf55cc7b4d9"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "ca303efdd2bcb7958d3e0a08f9b7adb327a2942d0730cda5991365c48016f4d4"
+        }
+      },
+      "upstream_files": [
+        {
+          "path": "declarations/7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54.txt",
+          "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+          "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+        }
+      ]
+    },
+    "pathfinder_geometry@0.5.1": {
+      "crate_sha256": "0b7b7e7b4ea703700ce73ebf128e1450eb69c3a8329199ffbfb9b2a0418e5ad3",
+      "source_revision": "a5e98fac00f433fe2ff4b2135383d82491b8bfc5",
+      "category": "original_source_notices",
+      "source_files": {
+        "Cargo.toml.orig": {
+          "sha256": "fdcc9be8eb9a2f08cd416fffc6e6c3d5c3311a9d06a2b8210e16e38ac91e9f78"
+        },
+        "Cargo.toml": {
+          "sha256": "141871f41ab4ac7af854e54f1f637fb168ffbc97fdb57c60608f11b8eb95f1d7"
+        },
+        "src/angle.rs": {
+          "sha256": "dce9c08facbaceccb920035477ac53ffc2798247b42b2ddef9338f2e35ab9c80"
+        },
+        "src/lib.rs": {
+          "sha256": "cedfb2d85e682e9b9e327a169347bf0cebecd52668e1ed91a3af05ec91b42090"
+        },
+        "src/line_segment.rs": {
+          "sha256": "4af21598890aef0ffec10abd5460c0416cb1bb56b003fb499f0cd75fc68177da"
+        },
+        "src/rect.rs": {
+          "sha256": "68d48ddd9934ac11f0ed0e81c2cc6ede9271528dc318c3dd49cc9c9f51cb15ca"
+        },
+        "src/transform2d.rs": {
+          "sha256": "36514cf158f7bd2118a1e2f2586e439f6484d61f0505919e8005fb733e3c917c"
+        },
+        "src/transform3d.rs": {
+          "sha256": "d42aa24d02570376c429256f24891f489bd71ef257d9691f80b4fb6528e09275"
+        },
+        "src/unit_vector.rs": {
+          "sha256": "a6c30c98aaf859492746696b9d67999322b18117fbe891b53f38ccfca5b28a5f"
+        },
+        "src/util.rs": {
+          "sha256": "33a05481be71f5cf41128eeeb3e378248249d0f6f30ebc057e4c05f11344a0e5"
+        },
+        "src/vector.rs": {
+          "sha256": "cfcaad0394c5489a412bcdbbbe6928e1875d4a422eb5a7da1a3e415fdbc0790c"
+        }
+      },
+      "upstream_files": []
+    },
+    "seahash@4.1.0": {
+      "crate_sha256": "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b",
+      "source_revision": "94b632aeac099031c373599313d5b5f0acbbaec0",
+      "category": "metadata_only_in_reviewed_archive",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "1d610f6d1bce065add6ec5f2fb764e97eeda505afbe26271acc5f3d73a8c410a"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "dd213de338ca98b7ef7a2562bcf4e4214d215d1a8277750a6a72b4e809c8d0dd"
+        }
+      },
+      "upstream_files": []
+    },
+    "simd_helpers@0.1.0": {
+      "crate_sha256": "95890f873bec569a0362c235787f3aca6e1e887302ba4840839bcc6459c42da6",
+      "source_revision": "ca1a2f84aa386d758e98f8a609d990263932fb85",
+      "category": "metadata_only_in_reviewed_archive",
+      "source_files": {
+        "Cargo.toml.orig": {
+          "sha256": "b41497677a5498040f2eb3fc089e3c2c38c413dca64f41dc57a115e26480461d"
+        },
+        "Cargo.toml": {
+          "sha256": "42364d200c5cc7792960bdf10354a108b6c68ca49f2e1567967e2d5b1dba37a6"
+        }
+      },
+      "upstream_files": []
+    },
+    "zune-inflate@0.2.54": {
+      "crate_sha256": "73ab332fe2f6680068f3582b16a24f90ad7096d5d39b974d1c0aff0125116f02",
+      "source_revision": "69502ce83fdfecdd0beefd677e2abb3781b29d98",
+      "category": "original_source_notices",
+      "source_files": {
+        "Cargo.toml": {
+          "sha256": "f3da162dd3818fcdf23c9ce34930d66064106873a692d6994abd49b80e60ea66"
+        },
+        "Cargo.toml.orig": {
+          "sha256": "a7e3d8fd82218e7f9f2172d41a048e4879abc81228589539e1ec750d72811f90"
+        },
+        "src/encoder/fast_match_finder.rs": {
+          "sha256": "67bcc3602a1705dd375128526d99334aee78777dc19bcc622757d78c43af90d6"
+        },
+        "src/encoder.rs": {
+          "sha256": "c99d7afda5c50bc52efc5d8e788da6a884d0e13b3b38865f760f5ed3d9fc65bd"
+        },
+        "src/lib.rs": {
+          "sha256": "ee2b5b58f48ee36835bd4e312a26dace36be39d1c4af956f4e2e04d0620667f9"
+        }
+      },
+      "upstream_files": []
+    }
+  }
+}

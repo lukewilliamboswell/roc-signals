@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "packages": {
+    "blade-graphics@0.7.1": {
+      "crate_sha256": "e71cfb73b98eb9f58ee84048aa1bdf4e7497fd20c141b57523499fa066b48fed",
+      "source_revision": "88b6c64cd7a32dd933acc4e5266808a07143ce84",
+      "notices": [
+        {
+          "path": "texts/8e9e23a134d00ae1760811ca60482b2e98b2db9154ffda66e58791796aa24ca1.txt",
+          "sha256": "8e9e23a134d00ae1760811ca60482b2e98b2db9154ffda66e58791796aa24ca1",
+          "source_url": "https://raw.githubusercontent.com/kvark/blade/88b6c64cd7a32dd933acc4e5266808a07143ce84/LICENSE"
+        }
+      ]
+    },
+    "blade-macros@0.3.0": {
+      "crate_sha256": "27142319e2f4c264581067eaccb9f80acccdde60d8b4bf57cc50cd3152f109ca",
+      "source_revision": "875b9c87e15e83ed48414c094f9a2b3fb189925d",
+      "notices": [
+        {
+          "path": "texts/8e9e23a134d00ae1760811ca60482b2e98b2db9154ffda66e58791796aa24ca1.txt",
+          "sha256": "8e9e23a134d00ae1760811ca60482b2e98b2db9154ffda66e58791796aa24ca1",
+          "source_url": "https://raw.githubusercontent.com/kvark/blade/875b9c87e15e83ed48414c094f9a2b3fb189925d/LICENSE"
+        }
+      ]
+    },
+    "blade-util@0.3.0": {
+      "crate_sha256": "3a6be3a82c001ba7a17b6f8e413ede5d1004e6047213f8efaf0ffc15b5c4904c",
+      "source_revision": "23e378613440513e1045f4e0f7c5979e67645d3b",
+      "notices": [
+        {
+          "path": "texts/8e9e23a134d00ae1760811ca60482b2e98b2db9154ffda66e58791796aa24ca1.txt",
+          "sha256": "8e9e23a134d00ae1760811ca60482b2e98b2db9154ffda66e58791796aa24ca1",
+          "source_url": "https://raw.githubusercontent.com/kvark/blade/23e378613440513e1045f4e0f7c5979e67645d3b/LICENSE"
+        }
+      ]
+    },
+    "dtor@0.0.6": {
+      "crate_sha256": "97cbdf2ad6846025e8e25df05171abfb30e3ababa12ee0a0e44b9bbe570633a8",
+      "source_revision": "e8c8b4a82de72311a5257db0502ced728081e745",
+      "notices": [
+        {
+          "path": "texts/bccaa8b6c09f94e81f06696e179dbe058464bbdfbc823b6d49cada1d71e84ac3.txt",
+          "sha256": "bccaa8b6c09f94e81f06696e179dbe058464bbdfbc823b6d49cada1d71e84ac3",
+          "source_url": "https://raw.githubusercontent.com/mmastrac/rust-ctor/e8c8b4a82de72311a5257db0502ced728081e745/LICENSE-MIT"
+        }
+      ]
+    },
+    "dtor-proc-macro@0.0.5": {
+      "crate_sha256": "7454e41ff9012c00d53cf7f475c5e3afa3b91b7c90568495495e8d9bf47a1055",
+      "source_revision": "b05136ac964049a1ee29de763d0b119c42258567",
+      "notices": [
+        {
+          "path": "texts/bccaa8b6c09f94e81f06696e179dbe058464bbdfbc823b6d49cada1d71e84ac3.txt",
+          "sha256": "bccaa8b6c09f94e81f06696e179dbe058464bbdfbc823b6d49cada1d71e84ac3",
+          "source_url": "https://raw.githubusercontent.com/mmastrac/rust-ctor/b05136ac964049a1ee29de763d0b119c42258567/LICENSE-MIT"
+        }
+      ]
+    },
+    "lyon@1.0.19": {
+      "crate_sha256": "bd0578bdecb7d6d88987b8b2b1e3a4e2f81df9d0ece1078623324a567904e7b7",
+      "source_revision": "56219c95c658d4f39de7b190d98e57d5773ba241",
+      "notices": [
+        {
+          "path": "texts/80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e.txt",
+          "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e",
+          "source_url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-MIT"
+        }
+      ]
+    },
+    "lyon_algorithms@1.0.21": {
+      "crate_sha256": "cdfa8785f95e57914ddb35e3b59994aeba6f5e79e9cfd03da1c269f010f36009",
+      "source_revision": "994526f2766c7e9bc5bb16687232fd7e8999dbdf",
+      "notices": [
+        {
+          "path": "texts/80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e.txt",
+          "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e",
+          "source_url": "https://raw.githubusercontent.com/nical/lyon/994526f2766c7e9bc5bb16687232fd7e8999dbdf/LICENSE-MIT"
+        }
+      ]
+    },
+    "lyon_geom@1.0.19": {
+      "crate_sha256": "4336502e29e32af93cf2dad2214ed6003c17ceb5bd499df77b1de663b9042b92",
+      "source_revision": "56219c95c658d4f39de7b190d98e57d5773ba241",
+      "notices": [
+        {
+          "path": "texts/80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e.txt",
+          "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e",
+          "source_url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-MIT"
+        }
+      ]
+    },
+    "lyon_path@1.0.19": {
+      "crate_sha256": "5c463f9c428b7fc5ec885dcd39ce4aa61e29111d0e33483f6f98c74e89d8621e",
+      "source_revision": "56219c95c658d4f39de7b190d98e57d5773ba241",
+      "notices": [
+        {
+          "path": "texts/80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e.txt",
+          "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e",
+          "source_url": "https://raw.githubusercontent.com/nical/lyon/56219c95c658d4f39de7b190d98e57d5773ba241/LICENSE-MIT"
+        }
+      ]
+    },
+    "lyon_tessellation@1.0.22": {
+      "crate_sha256": "43b8dcf906637ecef61b3c0740c7a4e7f27caeb31257cfac0cc579ce15be6005",
+      "source_revision": "b456b143215a1942a617c4672776b68b9a30feee",
+      "notices": [
+        {
+          "path": "texts/80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e.txt",
+          "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e",
+          "source_url": "https://raw.githubusercontent.com/nical/lyon/b456b143215a1942a617c4672776b68b9a30feee/LICENSE-MIT"
+        }
+      ]
+    },
+    "naga@25.0.1": {
+      "crate_sha256": "2b977c445f26e49757f9aca3631c3b8b836942cb278d69a92e7b80d3b24da632",
+      "source_revision": "060a779fc5f56560215ea84bda70278cbbd31e72",
+      "notices": [
+        {
+          "path": "texts/c7fea58d1cfe49634cd92e54fc10a9d871f4b275321a4cd8c09e449122caaeb4.txt",
+          "sha256": "c7fea58d1cfe49634cd92e54fc10a9d871f4b275321a4cd8c09e449122caaeb4",
+          "source_url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/LICENSE.MIT"
+        }
+      ]
+    },
+    "pathfinder_simd@0.5.6": {
+      "crate_sha256": "4500030c302e4af1d423f36f3b958d1aecb6c04184356ed5a833bf6b60435777",
+      "source_revision": "6c3c0466f451c5bd2007087728cd168798cd64e8",
+      "notices": [
+        {
+          "path": "texts/0621878e61f0d0fda054bcbe02df75192c28bde1ecc8289cbd86aeba2dd72720.txt",
+          "sha256": "0621878e61f0d0fda054bcbe02df75192c28bde1ecc8289cbd86aeba2dd72720",
+          "source_url": "https://raw.githubusercontent.com/servo/pathfinder/6c3c0466f451c5bd2007087728cd168798cd64e8/LICENSE-MIT"
+        }
+      ]
+    },
+    "profiling@1.0.18": {
+      "crate_sha256": "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5",
+      "source_revision": "8271551172eb6fa4cba47369aedd93790c623df9",
+      "notices": [
+        {
+          "path": "texts/c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333.txt",
+          "sha256": "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333",
+          "source_url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT"
+        }
+      ]
+    },
+    "profiling-procmacros@1.0.18": {
+      "crate_sha256": "4488a4a36b9a4ba6b9334a32a39971f77c1436ec82c38707bce707699cc3bbcb",
+      "source_revision": "8271551172eb6fa4cba47369aedd93790c623df9",
+      "notices": [
+        {
+          "path": "texts/c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333.txt",
+          "sha256": "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333",
+          "source_url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT"
+        }
+      ]
+    },
+    "pulp-wasm-simd-flag@0.1.1": {
+      "crate_sha256": "1d8f70e07b9c3962945a74e59ca1c511bba65b6419468acc217c457d93f3c740",
+      "source_revision": "5eb07fd7b68edf0a5e19f71737d315f72a510295",
+      "notices": [
+        {
+          "path": "texts/d64f878c89bd5f1e5ada7e4aad57690b122727cf5229b7b87ea1980c188da1d9.txt",
+          "sha256": "d64f878c89bd5f1e5ada7e4aad57690b122727cf5229b7b87ea1980c188da1d9",
+          "source_url": "https://raw.githubusercontent.com/sarah-quinones/pulp/5eb07fd7b68edf0a5e19f71737d315f72a510295/LICENSE"
+        }
+      ]
+    },
+    "svg_fmt@0.4.5": {
+      "crate_sha256": "0193cc4331cfd2f3d2011ef287590868599a2f33c3e69bc22c1a3d3acf9e02fb",
+      "source_revision": "93f414cd572b5c2781df93dbdc068ed13443d05a",
+      "notices": [
+        {
+          "path": "texts/7e98bed7f100747aaae7d82ab94fbe6b76fd6b84b09a3aaa413bff8196d0fbb1.txt",
+          "sha256": "7e98bed7f100747aaae7d82ab94fbe6b76fd6b84b09a3aaa413bff8196d0fbb1",
+          "source_url": "https://raw.githubusercontent.com/nical/rust_debug/93f414cd572b5c2781df93dbdc068ed13443d05a/LICENSE"
+        }
+      ]
+    },
+    "taffy@0.9.0": {
+      "crate_sha256": "a13e5d13f79d558b5d353a98072ca8ca0e99da429467804de959aa8c83c9a004",
+      "source_revision": "599b1b7d7410d97e13bafc4c01fbe6d7a9cf060a",
+      "notices": [
+        {
+          "path": "texts/a7083ef3dd41a65eeb2162c2c091b0082e2724fb4c6ed029b363c7840d244ecd.txt",
+          "sha256": "a7083ef3dd41a65eeb2162c2c091b0082e2724fb4c6ed029b363c7840d244ecd",
+          "source_url": "https://raw.githubusercontent.com/DioxusLabs/taffy/599b1b7d7410d97e13bafc4c01fbe6d7a9cf060a/LICENSE.md"
+        }
+      ]
+    },
+    "spirv@0.3.0+sdk-1.3.268.0": {
+      "crate_sha256": "eda41003dc44290527a59b13432d4a0379379fa074b70174882adfbdfd917844",
+      "source_revision": "e91a5debc10c395b36db7721dfff6326d697a1e2",
+      "notices": [
+        {
+          "path": "texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "source_url": "https://raw.githubusercontent.com/gfx-rs/rspirv/e91a5debc10c395b36db7721dfff6326d697a1e2/LICENSE"
+        }
+      ]
+    },
+    "stacksafe@0.1.4": {
+      "crate_sha256": "1d9c1172965d317e87ddb6d364a040d958b40a1db82b6ef97da26253a8b3d090",
+      "source_revision": "a5c029b7d3a5fe6771ecd79266b6e21313cfa174",
+      "notices": [
+        {
+          "path": "texts/c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "source_url": "https://raw.githubusercontent.com/fast/stacksafe/a5c029b7d3a5fe6771ecd79266b6e21313cfa174/LICENSE"
+        }
+      ]
+    },
+    "stacksafe-macro@0.1.4": {
+      "crate_sha256": "172175341049678163e979d9107ca3508046d4d2a7c6682bee46ac541b17db69",
+      "source_revision": "a5c029b7d3a5fe6771ecd79266b6e21313cfa174",
+      "notices": [
+        {
+          "path": "texts/c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "source_url": "https://raw.githubusercontent.com/fast/stacksafe/a5c029b7d3a5fe6771ecd79266b6e21313cfa174/LICENSE"
+        }
+      ]
+    }
+  }
+}

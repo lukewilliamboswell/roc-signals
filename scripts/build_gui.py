@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tempfile
 
-from prepare_dependencies import install_windows_imports, install_freetype, install_xkbcommon
+from prepare_dependencies import install_windows_imports, install_freetype, install_glibc, install_xkbcommon, install_unwind
 
 ROOT = Path(__file__).resolve().parent.parent
 MACOS_FRAMEWORKS = ('AppKit', 'ApplicationServices', 'Carbon', 'CoreFoundation',
@@ -74,28 +74,42 @@ def copy_macos_sysroot(sdk, destination):
                                else Path(str(path) + '.tbd'))
 
 
-def build(debug=False, jobs=2):
+def build(debug=False, jobs=2, cargo_evidence=None):
     target = host_target()
     if target is None:
         raise SystemExit('GUI builds require Linux x86_64 with glibc, Apple Silicon macOS, or Windows x86_64.')
     if jobs < 1:
         raise SystemExit('GUI build jobs must be positive.')
+    if debug and cargo_evidence is not None:
+        raise SystemExit('Cargo release evidence requires an optimized build.')
+    fingerprint = None
+    if cargo_evidence is not None:
+        from host_build_identity import source_fingerprint
+        fingerprint = source_fingerprint(ROOT)
     windows_dependencies = (install_windows_imports(ROOT / 'platform-gui/targets/x64win')
                             if target == 'x64win' else None)
     linux_dependencies = (install_freetype(ROOT / 'platform-gui/targets/x64glibc')
                           if target == 'x64glibc' else None)
     if target == 'x64glibc':
+        crt_dependencies = install_glibc(ROOT / 'platform-gui/targets/x64glibc')
+        linux_dependencies['artifacts'].update(crt_dependencies['artifacts'])
+        unwind_dependencies = install_unwind(ROOT / 'platform-gui/targets/x64glibc')
+        linux_dependencies['artifacts'].update(unwind_dependencies['artifacts'])
         keyboard_dependencies = install_xkbcommon(ROOT / 'platform-gui/targets/x64glibc')
         linux_dependencies['artifacts'].update(keyboard_dependencies['artifacts'])
     subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
-    subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, env=build_environment(), check=True)
     dest = ROOT / 'platform-gui/targets' / target
     dest.mkdir(parents=True, exist_ok=True)
-    metadata = json.loads(subprocess.check_output(
-        ['cargo', 'metadata', '--locked', '--no-deps', '--format-version=1'], cwd=ROOT, text=True,
-    ))
     rust_name = 'signals_gpui_host.lib' if target == 'x64win' else 'libsignals_gpui_host.a'
-    rust_host = Path(metadata['target_directory']) / ('debug' if debug else 'release') / rust_name
+    if cargo_evidence is not None:
+        from cargo_build_evidence import capture
+        rust_host = capture(ROOT, target, cargo_evidence, jobs, build_environment(), fingerprint)
+    else:
+        subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, env=build_environment(), check=True)
+        metadata = json.loads(subprocess.check_output(
+            ['cargo', 'metadata', '--locked', '--no-deps', '--format-version=1'], cwd=ROOT, text=True,
+        ))
+        rust_host = Path(metadata['target_directory']) / ('debug' if debug else 'release') / rust_name
     engine = ROOT / 'zig-out/gui/libengine.a'
     # Roc's platform header lists both archives for its final application link.
     shutil.copyfile(rust_host, dest / rust_name)
@@ -103,6 +117,7 @@ def build(debug=False, jobs=2):
     (dest / host_archive(target)).unlink(missing_ok=True)
     if target == 'x64win':
         build_windows_inputs(dest, windows_dependencies)
+        finish_evidence(target, dest, cargo_evidence, fingerprint)
         return
     if platform.system() == 'Darwin':
         sdk = Path(subprocess.check_output(['xcrun', '--show-sdk-path'], text=True).strip())
@@ -118,26 +133,18 @@ def build(debug=False, jobs=2):
             'sdk_build': subprocess.check_output(['xcrun', '--show-sdk-build-version'], text=True).strip(),
             'frameworks': MACOS_FRAMEWORKS,
         }, indent=2) + '\n')
+        finish_evidence(target, dest, cargo_evidence, fingerprint)
         return
-    for name in ['crt1.o', 'crti.o', 'crtn.o']:
-        source = subprocess.check_output(['cc', '-print-file-name=' + name], text=True).strip()
-        if not Path(source).is_file():
-            raise SystemExit('Missing C runtime development input: ' + name)
-        shutil.copyfile(source, dest / name)
-    # Copy ELF inputs, not development linker scripts with machine-local paths.
-    # Their SONAMEs retain runtime dependencies on the system's shared libraries.
-    cache = subprocess.check_output(['/sbin/ldconfig', '-p'], text=True)
     provenance = {'dependencies': linux_dependencies}
-    for name in ['gcc_s', 'util', 'rt', 'pthread', 'm', 'dl', 'c']:
-        prefix = 'lib' + name + '.so.'
-        matches = [line.split('=>')[1].strip() for line in cache.splitlines()
-                   if line.strip().startswith(prefix) and 'x86-64' in line]
-        if not matches:
-            raise SystemExit('Missing system library: ' + prefix)
-        source = Path(matches[0]).resolve()
-        shutil.copyfile(source, dest / ('lib' + name + '.so'))
-        provenance[name] = str(source)
     (dest / 'link-inputs.json').write_text(json.dumps(provenance, indent=2) + '\n')
+    finish_evidence(target, dest, cargo_evidence, fingerprint)
+
+
+def finish_evidence(target, destination, evidence_root, fingerprint):
+    """Seal every host-owned output after the complete native build succeeds."""
+    if evidence_root is not None:
+        from host_build_identity import record_outputs
+        record_outputs(ROOT, target, destination, evidence_root, fingerprint)
 
 
 def build_windows_inputs(dest, dependencies):
@@ -163,5 +170,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--debug', action='store_true', help='Use the faster development Rust build')
     parser.add_argument('--jobs', type=int, default=2, help='Concurrent Cargo build jobs (default: 2)')
+    parser.add_argument('--cargo-evidence', type=Path, help='New directory for exact Cargo release evidence')
     args = parser.parse_args()
-    build(args.debug, args.jobs)
+    build(args.debug, args.jobs, args.cargo_evidence)

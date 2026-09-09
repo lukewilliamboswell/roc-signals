@@ -3,3 +3,4 @@
 /dependencies/glibc/COPYING.LIB -text
 
 /dependencies/glibc/LICENSE-LINUX-* -text
+/dependencies/gui-host-notices/** -text

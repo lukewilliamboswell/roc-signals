@@ -95,7 +95,9 @@ class DependencyWorkflowFilterTests(unittest.TestCase):
                      "dependencies/xkbcommon/README.md", "dependencies.lock.json",
                      "src/signals/engine.zig", "crates/gpui-host/src/lib.rs",
                      "platform-gui/main.roc", "platform-shared/Signal.roc",
-                     "examples-gui/counter/main.roc", "scripts/prepare_dependencies.py")
+                     "examples-gui/counter/main.roc", "scripts/prepare_dependencies.py",
+                     "scripts/release_gui_hosts.py", "scripts/gui_host_artifacts.py",
+                     "scripts/cargo_build_evidence.py", "scripts/host_notice_payload.py")
         for path in unrelated:
             with self.subTest(input=path):
                 self.assertFalse(any(path in workflow(name)[1] for name in WORKFLOWS))

@@ -49,10 +49,14 @@ update and integration tests. Other Linux GUI link inputs remain outside this
 producer's scope.
 
 Every archive contains `dependency.json`, its exact target files, and license
-notices. The manifest records upstream identity, producer/recipe hashes, compiler
+notices. External dependency manifests record upstream identity, producer/recipe hashes, compiler
 configuration, and every payload file's size and digest. Tar metadata and paths
-are normalized. Release CI compares independent build directories and executes a
+are normalized. External dependency release CI compares independent build directories and executes a
 test linked against the extracted inputs on each supported architecture.
+Host archives instead record a committed-source fingerprint and payload hashes;
+their producer builds each maintained GUI app against the extracted candidate
+and runs its native specs. Host publication currently does not require a second
+build comparison.
 
 The consumer verifies signed GitHub build provenance against the locked repository,
 workflow, main ref, and exact source commit before extraction. It performs these
@@ -108,15 +112,20 @@ MIT and BSD notices remain applicable. These header licenses are distinct from
 the generated glibc link inputs' own licenses.
 
 The stubs retain system SONAMEs: the operating system supplies the actual glibc
-implementation at runtime. This producer does not include the GCC unwinder or
-adopt a consumer lock. Production consumption requires a separately reviewed
-release lock and platform-header update.
+implementation at runtime. Normal Linux GUI builds admit the locked release before
+compilation. Bundles independently verify it and retain its notices, source
+payload, reproduction inputs, and receipt. Checkout copies of CRT inputs and
+obsolete glibc compatibility libraries are excluded from bundle staging.
+The platform header supplies `crt1.o`, `libc_nonshared.a`, and the libc/libm stubs
+to Roc's final link. This target does not require `crti.o` or `crtn.o`.
+The LLVM unwinder is verified independently and supplied as `libunwind.a`.
+Neither host builds nor bundle staging copy `libgcc_s.so` from the build machine.
 
 ## LLVM unwinder producer
 
 `unwind.json` pins Zig's source distribution and compiler for an independently
-released Linux x86-64 `libunwind.a`. This replaces a dependency on ambient GCC
-unwinder packaging once a release is adopted. It is a static implementation,
+released Linux x86-64 `libunwind.a`. Its verified release replaces the direct
+link input previously copied from ambient GCC unwinder packaging. It is a static implementation,
 whereas the glibc producer's shared-library files are runtime link stubs.
 
 The producer builds in an offline container with private caches and fixed paths.
@@ -129,8 +138,10 @@ and publish them.
 
 The archive retains the complete original libunwind source tree, its full
 `LICENSE.TXT` including LLVM exceptions and legacy notices, Zig's license, and
-standalone reproduction inputs. The consumer lock and platform header are
-reviewed separately; this producer alone does not change existing bundles.
+standalone reproduction inputs. GUI builds verify the locked release before
+compiling the host. Bundle staging independently admits it, replaces any mutable
+checkout copy, and preserves its complete notice/source payload and receipt.
+Publication and consumer-lock adoption remain separate reviewed operations.
 
 ## Coverage and remaining boundaries
 
@@ -144,10 +155,42 @@ input or for historical platform releases.
 | Windows ADVAPI32 import library | Independent generation from pinned MinGW definitions, native candidate test, and verified release consumption | This describes the import library, not the Windows system DLL supplied by the operating system. |
 | Linux GUI FreeType | Independent Zig build from pinned source, native candidate tests, reproducibility checks, and verified release consumption | Supporting build libraries still come from the authenticated builder snapshot; the operating system supplies runtime font libraries. |
 | Linux GUI xkbcommon and xkbcommon-X11 | Independent Zig/Meson source build, native candidate test, reproducibility check, and verified release consumption | XCB runtime libraries and keyboard layout data remain operating-system inputs; applications resolve the system SONAMEs at runtime. |
-| Other Linux GUI shared libraries and startup objects | `build_gui.py` copies the build machine's installed inputs | No independent pinned producer, signed dependency receipt, or verified bundle admission yet; recorded local paths do not establish provenance. |
+| Linux GUI startup and glibc link inputs | Independent generation from pinned Zig sources, native candidate tests, reproducibility check, and verified release consumption | The operating system supplies the glibc implementation; source, license, and reproduction payloads accompany the link inputs. |
+| Linux GUI LLVM unwinder | Independent source build, native C++ and Rust unwind probes, reproducibility check, and verified release consumption | This removes the direct GCC link input; operating-system libraries may retain their own indirect runtime dependencies. |
 | macOS framework and system link stubs | `build_gui.py` copies the selected Xcode SDK's stubs and records SDK identifiers | No independently versioned, verified SDK artifact yet. SDK origin and redistribution rights must be established; proprietary SDK stubs cannot be described as an open-source build. |
-| Rust crates embedded in the GUI host | Cargo uses the reviewed lockfile and CI caches compiled dependencies; cross-crate release LTO is disabled | The cache is not a separately released dependency artifact. Generic Rust code can be instantiated in the host, so separating it into a reusable binary requires an explicit ABI and compatibility policy. |
-| Prebuilt GUI host target directories | The bundler accepts host archives supplied as target directories | Those host bytes are not yet bound to an expected source commit and verified producer identity at admission. A signed dependency library does not establish the host's provenance. |
+| Rust crates embedded in the GUI host | Cargo uses the reviewed lockfile and cached intermediates; ThinLTO optimizes the Rust host together | The cache is not a separately released dependency artifact. Generic Rust code can be instantiated in the host, so separating it into a reusable binary requires an explicit ABI and compatibility policy. |
+| Prebuilt GUI host archives | The bundler verifies a host-release lock, producer provenance, exact inventory, and committed host source compatibility before staging extracted bytes | Host releases do not supply external system libraries or SDK stubs; included targets must have those inputs separately. |
+
+### Windows import and host boundaries
+
+The released `advapi32.lib` is a generated import archive, not a Windows DLL or
+an implementation library. Its 879 short-import records match the complete
+preprocessed MinGW definition bundled with the pinned Zig toolchain. The release
+includes the applicable MinGW notice and does not copy Microsoft SDK libraries.
+Future Windows dependency packages must likewise provide complete definitions
+for each selected DLL, rather than a subset derived from host symbol usage.
+The producer checks the generated COFF archive before packaging: short imports
+must match every export and hint in the preprocessed definition, refer only to
+the selected DLL, and contain only the expected import descriptor sections.
+Executable sections, extra or missing imports, and unfamiliar definition syntax
+are rejected. This validator deliberately supports the reviewed x64 definition
+format; adding other DLLs or updating the toolchain may require extending it.
+
+This does not establish the provenance of every import in a GUI executable.
+Rust dependencies embed additional windows-rs and compiler-generated import
+records inside `signals_gpui_host.lib`, alongside actual open-source host
+implementation objects. Those imports need their own provenance accounting and
+must not be mistaken for Windows implementation DLLs. The host package also
+needs the transitive dependency notices; Signals and GPUI licenses alone are
+insufficient for publishing that combined archive.
+
+The pinned Roc compiler's MSVC link mode additionally searches installed SDK
+and MSVC library directories and requests default libraries. This is a final-link
+dependency, not evidence that SDK libraries were copied into our release archive.
+A Windows build passing on an SDK-equipped runner therefore does not prove that
+the platform provides every link input. Replacing these inputs requires an
+explicitly tested CRT, C++ runtime, and entry-point configuration; changing the
+target mode or renaming archives alone cannot establish compatibility.
 
 Host-owned engine objects, GUI Rust host archives, web `libhost.a`, and the Windows application
 resource remain platform build outputs. Changing their source should not change
