@@ -74,6 +74,8 @@ pub fn build(b: *std.Build) void {
     check_platform_sources_step.dependOn(&check_platform_sources.step);
     const prepare_platforms = b.addSystemCommand(&.{ python, "scripts/prepare_platforms.py" });
     const build_hosts_step = b.step("build-test-hosts", "Build platform host artifacts");
+    const prepare_dependencies = b.addSystemCommand(&.{ python, "scripts/prepare_dependencies.py" });
+    build_hosts_step.dependOn(&prepare_dependencies.step);
     const build_wasm_host_step = b.step("build-wasm-host", "Build the wasm32 browser host artifact");
     const build_wasm_benchmark_host_step = b.step("build-wasm-benchmark-host", "Build the instrumented ReleaseFast wasm32 benchmark host artifact");
     const run_check_zig_format_step = b.step("run-check-zig-format", "Check Zig formatting");

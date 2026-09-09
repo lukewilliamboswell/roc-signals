@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "name": "windows-imports",
+  "version": "zig-0.16.0-1",
+  "target": "x64win",
+  "zig_version": "0.16.0",
+  "libraries": [
+    "advapi32"
+  ],
+  "source_files_sha256": {
+    "lib-common/advapi32.def.in": "7fcb985f026adc8862d527544d51d269c33e7ecff7a5ce263b3818e4e82ed2f1",
+    "def-include/func.def.in": "afdd97ae2668d7041a0411bfad94069c1f31c9fdc131048c2a4ee0240a4cd65e",
+    "def-include/crt-aliases.def.in": "f098f5e0ace456ceb3008790b559cbb35451bf39ce0c3a5b2a7917bced7be1e5",
+    "COPYING": "99a69660981156c21336fdb5661f89341b013c94e4bf9e1c7467b4745718397f"
+  }
+}

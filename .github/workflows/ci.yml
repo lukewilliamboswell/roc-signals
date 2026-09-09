@@ -13,6 +13,10 @@ on:
 
 permissions:
   contents: read
+  attestations: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   smoke:
@@ -92,8 +96,12 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: 1.95.0
         run: |
-          python3 -m unittest discover -s scripts -p 'test_gui_suite.py'
+          python3 -m unittest discover -s scripts -p 'test_gui*.py'
           python3 scripts/test.py gui --keep-output
+      - name: Open GUI examples with software Vulkan
+        run: |
+          sudo apt-get install -y weston xvfb xauth mesa-vulkan-drivers
+          xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/gui_smoke.py --wayland
 
   gui-windows:
     name: Native GUI build and specs (Windows)
@@ -123,7 +131,7 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: 1.95.0
         run: |
-          python -m unittest discover -s scripts -p 'test_gui_suite.py'
+          python -m unittest discover -s scripts -p 'test_gui*.py'
           python scripts/test.py gui --keep-output
       # Distributable inputs are published with provenance by gui-hosts.yml on
       # their own release cycle; this job only proves the optimized build works.

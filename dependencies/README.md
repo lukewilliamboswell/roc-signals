@@ -11,6 +11,14 @@ the revision, rather than the upstream VERSION file alone, identifies its fixes.
 The producer builds baseline x86-64 and AArch64 code. It includes no Signals host
 or application code, and does not consume existing platform target directories.
 
+`windows-imports.json` pins the MinGW definition and license bytes distributed
+with Zig. Its producer generates `advapi32.lib` without building the Signals
+engine or Rust host. It also excludes `signals.res`, which describes our own
+application manifest and belongs to the host build. A Windows-native probe links
+against only the candidate ADVAPI32 import library and Zig's KERNEL32 imports,
+then calls an imported function before publication. The Windows dependency
+workflow has a separate release tag and signing identity from musl.
+
 Every archive contains `dependency.json`, its exact target files, and license
 notices. The manifest records upstream identity, producer/recipe hashes, compiler
 configuration, and every payload file's size and digest. Tar metadata and paths

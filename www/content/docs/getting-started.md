@@ -19,6 +19,8 @@ For the checkout workflow on this page:
   in `platform-web/main.roc` (the `roc` entry under `packages`).
 - **Zig 0.16.0** to build the platform hosts.
 - **Python 3** to run the native spec driver.
+- **GitHub CLI (`gh`)** authenticated for artifact provenance verification when
+  building hosts from a checkout. Published platform users do not need it.
 
 Release starters need only their pinned Roc compiler; their platform archives
 include the host binaries.
@@ -63,8 +65,13 @@ platform-web/targets/x64musl/libhost.a
 platform-web/targets/wasm32/host.wasm
 ```
 
-(The `crt1.o` and `libc.a` files alongside the musl hosts ship in the repo; they
-are not build outputs.)
+The build downloads the musl `crt1.o` and `libc.a` files from the independently
+released dependencies pinned in `dependencies.lock.json`. It verifies their
+digests and signed provenance before installing them beside the host outputs.
+No compiled libraries are committed. Downloads are cached, and a host change
+does not rebuild musl. Verification failures stop the build without substituting
+local binaries. See [contributing](@/docs/contributing.md#dependency-artifact-releases)
+for dependency release and cache commands.
 
 You only need to re-run it when the Zig host changes. If you skip it, builds
 fail with `MISSING TARGET FILE`.

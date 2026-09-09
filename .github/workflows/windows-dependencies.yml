@@ -1,0 +1,90 @@
+name: Windows dependency releases
+
+on:
+  pull_request:
+    paths:
+      - dependencies/windows-imports.json
+      - scripts/build_windows_imports.py
+      - scripts/windows_imports.py
+      - scripts/dependency_archive.py
+      - scripts/dependency_artifacts.py
+      - scripts/release_dependencies.py
+      - scripts/test_dependency_artifacts.py
+      - scripts/test_windows_import_artifact.py
+      - scripts/test_windows_dependencies.py
+      - test/dependencies/windows_imports.c
+      - .github/workflows/windows-dependencies.yml
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: New independent import release tag (deps-windows-imports-<version>)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-dependencies-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and test Windows imports
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+          use-cache: false
+      - name: Check dependency admission failures
+        run: python -m unittest scripts/test_dependency_artifacts.py scripts/test_windows_dependencies.py
+      - name: Build from pinned MinGW definitions
+        run: python scripts/build_windows_imports.py --output '${{ runner.temp }}/dependencies'
+      - name: Execute the exact candidate on Windows
+        run: python scripts/test_windows_import_artifact.py '${{ runner.temp }}/dependencies/windows-imports-x64win.tar'
+      - name: Check reproducibility in a second directory
+        shell: bash
+        run: |
+          python scripts/build_windows_imports.py --output '${{ runner.temp }}/rebuild'
+          cmp '${{ runner.temp }}/dependencies/windows-imports-x64win.tar' '${{ runner.temp }}/rebuild/windows-imports-x64win.tar'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-imports-x64win
+          path: ${{ runner.temp }}/dependencies/*.tar
+          retention-days: 30
+
+  publish:
+    name: Attest tested dependency artifacts
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: windows-imports-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/dependencies
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: ${{ runner.temp }}/dependencies/*.tar
+      - name: Publish the tested bytes without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python3 scripts/release_dependencies.py --directory "$RUNNER_TEMP/dependencies" --tag "$RELEASE_TAG" --kind windows-imports

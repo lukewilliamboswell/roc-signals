@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -105,6 +106,46 @@ class ReleaseTests(unittest.TestCase):
             (root / "signals-release.json").write_text(json.dumps(original))
             with self.assertRaisesRegex(ValueError, "URL disagrees"):
                 release.read_manifest(root)
+
+    def test_final_release_verifies_each_asset_and_metadata_at_the_tested_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.manifest_fixture(root)
+            manifest["provenance"] = {"signer_workflow": release.REPOSITORY + "/.github/workflows/release.yml",
+                                      "source_ref": "refs/heads/main"}
+            with patch.object(release.subprocess, "run") as verify:
+                release.verify_release_provenance(root, manifest)
+            self.assertEqual(verify.call_count, 4)
+            for call in verify.call_args_list:
+                command = call.args[0]
+                self.assertEqual(command[command.index("--source-digest") + 1], manifest["source_sha"])
+                self.assertEqual(command[command.index("--signer-workflow") + 1], manifest["provenance"]["signer_workflow"])
+                self.assertTrue(call.kwargs["check"])
+            with patch.object(release.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "gh")):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    release.verify_release_provenance(root, manifest)
+
+    def test_published_metadata_cannot_remove_the_reviewed_provenance_policy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.manifest_fixture(root)
+            manifest["provenance"] = {"signer_workflow": release.REPOSITORY + "/.github/workflows/release.yml",
+                                      "source_ref": "refs/heads/main"}
+            (root / "releases").mkdir()
+            (root / "releases/current.json").write_text(json.dumps(manifest))
+            example = Path("example/main.roc")
+            (root / example).parent.mkdir()
+            (root / example).write_text('app [main] { pf: platform "' + manifest["assets"]["platform"]["url"] + '" }')
+            downgraded = dict(manifest)
+            downgraded.pop("provenance")
+            def download(url, path):
+                path.write_text(json.dumps(downgraded))
+            with patch.object(release, "ROOT", root), patch.object(release, "public_examples", return_value=(SimpleNamespace(source=example),)), patch.object(
+                    release, "validate_roots", return_value=manifest["compiler_pin"]), patch.object(
+                    release, "verify_compiler"), patch.object(release, "download", side_effect=download) as fetch:
+                with self.assertRaisesRegex(ValueError, "reviewed supported release"):
+                    release.check_published("roc")
+                self.assertEqual(fetch.call_count, 1)
 
     def test_archive_escape_is_rejected_before_extraction(self):
         with tempfile.TemporaryDirectory() as temporary:

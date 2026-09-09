@@ -22,6 +22,7 @@ from urllib.request import urlopen
 import zipfile
 
 import bundle_browser
+from dependency_artifacts import read_lock
 from compiler_pins import read_pin, replace_pin
 import known_failures
 import test as driver
@@ -67,6 +68,31 @@ def release_base(url: str) -> str:
 def download(url: str, target: Path) -> None:
     with urlopen(url, timeout=120) as response, target.open("wb") as output:
         shutil.copyfileobj(response, output)
+
+
+def verify_release_provenance(directory: Path, manifest: dict) -> None:
+    """Verify final artifacts against the provenance policy in a trusted manifest.
+
+    Callers first compare downloaded metadata with their reviewed or tested local
+    manifest. Older reviewed releases carry digest pins but no provenance policy;
+    their absence of attestations must not be confused with a newly signed release.
+    """
+    policy = manifest.get("provenance")
+    if policy is None:
+        return
+    expected = {"signer_workflow": REPOSITORY + "/.github/workflows/release.yml",
+                "source_ref": "refs/heads/main"}
+    if policy != expected:
+        raise ValueError("unsupported platform release provenance policy")
+    paths = [directory / "signals-release.json"]
+    paths += [directory / item["name"] for item in manifest["assets"].values()]
+    if "site" in manifest:
+        paths.append(directory / manifest["site"]["name"])
+    for path in paths:
+        subprocess.run(["gh", "attestation", "verify", str(path), "--repo", REPOSITORY,
+                        "--signer-workflow", policy["signer_workflow"],
+                        "--source-digest", manifest["source_sha"],
+                        "--source-ref", policy["source_ref"], "--deny-self-hosted-runners"], check=True)
 
 
 def extract(archive: Path, directory: Path) -> None:
@@ -178,6 +204,9 @@ def check_published(roc: str) -> None:
         output = Path(scratch)
         download(base + "/signals-release.json", output / "signals-release.json")
         manifest = json.loads((output / "signals-release.json").read_text())
+        expected = json.loads((ROOT / "releases/current.json").read_text(encoding="utf-8"))
+        if manifest != expected:
+            raise ValueError("published metadata differs from the reviewed supported release")
         for asset in [*manifest["assets"].values(), *([manifest["site"]] if "site" in manifest else [])]:
             if not re.fullmatch(r"[A-Za-z0-9._-]+", asset["name"]) or asset["url"] != base + "/" + asset["name"]:
                 raise ValueError("published asset URL escaped its release")
@@ -185,6 +214,7 @@ def check_published(roc: str) -> None:
         manifest = read_manifest(output)
         if manifest["assets"]["platform"]["url"] != url:
             raise ValueError("published manifest does not describe the committed platform URL")
+        verify_release_provenance(output, expected)
         runtime = runtime_from_artifacts(output, manifest, output / "starter")
         check_apps(roc, examples, ROOT, runtime, output / "checks")
     if any(path.read_bytes() != data for path, data in before.items()):
@@ -202,6 +232,7 @@ def check_downloads(directory: Path, roc: str) -> None:
         for asset in [*expected["assets"].values(), expected["site"]]:
             download(asset["url"], output / asset["name"])
         manifest = read_manifest(output)
+        verify_release_provenance(output, expected)
         sources = output / "starter"
         runtime = runtime_from_artifacts(output, manifest, sources)
         check_apps(roc, public_examples(), sources, runtime, output / "checks")
@@ -249,7 +280,10 @@ def prepare(version: str, directory: Path, roc: str) -> None:
         starter.writestr("README.md", f"# Roc Signals {version}\n\nInstall `{pin}` from https://github.com/roc-lang/nightlies/releases/tag/{pin}.\nRun `roc version` to verify it. Each examples-web/<name>/ folder includes the complete app and native specs.\n\nBuild for the browser: `roc build --target=wasm32 --opt=size --output=examples-web/<name>/app.wasm examples-web/<name>/main.roc`.\nServe this directory over HTTP (for example `python3 -m http.server`) and open examples-web/<name>/index.html.\n\nFor native specs, build with `roc build --target=<target> --output=app examples-web/<name>/main.roc`, then run `./app examples-web/<name>/specs/<case>.scm`. Targets: x64musl, arm64musl, x64mac, arm64mac.\nNo Zig build or repository checkout is required.\n")
     manifest = {"schema_version": 1, "version": version,
                 "source_sha": source_sha,
-                "compiler_pin": pin, "compiler_channel": "nightly-bootstrap", "assets": {}}
+                "compiler_pin": pin, "compiler_channel": "nightly-bootstrap", "assets": {},
+                "dependencies": read_lock(ROOT / "dependencies.lock.json"),
+                "provenance": {"signer_workflow": REPOSITORY + "/.github/workflows/release.yml",
+                               "source_ref": "refs/heads/main"}}
     for kind, path in {"platform": platform, "browser": directory / "signals-browser.zip", "starters": directory / "signals-starters.zip"}.items():
         manifest["assets"][kind] = {"name": path.name, "url": f"{RELEASE_BASE}/{version}/{path.name}", "sha256": digest(path)}
     (directory / "signals-release.json").write_text(json.dumps(manifest, indent=2) + "\n")

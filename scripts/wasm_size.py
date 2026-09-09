@@ -192,6 +192,7 @@ def build_host(*, named: bool) -> None:
 def prepare_platform(destination: Path, host_object: Path | None = None) -> Path:
     shutil.copytree(ROOT / "platform-web", destination, dirs_exist_ok=True)
     if host_object is not None:
+        (destination / "targets" / "wasm32").mkdir(parents=True, exist_ok=True)
         shutil.copy2(host_object, destination / "targets" / "wasm32" / "host.wasm")
     return destination / "main.roc"
 

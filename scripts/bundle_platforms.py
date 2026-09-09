@@ -3,6 +3,7 @@
 import argparse
 import functools
 import http.server
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,8 +14,75 @@ import tempfile
 from build_gui import build as build_gui
 from prepare_platforms import prepare_platform
 from gui_suite import examples as gui_examples
+from prepare_dependencies import verified_web_dependencies, WEB_ARTIFACTS
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def stage_web_inputs(source, stage):
+    """Bundle current host outputs with freshly verified dependency releases.
+
+    An explicit host inventory prevents ignored files left by other builds from
+    entering a release. Mutable development libc copies are never bundled.
+    """
+    hosts = [f"{target}/libhost.a" for target in ("x64mac", "arm64mac", "x64musl", "arm64musl")]
+    hosts.append("wasm32/host.wasm")
+    for name in hosts:
+        path = source / "targets" / name
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"missing or invalid web host output: {path}")
+    with verified_web_dependencies() as inputs:
+        for name in hosts:
+            destination = stage / "targets" / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source / "targets" / name, destination)
+        for identity in WEB_ARTIFACTS:
+            for path in (inputs / identity).rglob("*"):
+                if not path.is_file():
+                    continue
+                relative = path.relative_to(inputs / identity)
+                if relative.as_posix() == "dependency.json":
+                    relative = Path("dependency-manifests") / (identity + ".json")
+                destination = stage / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if destination.exists():
+                    if destination.read_bytes() != path.read_bytes():
+                        raise ValueError(f"conflicting dependency input: {relative}")
+                else:
+                    shutil.copyfile(path, destination)
+        shutil.copyfile(inputs / "dependencies.lock.json", stage / "dependencies.lock.json")
+
+
+def stage_example_package(source, destination):
+    """Include a pinned source dependency required by downloadable GUI examples.
+
+    The upstream inventory is the complete admission list. An untracked file or
+    a local edit cannot silently become part of the downloaded example package.
+    """
+    metadata = (source / "upstream.json").read_bytes()
+    inventory = json.loads(metadata)["files_sha256"]
+    files = {"upstream.json": metadata}
+    for name, expected in inventory.items():
+        path = source / name
+        if Path(name).name != name or "\\" in name or path.is_symlink():
+            raise ValueError("unsafe example dependency file")
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise ValueError(f"example dependency differs from its upstream pin: {path}")
+        files[name] = data
+    if destination.exists():
+        actual = {path.relative_to(destination).as_posix(): path.read_bytes()
+                  for path in destination.rglob("*") if path.is_file()}
+        if actual != files or any(path.is_symlink() for path in destination.rglob("*")):
+            raise ValueError("example dependency output differs; use a fresh bundle output directory")
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=destination.parent, prefix=".example-package-") as temporary:
+        stage = Path(temporary) / "package"
+        stage.mkdir()
+        for name, data in files.items():
+            (stage / name).write_bytes(data)
+        stage.rename(destination)
 
 
 def main():
@@ -47,16 +115,18 @@ def main():
             stage = Path(tmp)
             source = ROOT / ('platform-' + package)
             prepare_platform(source, stage)
-            trees = [source / 'targets']
+            trees = []
+            if package == 'web':
+                stage_web_inputs(source, stage)
             if package == 'gui':
-                trees += [prebuilt.resolve() for prebuilt in args.prebuilt_targets]
+                trees = [source / 'targets'] + [prebuilt.resolve() for prebuilt in args.prebuilt_targets]
             hosts = []
             for tree in trees:
                 if not tree.is_dir():
                     raise SystemExit(f'Prebuilt targets directory not found: {tree}')
                 hosts += [(tree, p) for p in tree.rglob('*')
                           if p.is_file() and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json', '.tbd'}]
-            if not hosts:
+            if package == 'gui' and not hosts:
                 raise SystemExit(f'No {package} hosts found; run without --no-build.')
             for tree, path in hosts:
                 dest = stage / 'targets' / path.relative_to(tree)
@@ -81,6 +151,7 @@ def main():
     origin = f'http://127.0.0.1:{args.port}'
     links = '\n'.join(f'<li><a href="{path}">{name} platform</a></li>' for name, path in manifest.items())
     if 'gui' in manifest:
+        stage_example_package(ROOT / 'vendor/unicode', output / 'vendor/unicode')
         counter = (ROOT / 'examples-gui/counter/main.roc').read_text(encoding='utf-8').replace('../../platform-gui/main.roc', origin + '/' + manifest['gui'])
         (output / 'Counter.roc').write_text(counter, encoding='utf-8')
         links += '\n<li><a href="Counter.roc">Counter.roc</a> — roc build Counter.roc</li>'
