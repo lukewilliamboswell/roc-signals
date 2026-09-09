@@ -1,19 +1,58 @@
 name: GUI host link inputs
 
-# Publishes the prebuilt, app-independent GUI link inputs on their own release
-# cycle. Platform bundles pull a published set through
-# `scripts/bundle.sh --package gui --no-build --prebuilt-targets DIR`, so a
-# host rebuild happens only when the host itself changes, and nothing binary is
-# ever committed: every archive carries signed build provenance that
-# `gh attestation verify` checks against this repository.
+# Publishes host-owned archives after native tests of the extracted candidates.
+# External dependency inputs have their own release and verification policies.
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/gui-hosts.yml
+      - scripts/build_gui.py
+      - scripts/windows_gnu_build.py
+      - scripts/windows_gnu_coff.py
+      - scripts/windows_fxc_inventory.ps1
+      - scripts/test_windows_gnu_candidate.py
+      - scripts/test_windows_gnu_coff.py
+      - scripts/build_macos_stubs.py
+      - scripts/check_macos_interfaces.py
+      - scripts/bundle_platforms.py
+      - scripts/test_macos_stubs.py
+      - dependencies/macos-interfaces/**
+      - .cargo/config.toml
+      - scripts/test_freetype_boundary.py
+      - scripts/cargo_build_evidence.py
+      - scripts/host_build_identity.py
+      - scripts/test_host_build_identity.py
+      - scripts/host_notice_payload.py
+      - scripts/prepare_gui_host_release.py
+      - scripts/test_host_notice_payload.py
+      - scripts/gui_host_artifacts.py
+      - scripts/test_gui_host_artifacts.py
+      - scripts/rust_license_inventory.py
+      - scripts/test_rust_license_inventory.py
+      - scripts/toolchain_license_inventory.py
+      - scripts/test_toolchain_license_inventory.py
+      - dependencies/gui-host-notices/**
+      - scripts/release_dependencies.py
+      - scripts/release_gui_hosts.py
+      - scripts/dependency_artifacts.py
+      - scripts/dependency_archive.py
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Release tag for this set of link inputs (gui-hosts-<date>)
+        description: New independent host release tag (deps-gui-host-<version>)
         type: string
         required: true
+
+      release_targets:
+        description: Native host targets to publish
+        type: choice
+        default: x64glibc
+        options:
+          - x64glibc
+          - x64mingw
+          - arm64mac
+          - x64glibc,x64mingw
 
 permissions:
   contents: read
@@ -21,6 +60,10 @@ permissions:
 
 env:
   GH_TOKEN: ${{ github.token }}
+
+concurrency:
+  group: gui-hosts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -30,13 +73,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-2025
-            target: x64win
-          - os: ubuntu-24.04
-            target: x64glibc
-          # arm64mac needs a runner with Xcode's Metal toolchain component; add
-          # it here once one is validated, alongside its macos-sysroot tree.
+        # PRs validate all native hosts; a release builds only its selected targets.
+        include: >-
+          ${{ fromJSON(github.event_name != 'workflow_dispatch'
+            && '[{"os":"windows-2025","target":"x64mingw"},{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"macos-15","target":"arm64mac"}]'
+            || inputs.release_targets == 'x64glibc'
+            && '[{"os":"ubuntu-24.04","target":"x64glibc"}]'
+            || inputs.release_targets == 'arm64mac'
+            && '[{"os":"macos-15","target":"arm64mac"}]'
+            || inputs.release_targets == 'x64mingw'
+            && '[{"os":"windows-2025","target":"x64mingw"}]'
+            || '[{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"windows-2025","target":"x64mingw"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -45,6 +92,13 @@ jobs:
         with:
           python-version: '3.12'
       - uses: ./.github/actions/setup-toolchain
+      - name: Check host archive admission
+        run: |
+          python -m unittest discover -s scripts -p test_host_notice_payload.py
+          python -m unittest discover -s scripts -p test_host_build_identity.py
+          python -m unittest discover -s scripts -p test_gui_host_artifacts.py
+          python -m unittest discover -s scripts -p test_rust_license_inventory.py
+          python -m unittest discover -s scripts -p test_toolchain_license_inventory.py
       - name: Install GUI host build dependencies
         shell: bash
         run: |
@@ -53,6 +107,24 @@ jobs:
             sudo apt-get install -y libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev
           fi
           rustup toolchain install 1.95.0 --profile minimal
+          if [ "$RUNNER_OS" = Windows ]; then
+            rustup target add --toolchain 1.95.0 x86_64-pc-windows-gnullvm
+          fi
+      - name: Verify FreeType build-script suppression
+        if: runner.os == 'Linux'
+        env:
+          SIGNALS_TEST_CARGO_BOUNDARY: '1'
+        run: python3 -m unittest discover -s scripts -p test_freetype_boundary.py
+      - name: Install the selected macOS Metal toolchain
+        if: runner.os == 'macOS'
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+          TOOLCHAINS: Metal
+        run: |
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain
+          echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
+          echo "TOOLCHAINS=Metal" >> "$GITHUB_ENV"
       - name: Restore compiled Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         env:
@@ -61,7 +133,7 @@ jobs:
           shared-key: gui-dependencies
           cache-workspace-crates: false
           cache-bin: false
-          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH
+          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH DEVELOPER_DIR TOOLCHAINS
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Build the optimized host and its link inputs
         env:
@@ -69,15 +141,12 @@ jobs:
         shell: bash
         run: |
           python scripts/prepare_platforms.py
-          python scripts/build_gui.py
-          tar -cf "gui-link-inputs-${{ matrix.target }}.tar" -C platform-gui/targets "${{ matrix.target }}"
-          python -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest(), sys.argv[1])" "gui-link-inputs-${{ matrix.target }}.tar" | tee "gui-link-inputs-${{ matrix.target }}.sha256"
+          python scripts/build_gui.py --cargo-evidence "$RUNNER_TEMP/cargo-evidence"
+          python scripts/prepare_gui_host_release.py --target "${{ matrix.target }}" --cargo-evidence "$RUNNER_TEMP/cargo-evidence" --output host-candidate --roc roc
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: gui-link-inputs-${{ matrix.target }}
-          path: |
-            gui-link-inputs-${{ matrix.target }}.tar
-            gui-link-inputs-${{ matrix.target }}.sha256
+          name: gui-host-${{ matrix.target }}
+          path: host-candidate/
           retention-days: 30
 
   publish:
@@ -95,9 +164,25 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          pattern: gui-link-inputs-*
+          pattern: gui-host-*
           merge-multiple: true
-          path: ${{ runner.temp }}/link-inputs
+          path: ${{ runner.temp }}/candidates
+      - name: Select the exact tested host and source pairs
+        env:
+          RELEASE_TARGETS: ${{ inputs.release_targets }}
+        run: |
+          python3 - <<'PYTHON'
+          import os, pathlib, shutil
+          targets = os.environ["RELEASE_TARGETS"].split(",")
+          assert targets and len(set(targets)) == len(targets) and set(targets) <= {"x64glibc", "x64mingw", "arm64mac"}
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          output = root / "link-inputs"
+          output.mkdir()
+          for target in targets:
+              for kind in ("gui-host", "gui-host-sources"):
+                  source = root / "candidates" / f"{kind}-{target}.tar"
+                  shutil.copyfile(source, output / source.name)
+          PYTHON
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: ${{ runner.temp }}/link-inputs/*.tar
@@ -105,22 +190,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TARGETS: ${{ inputs.release_targets }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^gui-hosts-[0-9][A-Za-z0-9.-]*$ ]]; then
-            echo "release_tag must be a new gui-hosts-<version> identity"
-            exit 1
-          fi
-          existing=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" --jq ".[] | select(.ref == \"refs/tags/$RELEASE_TAG\") | .ref")
-          if [ -n "$existing" ]; then
-            echo "tag already exists; inspect and recover the original publication"
-            exit 1
-          fi
-          for archive in "$RUNNER_TEMP"/link-inputs/*.tar; do
-            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
-              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/gui-hosts.yml" \
-              --source-digest "$GITHUB_SHA" --source-ref refs/heads/main --deny-self-hosted-runners
-          done
-          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "GUI host link inputs $RELEASE_TAG" \
-            --latest=false \
-            --notes "Prebuilt app-independent GUI link inputs for platform-gui, built from $GITHUB_SHA. Verify with: gh attestation verify <file> --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/gui-hosts.yml --source-digest $GITHUB_SHA --source-ref refs/heads/main --deny-self-hosted-runners" \
-            "$RUNNER_TEMP"/link-inputs/*.tar "$RUNNER_TEMP"/link-inputs/*.sha256
+          IFS=',' read -ra targets <<< "$RELEASE_TARGETS"
+          arguments=()
+          for target in "${targets[@]}"; do arguments+=(--target "$target"); done
+          python3 scripts/release_gui_hosts.py --directory "$RUNNER_TEMP/link-inputs" --tag "$RELEASE_TAG" "${arguments[@]}"

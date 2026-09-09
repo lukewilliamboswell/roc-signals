@@ -41,20 +41,34 @@ The platform architecture and host boundary notes live in [design.md](design.md)
 
 ## Use a release
 
-Download `signals-starters.zip` from the [supported release](https://github.com/lukewilliamboswell/roc-signals/releases).
+Download `signals-starters.zip` from the [web platform RC, 0.2.0-rc2](https://github.com/lukewilliamboswell/roc-signals/releases/tag/0.2.0-rc2).
 It contains the complete examples, native specs, browser runtime, and direct Roc
 build commands. Install the exact compiler named in the application's `roc`
 header. A platform archive already contains its host binaries; users need no
 Zig build or repository checkout.
 
-Public examples pin immutable platform/package release URLs. The nightly bot
+Try a prebuilt release candidate with Roc `nightly-2026-09-04-c125b82`:
+
+| Native target | Download |
+| --- | --- |
+| Linux x86_64 (glibc/Wayland) | [Linux starters — rc.1](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.1/signals-gui-starters.zip) |
+| Apple Silicon macOS | [Mac starters — rc.2](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.2/signals-gui-starters.zip) |
+| Windows x86_64 | [Windows starters — rc.3](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.3/signals-gui-starters.zip) |
+
+Extract the archive and build Counter with `roc build --target=x64glibc --output=counter examples-gui/counter/main.roc`
+on Linux, or `roc build --target=arm64mac --output=counter examples-gui/counter/main.roc`
+on Apple Silicon. Run `./counter`. On Windows, use
+`roc build --target=x64mingw --output=counter.exe examples-gui/counter/main.roc`
+and run `.\counter.exe` in PowerShell. These starters need no Rust, Zig, or repository
+checkout. See [Native GUI](www/content/docs/native-gui.md#try-a-release-candidate) for runtime requirements.
+
+Public web examples pin immutable platform/package release URLs. The nightly bot
 updates their compiler pins and the development platform pin together, tests both
 the released dependencies and current source, and automatically merges passing
 pin-only updates. Failed updates remain open for investigation. A repair may need
 a new release before the examples can accept that compiler.
 
-The first release candidate for the new API is `0.2.0-rc1`; compiler compatibility
-branches are not needed during this exact-nightly bootstrap. Package versions
+Compiler compatibility branches are not needed during this exact-nightly bootstrap. Package versions
 are independent of Roc versions. See [nightly maintenance](.github/ROC_NIGHTLY.md).
 
 ## Develop locally

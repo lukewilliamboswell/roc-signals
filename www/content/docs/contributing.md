@@ -190,6 +190,55 @@ Roc app executables built during tests are written under `.test-out/` by
 
 ## Dependency artifact releases
 
+### macOS linker interfaces
+
+To inventory the compiled Rust host's external references without reading SDK
+interfaces, build the optimized archive and use the active Rust toolchain's
+LLVM reader. The matching reader is necessary because the static library can
+contain Rust standard-library bitcode that older Apple or Homebrew tools cannot
+read:
+
+```sh
+rustup component add llvm-tools-preview
+TOOLCHAINS=Metal cargo build --locked -p signals-gpui-host --release -j 2
+python3 scripts/audit_macos_archive.py target/release/libsignals_gpui_host.a --output /tmp/rust-host-imports.json
+python3 -m unittest scripts/test_macos_archive_audit.py
+```
+
+For a custom Cargo target directory, substitute its release archive path. Supply
+additional archives as positional arguments to subtract their definitions too;
+for example, include `platform-gui/targets/arm64mac/libengine.a` from the same
+platform build. The report records archive hashes, the reader version, and each
+external symbol's referring members. A reader failure aborts the inventory
+instead of publishing partial results. `--llvm-nm` selects an explicit compatible
+reader when inspecting an archive from another Rust toolchain.
+
+This is a conservative archive inventory before extraction and dead stripping.
+It includes application callbacks and unused dependency code. It does not assign
+symbols to frameworks or establish weak-import attributes or interface provenance.
+Use it to review required interfaces; a minimal stub set additionally needs
+reviewed library ownership and final-link validation for the released archives
+and supported compiler.
+
+The reviewed catalog in `dependencies/macos-interfaces/interfaces.json` selects
+symbols for generated TBD files and records the source URLs for each interface.
+The generator consumes this catalog and hashes the matching host archives:
+
+```sh
+python3 scripts/build_macos_stubs.py \
+  --archives platform-gui/targets/arm64mac \
+  --output /tmp/macos-interfaces-candidate
+```
+
+`build_gui.py` installs freshly generated interfaces after building the host.
+`bundle_platforms.py` generates them again from the selected archives in fresh
+staging, including when using prebuilt hosts. Each output includes the source
+catalog, provenance statement, archive identities, and generated-file hashes.
+After changing the catalog or host, validate final application links, native
+specs, desktop smoke tests, and consumption through a bundled platform URL.
+
+### musl
+
 The `Dependency releases` workflow builds musl from `dependencies/musl.json`,
 tests the exact archives on Linux x86-64 and AArch64, and checks that a second
 build produces the same bytes. Pull requests validate without publication.
@@ -236,12 +285,41 @@ command attaches all assets before publishing; publication then locks their byte
 and the tag. Historical releases created before immutability was enabled remain
 mutable and must not be described as having that protection.
 
+The `Complete Windows system import releases` workflow builds its independent
+pure-import package on Linux x86-64 and executes the exact candidate on Windows.
+It installs the recipe's checksum-pinned Rust and Zig tools itself. To reproduce
+both builds with Python 3.12 or newer:
+
+```sh
+python3 scripts/build_windows_system_imports.py --output /tmp/windows-imports-a --cache /tmp/windows-import-downloads
+python3 scripts/build_windows_system_imports.py --output /tmp/windows-imports-b --cache /tmp/windows-import-downloads
+cmp /tmp/windows-imports-a/windows-system-imports-x64mingw.tar /tmp/windows-imports-b/windows-system-imports-x64mingw.tar
+python3 scripts/test_windows_system_import_artifact.py /tmp/windows-imports-a/windows-system-imports-x64mingw.tar
+```
+
+The last command requires Zig 0.16.0. On Windows, run the same candidate probe
+with `--require-native`; cross-linking on Linux is not a native runtime test.
+Publication uses a fresh `deps-windows-system-imports-<version>` tag on `main`
+after both build and native jobs pass. This package does not yet replace existing
+Windows consumer inputs or provide CRT implementations.
+
 GUI CI caches compiled Cargo dependencies using the lockfile, Rust environment,
 and runner image identity. Only successful pushes to `main` save the cache;
 pull requests restore it without publishing entries. Workspace host code remains
 outside that dependency cache and is rebuilt from the current checkout. This is
 a build acceleration mechanism, separate from verification of release inputs.
 Published-download checks continue to use fresh Roc caches.
+
+Pull-request CI selects affected jobs from the complete merge-base diff using
+`scripts/ci_changes.py`. GUI-only changes run the native GUI jobs; web changes
+run browser/native checks, published examples, and release archive checks.
+Known documentation paths run the site check. Shared engine changes, build
+infrastructure, compiler/dependency locks, and unknown paths select every area.
+Renames count at both their old and new paths. Main-branch pushes and manual
+validation still run every area, and release workflows retain their full gates.
+The required `Platform source` check verifies the selection job and requires
+success from every selected job; it accepts a skip only for an unselected area.
+New commits cancel superseded PR CI runs, but do not cancel main or release runs.
 
 The `Windows dependency releases` workflow independently generates the ADVAPI32
 import library from the definition and license hashes in
@@ -258,6 +336,155 @@ python3 scripts/test_windows_import_artifact.py /tmp/windows-import-candidate/wi
 The second command cross-links on Linux; native execution is required on Windows
 before publication. This artifact contains no Signals host or application
 manifest resource.
+
+The `FreeType dependency releases` workflow builds the pinned upstream source
+from `dependencies/freetype.json`. On Linux x86-64, Python 3.12 and Docker are
+sufficient to run the same producer:
+
+```sh
+python3 scripts/build_freetype.py --output /tmp/freetype-candidate
+python3 scripts/build_freetype.py --output /tmp/freetype-rebuild
+cmp /tmp/freetype-candidate/freetype-x64glibc.tar /tmp/freetype-rebuild/freetype-x64glibc.tar
+python3 -m unittest scripts/test_freetype_dependencies.py
+```
+
+Source downloads are cached by digest under `~/.cache/roc-signals/sources` and
+verified again before each build. Docker constructs the reviewed builder from
+its base-image digest, bootstrap CA and Zig distribution digests, and authenticated Ubuntu package
+snapshot; the actual compilation has no network access and does not mount Cargo
+or platform target directories as build inputs. Each candidate is extracted and
+tested by rendering an exact glyph bitmap. No compiler pin or platform host
+build is involved. CI repeats the build in another clean container before
+publication.
+
+Dispatch this workflow on `main` with a new `deps-freetype-<version>` tag to
+publish tested bytes and their lock through `freetype-dependencies.yml`.
+Review and merge the lock entry separately when adopting the dependency. The
+Linux GUI builder verifies that release before compilation; the bundler verifies
+it again in fresh staging and excludes the development copy of `libfreetype.so`.
+Combined GUI bundles retain the lock entries and notices for FreeType,
+xkbcommon, Windows imports, glibc link inputs, and the LLVM unwinder. Linux CRT
+and unwinder inputs come from their independent verified releases.
+The artifact preserves FreeType's system SONAME; applications still use the operating
+system's runtime font libraries. The C compiler is Zig 0.16.0, targeting baseline
+x86-64 and glibc 2.39; the separate Roc compiler pin is preserved.
+The Linux link list omits the legacy `libutil`, `librt`, `libpthread`, and
+`libdl` compatibility libraries. The supported glibc provides the required
+symbols through libc; both native application specs and rendering smoke tests
+exercise this link list. xkbcommon and its X11 library remain required inputs.
+See `dependencies/README.md` for the input and
+runtime boundaries.
+
+The `glibc dependency releases` workflow generates Linux x86-64 startup and
+glibc link inputs from the checksum-pinned Zig distribution. Reproduce it with
+Python 3.12 and Docker:
+
+```sh
+python3 scripts/build_glibc.py --output /tmp/glibc-candidate
+python3 scripts/build_glibc.py --output /tmp/glibc-rebuild
+cmp /tmp/glibc-candidate/glibc-x64glibc.tar /tmp/glibc-rebuild/glibc-x64glibc.tar
+python3 -m unittest scripts/test_glibc_dependencies.py scripts/test_dependency_artifacts.py
+```
+
+Both builds run the native probe against their extracted candidate. Dispatch
+`glibc-dependencies.yml` on `main` with a new `deps-glibc-<version>` tag to attest
+and publish the tested bytes. The archive contains corresponding source and a
+standalone reproduction tree under `sources/glibc/`; run the same build command
+from that directory to reproduce the producer. Review the resulting consumer
+lock and platform link-input changes separately before adoption. Normal GUI
+builds reuse this pinned release, and bundles retain its complete source and
+notice payload alongside the link inputs. Admission requires the target-specific
+header source payload plus complete glibc, LLVM and Linux header license terms;
+older artifacts missing those notices are refused.
+
+The `xkbcommon dependency releases` workflow independently builds both keyboard
+libraries from the source and tool versions pinned in `dependencies/xkbcommon.json`.
+Its native Meson configuration uses Zig. To reproduce the producer on Linux x86-64
+with Python 3.12 and Docker:
+
+```sh
+python3 scripts/build_xkbcommon.py --output /tmp/xkbcommon-candidate
+python3 scripts/build_xkbcommon.py --output /tmp/xkbcommon-rebuild
+cmp /tmp/xkbcommon-candidate/xkbcommon-x64glibc.tar /tmp/xkbcommon-rebuild/xkbcommon-x64glibc.tar
+python3 -m unittest scripts/test_xkbcommon_dependencies.py scripts/test_prepare_dependencies.py
+```
+
+Dispatch `xkbcommon-dependencies.yml` on `main` with a new
+`deps-xkbcommon-<version>` tag to publish the tested, attested archive. Review the
+resulting lock entry separately. Normal GUI builds download and verify the pinned
+release; they do not rebuild xkbcommon or copy its link libraries from the build
+machine. Bundles independently verify and stage both libraries and their license.
+The runtime still uses the operating system's xkbcommon/XCB libraries and keyboard
+layout data through the libraries' existing SONAMEs.
+
+The `LLVM unwind dependency releases` workflow independently builds Linux x86-64
+`libunwind.a` from the same checksum-pinned Zig distribution. Reproduce the two
+container builds and test Rust panic recovery with Rust 1.95.0 installed:
+
+```sh
+python3 scripts/build_unwind.py --output /tmp/unwind-candidate
+python3 scripts/build_unwind.py --output /tmp/unwind-rebuild
+cmp /tmp/unwind-candidate/unwind-x64glibc.tar /tmp/unwind-rebuild/unwind-x64glibc.tar
+python3 scripts/test_unwind_rust.py --candidate /tmp/unwind-candidate/unwind-x64glibc.tar
+python3 -m unittest scripts/test_unwind_dependencies.py scripts/test_glibc_dependencies.py
+```
+
+Each build tests C++ exception handling and destructor execution using the
+extracted candidate with explicit final link inputs. Rust's probe checks panic
+recovery and `Drop` execution. Dispatch `unwind-dependencies.yml` on `main` with a
+new `deps-unwind-<version>` tag to attest and publish the tested archive. Original
+sources, notices, and reproduction inputs accompany `libunwind.a`; C++ support
+archives used only by the producer probe are excluded. Adopting the resulting
+consumer lock is a separate review. Linux GUI host builds and bundle staging
+verify that lock and use its `libunwind.a`, preserving notices and reproduction
+sources in bundles. No ambient GCC unwinder is copied into platform inputs.
+
+For host-license review, `scripts/rust_license_inventory.py` collects original
+notices from the crate archives selected by a `cargo-about --format json`
+report. It checks each archive against `Cargo.lock`, preserves the publisher's
+manifest separately, and reports packages without standalone notice files:
+
+```sh
+python3 scripts/rust_license_inventory.py --about /tmp/host-about.json --lock Cargo.lock --cache /path/to/cargo/registry/cache --supplements dependencies/gui-host-notices/manifest.json --review dependencies/gui-host-notices/review.json --include-sources --output /tmp/host-notices
+python3 -m unittest scripts/test_rust_license_inventory.py
+```
+
+The cache argument names the directory containing the downloaded `.crate`
+archives. Supplements preserve original upstream notice files and are admitted
+only when their crate hash and Git revision match the published archive. Their
+own bytes are checked against the reviewed manifest. The report determines the
+selected package set; this collector does
+not establish that the selection covers a host binary, resolve missing upstream
+notices, or account for toolchain runtime notices. Its inventory is review
+evidence, not permission to publish an incomplete host package.
+
+`--include-sources` also retains each selected original `.crate` archive with
+its locked hash. This preserves notices embedded in source comments and makes
+the published source available for review. Retaining source does not establish
+that an absent license grant exists; packages without standalone notices remain
+explicit in `missing_notice_files`.
+`--review` regenerates selected original source comments, declarations, and
+upstream caveats from the hash-bound review manifest. Its evidence categories
+do not certify permission or make standalone-file absence a publication blocker.
+
+Collect toolchain notice evidence separately from the distributions pinned in
+`dependencies/gui-host-notices/toolchains.json`:
+
+```sh
+python3 scripts/toolchain_license_inventory.py --target x64glibc --rust-archive /path/to/rustc-1.95.0-x86_64-unknown-linux-gnu.tar.xz --zig-source-archive /path/to/zig-0.16.0.tar.xz --output /tmp/host-toolchain-notices
+python3 -m unittest discover -s scripts -p test_toolchain_license_inventory.py
+```
+
+The collector verifies archive hashes before reading notice files. It retains
+Rust's standard-library copyright report and license texts, plus Zig's license
+and complete original source archive so source-level notices are preserved.
+Use the recipe's Rust distribution for the selected target. This is review
+evidence; it does not identify which runtime components a particular host links
+or cover SDK inputs. The release composer incorporates both inventories into the host/source pair
+with the actual compiled dependency selection and publication validation.
+
+Explicit GUI host release dispatches build only the selected native host targets.
+Pull requests validate complete host/source pairs on Linux, Windows, and macOS.
 
 ## Coverage
 
@@ -432,8 +659,12 @@ and `gui/` directories. `BUNDLE_OUT_DIR` or `--output-dir` changes that root.
 `--package web` and `--package gui` select one platform and put its archive
 directly in the output directory. `--no-build` reuses prepared hosts;
 `--debug-gui` selects a faster development Rust build. Use the default optimized
-GUI build for distributable archives: development archives can exceed the pinned
-compiler's default 100 MiB transitive package budget. Existing web test, site,
+GUI build for distributable archives. Both development and optimized GUI archives
+can exceed the pinned compiler's 100 MiB expanded transitive package budget;
+local-file platform builds passing does not establish that a URL-bound bundle
+can be consumed. The size-limit diagnostic suggests `--max-transitive-bytes`,
+but that option is not implemented by the pinned compiler. See
+`UPSTREAM_COMPILER_BUGS.md` for the reproducible limitation. Existing web test, site,
 and release commands explicitly select the web package.
 
 For the separate browser JavaScript artifact, run `python3 scripts/bundle_browser.py`.
@@ -931,32 +1162,66 @@ See `UPSTREAM_COMPILER_BUGS.md` for the observed limitations.
 
 The GUI targets are Apple Silicon macOS, Linux x86_64 with glibc and a
 Wayland/GPU session, and Windows x86_64. Host development needs Rust (tested
-with 1.94 on macOS, and 1.95.0 in Linux and Windows CI) and Zig 0.16. Linux also
-needs a C toolchain/CRT, FreeType and
-xkbcommon development packages, and the xkbcommon-X11 runtime. macOS needs Xcode
+with 1.95.0 on macOS, Linux, and Windows CI) and Zig 0.16. Linux also
+needs a C toolchain for Rust dependencies with native code,
+xkbcommon development packages, and the xkbcommon-X11 runtime. FreeType is
+an independently verified release input. The Linux Cargo `links` override in
+`.cargo/config.toml` supplies `dylib=freetype` and suppresses freetype-sys
+`build.rs` entirely, so missing pkg-config cannot trigger its bundled C build.
+Roc links the released FreeType input separately; host release evidence rejects
+any executed or compiled freetype-sys build script. Changing that crate version
+requires reviewing the override. macOS needs Xcode
 with its Metal compiler component (`xcodebuild -downloadComponent MetalToolchain`).
 If Xcode reports mismatched support frameworks, complete
-`xcodebuild -runFirstLaunch` first. Windows needs the `x86_64-pc-windows-msvc`
-Rust toolchain; the optimized host build also compiles GPUI's shaders with the
-Windows SDK's `fxc.exe` (set `GPUI_FXC_PATH` if it is not discovered), and a
-development build compiles them at runtime instead. Zig supplies the archiver
-and resource compiler, Roc's own `x64win` link supplies the C runtime, and the
-one additional import library is fetched from the independently signed Windows
-dependency release pinned in `dependencies.lock.json`. Its producer uses Zig's
-MinGW-w64 definitions. Source host builds require authenticated GitHub CLI access
-and verify that dependency before compiling the host; there is no local import
-generation fallback. Windows bundle staging verifies it again and includes the
-selected lock, manifest, and license. The host build still compiles its own
-application manifest resource. No MSVC link step or Windows SDK libraries are
-involved. Use
-`python` rather than
-`python3` in the commands below on Windows, where `python3` is often a Store
-shortcut; `build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
+`xcodebuild -runFirstLaunch` first. Windows uses Rust's MSVC compiler host with
+its `x86_64-pc-windows-gnullvm` target (`rustup target add --toolchain 1.95.0
+x86_64-pc-windows-gnullvm`). The shared Windows builder pins Zig 0.16.0 and the
+Microsoft-signed FXC/compiler DLL pair from SDK 10.0.26100.0, file version
+10.0.26100.8249. It checks the actual loaded compiler DLL and committed hashes;
+ambient `GPUI_FXC_PATH` cannot override release shader tooling. Optimized builds
+compile GPUI shaders before packaging; development builds compile them at runtime.
+
+Windows host builds verify and reuse both independently signed dependencies in
+`dependencies.lock.json`: complete per-DLL import archives and GNU CRT inputs.
+Authenticated GitHub CLI access is required. There is no local native dependency
+build fallback. The host and engine use the GNU ABI, and the host build produces
+its own application manifest resource. Structural COFF validation separates only
+import records and exact linker helpers from the raw Rust archive, preserving
+every implementation member byte-for-byte and in order. The transformation
+receipt binds raw Cargo output to the final archive; engine/resource bytes remain
+unchanged. Complete original notices are bundled and the validated source
+companion remains a separate release asset.
+
+Roc's final Windows link explicitly selects `--target=x64mingw` and uses all
+released inputs from the platform header. For a direct Windows build, run
+`roc build --target=x64mingw examples-gui/counter/main.roc --output=Counter.exe`. It does not discover installed MSVC/SDK
+libraries. FXC remains a build-time SDK tool. Use `python` instead of `python3`
+in the commands below on Windows, where `python3` can be a Store shortcut.
+`build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
+
+The separate `Windows GNU host candidate` workflow can inventory shader tooling
+or test identified CI artifacts before release. It uses the same native builder
+and structural transformer as production. Its full app gate admits original
+notices and paired sources, then runs all six builds/specs/render checks natively
+and through a fresh HTTP bundle cache. Candidate artifacts do not substitute for
+signed production dependency admission.
+
 Other native targets, including Intel macOS and Windows on Arm, are not
 implemented.
 The GUI builder selects `TOOLCHAINS=Metal` on macOS unless explicitly overridden;
 use the same setting for direct `cargo test` commands if Xcode's default lookup
 still reports the installed Metal component as missing.
+
+The GUI platform header lists the Rust host and Zig engine as separate link
+inputs: `libsignals_gpui_host.a` and `libengine.a` on all supported native targets. Roc links these with the
+application object and the other declared inputs to produce the executable.
+The builder does not merge them into a combined host archive. Rebuild older
+prebuilt target directories before using them with this header.
+
+Cargo tracks the checkout identity supplied by `.cargo/config.toml` through the
+host's `build.rs`. This prevents stale host reuse when multiple checkouts share
+`CARGO_TARGET_DIR`, without cleaning the host on every build. Run direct Cargo
+commands from the workspace or crate directory so Cargo discovers that config.
 
 ```sh
 python3 scripts/build_gui.py --debug
@@ -977,7 +1242,7 @@ each app must have specs. Every GUI check must pass; this suite has no known-fai
 allowlist. `--spec-filter`, `--shard`, `--jobs`, and `--fail-fast` also apply.
 The default `all` suite includes GUI checks on Linux x86_64; run `gui` explicitly
 on macOS, where it requires full Xcode and the Metal toolchain. CI runs them in a
-dedicated Linux and Windows jobs. GUI executables remain under `.test-out/gui`
+dedicated Linux, Windows, and macOS jobs. GUI executables remain under `.test-out/gui`
 when output is kept. Linux CI then runs `xvfb-run -a python3 scripts/gui_smoke.py --wayland`
 with Weston and Mesa's software Vulkan driver. Weston runs on Xvfb so GPUI
 receives a Wayland input seat as well as a virtual display; Weston's headless
@@ -994,13 +1259,11 @@ validation result. Host errors remain visible without tracing.
 
 Host builds default to two Cargo workers. Use `scripts/build_gui.py --jobs N`
 or `scripts/test.py gui --gui-build-jobs N` to adjust memory pressure. Parallel
-app work should serialize substantial host builds. The builder cleans the local
-Rust host crate before compiling so a shared Cargo target cannot reuse another
-worktree's host implementation; dependency artifacts remain cached.
-Release builds retain Rust's optimized per-crate compilation and local ThinLTO,
-with cross-crate LTO disabled so rebuilding the host does not optimize the full
-dependency graph again. This policy makes no claim about runtime performance
-relative to a whole-program LTO build.
+app work should serialize substantial host builds. Cargo reuses valid cached
+artifacts without an unconditional host clean. Rebuilding and optimizing the
+Rust host uses ThinLTO across its Rust dependency graph to keep the archive
+within Roc’s package-size budget. External native link libraries
+have independent release cycles and are fetched from their verified locks.
 GUI specs validate shared
 semantics; the separate window smoke above checks rendering and adapter dispatch,
 and does not establish OS keyboard, pointer, or IME behavior. GPUI adapter tests
@@ -1011,34 +1274,87 @@ and run `roc build Counter.roc`. Alternatively, `roc run Counter.roc --opt=speed
 compiles and opens the window directly. Plain `roc run` currently encounters the
 required-`main` shim collision documented in `UPSTREAM_COMPILER_BUGS.md`, case 12. The app author needs the pinned Roc compiler
 and the target operating system (plus runtime GUI libraries on Linux).
-Rust, Zig, and the native SDK/toolchain are used only when
-preparing the platform bundle. On macOS, the package embeds compiled Metal shaders
-and copies the required SDK framework/library link stubs into
-`targets/macos-sysroot`; building a bundled app does not need Xcode. The macOS
+Rust and Zig are used when preparing the platform bundle. Windows application
+linking still needs Roc's implicit MSVC/SDK inputs. On macOS, the package embeds compiled Metal shaders
+and generates the required framework/library link stubs from the reviewed
+interface catalog into
+`targets/macos-sysroot`; building a bundled app does not need Xcode. The
+final application link takes place on the user's machine during `roc build`
+or the compilation step of `roc run`. The `.tbd` files supply interface metadata;
+macOS supplies the actual framework implementations at runtime. Running an
+already-built executable does not require an Apple SDK. The macOS
 build is validated on macOS 26.3; older versions are not yet validated.
 This produces a native executable, not a desktop
-installer. The Linux prebuilt host depends on the build machine's glibc/library ABI;
-portable release packaging needs a deliberate sysroot and license inventory.
+installer. Linux bundles now include independently built glibc 2.39 link stubs,
+startup objects and complete corresponding source/license inventories. The Rust
+host still depends on its build environment's glibc ABI; the pinned link inputs
+do not establish compatibility with older Linux distributions.
 
-Prebuilt link inputs come from CI on their own release cycle instead of a
-local host build, and no binary is committed. The `GUI host link inputs`
-workflow (`gui-hosts.yml`, dispatched with a `gui-hosts-<date>` tag) builds the
-optimized `platform-gui/targets/<target>` trees on each supported runner,
-records signed build provenance, and publishes them as a GitHub release of
-`gui-link-inputs-<target>.tar` archives. Rerun it only when the host changes.
-To bundle from a published set, verify and extract each archive, then pass the
-extracted `targets/` tree:
+The `GUI host link inputs` workflow (`gui-hosts.yml`) builds native candidates
+and runs all GUI application specs with the pinned Roc compiler against their
+extracted archives. Candidate tests populate empty target directories from the
+independently verified Linux or Windows releases; development target copies are
+not admitted as dependency evidence. All native producers capture the actual Cargo build
+stream, filtered metadata, and unchanged lock with `build_gui.py --cargo-evidence`.
+The notice composer selects the conservative set of compiled packages, retains
+original notices and source declarations, and supplies pinned canonical SPDX
+terms under an explicit expression policy. These reference terms are labeled
+separately from upstream notices; template copyright placeholders are not
+attributed to crates. Unknown expressions and incomplete evidence are rejected.
+
+Mac `--cargo-evidence` builds use a fresh Cargo target beneath the evidence output's
+parent directory so cached shaders cannot be attributed to different tools.
+That scratch target is removed when the build process exits, after the host
+archive has been copied into the platform target directory. The existing host build receipt records the selected Metal/metallib executable
+hashes and version diagnostics, Xcode/SDK identities, and GPUI shader/header/AIR/
+metallib hashes bound to the resulting host. Ordinary development builds retain
+normal Cargo caching. The Mac source companion retains this evidence with the
+exact selected crate sources and compiler notices. No Apple SDK or tool binaries
+are added to the receipt. The original
+objc2 SDK-derived qualification remains preserved as an upstream declaration,
+not treated as an inferred distribution prohibition.
+
+Each eligible candidate comprises `gui-host-<target>.tar` plus
+`gui-host-sources-<target>.tar`. The host contains a hash-indexed compressed notice
+archive; the companion retains exact locked crate sources, Zig sources, and
+Cargo evidence. Rust distribution notices include its standard-library copyright
+report. The host manifest binds the companion digest, and both exact tested
+artifacts receive build attestations and appear in the release lock. Source
+companions remain accessible through that lock without occupying the Roc platform
+bundle or being downloaded for each app build. Preserve the notice archive and
+linked source access when redistributing the bundle.
+
+A main-branch manual dispatch selects Linux, Windows, macOS, or Linux and Windows
+for an independent `deps-gui-host-<version>` release. Mac admission requires the
+complete source/notice pair and native final links/specs against regenerated
+project-authored interfaces; copied SDK stubs are not release inputs. The original
+objc2 qualification is retained alongside its declared license terms. Missing
+standalone license files alone are not a blanket
+publication prohibition: original source evidence and declarations remain visible
+in the package inventory and reviewed expression policy.
+
+Set `HOST_RELEASE` to the actual published tag, verify its lock asset, and pass
+the reviewed lock directly to the bundler:
 
 ```sh
-gh release download gui-hosts-2026-09-09 --pattern 'gui-link-inputs-*.tar' --dir /tmp/hosts
-gh attestation verify /tmp/hosts/gui-link-inputs-x64win.tar --repo lukewilliamboswell/roc-signals
-mkdir -p /tmp/hosts/targets && tar -xf /tmp/hosts/gui-link-inputs-x64win.tar -C /tmp/hosts/targets
-scripts/bundle.sh --package gui --no-build --prebuilt-targets /tmp/hosts/targets
+gh release download "$HOST_RELEASE" --pattern dependencies.lock.json --dir /tmp/hosts
+gh release verify-asset "$HOST_RELEASE" /tmp/hosts/dependencies.lock.json
+scripts/bundle.sh --package gui --no-build --prebuilt-host-lock /tmp/hosts/dependencies.lock.json
 ```
 
-`--prebuilt-targets` copies the tree into the staged platform alongside any
-inputs already present locally, so one bundle can carry every operating
-system's inputs.
+The bundler downloads and verifies every selected archive, including cached
+copies, against the locked digest, source commit, main ref, and this repository's
+host-producing workflow. It extracts into private staging and checks host source
+compatibility before copying any host outputs. Host-related source must be clean
+and committed; documentation-only commits do not invalidate host compatibility.
+Overlapping local and prebuilt hosts for one target are errors.
+
+These archives contain host code and licenses, not external system libraries or
+SDK stubs. Every included target must also have its external link inputs supplied;
+the bundler rejects incomplete targets. Windows ADVAPI32 imports and all declared
+Linux external link inputs are fetched through their independent verified locks.
+Completing Windows CRT/import separation and macOS SDK stub admission remains
+separate work. Raw prebuilt directories are no longer accepted.
 
 The bundle output also contains every registered GUI app under `examples-gui/`,
 including its supporting Roc modules and semantic specs. Those generated app
@@ -1058,3 +1374,81 @@ Wide collections use `Gui.virtual_list` to bound child lookup and layout to the
 visible range; ordinary containers enumerate direct children when rendered.
 See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
 `crates/gpui-host/README.md` for the boundary limits.
+
+### Linux GUI release candidates
+
+`GUI release candidate` (`gui-release.yml`) packages an already published
+host for the selected `x64glibc`, `arm64mac`, or `x64mingw` target. Linux includes the independently
+verified FreeType, glibc, LLVM unwinder, and xkbcommon releases. Apple Silicon uses
+the host-owned project interface catalog; macOS supplies system implementations. It runs no Cargo or Zig host build. Use a fresh checkout with
+no `platform-gui/targets` directory and an immutable `deps-gui-host-<version>`
+release whose source fingerprint matches that checkout.
+
+Dispatch the workflow with a new `gui-X.Y.Z-rc.N` tag, the host release tag,
+`target: x64glibc`, `target: arm64mac`, or `target: x64mingw`, and `validate_only: true` for candidate validation. The job packages the existing
+verified inputs, serves the exact Roc archive over HTTP, builds all six maintained
+GUI applications with their pinned compiler, runs every semantic spec, and opens
+the same executables on its native runner. Linux uses Weston/Xvfb with Mesa
+software Vulkan; Apple Silicon and Windows use their native rendering backends. Rendering must
+report explicit success; the counter also verifies its increment interaction.
+The archive inventory check rejects missing dependency notices and receipts,
+unselected target files, and expanded payloads over Roc's 100 MiB limit.
+
+Mac archive admission regenerates the catalog's expected TBD bytes and checks
+all interface files, original provenance, generator identity, exact host hashes,
+and native validation record. Additional files under `targets/macos-sysroot` are
+rejected. The existing bundler runs the native link/spec validator before bundle
+creation; the RC gate then repeats builds/specs and rendering over fresh HTTP.
+Windows preparation requires both independently released dependency locks and
+the exact complete production header input order. The native Windows runner
+verifies the archive decoder, downloads the pinned Roc compiler, then uses the
+released GNU runtime and complete DLL import libraries without building Rust or
+Zig host inputs. A compatible signed host release and its source companion are
+still mandatory; candidate CI artifacts cannot substitute for those releases.
+All six Windows executables use `--target=x64mingw` and are checked locally over
+fresh HTTP and again from untouched public URLs after publication.
+
+A publishing dispatch must run on `main` with `validate_only: false`. It attests
+the exact tested platform archive, starter ZIP, original host lock, and
+`signals-gui-release.json`, then creates a new immutable prerelease. Repository
+[release immutability](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/establish-provenance-and-integrity/prevent-release-changes)
+must already be enabled. Existing tags or releases are never overwritten; a
+partial publication requires inspecting and recovering those original bytes.
+The workflow verifies the published release and every asset, then rebuilds and
+runs all six applications from their unchanged public release URLs with a fresh
+Roc cache. A post-publication failure does not replace or silently repair assets.
+
+The starter ZIP contains all app sources/specs, the six-app registry, and the
+pinned Unicode source dependency. Compiler pins are preserved and platform URLs
+name the immutable GUI release. Host notices remain inside the platform; the
+original source companion remains at its independently attested host release,
+with its exact digest, size, and URL retained in the GUI manifest and embedded
+dependency lock. Candidate and published checks verify that source is available.
+Windows and macOS are outside this Linux RC and retain their separate release
+completion work.
+
+The CI-only GUI release helper and its tests live under `.github/scripts`, outside
+the host build fingerprint, because packaging verified archives does not alter
+host bytes. Packaging-only changes therefore reuse a compatible host release;
+changes to actual host inputs still invalidate that compatibility check. The
+existing web release workflow and supported web release are independent.
+
+### Validate generated macOS bundles
+
+Local macOS bundles, including `--no-build`, require native Apple Silicon.
+Before creating the bundle, admission links every maintained GUI example with
+the selected host archives and generated interfaces, then runs its native specs.
+The generated validation record binds these exact inputs; regeneration alone
+is not accepted as compatibility evidence. Mac CI repeats this with the Rust
+1.95.0 optimized host and consumes the resulting archive over HTTP with an empty
+Roc cache:
+
+```sh
+python3 scripts/build_gui.py
+python3 scripts/bundle_platforms.py --package gui --no-build --output-dir /tmp/macos-bundle
+python3 scripts/check_macos_interfaces.py --bundle /tmp/macos-bundle
+```
+
+These are candidate checks. Mac host source/notice eligibility and signed
+publication remain separate requirements. Cross-platform bundling of future
+Mac prebuilts will require a verified compatibility receipt.

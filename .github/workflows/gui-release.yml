@@ -1,0 +1,161 @@
+name: GUI release candidate
+
+on:
+  pull_request:
+    paths:
+      - .github/scripts/gui_release.py
+      - .github/scripts/test_gui_release.py
+      - .github/workflows/gui-release.yml
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: New GUI RC tag (gui-X.Y.Z-rc.N)
+        required: true
+        type: string
+      host_release:
+        description: Immutable deps-gui-host release containing the compatible selected host
+        required: true
+        type: string
+      target:
+        description: Native target with production bundle admission
+        required: true
+        default: x64glibc
+        type: choice
+        options:
+          - x64glibc
+          - arm64mac
+          - x64mingw
+      validate_only:
+        description: Test exact candidate downloads without publishing
+        default: true
+        type: boolean
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+  attestations: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+concurrency:
+  group: gui-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest discover -s .github/scripts -p test_gui_release.py
+
+  candidate:
+    if: github.event_name == 'workflow_dispatch'
+    needs: tests
+    runs-on: ${{ inputs.target == 'arm64mac' && 'macos-15' || inputs.target == 'x64mingw' && 'windows-2025' || 'ubuntu-24.04' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/setup-toolchain
+      - name: Install application runtime and virtual display
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfreetype6 libxkbcommon0 libxkbcommon-x11-0 weston xvfb xauth mesa-vulkan-drivers zstd
+      - name: Verify Windows archive decoder
+        if: runner.os == 'Windows'
+        run: zstd --version
+      - name: Install Mac archive decoder
+        if: runner.os == 'macOS'
+        run: command -v zstd || brew install zstd
+      - name: Package the verified selected host and link inputs
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          HOST_RELEASE: ${{ inputs.host_release }}
+          RC_TARGET: ${{ inputs.target }}
+        run: python .github/scripts/gui_release.py prepare --target "$RC_TARGET" --tag "$RELEASE_TAG" --host-release "$HOST_RELEASE" --directory "$RUNNER_TEMP/gui-release"
+      - name: Build all downloaded apps, run their specs, and confirm rendering
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' python .github/scripts/gui_release.py check --directory "$RUNNER_TEMP/gui-release"
+      - name: Build downloaded native apps, run specs, and confirm rendering
+        if: runner.os != 'Linux'
+        run: python .github/scripts/gui_release.py check --directory "$RUNNER_TEMP/gui-release"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: tested-gui-release
+          path: ${{ runner.temp }}/gui-release/
+          retention-days: 90
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && !inputs.validate_only && github.ref == 'refs/heads/main' && github.repository == 'lukewilliamboswell/roc-signals'
+    needs: candidate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: tested-gui-release
+          path: ${{ runner.temp }}/gui-release
+      - run: python .github/scripts/gui_release.py verify --directory "$RUNNER_TEMP/gui-release"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: |
+            ${{ runner.temp }}/gui-release/*.tar.zst
+            ${{ runner.temp }}/gui-release/*.zip
+            ${{ runner.temp }}/gui-release/*.json
+      - name: Publish the exact tested assets as an immutable prerelease
+        run: python .github/scripts/gui_release.py publish --directory "$RUNNER_TEMP/gui-release"
+
+  downloads:
+    needs: publish
+    runs-on: ${{ inputs.target == 'arm64mac' && 'macos-15' || inputs.target == 'x64mingw' && 'windows-2025' || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/setup-toolchain
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: tested-gui-release
+          path: ${{ runner.temp }}/gui-release
+      - name: Install application runtime and virtual display
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfreetype6 libxkbcommon0 libxkbcommon-x11-0 weston xvfb xauth mesa-vulkan-drivers zstd
+      - name: Verify Windows archive decoder
+        if: runner.os == 'Windows'
+        run: zstd --version
+      - name: Install Mac archive decoder
+        if: runner.os == 'macOS'
+        run: command -v zstd || brew install zstd
+      - name: Verify immutable downloads and run untouched published app URLs
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s '-screen 0 1280x1024x24' python .github/scripts/gui_release.py downloads --directory "$RUNNER_TEMP/gui-release"
+      - name: Verify native downloads and run untouched published app URLs
+        if: runner.os != 'Linux'
+        run: python .github/scripts/gui_release.py downloads --directory "$RUNNER_TEMP/gui-release"

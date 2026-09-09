@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+from windows_import_validation import validate_import_library
 
 
 def zig_lib_dir():
@@ -33,6 +34,6 @@ def windows_import_library(name, dest):
     else:
         raise SystemExit('Zig does not bundle a MinGW definition for ' + name)
     subprocess.run(['zig', 'dlltool', '-m', 'i386:x86-64', '-d', str(definition), '-l', str(dest / (name + '.lib'))], check=True)
+    validate_import_library((dest / (name + '.lib')).read_bytes(), definition.read_text())
     definition.unlink()
-
 

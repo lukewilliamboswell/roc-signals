@@ -1,0 +1,112 @@
+name: Complete Windows system import releases
+
+on:
+  pull_request:
+    paths:
+      - dependencies/windows-system-imports.json
+      - dependencies/windows-system-imports/Cargo.toml
+      - dependencies/windows-system-imports/Cargo.lock
+      - dependencies/windows-system-imports/src/lib.rs
+      - dependencies/windows-system-imports/inventory.json
+      - scripts/build_windows_system_imports.py
+      - scripts/windows_system_imports.py
+      - scripts/release_windows_system_imports.py
+      - scripts/test_windows_system_imports.py
+      - scripts/test_windows_system_import_artifact.py
+      - scripts/audit_windows_archive.py
+      - scripts/build_glibc.py
+      - scripts/dependency_archive.py
+      - scripts/dependency_artifacts.py
+      - scripts/release_dependencies.py
+      - scripts/test_dependency_artifacts.py
+      - test/dependencies/windows_system_imports.c
+      - .github/workflows/windows-system-imports.yml
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: New deps-windows-system-imports-<version> release tag
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-system-imports-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build complete imports twice from verified sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Check malformed archives and publication guards
+        run: python3 -m unittest scripts/test_dependency_artifacts.py scripts/test_windows_system_imports.py
+      - name: Build using private pinned toolchains and Cargo caches
+        run: python3 scripts/build_windows_system_imports.py --output "$RUNNER_TEMP/candidate" --cache "$RUNNER_TEMP/downloads"
+      - name: Compare a second fresh toolchain and compilation
+        run: |
+          python3 scripts/build_windows_system_imports.py --output "$RUNNER_TEMP/rebuild" --cache "$RUNNER_TEMP/downloads"
+          cmp "$RUNNER_TEMP/candidate/windows-system-imports-x64mingw.tar" "$RUNNER_TEMP/rebuild/windows-system-imports-x64mingw.tar"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-system-imports-candidate
+          path: ${{ runner.temp }}/candidate/*.tar
+          retention-days: 30
+
+  native:
+    name: Execute ICUUC NTDLL OLE32 and KERNEL32 candidate imports
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+          use-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: windows-system-imports-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Verify all pure imports and run the OS-only probe
+        run: python scripts/test_windows_system_import_artifact.py '${{ runner.temp }}/candidate/windows-system-imports-x64mingw.tar' --require-native
+
+  publish:
+    name: Attest and publish the tested bytes
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: [build, native]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: windows-system-imports-candidate
+          path: ${{ runner.temp }}/candidate
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: ${{ runner.temp }}/candidate/*.tar
+      - name: Publish without replacing an existing tag or rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python3 scripts/release_windows_system_imports.py --directory "$RUNNER_TEMP/candidate" --tag "$RELEASE_TAG"

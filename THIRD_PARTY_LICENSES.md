@@ -1,7 +1,27 @@
 # Third-Party Licenses
 
-This project bundles third-party libraries for static linking on Linux musl
-targets and release tooling.
+This project bundles third-party platform link inputs and release tooling.
+
+## macOS linker interfaces
+
+Files: project-generated `.tbd` metadata under `targets/macos-sysroot`.
+
+The generator writes minimal YAML linkage descriptions from the project's
+reviewed interface catalog. Its inputs are symbol records and compiled Signals
+host archives. Apple API documentation and identified open-source declarations
+provide the interface references; the catalog links each source. Generated
+packages include the catalog and its provenance statement. See
+[`dependencies/macos-interfaces/`](dependencies/macos-interfaces/README.md).
+Applications load the framework implementations supplied by macOS at runtime.
+
+## FreeType
+
+Files: verified dependency release input `targets/x64glibc/libfreetype.so`.
+
+This software is based in part on the work of the FreeType Team. The dependency
+release selects the FreeType License and includes the upstream license texts and
+acknowledgment under `licenses/freetype/`. GUI bundles retain these notices,
+the dependency manifest, and the verified release lock.
 
 ## roc-automation
 

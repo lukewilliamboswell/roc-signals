@@ -5,23 +5,19 @@ import json
 import os
 from pathlib import Path
 import platform
-import re
 import shutil
 import subprocess
 import tempfile
 
-from prepare_dependencies import install_windows_imports
+from build_macos_stubs import install as install_macos_interfaces
+from prepare_dependencies import install_freetype, install_glibc, install_xkbcommon, install_unwind
 
 ROOT = Path(__file__).resolve().parent.parent
-MACOS_FRAMEWORKS = ('AppKit', 'ApplicationServices', 'Carbon', 'CoreFoundation',
-                    'CoreGraphics', 'CoreMedia', 'CoreText', 'CoreVideo',
-                    'Foundation', 'IOKit', 'IOSurface', 'Metal', 'QuartzCore',
-                    'ScreenCaptureKit', 'Security', 'SystemConfiguration')
 
 def host_target():
     return {('Linux', 'x86_64'): 'x64glibc',
             ('Darwin', 'arm64'): 'arm64mac',
-            ('Windows', 'AMD64'): 'x64win'}.get((platform.system(), platform.machine()))
+            ('Windows', 'AMD64'): 'x64mingw'}.get((platform.system(), platform.machine()))
 
 
 def host_archive(target):
@@ -41,145 +37,114 @@ def build_environment():
     return environment
 
 
-def copy_macos_sysroot(sdk, destination):
-    """Retain SDK link stubs and their reexports, never SDK headers or binaries.
-
-    Roc discovers frameworks in targets/macos-sysroot. Resolve SDK symlinks by
-    copying their contents so an extracted package has no machine-local paths.
-    """
-    pending = [Path('System/Library/Frameworks') / (name + '.framework') / (name + '.tbd')
-               for name in MACOS_FRAMEWORKS]
-    pending += [Path('usr/lib') / name for name in ['libSystem.tbd', 'libobjc.tbd', 'libc++.tbd']]
-    copied = set()
-    while pending:
-        relative = pending.pop()
-        if relative in copied:
-            continue
-        source = sdk / relative
-        content = source.read_text()
-        if not re.search(r'^tbd-version:\s+4\s*$', content, re.MULTILINE):
-            raise ValueError(f'Expected SDK TBD version 4: {source}')
-        dest = destination / relative
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, dest)
-        copied.add(relative)
-        # A TBD can contain multiple documents defining its own reexports.
-        provided = set(re.findall(r"^install-name:\s*'([^']+)'", content, re.MULTILINE))
-        for block in re.findall(r'^reexported-libraries:\n(.*?)(?=^\S|\Z)', content, re.MULTILINE | re.DOTALL):
-            for name in re.findall(r"'(/[^']+)'", block):
-                if name in provided:
-                    continue
-                path = Path(name.lstrip('/'))
-                pending.append(path.with_suffix('.tbd') if path.suffix == '.dylib'
-                               else Path(str(path) + '.tbd'))
-
-
-def merge_archives(stage, output, members):
-    """Merge object members, not archives-as-members: Roc consumes one host archive.
-
-    Zig's bundled llvm-ar reads the same MRI script everywhere, so Windows needs
-    neither MSVC's lib.exe nor a separate binutils installation.
-    """
-    if platform.system() == 'Darwin':
-        subprocess.run(['libtool', '-static', '-o', output] + members, cwd=stage, check=True)
-        return
-    script = f'CREATE {output}\n' + ''.join(f'ADDLIB {member}\n' for member in members) + 'SAVE\nEND\n'
-    tool = ['zig', 'ar'] if platform.system() == 'Windows' else ['ar']
-    subprocess.run(tool + ['-M'], input=script, text=True, cwd=stage, check=True)
-
-
-def build(debug=False, jobs=2):
+def build(debug=False, jobs=2, cargo_evidence=None):
     target = host_target()
     if target is None:
         raise SystemExit('GUI builds require Linux x86_64 with glibc, Apple Silicon macOS, or Windows x86_64.')
     if jobs < 1:
         raise SystemExit('GUI build jobs must be positive.')
-    windows_dependencies = (install_windows_imports(ROOT / 'platform-gui/targets/x64win')
-                            if target == 'x64win' else None)
+    if debug and cargo_evidence is not None:
+        raise SystemExit('Cargo release evidence requires an optimized build.')
+    if target == 'x64mingw':
+        build_windows(debug, jobs, cargo_evidence)
+        return
+    fingerprint = None
+    if cargo_evidence is not None:
+        from host_build_identity import source_fingerprint
+        fingerprint = source_fingerprint(ROOT)
+    linux_dependencies = (install_freetype(ROOT / 'platform-gui/targets/x64glibc')
+                          if target == 'x64glibc' else None)
+    if target == 'x64glibc':
+        crt_dependencies = install_glibc(ROOT / 'platform-gui/targets/x64glibc')
+        linux_dependencies['artifacts'].update(crt_dependencies['artifacts'])
+        unwind_dependencies = install_unwind(ROOT / 'platform-gui/targets/x64glibc')
+        linux_dependencies['artifacts'].update(unwind_dependencies['artifacts'])
+        keyboard_dependencies = install_xkbcommon(ROOT / 'platform-gui/targets/x64glibc')
+        linux_dependencies['artifacts'].update(keyboard_dependencies['artifacts'])
     subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
-    # Worktrees may share dependencies, but Cargo can reuse the identically named
-    # local crate from another checkout. Rebuild this small crate explicitly.
-    subprocess.run(['cargo', 'clean', '-p', 'signals-gpui-host'], cwd=ROOT, check=True)
-    subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, env=build_environment(), check=True)
     dest = ROOT / 'platform-gui/targets' / target
     dest.mkdir(parents=True, exist_ok=True)
-    # Merge object members, not archives-as-members: Roc consumes one host archive.
-    metadata = json.loads(subprocess.check_output(
-        ['cargo', 'metadata', '--locked', '--no-deps', '--format-version=1'], cwd=ROOT, text=True,
-    ))
-    rust_name = 'signals_gpui_host.lib' if target == 'x64win' else 'libsignals_gpui_host.a'
-    rust_host = Path(metadata['target_directory']) / ('debug' if debug else 'release') / rust_name
+    rust_name = 'libsignals_gpui_host.a'
+    if cargo_evidence is not None:
+        from cargo_build_evidence import capture
+        rust_host = capture(ROOT, target, cargo_evidence, jobs, build_environment(), fingerprint)
+    else:
+        subprocess.run(['cargo', 'build', '--locked', '-p', 'signals-gpui-host', '-j', str(jobs)] + ([] if debug else ['--release']), cwd=ROOT, env=build_environment(), check=True)
+        metadata = json.loads(subprocess.check_output(
+            ['cargo', 'metadata', '--locked', '--no-deps', '--format-version=1'], cwd=ROOT, text=True,
+        ))
+        rust_host = Path(metadata['target_directory']) / ('debug' if debug else 'release') / rust_name
     engine = ROOT / 'zig-out/gui/libengine.a'
-    archive = host_archive(target)
-    with tempfile.TemporaryDirectory(prefix='signals-host-') as tmp:
-        stage = Path(tmp)
-        shutil.copyfile(rust_host, stage / 'rust.a')
-        shutil.copyfile(engine, stage / 'engine.a')
-        merge_archives(stage, archive, ['rust.a', 'engine.a'])
-        shutil.copyfile(stage / archive, dest / archive)
-    for obsolete in ['libgpui_host.a', 'libengine.a']:
-        (dest / obsolete).unlink(missing_ok=True)
-    if target == 'x64win':
-        build_windows_inputs(dest, windows_dependencies)
-        return
+    # Roc's platform header lists both archives for its final application link.
+    shutil.copyfile(rust_host, dest / rust_name)
+    shutil.copyfile(engine, dest / 'libengine.a')
+    (dest / host_archive(target)).unlink(missing_ok=True)
     if platform.system() == 'Darwin':
-        sdk = Path(subprocess.check_output(['xcrun', '--show-sdk-path'], text=True).strip())
-        sysroot = dest.parent / 'macos-sysroot'
-        with tempfile.TemporaryDirectory(prefix='signals-sdk-') as tmp:
-            staged = Path(tmp) / 'macos-sysroot'
-            copy_macos_sysroot(sdk, staged)
-            if sysroot.exists():
-                shutil.rmtree(sysroot)
-            shutil.move(staged, sysroot)
+        manifest = install_macos_interfaces(dest.parent)
         (dest / 'link-inputs.json').write_text(json.dumps({
-            'sdk_version': subprocess.check_output(['xcrun', '--show-sdk-version'], text=True).strip(),
-            'sdk_build': subprocess.check_output(['xcrun', '--show-sdk-build-version'], text=True).strip(),
-            'frameworks': MACOS_FRAMEWORKS,
+            'macos_interfaces': manifest,
         }, indent=2) + '\n')
+        finish_evidence(target, dest, cargo_evidence, fingerprint)
         return
-    for name in ['crt1.o', 'crti.o', 'crtn.o']:
-        source = subprocess.check_output(['cc', '-print-file-name=' + name], text=True).strip()
-        if not Path(source).is_file():
-            raise SystemExit('Missing C runtime development input: ' + name)
-        shutil.copyfile(source, dest / name)
-    # Copy ELF inputs, not development linker scripts with machine-local paths.
-    # Their SONAMEs retain runtime dependencies on the system's shared libraries.
-    cache = subprocess.check_output(['/sbin/ldconfig', '-p'], text=True)
-    provenance = {}
-    for name in ['freetype', 'xkbcommon', 'xkbcommon-x11', 'gcc_s', 'util', 'rt', 'pthread', 'm', 'dl', 'c']:
-        prefix = 'lib' + name + '.so.'
-        matches = [line.split('=>')[1].strip() for line in cache.splitlines()
-                   if line.strip().startswith(prefix) and 'x86-64' in line]
-        if not matches:
-            raise SystemExit('Missing system library: ' + prefix)
-        source = Path(matches[0]).resolve()
-        shutil.copyfile(source, dest / ('lib' + name + '.so'))
-        provenance[name] = str(source)
+    provenance = {'dependencies': linux_dependencies}
     (dest / 'link-inputs.json').write_text(json.dumps(provenance, indent=2) + '\n')
+    finish_evidence(target, dest, cargo_evidence, fingerprint)
 
 
-def build_windows_inputs(dest, dependencies):
-    """Produce the x64win inputs beyond the host archive itself.
+def build_windows(debug, jobs, cargo_evidence):
+    """Build GNU host outputs and reuse independently verified Windows libraries."""
+    from prepare_dependencies import install_windows_gnu, verified_windows_gnu, windows_gnu_inventory
+    from windows_gnu_build import execute
+    from windows_gnu_coff import normalize
 
-    The application manifest is embedded into every executable Roc links: GPUI
-    imports TaskDialogIndirect at load time, which only the Common Controls 6
-    side-by-side comctl32 exports, and the manifest also declares per-monitor
-    DPI awareness. External import libraries come from their verified release.
-    """
-    dest = dest.resolve()
-    resources = ROOT / 'crates/gpui-host/windows'
-    subprocess.run(['zig', 'rc', 'signals.rc', str(dest / 'signals.res')], cwd=resources, check=True)
-    (dest / 'link-inputs.json').write_text(json.dumps({
-        'manifest': 'crates/gpui-host/windows/signals.manifest.xml',
-        'dependencies': dependencies,
-        'rust_target': 'x86_64-pc-windows-msvc',
-        'engine_target': 'x86_64-windows-msvc',
-    }, indent=2) + '\n')
+    destination = ROOT / 'platform-gui/targets/x64mingw'
+    dependencies = install_windows_gnu(destination)
+    cargo_target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'))
+    if not cargo_target.is_absolute():
+        cargo_target = ROOT / cargo_target
+    # Keep captured raw Cargo bytes separate from the final distributed archive.
+    with tempfile.TemporaryDirectory(prefix='signals-windows-build-') as temporary, \
+            tempfile.TemporaryDirectory(dir=destination, prefix='.host-') as staged_path:
+        staged = Path(staged_path)
+        output = cargo_evidence or Path(temporary) / 'build'
+        payload = execute('build', output, jobs=jobs, cargo_target=cargo_target,
+                          debug=debug, capture_evidence=cargo_evidence is not None)
+        zig = output.resolve() / 'tools/zig-x86_64-windows-0.16.0/zig.exe'
+        with verified_windows_gnu() as verified:
+            inventory = windows_gnu_inventory(verified)
+            receipt = normalize(payload / 'libsignals_gpui_host.a', staged / 'libsignals_gpui_host.a', inventory, zig)
+        for name in ('libengine.a', 'signals.res'):
+            shutil.copyfile(payload / name, staged / name)
+        (staged / 'normalization.json').write_text(json.dumps(receipt, indent=2) + '\n')
+        if cargo_evidence is not None:
+            from host_notice_payload import validate_packaged_outputs
+            evidence = json.loads((output / 'evidence.json').read_text())
+            validate_packaged_outputs(json.loads((output / 'build.json').read_text()), 'x64mingw',
+                                     evidence['source_fingerprint'], evidence['host'],
+                                     {name: (staged / name).read_bytes() for name in
+                                      ('libsignals_gpui_host.a', 'libengine.a', 'signals.res')}, receipt)
+        (staged / 'link-inputs.json').write_text(json.dumps({
+            'dependencies': dependencies,
+            'rust_target': 'x86_64-pc-windows-gnullvm', 'engine_target': 'x86_64-windows-gnu',
+            'manifest': 'crates/gpui-host/windows/signals.manifest.xml',
+        }, indent=2) + '\n')
+
+        for name in ('libsignals_gpui_host.a', 'libengine.a', 'signals.res', 'normalization.json', 'link-inputs.json'):
+            (staged / name).replace(destination / name)
+
+
+def finish_evidence(target, destination, evidence_root, fingerprint):
+    """Seal every host-owned output after the complete native build succeeds."""
+    if evidence_root is not None:
+        from host_build_identity import record_outputs
+        record_outputs(ROOT, target, destination, evidence_root, fingerprint)
+
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--debug', action='store_true', help='Use the faster development Rust build')
     parser.add_argument('--jobs', type=int, default=2, help='Concurrent Cargo build jobs (default: 2)')
+    parser.add_argument('--cargo-evidence', type=Path, help='New directory for exact Cargo release evidence')
     args = parser.parse_args()
-    build(args.debug, args.jobs)
+    build(args.debug, args.jobs, args.cargo_evidence)

@@ -10,12 +10,18 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from contextlib import ExitStack
 
 from build_gui import build as build_gui
+from build_macos_stubs import generate as generate_macos_interfaces, ARCHIVES as MACOS_ARCHIVES, read_catalog
 from prepare_platforms import prepare_platform
 from gui_suite import examples as gui_examples
+from gui_host_artifacts import verified_hosts, HOST_FILES
 from prepare_dependencies import (verified_web_dependencies, WEB_ARTIFACTS,
-                                  verified_windows_imports, WINDOWS_IMPORTS)
+                                  verified_windows_gnu, WINDOWS_GNU_ARTIFACTS, windows_gnu_files,
+                                  verified_freetype, FREETYPE,
+                                  verified_glibc, GLIBC, GLIBC_LIBRARIES, verified_unwind, UNWIND,
+                                  verified_xkbcommon, XKBCOMMON, XKBCOMMON_LIBRARIES)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -41,6 +47,14 @@ def stage_web_inputs(source, stage):
 
 
 def stage_dependency_inputs(inputs, identities, stage):
+    receipt = json.loads((inputs / "dependencies.lock.json").read_text())
+    receipt_path = stage / "dependencies.lock.json"
+    if receipt_path.exists():
+        existing = json.loads(receipt_path.read_text())
+        for identity, entry in existing["artifacts"].items():
+            if identity in receipt["artifacts"] and receipt["artifacts"][identity] != entry:
+                raise ValueError(f"conflicting dependency receipt: {identity}")
+            receipt["artifacts"][identity] = entry
     for identity in identities:
         for path in (inputs / identity).rglob("*"):
             if not path.is_file():
@@ -55,22 +69,67 @@ def stage_dependency_inputs(inputs, identities, stage):
                     raise ValueError(f"conflicting dependency input: {relative}")
             else:
                 shutil.copyfile(path, destination)
-    shutil.copyfile(inputs / "dependencies.lock.json", stage / "dependencies.lock.json")
+    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
 
 
-def stage_windows_inputs(source, stage):
-    """Combine the selected Windows host outputs with newly verified imports."""
-    names = ("host.lib", "signals.res")
+def validate_gui_archives(tree):
+    """Reject incomplete or obsolete host layouts before assembling a bundle."""
+    if (tree / "x64win").exists():
+        raise ValueError("obsolete x64win host outputs; rebuild the Windows GNU target before bundling")
+    for target in ("x64glibc", "arm64mac", "x64mingw"):
+        directory = tree / target
+        if not directory.exists():
+            continue
+        names = ("libsignals_gpui_host.a", "libengine.a")
+        for name in names:
+            path = directory / name
+            if not path.is_file() or path.is_symlink():
+                raise ValueError(f"missing or invalid GUI archive: {path}; rebuild the target directory")
+
+
+def validate_gui_link_inputs(tree):
+    """Do not publish a host-only target as a complete platform target."""
+    validate_gui_archives(tree)
+    required = []
+    if (tree / "x64glibc").is_dir():
+        names = (*GLIBC_LIBRARIES, "libfreetype.so", *XKBCOMMON_LIBRARIES, "libunwind.a")
+        required.extend(tree / "x64glibc" / name for name in names)
+    if (tree / "x64mingw").is_dir():
+        required.extend(tree / "x64mingw" / name for name in ("signals.res", *windows_gnu_files()))
+    if (tree / "arm64mac").is_dir():
+        interfaces = tree / "macos-sysroot"
+        required.extend(interfaces / library['path'] for library in read_catalog()['libraries'])
+        required.extend(interfaces / name for name in ('interfaces.json', 'manifest.json', 'PROVENANCE.md'))
+    for path in required:
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"missing or invalid GUI link dependency: {path}")
+
+
+def stage_windows_gnu_inputs(source, stage):
+    """Retain only host-owned outputs and independently re-admit all GNU libraries."""
+    names = ("libsignals_gpui_host.a", "libengine.a", "signals.res")
     for name in names:
         path = source / name
         if not path.is_file() or path.is_symlink():
-            raise ValueError(f"missing or invalid Windows host output: {path}")
-    with verified_windows_imports() as inputs:
-        destination = stage / "targets/x64win"
+            raise ValueError(f"missing or invalid Windows GNU host output: {path}")
+    with verified_windows_gnu() as inputs:
+        destination = stage / "targets/x64mingw"
         destination.mkdir(parents=True, exist_ok=True)
         for name in names:
             shutil.copyfile(source / name, destination / name)
-        stage_dependency_inputs(inputs, (WINDOWS_IMPORTS,), stage)
+        stage_dependency_inputs(inputs, WINDOWS_GNU_ARTIFACTS, stage)
+
+
+def stage_macos_inputs(source, stage):
+    """Generate interfaces for the selected host; never admit a copied sysroot."""
+    destination = stage / 'targets/arm64mac'
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in MACOS_ARCHIVES:
+        path = source / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f'missing or invalid macOS host archive: {path}')
+        shutil.copyfile(path, destination / name)
+    generate_macos_interfaces(destination, stage / 'targets/macos-sysroot')
 
 
 
@@ -111,8 +170,8 @@ def main():
     parser.add_argument('--package', choices=['all', 'web', 'gui'], default='all')
     parser.add_argument('--no-build', action='store_true')
     parser.add_argument('--debug-gui', action='store_true')
-    parser.add_argument('--prebuilt-targets', type=Path, action='append', default=[],
-                        help='A targets/ tree of CI-built GUI link inputs to include alongside local ones')
+    parser.add_argument('--prebuilt-host-lock', type=Path, action='append', default=[],
+                        help='Verified GUI host release lock to include alongside local targets')
     parser.add_argument('--output-dir', type=Path, default=Path(os.environ.get('BUNDLE_OUT_DIR', str(ROOT / '.test-out/bundles'))))
     parser.add_argument('--serve', action='store_true')
     parser.add_argument('--port', type=int, default=8000)
@@ -134,7 +193,7 @@ def main():
         package_out.mkdir(parents=True, exist_ok=True)
         # Roc publishes its cwd-local temporary archive with rename. Keep the
         # source staging tree on the output filesystem (upstream bug 14).
-        with tempfile.TemporaryDirectory(prefix='.signals-bundle-', dir=package_out) as tmp:
+        with tempfile.TemporaryDirectory(prefix='.signals-bundle-', dir=package_out) as tmp, ExitStack() as resources:
             stage = Path(tmp)
             source = ROOT / ('platform-' + package)
             prepare_platform(source, stage)
@@ -142,27 +201,73 @@ def main():
             if package == 'web':
                 stage_web_inputs(source, stage)
             if package == 'gui':
-                trees = [source / 'targets'] + [prebuilt.resolve() for prebuilt in args.prebuilt_targets]
+                trees = [source / 'targets'] if (source / 'targets').is_dir() else []
+                for lock in args.prebuilt_host_lock:
+                    inputs = resources.enter_context(verified_hosts(
+                        lock.resolve(), Path.home() / '.cache/roc-signals/dependencies', ROOT))
+                    receipt = json.loads((inputs / 'dependencies.lock.json').read_text())
+                    identities = tuple(identity for identity, entry in receipt['artifacts'].items()
+                                       if entry.get('name') != 'gui-host-sources')
+                    trees.extend(inputs / identity / 'targets' for identity in identities)
+                    stage_dependency_inputs(inputs, identities, stage)
             hosts = []
-            windows_targets = []
+            windows_gnu_targets = []
+            macos_targets = []
+            selected_targets = set()
             for tree in trees:
                 if not tree.is_dir():
                     raise SystemExit(f'Prebuilt targets directory not found: {tree}')
-                if (tree / 'x64win').is_dir():
-                    windows_targets.append(tree / 'x64win')
+                for target, names in HOST_FILES.items():
+                    if any((tree / target / name).exists() for name in (*names, 'libhost.a', 'host.lib')):
+                        for name in names:
+                            path = tree / target / name
+                            if not path.is_file() or path.is_symlink():
+                                raise ValueError(f'missing or invalid GUI host output: {path}')
+                        if target in selected_targets:
+                            raise ValueError(f'select one local or verified host tree for {target}')
+                        selected_targets.add(target)
+                if (tree / 'x64win').exists():
+                    raise ValueError('obsolete x64win host outputs; rebuild the Windows GNU target before bundling')
+                if (tree / 'x64mingw').is_dir():
+                    windows_gnu_targets.append(tree / 'x64mingw')
+                if (tree / 'arm64mac').is_dir():
+                    macos_targets.append(tree / 'arm64mac')
                 hosts += [(tree, p) for p in tree.rglob('*')
-                          if p.is_file() and p.relative_to(tree).parts[0] != 'x64win'
-                          and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json', '.tbd'}]
-            if package == 'gui' and not hosts and not windows_targets:
+                          if p.is_file() and p.relative_to(tree).parts[0] not in
+                          {'x64win', 'x64mingw', 'arm64mac', 'macos-sysroot'}
+                          and (p.relative_to(tree).parts[0] != 'x64glibc'
+                               or p.relative_to(tree).as_posix() in {
+                                   'x64glibc/libsignals_gpui_host.a', 'x64glibc/libengine.a',
+                                   'x64glibc/link-inputs.json'})
+                          and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json'}]
+            if package == 'gui' and not hosts and not windows_gnu_targets and not macos_targets:
                 raise SystemExit(f'No {package} hosts found; run without --no-build.')
             for tree, path in hosts:
                 dest = stage / 'targets' / path.relative_to(tree)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, dest)
-            if len(windows_targets) > 1:
-                raise ValueError('select one Windows host tree; overlapping local/prebuilt hosts are ambiguous')
-            if windows_targets:
-                stage_windows_inputs(windows_targets[0], stage)
+            if len(windows_gnu_targets) > 1:
+                raise ValueError('select one Windows GNU host tree; overlapping hosts are ambiguous')
+            if windows_gnu_targets:
+                stage_windows_gnu_inputs(windows_gnu_targets[0], stage)
+            if len(macos_targets) > 1:
+                raise ValueError('select one macOS host tree; overlapping local/prebuilt hosts are ambiguous')
+            if macos_targets:
+                stage_macos_inputs(macos_targets[0], stage)
+            if any((tree / 'x64glibc').is_dir() for tree in trees):
+                with verified_freetype() as inputs:
+                    stage_dependency_inputs(inputs, (FREETYPE,), stage)
+                with verified_glibc() as inputs:
+                    stage_dependency_inputs(inputs, (GLIBC,), stage)
+                with verified_unwind() as inputs:
+                    stage_dependency_inputs(inputs, (UNWIND,), stage)
+                with verified_xkbcommon() as inputs:
+                    stage_dependency_inputs(inputs, (XKBCOMMON,), stage)
+            if package == 'gui':
+                validate_gui_link_inputs(stage / 'targets')
+                if macos_targets:
+                    from check_macos_interfaces import validate_platform
+                    validate_platform(stage, roc, root=ROOT)
             for name in ['LICENSE', 'THIRD_PARTY_LICENSES.md']:
                 if (ROOT / name).is_file():
                     shutil.copyfile(ROOT / name, stage / name)

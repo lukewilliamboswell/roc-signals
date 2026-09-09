@@ -1,29 +1,86 @@
 {
   "schema_version": 1,
-  "version": "0.2.0-rc1",
-  "source_sha": "65340f737687927372f905f6be372f7c3e101787",
+  "version": "0.2.0-rc2",
+  "source_sha": "00096165a07738fdbaacb8e04c14313bba86d8f1",
   "compiler_pin": "nightly-2026-09-04-c125b82",
   "compiler_channel": "nightly-bootstrap",
   "assets": {
     "platform": {
-      "name": "2AkoWkbJFbvPCzryikfAUcwUs1hL8x6UzwhzPFoxuvN5.tar.zst",
-      "url": "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc1/2AkoWkbJFbvPCzryikfAUcwUs1hL8x6UzwhzPFoxuvN5.tar.zst",
-      "sha256": "6d78321f4c44f81740b656e812b2db3550e2a8ae38a5a1df6b1002c69dc668d2"
+      "name": "AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst",
+      "url": "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst",
+      "sha256": "75a475f673de37bcbbe53150558ae4663b3a25cdf91ae67218e59883514e1a0c"
     },
     "browser": {
       "name": "signals-browser.zip",
-      "url": "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc1/signals-browser.zip",
+      "url": "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/signals-browser.zip",
       "sha256": "0b985e496962b2509f33c718c5a2b6d33029f7a827ce88024150b048bceea022"
     },
     "starters": {
       "name": "signals-starters.zip",
-      "url": "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc1/signals-starters.zip",
-      "sha256": "570a89597ebc7f96d6efcc73b230a6cb9798ac446dfcd7bef62125a26c51d635"
+      "url": "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/signals-starters.zip",
+      "sha256": "db9b76d12b7bf416bc2d96316281674aaa14a5a8f9830762bfa1ec510d8ba074"
     }
+  },
+  "dependencies": {
+    "schema_version": 1,
+    "artifacts": {
+      "musl-x64musl": {
+        "name": "musl",
+        "target": "x64musl",
+        "repository": "lukewilliamboswell/roc-signals",
+        "release": "deps-musl-1.2.6-20260909.1",
+        "asset": "musl-x64musl.tar",
+        "sha256": "24d89921ac75d953f7bf5f84bf0445556a9477e85a930922cc49c8fa8874d4b1",
+        "size": 8529920,
+        "source_sha": "29666398255ff2fd83c24627a9b170ecd2f7be5a",
+        "source_ref": "refs/heads/main",
+        "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/dependencies.yml"
+      },
+      "musl-arm64musl": {
+        "name": "musl",
+        "target": "arm64musl",
+        "repository": "lukewilliamboswell/roc-signals",
+        "release": "deps-musl-1.2.6-20260909.1",
+        "asset": "musl-arm64musl.tar",
+        "sha256": "c9b3b1fc85b4441c1ff8e4e2822dc3f7adf511315c2fdf366aa67d96cd7c093b",
+        "size": 9011200,
+        "source_sha": "29666398255ff2fd83c24627a9b170ecd2f7be5a",
+        "source_ref": "refs/heads/main",
+        "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/dependencies.yml"
+      },
+      "windows-imports-x64win": {
+        "name": "windows-imports",
+        "target": "x64win",
+        "repository": "lukewilliamboswell/roc-signals",
+        "release": "deps-windows-imports-0.16.0-20260909.1",
+        "asset": "windows-imports-x64win.tar",
+        "sha256": "444bbb3e56b686e2cb23c490dbffadf51d6537a11c77ddf0f1f85245a345b6d9",
+        "size": 215040,
+        "source_sha": "4d89ab1b69d529a7ae7ab876945cd1d7d8f2d7e5",
+        "source_ref": "refs/heads/main",
+        "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/windows-dependencies.yml"
+      },
+      "freetype-x64glibc": {
+        "name": "freetype",
+        "target": "x64glibc",
+        "repository": "lukewilliamboswell/roc-signals",
+        "release": "deps-freetype-2.14.3-20260909.1",
+        "asset": "freetype-x64glibc.tar",
+        "sha256": "56dd32c08700259dfbb8323852b6f9cc5c871d508712a0276987acea56a9c98b",
+        "size": 3778560,
+        "source_sha": "496d1da376fac0feef9bd3666859521837898663",
+        "source_ref": "refs/heads/main",
+        "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/freetype-dependencies.yml"
+      }
+    }
+  },
+  "provenance": {
+    "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/release.yml",
+    "source_ref": "refs/heads/main"
   },
   "site": {
     "name": "signals-site.zip",
-    "url": "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc1/signals-site.zip",
-    "sha256": "2bbdce2c51c66c4ba6bfec0743aa8e92994019256e1f36dde05de904baf0727c"
+    "url": "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/signals-site.zip",
+    "sha256": "707dd35d251f259a68be2752224b26f6dd338fc39fbbe73b9e2722e672ebf43e"
   }
 }

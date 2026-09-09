@@ -18,8 +18,35 @@ permissions:
 env:
   GH_TOKEN: ${{ github.token }}
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    name: Select affected checks
+    runs-on: ubuntu-24.04
+    outputs:
+      smoke: ${{ steps.select.outputs.smoke }}
+      source: ${{ steps.select.outputs.source }}
+      gui: ${{ steps.select.outputs.gui }}
+      published: ${{ steps.select.outputs.published }}
+      archive: ${{ steps.select.outputs.archive }}
+      site: ${{ steps.select.outputs.site }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: python3 -m unittest discover -s scripts -p test_ci_changes.py
+      - run: python3 -m unittest discover -s scripts -p test_dependency_workflow_filters.py
+      - run: python3 -m unittest discover -s scripts -p 'test_macos_*.py'
+      - id: select
+        run: python3 scripts/ci_changes.py
+
   smoke:
+    needs: changes
+    if: needs.changes.outputs.smoke == 'true'
     name: PR normal and smoke tests
     runs-on: ubuntu-24.04
     steps:
@@ -36,6 +63,8 @@ jobs:
       - run: python3 scripts/fuzz.py check
 
   source:
+    needs: changes
+    if: needs.changes.outputs.source == 'true'
     name: Full tests and coverage
     runs-on: macos-15
     timeout-minutes: 60
@@ -69,6 +98,8 @@ jobs:
           path: kcov-output/native-host
 
   gui:
+    needs: changes
+    if: needs.changes.outputs.gui == 'true'
     name: Native GUI build and specs
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -104,6 +135,8 @@ jobs:
           xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/gui_smoke.py --wayland
 
   gui-windows:
+    needs: changes
+    if: needs.changes.outputs.gui == 'true'
     name: Native GUI build and specs (Windows)
     runs-on: windows-2025
     timeout-minutes: 60
@@ -116,7 +149,7 @@ jobs:
           python-version: '3.12'
       - uses: ./.github/actions/setup-toolchain
       - name: Install GUI host build dependencies
-        run: rustup toolchain install 1.95.0 --profile minimal
+        run: rustup toolchain install 1.95.0 --profile minimal --target x86_64-pc-windows-gnullvm
       - name: Restore compiled Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         env:
@@ -139,23 +172,79 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: 1.95.0
         run: python scripts/build_gui.py
+      - name: Record Windows archive dependency declarations
+        run: |
+          python -m unittest discover -s scripts -p 'test_windows_archive_audit.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/windows-import-audit"
+          python scripts/audit_windows_archive.py platform-gui/targets/x64mingw/libsignals_gpui_host.a > "$env:RUNNER_TEMP/windows-import-audit/host.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/audit_windows_archive.py platform-gui/targets/x64mingw/libengine.a > "$env:RUNNER_TEMP/windows-import-audit/engine.json"
+      - name: Upload Windows dependency review evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-import-audit
+          path: ${{ runner.temp }}/windows-import-audit
+          if-no-files-found: error
       - name: Verify Windows dependency admission and bundle the built host
         run: |
           python -m unittest scripts/test_prepare_dependencies.py scripts/test_dependency_artifacts.py
           python scripts/bundle_platforms.py --package gui --no-build --output-dir "$env:RUNNER_TEMP/gui-candidate"
 
+  gui-macos:
+    needs: changes
+    if: needs.changes.outputs.gui == 'true'
+    name: Native GUI build and specs (macOS)
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: 1.95.0
+      TOOLCHAINS: Metal
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-toolchain
+      - name: Install GUI host build dependencies
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun --find metal
+      - name: Restore compiled Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: gui-dependencies
+          cache-workspace-crates: false
+          cache-bin: false
+          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET TOOLCHAINS DEVELOPER_DIR
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Verify GUI applications with separate archives
+        run: python3 scripts/test.py gui --keep-output
+      - name: Build and validate the optimized macOS bundle
+        run: |
+          python3 scripts/build_gui.py
+          python3 scripts/bundle_platforms.py --package gui --no-build --output-dir "$RUNNER_TEMP/macos-bundle"
+          python3 scripts/check_macos_interfaces.py --bundle "$RUNNER_TEMP/macos-bundle"
+
   platform-source:
     name: Platform source
-    needs: [smoke, source, gui, gui-windows]
+    needs: [changes, smoke, source, gui, gui-windows, gui-macos, published, archive, site]
     if: always()
     runs-on: ubuntu-24.04
     steps:
-      - name: Require every source job
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Require every selected job
         env:
           RESULTS: ${{ toJSON(needs) }}
-        run: python3 -c 'import json,os; assert all(job["result"] == "success" for job in json.loads(os.environ["RESULTS"]).values())'
+        run: python3 scripts/ci_changes.py --verify-results
 
   published:
+    needs: changes
+    if: needs.changes.outputs.published == 'true'
     name: Published examples
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -172,6 +261,8 @@ jobs:
       - run: python3 scripts/test.py published
 
   archive:
+    needs: changes
+    if: needs.changes.outputs.archive == 'true'
     name: Release archive
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -187,3 +278,20 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
       - run: python3 scripts/release.py prepare --version 0.2.0-rc1 --directory "$RUNNER_TEMP/candidate"
       - run: python3 scripts/release.py check --directory "$RUNNER_TEMP/candidate"
+
+  site:
+    name: Documentation and site
+    needs: changes
+    if: needs.changes.outputs.site == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install pinned Zola
+        run: |
+          curl -fsSL https://github.com/getzola/zola/releases/download/v0.22.1/zola-v0.22.1-x86_64-unknown-linux-gnu.tar.gz -o "$RUNNER_TEMP/zola.tar.gz"
+          echo "0ca09aa40376aaa9ddfb512ff9ad963262ef95edb0d0f2d5ec6961b6f5cf22ef  $RUNNER_TEMP/zola.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/zola.tar.gz" -C "$RUNNER_TEMP"
+      - name: Check documentation and templates
+        run: '"$RUNNER_TEMP/zola" --root www check'

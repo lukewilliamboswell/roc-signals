@@ -131,3 +131,23 @@ device IDs.
 `scripts/bundle_platforms.py` stages inputs in a private temporary directory
 inside the requested output directory. The compiler's final rename then stays
 on one filesystem; this does not rebuild, rewrite, or replace a tested archive.
+
+## 15. Package size diagnostic suggests an unavailable override
+
+With `nightly-2026-09-04-c125b82`, fetching a platform package that expands above
+104857600 bytes fails with `dependency tree too large`. The diagnostic suggests
+`--max-transitive-bytes`, but the pinned CLI does not implement that option.
+It appears only in the diagnostic text in `src/compile/package_resolution.zig`.
+
+Reproduce by preparing a Linux GUI release host, running
+`scripts/bundle.sh --package gui --no-build --serve --port 8000`, and compiling
+the generated URL-bound `Counter.roc` with the pinned compiler. The observed
+host archive alone was 151741542 bytes; its complete GUI package expanded to
+191834541 bytes. Adding `--max-transitive-bytes=536870912` to `roc build` is
+rejected rather than raising the budget. This is a linked-platform reproduction,
+not a minimized compiler regression.
+
+Do not interpret a successful local-file build or compressed archive size as
+proof of URL consumption. Package layout and host size still need to satisfy
+the expanded transitive budget; there is no validated CLI workaround for this
+compiler pin. No compiler change is made here.
