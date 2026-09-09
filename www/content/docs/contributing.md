@@ -480,12 +480,11 @@ Rust's standard-library copyright report and license texts, plus Zig's license
 and complete original source archive so source-level notices are preserved.
 Use the recipe's Rust distribution for the selected target. This is review
 evidence; it does not identify which runtime components a particular host links
-or cover SDK inputs. Both inventories still need to be incorporated into the
-host archive with a reviewed dependency selection and publication validation.
+or cover SDK inputs. The release composer incorporates both inventories into the host/source pair
+with the actual compiled dependency selection and publication validation.
 
-Explicit GUI host release dispatches build only the selected Linux and/or Windows
-host targets. Pull requests still validate all three native candidates, including
-macOS; macOS publication remains excluded while its SDK boundary is unresolved.
+Explicit GUI host release dispatches build only the selected native host targets.
+Pull requests validate complete host/source pairs on Linux, Windows, and macOS.
 
 ## Coverage
 
@@ -1281,13 +1280,25 @@ The `GUI host link inputs` workflow (`gui-hosts.yml`) builds native candidates
 and runs all GUI application specs with the pinned Roc compiler against their
 extracted archives. Candidate tests populate empty target directories from the
 independently verified Linux or Windows releases; development target copies are
-not admitted as dependency evidence. Linux and Windows producers capture the actual Cargo build
+not admitted as dependency evidence. All native producers capture the actual Cargo build
 stream, filtered metadata, and unchanged lock with `build_gui.py --cargo-evidence`.
 The notice composer selects the conservative set of compiled packages, retains
 original notices and source declarations, and supplies pinned canonical SPDX
 terms under an explicit expression policy. These reference terms are labeled
 separately from upstream notices; template copyright placeholders are not
 attributed to crates. Unknown expressions and incomplete evidence are rejected.
+
+Mac `--cargo-evidence` builds use a fresh Cargo target beneath the evidence output's
+parent directory so cached shaders cannot be attributed to different tools.
+That scratch target is removed when the build process exits, after the host
+archive has been copied into the platform target directory. The existing host build receipt records the selected Metal/metallib executable
+hashes and version diagnostics, Xcode/SDK identities, and GPUI shader/header/AIR/
+metallib hashes bound to the resulting host. Ordinary development builds retain
+normal Cargo caching. The Mac source companion retains this evidence with the
+exact selected crate sources and compiler notices. No Apple SDK or tool binaries
+are added to the receipt. The original
+objc2 SDK-derived qualification remains preserved as an upstream declaration,
+not treated as an inferred distribution prohibition.
 
 Each eligible candidate comprises `gui-host-<target>.tar` plus
 `gui-host-sources-<target>.tar`. The host contains a hash-indexed compressed notice
@@ -1299,10 +1310,12 @@ companions remain accessible through that lock without occupying the Roc platfor
 bundle or being downloaded for each app build. Preserve the notice archive and
 linked source access when redistributing the bundle.
 
-A main-branch manual dispatch selects Linux, Windows, or both for an independent
-`deps-gui-host-<version>` release. macOS continues native candidate tests but is
-excluded from publication while the Apple SDK-derived material needs a separate
-redistribution decision. Missing standalone license files alone are not a blanket
+A main-branch manual dispatch selects Linux, Windows, macOS, or Linux and Windows
+for an independent `deps-gui-host-<version>` release. Mac admission requires the
+complete source/notice pair and native final links/specs against regenerated
+project-authored interfaces; copied SDK stubs are not release inputs. The original
+objc2 qualification is retained alongside its declared license terms. Missing
+standalone license files alone are not a blanket
 publication prohibition: original source evidence and declarations remain visible
 in the package inventory and reviewed expression policy.
 
@@ -1350,20 +1363,32 @@ See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
 
 ### Linux GUI release candidates
 
-`Linux GUI release candidate` (`gui-release.yml`) packages an already published
-Linux host with the independently verified FreeType, glibc, LLVM unwinder, and
-xkbcommon releases. It runs no Cargo or Zig host build. Use a fresh checkout with
+`GUI release candidate` (`gui-release.yml`) packages an already published
+host for the selected `x64glibc` or `arm64mac` target. Linux includes the independently
+verified FreeType, glibc, LLVM unwinder, and xkbcommon releases. Apple Silicon uses
+the host-owned project interface catalog; macOS supplies system implementations. It runs no Cargo or Zig host build. Use a fresh checkout with
 no `platform-gui/targets` directory and an immutable `deps-gui-host-<version>`
 release whose source fingerprint matches that checkout.
 
-Dispatch the workflow with a new `gui-X.Y.Z-rc.N` tag, the host release tag, and
-`validate_only: true` for candidate validation. The job packages the existing
+Dispatch the workflow with a new `gui-X.Y.Z-rc.N` tag, the host release tag,
+`target: x64glibc` or `target: arm64mac`, and `validate_only: true` for candidate validation. The job packages the existing
 verified inputs, serves the exact Roc archive over HTTP, builds all six maintained
 GUI applications with their pinned compiler, runs every semantic spec, and opens
-the same executables under Weston/Xvfb with Mesa software Vulkan. Rendering must
+the same executables on its native runner. Linux uses Weston/Xvfb with Mesa
+software Vulkan; Apple Silicon uses native macOS rendering. Rendering must
 report explicit success; the counter also verifies its increment interaction.
 The archive inventory check rejects missing dependency notices and receipts,
 unselected target files, and expanded payloads over Roc's 100 MiB limit.
+
+Mac archive admission regenerates the catalog's expected TBD bytes and checks
+all interface files, original provenance, generator identity, exact host hashes,
+and native validation record. Additional files under `targets/macos-sysroot` are
+rejected. The existing bundler runs the native link/spec validator before bundle
+creation; the RC gate then repeats builds/specs and rendering over fresh HTTP.
+Windows GNU target identity and native-check routing are supported by the helper,
+but RC preparation remains disabled until production header/input admission and
+verified host/runtime/import releases are adopted. Candidate CI inputs cannot
+substitute for those releases.
 
 A publishing dispatch must run on `main` with `validate_only: false`. It attests
 the exact tested platform archive, starter ZIP, original host lock, and

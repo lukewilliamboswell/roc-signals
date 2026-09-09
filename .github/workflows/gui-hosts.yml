@@ -40,12 +40,13 @@ on:
         required: true
 
       release_targets:
-        description: Eligible host targets to publish (macOS remains candidate-only)
+        description: Native host targets to publish
         type: choice
         default: x64glibc
         options:
           - x64glibc
           - x64win
+          - arm64mac
           - x64glibc,x64win
 
 permissions:
@@ -73,6 +74,8 @@ jobs:
             && '[{"os":"windows-2025","target":"x64win"},{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"macos-15","target":"arm64mac"}]'
             || inputs.release_targets == 'x64glibc'
             && '[{"os":"ubuntu-24.04","target":"x64glibc"}]'
+            || inputs.release_targets == 'arm64mac'
+            && '[{"os":"macos-15","target":"arm64mac"}]'
             || inputs.release_targets == 'x64win'
             && '[{"os":"windows-2025","target":"x64win"}]'
             || '[{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"windows-2025","target":"x64win"}]') }}
@@ -130,18 +133,12 @@ jobs:
         shell: bash
         run: |
           python scripts/prepare_platforms.py
-          if [ "${{ matrix.target }}" = arm64mac ]; then
-            python scripts/build_gui.py
-            mkdir host-candidate
-            python scripts/gui_host_artifacts.py --target arm64mac --output host-candidate/gui-host-arm64mac.tar --roc roc
-          else
-            python scripts/build_gui.py --cargo-evidence "$RUNNER_TEMP/cargo-evidence"
-            python scripts/prepare_gui_host_release.py --target "${{ matrix.target }}" --cargo-evidence "$RUNNER_TEMP/cargo-evidence" --output host-candidate --roc roc
-          fi
+          python scripts/build_gui.py --cargo-evidence "$RUNNER_TEMP/cargo-evidence"
+          python scripts/prepare_gui_host_release.py --target "${{ matrix.target }}" --cargo-evidence "$RUNNER_TEMP/cargo-evidence" --output host-candidate --roc roc
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: gui-host-${{ matrix.target }}
-          path: host-candidate/*.tar
+          path: host-candidate/
           retention-days: 30
 
   publish:
@@ -169,7 +166,7 @@ jobs:
           python3 - <<'PYTHON'
           import os, pathlib, shutil
           targets = os.environ["RELEASE_TARGETS"].split(",")
-          assert targets and len(set(targets)) == len(targets) and set(targets) <= {"x64glibc", "x64win"}
+          assert targets and len(set(targets)) == len(targets) and set(targets) <= {"x64glibc", "x64win", "arm64mac"}
           root = pathlib.Path(os.environ["RUNNER_TEMP"])
           output = root / "link-inputs"
           output.mkdir()
