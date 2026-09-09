@@ -14,7 +14,8 @@ import tempfile
 from build_gui import build as build_gui
 from prepare_platforms import prepare_platform
 from gui_suite import examples as gui_examples
-from prepare_dependencies import verified_web_dependencies, WEB_ARTIFACTS
+from prepare_dependencies import (verified_web_dependencies, WEB_ARTIFACTS,
+                                  verified_windows_imports, WINDOWS_IMPORTS)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -36,21 +37,41 @@ def stage_web_inputs(source, stage):
             destination = stage / "targets" / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source / "targets" / name, destination)
-        for identity in WEB_ARTIFACTS:
-            for path in (inputs / identity).rglob("*"):
-                if not path.is_file():
-                    continue
-                relative = path.relative_to(inputs / identity)
-                if relative.as_posix() == "dependency.json":
-                    relative = Path("dependency-manifests") / (identity + ".json")
-                destination = stage / relative
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if destination.exists():
-                    if destination.read_bytes() != path.read_bytes():
-                        raise ValueError(f"conflicting dependency input: {relative}")
-                else:
-                    shutil.copyfile(path, destination)
-        shutil.copyfile(inputs / "dependencies.lock.json", stage / "dependencies.lock.json")
+        stage_dependency_inputs(inputs, WEB_ARTIFACTS, stage)
+
+
+def stage_dependency_inputs(inputs, identities, stage):
+    for identity in identities:
+        for path in (inputs / identity).rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(inputs / identity)
+            if relative.as_posix() == "dependency.json":
+                relative = Path("dependency-manifests") / (identity + ".json")
+            destination = stage / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                if destination.read_bytes() != path.read_bytes():
+                    raise ValueError(f"conflicting dependency input: {relative}")
+            else:
+                shutil.copyfile(path, destination)
+    shutil.copyfile(inputs / "dependencies.lock.json", stage / "dependencies.lock.json")
+
+
+def stage_windows_inputs(source, stage):
+    """Combine the selected Windows host outputs with newly verified imports."""
+    names = ("host.lib", "signals.res")
+    for name in names:
+        path = source / name
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"missing or invalid Windows host output: {path}")
+    with verified_windows_imports() as inputs:
+        destination = stage / "targets/x64win"
+        destination.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            shutil.copyfile(source / name, destination / name)
+        stage_dependency_inputs(inputs, (WINDOWS_IMPORTS,), stage)
+
 
 
 def stage_example_package(source, destination):
@@ -121,17 +142,25 @@ def main():
             if package == 'gui':
                 trees = [source / 'targets'] + [prebuilt.resolve() for prebuilt in args.prebuilt_targets]
             hosts = []
+            windows_targets = []
             for tree in trees:
                 if not tree.is_dir():
                     raise SystemExit(f'Prebuilt targets directory not found: {tree}')
+                if (tree / 'x64win').is_dir():
+                    windows_targets.append(tree / 'x64win')
                 hosts += [(tree, p) for p in tree.rglob('*')
-                          if p.is_file() and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json', '.tbd'}]
-            if package == 'gui' and not hosts:
+                          if p.is_file() and p.relative_to(tree).parts[0] != 'x64win'
+                          and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json', '.tbd'}]
+            if package == 'gui' and not hosts and not windows_targets:
                 raise SystemExit(f'No {package} hosts found; run without --no-build.')
             for tree, path in hosts:
                 dest = stage / 'targets' / path.relative_to(tree)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, dest)
+            if len(windows_targets) > 1:
+                raise ValueError('select one Windows host tree; overlapping local/prebuilt hosts are ambiguous')
+            if windows_targets:
+                stage_windows_inputs(windows_targets[0], stage)
             for name in ['LICENSE', 'THIRD_PARTY_LICENSES.md']:
                 if (ROOT / name).is_file():
                     shutil.copyfile(ROOT / name, stage / name)
