@@ -103,29 +103,34 @@ def build_windows(debug, jobs, cargo_evidence):
     if not cargo_target.is_absolute():
         cargo_target = ROOT / cargo_target
     # Keep captured raw Cargo bytes separate from the final distributed archive.
-    with tempfile.TemporaryDirectory(prefix='signals-windows-build-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='signals-windows-build-') as temporary, \
+            tempfile.TemporaryDirectory(dir=destination, prefix='.host-') as staged_path:
+        staged = Path(staged_path)
         output = cargo_evidence or Path(temporary) / 'build'
         payload = execute('build', output, jobs=jobs, cargo_target=cargo_target,
                           debug=debug, capture_evidence=cargo_evidence is not None)
         zig = output.resolve() / 'tools/zig-x86_64-windows-0.16.0/zig.exe'
         with verified_windows_gnu() as verified:
             inventory = windows_gnu_inventory(verified)
-            receipt = normalize(payload / 'libsignals_gpui_host.a', destination / 'libsignals_gpui_host.a', inventory, zig)
+            receipt = normalize(payload / 'libsignals_gpui_host.a', staged / 'libsignals_gpui_host.a', inventory, zig)
         for name in ('libengine.a', 'signals.res'):
-            shutil.copyfile(payload / name, destination / name)
-        (destination / 'normalization.json').write_text(json.dumps(receipt, indent=2) + '\n')
+            shutil.copyfile(payload / name, staged / name)
+        (staged / 'normalization.json').write_text(json.dumps(receipt, indent=2) + '\n')
         if cargo_evidence is not None:
             from host_notice_payload import validate_packaged_outputs
             evidence = json.loads((output / 'evidence.json').read_text())
             validate_packaged_outputs(json.loads((output / 'build.json').read_text()), 'x64mingw',
                                      evidence['source_fingerprint'], evidence['host'],
-                                     {name: (destination / name).read_bytes() for name in
+                                     {name: (staged / name).read_bytes() for name in
                                       ('libsignals_gpui_host.a', 'libengine.a', 'signals.res')}, receipt)
-        (destination / 'link-inputs.json').write_text(json.dumps({
+        (staged / 'link-inputs.json').write_text(json.dumps({
             'dependencies': dependencies,
             'rust_target': 'x86_64-pc-windows-gnullvm', 'engine_target': 'x86_64-windows-gnu',
             'manifest': 'crates/gpui-host/windows/signals.manifest.xml',
         }, indent=2) + '\n')
+
+        for name in ('libsignals_gpui_host.a', 'libengine.a', 'signals.res', 'normalization.json', 'link-inputs.json'):
+            (staged / name).replace(destination / name)
 
 
 def finish_evidence(target, destination, evidence_root, fingerprint):
