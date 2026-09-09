@@ -17,6 +17,10 @@ on:
 
 permissions:
   contents: read
+  attestations: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   build:
