@@ -344,6 +344,26 @@ machine. Bundles independently verify and stage both libraries and their license
 The runtime still uses the operating system's xkbcommon/XCB libraries and keyboard
 layout data through the libraries' existing SONAMEs.
 
+The `LLVM unwind dependency releases` workflow independently builds Linux x86-64
+`libunwind.a` from the same checksum-pinned Zig distribution. Reproduce the two
+container builds and test Rust panic recovery with Rust 1.95.0 installed:
+
+```sh
+python3 scripts/build_unwind.py --output /tmp/unwind-candidate
+python3 scripts/build_unwind.py --output /tmp/unwind-rebuild
+cmp /tmp/unwind-candidate/unwind-x64glibc.tar /tmp/unwind-rebuild/unwind-x64glibc.tar
+python3 scripts/test_unwind_rust.py --candidate /tmp/unwind-candidate/unwind-x64glibc.tar
+python3 -m unittest scripts/test_unwind_dependencies.py scripts/test_glibc_dependencies.py
+```
+
+Each build tests C++ exception handling and destructor execution using the
+extracted candidate with explicit final link inputs. Rust's probe checks panic
+recovery and `Drop` execution. Dispatch `unwind-dependencies.yml` on `main` with a
+new `deps-unwind-<version>` tag to attest and publish the tested archive. Original
+sources, notices, and reproduction inputs accompany `libunwind.a`; C++ support
+archives used only by the producer probe are excluded. Adopting the resulting
+consumer lock and replacing the platform's GCC unwinder input is separate work.
+
 ## Coverage
 
 Native host coverage is a diagnostic tool for finding major gaps in the Zig
