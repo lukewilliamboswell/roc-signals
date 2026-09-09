@@ -6,15 +6,15 @@ from pathlib import Path
 import subprocess
 import sys
 
-AREAS = frozenset({"smoke", "source", "gui", "published", "archive", "site"})
-WEB = frozenset({"smoke", "source", "published", "archive", "site"})
+AREAS = frozenset({"source", "gui", "published", "archive", "site"})
+WEB = frozenset({"source", "published", "archive", "site"})
 
 
 def verify_results(results):
     if results["changes"]["result"] != "success":
         raise ValueError("CI selection did not succeed")
     selection = results["changes"]["outputs"]
-    for job in ("smoke", "source", "gui", "gui-windows", "gui-macos", "published", "archive", "site"):
+    for job in ("source", "gui", "gui-windows", "gui-macos", "published", "archive", "site"):
         area = "gui" if job.startswith("gui") else job
         enabled = selection[area]
         if enabled not in ("true", "false"):

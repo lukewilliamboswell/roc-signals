@@ -16,6 +16,8 @@ Presentation : {
 	height : Length,
 	grow : Bool,
 	background : Color,
+	hover_background : Color,
+	active_background : Color,
 	foreground : Color,
 	border_color : Color,
 	border_width : U32,
@@ -29,6 +31,9 @@ Attribute := [
 	Presentation(Presentation),
 	PresentationSignal(Signal(Presentation)),
 	Label(Str),
+	Placeholder(Str),
+	FontFamily(Str),
+	EmbeddedFonts(List({ family : Str, bytes : List(U8) })),
 	TestId(Str),
 	Selected(Signal(Bool)),
 	Enabled(Signal(Bool)),
@@ -37,11 +42,41 @@ Attribute := [
 	DropTarget(Node.Msg),
 ]
 
+# BEGIN GENERATED PROTOCOL (scripts/generate_protocol.py; edit protocol/native-protocol.json)
+# Versioned native presentation record; never encoded on the browser wire.
 native_style_field : Node.TextField
 native_style_field = { id: 8 }
-
+# Fixed-row virtual list record `1,row_height,follow_tail`.
+native_viewport_field : Node.TextField
+native_viewport_field = { id: 9 }
+# Bounded application key exposed by an internal drag source.
+native_drag_key_field : Node.TextField
+native_drag_key_field = { id: 10 }
+# Window close policy: `keep-open`, `await-decision`, or `close`.
+native_window_close_field : Node.TextField
+native_window_close_field = { id: 11 }
+# Static empty-field hint text shown while a controlled field is empty.
+native_placeholder_field : Node.TextField
+native_placeholder_field = { id: 12 }
+# Relative image source resolved against the process-wide assets root.
+native_image_source_field : Node.TextField
+native_image_source_field = { id: 13 }
+# Static font family joined into the element's inherited text style.
+native_font_family_field : Node.TextField
+native_font_family_field = { id: 14 }
+# Versioned embedded-font registration declaration; registered once at startup.
+native_fonts_field : Node.TextField
+native_fonts_field = { id: 15 }
+# Disables input while retaining native identity.
+disabled_field : Node.BoolField
+disabled_field = { id: 2 }
+# Native selected presentation, independent of checkbox state.
 selected_field : Node.BoolField
 selected_field = { id: 4 }
+# Marks an internal drop target that must bind a string-detail drop event.
+native_drop_target_field : Node.BoolField
+native_drop_target_field = { id: 5 }
+# END GENERATED PROTOCOL
 
 dimension : Length -> { kind : U32, value : U32 }
 dimension = |length| match length {
@@ -67,7 +102,7 @@ overflow_number = |overflow| match overflow {
 	Scroll => 2
 }
 
-# Native presentation protocol v1: fixed, canonical decimal fields. The host
+# Native presentation protocol v2: fixed, canonical decimal fields. The host
 # validates the complete record before publication; these are not CSS strings.
 encode_style : U32, Presentation -> Str
 encode_style = |direction, style| {
@@ -78,7 +113,62 @@ encode_style = |direction, style| {
 	} else {
 		0.U32
 	}
-	"1,${direction.to_str()},${style.gap.to_str()},${style.padding.to_str()},${width.kind.to_str()},${width.value.to_str()},${height.kind.to_str()},${height.value.to_str()},${grow.to_str()},${color_number(style.background).to_str()},${color_number(style.foreground).to_str()},${color_number(style.border_color).to_str()},${style.border_width.to_str()},${style.radius.to_str()},${style.font_size.to_str()},${overflow_number(style.overflow_x).to_str()},${overflow_number(style.overflow_y).to_str()}"
+	"2,${direction.to_str()},${style.gap.to_str()},${style.padding.to_str()},${width.kind.to_str()},${width.value.to_str()},${height.kind.to_str()},${height.value.to_str()},${grow.to_str()},${color_number(style.background).to_str()},${color_number(style.hover_background).to_str()},${color_number(style.active_background).to_str()},${color_number(style.foreground).to_str()},${color_number(style.border_color).to_str()},${style.border_width.to_str()},${style.radius.to_str()},${style.font_size.to_str()},${overflow_number(style.overflow_x).to_str()},${overflow_number(style.overflow_y).to_str()}"
+}
+
+base64_table : List(U8)
+base64_table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".to_utf8()
+
+# Standard base64 with '=' padding. Font bytes are embedded raw at compile
+# time; this runs once at startup while the app's element tree is built.
+encode_base64 : List(U8) -> Str
+encode_base64 = |bytes| {
+	char = |index| base64_table.get(index.to_u64()) ?? crash "base64 index is always below 64"
+	encoded = bytes.fold(
+		{ out: [], carry: 0.U8, phase: 0.U8 },
+		|state, byte| match state.phase {
+			0 => { out: state.out.append(char(byte.shr_wrap(2))), carry: byte.bitwise_and(3).shl_wrap(4), phase: 1 }
+			1 => { out: state.out.append(char(state.carry.bitwise_or(byte.shr_wrap(4)))), carry: byte.bitwise_and(15).shl_wrap(2), phase: 2 }
+			_ => { out: state.out.append(char(state.carry.bitwise_or(byte.shr_wrap(6)))).append(char(byte.bitwise_and(63))), carry: 0, phase: 0 }
+		},
+	)
+	completed = match encoded.phase {
+		0 => encoded.out
+		1 => encoded.out.append(char(encoded.carry)).append(61).append(61)
+		_ => encoded.out.append(char(encoded.carry)).append(61)
+	}
+	Str.from_utf8(completed) ?? crash "base64 output is ASCII"
+}
+
+# Host-enforced embedded font bounds, mirrored by the native adapters.
+max_fonts : U64
+max_fonts = 8
+
+max_font_bytes : U64
+max_font_bytes = 8388608
+
+encode_fonts : List({ family : Str, bytes : List(U8) }) -> Str
+encode_fonts = |fonts| {
+	if fonts.is_empty() or fonts.len() > max_fonts {
+		crash "Gui.embedded_fonts registers 1 to 8 fonts"
+	}
+	lines = fonts.fold(
+		["1"],
+		|acc, font| {
+			family_bytes = font.family.to_utf8()
+			if family_bytes.is_empty() or family_bytes.len() > 128 {
+				crash "Gui embedded font family name must contain 1 to 128 UTF-8 bytes"
+			}
+			if family_bytes.any(|byte| byte < 32 or byte == 127) {
+				crash "Gui embedded font family name must not contain control characters"
+			}
+			if font.bytes.is_empty() or font.bytes.len() > max_font_bytes {
+				crash "Gui embedded font data must contain 1 to 8388608 bytes"
+			}
+			acc.append(font.family).append(encode_base64(font.bytes))
+		},
+	)
+	Str.join_with(lines, "\n")
 }
 
 style_attr : U32, Presentation -> Node.Attr
@@ -110,7 +200,7 @@ lower_attrs = |direction, defaults, attrs| {
 	with_drop = if drop_targets.is_empty() {
 		initial
 	} else {
-		initial.append(Node.Attr.StaticBool({ field: { id: 5 }, name: "", value: True }))
+		initial.append(Node.Attr.StaticBool({ field: native_drop_target_field, name: "", value: True }))
 	}
 	with_drop.concat(
 		attrs.map(
@@ -125,16 +215,19 @@ lower_attrs = |direction, defaults, attrs| {
 					}
 				}
 				Attribute.Label(value) => Html.aria_label(value)
+				Attribute.Placeholder(value) => Node.Attr.StaticText({ field: native_placeholder_field, name: "", value })
+				Attribute.FontFamily(value) => Node.Attr.StaticText({ field: native_font_family_field, name: "", value })
+				Attribute.EmbeddedFonts(fonts) => Node.Attr.StaticText({ field: native_fonts_field, name: "", value: encode_fonts(fonts) })
 				Attribute.TestId(value) => Html.test_id(value)
 				Attribute.Selected(value) => match Html.bool_attr_s("", value) {
 					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: selected_field })
 					_ => crash "expected a signal bool descriptor"
 				}
 				Attribute.Enabled(value) => match Html.bool_attr_s("", value.map(|enabled| !enabled)) {
-					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: { id: 2 } })
+					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: disabled_field })
 					_ => crash "expected a signal bool descriptor"
 				}
-				Attribute.DragSource(key) => Node.Attr.StaticText({ field: { id: 10 }, name: "", value: key })
+				Attribute.DragSource(key) => Node.Attr.StaticText({ field: native_drag_key_field, name: "", value: key })
 				Attribute.DropTarget(msg) => Node.Attr.On({
 					kind: { id: 0 },
 					name: "drop",
@@ -200,6 +293,8 @@ Gui := [].{
 		height: Auto,
 		grow: False,
 		background: Default,
+		hover_background: Default,
+		active_background: Default,
 		foreground: Default,
 		border_color: Default,
 		border_width: 0,
@@ -224,6 +319,26 @@ Gui := [].{
 	## Give a control or region a semantic name, independent of its styling.
 	label : Str -> Attr
 	label = |value| Attribute.Label(value)
+
+	## Show an empty-field hint inside a text control. The hint is explicit
+	## static text; the host never derives one from a label or a default.
+	placeholder : Str -> Attr
+	placeholder = |value| Attribute.Placeholder(value)
+
+	## Render this element and its descendants with a named font family. The
+	## family must be available to the native text system: either installed on
+	## the machine or registered at startup through `embedded_fonts`. Text
+	## styles inherit, so descendants without their own family use this one.
+	font_family : Str -> Attr
+	font_family = |value| Attribute.FontFamily(value)
+
+	## Register embedded fonts with the native text system at startup. Declare
+	## exactly one list on the app's root element; the bytes come from a
+	## compile-time `import "font.ttf" as name : List(U8)`. The host registers
+	## each family once and rejects more than 8 fonts or fonts over 8 MiB with
+	## a visible host error. Re-publishing identical data never re-registers.
+	embedded_fonts : List({ family : Str, bytes : List(U8) }) -> Attr
+	embedded_fonts = |fonts| Attribute.EmbeddedFonts(fonts)
 
 	## Mark selection independently of checkbox state or application identity.
 	selected_s : Signal(Bool) -> Attr
@@ -266,7 +381,7 @@ Gui := [].{
 			},
 		)
 		policy_attr = match Html.attr_s("", policy) {
-			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: { id: 11 } })
+			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: native_window_close_field })
 			_ => crash "expected a signal text descriptor"
 		}
 		Elem.Element({
@@ -325,10 +440,27 @@ Gui := [].{
 			}",
 		)
 		viewport = match Html.attr_s("", encoded) {
-			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: { id: 9 } })
+			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: native_viewport_field })
 			_ => crash "expected a signal text descriptor"
 		}
 		Html.div(lower_attrs(1, { ..style_default, width: Fill, height: Px(480), grow: True }, attrs).append(viewport), children)
+	}
+
+	## Render an image from a relative path inside the host's assets root.
+	## Absolute paths, `..` traversal, and URIs never resolve; a missing or
+	## undecodable source renders a neutral placeholder box of the styled size.
+	## The label is a semantic name for the picture, never derived by the host.
+	image : { source : Str, label : Str }, List(Attr) -> Elem
+	image = |props, attrs| {
+		if props.source.is_empty() or props.source.to_utf8().len() > 1024 {
+			crash "Gui image sources contain 1 to 1024 UTF-8 bytes"
+		}
+		Elem.Element({
+			namespace: Html,
+			tag: "img",
+			attrs: lower_attrs(1, style_default, [Attribute.Label(props.label)].concat(attrs)).append(Node.Attr.StaticText({ field: native_image_source_field, name: "", value: props.source })),
+			children: [],
+		})
 	}
 
 	## Render a prominent heading.
@@ -347,10 +479,18 @@ Gui := [].{
 	button : Str, Msg -> Elem
 	button = |value, message| Html.button(value, message)
 
+	## Create a static-label button that accepts native attributes: a style,
+	## test id, label, selected and enabled signals, and shortcuts, like every
+	## other control. A supplied style replaces the button's complete default
+	## record, including its hover and active backgrounds.
+	button_attrs : Str, List(Attr), Msg -> Elem
+	button_attrs = |value, attrs, message|
+		Html.button_attrs(value, lower_attrs(1, { ..style_default, padding: 8, radius: 6, background: Rgb(3232873), hover_background: Rgb(0x3F6175), active_background: Rgb(0x2B4452) }, attrs), message)
+
 	## Create a button whose label and availability change independently.
 	action_button : { label : Signal(Str), enabled : Signal(Bool) }, List(Attr), Msg -> Elem
 	action_button = |props, attrs, message|
-		Html.action_button_attrs(props.label, props.enabled.map(|enabled| !enabled), lower_attrs(1, { ..style_default, padding: 8, radius: 6, background: Rgb(3232873) }, attrs), message)
+		Html.action_button_attrs(props.label, props.enabled.map(|enabled| !enabled), lower_attrs(1, { ..style_default, padding: 8, radius: 6, background: Rgb(3232873), hover_background: Rgb(0x3F6175), active_background: Rgb(0x2B4452) }, attrs), message)
 
 	## Edit one controlled line; the label is a semantic name, not placeholder text.
 	text_input : { label : Str, value : Signal(Str) }, List(Attr), Msg -> Elem
@@ -370,5 +510,14 @@ Gui := [].{
 		Html.checkbox_attrs(props.label, props.checked, lower_attrs(0, style_default, attrs), message)
 }
 
-## The native default encoding is a canonical v1 record shared with the Zig decoder.
-expect encode_style(1, Gui.style_default) == "1,1,8,0,0,0,0,0,0,16777216,16777216,16777216,0,0,0,0,0"
+## The native default encoding is a canonical v2 record shared with the Zig decoder.
+expect encode_style(1, Gui.style_default) == "2,1,8,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0"
+
+## Base64 matches the canonical RFC 4648 vectors at every padding length.
+expect encode_base64("foo".to_utf8()) == "Zm9v"
+expect encode_base64("fo".to_utf8()) == "Zm8="
+expect encode_base64("f".to_utf8()) == "Zg=="
+expect encode_base64([0, 255, 127]) == "AP9/"
+
+## The v1 declaration is one version line, then family and data lines per font.
+expect encode_fonts([{ family: "Source Code Pro", bytes: "foo".to_utf8() }]) == "1\nSource Code Pro\nZm9v"

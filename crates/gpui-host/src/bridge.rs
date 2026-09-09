@@ -1,6 +1,68 @@
 //! Single-threaded owner of the experimental native ABI. No Roc layout enters Rust.
+use crate::protocol_gen::{EFFECT_VERSION, PROTOCOL_VERSION, RawNode, TIMER_VERSION};
 use crate::shortcut::{MAX_PER_ELEMENT, Shortcut};
 use std::{marker::PhantomData, rc::Rc};
+
+/// Element kind, derived exactly once from the published tag when a node
+/// crosses the bridge boundary. Host code branches on this enum; the raw tag
+/// string is retained only for diagnostics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ControlKind {
+    #[default]
+    Unknown,
+    Root,
+    Div,
+    Dialog,
+    Window,
+    Heading1,
+    Heading2,
+    Paragraph,
+    Button,
+    Input,
+    Textarea,
+    Text,
+    Image,
+}
+impl ControlKind {
+    pub fn from_tag(tag: &str) -> Self {
+        match tag {
+            "root" => Self::Root,
+            "div" => Self::Div,
+            "dialog" => Self::Dialog,
+            "window" => Self::Window,
+            "h1" => Self::Heading1,
+            "h2" => Self::Heading2,
+            "p" => Self::Paragraph,
+            "button" => Self::Button,
+            "input" => Self::Input,
+            "textarea" => Self::Textarea,
+            "text" => Self::Text,
+            "img" => Self::Image,
+            _ => Self::Unknown,
+        }
+    }
+    pub fn is_heading(self) -> bool {
+        matches!(self, Self::Heading1 | Self::Heading2)
+    }
+}
+
+/// Semantic role, derived once from the published role string alongside
+/// `ControlKind`. Only the checkbox role changes host behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Role {
+    #[default]
+    Generic,
+    Checkbox,
+}
+impl Role {
+    pub fn from_role(role: &str) -> Self {
+        if role == "checkbox" {
+            Self::Checkbox
+        } else {
+            Self::Generic
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct Node {
@@ -13,10 +75,15 @@ pub struct Node {
     pub parent: Option<u64>,
     pub active: bool,
     pub tag: String,
+    pub kind: ControlKind,
     pub text: String,
     pub value: String,
     pub label: String,
-    pub role: String,
+    pub placeholder: String,
+    pub image_source: String,
+    pub font_family: String,
+    pub fonts: String,
+    pub role: Role,
     pub test_id: String,
     pub style: Option<Style>,
     pub child_count: usize,
@@ -30,7 +97,7 @@ pub struct Node {
     pub disabled: bool,
     pub shortcuts: Vec<Shortcut>,
 }
-/// Validated native presentation v1, copied from the committed C boundary.
+/// Validated native presentation v2, copied from the committed C boundary.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Style {
@@ -43,6 +110,8 @@ pub struct Style {
     pub height: u32,
     pub grow: u32,
     pub background: u32,
+    pub hover_background: u32,
+    pub active_background: u32,
     pub foreground: u32,
     pub border_color: u32,
     pub border_width: u32,
@@ -72,9 +141,9 @@ impl Node {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Slice {
-    ptr: *const u8,
-    len: usize,
+pub(crate) struct Slice {
+    pub(crate) ptr: *const u8,
+    pub(crate) len: usize,
 }
 impl Slice {
     unsafe fn copy(self) -> String {
@@ -84,34 +153,6 @@ impl Slice {
         String::from_utf8(unsafe { std::slice::from_raw_parts(self.ptr, self.len) }.to_vec())
             .expect("invalid host UTF-8")
     }
-}
-#[repr(C)]
-struct RawNode {
-    id: u64,
-    active: u64,
-    parent: u64,
-    tag: Slice,
-    text: Slice,
-    value: Slice,
-    label: Slice,
-    role: Slice,
-    test_id: Slice,
-    class: Slice,
-    child_count: usize,
-    click: u64,
-    input: u64,
-    check: u64,
-    checked: u64,
-    disabled: u64,
-    selected: u64,
-    style_present: u64,
-    style: Style,
-    viewport: [u32; 2],
-    lifetime: u64,
-    drag_key: Slice,
-    drop: u64,
-    close_requested: u64,
-    close_policy: u64,
 }
 #[repr(C)]
 struct RawEffect {
@@ -157,7 +198,7 @@ impl Engine {
             };
             assert_eq!(
                 signals_protocol_version(),
-                7,
+                PROTOCOL_VERSION,
                 "native GUI protocol mismatch"
             );
             assert_eq!(
@@ -167,11 +208,15 @@ impl Engine {
             );
             assert_eq!(
                 signals_effect_version(),
-                2,
+                EFFECT_VERSION,
                 "native effect protocol mismatch"
             );
             assert_eq!(signals_effect_size(), std::mem::size_of::<RawEffect>());
-            assert_eq!(signals_timer_version(), 1, "native timer protocol mismatch");
+            assert_eq!(
+                signals_timer_version(),
+                TIMER_VERSION,
+                "native timer protocol mismatch"
+            );
             assert_eq!(
                 signals_timer_size(),
                 std::mem::size_of::<crate::timers::Message>()
@@ -199,6 +244,8 @@ impl Engine {
                         shortcut_count <= MAX_PER_ELEMENT,
                         "native shortcut count exceeded its bound"
                     );
+                    let tag = r.tag.copy();
+                    let role = r.role.copy();
                     Node {
                         id: r.id,
                         lifetime: r.lifetime,
@@ -208,11 +255,16 @@ impl Engine {
                         close_policy: r.close_policy,
                         parent: (r.parent != u64::MAX).then_some(r.parent),
                         active: r.active != 0,
-                        tag: r.tag.copy(),
+                        kind: ControlKind::from_tag(&tag),
+                        tag,
                         text: r.text.copy(),
                         value: r.value.copy(),
                         label: r.label.copy(),
-                        role: r.role.copy(),
+                        placeholder: r.placeholder.copy(),
+                        image_source: r.image_source.copy(),
+                        font_family: r.font_family.copy(),
+                        fonts: r.fonts.copy(),
+                        role: Role::from_role(&role),
                         test_id: r.test_id.copy(),
                         style: (r.style_present != 0).then_some(r.style),
                         child_count: r.child_count,

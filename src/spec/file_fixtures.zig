@@ -23,6 +23,7 @@ pub fn recognizes(head: []const u8) bool {
         std.mem.eql(u8, head, "resolve-file-directory") or
         std.mem.eql(u8, head, "resolve-file-preview") or
         std.mem.eql(u8, head, "resolve-file-open") or
+        std.mem.eql(u8, head, "resolve-file-assets") or
         std.mem.eql(u8, head, "reject-file");
 }
 
@@ -37,7 +38,7 @@ pub fn admits(kinds: u64, kind: boundary.TaskKind) bool {
 
 fn fileKinds() u64 {
     var kinds: u64 = 0;
-    for ([_]boundary.TaskKind{ .choose_file, .choose_directory, .choose_save_path, .read_text, .write_text, .scan_directory, .list_directory, .open_path, .read_preview, .read_log }) |kind| {
+    for ([_]boundary.TaskKind{ .choose_file, .choose_directory, .choose_save_path, .read_text, .write_text, .scan_directory, .list_directory, .open_path, .read_preview, .read_log, .verify_assets }) |kind| {
         kinds |= bit(kind);
     }
     return kinds;
@@ -215,6 +216,28 @@ pub fn parse(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr
             try numberFrame(&buffer.writer, bytes);
         }
         kinds = bit(.list_directory);
+    } else if (std.mem.eql(u8, head, "resolve-file-assets")) {
+        if (args.len != 3) return error.InvalidFormat;
+        const entries = switch ((try field(args[1..], ":entries")).value) {
+            .list => |items| items,
+            else => return error.InvalidFormat,
+        };
+        if (entries.len == 0 or entries.len > 256) return error.InvalidFormat;
+        try numberFrame(&buffer.writer, entries.len);
+        for (entries) |entry| {
+            const parts = switch (entry.value) {
+                .list => |items| items,
+                else => return error.InvalidFormat,
+            };
+            if (parts.len != 2) return error.InvalidFormat;
+            const status = try symbol(parts[0]);
+            const name = try string(parts[1]);
+            if (!oneOf(status, &.{ "ok", "missing", "mismatch" })) return error.InvalidFormat;
+            if (name.len == 0 or !validText(name, 1024)) return error.InvalidFormat;
+            try frame(&buffer.writer, name);
+            try frame(&buffer.writer, status);
+        }
+        kinds = bit(.verify_assets);
     } else if (failed) {
         if (args.len != 5) return error.InvalidFormat;
         const kind = try symbol(try field(args[1..], ":kind"));
@@ -233,6 +256,19 @@ pub fn parse(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr
     errdefer allocator.free(name);
     const payload = try allocator.dupe(u8, buffer.written());
     return .{ .task_name = name, .payload = payload, .kinds = kinds, .failed = failed };
+}
+
+test "asset fixtures frame ordered name and status pairs" {
+    var reader = sexpr.Reader.init(std.testing.allocator, "(resolve-file-assets \"asset-verify\" :entries ((ok \"avatars/maya.png\") (missing \"glyphs/λ.png\")))");
+    const expr = try reader.readOne();
+    defer expr.deinit(std.testing.allocator);
+    const items = expr.value.list;
+    const fixture = try parse(std.testing.allocator, try symbol(items[0]), items[1..]);
+    defer std.testing.allocator.free(fixture.task_name);
+    defer std.testing.allocator.free(fixture.payload);
+    try std.testing.expectEqualStrings("6:files11:216:avatars/maya.png2:ok13:glyphs/λ.png7:missing", fixture.payload);
+    try std.testing.expect(admits(fixture.kinds, .verify_assets));
+    try std.testing.expect(!admits(fixture.kinds, .read_text));
 }
 
 test "file fixtures frame exact UTF-8 bytes and preserve separators" {
@@ -257,6 +293,7 @@ pub fn expectedService(kinds: u64) []const u8 {
     if (kinds == bit(.read_preview)) return "read_preview";
     if (kinds == bit(.list_directory)) return "list_directory";
     if (kinds == bit(.open_path)) return "open_path";
+    if (kinds == bit(.verify_assets)) return "verify_assets";
     if (kinds == bit(.choose_file) | bit(.choose_directory) | bit(.choose_save_path)) return "file/directory/save chooser";
     return "a native Files task";
 }

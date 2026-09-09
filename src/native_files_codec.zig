@@ -36,6 +36,34 @@ pub fn validateLogRequest(payload: []const u8) error{InvalidFilesRequest}!void {
     for (cursor) |value| if (value != 0) return error.InvalidFilesRequest;
 }
 
+pub const max_manifest_assets = 256;
+pub const max_asset_name_bytes = 1024;
+
+/// Validates one complete asset-verification request before publication: a
+/// canonical asset count, then per-asset relative name and lowercase hex
+/// sha256 frames. Path containment and hashing remain typed operation results.
+pub fn validateAssetsRequest(payload: []const u8) error{InvalidFilesRequest}!void {
+    if (payload.len > max_payload_bytes) return error.InvalidFilesRequest;
+    var rest = payload;
+    if (!std.mem.eql(u8, try frame(&rest), "files1")) return error.InvalidFilesRequest;
+    const count_text = try frame(&rest);
+    if (count_text.len == 0 or (count_text.len > 1 and count_text[0] == '0')) return error.InvalidFilesRequest;
+    for (count_text) |byte| if (byte < '0' or byte > '9') return error.InvalidFilesRequest;
+    const count = std.fmt.parseInt(usize, count_text, 10) catch return error.InvalidFilesRequest;
+    if (count == 0 or count > max_manifest_assets) return error.InvalidFilesRequest;
+    for (0..count) |_| {
+        const name = try frame(&rest);
+        if (name.len == 0 or name.len > max_asset_name_bytes) return error.InvalidFilesRequest;
+        const digest = try frame(&rest);
+        if (digest.len != 64) return error.InvalidFilesRequest;
+        for (digest) |byte| {
+            const hex = (byte >= '0' and byte <= '9') or (byte >= 'a' and byte <= 'f');
+            if (!hex) return error.InvalidFilesRequest;
+        }
+    }
+    if (rest.len != 0) return error.InvalidFilesRequest;
+}
+
 fn frame(rest: *[]const u8) error{InvalidFilesRequest}![]const u8 {
     const end = std.mem.indexOfScalar(u8, rest.*, ':') orelse return error.InvalidFilesRequest;
     const length = rest.*[0..end];
@@ -48,6 +76,19 @@ fn frame(rest: *[]const u8) error{InvalidFilesRequest}![]const u8 {
     if (!std.unicode.utf8ValidateSlice(value)) return error.InvalidFilesRequest;
     rest.* = tail[count..];
     return value;
+}
+
+test "native asset verification requests are strictly framed and bounded" {
+    const digest = "a" ** 64;
+    try validateAssetsRequest("6:files11:115:avatars/one.png64:" ++ digest);
+    for ([_][]const u8{
+        "6:files11:0", // zero assets
+        "6:files12:011:x64:" ++ digest, // noncanonical count
+        "6:files11:11:x63:" ++ digest[0..63], // short digest
+        "6:files11:11:x64:" ++ ("A" ** 64), // uppercase hex
+        "6:files11:21:x64:" ++ digest, // truncated entry list
+        "6:files11:11:x64:" ++ digest ++ "1:y", // trailing frame
+    }) |payload| try std.testing.expectError(error.InvalidFilesRequest, validateAssetsRequest(payload));
 }
 
 test "native Files requests preserve UTF-8 and arbitrary file text" {

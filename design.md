@@ -18,6 +18,10 @@ contracts without making every representation choice a permanent principle:
 - [Appendix B](#appendix-b-browser-protocol-contract) records the browser ABI
   and encoding. These are normative for a protocol version, but may evolve
   through explicit producer/consumer changes and compatibility validation.
+- The [native protocol manifest](protocol/native-protocol.json) owns native
+  presentation, effect, and timer versions and layout tables. The
+  [native boundary contract](docs/native-gui-protocol.md) supplies their detailed
+  encoding and executor rules; the architectural laws below govern every host.
 - [Appendix C](#appendix-c-representative-apps) describes the representative
   workloads used to test the architecture. Their membership is replaceable;
   coverage of the capabilities is the enduring requirement.
@@ -35,23 +39,26 @@ documents provide evidence and workflow, not exceptions to the semantic laws.
 
 ## Thesis
 
-Roc Signals exists so that a Roc developer can build an interactive browser UI
-in pure Roc and trust it the way they trust the rest of their Roc code: values
+Roc Signals exists so that a Roc developer can build an interactive browser or
+native UI in pure Roc and trust it the way they trust the rest of their Roc code: values
 in, values out, no hidden mutable runtime in the app, and its reactive semantics
 checkable independently of a browser. The app describes its UI as data — a
 descriptor tree whose dependency edges are already explicit in the structure
 of each `map`/`map2`/record-builder call — and hands that description to a
 host-owned engine once. From then on, the engine re-runs only the closures
-whose inputs changed, in dependency order, and emits only the DOM commands
+whose inputs changed, in dependency order, and emits only the rendering decisions
 those changes imply. There is no virtual DOM and no per-event re-render; work
 is proportional to what changed, and that claim is enforced by counters a spec
-can assert, not by benchmarks a reviewer has to trust.
+can assert, not by benchmarks a reviewer has to trust. Browser and GPUI executors
+apply those decisions through their own presentation systems.
 
 The one-sentence wedge: **pure Roc, no VDOM, updates local to affected
-dependencies, and fast native specs backed by real-browser interaction evidence.**
+dependencies, and fast native specs backed by browser and desktop interaction
+evidence.**
 
 It is for Roc developers building interactive browser applications — dashboards,
-editors, forms, routed multi-page apps such as Conduit. It is not a general
+forms, routed multi-page apps such as Conduit — and native tools such as document
+editors, task boards, folder explorers, and log viewers. It is not a general
 replacement for the JavaScript ecosystem, not a UI toolkit for other languages,
 and not a server-rendering platform.
 
@@ -85,13 +92,15 @@ principle is observed; this section says what it is.
 4. **Failure is legible.** Every contract violation — in a descriptor, a key, a
    capability, a payload, a budget — is reported to the author as a readable
    diagnostic naming the construction site and the rule broken, identically
-   under the native runner and in the browser. A bare trap, an integer code, or
-   a silent no-op is never an acceptable way to fail.
+   under the native runner, in the browser, and at the GUI boundary. A bare trap,
+   an integer code, or a silent no-op is never an acceptable way to fail.
 
-5. **There is exactly one door to the outside.** Everything that crosses to
-   JavaScript — events, tasks, browser sources, and third-party integration —
-   travels through the same declared, scope-owned, typed boundary vocabulary.
-   No globals, no second payload format, no runtime edits per app.
+5. **There is exactly one door to the outside.** Events, tasks, environment
+   sources, and third-party integration travel through declared, scope-owned,
+   typed boundaries and the same engine scheduling and ownership model.
+   JavaScript uses the browser boundary vocabulary; native services use explicit
+   native task kinds and validated primitive payloads. Neither surface exposes
+   an application back door into host state or requires runtime edits per app.
 
 6. **Cost is visible and bounded.** Payload size, startup, and per-event work
    are measured, budgeted, and enforced continuously, so an author can reason
@@ -101,8 +110,10 @@ principle is observed; this section says what it is.
 7. **Testable at the right boundary.** Reactive semantics, ordering, work,
    and cleanup can be asserted in fast, deterministic native tests in
    user-facing terms. Browser tests establish actual input, focus, layout,
-   accessibility, and integration behavior. Tests are evidence within their
-   model; a simulated DOM is not a proof of all browser behavior.
+   accessibility, and integration behavior. GPUI adapter tests and native desktop
+   journeys establish the corresponding native input, focus, layout, and service
+   behavior. Tests are evidence within their model; a simulated DOM is not a
+   proof of browser or operating-system interaction.
 
 8. **Approachable and honest.** A developer who knows Roc can learn the model
    from the documentation alone, and what the documentation says is what the
@@ -130,8 +141,8 @@ failed. Tiers 2 and 3 are the externally visible outcomes the engine exists
 to deliver.
 
 **Tier 1 — Engine invariants.** The properties listed under *Measures of
-Effectiveness* below (one engine, thin hosts; same apps in both
-environments; native semantic evidence; work scales with change;
+Effectiveness* below (one engine, thin hosts; each platform's apps in semantic
+specs and its live executor; native semantic evidence; work scales with change;
 deterministic reclamation with no leaks; determinism; incompatible erased-value
 routing is rejected), with production checks and bounded transaction failure.
 *Evidence:* native specs with `expect_metric_delta`, host tests, fault
@@ -147,7 +158,7 @@ placement, mutation-tested fuzz targets, and release-build boundary rejection te
 - *Scaling for apps:* a one-row change in the large keyed fixtures runs O(1)
   Roc closures, pinned by `expect_metric_delta` on `derived_calls_into_roc`.
 - *Legible failure:* one fixture per contract-error class asserts the
-  diagnostic text and site attribution on both hosts.
+  diagnostic text and site attribution on each applicable host.
 - *One door:* an interop canary integrates a third-party widget through the
   declared boundary only.
 - *Bounded cost:* compressed artifact size, construction cost, interaction
@@ -155,14 +166,17 @@ placement, mutation-tested fuzz targets, and release-build boundary rejection te
   Deterministic work and size limits gate CI; repeatable production-browser
   measurements support release acceptance under an explicit noise policy.
 - *Testable at the right boundary:* maintained app semantics run natively;
-  browser contract tests and a small end-to-end suite establish integration.
+  browser and GPUI contract tests plus live interaction journeys establish
+  integration on their respective surfaces.
 - *Approachable:* newcomer exercises record time, errors, and framework-specific
   ceremony for deployment, component extraction, validation, preserving an edit
   across navigation, and diagnosing unexpected work. Line count is supporting
   evidence, not the definition of ergonomics.
 - *Interaction and accessibility:* browser journeys cover keyboard navigation,
   focus restoration, input composition and selection, accessible relationships,
-  and focused row movement. Native specs cover the shared command semantics.
+  and focused row movement. Desktop journeys cover native editing, modal focus,
+  shortcuts, and scoped control lifetime. Native specs cover shared rendering
+  semantics; semantic labels alone establish no screen-reader integration.
 - *Intent and coordination:* fixtures prove identical repeated submissions,
   atomic multi-source resets, and effect observers that see settled state only.
 
@@ -175,6 +189,10 @@ read this document:
 - Conduit passing a real-browser end-to-end run (Playwright) against the
   RealWorld specification, not only the native spec suite and the DOM double.
 - Compressed Wasm and runtime size budgets enforced as upper bounds.
+- Native applications built against the independently prebuilt GUI platform,
+  with semantic specs and live desktop evidence for editing, file workflows,
+  rendering, and shutdown on each supported native target. Supported systems
+  and release evidence belong in the maintained native documentation.
 
 ## Non-Goals
 
@@ -232,7 +250,7 @@ reactive behaviour:
   allocation ledger, and fine-grained work counters. It compiles to a native
   binary, so ordinary tooling (`lldb`, allocation tracing) can inspect crashes
   and memory behaviour directly. Its job is **low-level observability and
-  semantic assertion** — the things a real browser cannot show us.
+  semantic assertion** — the things a live presentation system cannot show us.
 
 - **Wasm host** — the browser-boundary host. It backs the engine with a
   command-buffer sink serialized into linear memory, plus the JS↔WASM boundary:
@@ -258,7 +276,8 @@ it, the shared engine, and the application into a native executable. Each
 platform must declare its supported effects explicitly rather than silently
 substitute browser services on native systems. The GUI boundary has the same
 ownership, atomic publication, disposal, and O(changed) obligations as the web
-boundary; these are requirements, not claims about the completeness of a spike.
+boundary; these are requirements, not claims that every implementation path
+already satisfies them.
 
 The same web Roc apps compile against the native spec and Wasm hosts. The native spec runner asserts
 semantics and work budgets; the browser runs the apps for real. The JS runtime
@@ -267,11 +286,18 @@ reconstructs meaning, holds reactive state, or re-decides patches.
 
 ```mermaid
 flowchart LR
-    App["Roc application"] --> Platform["Roc platform<br/>descriptor tree · typed retained closures"]
+    App["Roc application"] --> WebPlatform["platform-web<br/>Html · Ui"]
+    App --> GuiPlatform["platform-gui<br/>Gui"]
+    WebPlatform --> Platform["shared descriptor tree<br/>signals · scopes · typed retained closures"]
+    GuiPlatform --> Platform
     Platform -->|"roc_ui_init once;<br/>direct closure calls thereafter"| Engine["shared Engine(Ctx)<br/>reactivity · structure · ownership · rendering decisions"]
 
-    Engine <-->|"Ctx + sink contract"| Native["native host"]
+    Engine <-->|"Ctx + sink contract"| Native["native spec host"]
     Native --> NativeSurface["simulated DOM<br/>spec runner · metrics · allocation ledger"]
+
+    Engine <-->|"Ctx + sink contract"| Gui["GPUI boundary host<br/>Zig adapter"]
+    Gui -->|"committed rendering decisions"| GuiSurface["Rust static library<br/>windows · input widgets · retained GPUI entities"]
+    GuiSurface -->|"native input events"| Gui
 
     Engine <-->|"Ctx + sink contract"| Wasm["Wasm boundary host"]
     Wasm --> Wire["atomic command and payload buffers<br/>in linear memory"]
@@ -322,8 +348,8 @@ document is meant to preserve. Every part of this design must respect them.
    *Confined Erasure*.
 6. **One engine, thin hosts.** All reactive and structural logic lives in the
    shared engine. A host file contains only its boundary (sink, marshalling,
-   spec runner / JS bridge) and its `Ctx` implementation. Reactive or structural
-   logic appearing in a host file is a defect: it lets the hosts diverge,
+   spec runner / JS bridge / GPUI adapter) and its `Ctx` implementation. Reactive
+   or structural logic appearing in a host file is a defect: it lets the hosts diverge,
    which this architecture exists to prevent.
 
 ## First Principles, Not Imitation
@@ -456,8 +482,8 @@ must not be serialized as a key or used to encode action occurrences.
   descriptor that references a source binder or derived expression. The `a`
   exists only in Roc's type system; the host assigns the runtime node id when it
   ingests the descriptor tree.
-- **Source** — a node whose value is set by host input (a DOM event, a timer, an
-  effect result). Local state sources are introduced by the `Ui.state` closure
+- **Source** — a node whose value is set by host input (a browser or native event,
+  a timer, an effect result). Local state sources are introduced by the `Ui.state` closure
   binder; effect combinators introduce effect sources.
 - **Derived node** — `map`, `map2`, `combine`. Holds a retained Roc transform
   closure plus its input node ids. The host recomputes it when an input changes.
@@ -467,7 +493,7 @@ must not be serialized as a key or used to encode action occurrences.
   retains the erased reducer and calls it when the bound event fires.
 - **Scope** — a host-owned region that owns minted node ids and retained
   closures: the root, each conditional branch, and each list row are scopes.
-  Disposing a scope drops its refcounts and detaches its DOM.
+  Disposing a scope drops its refcounts and detaches its rendered structure.
 - **Elem** — a pure description of UI structure that references signals for
   dynamic text/attrs and references reducers for event handlers. Element nodes
   carry a tag string, attrs, and children; user-controlled copy stays in text
@@ -791,8 +817,8 @@ reservations are provisional until validation and all fallible host allocation
 succeeds. Commit swaps the generation, publishes row-source updates and local
 structural splices, and exposes one complete command batch without allocation.
 Abort releases candidate ownership, provisional items, keys, handles, and sink
-state and leaves the committed generation and DOM untouched. The old generation
-is released only after successful publication.
+state and leaves the committed generation and rendered structure untouched.
+The old generation is released only after successful publication.
 
 Generation ownership is site-scoped. At most the committed generation plus a
 transaction's candidate generation are retained for one `Ui.each` site, apart
@@ -830,8 +856,12 @@ capability bridges the two.
 The app sees `Signal(a)`, `Ui.Row(a)` with exact UTF-8 identity, `Elem`,
 task/effect helpers, and a small set of polymorphic functions. It never sees
 host ids, host-private key hashes, `NodeValue`, or lifecycle tokens. The API is
-identical regardless of which host runs the app — apps are written once and run
-under both the native spec runner and the browser.
+shared for signals, actions, and scope ownership. Rendering and services are
+platform-specific: `platform-web` exposes `Html` and browser services;
+`platform-gui` exposes `Gui` and `Files`, with shared `Ui`, `Signal`, and `Rows`
+semantics. A web app runs under the native semantic runner and in the browser;
+a GUI app runs under the native semantic runner and GPUI. This does not promise
+that a browser rendering API or service is supported by the GUI executor.
 Everything that crosses to JavaScript — `Cmd` out, `Sub(a)` in, and widget
 attachments — is one declared boundary (see *One door to JavaScript*). There
 is no second payload format, no public id route table, and no browser-only
@@ -989,7 +1019,8 @@ path. Only an accepted matching binding consumes the keystroke. The browser
 host rejects this native-only filter before command publication until it has an
 explicit executor capability; it must not drop the filter and bind all keys.
 
-Native window closure is governed by one explicit root-owned declaration. A
+Native window closure may be governed by one explicit root-owned declaration;
+without it, native close requests close the window immediately. A
 close request enters the ordinary unit-event graph; the committed app decision
 cancels it, holds it pending, or permits closure. Async work completes through
 ordinary task settlement before the app may permit closure. The native adapter
@@ -1019,6 +1050,8 @@ only the affected views and the bounded modal registrations. Tab and Shift-Tab
 wrap through current child order, skipping disabled controls. An empty modal
 retains focus itself. These are host presentation limits, not another reactive
 scheduler or a reason to scan the application tree on each update.
+Exceeding them is a programmer-contract failure requiring diagnostic containment,
+not a recoverable capacity refusal or permission to use a partial focus list.
 
 `EventDelivery` is derived by the host before render-cache storage. The public
 request is `auto` or `native`. The effective delivery is `native` whenever the
@@ -1249,8 +1282,8 @@ roc_ui_init : () -> Box(Elem)
   builds adjacency and topological ranks, computes initial values by calling the
   retained transform thunks in dependency order, and emits the initial render
   patches.
-- **Per event there is no Roc entrypoint call.** A bound DOM listener fires; the
-  host routes the event id to its source node (O(1)), calls that source's
+- **Per event there is no Roc entrypoint call.** A bound browser or native listener
+  fires; the host routes the event id to its source node (O(1)), calls that source's
   retained reducer thunk directly through `RocErasedCallable`, then propagates in
   rank order, invoking only the changed derived nodes' retained transform thunks.
   Every Roc call per event is a direct closure invocation, not an FFI entrypoint
@@ -1331,7 +1364,7 @@ The engine is the mutable reactive runtime, factored as `Engine(comptime Ctx)`.
 It owns identity, ownership, dirtiness, scopes, the keyed diff, and the
 structural splice/collect/apply algorithms. It calls the host through the `Ctx`
 contract and writes all output through `sink()`. It never knows whether it is
-running under the simulated DOM or the browser.
+running under the semantic runner, the browser, or GPUI.
 
 The engine processes declarations and structural change through one transaction
 boundary, but they affect different kinds of state. A **descriptor transaction**
@@ -1354,7 +1387,7 @@ flowchart TB
     Ingress["ingress<br/>mount · event · source update · task result"] --> Tx["transaction coordinator"]
 
     subgraph Model["committed model"]
-        Identity["identity tables<br/>node · DOM · construction site"]
+        Identity["identity tables<br/>node · rendered element · construction site"]
         Desc["descriptor stream<br/>render nodes · attrs · events · scope sites"]
         Values["retained values and signal records<br/>capabilities · state cells · caches"]
         Scope["scope forest<br/>root · component · when branch · each row"]
@@ -1368,7 +1401,7 @@ flowchart TB
     end
 
     subgraph Services["host-facing services"]
-        Effects["effect lifecycle<br/>tasks · timers · browser-backed sources"]
+        Effects["effect lifecycle<br/>tasks · timers · declared host-backed sources"]
         Render["render cache and minimal diff"]
         Sink["transactional command sink"]
         Safety["limits · metrics · bounded diagnostics · poison"]
@@ -1490,7 +1523,7 @@ report it explicitly rather than describing every one-row input as O(1).
 | `Ui.each` direct-parent delta | O(edit operations + touched key bytes + affected scopes/fanout) | O(L) snapshot scan or O(N) global work |
 | `Ui.each` snapshot/stale sibling | O(L + key bytes), plus item comparison and order planning | O(L²) `is_eq` scan |
 | `Ui.each` append/remove/filter | Local to K subtrees, plus explicit edit/index/byte costs | O(N) per touched row |
-| `Ui.each` reorder | O(K moved) DOM moves | O(L) whole-site re-collect + rebuild |
+| `Ui.each` reorder | O(K moved) render moves, plus declared native order-index cost | O(L) whole-site re-collect + rebuild |
 | dependency-graph maintenance after a splice | O(affected scope) | full clear-and-rebuild of the active graph over N |
 | host allocation / free bookkeeping | O(1) per alloc/free | O(live allocations) scan per free |
 | spec/bench action target resolution | acceptable O(DOM) for the *harness*, but excluded from `dispatch_apply_ns` | folding harness lookup time into measured framework cost |
@@ -1517,7 +1550,7 @@ Non-negotiable structural rules that follow from the budget:
   budget violation. Dropping the hash index is a regression to fix, not a host
   workaround to absorb.
 - **Reorder moves, it does not rebuild.** A pure permutation of surviving rows
-  must emit only DOM moves for displaced rows. Snapshot order planning may use
+  must emit only render moves for displaced rows. Snapshot order planning may use
   a longest-stable subsequence with its planning cost measured; sparse moves
   must not require whole-site planning. Reorder must not re-collect surviving
   row descriptors or rebuild the site's signal graph. Whole-site replacement is
@@ -1535,9 +1568,9 @@ Non-negotiable structural rules that follow from the budget:
 Local updates are necessary but insufficient for a usable application. Creating
 or retiring K rows must also have measured cost per row, element, binding, and
 scope. Account for Roc and host allocations, retained callable/capability edges,
-descriptor ingestion, command bytes, decoding, DOM application, and temporary
+descriptor ingestion, command bytes, decoding, host presentation, and temporary
 memory as well as reconciliation. Measure startup and interaction latency on
-production browser artifacts, including slower representative environments.
+production browser and native artifacts, including slower representative environments.
 
 Bulk construction may share immutable declarations through explicit symbolic
 templates. A template describes static structure and typed row parameters; it
@@ -1582,8 +1615,8 @@ re-sort. Value pruning is the second half of linear-with-changes scaling.
 
 The host maintains dense event binding tables built from canonical
 `Node.Attr.On(EventBinding)` descriptors. Fixed and named bindings both resolve
-to retained event descriptors; when a DOM listener fires (a simulated one on the
-native host, a real one in the browser), it looks up the event id in O(1),
+to retained event descriptors; when a simulated, browser, or native listener
+fires, it looks up the event id in O(1),
 validates the boundary payload descriptor, and calls the source's retained
 reducer thunk directly. No scan, no string lookup.
 
@@ -1600,7 +1633,7 @@ change or a key-set change:
   and adjacency, call `decrefErasedCallable` on each retained closure (Roc
   reclaims captured environments), release capability-owned state/source values,
   run any `Ui.on_cleanup` task, and detach the rendered subtree through `sink()`,
-- reorder list rows by moving DOM nodes, never rebuilding surviving rows.
+- reorder list rows by moving rendered nodes, never rebuilding surviving rows.
 
 Dense id tables are allowed to keep their backing arrays, but inactive slots are
 not allowed to grow without bound. Disposed each-row scopes, state cells, node
@@ -1649,7 +1682,7 @@ Reclamation is deterministic, no GC.
 
 ### The render-command sink
 
-The engine never touches a DOM directly. It writes to a `sink()` the host
+The engine never touches a DOM or GPUI entity directly. It writes to a `sink()` the host
 supplies. The command set is the typed, host-independent vocabulary:
 `ResetDom`, `CreateElement`, `CreateText`, `AppendChild`, `RemoveNode`,
 `MoveBefore`, `SetText`, `SetValue`, `SetChecked`, `SetDisabled`, `SetRole`,
@@ -1661,7 +1694,7 @@ counters, metrics accumulator, fixed-width command record, and dynamic-record
 framing live in `src/signals/render_commands.zig`. Each host implements the
 sink:
 
-- the **native host** applies each command to its `DomElement` array, including
+- the **native semantic host** applies each command to its `DomElement` array, including
   a separate owned custom-attribute table for `Html.attr`/`Html.attr_s`/
   `Html.attr_maybe_s`;
 - the **wasm host** serializes each command into a fixed-width record in linear
@@ -1669,12 +1702,19 @@ sink:
   attributes (`role`, `aria-label`, `data-testid`, `class`) and open-ended
   custom text attributes. Optional signal-backed custom text attrs lower to the
   same set/clear command vocabulary: `None` removes the attr, `Some(text)` sets
-  it.
+  it;
+- the **GPUI boundary** publishes validated native scalar records, retired
+  lifetimes, and engine-decided child edits. Rust copies changed records into
+  retained views and queries committed indexed child order. Native-only fields
+  use this typed publication and are rejected by the browser before wire
+  staging; sharing a logical engine vocabulary does not require inventing
+  browser opcodes for native capabilities.
 
 Because the logical command set is shared, a spec on the native host asserts the
 same render semantics the browser will execute. The browser wire can choose a
 compact fixed record or an `Extended` dynamic record without changing the engine
-or native host semantics.
+or native host semantics. The native GUI protocol is a separate encoding of
+declared native capabilities over that same graph and structural machinery.
 
 ### Metrics
 
@@ -1819,7 +1859,7 @@ task failures are typed values, including cancellation where the task's public
 contract exposes it. Contract violations and poisoned instances are diagnostics,
 not fabricated task results.
 
-## Native Host Specifics
+## Native Semantic Host Specifics
 
 The native host is the engine plus a simulated DOM, a spec runner, and
 telemetry. It is the place where we prove semantics and characterize work,
@@ -1838,7 +1878,211 @@ because it can observe things a real browser structurally cannot.
   work counters above. This is the observability surface; it does not exist in
   the browser host.
 
-These are native-specific and are **not** part of the browser host.
+The same display-free runner exercises GUI declarations and Files results through
+semantic fixtures without opening windows, touching a text system, or performing
+real filesystem work. Those fixtures prove shared application semantics and
+lifetime, not the desktop behavior of the GPUI executor. The simulated DOM and
+spec runner are **not** part of the browser executor.
+
+## Native GUI Host and Desktop Boundary
+
+`platform-gui` is a native rendering and service vocabulary over the shared
+engine. `Gui` builds ordinary `Elem` descriptors; `Ui` still owns local state,
+actions, components, conditionals, and keyed rows. A prebuilt Rust GPUI library,
+the Zig engine, and the Roc app link into one native executable. Toolchains,
+supported operating systems, packaging inputs, and release evidence belong in
+[contributing](www/content/docs/contributing.md) and the
+[native guide](www/content/docs/native-gui.md), rather than this design.
+
+### Protocol, publication, and ownership
+
+The GUI boundary exchanges validated primitive records, integer identities,
+and UTF-8 bytes. The [native protocol manifest](protocol/native-protocol.json)
+owns the presentation, effect, and timer versions, scalar field and task-kind
+tables, and native node layout. Generated Zig, Rust, Roc, and documentation
+artifacts must agree with it. The
+[native boundary contract](docs/native-gui-protocol.md) owns exact encodings,
+export signatures, limits, and compatibility checks. Presentation and service
+record versions and sizes are checked before mount; incompatible statically
+linked parts must be rebuilt together. Native protocol changes do not implicitly
+change the browser wire.
+
+The engine remains on the UI thread. Rust copies borrowed strings, node records,
+shortcuts, and effect requests before another engine operation can invalidate
+them. No Roc value, capability, callable, or Roc layout enters Rust or a worker.
+Native callbacks distinguish unit, controlled text, checked boolean, and event
+detail payloads; text and detail remain distinct even when both carry UTF-8.
+They validate the current element lifetime and binding before dispatch through
+the ordinary source transaction. Recycled slots cannot revive old callbacks.
+
+Native publication prepares field validation, changed-record storage, child-order
+edits, and service reservations before commit. A recoverable refusal retains the
+previous published generation; commit allocates nothing. GPUI notifications
+invalidate retained presentation entities only after complete publication. The
+adapter never reconciles application state or infers a new reactive dependency.
+Executor failure after publication follows containment, not replay of a partly
+applied generation. Shutdown invalidates callbacks and worker delivery, cancels
+native jobs, and releases retained views and engine ownership in that order.
+
+### Typed presentation and controlled editing
+
+Native layout is explicit data: rows, columns, panels, buttons, checkboxes,
+single-line inputs, textareas, text, and images. `Gui.Style` carries typed lengths,
+colors, spacing, borders, typography, and overflow, including declared hover and
+active button backgrounds. Each element accepts one complete style; a supplied
+record replaces its helper defaults. `style_s`, selection, and enabled state use
+ordinary equality-pruned signal sinks. Labels, roles, and test IDs carry semantic
+meaning and never encode native styles or service routes. Native-only scalar
+fields and task kinds must fail at an unsupported host boundary before commands
+are published.
+
+`Fill` distributes the parent's content space on its layout axis; content does
+not enlarge that allocation. Overflow is explicitly visible, clipped, or
+scrollable. Native scroll offsets, scrollbar interaction, pointer feedback,
+selection, and IME preedit belong to presentation. They do not become application
+sources unless the application has an explicit supported declaration for them.
+Placeholder text is static app configuration, separate from the visible label;
+an absent declaration supplies no hint. Native typography and colors apply to
+the editor field as well as its surrounding element.
+
+The application owns each controlled document value. Accepted edits, including
+native undo and redo, dispatch the restored or edited text through its current
+input message. Equal committed input echoes preserve selection and edit history;
+a different authoritative document clears history. Availability changes retain
+the editor and its identity; lifetime, binding, or editor-kind replacement makes
+a fresh guarded editor. Disabled editors refuse editing and history actions.
+Soft wrapping changes visual rows, caret navigation, and selection geometry, not
+the document's hard line breaks.
+
+Text is bounded at one MiB of UTF-8. An oversized insertion, paste, or IME
+replacement is refused as a whole before changing text, selection, or composition
+and sends no event; an oversized authoritative value is a contract error.
+Undo and redo share bounds of 128 history boundaries and eight MiB of retained
+text, expiring oldest boundaries first. Native editing history is control-local
+interaction state, not an application undo model; domain undo remains pure
+application state and ordinary actions.
+
+Focus, shortcuts, modal input admission, and window-close decisions obey the
+native contracts in *Boundary payloads and event bindings*. Internal drag-and-drop
+adds a bounded application key payload and an ordinary detail event. It does not
+create row identity. Both ends validate runtime, element lifetime, binding, and
+enabled state at delivery; disposed, rebound, foreign, or modal-inadmissible
+participants cannot deliver a drop. External desktop drag payloads require a
+separately declared capability and are not implicit in this contract.
+
+Semantic labels support specs and native selectors. They do not establish an
+operating-system accessibility tree or screen-reader support. Accessibility
+acceptance requires evidence from the actual native accessibility boundary;
+rendered text and successful semantic tests cannot substitute for it.
+
+### Indexed viewport presentation
+
+`Gui.virtual_list` declares a fixed direct-child row height and a signal-backed
+follow-tail policy. It presents only the requested visible child range while
+ordinary `Ui.each` scopes remain mounted. Applications own bounded history and
+data retention; scrolling cannot implicitly dispose, suspend, or restore rows.
+
+The executor consumes an indexed projection of engine-decided child order.
+Sparse updates touch changed index paths, preparation failure preserves the old
+order, and empty indexes are retired. Rank lookup must not scan preceding
+siblings or copy the complete child list. Rust reads a committed range without
+interleaving propagation, retains surviving child entities, and lays out that
+range. Full snapshot replacement has its declared broad cost; ordinary
+containers enumerate their direct children when rendered. Viewport locality is
+therefore a specific presentation contract, not a claim that every GPUI layout
+pass is O(changed).
+
+### Native tasks, timers, and external state
+
+`Files` provides declared chooser, text read/write, recursive scan, direct-child
+listing, preview, log-read, associated-application launch, and asset-verification
+tasks. An explicit closed task kind selects the executor; labels are diagnostic.
+Requests and results use a strict, bounded, versioned private codec whose shape
+belongs to that kind. The platform's typed decoder constructs Roc results;
+workers handle only copied primitive requests and return primitive results to
+the UI thread. No native service owns application navigation, drafts, saved
+state, history, or log cursors.
+
+Every native operation reserves capacity before acceptance. The 16-operation
+bound includes queued and running work, canceled workers, and completed results
+awaiting delivery. A queued cancellation releases immediately; a running or
+already-open chooser retains its reservation until settlement even if delivery
+has been invalidated. Result commit releases capacity before observers start
+follow-up work. Explicit `Signal.cancel` and saturation publish the task's
+declared cancellation or refusal value through ordinary propagation; scope
+disposal cancels without constructing an application-visible replacement.
+Recognized late results release ownership without entering a Roc decoder.
+A user-dismissed chooser is a successful `Choice.Canceled`, distinct from
+explicit task cancellation.
+
+File operations have explicit path, text, result-count, traversal, and aggregate
+byte limits. Complete reads, writes, and listings refuse excess rather than
+truncate meaning. Preview and incremental log APIs instead declare partial
+results: previews report truncation, log reads return an app-owned cursor,
+rotation/truncation observation, and complete UTF-8 progress. Partial-line
+assembly and retained history remain bounded application data. Filesystem
+observations are not snapshots; unchanged file identity cannot detect every
+truncate-and-regrow history. Symlinks are reported without traversal, and file
+access follows the no-follow contract of the platform's native primitives.
+
+A text write submits an immutable snapshot and atomically replaces its target.
+Cancellation cannot undo replacement after it committed; atomic replacement
+does not by itself promise power-loss durability. Associated-application launch
+hands off a path under an explicit typed result contract, not ownership of the
+external application or a stable file snapshot. Failures and unsupported native
+services remain typed results, never fabricated success. OS-specific mechanisms
+belong to the native adapter and its documented capability contract.
+
+Native intervals use exact engine-issued tokens, owning scopes, and the common
+propagation scheduler. At most 256 intervals are committed or reserved, with a
+bounded notification pool covering starts and cancellations. Reservation failure
+rejects preparation. Each executor wake submits one tick; matching periods do
+not alias identities, and no elapsed-time value or coalescing policy is inferred.
+Disposal invalidates delivery before dropping the native job; shutdown cancels
+jobs before engine teardown. A delayed OS call or chooser settlement may delay
+release but cannot exceed the admitted work bound.
+
+### Assets and startup fonts
+
+An image source is an explicit relative name under one startup assets root.
+Absolute paths, traversal, URI schemes, and links below that root cannot become
+asset access. Missing or undecodable images use the declared neutral placeholder
+presentation; no remote fetch or alternative filesystem search is implied.
+`Files.verify_assets` checks a bounded manifest against expected SHA-256 digests
+through the same task and cancellation model. It reports integrity outcomes as
+typed data; a verification result does not freeze a subsequently mutable file.
+Image decoding and retained resource caches must also have explicit lifetime and
+memory bounds, rather than borrowing the task queue's bound as proof of theirs.
+
+Font families are inherited text presentation. Embedded fonts are one bounded
+startup declaration at the root, with at most eight fonts, eight MiB of decoded
+bytes per font, and bounded family names. Registration belongs to the native
+text-system lifetime, not disposable row scopes. Validate a complete declaration
+before registration; identical republication is inert and conflicting bytes for
+an already registered family are rejected. Hashes may index comparison but cannot
+replace exact equality. The registry and its diagnostic retention remain bounded
+for the whole runtime. Native text-system resources have explicit shutdown
+ownership; the inability to unregister an individual font is no permission to
+accumulate dynamic declarations. The semantic runner validates and retains the
+declaration without loading fonts or images.
+
+### Native evidence
+
+GUI semantic specs prove application actions, keyed identity, scope disposal,
+controlled values, Files settlement/cancellation, and close decisions using the
+same engine as the live host. Zig boundary and fault tests prove validation,
+atomic publication, sparse order updates, reservations, and ownership. GPUI
+adapter tests prove retained control lifetime, layout, viewport work, editor
+history, keyboard precedence, modal focus, drag admission, and native callbacks.
+Worker tests cover framing, file limits, UTF-8 boundaries, cancellation, and
+platform-specific filesystem behavior.
+
+Linked window smoke checks establish that the packaged renderer starts and
+renders on its target. Actual pointer, keyboard, IME, clipboard, file-dialog,
+window-close, and accessibility journeys supply distinct desktop integration
+evidence. Neither display-free specs nor a render smoke image prove those
+interactions. Supported-target evidence must cover the released artifacts, while
+shared semantics remain in the native spec and engine suites.
 
 ## Wasm Host and Browser Boundary
 
@@ -2011,7 +2255,7 @@ Every contract error the host raises — duplicate key, capability mismatch,
 malformed descriptor or payload, cycle, resource limit, poisoned instance —
 is one structured diagnostic with three parts:
 
-- an **error class** from a closed enum shared by both hosts;
+- an **error class** from a closed enum shared by the hosts;
 - the **rule** broken, as a short fixed string that names the invariant in
   this document's terms;
 - the **construction-site path**: the scope chain from the root (component
@@ -2195,20 +2439,23 @@ platform; each is backed by a spec, host test, or measurement that fails if the
 property regresses.
 
 1. **One engine, thin hosts.** All reactive and structural logic lives in the
-   shared engine. Neither host file contains reactive or structural logic; each
+   shared engine. No host adapter contains reactive or structural logic; each
    is a `Ctx` + `sink()` implementation plus its boundary. *We know this holds
    when:* the hosts cannot drift apart, because there is only one implementation
-   of behaviour to drift from, and the same engine instantiates under both the
-   native build and `wasm32`.
+   of behaviour to drift from, and the same engine instantiates under native
+   semantic, GPUI, and `wasm32` hosts.
 
-2. **Same apps, both environments.** The app suite is written once in Roc and runs
-   under the native spec runner and in the browser. *We know this holds when:*
-   every app in the suite builds and runs in both, with `scripts/serve.py` able to build
-   and serve any app, not just one.
+2. **Same app semantics under specs and live execution.** Web apps run under
+   the native spec runner and in the browser; GUI apps run under that runner
+   and GPUI. *We know this holds when:* every maintained app builds and runs
+   with its declared platform vocabulary in both semantic and live environments.
+   Host-specific rendering and services remain explicit; this is not a claim
+   of source compatibility between `Html` and `Gui`.
 
 3. **Evidence at the appropriate layer.** Native specs assert shared semantics
-   and work budgets. Focused browser tests assert boundary behavior, and a small
-   production end-to-end suite verifies integration and interaction.
+   and work budgets. Focused browser and GPUI tests assert their boundary
+   behavior, and production browser and desktop journeys verify integration
+   and interaction.
    *Evidence:* each contract has coverage at the layer able to observe it,
    without treating a simulation or a passing test as a universal proof.
 
@@ -2250,8 +2497,10 @@ simplifying an app.
 Author exercises additionally cover identical repeated submissions, atomic
 multi-source reset, independent component-input invalidation, child placement
 lifetime, filtered-row removal/reinsertion, and explicit persistence outside
-rendered scopes. Browser journeys cover keyboard, focus, selection, composition,
-and the execution-failure boundary.
+rendered scopes. Browser and desktop journeys cover keyboard, focus, selection,
+composition, and their execution-failure boundaries. Native file, close-request,
+editor-history, and viewport workflows additionally require the evidence in
+*Native GUI Host and Desktop Boundary*.
 
 **Foundation coverage the suite must carry.** Proving behavior is not enough; the
 suite must also assert *work*, so a regression to O(N) work fails the build rather
@@ -2315,6 +2564,8 @@ exceptions to them. Public spellings and delivery steps belong in issues.
 - **Native vs. browser render-surface parity.** Whether the native spec runner
   should consume the same command-buffer wire format the browser does, to keep a
   single render surface rather than two emit paths behind one command enum.
+  This question concerns the web semantic model only; native GUI fields keep
+  their explicit native protocol and are not encoded as browser operations.
 
 ## Appendix A: Target API Surface
 
@@ -2324,6 +2575,15 @@ a type variable must provide. There is no `implements`/ability syntax; a
 constraint such as `a.is_eq : a, a -> Bool` says "the concrete type bound to `a`
 must define an `is_eq` method of that signature," which monomorphization
 resolves and specializes.
+
+The catalog below records shared reactive APIs and the web rendering/service
+surface. Native applications use the same `Signal`, `Ui`, `Rows`, and opaque
+`Elem` contracts with the `Gui` controls and `Files` tasks described in
+*Native GUI Host and Desktop Boundary*. The exact native public signatures live
+with [Gui](platform-gui/Gui.roc), [Files](platform-gui/Files.roc), and the
+[native task reference](www/content/docs/reference.md#native-files); the
+[native guide](www/content/docs/native-gui.md) supplies composition examples.
+Neither the `Html` nor the browser-service signatures below imply GUI support.
 
 ```roc
 # Opaque to the app:
@@ -2785,6 +3045,29 @@ cross-state reducer reads, metric semantics, generated large-`Ui.each`
 scaling, `Signal.select` membership under large N, recursive `Ui.switch`
 structure, component inputs/children/scope, subscription start/stop by scope,
 widget attach/message/event/detach, and per-error-class diagnostic text.
+
+The native GUI suite in `examples-gui/` supplies complementary workloads over
+the same engine:
+
+- `counter` — the minimal native control and value-propagation path.
+- `keyed-rows` — row-local drafts, keyed survival, and scoped disposal.
+- `notes-editor` — controlled multiline editing, Unicode statistics, immutable
+  save snapshots, chooser cancellation, and save-before-close decisions.
+- `task-board` — keyed creation, editing, reorder and cross-container transfer,
+  internal drops with keyboard alternatives, domain undo, document persistence,
+  close protection, and declared asset integrity.
+- `folder-explorer` — explicit sample versus real-directory navigation,
+  breadcrumbs/history, bounded listings and previews, typed failures, and
+  associated-application handoff.
+- `activity-monitor` — explicit replay versus real log following, scoped timers,
+  app-owned cursors and partial-line assembly, rotation/truncation observation,
+  bounded history, and fixed-height viewport follow-tail.
+
+Focused `test/gui/` fixtures cover presentation and structural-field replacement,
+compound disposal, task routing and cancellation, timers, shortcut bindings,
+internal drag payloads, dialog scope lifetime, and window-close decisions.
+GPUI tests and desktop journeys carry the native presentation and service
+evidence that those semantic fixtures cannot establish.
 
 Host tests cover topological rank ordering, diamond deduplication, confined
 erasure through carrier tags, retained closure lifecycle accounting, dirty cache

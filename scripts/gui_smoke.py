@@ -17,6 +17,7 @@ from build_gui import executable_name
 from gui_suite import ROOT, examples
 
 MARKER = "PASS: GPUI mounted, rendered, and checked "
+COUNTER_ARGUMENTS = ("--smoke-click", "Increment", "--smoke-expect", "1")
 
 
 def check(executable, arguments=(), environment=None):
@@ -33,7 +34,7 @@ def check(executable, arguments=(), environment=None):
 
 def run(directory, environment=None):
     for app in examples():
-        arguments = ("--smoke-click", "Increment", "--smoke-expect", "Count: 1") if app.name == "counter" else ()
+        arguments = COUNTER_ARGUMENTS if app.name == "counter" else ()
         check(directory / executable_name(app.name), arguments, environment)
 
 

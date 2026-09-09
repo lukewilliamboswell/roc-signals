@@ -267,21 +267,15 @@ fn appendRemovalIndexAssumeCapacity(indexes: *shared_buffer.List(usize), index: 
 }
 
 fn appendTextFieldRemovalIndexesAssumeCapacity(indexes: *shared_buffer.List(usize), fields: anytype) void {
-    inline for (std.meta.fields(@TypeOf(fields))) |field| appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(@field(fields, field.name)));
+    inline for (std.meta.fields(@TypeOf(fieldSlots(fields)))) |field| appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(@field(fieldSlots(fields), field.name)));
 }
 
 fn appendBoolFieldRemovalIndexesAssumeCapacity(indexes: *shared_buffer.List(usize), fields: anytype) void {
-    inline for (std.meta.fields(@TypeOf(fields))) |field| appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(@field(fields, field.name)));
+    inline for (std.meta.fields(@TypeOf(fieldSlots(fields)))) |field| appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(@field(fieldSlots(fields), field.name)));
 }
 
 fn appendEventRemovalIndexesAssumeCapacity(indexes: *shared_buffer.List(usize), events: anytype) void {
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.click));
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.input));
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.check));
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.pointer_down));
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.pointer_up));
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.pointer_enter));
-    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.pointer_leave));
+    inline for (std.meta.fields(@TypeOf(fieldSlots(events)))) |field| appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(@field(fieldSlots(events), field.name)));
 }
 
 fn descriptorIndexValue(index: anytype) ?usize {
@@ -289,25 +283,25 @@ fn descriptorIndexValue(index: anytype) ?usize {
     return index;
 }
 
+// The live descriptor index structs wrap their per-field slots in a generated
+// `indexes` record; test doubles keep declaring bare field structs.
+fn fieldSlots(fields: anytype) @TypeOf(if (@hasField(@TypeOf(fields), "indexes")) fields.indexes else fields) {
+    return if (@hasField(@TypeOf(fields), "indexes")) fields.indexes else fields;
+}
+
 /// Appends text field removal indexes using capacity that must already satisfy the caller's transaction contract.
 pub fn appendTextFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *shared_buffer.List(usize), fields: anytype) void {
-    inline for (std.meta.fields(@TypeOf(fields))) |field| appendRemovalIndex(allocator, indexes, descriptorIndexValue(@field(fields, field.name)));
+    inline for (std.meta.fields(@TypeOf(fieldSlots(fields)))) |field| appendRemovalIndex(allocator, indexes, descriptorIndexValue(@field(fieldSlots(fields), field.name)));
 }
 
 /// Appends bool field removal indexes using capacity that must already satisfy the caller's transaction contract.
 pub fn appendBoolFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *shared_buffer.List(usize), fields: anytype) void {
-    inline for (std.meta.fields(@TypeOf(fields))) |field| appendRemovalIndex(allocator, indexes, descriptorIndexValue(@field(fields, field.name)));
+    inline for (std.meta.fields(@TypeOf(fieldSlots(fields)))) |field| appendRemovalIndex(allocator, indexes, descriptorIndexValue(@field(fieldSlots(fields), field.name)));
 }
 
 /// Appends event removal indexes using capacity that must already satisfy the caller's transaction contract.
 pub fn appendEventRemovalIndexes(allocator: std.mem.Allocator, indexes: *shared_buffer.List(usize), events: anytype) void {
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.click));
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.input));
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.check));
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_down));
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_up));
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_enter));
-    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_leave));
+    inline for (std.meta.fields(@TypeOf(fieldSlots(events)))) |field| appendRemovalIndex(allocator, indexes, descriptorIndexValue(@field(fieldSlots(events), field.name)));
 }
 
 /// Builds target scope set from validated descriptors without introducing host-specific semantics.

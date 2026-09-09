@@ -1,4 +1,6 @@
+mod assets;
 mod bridge;
+mod protocol_gen;
 mod controls;
 mod dialog;
 mod drag;
@@ -7,10 +9,11 @@ mod file_io;
 mod input;
 mod scrollbars;
 mod shortcut;
+mod fonts;
 mod timers;
 mod window_frame;
 mod window_lifecycle;
-use bridge::{Engine, Node, Payload};
+use bridge::{ControlKind, Engine, Node, Payload, Role};
 use gpui::{div, prelude::*, px, rgb, *};
 #[cfg(not(test))]
 use std::time::Duration;
@@ -47,11 +50,14 @@ impl NodeView {
                     runtime.event_if_live(id, lifetime, event, Payload::InputValue(&value), cx)
                 });
             });
-            if node.tag == "textarea" {
+            let mut input = if node.kind == ControlKind::Textarea {
                 input::TextInput::new_multiline(node.value.clone(), callback, cx)
             } else {
                 input::TextInput::new(node.value.clone(), callback, cx)
-            }
+            };
+            input.set_placeholder(&node.placeholder, cx);
+            input.set_style_foreground(editor_style_foreground(node.style), cx);
+            input
         }))
     }
 }
@@ -64,7 +70,7 @@ impl Render for NodeView {
             .flex_col()
             .gap_2()
             .debug_selector(|| self.node.test_id.clone());
-        if self.node.tag == "root" {
+        if self.node.kind == ControlKind::Root {
             element = element.min_w_full().min_h_full().flex_shrink_0();
         }
         element = drag::install(element, &self.node, cx.entity_id(), self.runtime.clone());
@@ -85,12 +91,12 @@ impl Render for NodeView {
                 }
             }));
         }
-        if self.node.tag == "button" || self.node.role == "checkbox" {
+        if self.node.kind == ControlKind::Button || self.node.role == Role::Checkbox {
             let runtime = self.runtime.clone();
             let id = self.node.id;
             let view_id = cx.entity_id();
             let lifetime = self.node.lifetime;
-            let binding = if self.node.role == "checkbox" {
+            let binding = if self.node.role == Role::Checkbox {
                 self.node.check
             } else {
                 self.node.click
@@ -98,7 +104,7 @@ impl Render for NodeView {
             element = controls::install(
                 element,
                 &self.focus,
-                self.node.role == "checkbox",
+                self.node.role == Role::Checkbox,
                 self.node.disabled,
                 move |cx| {
                     runtime
@@ -134,14 +140,21 @@ impl Render for NodeView {
                 );
             }
         }
-        if self.node.tag == "button" {
-            element = element.px_3().py_1().rounded_md().bg(rgb(0x315469));
+        if self.node.kind == ControlKind::Button {
+            element = element.px_3().py_1().rounded_md().bg(rgb(0x335061));
             if !self.node.disabled {
+                let (hover, active) = button_state_backgrounds(self.node.style);
+                if let Some(color) = hover {
+                    element = element.hover(move |style| style.bg(rgb(color)));
+                }
+                if let Some(color) = active {
+                    element = element.active(move |style| style.bg(rgb(color)));
+                }
                 let runtime = self.runtime.clone();
                 let node_id = self.node.id;
                 let view_id = cx.entity_id();
                 let lifetime = self.node.lifetime;
-                let binding = if self.node.role == "checkbox" {
+                let binding = if self.node.role == Role::Checkbox {
                     self.node.check
                 } else {
                     self.node.click
@@ -153,7 +166,7 @@ impl Render for NodeView {
                 });
             }
         }
-        if self.node.role == "checkbox" {
+        if self.node.role == Role::Checkbox {
             element = element
                 .flex_row()
                 .items_center()
@@ -164,7 +177,7 @@ impl Render for NodeView {
                 let node_id = self.node.id;
                 let view_id = cx.entity_id();
                 let lifetime = self.node.lifetime;
-                let binding = if self.node.role == "checkbox" {
+                let binding = if self.node.role == Role::Checkbox {
                     self.node.check
                 } else {
                     self.node.click
@@ -176,11 +189,16 @@ impl Render for NodeView {
                 });
             }
         }
-        if matches!(self.node.tag.as_str(), "h1" | "h2") {
-            element = element.text_2xl();
+        if self.node.kind.is_heading() {
+            element = element.text_2xl().font_weight(FontWeight::SEMIBOLD);
+        }
+        // An explicit family joins GPUI's inherited text style, so descendants
+        // without their own family render with this one.
+        if !self.node.font_family.is_empty() {
+            element = element.font_family(self.node.font_family.clone());
         }
         if let Some(style) = self.node.style {
-            element = apply_style(element, style);
+            element = apply_style(element, style, self.parent_direction(cx));
         }
         if self.node.selected {
             element = element.border_2().border_color(rgb(0x70c5e8));
@@ -189,20 +207,54 @@ impl Render for NodeView {
             element = element.opacity(0.45);
         }
 
+        if self.node.kind == ControlKind::Image {
+            let radius = self.node.style.map_or(0, |style| style.radius);
+            element = element.flex_shrink_0().overflow_hidden();
+            element = match assets::resolve(&self.node.image_source) {
+                Some(path) => element.child(
+                    img(path)
+                        .size_full()
+                        .rounded(px(radius as f32))
+                        .object_fit(ObjectFit::Cover)
+                        .with_fallback(move || missing_image(radius).into_any_element()),
+                ),
+                // An invalid or unresolvable source renders a neutral surface
+                // sized by the element's style, never a filesystem access.
+                None => element.child(missing_image(radius)),
+            };
+        }
         if !self.node.text.is_empty() {
             element = element.child(self.node.text.clone());
         }
         if let Some(input) = &self.input {
-            let constrained = self.node.tag == "textarea"
+            let constrained = self.node.kind == ControlKind::Textarea
                 && self.node.style.is_some_and(|style| style.height_kind != 0);
             if constrained {
                 element = element.min_h_0();
             }
-            element = element.child(self.node.label.clone());
+            // Multiline editors keep a visible caption above the text; the
+            // empty-field hint is the app-declared placeholder on every field.
+            if self.node.kind == ControlKind::Textarea {
+                element = element.child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(0xa9bfcc))
+                        .child(self.node.label.clone()),
+                );
+            }
+            let chrome = editor_field_chrome(self.node.style);
             element = element.child(
                 div()
-                    .bg(rgb(0xf4f4f0))
-                    .text_color(rgb(0x151515))
+                    .bg(rgb(chrome.background))
+                    .text_color(rgb(chrome.foreground))
+                    .text_size(px(chrome.font_size))
+                    .line_height(px(chrome.font_size * 1.875))
+                    .border_1()
+                    .border_color(rgb(chrome.border))
+                    .map(|element| match chrome.radius {
+                        Some(radius) => element.rounded(px(radius)),
+                        None => element.rounded_md(),
+                    })
                     .p_2()
                     .when(constrained, |element| {
                         element.flex().flex_col().flex_1().min_h_0()
@@ -233,8 +285,17 @@ impl Render for NodeView {
                             let mut style = StyleRefinement::default();
                             style.size.width = Some(relative(1.).into());
                             style.size.height = Some(height.into());
-                            let row = div().id(("row", id)).h(height).w_full().overflow_hidden();
-                            if child.read(cx).node.tag == "dialog" {
+                            // A column context, like the viewport element the
+                            // rows belong to, so a Fill row resolves its axes
+                            // exactly as it would outside the virtual list.
+                            let row = div()
+                                .id(("row", id))
+                                .flex()
+                                .flex_col()
+                                .h(height)
+                                .w_full()
+                                .overflow_hidden();
+                            if child.read(cx).node.kind == ControlKind::Dialog {
                                 row
                             } else {
                                 row.child(AnyView::from(child).cached(style))
@@ -262,7 +323,7 @@ impl Render for NodeView {
             .filter_map(|rank| {
                 let id = runtime.engine.child_at(parent, rank);
                 let child = runtime.nodes.get(&id).expect("missing child identity");
-                (child.read(cx).node.tag != "dialog").then(|| AnyView::from(child.clone()))
+                (child.read(cx).node.kind != ControlKind::Dialog).then(|| AnyView::from(child.clone()))
             })
             .collect::<Vec<_>>();
         let element = element.children(children);
@@ -285,7 +346,103 @@ impl Render for NodeView {
         }
     }
 }
-fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div> {
+/// Neutral stand-in for a missing or undecodable image, on theme surfaces.
+fn missing_image(radius: u32) -> Div {
+    div()
+        .size_full()
+        .bg(rgb(0x1b2a33))
+        .border_1()
+        .border_color(rgb(0x3a4f5c))
+        .rounded(px(radius as f32))
+}
+
+impl NodeView {
+    /// The committed parent's layout direction (row=0, column=1) decides which
+    /// of this element's axes is the parent's main axis. An absent parent or
+    /// style is the column default: the host lays out the root column-wise.
+    fn parent_direction(&self, cx: &App) -> u32 {
+        self.node
+            .parent
+            .and_then(|id| {
+                let runtime = self.runtime.upgrade()?;
+                let runtime = runtime.read(cx);
+                let parent = runtime.nodes.get(&id)?;
+                parent.read(cx).node.style.map(|style| style.direction)
+            })
+            .unwrap_or(1)
+    }
+}
+
+/// Chrome for the retained editor field inside an input or textarea element.
+struct EditorFieldChrome {
+    background: u32,
+    foreground: u32,
+    border: u32,
+    /// None keeps the host's standard medium rounding; a zero radius is not
+    /// expressible, exactly as font size zero means inherit.
+    radius: Option<f32>,
+    font_size: f32,
+}
+
+/// Resolves the element's style record into the editor field. Explicit
+/// background, foreground, and border colors replace the host's dark
+/// defaults; a nonzero radius and font size replace the standard rounding
+/// and 16-pixel editor text (line height stays proportional at 1.875x).
+/// Every field at its sentinel keeps today's exact chrome. The foreground
+/// also drives the placeholder at reduced alpha and the cursor and
+/// selection tint, so a light-background editor stays legible throughout.
+fn editor_field_chrome(style: Option<bridge::Style>) -> EditorFieldChrome {
+    let color = |explicit: Option<u32>, default: u32| {
+        explicit
+            .filter(|color| *color <= 0xffffff)
+            .unwrap_or(default)
+    };
+    EditorFieldChrome {
+        background: color(style.map(|style| style.background), 0x0f1b21),
+        foreground: color(style.map(|style| style.foreground), 0xeaf0f3),
+        border: color(style.map(|style| style.border_color), 0x3a4f5c),
+        radius: style
+            .filter(|style| style.radius != 0)
+            .map(|style| style.radius as f32),
+        font_size: style
+            .filter(|style| style.font_size != 0)
+            .map_or(16., |style| style.font_size as f32),
+    }
+}
+
+/// The explicit style foreground, if any, for the editor's cursor and
+/// selection tint; the inherit sentinel keeps the host's accent constants.
+fn editor_style_foreground(style: Option<bridge::Style>) -> Option<u32> {
+    style
+        .map(|style| style.foreground)
+        .filter(|color| *color <= 0xffffff)
+}
+
+/// Resolves an enabled button's hover and active backgrounds. An explicit
+/// style-v2 state color always wins. With both state fields at their inherit
+/// sentinel, a default-background button keeps the host's standard feedback,
+/// and an explicitly colored button changes nothing on hover or press -
+/// exactly the pre-v2 behavior. Checkboxes deliberately take no state
+/// backgrounds: their feedback is the glyph and cursor, and a row-wide
+/// highlight would misstate their hit area.
+fn button_state_backgrounds(style: Option<bridge::Style>) -> (Option<u32>, Option<u32>) {
+    let default_background = style.is_none_or(|style| style.background > 0xffffff);
+    let resolve = |explicit: Option<u32>, host_default: u32| {
+        explicit
+            .filter(|color| *color <= 0xffffff)
+            .or_else(|| default_background.then_some(host_default))
+    };
+    (
+        resolve(style.map(|style| style.hover_background), 0x3f6175),
+        resolve(style.map(|style| style.active_background), 0x2b4452),
+    )
+}
+
+fn apply_style(
+    mut element: Stateful<Div>,
+    style: bridge::Style,
+    parent_direction: u32,
+) -> Stateful<Div> {
     element = if style.direction == 0 {
         element.flex_row()
     } else {
@@ -294,12 +451,23 @@ fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div
     element = element
         .gap(px(style.gap as f32))
         .p(px(style.padding as f32));
+    // Fill means the parent's content box. On the parent's main axis a
+    // percentage would resolve against the border box (overshooting padded
+    // parents) and degenerate to the content size under the auto-height root,
+    // so Fill becomes flex distribution of the free space instead: a zero
+    // preferred size with grow and a zero minimum, so the element's own
+    // content never inflates the allocation. A Fill region owns its own
+    // overflow - it clips or scrolls rather than pushing past the padding.
+    // On the cross axis, taffy resolves the percentage against the parent's
+    // content box, which is exactly the contract.
     element = match style.width_kind {
+        1 if parent_direction == 0 => element.w(px(0.)).flex_grow().min_w_0(),
         1 => element.w_full(),
         2 => element.w(px(style.width as f32)),
         _ => element,
     };
     element = match style.height_kind {
+        1 if parent_direction == 1 => element.h(px(0.)).flex_grow().min_h_0(),
         1 => element.h_full(),
         2 => element.h(px(style.height as f32)),
         _ => element,
@@ -322,14 +490,16 @@ fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div
     if style.font_size != 0 {
         element = element.text_size(px(style.font_size as f32));
     }
+    // A clipped or scrollable region must be able to shrink below its
+    // content's intrinsic size, or the viewport can never bind it.
     element = match style.overflow_x {
-        1 => element.overflow_x_hidden(),
-        2 => element.overflow_x_scroll(),
+        1 => element.overflow_x_hidden().min_w_0(),
+        2 => element.overflow_x_scroll().min_w_0(),
         _ => element,
     };
     match style.overflow_y {
-        1 => element.overflow_y_hidden(),
-        2 => element.overflow_y_scroll(),
+        1 => element.overflow_y_hidden().min_h_0(),
+        2 => element.overflow_y_scroll().min_h_0(),
         _ => element,
     }
 }
@@ -348,6 +518,7 @@ struct Runtime {
     renders: Rc<Cell<u64>>,
     child_visits: Rc<Cell<u64>>,
     timers: timers::Manager,
+    fonts: fonts::Registry,
 }
 impl Runtime {
     fn shortcut_if_live(
@@ -393,6 +564,7 @@ impl Runtime {
             renders: Rc::new(Cell::new(0)),
             child_visits: Rc::new(Cell::new(0)),
             timers: timers::Manager::new(clock),
+            fonts: fonts::Registry::default(),
         };
         runtime.apply(initial, cx);
         runtime.drain_effects(cx);
@@ -498,6 +670,27 @@ impl Runtime {
         self.apply(changes, cx);
         self.drain_effects(cx);
     }
+    /// Registers a published embedded-font declaration with the text system.
+    /// Identity pruning and every bound violation live in the registry; a
+    /// violation is a visible host error and never a panic.
+    fn register_fonts(&mut self, declaration: &str, cx: &mut Context<Self>) {
+        let pending = self.fonts.ingest(declaration);
+        if pending.is_empty() {
+            return;
+        }
+        if let Err(error) = cx.text_system().add_fonts(pending) {
+            self.fonts
+                .record_error(format!("embedded font registration failed: {error:#}"));
+        }
+    }
+    #[cfg(test)]
+    fn registered_font_families_for_test(&self) -> Vec<String> {
+        self.fonts.registered_families()
+    }
+    #[cfg(test)]
+    fn font_errors_for_test(&self) -> &[String] {
+        self.fonts.errors()
+    }
     fn apply(&mut self, changes: Vec<Node>, cx: &mut Context<Self>) {
         if changes.is_empty() {
             return;
@@ -506,21 +699,11 @@ impl Runtime {
         // before wiring the engine-selected child lists, regardless of batch order.
         self.nodes.reserve(changes.len());
         for node in changes.iter().filter(|n| n.active) {
+            if !node.fonts.is_empty() {
+                self.register_fonts(&node.fonts, cx);
+            }
             assert!(
-                matches!(
-                    node.tag.as_str(),
-                    "root"
-                        | "div"
-                        | "dialog"
-                        | "window"
-                        | "h1"
-                        | "h2"
-                        | "p"
-                        | "button"
-                        | "input"
-                        | "textarea"
-                        | "text"
-                ),
+                node.kind != ControlKind::Unknown,
                 "unsupported spike element: {}",
                 node.tag
             );
@@ -548,7 +731,7 @@ impl Runtime {
         let mut roots_changed = false;
         for node in changes.iter().filter(|n| n.active) {
             let view = self.nodes[&node.id].clone();
-            if node.tag == "root" && !self.roots.iter().any(|r| r.entity_id() == view.entity_id()) {
+            if node.kind == ControlKind::Root && !self.roots.iter().any(|r| r.entity_id() == view.entity_id()) {
                 self.roots.push(view.clone());
                 roots_changed = true;
             }
@@ -563,9 +746,11 @@ impl Runtime {
                 if let Some(input) = &view.input {
                     input.update(cx, |input, cx| {
                         input.set_value(&node.value, cx);
+                        input.set_placeholder(&node.placeholder, cx);
+                        input.set_style_foreground(editor_style_foreground(node.style), cx);
                         input.set_disabled(node.disabled, cx);
                         input.set_fill_height(
-                            node.tag == "textarea"
+                            node.kind == ControlKind::Textarea
                                 && node.style.is_some_and(|style| style.height_kind != 0),
                             cx,
                         );
@@ -637,7 +822,7 @@ impl Render for Runtime {
             .size_full()
             .relative()
             .bg(rgb(0x16252c))
-            .text_color(rgb(0xeeeeea))
+            .text_color(rgb(0xf2f5f6))
             .on_key_down(cx.listener(|runtime, event: &KeyDownEvent, window, cx| {
                 if let Some(reverse) = tab_direction(&event.keystroke)
                     && runtime.dialogs.active.is_empty()
@@ -652,13 +837,17 @@ impl Render for Runtime {
                 }
             }))
             .child(scrollbars::wrap(
+                // Vertical-only window scrolling keeps the viewport width as
+                // real layout pressure: Fill and grow children shrink and wrap
+                // instead of panning the whole window sideways. Horizontal
+                // scrolling stays an explicit per-element style.
                 div()
                     .id("signals-content")
                     .flex()
                     .flex_col()
                     .items_start()
                     .size_full()
-                    .overflow_scroll()
+                    .overflow_y_scroll()
                     .track_scroll(&self.content_scroll)
                     .children(self.roots.iter().map(|root| AnyView::from(root.clone()))),
                 self.content_scroll.clone(),
@@ -713,6 +902,14 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--run-spec-json") {
         return unsafe { signals_spec_main(argc, argv) };
+    }
+    let assets_root = args
+        .windows(2)
+        .find(|pair| pair[0] == "--assets-root")
+        .map(|pair| std::path::PathBuf::from(&pair[1]))
+        .or_else(|| std::env::var_os("ROC_SIGNALS_ASSETS_ROOT").map(std::path::PathBuf::from));
+    if let Some(root) = assets_root {
+        assets::set_root(root);
     }
     let trace_engine = args.iter().any(|arg| arg == "--host-trace-engine");
     let smoke = args.iter().any(|arg| arg == "--smoke");
@@ -804,7 +1001,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                                 .values()
                                 .find(|v| {
                                     let n = &v.read(cx).node;
-                                    n.tag == "button"
+                                    n.kind == bridge::ControlKind::Button
                                         && (n.text == label
                                             || (0..n.child_count).any(|rank| {
                                                 let id = runtime.engine.child_at(n.id, rank);
@@ -913,6 +1110,7 @@ mod tests {
             renders: Rc::new(Cell::new(0)),
             child_visits: Rc::new(Cell::new(0)),
             timers: crate::timers::Manager::new(false),
+            fonts: crate::fonts::Registry::default(),
         }
     }
 
@@ -920,11 +1118,74 @@ mod tests {
         Engine::set_test_children(id, children.into());
         Node {
             id,
+            kind: super::ControlKind::from_tag(tag),
             tag: tag.into(),
             active: true,
             child_count: children.len(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn button_state_backgrounds_prefer_explicit_colors_and_preserve_host_defaults() {
+        // The inherit sentinel is 0x1000000; the engine never publishes zeros
+        // for absent colors, so the record spells every field out.
+        let sentinel = 0x1000000;
+        let inherit_all = super::bridge::Style {
+            background: sentinel,
+            hover_background: sentinel,
+            active_background: sentinel,
+            foreground: sentinel,
+            border_color: sentinel,
+            ..Default::default()
+        };
+        // No style, or a style leaving the background default, keeps the
+        // host's standard hover and active feedback.
+        assert_eq!(
+            super::button_state_backgrounds(None),
+            (Some(0x3f6175), Some(0x2b4452))
+        );
+        assert_eq!(
+            super::button_state_backgrounds(Some(inherit_all)),
+            (Some(0x3f6175), Some(0x2b4452))
+        );
+        // An explicit background with default state colors changes nothing on
+        // hover or press - the pre-v2 behavior.
+        let explicit_background = super::bridge::Style {
+            background: 0x2e6fa3,
+            ..inherit_all
+        };
+        assert_eq!(
+            super::button_state_backgrounds(Some(explicit_background)),
+            (None, None)
+        );
+        // Explicit state colors always win, over both the host defaults and
+        // the explicit-background suppression, independently per state.
+        let explicit_states = super::bridge::Style {
+            hover_background: 0x3a80b8,
+            active_background: 0x265d89,
+            ..explicit_background
+        };
+        assert_eq!(
+            super::button_state_backgrounds(Some(explicit_states)),
+            (Some(0x3a80b8), Some(0x265d89))
+        );
+        let hover_only = super::bridge::Style {
+            hover_background: 0x3a80b8,
+            ..explicit_background
+        };
+        assert_eq!(
+            super::button_state_backgrounds(Some(hover_only)),
+            (Some(0x3a80b8), None)
+        );
+        let hover_on_default_background = super::bridge::Style {
+            hover_background: 0x3a80b8,
+            ..inherit_all
+        };
+        assert_eq!(
+            super::button_state_backgrounds(Some(hover_on_default_background)),
+            (Some(0x3a80b8), Some(0x2b4452))
+        );
     }
 
     #[gpui::test]
@@ -1052,7 +1313,7 @@ mod tests {
             let runtime = cx.new(|_| runtime());
             runtime.update(cx, |runtime, cx| {
                 let mut checkbox = node(1, "input", &[]);
-                checkbox.role = "checkbox".into();
+                checkbox.role = super::Role::Checkbox;
                 checkbox.check = 31;
                 checkbox.disabled = true;
                 runtime.apply(vec![node(0, "root", &[1]), checkbox.clone()], cx);
@@ -1201,6 +1462,164 @@ mod tests {
                 };
                 assert!(!runtime.accept_drop(current_target, &current, cx));
                 assert!(Engine::take_test_event().is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn unresolvable_image_sources_render_a_placeholder_box_of_the_styled_size(
+        cx: &mut TestAppContext,
+    ) {
+        let cx = cx.add_empty_window();
+        let runtime = cx.new(|cx| {
+            let mut runtime = runtime();
+            let sources = [
+                "avatars/absent.png",
+                "../../../etc/passwd",
+                "/etc/passwd",
+                "https://example.com/x.png",
+            ];
+            let mut nodes: Vec<_> = sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    let id = index as u64 + 1;
+                    let mut image = node(id, "img", &[]);
+                    image.test_id = format!("image-{id}");
+                    image.image_source = (*source).into();
+                    image.style = Some(bridge::Style {
+                        width_kind: 2,
+                        width: 32,
+                        height_kind: 2,
+                        height: 32,
+                        radius: 16,
+                        ..Default::default()
+                    });
+                    image
+                })
+                .collect();
+            nodes.push(node(0, "root", &[1, 2, 3, 4]));
+            runtime.apply(nodes, cx);
+            runtime
+        });
+        cx.draw(point(px(0.), px(0.)), size(px(400.), px(240.)), |_, _| {
+            runtime.clone()
+        });
+        for selector in ["image-1", "image-2", "image-3", "image-4"] {
+            let bounds = cx
+                .debug_bounds(selector)
+                .expect("image node must render its placeholder box");
+            assert_eq!(bounds.size, size(px(32.), px(32.)));
+        }
+        assert!(Engine::take_test_event().is_none());
+    }
+
+    #[gpui::test]
+    fn explicit_placeholder_reaches_editors_and_labels_derive_nothing(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                let placeholder = |runtime: &Runtime, id: u64, cx: &gpui::App| {
+                    runtime.nodes[&id]
+                        .read(cx)
+                        .input
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .placeholder_for_test()
+                        .to_owned()
+                };
+                let mut field = node(1, "input", &[]);
+                field.input = 42;
+                field.label = "Filter".into();
+                field.placeholder = "Filter tasks…".into();
+                let mut editor = node(2, "textarea", &[]);
+                editor.input = 43;
+                editor.label = "Note text".into();
+                editor.placeholder = "Start writing…".into();
+                let mut unhinted = node(3, "input", &[]);
+                unhinted.input = 44;
+                unhinted.label = "Quantity".into();
+                runtime.apply(
+                    vec![
+                        node(0, "root", &[1, 2, 3]),
+                        field.clone(),
+                        editor,
+                        unhinted,
+                    ],
+                    cx,
+                );
+                assert_eq!(placeholder(runtime, 1, cx), "Filter tasks…");
+                assert_eq!(placeholder(runtime, 2, cx), "Start writing…");
+                assert_eq!(placeholder(runtime, 3, cx), "");
+                field.placeholder = "Search projects…".into();
+                runtime.apply(vec![field.clone()], cx);
+                assert_eq!(placeholder(runtime, 1, cx), "Search projects…");
+                field.placeholder = String::new();
+                runtime.apply(vec![field], cx);
+                assert_eq!(placeholder(runtime, 1, cx), "");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn published_font_declarations_register_once_and_family_reaches_nodes(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                let ttf: &[u8] =
+                    include_bytes!("../../../vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf");
+                let declaration =
+                    format!("1\nSource Code Pro\n{}", crate::fonts::encode_base64(ttf));
+                let mut root = node(0, "root", &[1]);
+                root.fonts = declaration.clone();
+                let mut row = node(1, "div", &[]);
+                row.font_family = "Source Code Pro".into();
+                runtime.apply(vec![root.clone(), row], cx);
+                assert_eq!(
+                    runtime.registered_font_families_for_test(),
+                    vec!["Source Code Pro".to_owned()]
+                );
+                assert!(runtime.font_errors_for_test().is_empty());
+                assert_eq!(
+                    runtime.nodes[&1].read(cx).node.font_family,
+                    "Source Code Pro"
+                );
+                assert_eq!(runtime.nodes[&0].read(cx).node.font_family, "");
+                // Re-publication of the identical declaration is pruned.
+                runtime.apply(vec![root], cx);
+                assert_eq!(runtime.registered_font_families_for_test().len(), 1);
+                assert!(runtime.font_errors_for_test().is_empty());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn font_declarations_outside_host_bounds_are_visible_errors_not_crashes(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                // Nine fonts exceed the bound of eight.
+                let mut declaration = String::from("1");
+                for index in 0..9 {
+                    declaration.push_str(&format!("\nFamily {index}\nAAAA"));
+                }
+                let mut root = node(0, "root", &[]);
+                root.fonts = declaration;
+                runtime.apply(vec![root], cx);
+                assert!(runtime.registered_font_families_for_test().is_empty());
+                assert_eq!(runtime.font_errors_for_test().len(), 1);
+                // An oversized payload is refused before any registration.
+                let oversized = crate::fonts::encode_base64(&vec![0u8; 8 * 1024 * 1024 + 3]);
+                let mut root = node(0, "root", &[]);
+                root.fonts = format!("1\nBig\n{oversized}");
+                runtime.apply(vec![root], cx);
+                assert!(runtime.registered_font_families_for_test().is_empty());
+                assert_eq!(runtime.font_errors_for_test().len(), 2);
             });
         });
     }
@@ -1539,6 +1958,183 @@ mod tests {
         let auto = original.read_with(cx, |input, _| input.viewport_bounds_for_test());
         assert_eq!(auto.size.height, px(320.));
         assert!(Engine::take_test_event().is_none());
+    }
+
+    #[gpui::test]
+    fn styled_editor_field_reflects_the_elements_style_record(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                // A light theme: dark text on a white field.
+                let style = bridge::Style {
+                    background: 0xffffff,
+                    foreground: 0x1b2d36,
+                    border_color: 0xc3ced4,
+                    radius: 10,
+                    font_size: 18,
+                    hover_background: 0x1000000,
+                    active_background: 0x1000000,
+                    ..Default::default()
+                };
+                let mut editor = node(1, "textarea", &[]);
+                editor.input = 42;
+                editor.style = Some(style);
+                runtime.apply(vec![node(0, "root", &[1]), editor], cx);
+                let chrome = super::editor_field_chrome(Some(style));
+                assert_eq!(chrome.background, 0xffffff);
+                assert_eq!(chrome.foreground, 0x1b2d36);
+                assert_eq!(chrome.border, 0xc3ced4);
+                assert_eq!(chrome.radius, Some(10.));
+                assert_eq!(chrome.font_size, 18.);
+                // The retained editor tints its cursor and selection from the
+                // explicit foreground, and the placeholder derives from the
+                // effective text color at reduced alpha in shape_layout.
+                let input = runtime.nodes[&1].read(cx).input.clone().unwrap();
+                assert_eq!(input.read(cx).style_foreground_for_test(), Some(0x1b2d36));
+                // Restyling the same element re-resolves without recreating it.
+                let mut restyled = runtime.nodes[&1].read(cx).node.clone();
+                restyled.style.as_mut().unwrap().foreground = 0x1000000;
+                runtime.apply(vec![restyled], cx);
+                let unchanged = runtime.nodes[&1].read(cx).input.clone().unwrap();
+                assert_eq!(unchanged.entity_id(), input.entity_id());
+                assert_eq!(unchanged.read(cx).style_foreground_for_test(), None);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn unstyled_editor_field_keeps_the_host_default_chrome(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                let mut field = node(1, "input", &[]);
+                field.input = 42;
+                // A style whose editor-relevant fields all sit at their
+                // sentinels resolves identically to no style at all.
+                let mut sized = node(2, "textarea", &[]);
+                sized.input = 43;
+                sized.style = Some(bridge::Style {
+                    height_kind: 2,
+                    height: 160,
+                    background: 0x1000000,
+                    hover_background: 0x1000000,
+                    active_background: 0x1000000,
+                    foreground: 0x1000000,
+                    border_color: 0x1000000,
+                    ..Default::default()
+                });
+                runtime.apply(vec![node(0, "root", &[1, 2]), field, sized.clone()], cx);
+                for style in [None, sized.style] {
+                    let chrome = super::editor_field_chrome(style);
+                    assert_eq!(chrome.background, 0x0f1b21);
+                    assert_eq!(chrome.foreground, 0xeaf0f3);
+                    assert_eq!(chrome.border, 0x3a4f5c);
+                    assert_eq!(chrome.radius, None);
+                    assert_eq!(chrome.font_size, 16.);
+                }
+                for id in [1, 2] {
+                    let input = runtime.nodes[&id].read(cx).input.clone().unwrap();
+                    assert_eq!(input.read(cx).style_foreground_for_test(), None);
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn fill_children_stay_inside_their_padded_parents_content_box(cx: &mut TestAppContext) {
+        let sentinel = 0x1000000;
+        let colors = bridge::Style {
+            background: sentinel,
+            hover_background: sentinel,
+            active_background: sentinel,
+            foreground: sentinel,
+            border_color: sentinel,
+            ..Default::default()
+        };
+        let fill = bridge::Style {
+            direction: 1,
+            width_kind: 1,
+            height_kind: 1,
+            ..colors
+        };
+        let cx = cx.add_empty_window();
+        let runtime = cx.new(|cx| {
+            let mut runtime = runtime();
+            // The app shape every example uses: a Fill/Fill window wrapper, a
+            // padded Fill/Fill column, a fixed header, and a Fill panel.
+            let mut window = node(1, "window", &[2]);
+            window.style = Some(fill);
+            let mut parent = node(2, "div", &[3, 4]);
+            parent.test_id = "padded-parent".into();
+            parent.style = Some(bridge::Style {
+                gap: 8,
+                padding: 24,
+                ..fill
+            });
+            let mut header = node(3, "text", &[]);
+            header.test_id = "fill-header".into();
+            header.text = "Header".into();
+            header.style = Some(bridge::Style {
+                direction: 1,
+                height_kind: 2,
+                height: 40,
+                ..colors
+            });
+            let mut panel = node(4, "div", &[]);
+            panel.test_id = "fill-panel".into();
+            panel.style = Some(fill);
+            runtime.apply(vec![node(0, "root", &[1]), window, parent, header, panel], cx);
+            runtime
+        });
+        cx.draw(point(px(0.), px(0.)), size(px(500.), px(400.)), |_, _| {
+            runtime.clone()
+        });
+        let parent = cx.debug_bounds("padded-parent").unwrap();
+        let header = cx.debug_bounds("fill-header").unwrap();
+        let panel = cx.debug_bounds("fill-panel").unwrap();
+        eprintln!("parent={parent:?} header={header:?} panel={panel:?}");
+        assert_eq!(parent.size, size(px(500.), px(400.)));
+        // Fill means the parent's content box: inside the padding on every
+        // side, and after the fixed sibling plus the gap on the main axis.
+        assert_eq!(panel.left(), parent.left() + px(24.));
+        assert_eq!(panel.right(), parent.right() - px(24.));
+        assert_eq!(panel.top(), header.bottom() + px(8.));
+        assert_eq!(
+            panel.bottom(),
+            parent.bottom() - px(24.),
+            "Fill height must stop at the content box, not the border box"
+        );
+
+        // A Fill panel with oversized content keeps its allocation instead of
+        // growing past the padding: the region owns its overflow. Before the
+        // flex mapping this exact shape pushed the panel to the window edge.
+        runtime.update(cx, |runtime, cx| {
+            let mut oversized = node(5, "div", &[]);
+            oversized.test_id = "oversized".into();
+            oversized.style = Some(bridge::Style {
+                direction: 1,
+                height_kind: 2,
+                height: 900,
+                width_kind: 2,
+                width: 100,
+                ..colors
+            });
+            let mut panel = runtime.nodes[&4].read(cx).node.clone();
+            panel.child_count = 1;
+            Engine::set_test_children(4, vec![5]);
+            runtime.apply(vec![panel, oversized], cx);
+        });
+        cx.draw(point(px(0.), px(0.)), size(px(500.), px(400.)), |_, _| {
+            runtime.clone()
+        });
+        let parent = cx.debug_bounds("padded-parent").unwrap();
+        let panel = cx.debug_bounds("fill-panel").unwrap();
+        assert_eq!(parent.size, size(px(500.), px(400.)));
+        assert_eq!(
+            panel.bottom(),
+            parent.bottom() - px(24.),
+            "oversized content must not push a Fill panel past the padding"
+        );
     }
 
     #[gpui::test]

@@ -27,7 +27,6 @@ jobs:
     name: Select affected checks
     runs-on: ubuntu-24.04
     outputs:
-      smoke: ${{ steps.select.outputs.smoke }}
       source: ${{ steps.select.outputs.source }}
       gui: ${{ steps.select.outputs.gui }}
       published: ${{ steps.select.outputs.published }}
@@ -38,64 +37,22 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - run: python3 -m unittest discover -s scripts -p test_ci_changes.py
-      - run: python3 -m unittest discover -s scripts -p test_dependency_workflow_filters.py
-      - run: python3 -m unittest discover -s scripts -p 'test_macos_*.py'
+      - run: python3 scripts/minici selection
       - id: select
         run: python3 scripts/ci_changes.py
-
-  smoke:
-    needs: changes
-    if: needs.changes.outputs.smoke == 'true'
-    name: PR normal and smoke tests
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Verify shared platform sources
-        run: |
-          python3 scripts/prepare_platforms.py
-          python3 scripts/prepare_platforms.py --check
-          python3 -m unittest discover -s scripts -p 'test_prepare_platforms.py'
-      - uses: ./.github/actions/setup-toolchain
-      - run: python3 scripts/test.py zig browser roc-check roc-test wasm size --native never --bundle never
-      - run: python3 scripts/fuzz.py check
 
   source:
     needs: changes
     if: needs.changes.outputs.source == 'true'
-    name: Full tests and coverage
-    runs-on: macos-15
+    name: Hosted source tests
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Verify shared platform sources
-        run: |
-          python3 scripts/prepare_platforms.py
-          python3 scripts/prepare_platforms.py --check
-          python3 -m unittest discover -s scripts -p 'test_prepare_platforms.py'
       - uses: ./.github/actions/setup-toolchain
-      - run: brew install dwarfutils
-      - run: python3 scripts/test.py
-      - name: Native coverage
-        run: |
-          sudo env "PATH=$PATH" \
-            "ZIG_GLOBAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
-            "ZIG_LOCAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
-            python3 scripts/coverage.py --min 86.5 \
-              --min-file src/signals/engine.zig=71.0 \
-              --min-file src/signals/descriptor_stream.zig=76.0 \
-              --min-file src/native_host.zig=92.5 \
-              --min-file src/signals/roc_platform_abi.zig=72.0 \
-              --min-file src/spec/spec_parser.zig=90.0 --top 20
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: native-host-coverage
-          path: kcov-output/native-host
+      - run: python3 scripts/minici hosted
 
   gui:
     needs: changes
@@ -126,13 +83,11 @@ jobs:
       - name: Verify GUI discovery and applications
         env:
           RUSTUP_TOOLCHAIN: 1.95.0
-        run: |
-          python3 -m unittest discover -s scripts -p 'test_gui*.py'
-          python3 scripts/test.py gui --keep-output
+        run: python3 scripts/minici gui
       - name: Open GUI examples with software Vulkan
         run: |
           sudo apt-get install -y weston xvfb xauth mesa-vulkan-drivers
-          xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/gui_smoke.py --wayland
+          python3 scripts/minici gui-smoke
 
   gui-windows:
     needs: changes
@@ -163,9 +118,7 @@ jobs:
       - name: Verify GUI discovery and applications
         env:
           RUSTUP_TOOLCHAIN: 1.95.0
-        run: |
-          python -m unittest discover -s scripts -p 'test_gui*.py'
-          python scripts/test.py gui --keep-output
+        run: python scripts/minici gui
       # Distributable inputs are published with provenance by gui-hosts.yml on
       # their own release cycle; this job only proves the optimized build works.
       - name: Build the distributable Windows link inputs
@@ -221,7 +174,7 @@ jobs:
           env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET TOOLCHAINS DEVELOPER_DIR
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Verify GUI applications with separate archives
-        run: python3 scripts/test.py gui --keep-output
+        run: python3 scripts/minici gui
       - name: Build and validate the optimized macOS bundle
         run: |
           python3 scripts/build_gui.py
@@ -230,7 +183,7 @@ jobs:
 
   platform-source:
     name: Platform source
-    needs: [changes, smoke, source, gui, gui-windows, gui-macos, published, archive, site]
+    needs: [changes, source, gui, gui-windows, gui-macos, published, archive, site]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -252,13 +205,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Verify shared platform sources
-        run: |
-          python3 scripts/prepare_platforms.py
-          python3 scripts/prepare_platforms.py --check
-          python3 -m unittest discover -s scripts -p 'test_prepare_platforms.py'
       - uses: ./.github/actions/setup-toolchain
-      - run: python3 scripts/test.py published
+      - run: python3 scripts/minici published
 
   archive:
     needs: changes
@@ -270,14 +218,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Verify shared platform sources
-        run: |
-          python3 scripts/prepare_platforms.py
-          python3 scripts/prepare_platforms.py --check
-          python3 -m unittest discover -s scripts -p 'test_prepare_platforms.py'
       - uses: ./.github/actions/setup-toolchain
-      - run: python3 scripts/release.py prepare --version 0.2.0-rc1 --directory "$RUNNER_TEMP/candidate"
-      - run: python3 scripts/release.py check --directory "$RUNNER_TEMP/candidate"
+      - run: python3 scripts/minici archive
 
   site:
     name: Documentation and site
@@ -294,4 +236,6 @@ jobs:
           echo "0ca09aa40376aaa9ddfb512ff9ad963262ef95edb0d0f2d5ec6961b6f5cf22ef  $RUNNER_TEMP/zola.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/zola.tar.gz" -C "$RUNNER_TEMP"
       - name: Check documentation and templates
-        run: '"$RUNNER_TEMP/zola" --root www check'
+        run: |
+          export PATH="$RUNNER_TEMP:$PATH"
+          python3 scripts/minici site

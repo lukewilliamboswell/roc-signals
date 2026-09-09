@@ -56,6 +56,15 @@ Board :: [].{
 			]
 		}
 
+	## Relative assets-root source for a teammate's generated avatar picture.
+	avatar_source : Str -> [None, Some(Str)]
+	avatar_source = |assignee| match assignee {
+		"Maya" => Some("avatars/maya.png")
+		"Jon" => Some("avatars/jon.png")
+		"Sam" => Some("avatars/sam.png")
+		_ => None
+	}
+
 	new_task : U64, Str -> Task
 	new_task = |number, title| {
 		key: "task-${number.to_str()}",

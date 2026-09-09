@@ -15,6 +15,12 @@ utf8 = |bytes| match Str.from_utf8(bytes) {
 	Err(_) => crash "malformed Files UTF-8 frame"
 }
 
+valid_sha256 : Str -> Bool
+valid_sha256 = |digest| {
+	bytes = digest.to_utf8()
+	bytes.len() == 64 and bytes.fold(True, |ok, byte| ok and ((byte >= 48 and byte <= 57) or (byte >= 97 and byte <= 102)))
+}
+
 number : Str -> U64
 number = |text| match U64.from_str(text) {
 	Ok(value) if value.to_str() == text => value
@@ -231,6 +237,41 @@ Files := [].{
 		file_start(Node.TaskKind.ReadLog, task, [request.path].concat(fields))
 	}
 
+	AssetStatus := [Ok, Missing, Mismatch].{
+		is_eq : _
+	}
+	AssetEntry : { name : Str, sha256 : Str }
+	AssetCheck : { name : Str, status : AssetStatus }
+
+	## Create one bounded asset-verification task.
+	verify_assets_task : Str -> Signal.Task(List(AssetCheck), Error)
+	verify_assets_task = |name| file_task(Node.TaskKind.VerifyAssets, name, decode_asset_report)
+
+	## Hash each manifest entry under the host's assets root and report ok,
+	## missing, or mismatch per asset, in manifest order. Names are relative
+	## paths of 1 to 1024 UTF-8 bytes; digests are 64 lowercase hex characters
+	## of SHA-256. Manifests carry 1 to 256 entries; the host refuses symlinked
+	## or traversing paths and bounds each hashed asset at 32 MiB.
+	verify_assets : Signal.Task(List(AssetCheck), Error), List(AssetEntry) -> Node.Cmd
+	verify_assets = |task, entries| {
+		if entries.is_empty() or entries.len() > 256 {
+			crash "Files asset manifests contain 1 to 256 entries"
+		}
+		fields = entries.fold(
+			[entries.len().to_str()],
+			|acc, entry| {
+				if entry.name.is_empty() or entry.name.to_utf8().len() > 1024 {
+					crash "Files asset names contain 1 to 1024 UTF-8 bytes"
+				}
+				if !valid_sha256(entry.sha256) {
+					crash "Files asset digests are 64 lowercase hex characters"
+				}
+				acc.append(entry.name).append(entry.sha256)
+			},
+		)
+		file_start(Node.TaskKind.VerifyAssets, task, fields)
+	}
+
 	## Describe a native failure without losing its typed case.
 	error_text : Error -> Str
 	error_text = |error| match error {
@@ -368,6 +409,34 @@ Files := [].{
 		}
 	}
 
+	decode_asset_report = |payload| {
+		count = read_frame(reader(payload))
+		total = number(count.value)
+		if total == 0 or total > 256 {
+			crash "Files asset report limit exceeded"
+		}
+		var $rest = count.rest
+		var $checks = []
+		var $index = 0.U64
+		while $index < total {
+			name = read_frame($rest)
+			status = read_frame(name.rest)
+			$checks = $checks.append({
+				name: name.value,
+				status: match status.value {
+					"ok" => AssetStatus.Ok
+					"missing" => AssetStatus.Missing
+					"mismatch" => AssetStatus.Mismatch
+					_ => crash "malformed Files asset status"
+				},
+			})
+			$rest = status.rest
+			$index = $index + 1
+		}
+		finish($rest)
+		$checks
+	}
+
 	decode_error = |payload| {
 		kind = read_frame(reader(payload))
 		detail = read_frame(kind.rest)
@@ -391,6 +460,7 @@ expect Files.decode_text(packet(["/tmp/a:b\nλ.txt", "first\nsecond: λ"])) == {
 expect Files.decode_choice(packet(["canceled"])) == Files.Choice.Canceled
 expect Files.decode_written(packet(["/tmp/empty", "0"])) == { path: "/tmp/empty", bytes: 0 }
 expect Files.decode_scan(packet(["/tmp", "1", "/tmp/link", "symbolic-link", "0"])) == { root: "/tmp", entries: [{ path: "/tmp/link", kind: Files.Kind.SymbolicLink, bytes: 0 }] }
+expect Files.decode_asset_report(packet(["2", "avatars/maya.png", "ok", "glyphs/λ.png", "missing"])) == [{ name: "avatars/maya.png", status: Files.AssetStatus.Ok }, { name: "glyphs/λ.png", status: Files.AssetStatus.Missing }]
 
 expect Files.decode_directory(packet(["/tmp", "1", "/tmp/child", "directory", "0"])) == { path: "/tmp", entries: [{ path: "/tmp/child", kind: Files.Kind.Directory, bytes: 0 }] }
 expect Files.decode_opened(packet(["/tmp/a:λ.txt"])) == { path: "/tmp/a:λ.txt" }

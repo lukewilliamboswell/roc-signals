@@ -41,5 +41,15 @@ semantic specs use typed file-result fixtures and cover direct-child browsing,
 breadcrumbs, keyboard history, refresh, failure/cancel/retry, preview contents,
 associated launch outcomes, and stale result refusal.
 
+Folder and file rows carry small generated glyph PNGs from `assets/` —
+regenerate them and `assets/manifest.json` (real SHA-256 hashes) with
+`python3 assets/generate.py`. The app ingests the manifest at compile time and
+verifies it at startup through `Files.verify_assets`; a missing or altered
+glyph is named in a danger-colored status line and its rows show neutral
+placeholder boxes while browsing continues. When running the built binary
+directly, pass `--assets-root examples-gui/folder-explorer/assets` (or set
+`ROC_SIGNALS_ASSETS_ROOT`); image sources are always relative paths inside
+that root.
+
 Build and run with the GUI workflow in
 [`contributing.md`](../../www/content/docs/contributing.md).

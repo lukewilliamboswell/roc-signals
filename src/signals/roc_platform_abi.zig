@@ -3587,7 +3587,8 @@ pub const NodeTaskKind = enum(u8) {
     read_preview = 7,
     read_text = 8,
     scan_directory = 9,
-    write_text = 10,
+    verify_assets = 10,
+    write_text = 11,
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         _ = self;

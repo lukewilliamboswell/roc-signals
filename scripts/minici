@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Run the same repository checks used by CI jobs.
+
+With no target, run every locally reproducible CI area for the current operating
+system. Individual targets are also used by .github/workflows/ci.yml so local
+and hosted command lists cannot drift independently.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import platform
+import shutil
+import subprocess
+import sys
+import tempfile
+
+from toolchain import validate_roots, verify_compiler
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def run(*command: str) -> None:
+    print("==> " + " ".join(command), flush=True)
+    subprocess.run(command, cwd=ROOT, check=True)
+
+
+def ensure_pinned_roc() -> None:
+    """Select one executable and reject a compiler that differs from the headers."""
+    selected = os.environ.get("ROC_BIN") or os.environ.get("ROC") or "roc"
+    path = Path(selected)
+    if len(path.parts) == 1:
+        executable = shutil.which(selected)
+    elif path.is_file() and os.access(path, os.X_OK):
+        executable = str(path.resolve())
+    else:
+        executable = None
+    if executable is None:
+        raise SystemExit(f"mini-CI requires the pinned Roc compiler; executable not found: {selected}")
+    pin = validate_roots(ROOT)
+    try:
+        verify_compiler(executable, pin)
+    except (OSError, subprocess.CalledProcessError, ValueError) as error:
+        raise SystemExit(f"mini-CI requires Roc {pin}: {error}") from error
+    os.environ["ROC_BIN"] = executable
+
+
+def shared_sources() -> None:
+    run(sys.executable, "scripts/prepare_platforms.py")
+    run(sys.executable, "scripts/prepare_platforms.py", "--check")
+    run(sys.executable, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_prepare_platforms.py")
+
+
+def smoke() -> None:
+    shared_sources()
+    run(sys.executable, "scripts/test.py", "zig", "browser", "roc-check", "roc-test", "wasm", "size", "--native", "never", "--bundle", "never")
+    run(sys.executable, "scripts/fuzz.py", "check")
+
+
+def hosted() -> None:
+    """Run the bounded source gate used for ordinary pull requests."""
+    shared_sources()
+    run(
+        sys.executable,
+        "scripts/test.py",
+        "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "native", "size",
+        "--bundle", "never",
+    )
+
+
+def source() -> None:
+    shared_sources()
+    run(sys.executable, "scripts/test.py")
+
+
+def gui() -> None:
+    run(sys.executable, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_gui*.py")
+    run(sys.executable, "scripts/test.py", "gui", "--keep-output")
+
+
+def gui_smoke() -> None:
+    if platform.system() == "Linux":
+        if not all(shutil.which(tool) for tool in ("weston", "xvfb-run")):
+            raise SystemExit("Linux gui-smoke requires weston and xvfb-run (CI installs both)")
+        run("xvfb-run", "-a", "-s", "-screen 0 1280x1024x24", sys.executable, "scripts/gui_smoke.py", "--wayland")
+    else:
+        run(sys.executable, "scripts/gui_smoke.py")
+
+
+def selection() -> None:
+    for pattern in ("test_ci_changes.py", "test_dependency_workflow_filters.py", "test_macos_*.py", "test_minici.py"):
+        run(sys.executable, "-m", "unittest", "discover", "-s", "scripts", "-p", pattern)
+
+
+def published() -> None:
+    shared_sources()
+    run(sys.executable, "scripts/test.py", "published")
+
+
+def archive() -> None:
+    shared_sources()
+    with tempfile.TemporaryDirectory(prefix="signals-release-") as temporary:
+        candidate = str(Path(temporary) / "candidate")
+        run(sys.executable, "scripts/release.py", "prepare", "--version", "0.2.0-rc1", "--directory", candidate)
+        run(sys.executable, "scripts/release.py", "check", "--directory", candidate)
+
+
+def site() -> None:
+    if not shutil.which("zola"):
+        raise SystemExit("site requires the pinned Zola executable on PATH")
+    run("zola", "--root", "www", "check")
+
+
+def coverage() -> None:
+    if platform.system() != "Darwin":
+        print("==> coverage is a macOS CI gate; skipped on this operating system", flush=True)
+        return
+    run(
+        sys.executable,
+        "scripts/coverage.py",
+        "--min", "86.5",
+        "--min-file", "src/signals/engine.zig=71.0",
+        "--min-file", "src/signals/descriptor_stream.zig=76.0",
+        "--min-file", "src/native_host.zig=92.5",
+        "--min-file", "src/signals/roc_platform_abi.zig=72.0",
+        "--min-file", "src/spec/spec_parser.zig=90.0",
+        "--top", "20",
+    )
+
+
+TARGETS = {
+    "selection": selection,
+    "smoke": smoke,
+    "hosted": hosted,
+    "source": source,
+    "gui": gui,
+    "gui-smoke": gui_smoke,
+    "published": published,
+    "archive": archive,
+    "site": site,
+    "coverage": coverage,
+}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("targets", nargs="*", choices=TARGETS)
+    args = parser.parse_args()
+    targets = args.targets or [
+        "selection", "smoke", "source", "coverage", "gui", "gui-smoke",
+        "published", "archive", "site",
+    ]
+    if any(target not in {"selection", "site"} for target in targets):
+        ensure_pinned_roc()
+    for target in targets:
+        TARGETS[target]()
+
+
+if __name__ == "__main__":
+    main()

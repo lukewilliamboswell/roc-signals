@@ -100,8 +100,15 @@ const NativeTaskPublication = struct {
                 .write_text => 2,
                 .choose_save_path => 3,
                 .read_log => 5,
+                // Asset manifests carry a count frame plus two frames per
+                // asset; the dedicated validator owns that variable shape.
+                .verify_assets => 0,
             };
-            native_files_codec.validateRequest(request, arguments) catch failHost("malformed native Files request");
+            if (kind == .verify_assets) {
+                native_files_codec.validateAssetsRequest(request) catch failHost("malformed native asset manifest request");
+            } else {
+                native_files_codec.validateRequest(request, arguments) catch failHost("malformed native Files request");
+            }
             if (kind == .read_log) native_files_codec.validateLogRequest(request) catch failHost("malformed native Files log cursor");
             return .{
                 .host = host,
@@ -218,19 +225,13 @@ const NativeRenderPublication = struct {
 
     fn prepareTextField(allocator: std.mem.Allocator, node: *sim_dom.Element, field: RenderTextField, next: ?[]const u8) std.mem.Allocator.Error!void {
         const slot: *?[]const u8 = switch (field) {
-            .text => &node.text,
-            .role => &node.role,
-            .label => &node.label,
-            .test_id => &node.test_id,
-            .value => &node.value,
-            .class => &node.class,
-            .native_style => &node.native_style,
-            .native_viewport => &node.native_viewport,
-            .native_drag_key => &node.native_drag_key,
-            .native_window_close => &node.native_window_close,
+            inline else => |comptime_field| &@field(node, @tagName(comptime_field)),
         };
         if (field == .native_viewport) if (next) |bytes| {
             _ = native_style.decodeViewport(bytes) catch failHost("invalid native viewport record");
+        };
+        if (field == .native_fonts) if (next) |bytes| {
+            _ = native_style.validateFontDeclaration(bytes) catch failHost("invalid native font declaration");
         };
         if (field == .native_style) if (next) |bytes| {
             _ = native_style.decode(bytes) catch failHost("invalid native presentation record");
@@ -2613,21 +2614,21 @@ fn setRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFiel
     const elem = domElementById(host, elem_id);
     switch (field) {
         .text => setElementText(host, elem, value),
-        .role => sim_dom.setOwnedString(host.hostAllocator(), &elem.role, value),
-        .label => sim_dom.setOwnedString(host.hostAllocator(), &elem.label, value),
-        .test_id => sim_dom.setOwnedString(host.hostAllocator(), &elem.test_id, value),
         .value => setElementValue(host, elem, value),
-        .class => sim_dom.setOwnedString(host.hostAllocator(), &elem.class, value),
         .native_style => {
             _ = native_style.decode(value) catch failHost("invalid native presentation record");
             sim_dom.setOwnedString(host.hostAllocator(), &elem.native_style, value);
         },
-        .native_drag_key => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_drag_key, value),
-        .native_window_close => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_window_close, value),
+        .native_fonts => {
+            _ = native_style.validateFontDeclaration(value) catch failHost("invalid native font declaration");
+            sim_dom.setOwnedString(host.hostAllocator(), &elem.native_fonts, value);
+        },
         .native_viewport => {
             _ = native_style.decodeViewport(value) catch failHost("invalid native viewport record");
             sim_dom.setOwnedString(host.hostAllocator(), &elem.native_viewport, value);
         },
+        // Every remaining scalar is an owned string slot named after its field.
+        inline else => |comptime_field| sim_dom.setOwnedString(host.hostAllocator(), &@field(elem, @tagName(comptime_field)), value),
     }
 }
 
@@ -2640,8 +2641,8 @@ fn setRenderBoolField(host: *HostEnv, elem_id: ids.ElemId, field: RenderBoolFiel
     switch (field) {
         .checked => setElementChecked(elem, value),
         .disabled => setElementDisabled(elem, value),
-        .selected => elem.selected = value,
-        .native_drop_target => elem.native_drop_target = value,
+        // Every remaining boolean is a plain flag named after its field.
+        inline else => |comptime_field| @field(elem, @tagName(comptime_field)) = value,
     }
 }
 
@@ -2649,15 +2650,9 @@ fn clearRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFi
     const elem = domElementById(host, elem_id);
     switch (field) {
         .text => clearElementText(host, elem),
-        .role => sim_dom.clearOwnedString(host.hostAllocator(), &elem.role),
-        .label => sim_dom.clearOwnedString(host.hostAllocator(), &elem.label),
-        .test_id => sim_dom.clearOwnedString(host.hostAllocator(), &elem.test_id),
         .value => clearElementValue(host, elem),
-        .class => sim_dom.clearOwnedString(host.hostAllocator(), &elem.class),
-        .native_style => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_style),
-        .native_viewport => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_viewport),
-        .native_drag_key => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_drag_key),
-        .native_window_close => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_window_close),
+        // Every remaining scalar is an owned string slot named after its field.
+        inline else => |comptime_field| sim_dom.clearOwnedString(host.hostAllocator(), &@field(elem, @tagName(comptime_field))),
     }
 }
 
@@ -2670,8 +2665,8 @@ fn clearRenderBoolField(host: *HostEnv, elem_id: ids.ElemId, field: RenderBoolFi
     switch (field) {
         .checked => setElementChecked(elem, false),
         .disabled => setElementDisabled(elem, false),
-        .selected => elem.selected = false,
-        .native_drop_target => elem.native_drop_target = false,
+        // Every remaining boolean is a plain flag named after its field.
+        inline else => |comptime_field| @field(elem, @tagName(comptime_field)) = false,
     }
 }
 
@@ -10128,6 +10123,10 @@ test "signals host structural patch clears fields absent from reused DOM node" {
 
     const initial_attrs = [_]abi.NodeAttr{
         testNodeStaticTextAttr(&roc_host, .label, "Initial label"),
+        testNodeStaticTextAttr(&roc_host, .native_placeholder, "Initial hint"),
+        testNodeStaticTextAttr(&roc_host, .native_image_source, "avatars/initial.png"),
+        testNodeStaticTextAttr(&roc_host, .native_font_family, "Initial Mono"),
+        testNodeStaticTextAttr(&roc_host, .native_fonts, "1\nInitial Mono\nAAAA"),
         testNodeStaticCustomTextAttr(&roc_host, "data-mode", "initial"),
         testNodeStaticBoolAttr(.disabled, true),
     };
@@ -10141,6 +10140,10 @@ test "signals host structural patch clears fields absent from reused DOM node" {
 
     const section_id = host.engine.active_stream.elements.items[0].elem_id;
     try std.testing.expectEqualStrings("Initial label", host.dom_elements.items[@intCast(section_id.raw())].label.?);
+    try std.testing.expectEqualStrings("Initial hint", host.dom_elements.items[@intCast(section_id.raw())].native_placeholder.?);
+    try std.testing.expectEqualStrings("avatars/initial.png", host.dom_elements.items[@intCast(section_id.raw())].native_image_source.?);
+    try std.testing.expectEqualStrings("Initial Mono", host.dom_elements.items[@intCast(section_id.raw())].native_font_family.?);
+    try std.testing.expectEqualStrings("1\nInitial Mono\nAAAA", host.dom_elements.items[@intCast(section_id.raw())].native_fonts.?);
     try std.testing.expectEqualStrings("initial", elementTextAttr(&host.dom_elements.items[@intCast(section_id.raw())], "data-mode").?);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].disabled);
 
@@ -10155,9 +10158,13 @@ test "signals host structural patch clears fields absent from reused DOM node" {
 
     try std.testing.expectEqual(@as(u64, 0), patch_counts.reset_dom);
     try std.testing.expectEqual(@as(u64, 0), patch_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 2), patch_counts.set_metadata);
+    try std.testing.expectEqual(@as(u64, 6), patch_counts.set_metadata);
     try std.testing.expectEqual(@as(u64, 1), patch_counts.set_disabled);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].label == null);
+    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_placeholder == null);
+    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_image_source == null);
+    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_font_family == null);
+    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_fonts == null);
     try std.testing.expect(elementTextAttr(&host.dom_elements.items[@intCast(section_id.raw())], "data-mode") == null);
     try std.testing.expect(!host.dom_elements.items[@intCast(section_id.raw())].disabled);
 }
@@ -12612,33 +12619,9 @@ const Gpui = struct {
         key: u32,
         modifiers: u32,
     };
-    const Node = extern struct {
-        id: u64,
-        active: u64,
-        parent: u64,
-        tag: Slice,
-        text: Slice,
-        value: Slice,
-        label: Slice,
-        role: Slice,
-        test_id: Slice,
-        class: Slice,
-        child_count: usize,
-        click: u64,
-        input: u64,
-        check: u64,
-        checked: u64,
-        disabled: u64,
-        selected: u64,
-        style_present: u64,
-        style: native_style.Style,
-        viewport: native_style.Viewport,
-        lifetime: u64,
-        drag_key: Slice,
-        drop: u64,
-        close_requested: u64,
-        close_policy: u64,
-    };
+    // The extern node layout is generated from the protocol manifest, so this
+    // Zig writer and the Rust reader can never disagree on field order.
+    const Node = render.native_protocol.RawNode(Slice, native_style.Style, native_style.Viewport);
     const Effect = extern struct {
         op: u32,
         kind: u32,
@@ -12669,7 +12652,7 @@ const Gpui = struct {
         }
     }
     fn protocolVersion() callconv(.c) u32 {
-        return 7;
+        return render.native_protocol.protocol_version;
     }
     fn nodeSize() callconv(.c) usize {
         return @sizeOf(Node);
@@ -12752,7 +12735,7 @@ const Gpui = struct {
         return needed;
     }
     fn effectVersion() callconv(.c) u32 {
-        return 2;
+        return render.native_protocol.effect_version;
     }
     fn effectSize() callconv(.c) usize {
         return @sizeOf(Effect);
@@ -12801,6 +12784,10 @@ const Gpui = struct {
             .role = Slice.from(elem.role orelse ""),
             .test_id = Slice.from(elem.test_id orelse ""),
             .class = Slice.from(elem.class orelse ""),
+            .placeholder = Slice.from(elem.native_placeholder orelse ""),
+            .image_source = Slice.from(elem.native_image_source orelse ""),
+            .font_family = Slice.from(elem.native_font_family orelse ""),
+            .fonts = Slice.from(elem.native_fonts orelse ""),
             .child_count = child_order.count(ids.ElemId.fromRaw(elem.id)),
             .click = if (elem.event_bindings.click) |binding| binding.event_id.raw() else 0,
             .input = if (elem.event_bindings.input) |binding| binding.event_id.raw() else 0,
@@ -12823,7 +12810,7 @@ const Gpui = struct {
         return (child_order.childAt(ids.ElemId.fromRaw(parent), rank) catch failHost("invalid GPUI child rank")).raw();
     }
     fn timerVersion() callconv(.c) u32 {
-        return 1;
+        return render.native_protocol.timer_version;
     }
     fn timerSize() callconv(.c) usize {
         return @sizeOf(native_timers.Message);
@@ -12864,7 +12851,7 @@ test "native presentation and selection publish together after validation" {
         .wire_commands = 2,
     });
     defer splice.deinit();
-    const encoded = "1,0,12,16,1,0,2,120,1,1193046,16777215,0,1,8,18,0,2";
+    const encoded = "2,0,12,16,1,0,2,120,1,1193046,16777216,16777216,16777215,0,1,8,18,0,2";
     try splice.addTextField(&host.engine.render_cache, ids.root_elem, .native_style, encoded);
     try splice.addBoolField(&host.engine.render_cache, ids.root_elem, .selected, true);
     var publication = try NativeRenderPublication.prepare(&host, &splice);

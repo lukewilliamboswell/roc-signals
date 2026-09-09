@@ -181,6 +181,14 @@ pub fn build(b: *std.Build) void {
         "scripts/browser/wasm_benchmark_metrics.test.mjs",
         "scripts/browser/wasm_benchmark_runtime.test.mjs",
         "scripts/browser/wasm_memory_views.test.mjs",
+    });
+    // Node 23's Maglev optimizer can spend minutes compiling the repeated Wasm
+    // instantiation loop in this fault sweep. The test completes in under a
+    // second without Maglev and still executes the same Wasm failure paths.
+    const browser_panic_tests = b.addSystemCommand(&.{
+        "node",
+        "--no-maglev",
+        "--test",
         "scripts/browser/wasm_panic_fixture.test.mjs",
     });
     const wasm_integration_options = b.addOptions();
@@ -225,7 +233,10 @@ pub fn build(b: *std.Build) void {
     browser_tests.step.dependOn(&link_wasm_fixture.step);
     browser_tests.step.dependOn(&link_bounded_wasm_fixture.step);
     browser_tests.step.dependOn(&link_wasm_benchmark_fixture.step);
+    browser_panic_tests.step.dependOn(&link_wasm_fixture.step);
+    browser_panic_tests.step.dependOn(&link_bounded_wasm_fixture.step);
     run_test_browser_step.dependOn(&browser_tests.step);
+    run_test_browser_step.dependOn(&browser_panic_tests.step);
 
     const fmt_paths = [_][]const u8{ "build.zig", "src", "scripts", "test" };
     const fmt = b.addFmt(.{ .paths = &fmt_paths });

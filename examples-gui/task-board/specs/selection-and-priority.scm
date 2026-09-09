@@ -9,7 +9,7 @@
     (click (role button :name "Low priority"))
     (expect-visible (text "Priority: Low"))
     (fill (label "Assignee") "Rae")
-    (expect-visible (text "Low priority · Rae"))
+    (expect-text (test-id "meta-task-5") "Low priority · Rae")
     (click (test-id "edit-task-1"))
     (expect-value (label "Assignee") "Maya")
     (click (test-id "edit-task-5"))

@@ -77,8 +77,23 @@ padding or borders explicitly when you want them.
 Styles specify logical-pixel dimensions, spacing, padding, colors, borders,
 radius, font size, and overflow. Lengths are `Auto`, `Fill`, or `Px(value)`;
 colors are `Default` or `Rgb(value)`. Zero font size and default colors inherit.
-These are native presentation properties. Semantic labels, test IDs, selected
-state, and enabled state are separate attributes.
+`Fill` means the parent's content box: a Fill child stays inside the parent's
+padding and shares the remaining space with its siblings, and its own content
+never grows the allocation - give a Fill region `Scroll` or `Clip` overflow
+when its content can exceed it. These are native presentation properties.
+Semantic labels, test IDs, selected state, and enabled state are separate
+attributes.
+
+`hover_background` and `active_background` color an enabled button while the
+pointer rests on or presses it. Default state colors keep the host's standard
+feedback on default-background buttons and leave explicitly colored buttons
+unchanged, so declare them alongside an explicit `background` - typically as
+theme knobs next to the accent color. Text inputs and textareas render their
+inner field from the same style record: explicit `background`, `foreground`,
+`border_color`, `radius`, and `font_size` replace the host's dark field
+defaults, the placeholder derives from the foreground at reduced alpha, and
+an explicit foreground also tints the cursor and selection, so a
+light-background editor is fully legible.
 The initial window is 1200 × 820 logical pixels and can be moved, resized,
 minimized, and maximized. The host requests client decorations on Wayland and
 supplies a draggable title bar and resize borders when the compositor delegates
@@ -97,6 +112,7 @@ do not dispatch application events.
 | `heading`, `text` | literal string |
 | `text_s` | string signal |
 | `button` | label and unit message |
+| `button_attrs` | label, attributes, unit message |
 | `action_button` | `{ label, enabled }` signals, attributes, unit message |
 | `text_input`, `textarea` | `{ label, value }`, attributes, string message |
 | `checkbox` | `{ label, checked }`, attributes, boolean message |
@@ -120,12 +136,55 @@ constrains the retained editing viewport. `Auto` keeps a 320-pixel editor. Use
 `Fill` inside a container with a defined height to grow and shrink with its space.
 `Gui.enabled_s` and `Gui.disabled_s` change availability while preserving the
 control's identity.
+`Gui.placeholder` shows an explicit empty-field hint inside `text_input` and
+`textarea` while their document is empty, for example
+`Gui.text_input({ label, value }, [Gui.placeholder("Filter tasks…")], msg)`.
+The hint is static text declared by the app; a field without the attribute
+shows an empty field, and labels are never reused as hint text.
 Tab and Shift-Tab traverse enabled controls in native layout order. Focused
 control actions and declared shortcuts run first; modal dialogs own their Tab
 navigation while open.
 
+`Gui.image({ source, label }, attrs)` renders a picture from a relative path
+inside the host's assets root, sized and rounded by its style, for example
+`Gui.image({ source: "avatars/maya.png", label: "Maya avatar" },
+[Gui.style({ ..Gui.style_default, width: Px(24), height: Px(24), radius: 24 })])`.
+Launch the host with `--assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
+choose the root; the default is `assets/` beside the executable. Absolute
+paths, `..` traversal, URIs, and symbolic links never resolve, and a missing or
+undecodable image shows a neutral placeholder box instead of nothing.
+Ship an `assets/manifest.json` next to `main.roc`, ingest it at compile time,
+and start `Files.verify_assets` at mount to report each asset as ok, missing,
+or altered; the task-board and folder-explorer examples show the pattern.
+
 Use `Gui.test_id` for stable spec locators and `Gui.label` for semantic names.
 Labels do not establish native screen-reader support, which is not implemented.
+
+## Embedded fonts
+
+Apps can ship fonts inside the binary and register them with the native text
+system at startup. Embed the bytes with a compile-time import and declare them
+once on the app's root element:
+
+```roc
+import "../../vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
+
+Gui.column(
+    [Gui.embedded_fonts([{ family: "Source Code Pro", bytes: source_code_pro }]), ...],
+    [...],
+)
+```
+
+`Gui.font_family("Source Code Pro")` then renders an element and its
+descendants with that family; text styles inherit, so one attribute on a row
+or panel covers all of its text. Families not registered here must be
+installed on the machine.
+
+The host enforces bounds: at most 8 embedded fonts, at most 8 MiB per font,
+and family names of 1 to 128 bytes. Violations surface as visible host errors
+rather than crashes, and identical re-publication never re-registers a family.
+Only ship fonts whose licenses permit embedding and redistribution, and keep
+the license text in the repository next to the font file.
 
 ## Modal dialogs
 

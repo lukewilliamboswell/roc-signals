@@ -1,16 +1,83 @@
 # Native GUI presentation boundary
 
-The statically linked GUI boundary uses protocol version **7**. Zig exports
-`signals_protocol_version` and `signals_node_size`; Rust checks both before
-mount. Version 7 adds explicit event-detail dispatch. The node layout retains
-the close-request event ID and close-decision word introduced in version 6.
-Both sides must be rebuilt together.
+The tabular protocol contract - the protocol/effect/timer versions, the scalar
+text and boolean field tables, the task-kind routes, and the extern node record
+layout - has one authority: `protocol/native-protocol.json`. Running
+`python3 scripts/generate_protocol.py` regenerates the committed artifacts
+(`src/signals/native_protocol_gen.zig`, `crates/gpui-host/src/protocol_gen.rs`,
+the marked section of `platform-gui/Gui.roc`, and the tables below);
+`scripts/test.py zig` fails when any of them is stale. The prose in this
+document stays hand-written.
+
+<!-- BEGIN GENERATED PROTOCOL TABLES (scripts/generate_protocol.py; edit protocol/native-protocol.json) -->
+
+The statically linked GUI boundary uses protocol version **10**;
+the separate native effects boundary is version **2** and the
+separate timer boundary is version **1**.
+
+| Version | Change |
+| --- | --- |
+| 10 | Extends the presentation record to style version 2 with hover and active background slots (18 u32 style record); style version 1 records are no longer accepted. |
+| 9 | Adds the explicit image-source text slot together with the font-family and embedded-font declaration slots to the node layout. |
+| 8 | Adds the placeholder text slot to the node layout. |
+| 7 | Adds explicit event-detail dispatch to `signals_dispatch`. |
+| 6 | Adds the close-request event ID and close-decision word to the node layout. |
+
+Scalar text fields:
+
+| Id | Field | Scope | Purpose |
+| --- | --- | --- | --- |
+| 1 | `text` | browser (`set_text`) | Element text content. |
+| 2 | `role` | browser (`set_role`) | Semantic role string. |
+| 3 | `label` | browser (`set_label`) | Visible caption and semantic name. |
+| 4 | `test_id` | browser (`set_test_id`) | Stable test selector identity. |
+| 5 | `value` | browser (`set_value`) | Controlled input value. |
+| 6 | `class` | browser (`set_class`) | CSS class list for browser presentation. |
+| 8 | `native_style` | native | Versioned native presentation record; never encoded on the browser wire. |
+| 9 | `native_viewport` | native | Fixed-row virtual list record `1,row_height,follow_tail`. |
+| 10 | `native_drag_key` | native | Bounded application key exposed by an internal drag source. |
+| 11 | `native_window_close` | native | Window close policy: `keep-open`, `await-decision`, or `close`. |
+| 12 | `native_placeholder` | native | Static empty-field hint text shown while a controlled field is empty. |
+| 13 | `native_image_source` | native | Relative image source resolved against the process-wide assets root. |
+| 14 | `native_font_family` | native | Static font family joined into the element's inherited text style. |
+| 15 | `native_fonts` | native | Versioned embedded-font registration declaration; registered once at startup. |
+| 7 | - | shared | Reserved marker for named custom text attributes. |
+
+Scalar boolean fields:
+
+| Id | Field | Scope | Purpose |
+| --- | --- | --- | --- |
+| 1 | `checked` | browser (`set_checked`) | Checkbox checked state. |
+| 2 | `disabled` | browser (`set_disabled`) | Disables input while retaining native identity. |
+| 4 | `selected` | native | Native selected presentation, independent of checkbox state. |
+| 5 | `native_drop_target` | native | Marks an internal drop target that must bind a string-detail drop event. |
+| 3 | - | shared | Reserved marker for named custom boolean attributes. |
+
+`Node.TaskKind` is an explicit closed route:
+
+| Id | Kind | Purpose |
+| --- | --- | --- |
+| 0 | `external` | App-declared external task; the only route the browser host accepts. |
+| 1 | `choose_file` | Native file chooser dialog. |
+| 2 | `choose_directory` | Native directory chooser dialog. |
+| 3 | `choose_save_path` | Native save-path chooser with location kind, directory, and suggested name. |
+| 4 | `read_text` | Bounded UTF-8 text read of one absolute path. |
+| 5 | `write_text` | Atomic bounded UTF-8 text write of one absolute path. |
+| 6 | `scan_directory` | Bounded recursive directory metadata scan. |
+| 7 | `list_directory` | Bounded direct-children directory listing. |
+| 8 | `open_path` | Hand one regular file to its associated application. |
+| 9 | `read_preview` | Bounded UTF-8 prefix read with an explicit truncation marker. |
+| 10 | `read_log` | Cursor-driven bounded log chunk read with rotation detection. |
+| 11 | `verify_assets` | Hash a bounded manifest of relative assets against expected SHA-256 digests. |
+
+<!-- END GENERATED PROTOCOL TABLES -->
+
+Zig exports `signals_protocol_version` and `signals_node_size`; Rust checks
+both before mount. Both sides must be rebuilt together.
 The browser protocol and its version are unchanged.
 
-`Gui` lowers native presentation through the shared scalar descriptor machinery.
-Text field **8** is `native_style`, field **9** is `native_viewport`, field **10**
-is `native_drag_key`, and field **11** is `native_window_close`; boolean fields **4** and **5** are `selected` and
-`native_drop_target`. The unused
+`Gui` lowers native presentation through the shared scalar descriptor
+machinery using the text and boolean field ids tabled above. The reserved
 IDs 7 and 3 remain the existing custom text/bool field markers. Native fields
 are explicit protocol fields, not CSS, class names, test identifiers, or custom
 attribute conventions. The browser rejects them before reserving or staging a
@@ -22,16 +89,27 @@ publication and never acquire invented browser opcodes.
 The style field contains a canonical ASCII decimal record separated by commas:
 
 ```
-version,direction,gap,padding,width_kind,width,height_kind,height,grow,background,foreground,border_color,border_width,radius,font_size,overflow_x,overflow_y
+version,direction,gap,padding,width_kind,width,height_kind,height,grow,background,hover_background,active_background,foreground,border_color,border_width,radius,font_size,overflow_x,overflow_y
 ```
 
-Version 1 has exactly these 17 fields. Numbers have no signs, whitespace, or
+Version 2 has exactly these 19 fields. Numbers have no signs, whitespace, or
 leading zeroes. Direction is row=0 or column=1. Length kind is auto=0, fill=1,
 pixels=2; auto/fill must have a zero value. Grow is 0 or 1. Overflow is
 visible=0, clip=1, scroll=2. Colors are 24-bit RGB or 16777216 for inherited/default.
 Lengths, spacing, radius, borders, and font size are logical pixels, bounded at
 16384. Font size zero inherits. Invalid records are programmer-contract errors,
-not a request to substitute defaults. Records are bounded at 192 bytes.
+not a request to substitute defaults. Records are bounded at 224 bytes.
+Retired version-1 records (17 fields, without the state backgrounds) are
+refused like any other invalid record: platform and host are statically linked
+and ship together, so no compatibility window exists.
+
+`hover_background` and `active_background` color enabled buttons while the
+pointer rests on or presses them. An explicit state color always wins; with
+both at the inherit sentinel, a default-background button keeps the host's
+standard hover/active feedback, and an explicitly colored button shows no state
+change. Checkboxes and non-interactive elements ignore the state slots: a
+checkbox's feedback is its glyph and cursor, and a row-wide highlight would
+misstate its hit area.
 
 The public `Gui.Style` contains typed lengths, colors and overflow tags. Only the
 platform encoder creates records. `Gui.row`/`column`/`panel` choose direction;
@@ -41,14 +119,69 @@ The style signal is an ordinary typed, equality-pruned signal; there is no
 native styling observer graph.
 
 Zig validates the style during native publication preparation and exports an
-`extern` struct of 16 `u32` fields in the order after `version` above. Rust copies
+`extern` struct of 18 `u32` fields in the order after `version` above. Rust copies
 this validated record along with primitive fields and borrowed UTF-8 data before
 any next engine operation. Rust applies the supplied layout and presentation
 properties with GPUI. Selected state adds the standard selection border, and
 disabled state applies reduced opacity and refuses input dispatch.
-The semantic root fills the host viewport, and apps own outer padding. Explicit
-textarea heights constrain the complete field; the retained editor fills the
-space after caption and padding. Auto presentation retains a 320-pixel editor.
+The semantic root fills the host viewport, and apps own outer padding.
+
+Fill means the parent's content box. On the parent's main axis the host maps
+Fill to flex distribution of the free space (zero preferred size, grow, zero
+minimum), so a Fill element stays inside the parent's padding, shares the
+remaining space with its siblings, and never grows with its own content; a
+Fill region that can overflow declares its own `Clip` or `Scroll`. On the
+cross axis Fill is a percentage of the parent's content box. The committed
+parent's direction decides which axis is which.
+
+Text inputs and textareas resolve their inner field from the same record:
+explicit `background`, `foreground`, and `border_color` replace the host's
+dark field defaults, a nonzero `radius` replaces the standard rounding, and a
+nonzero `font_size` sizes the editor text with a proportional line height.
+The placeholder derives from the effective foreground at reduced alpha, and
+an explicit foreground also tints the cursor and the selection highlight.
+Explicit textarea heights constrain the complete field; the retained editor
+fills the space after caption and padding. Auto presentation retains a
+320-pixel editor.
+
+`Gui.placeholder` lowers static empty-field hint text through field 12. The
+hint is app-declared configuration, not host behavior: the host shows exactly
+the supplied text while a controlled field's document is empty, and a field
+without the attribute shows nothing. Labels never become placeholder text, and
+the host holds no default hint strings. The browser host rejects the field like
+every other native scalar.
+
+`Gui.image` lowers element tag `img` with its relative source text on field
+13. The source is application data, not a filesystem capability: the host
+resolves it against one process-wide assets root (`--assets-root <dir>`, else
+`ROC_SIGNALS_ASSETS_ROOT`, else `assets/` beside the executable) and refuses
+absolute paths, `..` traversal, URI schemes, backslashes, and symbolic links
+anywhere below the root. Sources are 1 to 1024 UTF-8 bytes. A source that does
+not resolve to a regular decodable image renders a neutral placeholder box
+(surface `0x1B2A33`, border `0x3A4F5C`) of the element's styled size; nothing
+is fetched remotely. The display-free spec host stores the field like every
+other native scalar and never touches the filesystem.
+
+`Gui.font_family` lowers a static family name through field 14. The GPUI host
+joins the family into the element's inherited text style, so descendants
+without their own family render with it. The family must be installed on the
+machine or registered through the embedded-font declaration below; an unknown
+family falls back through GPUI's ordinary font resolution.
+
+`Gui.embedded_fonts` lowers a startup font registration through field 15. The
+value is a newline-delimited v1 record: a `1` version line, then one family
+line and one standard-base64 data line per font. Families are 1 to 128 UTF-8
+bytes without control characters. The record is bounded at **8 fonts** and
+**8 MiB of decoded bytes per font**; the Zig engine validates structure and
+bounds before publication, and the GPUI host re-validates, decodes, and calls
+`add_fonts` exactly once per family at startup. Bound violations are visible
+host errors, never panics, and never partial registrations. Re-publishing an
+identical declaration is pruned by content identity; the same family with
+different bytes is refused, because a text system cannot unregister fonts.
+Base64 costs one third extra over the raw bytes while the declaration string
+is alive; the app binary embeds only the raw compile-time import, and the
+encoding happens once while the element tree is built. The display-free spec
+host stores the validated declaration without touching any text system.
 
 Ordinary Tab and Shift-Tab use GPUI's committed tab-stop index after focused
 handlers decline the key. A Runtime owns one window-filtered GPUI subscription
@@ -215,9 +348,8 @@ This is presentation policy, not a second timer, observer, or reactive graph.
 
 `Files` declares native chooser, read, write, and recursive scan tasks. Each
 factory takes a diagnostic label; the label never selects host behavior.
-`Node.TaskKind` is an explicit closed route: external=0, choose-file=1,
-choose-directory=2, choose-save-path=3, read-text=4, write-text=5, scan-directory=6,
-list-directory=7, open-path=8, read-preview=9, read-log=10.
+`Node.TaskKind` is an explicit closed route; the generated task-kind table
+above is the authoritative numbering.
 The browser rejects non-external task routes before command publication. Its
 existing task command wire format is unchanged.
 
@@ -269,6 +401,7 @@ Task kind defines the remaining request frames:
 | Read text / scan / list directory / open path / read preview | absolute path |
 | Read log | absolute path, position (`start`, `end`, `after`), device, inode, offset |
 | Write text | absolute path, complete UTF-8 text |
+| Verify assets | asset count, then per asset: relative name, lowercase hex SHA-256 |
 
 Choice results are `chosen, path` or `canceled`. A user dismissing a dialog is
 `Done(Choice.Canceled)`; explicit task cancellation is `Failed(Error.Canceled)`.
@@ -328,6 +461,21 @@ day-sized executor waits to avoid overflowing native clock arithmetic. Normal
 smoke checks disable clocks for deterministic assertions; `--smoke-timers`
 enables real timer delivery and waits 1.2 seconds after the requested action.
 
+### Asset verification
+
+`VerifyAssets` requests carry a canonical asset count of 1 to **256**, then a
+relative name of 1 to **1024 UTF-8 bytes** and a 64-character lowercase hex
+SHA-256 digest per asset; the Zig publication validator rejects any other
+shape. The worker hashes each named file under the committed assets root
+through the same no-follow primitives as every Files read, bounded at
+**32 MiB** per asset. Results are `count` followed by `name, status` pairs in
+manifest order; statuses are `ok`, `missing` (also covering symlinked or
+special files), and `mismatch`. A traversing name, an unreadable file, or an
+asset above the byte bound fails the whole task with its typed error. Apps
+ingest `assets/manifest.json` at compile time and start verification once at
+mount; specs settle it deterministically with the `resolve-file-assets`
+fixture.
+
 ### Directory navigation, previews, associated applications, and logs
 
 `ListDirectory` returns `path, count` followed by the same entry triples as a
@@ -371,3 +519,33 @@ at EOF after validating its terminal code point (up to four bytes). An incomplet
 or invalid EOF code point refuses `end` with `InvalidUtf8`; skipped history is
 not validated. All routes use the existing 16-operation reservations, shared
 scope cancellation, stale-result rejection, and typed failure delivery.
+
+## Adding a protocol field
+
+The manifest owns the tables; the generator owns the transcription; a bounded
+amount of behavior stays hand-written. To add a native scalar field:
+
+1. Declare the field in `protocol/native-protocol.json`: append it to
+   `text_fields` (or `bool_fields`) with a fresh id, `"native": true`, a
+   `roc_const` name when `Gui` lowers it, and a one-line doc. Bump
+   `protocol_version` and prepend a `version_history` entry. If the GPUI host
+   reads the value directly, add its slot to `raw_node.fields` in the intended
+   ABI position.
+2. Run `python3 scripts/generate_protocol.py`. This regenerates the Zig/Rust
+   enums, counts, and `RawNode` layouts, the `Gui.roc` constants, and the
+   tables above. Every derived contract (metadata counts, descriptor-index
+   sizes, `signals_node_size`, version asserts) follows automatically.
+3. Write the honest residue - the behavior no table can express. The Zig
+   compiler reports each site as a compile error (`inline else` field access
+   and exhaustive switches), so the checklist is enforced, not remembered:
+   - `src/sim_dom.zig`: an `Element` slot named exactly like the field.
+   - `src/signals/render_cache.zig`: a matching `ScalarNode` slot.
+   - `src/native_host.zig`: any publication-time validation, plus the
+     `Gpui.read` expression that fills the new `RawNode` slot.
+   - `crates/gpui-host/src/bridge.rs`: copy the new `RawNode` slot into `Node`
+     (a missed slot is unused-field/`E0063`-adjacent, and the size assert plus
+     `cargo test` catch drift) and present it in the host.
+   - `platform-gui/Gui.roc`: an `Attribute` variant lowering to the generated
+     `*_field` constant.
+4. Describe the field's semantics in prose in this document, and rebuild both
+   sides together (`python3 scripts/build_gui.py`).

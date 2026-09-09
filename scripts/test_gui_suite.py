@@ -10,6 +10,10 @@ import gui_suite
 
 
 class GuiDiscoveryTests(unittest.TestCase):
+    def test_macos_target_links_the_staged_system_interface(self):
+        header = (gui_suite.ROOT / "platform-gui/main.roc").read_text()
+        self.assertIn('"../macos-sysroot/usr/lib/libSystem.tbd"', header)
+
     def test_supported_hosts_match_platform_targets(self):
         for system, machine, expected in [('Linux', 'x86_64', 'x64glibc'),
                                           ('Darwin', 'arm64', 'arm64mac'),

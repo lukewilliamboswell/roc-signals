@@ -3634,6 +3634,37 @@
           ]
         },
         {
+          "name": "_acos",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/kernel/1557251-acos",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/kernel/1557251-acos.json",
+              "external_id": "c:@F@acos",
+              "title": "acos",
+              "documented_modules": [
+                "Kernel"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:24.766956+00:00",
+              "response_sha256": "f9f5e84731133898f4147a658e8aea1915e12f2e898b61004add95a4472cb016"
+            },
+            {
+              "url": "https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/acos.3.html",
+              "documented_modules": [],
+              "evidence_kind": "exact_function_name_in_manpage_synopsis",
+              "retrieved_at": "2026-09-09T10:06:38.851316+00:00",
+              "response_sha256": "4495a55c494df307a5cd72540856f4aac924e5f80a5474916a1a4c009f684d0e"
+            },
+            {
+              "url": "https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/acosf.3.html",
+              "documented_modules": [],
+              "evidence_kind": "exact_function_name_in_manpage_synopsis",
+              "retrieved_at": "2026-09-09T10:06:39.573286+00:00",
+              "response_sha256": "5005dc83aab8346961f8e2da2813417a879b229e0918e20b6c10375380d69fae"
+            }
+          ]
+        },
+        {
           "name": "_acosf",
           "sources": [
             {
@@ -5019,6 +5050,32 @@
           ]
         },
         {
+          "name": "_lstat",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fstat.2.html",
+              "documented_modules": [],
+              "evidence_kind": "exact_function_name_in_manpage_synopsis",
+              "retrieved_at": "2026-09-09T10:06:53.628462+00:00",
+              "response_sha256": "0f06812c4ba6605cc8a4a4fe940b1dccb3cc62703ad7251262912bd68c9cda4b"
+            },
+            {
+              "url": "https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/lstat.2.html",
+              "documented_modules": [],
+              "evidence_kind": "exact_function_name_in_manpage_synopsis",
+              "retrieved_at": "2026-09-09T10:07:05.984748+00:00",
+              "response_sha256": "53dc2b8df2e62135ba2b57aa5afc013a7cc29d772dcac3855a92e0887f4b14d1"
+            },
+            {
+              "url": "https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/stat.2.html",
+              "documented_modules": [],
+              "evidence_kind": "exact_function_name_in_manpage_synopsis",
+              "retrieved_at": "2026-09-09T10:07:30.589506+00:00",
+              "response_sha256": "7061e093257e5c2038b2544b35f0563cbeeb19885b73ecbf3ad91d75ff1a3908"
+            }
+          ]
+        },
+        {
           "name": "_malloc",
           "sources": [
             {
@@ -5671,6 +5728,18 @@
               "evidence_kind": "exact_function_name_in_manpage_synopsis",
               "retrieved_at": "2026-09-09T10:07:16.493752+00:00",
               "response_sha256": "d2cf022b1230889cca25e09e77f66a8a2c2d371fe8b50e5123978e75a2685220"
+            }
+          ]
+        },
+        {
+          "name": "_pthread_cond_broadcast",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/pthread_cond_broadcast.3.html",
+              "documented_modules": [],
+              "evidence_kind": "exact_function_name_in_manpage_synopsis",
+              "retrieved_at": "2026-09-09T10:07:16.649142+00:00",
+              "response_sha256": "7f65af3d52cdb31794af73e2368bc525b34764c1fca8d9d34fdb81d467a261b8"
             }
           ]
         },
