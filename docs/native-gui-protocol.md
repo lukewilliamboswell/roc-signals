@@ -2,17 +2,19 @@
 
 The statically linked GUI boundary uses protocol version **9**. Zig exports
 `signals_protocol_version` and `signals_node_size`; Rust checks both before
-mount. Version 9 adds the explicit image-source text slot to the node layout.
-Version 8 added the placeholder text slot, version 7 added explicit
-event-detail dispatch, and the node layout retains the close-request event ID
-and close-decision word introduced in version 6.
+mount. Version 9 adds the explicit image-source text slot together with the
+font-family and embedded-font declaration slots to the node layout. Version 8
+added the placeholder text slot, version 7 added explicit event-detail
+dispatch, and the node layout retains the close-request event ID and
+close-decision word introduced in version 6.
 Both sides must be rebuilt together.
 The browser protocol and its version are unchanged.
 
 `Gui` lowers native presentation through the shared scalar descriptor machinery.
 Text field **8** is `native_style`, field **9** is `native_viewport`, field **10**
 is `native_drag_key`, field **11** is `native_window_close`, field **12** is
-`native_placeholder`, and field **13** is `native_image_source`; boolean fields
+`native_placeholder`, field **13** is `native_image_source`, field **14** is
+`native_font_family`, and field **15** is `native_fonts`; boolean fields
 **4** and **5** are `selected` and
 `native_drop_target`. The unused
 IDs 7 and 3 remain the existing custom text/bool field markers. Native fields
@@ -71,6 +73,27 @@ not resolve to a regular decodable image renders a neutral placeholder box
 (surface `0x1B2A33`, border `0x3A4F5C`) of the element's styled size; nothing
 is fetched remotely. The display-free spec host stores the field like every
 other native scalar and never touches the filesystem.
+
+`Gui.font_family` lowers a static family name through field 14. The GPUI host
+joins the family into the element's inherited text style, so descendants
+without their own family render with it. The family must be installed on the
+machine or registered through the embedded-font declaration below; an unknown
+family falls back through GPUI's ordinary font resolution.
+
+`Gui.embedded_fonts` lowers a startup font registration through field 15. The
+value is a newline-delimited v1 record: a `1` version line, then one family
+line and one standard-base64 data line per font. Families are 1 to 128 UTF-8
+bytes without control characters. The record is bounded at **8 fonts** and
+**8 MiB of decoded bytes per font**; the Zig engine validates structure and
+bounds before publication, and the GPUI host re-validates, decodes, and calls
+`add_fonts` exactly once per family at startup. Bound violations are visible
+host errors, never panics, and never partial registrations. Re-publishing an
+identical declaration is pruned by content identity; the same family with
+different bytes is refused, because a text system cannot unregister fonts.
+Base64 costs one third extra over the raw bytes while the declaration string
+is alive; the app binary embeds only the raw compile-time import, and the
+encoding happens once while the element tree is built. The display-free spec
+host stores the validated declaration without touching any text system.
 
 Ordinary Tab and Shift-Tab use GPUI's committed tab-stop index after focused
 handlers decline the key. A Runtime owns one window-filtered GPUI subscription

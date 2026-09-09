@@ -84,6 +84,76 @@ pub fn decodeViewport(bytes: []const u8) DecodeError!Viewport {
     return value;
 }
 
+/// Host-enforced embedded font bounds. These are protocol constants shared by
+/// every native adapter; a declaration outside them is rejected before any
+/// text-system registration.
+pub const max_fonts: usize = 8;
+pub const max_font_bytes: usize = 8 * 1024 * 1024;
+pub const max_font_family_bytes: usize = 128;
+
+/// Validates the complete v1 embedded-font declaration without allocating.
+/// The record is newline-delimited: a "1" version line, then one family line
+/// and one standard-base64 data line per font. Returns the font count.
+pub fn validateFontDeclaration(bytes: []const u8) DecodeError!usize {
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    const head = lines.next() orelse return error.InvalidNativeStyle;
+    if (!std.mem.eql(u8, head, "1")) return error.InvalidNativeStyle;
+    var count: usize = 0;
+    while (lines.next()) |family| {
+        const data = lines.next() orelse return error.InvalidNativeStyle;
+        if (family.len == 0 or family.len > max_font_family_bytes) return error.InvalidNativeStyle;
+        for (family) |byte| if (byte < 0x20 or byte == 0x7f) return error.InvalidNativeStyle;
+        _ = try fontDataSize(data);
+        count += 1;
+        if (count > max_fonts) return error.InvalidNativeStyle;
+    }
+    if (count == 0) return error.InvalidNativeStyle;
+    return count;
+}
+
+/// Validates one standard-base64 data line and returns its decoded byte size.
+pub fn fontDataSize(data: []const u8) DecodeError!usize {
+    if (data.len == 0 or data.len % 4 != 0) return error.InvalidNativeStyle;
+    var padding: usize = 0;
+    if (data[data.len - 1] == '=') padding += 1;
+    if (data.len >= 2 and data[data.len - 2] == '=') padding += 1;
+    for (data[0 .. data.len - padding]) |byte| {
+        const valid = (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z') or
+            (byte >= '0' and byte <= '9') or byte == '+' or byte == '/';
+        if (!valid) return error.InvalidNativeStyle;
+    }
+    const size = data.len / 4 * 3 - padding;
+    if (size == 0 or size > max_font_bytes) return error.InvalidNativeStyle;
+    return size;
+}
+
+test "font declarations validate structure bounds and base64 payloads" {
+    try std.testing.expectEqual(@as(usize, 1), try validateFontDeclaration("1\nSource Code Pro\nAAAA"));
+    try std.testing.expectEqual(@as(usize, 2), try validateFontDeclaration("1\nMono A\nAAECAw==\nMono B\nBQY="));
+    try std.testing.expectEqual(@as(usize, 3), try fontDataSize("AAAA"));
+    // Nine fonts exceed the host bound of eight.
+    const nine = "1" ++ ("\nf\nAAAA" ** 9);
+    try std.testing.expectError(error.InvalidNativeStyle, validateFontDeclaration(nine));
+    const eight = "1" ++ ("\nf\nAAAA" ** 8);
+    try std.testing.expectEqual(@as(usize, 8), try validateFontDeclaration(eight));
+    for ([_][]const u8{
+        "", "1", "2\nf\nAAAA", "1\nf", "1\n\nAAAA", "1\nf\n", "1\nf\nAAA", "1\nf\nA?AA", "1\nf\n====", "1\nf\nAAAA\n",
+    }) |bytes| try std.testing.expectError(error.InvalidNativeStyle, validateFontDeclaration(bytes));
+}
+
+test "font data size enforces the eight-mebibyte decoded bound" {
+    const allocator = std.testing.allocator;
+    // 8 MiB decodes exactly at the bound; one more block exceeds it.
+    const at_bound = try allocator.alloc(u8, max_font_bytes / 3 * 4);
+    defer allocator.free(at_bound);
+    @memset(at_bound, 'A');
+    try std.testing.expectEqual(max_font_bytes - 1, (try fontDataSize(at_bound)) + 1);
+    const over = try allocator.alloc(u8, (max_font_bytes / 3 + 1) * 4);
+    defer allocator.free(over);
+    @memset(over, 'A');
+    try std.testing.expectError(error.InvalidNativeStyle, fontDataSize(over));
+}
+
 test "native viewport rejects malformed size and follow-tail contracts" {
     try std.testing.expectEqualDeep(Viewport{ .row_height = 48, .follow_tail = 1 }, try decodeViewport("1,48,1"));
     for ([_][]const u8{ "1,0,0", "1,16385,0", "1,48,2", "2,48,1", "1,048,1", "1,48,1,0" }) |bytes| try std.testing.expectError(error.InvalidNativeStyle, decodeViewport(bytes));

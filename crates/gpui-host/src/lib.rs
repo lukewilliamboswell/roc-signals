@@ -8,6 +8,7 @@ mod file_io;
 mod input;
 mod scrollbars;
 mod shortcut;
+mod fonts;
 mod timers;
 mod window_frame;
 mod window_lifecycle;
@@ -190,6 +191,11 @@ impl Render for NodeView {
         }
         if self.node.kind.is_heading() {
             element = element.text_2xl().font_weight(FontWeight::SEMIBOLD);
+        }
+        // An explicit family joins GPUI's inherited text style, so descendants
+        // without their own family render with this one.
+        if !self.node.font_family.is_empty() {
+            element = element.font_family(self.node.font_family.clone());
         }
         if let Some(style) = self.node.style {
             element = apply_style(element, style);
@@ -400,6 +406,7 @@ struct Runtime {
     renders: Rc<Cell<u64>>,
     child_visits: Rc<Cell<u64>>,
     timers: timers::Manager,
+    fonts: fonts::Registry,
 }
 impl Runtime {
     fn shortcut_if_live(
@@ -445,6 +452,7 @@ impl Runtime {
             renders: Rc::new(Cell::new(0)),
             child_visits: Rc::new(Cell::new(0)),
             timers: timers::Manager::new(clock),
+            fonts: fonts::Registry::default(),
         };
         runtime.apply(initial, cx);
         runtime.drain_effects(cx);
@@ -550,6 +558,27 @@ impl Runtime {
         self.apply(changes, cx);
         self.drain_effects(cx);
     }
+    /// Registers a published embedded-font declaration with the text system.
+    /// Identity pruning and every bound violation live in the registry; a
+    /// violation is a visible host error and never a panic.
+    fn register_fonts(&mut self, declaration: &str, cx: &mut Context<Self>) {
+        let pending = self.fonts.ingest(declaration);
+        if pending.is_empty() {
+            return;
+        }
+        if let Err(error) = cx.text_system().add_fonts(pending) {
+            self.fonts
+                .record_error(format!("embedded font registration failed: {error:#}"));
+        }
+    }
+    #[cfg(test)]
+    fn registered_font_families_for_test(&self) -> Vec<String> {
+        self.fonts.registered_families()
+    }
+    #[cfg(test)]
+    fn font_errors_for_test(&self) -> &[String] {
+        self.fonts.errors()
+    }
     fn apply(&mut self, changes: Vec<Node>, cx: &mut Context<Self>) {
         if changes.is_empty() {
             return;
@@ -558,6 +587,9 @@ impl Runtime {
         // before wiring the engine-selected child lists, regardless of batch order.
         self.nodes.reserve(changes.len());
         for node in changes.iter().filter(|n| n.active) {
+            if !node.fonts.is_empty() {
+                self.register_fonts(&node.fonts, cx);
+            }
             assert!(
                 node.kind != ControlKind::Unknown,
                 "unsupported spike element: {}",
@@ -965,6 +997,7 @@ mod tests {
             renders: Rc::new(Cell::new(0)),
             child_visits: Rc::new(Cell::new(0)),
             timers: crate::timers::Manager::new(false),
+            fonts: crate::fonts::Registry::default(),
         }
     }
 
@@ -1350,6 +1383,68 @@ mod tests {
                 field.placeholder = String::new();
                 runtime.apply(vec![field], cx);
                 assert_eq!(placeholder(runtime, 1, cx), "");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn published_font_declarations_register_once_and_family_reaches_nodes(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                let ttf: &[u8] =
+                    include_bytes!("../../../vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf");
+                let declaration =
+                    format!("1\nSource Code Pro\n{}", crate::fonts::encode_base64(ttf));
+                let mut root = node(0, "root", &[1]);
+                root.fonts = declaration.clone();
+                let mut row = node(1, "div", &[]);
+                row.font_family = "Source Code Pro".into();
+                runtime.apply(vec![root.clone(), row], cx);
+                assert_eq!(
+                    runtime.registered_font_families_for_test(),
+                    vec!["Source Code Pro".to_owned()]
+                );
+                assert!(runtime.font_errors_for_test().is_empty());
+                assert_eq!(
+                    runtime.nodes[&1].read(cx).node.font_family,
+                    "Source Code Pro"
+                );
+                assert_eq!(runtime.nodes[&0].read(cx).node.font_family, "");
+                // Re-publication of the identical declaration is pruned.
+                runtime.apply(vec![root], cx);
+                assert_eq!(runtime.registered_font_families_for_test().len(), 1);
+                assert!(runtime.font_errors_for_test().is_empty());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn font_declarations_outside_host_bounds_are_visible_errors_not_crashes(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let runtime = cx.new(|_| runtime());
+            runtime.update(cx, |runtime, cx| {
+                // Nine fonts exceed the bound of eight.
+                let mut declaration = String::from("1");
+                for index in 0..9 {
+                    declaration.push_str(&format!("\nFamily {index}\nAAAA"));
+                }
+                let mut root = node(0, "root", &[]);
+                root.fonts = declaration;
+                runtime.apply(vec![root], cx);
+                assert!(runtime.registered_font_families_for_test().is_empty());
+                assert_eq!(runtime.font_errors_for_test().len(), 1);
+                // An oversized payload is refused before any registration.
+                let oversized = crate::fonts::encode_base64(&vec![0u8; 8 * 1024 * 1024 + 3]);
+                let mut root = node(0, "root", &[]);
+                root.fonts = format!("1\nBig\n{oversized}");
+                runtime.apply(vec![root], cx);
+                assert!(runtime.registered_font_families_for_test().is_empty());
+                assert_eq!(runtime.font_errors_for_test().len(), 2);
             });
         });
     }

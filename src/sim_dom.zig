@@ -35,6 +35,8 @@ pub const Element = struct {
     native_window_close: ?[]const u8,
     native_placeholder: ?[]const u8,
     native_image_source: ?[]const u8,
+    native_font_family: ?[]const u8,
+    native_fonts: ?[]const u8,
     text: ?[]const u8,
     value: ?[]const u8,
     pending_value: ?[]const u8,
@@ -70,6 +72,8 @@ pub const Element = struct {
             .native_window_close = null,
             .native_placeholder = null,
             .native_image_source = null,
+            .native_font_family = null,
+            .native_fonts = null,
             .text = null,
             .value = null,
             .pending_value = null,
@@ -105,6 +109,8 @@ pub const Element = struct {
         if (self.native_window_close) |value| allocator.free(value);
         if (self.native_placeholder) |value| allocator.free(value);
         if (self.native_image_source) |value| allocator.free(value);
+        if (self.native_font_family) |value| allocator.free(value);
+        if (self.native_fonts) |value| allocator.free(value);
         if (self.text) |text| allocator.free(text);
         if (self.value) |value| allocator.free(value);
         if (self.pending_value) |pending_value| allocator.free(pending_value);
@@ -138,7 +144,7 @@ pub const Element = struct {
         cloned.value_update_count = self.value_update_count;
         cloned.checked_update_count = self.checked_update_count;
         cloned.disabled_update_count = self.disabled_update_count;
-        inline for (.{ "role", "label", "test_id", "class", "native_style", "native_viewport", "native_drag_key", "native_window_close", "native_placeholder", "native_image_source", "text", "value", "pending_value" }) |field_name| {
+        inline for (.{ "role", "label", "test_id", "class", "native_style", "native_viewport", "native_drag_key", "native_window_close", "native_placeholder", "native_image_source", "native_font_family", "native_fonts", "text", "value", "pending_value" }) |field_name| {
             if (@field(self, field_name)) |value| @field(cloned, field_name) = try allocator.dupe(u8, value);
         }
         try cloned.children.appendSlice(allocator, self.children.items);

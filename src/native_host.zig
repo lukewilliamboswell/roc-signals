@@ -237,9 +237,14 @@ const NativeRenderPublication = struct {
             .native_window_close => &node.native_window_close,
             .native_placeholder => &node.native_placeholder,
             .native_image_source => &node.native_image_source,
+            .native_font_family => &node.native_font_family,
+            .native_fonts => &node.native_fonts,
         };
         if (field == .native_viewport) if (next) |bytes| {
             _ = native_style.decodeViewport(bytes) catch failHost("invalid native viewport record");
+        };
+        if (field == .native_fonts) if (next) |bytes| {
+            _ = native_style.validateFontDeclaration(bytes) catch failHost("invalid native font declaration");
         };
         if (field == .native_style) if (next) |bytes| {
             _ = native_style.decode(bytes) catch failHost("invalid native presentation record");
@@ -2635,6 +2640,11 @@ fn setRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFiel
         .native_window_close => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_window_close, value),
         .native_placeholder => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_placeholder, value),
         .native_image_source => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_image_source, value),
+        .native_font_family => sim_dom.setOwnedString(host.hostAllocator(), &elem.native_font_family, value),
+        .native_fonts => {
+            _ = native_style.validateFontDeclaration(value) catch failHost("invalid native font declaration");
+            sim_dom.setOwnedString(host.hostAllocator(), &elem.native_fonts, value);
+        },
         .native_viewport => {
             _ = native_style.decodeViewport(value) catch failHost("invalid native viewport record");
             sim_dom.setOwnedString(host.hostAllocator(), &elem.native_viewport, value);
@@ -2671,6 +2681,8 @@ fn clearRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFi
         .native_window_close => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_window_close),
         .native_placeholder => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_placeholder),
         .native_image_source => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_image_source),
+        .native_font_family => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_font_family),
+        .native_fonts => sim_dom.clearOwnedString(host.hostAllocator(), &elem.native_fonts),
     }
 }
 
@@ -10143,6 +10155,8 @@ test "signals host structural patch clears fields absent from reused DOM node" {
         testNodeStaticTextAttr(&roc_host, .label, "Initial label"),
         testNodeStaticTextAttr(&roc_host, .native_placeholder, "Initial hint"),
         testNodeStaticTextAttr(&roc_host, .native_image_source, "avatars/initial.png"),
+        testNodeStaticTextAttr(&roc_host, .native_font_family, "Initial Mono"),
+        testNodeStaticTextAttr(&roc_host, .native_fonts, "1\nInitial Mono\nAAAA"),
         testNodeStaticCustomTextAttr(&roc_host, "data-mode", "initial"),
         testNodeStaticBoolAttr(.disabled, true),
     };
@@ -10158,6 +10172,8 @@ test "signals host structural patch clears fields absent from reused DOM node" {
     try std.testing.expectEqualStrings("Initial label", host.dom_elements.items[@intCast(section_id.raw())].label.?);
     try std.testing.expectEqualStrings("Initial hint", host.dom_elements.items[@intCast(section_id.raw())].native_placeholder.?);
     try std.testing.expectEqualStrings("avatars/initial.png", host.dom_elements.items[@intCast(section_id.raw())].native_image_source.?);
+    try std.testing.expectEqualStrings("Initial Mono", host.dom_elements.items[@intCast(section_id.raw())].native_font_family.?);
+    try std.testing.expectEqualStrings("1\nInitial Mono\nAAAA", host.dom_elements.items[@intCast(section_id.raw())].native_fonts.?);
     try std.testing.expectEqualStrings("initial", elementTextAttr(&host.dom_elements.items[@intCast(section_id.raw())], "data-mode").?);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].disabled);
 
@@ -10172,11 +10188,13 @@ test "signals host structural patch clears fields absent from reused DOM node" {
 
     try std.testing.expectEqual(@as(u64, 0), patch_counts.reset_dom);
     try std.testing.expectEqual(@as(u64, 0), patch_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 4), patch_counts.set_metadata);
+    try std.testing.expectEqual(@as(u64, 6), patch_counts.set_metadata);
     try std.testing.expectEqual(@as(u64, 1), patch_counts.set_disabled);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].label == null);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_placeholder == null);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_image_source == null);
+    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_font_family == null);
+    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_fonts == null);
     try std.testing.expect(elementTextAttr(&host.dom_elements.items[@intCast(section_id.raw())], "data-mode") == null);
     try std.testing.expect(!host.dom_elements.items[@intCast(section_id.raw())].disabled);
 }
@@ -12644,6 +12662,8 @@ const Gpui = struct {
         class: Slice,
         placeholder: Slice,
         image_source: Slice,
+        font_family: Slice,
+        fonts: Slice,
         child_count: usize,
         click: u64,
         input: u64,
@@ -12824,6 +12844,8 @@ const Gpui = struct {
             .class = Slice.from(elem.class orelse ""),
             .placeholder = Slice.from(elem.native_placeholder orelse ""),
             .image_source = Slice.from(elem.native_image_source orelse ""),
+            .font_family = Slice.from(elem.native_font_family orelse ""),
+            .fonts = Slice.from(elem.native_fonts orelse ""),
             .child_count = child_order.count(ids.ElemId.fromRaw(elem.id)),
             .click = if (elem.event_bindings.click) |binding| binding.event_id.raw() else 0,
             .input = if (elem.event_bindings.input) |binding| binding.event_id.raw() else 0,

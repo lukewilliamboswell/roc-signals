@@ -13,6 +13,21 @@ Universal Permissive License, Version 1.0. See
 [`vendor/roc-automation-LICENSE`](vendor/roc-automation-LICENSE) for its full text.
 The local copy explicitly decodes header files as UTF-8 on every operating system.
 
+## Source Code Pro
+
+Files: `vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf`
+
+Source Code Pro is copyright 2010 - 2020 Adobe Systems Incorporated, with
+Reserved Font Name 'Source', and is licensed under the SIL Open Font
+License, Version 1.1. The `examples-gui/activity-monitor` app embeds this
+font at compile time. See
+[`vendor/fonts/source-code-pro/OFL.txt`](vendor/fonts/source-code-pro/OFL.txt)
+for the full license text and
+[`vendor/fonts/source-code-pro/PROVENANCE.md`](vendor/fonts/source-code-pro/PROVENANCE.md)
+for provenance.
+
+Source: https://github.com/adobe-fonts/source-code-pro
+
 ## musl libc
 
 Files: verified dependency release inputs `targets/*/libc.a` and `targets/*/crt1.o`.

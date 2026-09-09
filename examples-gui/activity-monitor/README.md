@@ -36,6 +36,14 @@ rebuilds a bounded projection of retained history; it is not an incremental
 filter. Selection remains valid when a filter hides its row. If the selected
 event is cleared or evicted, the inspector explains that it is gone.
 
+The event feed rows and inspector detail render in Source Code Pro, an
+OFL-licensed monospace face embedded into the binary at compile time with
+`import "….ttf" as source_code_pro : List(U8)`, registered at startup through
+`Gui.embedded_fonts`, and applied with `Gui.font_family`. The canonical font
+file, its SIL Open Font License 1.1 text, and provenance notes live in
+`vendor/fonts/source-code-pro/`; the import references that vendored copy
+directly, so the repository carries exactly one copy of the font.
+
 Run `scripts/test.py gui` with the pinned Roc compiler, as described in the
 contributor guide. The semantic journeys exercise replay, chunk assembly,
 sequential reads, cancellation and stale results, error retry, rotation and

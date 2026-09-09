@@ -1399,11 +1399,14 @@ pub const TextField = enum(u64) {
     native_window_close = 11,
     native_placeholder = 12,
     native_image_source = 13,
+    native_font_family = 14,
+    /// Versioned embedded-font registration declaration; registered once at startup.
+    native_fonts = 15,
 
     /// Identifies fields consumed only by the native presentation adapter.
     pub fn isNative(self: TextField) bool {
         return switch (self) {
-            .native_style, .native_viewport, .native_drag_key, .native_window_close, .native_placeholder, .native_image_source => true,
+            .native_style, .native_viewport, .native_drag_key, .native_window_close, .native_placeholder, .native_image_source, .native_font_family, .native_fonts => true,
             else => false,
         };
     }
@@ -1418,7 +1421,7 @@ pub const TextField = enum(u64) {
             .test_id => .set_test_id,
             .value => .set_value,
             .class => .set_class,
-            .native_style, .native_viewport, .native_drag_key, .native_window_close, .native_placeholder, .native_image_source => @panic("native text metadata has no browser opcode"),
+            .native_style, .native_viewport, .native_drag_key, .native_window_close, .native_placeholder, .native_image_source, .native_font_family, .native_fonts => @panic("native text metadata has no browser opcode"),
         };
     }
 };
@@ -1848,6 +1851,6 @@ test "every native scalar counts as metadata without a browser opcode" {
     inline for (std.meta.tags(BoolField)) |field| {
         if (field.isNative()) counts.addBoolField(field);
     }
-    try std.testing.expectEqual(@as(u64, 8), counts.total);
+    try std.testing.expectEqual(@as(u64, 10), counts.total);
     try std.testing.expectEqual(counts.total, counts.set_metadata);
 }

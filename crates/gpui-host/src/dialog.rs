@@ -357,6 +357,7 @@ mod tests {
             renders: Rc::new(Cell::new(0)),
             child_visits: Rc::new(Cell::new(0)),
             timers: crate::timers::Manager::new(false),
+            fonts: crate::fonts::Registry::default(),
         }
     }
     fn node(id: u64, parent: Option<u64>, tag: &str, children: &[u64]) -> Node {

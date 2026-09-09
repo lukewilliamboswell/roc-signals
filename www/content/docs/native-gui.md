@@ -93,6 +93,32 @@ or altered; the task-board and folder-explorer examples show the pattern.
 Use `Gui.test_id` for stable spec locators and `Gui.label` for semantic names.
 Labels do not establish native screen-reader support, which is not implemented.
 
+## Embedded fonts
+
+Apps can ship fonts inside the binary and register them with the native text
+system at startup. Embed the bytes with a compile-time import and declare them
+once on the app's root element:
+
+```roc
+import "../../vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
+
+Gui.column(
+    [Gui.embedded_fonts([{ family: "Source Code Pro", bytes: source_code_pro }]), ...],
+    [...],
+)
+```
+
+`Gui.font_family("Source Code Pro")` then renders an element and its
+descendants with that family; text styles inherit, so one attribute on a row
+or panel covers all of its text. Families not registered here must be
+installed on the machine.
+
+The host enforces bounds: at most 8 embedded fonts, at most 8 MiB per font,
+and family names of 1 to 128 bytes. Violations surface as visible host errors
+rather than crashes, and identical re-publication never re-registers a family.
+Only ship fonts whose licenses permit embedding and redistribution, and keep
+the license text in the repository next to the font file.
+
 ## Modal dialogs
 
 Use `Gui.dialog({ label, on_dismiss }, attrs, children)` inside `Ui.when` so

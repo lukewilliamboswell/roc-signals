@@ -8,11 +8,18 @@ import Feed
 import Session
 import Workflow
 
+# Embedded at compile time; registered with the native text system at startup.
+# Licensed under the SIL Open Font License 1.1 — see vendor/fonts/source-code-pro/OFL.txt.
+import "../../vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
+
+feed_font : Str
+feed_font = "Source Code Pro"
+
 entry_view : Ui.Row(Feed.Entry), Ui.State(Str) -> Elem
 entry_view = |row, selected| {
 	key = row.key()
 	Gui.row(
-		[Gui.style({ ..Gui.style_default, height: Px(44), gap: 10, overflow_x: Clip, overflow_y: Clip }), Gui.test_id("event-${key}"), Gui.selected_s(Signal.select(selected.signal(), key))],
+		[Gui.style({ ..Gui.style_default, height: Px(44), gap: 10, overflow_x: Clip, overflow_y: Clip }), Gui.font_family(feed_font), Gui.test_id("event-${key}"), Gui.selected_s(Signal.select(selected.signal(), key))],
 		[
 			Gui.button("Inspect ${key}", selected.on_unit(|_| key)),
 			Gui.column(
@@ -55,7 +62,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 	visible = projection.map(|value| Feed.visible(value.history, value.query, value.errors))
 	inspection = { history, selected: selected.signal() }.Signal
 	Gui.column(
-		[Gui.style({ ..Gui.style_default, padding: 24, gap: 12, width: Fill, height: Fill, overflow_y: Clip })],
+		[Gui.style({ ..Gui.style_default, padding: 24, gap: 12, width: Fill, height: Fill, overflow_y: Clip }), Gui.embedded_fonts([{ family: feed_font, bytes: source_code_pro }])],
 		[
 			Gui.heading("Activity Monitor"),
 			Gui.column(
@@ -242,12 +249,15 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 											[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC) })],
 											[Gui.heading("Unterminated line")],
 										),
-										Gui.text_s(session.map(|state| state.lines.partial)),
+										Gui.column([Gui.font_family(feed_font)], [Gui.text_s(session.map(|state| state.lines.partial))]),
 									],
 								),
 								|| Gui.text(""),
 							),
-							Gui.text_s(
+							Gui.column(
+								[Gui.font_family(feed_font), Gui.test_id("inspector-detail")],
+								[
+									Gui.text_s(
 								inspection.map(
 									|value| if value.selected.is_empty() {
 										"Select an event to inspect its details."
@@ -258,6 +268,8 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 										}
 									},
 								),
+							),
+								],
 							),
 						],
 					),
