@@ -55,7 +55,8 @@ class HostArtifactTests(unittest.TestCase):
                 self.assertFalse((cwd / "targets/x64glibc/libutil.so").exists())
                 receipt = json.loads((cwd / "dependencies.lock.json").read_text())
                 self.assertEqual(set(receipt["artifacts"]), {"gui-host-x64glibc", "freetype-x64glibc"})
-                return subprocess.CompletedProcess(command, 0, stdout=f"Created: {root / 'out/platform.tar.zst'}\n")
+                archive = Path(command[command.index("--output-dir") + 1]) / "platform.tar.zst"
+                return subprocess.CompletedProcess(command, 0, stdout=f"Created: {archive}\n")
 
             with patch.object(bundle_platforms, "ROOT", root), \
                     patch.object(bundle_platforms, "prepare_platform"), \
