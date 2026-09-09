@@ -295,8 +295,9 @@ publish tested bytes and their lock through `freetype-dependencies.yml`.
 Review and merge the lock entry separately when adopting the dependency. The
 Linux GUI builder verifies that release before compilation; the bundler verifies
 it again in fresh staging and excludes the development copy of `libfreetype.so`.
-Combined GUI bundles retain the lock entries and notices for both FreeType and
-Windows imports. Other Linux libraries still need independent producers.
+Combined GUI bundles retain the lock entries and notices for FreeType,
+xkbcommon, and Windows imports. Linux CRT consumer adoption and an independent GCC runtime replacement remain
+outstanding.
 The artifact preserves FreeType's system SONAME; applications still use the operating
 system's runtime font libraries. The C compiler is Zig 0.16.0, targeting baseline
 x86-64 and glibc 2.39; the separate Roc compiler pin is preserved.
@@ -320,6 +321,26 @@ and publish the tested bytes. The archive contains corresponding source and a
 standalone reproduction tree under `sources/glibc/`; run the same build command
 from that directory to reproduce the producer. Review the resulting consumer
 lock and platform link-input changes separately before adoption.
+
+The `xkbcommon dependency releases` workflow independently builds both keyboard
+libraries from the source and tool versions pinned in `dependencies/xkbcommon.json`.
+Its native Meson configuration uses Zig. To reproduce the producer on Linux x86-64
+with Python 3.12 and Docker:
+
+```sh
+python3 scripts/build_xkbcommon.py --output /tmp/xkbcommon-candidate
+python3 scripts/build_xkbcommon.py --output /tmp/xkbcommon-rebuild
+cmp /tmp/xkbcommon-candidate/xkbcommon-x64glibc.tar /tmp/xkbcommon-rebuild/xkbcommon-x64glibc.tar
+python3 -m unittest scripts/test_xkbcommon_dependencies.py scripts/test_prepare_dependencies.py
+```
+
+Dispatch `xkbcommon-dependencies.yml` on `main` with a new
+`deps-xkbcommon-<version>` tag to publish the tested, attested archive. Review the
+resulting lock entry separately. Normal GUI builds download and verify the pinned
+release; they do not rebuild xkbcommon or copy its link libraries from the build
+machine. Bundles independently verify and stage both libraries and their license.
+The runtime still uses the operating system's xkbcommon/XCB libraries and keyboard
+layout data through the libraries' existing SONAMEs.
 
 ## Coverage
 
