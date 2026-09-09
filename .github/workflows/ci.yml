@@ -139,6 +139,10 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: 1.95.0
         run: python scripts/build_gui.py
+      - name: Verify Windows dependency admission and bundle the built host
+        run: |
+          python -m unittest scripts/test_prepare_dependencies.py scripts/test_dependency_artifacts.py
+          python scripts/bundle_platforms.py --package gui --no-build --output-dir "$env:RUNNER_TEMP/gui-candidate"
 
   platform-source:
     name: Platform source

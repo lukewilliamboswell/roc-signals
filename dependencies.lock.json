@@ -24,6 +24,18 @@
       "source_sha": "29666398255ff2fd83c24627a9b170ecd2f7be5a",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/dependencies.yml"
+    },
+    "windows-imports-x64win": {
+      "name": "windows-imports",
+      "target": "x64win",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-windows-imports-0.16.0-20260909.1",
+      "asset": "windows-imports-x64win.tar",
+      "sha256": "444bbb3e56b686e2cb23c490dbffadf51d6537a11c77ddf0f1f85245a345b6d9",
+      "size": 215040,
+      "source_sha": "4d89ab1b69d529a7ae7ab876945cd1d7d8f2d7e5",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/windows-dependencies.yml"
     }
   }
 }
