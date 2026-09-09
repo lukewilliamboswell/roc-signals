@@ -1291,7 +1291,8 @@ attributed to crates. Unknown expressions and incomplete evidence are rejected.
 
 Mac `--cargo-evidence` builds use a fresh Cargo target beneath the evidence output's
 parent directory so cached shaders cannot be attributed to different tools.
-The existing host build receipt records the selected Metal/metallib executable
+That scratch target is removed when the build process exits, after the host
+archive has been copied into the platform target directory. The existing host build receipt records the selected Metal/metallib executable
 hashes and version diagnostics, Xcode/SDK identities, and GPUI shader/header/AIR/
 metallib hashes bound to the resulting host. Ordinary development builds retain
 normal Cargo caching. CI retains this Cargo evidence beside the Mac candidate
