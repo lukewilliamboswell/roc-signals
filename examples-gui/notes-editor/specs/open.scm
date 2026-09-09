@@ -21,7 +21,7 @@
     (expect-text (test-id "document-name") "Ideas café.txt")
     (expect-value (label "Note text") "Heading\n\ncafé 🙂\n")
     (expect-text (test-id "note-status") "No changes")
-    (expect-text (test-id "note-summary") "3 words · 16 characters")
+    (expect-text (test-id "note-summary") "2 words · 16 characters")
     (expect-disabled (label "Note text") false)
     (shortcut (test-id "notes-editor") "n" 1)
     (expect-value (label "Note text") "")

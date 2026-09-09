@@ -167,6 +167,11 @@ Activity Monitor explicitly separates simulated replay from chosen plain-text
 log files. Folder Explorer labels its sample workspace and offers an explicit
 chooser for real directory navigation.
 
+Notes uses the pinned Roc Unicode package for Unicode 17 grapheme counts and
+word segmentation. Its word count includes segments containing letters or
+numbers, excluding punctuation and emoji-only segments. Statistics preserve the
+original text and do not imply language-specific dictionary segmentation.
+
 Every registered app has native semantic specs. The GUI suite also runs GPUI
 adapter tests with simulated input and layout. A Wayland smoke run checks the
 linked renderer and adapter; an actual pointer, keyboard, and IME walkthrough

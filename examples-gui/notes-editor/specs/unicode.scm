@@ -1,0 +1,15 @@
+(test "Unicode statistics preserve original document spelling"
+  (steps
+    (fill (label "Note text") "é 🇦🇺 👨‍👩‍👧‍👦")
+    (expect-value (label "Note text") "é 🇦🇺 👨‍👩‍👧‍👦")
+    (expect-text (test-id "note-summary") "1 word · 5 characters")
+    (mark-metrics)
+    (fill (label "Note text") "é 🇦🇺 👨‍👩‍👧‍👦")
+    (expect-metric-delta derived_calls_into_roc 0)
+    (fill (label "Note text") "café 世界—42!")
+    (expect-text (test-id "note-summary") "4 words · 11 characters")
+    (fill (label "Note text") "can't... 🙂 !!!")
+    (expect-text (test-id "note-summary") "1 word · 14 characters")
+    (fill (label "Note text") "é\r\né")
+    (expect-value (label "Note text") "é\r\né")
+    (expect-text (test-id "note-summary") "2 words · 3 characters")))

@@ -43,8 +43,16 @@ asks whether to Save and close, Discard and close, or Keep editing. A closing
 save freezes editing and waits for successful completion; cancellation or failure
 keeps the window and draft open. Closing during another file operation asks the
 user to finish or cancel it first.
-Character counts measure Unicode scalar values, and words are runs separated
-by ASCII whitespace, including tabs and line breaks.
+Statistics use the pinned [Roc Unicode package](../../vendor/unicode/README.md).
+Characters are Unicode 17 extended grapheme clusters, including whitespace:
+`é` and `é` each count as one, as do joined emoji and flag sequences; CRLF
+counts as one cluster. Words are default Unicode word segments containing a
+letter or number. Punctuation, whitespace, and emoji-only segments are excluded.
+This is Unicode's default segmentation, not language-specific dictionary word
+counting. Original text is never normalized or rewritten to compute statistics.
+The scans use ranges and iterators rather than per-character lists; counting
+still visits the complete changed document. GPUI retains responsibility for
+native shaping, caret interaction, and IME behavior.
 
 `Session.roc` holds the pure document operation state machine. `Workflow.roc`
 observes only its phase to start tasks, and task results enter ordinary shared

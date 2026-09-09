@@ -1,4 +1,4 @@
-app [main] { pf: platform "../../platform-gui/main.roc" }
+app [main] { pf: platform "../../platform-gui/main.roc", unicode: "../../vendor/unicode/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Gui

@@ -1,10 +1,14 @@
+import unicode.ByteRange
+import unicode.GeneralCategory
+import unicode.Grapheme
+import unicode.Scalar
+import unicode.Word
+
 ## Pure document values and statistics, independent of the rendering surface.
 Document := [].{
 	Snapshot : { title : Str, body : Str }
 
 	Counts : { words : U64, characters : U64 }
-
-	CountState : { words : U64, characters : U64, in_word : Bool }
 
 	blank : Snapshot
 	blank = { title: "Untitled note", body: "" }
@@ -14,31 +18,39 @@ Document := [].{
 	is_dirty : { draft : Snapshot, baseline : Snapshot } -> Bool
 	is_dirty = |{ draft, baseline }| draft != baseline
 
-	## Count Unicode scalar values and runs separated by ASCII whitespace.
-	## This includes line breaks and tabs without treating UTF-8 bytes as letters.
+	## Count extended grapheme clusters, including whitespace. A word is a
+	## default Unicode word segment containing at least one letter or number.
+	## Ranges and scalar iterators avoid materializing per-character lists.
 	counts : Str -> Counts
 	counts = |body| {
-		result = body.to_utf8().fold({ words: 0, characters: 0, in_word: False }, count_byte)
-		{ words: result.words, characters: result.characters }
+		var $characters = 0.U64
+		for _ in Grapheme.iter_ranges(body) {
+			$characters = $characters + 1
+		}
+		words = Word.fold_ranges(
+			body,
+			0.U64,
+			|count, range| {
+				segment = ByteRange.slice(range, body) ?? crash "Unicode word range must belong to its source"
+				if contains_word_scalar(segment) {
+					count + 1
+				} else {
+					count
+				}
+			},
+		)
+		{ words, characters: $characters }
 	}
 
-	count_byte : CountState, U8 -> CountState
-	count_byte = |state, byte| {
-		characters = if byte < 128 or byte >= 192 {
-			state.characters + 1
-		} else {
-			state.characters
+	contains_word_scalar : Str -> Bool
+	contains_word_scalar = |segment| {
+		for item in Scalar.iter(segment) {
+			match GeneralCategory.of_scalar(item.scalar) {
+				Lu | Ll | Lt | Lm | Lo | Nd | Nl | No => return True
+				_ => {}
+			}
 		}
-		space = byte == 32 or (byte >= 9 and byte <= 13)
-		{
-			words: if !space and !state.in_word {
-				state.words + 1
-			} else {
-				state.words
-			},
-			characters,
-			in_word: !space,
-		}
+		False
 	}
 
 	## Keep the summary wording shared between the view and document tests.
@@ -69,7 +81,7 @@ expect {
 }
 
 ## Tabs, repeated spaces, and line breaks separate words; Unicode stays intact.
-expect Document.counts("Hello  café\nworld\t🙂") == { words: 4, characters: 19 }
+expect Document.counts("Hello  café\nworld\t🙂") == { words: 3, characters: 19 }
 
 ## Changing either title or body is observable, even when the other is unchanged.
 expect {
@@ -83,3 +95,15 @@ expect {
 		\\title: True
 		\\body: True
 }
+
+## Combining marks, flags, and joined emoji count as complete grapheme clusters.
+expect Document.counts("é 🇦🇺 👨‍👩‍👧‍👦") == { words: 1, characters: 5 }
+
+## Unicode whitespace and punctuation separate words without becoming words.
+expect Document.counts("café 世界—42!") == { words: 4, characters: 11 }
+
+## Apostrophes within words stay together; emoji and punctuation alone are not words.
+expect Document.counts("can't... 🙂 !!!").words == 1
+
+## CRLF is one grapheme cluster, and scalar spelling never normalizes the document.
+expect Document.counts("é\r\né") == { words: 2, characters: 3 }
