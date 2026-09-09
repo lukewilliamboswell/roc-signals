@@ -3,13 +3,14 @@ name: Dependency releases
 on:
   pull_request:
     paths:
-      - dependencies/**
+      - dependencies/musl.json
       - scripts/build_musl.py
+      - scripts/dependency_archive.py
       - scripts/dependency_artifacts.py
       - scripts/release_dependencies.py
       - scripts/test_dependency_artifacts.py
       - scripts/test_musl_artifact.py
-      - test/dependencies/**
+      - test/dependencies/musl.c
       - .github/workflows/dependencies.yml
   workflow_dispatch:
     inputs:
