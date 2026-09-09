@@ -3,6 +3,9 @@ ADD --chmod=0644 --checksum=sha256:f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db93
 RUN chmod 0755 /etc/ssl /etc/ssl/certs && sed -i '/^Types:/a Snapshot: yes' /etc/apt/sources.list.d/ubuntu.sources \
     && apt-get -o Acquire::https::CaInfo=/etc/ssl/certs/ca-certificates.crt -o APT::Update::Error-Mode=any --snapshot 20260909T000000Z update \
     && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::https::CaInfo=/etc/ssl/certs/ca-certificates.crt --snapshot 20260909T000000Z install -y --no-install-recommends \
-       build-essential cmake pkg-config ca-certificates python3 libbz2-dev libpng-dev \
+       make xz-utils cmake pkg-config ca-certificates python3 libbz2-dev libpng-dev \
        zlib1g-dev libharfbuzz-dev libbrotli-dev \
     && rm -rf /var/lib/apt/lists/*
+ADD --chmod=0644 --checksum=sha256:70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00 https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz /tmp/zig.tar.xz
+RUN mkdir /opt/zig && tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1 \
+    && rm /tmp/zig.tar.xz

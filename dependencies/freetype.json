@@ -3,6 +3,8 @@
   "name": "freetype",
   "version": "2.14.3",
   "target": "x64glibc",
+  "zig_version": "0.16.0",
+  "cc_args": ["cc", "-target", "x86_64-linux-gnu.2.39", "-mcpu=baseline", "-fno-sanitize=all"],
   "source": {
     "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz",
     "sha256": "36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f",

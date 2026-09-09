@@ -22,8 +22,9 @@ workflow has a separate release tag and signing identity from musl.
 `freetype.json` pins the upstream FreeType source archive and explicitly requires
 zlib, bzip2, PNG, HarfBuzz, and Brotli support. Its Linux producer uses the Ubuntu
 container digest and authenticated package snapshot in `linux/Dockerfile` for
-build tools and headers. Compilation then runs without network access in a clean
-container. The artifact records the complete installed package versions, builder
+build tools and headers. A checksum-pinned Zig 0.16.0 distribution compiles the C
+source for baseline x86-64 with a glibc 2.39 target. Compilation then runs without
+network access in a clean container. The artifact records the complete installed package versions, builder
 image identity, recipe and probe hashes, source identity, and license notices.
 Two clean builds must produce identical archives, and each extracted candidate
 must parse and render the expected bitmap glyph before it can be published.
