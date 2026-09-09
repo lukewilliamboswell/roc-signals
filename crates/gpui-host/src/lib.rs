@@ -5,8 +5,10 @@ mod drag;
 mod effects;
 mod file_io;
 mod input;
+mod scrollbars;
 mod shortcut;
 mod timers;
+mod window_frame;
 mod window_lifecycle;
 use bridge::{Engine, Node, Payload};
 use gpui::{div, prelude::*, px, rgb, *};
@@ -17,6 +19,7 @@ use std::{cell::Cell, collections::HashMap, rc::Rc};
 struct NodeView {
     node: Node,
     scroll: UniformListScrollHandle,
+    scrollbars: scrollbars::State,
     input: Option<Entity<input::TextInput>>,
     focus: FocusHandle,
     focus_subscription: Option<Subscription>,
@@ -62,7 +65,7 @@ impl Render for NodeView {
             .gap_2()
             .debug_selector(|| self.node.test_id.clone());
         if self.node.tag == "root" {
-            element = element.size_full();
+            element = element.min_w_full().min_h_full().flex_shrink_0();
         }
         element = drag::install(element, &self.node, cx.entity_id(), self.runtime.clone());
         if self.focus_subscription.is_none() && self.focus_target(cx).is_some() {
@@ -242,7 +245,14 @@ impl Render for NodeView {
             )
             .track_scroll(self.scroll.clone())
             .size_full();
-            return element.child(list).into_any_element();
+            return scrollbars::wrap_axes(
+                element.child(list),
+                self.scroll.0.borrow().base_handle.clone(),
+                self.scrollbars.clone(),
+                self.node.style.is_some_and(|style| style.overflow_x == 2),
+                true,
+            )
+            .into_any_element();
         }
         self.child_visits
             .set(self.child_visits.get() + self.node.child_count as u64);
@@ -255,7 +265,24 @@ impl Render for NodeView {
                 (child.read(cx).node.tag != "dialog").then(|| AnyView::from(child.clone()))
             })
             .collect::<Vec<_>>();
-        element.children(children).into_any_element()
+        let element = element.children(children);
+        if self
+            .node
+            .style
+            .is_some_and(|style| style.overflow_x == 2 || style.overflow_y == 2)
+        {
+            let handle = self.scroll.0.borrow().base_handle.clone();
+            scrollbars::wrap_axes(
+                element.track_scroll(&handle),
+                handle,
+                self.scrollbars.clone(),
+                self.node.style.unwrap().overflow_x == 2,
+                self.node.style.unwrap().overflow_y == 2,
+            )
+            .into_any_element()
+        } else {
+            element.into_any_element()
+        }
     }
 }
 fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div> {
@@ -308,6 +335,9 @@ fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div
 }
 
 struct Runtime {
+    content_scroll: ScrollHandle,
+    content_scrollbars: scrollbars::State,
+    trace_engine: bool,
     unfocused_keys: Option<Subscription>,
     engine: Engine,
     effects: effects::Manager,
@@ -350,6 +380,9 @@ impl Runtime {
         let engine = Engine::open();
         let initial = engine.changes();
         let mut runtime = Self {
+            content_scroll: gpui::ScrollHandle::new(),
+            content_scrollbars: crate::scrollbars::State::default(),
+            trace_engine: false,
             unfocused_keys: None,
             engine,
             effects: crate::effects::Manager::default(),
@@ -433,11 +466,13 @@ impl Runtime {
     }
     fn event(&mut self, event: u64, payload: Payload<'_>, cx: &mut Context<Self>) {
         let changes = self.engine.event(event, payload);
-        eprintln!(
-            "engine turn: {} touched render slots; metrics {:?}",
-            changes.len(),
-            self.engine.metrics()
-        );
+        if self.trace_engine {
+            eprintln!(
+                "engine turn: {} touched render slots; metrics {:?}",
+                changes.len(),
+                self.engine.metrics()
+            );
+        }
         self.apply(changes, cx);
         self.drain_effects(cx);
     }
@@ -498,6 +533,7 @@ impl Runtime {
                     NodeView {
                         node: node.clone(),
                         scroll: UniformListScrollHandle::default(),
+                        scrollbars: scrollbars::State::default(),
                         input,
                         focus: cx.focus_handle(),
                         focus_subscription: None,
@@ -615,13 +651,19 @@ impl Render for Runtime {
                     cx.stop_propagation();
                 }
             }))
-            .child(
+            .child(scrollbars::wrap(
                 div()
                     .id("signals-content")
+                    .flex()
+                    .flex_col()
+                    .items_start()
                     .size_full()
-                    .overflow_y_scroll()
+                    .overflow_scroll()
+                    .track_scroll(&self.content_scroll)
                     .children(self.roots.iter().map(|root| AnyView::from(root.clone()))),
-            );
+                self.content_scroll.clone(),
+                self.content_scrollbars.clone(),
+            ));
         for dialog in &self.dialogs.active {
             let id = dialog.id;
             root = root.child(
@@ -646,7 +688,7 @@ impl Render for Runtime {
                     .child(self.nodes[&id].clone()),
             );
         }
-        root
+        self.window_frame(root, window.window_decorations(), window, cx)
     }
 }
 
@@ -672,6 +714,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
     if args.iter().any(|arg| arg == "--run-spec-json") {
         return unsafe { signals_spec_main(argc, argv) };
     }
+    let trace_engine = args.iter().any(|arg| arg == "--host-trace-engine");
     let smoke = args.iter().any(|arg| arg == "--smoke");
     let smoke_timers = args.iter().any(|arg| arg == "--smoke-timers");
     let click = args
@@ -696,9 +739,23 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Roc Signals".into()),
+                        ..Default::default()
+                    }),
+                    window_min_size: Some(size(px(360.), px(240.))),
+                    window_decorations: Some(WindowDecorations::Client),
+                    is_movable: true,
+                    is_resizable: true,
                     ..Default::default()
                 },
-                |_, cx| cx.new(|cx| Runtime::new(!smoke || smoke_timers, cx)),
+                |_, cx| {
+                    cx.new(|cx| {
+                        let mut runtime = Runtime::new(!smoke || smoke_timers, cx);
+                        runtime.trace_engine = trace_engine;
+                        runtime
+                    })
+                },
             )
             .unwrap();
         cx.activate(true);
@@ -772,6 +829,9 @@ mod tests {
 
     fn runtime() -> Runtime {
         Runtime {
+            content_scroll: gpui::ScrollHandle::new(),
+            content_scrollbars: crate::scrollbars::State::default(),
+            trace_engine: false,
             unfocused_keys: None,
             engine: Engine::test_boundary(),
             effects: crate::effects::Manager::default(),
@@ -1199,6 +1259,132 @@ mod tests {
         cx.update(|window, cx| {
             assert!(runtime.read(cx).nodes[&1].read(cx).focus.is_focused(window));
         });
+    }
+
+    #[gpui::test]
+    fn client_frame_close_uses_the_same_unsaved_guard_as_os_close(cx: &mut TestAppContext) {
+        struct ClientFrame(gpui::Entity<Runtime>);
+        impl gpui::Render for ClientFrame {
+            fn render(
+                &mut self,
+                window: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl gpui::IntoElement {
+                self.0.update(cx, |runtime, cx| {
+                    runtime.window_frame(
+                        gpui::div(),
+                        gpui::Decorations::Client {
+                            tiling: gpui::Tiling::default(),
+                        },
+                        window,
+                        cx,
+                    )
+                })
+            }
+        }
+        let runtime = cx.new(|cx| {
+            let mut runtime = runtime();
+            let mut owner = node(1, "window", &[]);
+            owner.parent = Some(0);
+            owner.close_requested = 95;
+            owner.close_policy = 1;
+            runtime.apply(vec![node(0, "root", &[1]), owner], cx);
+            runtime
+        });
+        let (_, cx) = cx.add_window_view(|_, _| ClientFrame(runtime.clone()));
+        cx.run_until_parked();
+        let position = cx.debug_bounds("window-close").unwrap().center();
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(
+            position,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            position,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        assert_eq!(Engine::take_test_event(), Some((95, 0, String::new(), 0)));
+        assert_eq!(cx.windows().len(), 1, "KeepOpen must preserve the window");
+        runtime.update(cx, |runtime, cx| {
+            let mut owner = runtime.nodes[&1].read(cx).node.clone();
+            owner.close_policy = 3;
+            runtime.apply(vec![owner], cx);
+        });
+        cx.simulate_mouse_down(
+            position,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            position,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+        assert!(
+            cx.windows().is_empty(),
+            "Close must remove the window after admission"
+        );
+    }
+
+    #[gpui::test]
+    fn window_overflow_is_reachable_with_scrollbar_drag_and_resize(cx: &mut TestAppContext) {
+        let (runtime, cx) = cx.add_window_view(|_, cx| {
+            let mut runtime = runtime();
+            let mut content = node(2, "div", &[]);
+            content.test_id = "oversized-content".into();
+            content.style = Some(bridge::Style {
+                direction: 1,
+                width_kind: 2,
+                width: 900,
+                height_kind: 2,
+                height: 1200,
+                ..Default::default()
+            });
+            let mut app = node(1, "div", &[2]);
+            app.style = Some(bridge::Style {
+                direction: 1,
+                width_kind: 1,
+                ..Default::default()
+            });
+            runtime.apply(vec![node(0, "root", &[1]), app, content], cx);
+            runtime
+        });
+        cx.simulate_resize(size(px(400.), px(300.)));
+        cx.run_until_parked();
+        let handle = runtime.read_with(cx, |runtime, _| runtime.content_scroll.clone());
+        assert!(
+            handle.max_offset().height >= px(900.),
+            "vertical overflow: {:?}",
+            handle.max_offset()
+        );
+        assert!(
+            handle.max_offset().width >= px(500.),
+            "horizontal overflow: {:?}",
+            handle.max_offset()
+        );
+        let bounds = handle.bounds();
+        let start = point(bounds.right() - px(6.), bounds.top() + px(8.));
+        let end = point(start.x, bounds.bottom() - px(15.));
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(end, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::default());
+        assert!(
+            handle.offset().y < px(-800.),
+            "thumb drag: {:?}",
+            handle.offset()
+        );
+        assert!(
+            Engine::take_test_event().is_none(),
+            "scrolling must not dispatch an app event"
+        );
+        cx.simulate_resize(size(px(1000.), px(1400.)));
+        cx.run_until_parked();
+        assert_eq!(handle.max_offset().height, px(0.));
+        assert_eq!(handle.offset().y, px(0.));
     }
 
     #[gpui::test]

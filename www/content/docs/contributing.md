@@ -877,6 +877,10 @@ allowlist. `--spec-filter`, `--shard`, `--jobs`, and `--fail-fast` also apply.
 The default `all` suite includes GUI checks on Linux x86_64; CI runs them in a
 dedicated Linux job. GUI executables remain under `.test-out/gui` when output is kept.
 
+Normal GUI launches do not print engine metrics. Pass `--host-trace-engine` to an
+app executable to log event-turn metrics to stderr; `--smoke` prints its explicit
+validation result. Host errors remain visible without tracing.
+
 Host builds default to two Cargo workers. Use `scripts/build_gui.py --jobs N`
 or `scripts/test.py gui --gui-build-jobs N` to adjust memory pressure. Parallel
 app work should serialize substantial host builds. The builder cleans the local

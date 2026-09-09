@@ -344,6 +344,9 @@ mod tests {
 
     fn runtime() -> Runtime {
         Runtime {
+            content_scroll: gpui::ScrollHandle::new(),
+            content_scrollbars: crate::scrollbars::State::default(),
+            trace_engine: false,
             unfocused_keys: None,
             engine: Engine::test_boundary(),
             effects: crate::effects::Manager::default(),

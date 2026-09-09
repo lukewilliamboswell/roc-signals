@@ -109,7 +109,9 @@ impl Runtime {
         }
     }
 
-    fn native_close_requested(&mut self, cx: &mut Context<Self>) -> bool {
+    /// Admits both compositor and client-frame close requests through the live
+    /// application owner; true permits removal, false preserves the window.
+    pub(crate) fn native_close_requested(&mut self, cx: &mut Context<Self>) -> bool {
         if self.window_lifecycle.take_close() {
             return true;
         }

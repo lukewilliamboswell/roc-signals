@@ -149,6 +149,7 @@ pub struct TextInput {
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
     scroll: ScrollHandle,
+    scrollbars: crate::scrollbars::State,
     reveal_cursor: bool,
     preferred_x: Option<Pixels>,
     history: History,
@@ -181,6 +182,7 @@ impl TextInput {
             last_bounds: None,
             is_selecting: false,
             scroll: ScrollHandle::new(),
+            scrollbars: crate::scrollbars::State::default(),
             reveal_cursor: false,
             preferred_x: None,
             history: History::default(),
@@ -1207,7 +1209,7 @@ impl Element for TextElement {
 
 impl Render for TextInput {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let content = div()
             .id("text-editor")
             .flex()
             .flex_col()
@@ -1262,7 +1264,8 @@ impl Render for TextInput {
             .line_height(px(30.))
             .text_size(px(18.))
             .text_color(rgb(0x151515))
-            .child(TextElement { input: cx.entity() })
+            .child(TextElement { input: cx.entity() });
+        crate::scrollbars::wrap(content, self.scroll.clone(), self.scrollbars.clone())
     }
 }
 

@@ -28,8 +28,18 @@ radius, font size, and overflow. Lengths are `Auto`, `Fill`, or `Px(value)`;
 colors are `Default` or `Rgb(value)`. Zero font size and default colors inherit.
 These are native presentation properties. Semantic labels, test IDs, selected
 state, and enabled state are separate attributes.
-The initial window is 1200 × 820 logical pixels. Apps own their outer padding;
-the host adds none.
+The initial window is 1200 × 820 logical pixels and can be moved, resized,
+minimized, and maximized. The host requests client decorations on Wayland and
+supplies a draggable title bar and resize borders when the compositor delegates
+them to the app. The title-bar Close button uses the same `Gui.window_lifecycle` close
+guard as an OS close request. The minimum window size is 360 × 240 logical pixels.
+Apps own their content padding; the frame sits outside that content.
+
+Window overflow, scrollable panels, virtual lists, and editors show draggable
+scrollbars when content exceeds the viewport. Clicking a track positions its
+thumb at the pointer; wheel and touchpad scrolling remain available. `Clip`
+does not acquire scrolling controls. Scroll offsets belong to native views and
+do not dispatch application events.
 
 | Control | Inputs |
 | --- | --- |

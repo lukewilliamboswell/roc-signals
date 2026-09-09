@@ -11,6 +11,8 @@ The executable accepts `--run-spec-json path.scm` to use the shared native spec
 runner without a display. `--smoke --smoke-click Increment --smoke-expect 'Count: 1'`
 opens Counter briefly, dispatches through the normal adapter, and checks its
 retained model after rendering. This is not an OS mouse/keyboard test.
+Normal launches are quiet; `--host-trace-engine` explicitly enables event-turn
+metrics on stderr. Errors remain visible without tracing.
 
 ## Boundary and ownership
 
@@ -56,8 +58,11 @@ colors, borders, radius, font size and overflow. The fixed-height `card` and
 The [native presentation protocol](../../docs/native-gui-protocol.md) defines
 field IDs, strict versioned encoding, validation and the typed C record. The
 browser host rejects these native fields; this is not an HTML/CSS implementation.
-Native OS accessibility, general DOM policies, browser services, SVG, and native
-menus/windows are not implemented. Semantic labels and keyboard/focus behavior
+The Wayland host supplies client title-bar controls and resize borders, with
+close requests routed through the application window guard. Scrollable content
+uses retained GPUI offsets and visible draggable scrollbars.
+Native OS accessibility, general DOM policies, browser services, SVG, application
+menus, and multiple application windows are not implemented. Semantic labels and keyboard/focus behavior
 must not be mistaken for verified screen-reader integration.
 
 The editor is adapted from GPUI's Apache-2.0 `examples/input.rs`; its attribution
