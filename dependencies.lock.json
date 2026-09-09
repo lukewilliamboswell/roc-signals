@@ -65,13 +65,25 @@
       "name": "glibc",
       "target": "x64glibc",
       "repository": "lukewilliamboswell/roc-signals",
-      "release": "deps-glibc-0.16.0-20260909.1",
+      "release": "deps-glibc-0.16.0-20260909.2",
       "asset": "glibc-x64glibc.tar",
-      "sha256": "b6ce02955bb6d83dbb98613a46b988d060da8fc203b7368465a91b6a8d2cdb42",
-      "size": 13864960,
-      "source_sha": "3c70361971b90a13b5a56a0a919a27e58f358d8e",
+      "sha256": "81ffc7b5ca1925f8155dde2db1f3cf4b07f821669a334a8ba540d8167f417e64",
+      "size": 3379200,
+      "source_sha": "67be41ff2cf58140dee3217c887fa07645bcfb8b",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/glibc-dependencies.yml"
+    },
+    "unwind-x64glibc": {
+      "name": "unwind",
+      "target": "x64glibc",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-unwind-0.16.0-20260909.1",
+      "asset": "unwind-x64glibc.tar",
+      "sha256": "33a34c099454bc010ac9f6217a0426ecd02dfbaeb0eee6569c60eaadaa9ac864",
+      "size": 491520,
+      "source_sha": "67be41ff2cf58140dee3217c887fa07645bcfb8b",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/unwind-dependencies.yml"
     }
   }
 }
