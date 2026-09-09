@@ -144,9 +144,37 @@ jobs:
           python -m unittest scripts/test_prepare_dependencies.py scripts/test_dependency_artifacts.py
           python scripts/bundle_platforms.py --package gui --no-build --output-dir "$env:RUNNER_TEMP/gui-candidate"
 
+  gui-macos:
+    name: Native GUI build and specs (macOS)
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: 1.95.0
+      TOOLCHAINS: Metal
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-toolchain
+      - name: Install GUI host build dependencies
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun --find metal
+      - name: Restore compiled Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: gui-dependencies
+          cache-workspace-crates: false
+          cache-bin: false
+          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET TOOLCHAINS
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Verify GUI applications with separate archives
+        run: python3 scripts/test.py gui --keep-output
+
   platform-source:
     name: Platform source
-    needs: [smoke, source, gui, gui-windows]
+    needs: [smoke, source, gui, gui-windows, gui-macos]
     if: always()
     runs-on: ubuntu-24.04
     steps:
