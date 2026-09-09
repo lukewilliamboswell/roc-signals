@@ -317,3 +317,18 @@ source checkout against captured evidence and checks the paired payload before
 retaining it. Candidate native-link workflows can use this step independently;
 normal release preparation additionally packages and runs the native candidate.
 Composition alone does not establish native compatibility or release provenance.
+
+## Windows GNU platform consumption
+
+The `x64mingw` GUI target links the independently released complete Windows
+system imports and Zig GNU runtime alongside the host, shared engine, application
+object, and host-owned resource. Its platform header enumerates every input.
+The runtime archives precede system providers, with OLE32 first among providers
+to preserve the proven DLL binding when libraries expose overlapping symbols.
+
+Development installation and bundle staging separately verify both releases.
+The complete producer-owned DLL inventory drives host import separation; it is
+never reduced to symbols used by the current host. Bundles copy only the selected
+host, engine and resource from development outputs, then retain every released
+link input, original notice, source payload, reproduction file and lock receipt.
+Obsolete `x64win` output trees are rejected and must be rebuilt for the GNU target.

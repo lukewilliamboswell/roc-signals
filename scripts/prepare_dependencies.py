@@ -161,6 +161,76 @@ def install_freetype(destination, lock=LOCK, cache=CACHE):
         return json.loads((inputs / "dependencies.lock.json").read_text())
 
 
+WINDOWS_SYSTEM_IMPORTS = "windows-system-imports-x64mingw"
+WINDOWS_GNU_RUNTIME = "windows-gnu-runtime-x64mingw"
+WINDOWS_GNU_ARTIFACTS = (WINDOWS_SYSTEM_IMPORTS, WINDOWS_GNU_RUNTIME)
+WINDOWS_GNU_INVENTORY = "sources/windows-system-imports/dependencies/windows-system-imports/inventory.json"
+
+
+def windows_gnu_files():
+    """Return the reviewed complete runtime and provider inventories in link order."""
+    runtime = json.loads((ROOT / "dependencies/windows-gnu-runtime.json").read_text())["files"]
+    dlls = json.loads((ROOT / "dependencies/windows-system-imports.json").read_text())["dlls"]
+    providers = [dll.rsplit(".", 1)[0] + ".lib" for dll in dlls]
+    if (len(set(runtime)) != len(runtime) or len(set(providers)) != len(providers)
+            or set(runtime) & set(providers) or "crt2.obj" not in runtime or "ole32.lib" not in providers):
+        raise ValueError("invalid Windows GNU runtime or provider inventory")
+    return ("crt2.obj", *sorted(set(runtime) - {"crt2.obj"}), "ole32.lib", *sorted(set(providers) - {"ole32.lib"}))
+
+
+def windows_gnu_inventory(inputs):
+    """Read the full producer-owned DLL inventory after release admission."""
+    return json.loads((inputs / WINDOWS_SYSTEM_IMPORTS / WINDOWS_GNU_INVENTORY).read_bytes())
+
+
+@contextmanager
+def verified_windows_gnu(lock=LOCK, cache=CACHE):
+    """Admit both independent GNU packages with complete source and notice closure.
+
+    The yielded tree has one directory per artifact and their merged lock receipt.
+    The compiler-derived full DLL inventory remains owned by the imports release;
+    host changes never select a reduced symbol inventory.
+    """
+    from build_windows_system_imports import REPRODUCTION as import_sources
+    from build_windows_gnu_runtime import REPRODUCTION as runtime_sources
+    with tempfile.TemporaryDirectory(prefix="signals-verified-windows-gnu-") as temporary:
+        destination = Path(temporary) / "inputs"
+        materialize(lock, WINDOWS_GNU_ARTIFACTS, cache, destination)
+        for identity, reproduction, extras in (
+                (WINDOWS_SYSTEM_IMPORTS, import_sources, ("source.tar.xz", "coverage.json")),
+                (WINDOWS_GNU_RUNTIME, runtime_sources, ("source.tar.xz",))):
+            kind = identity.removesuffix("-x64mingw")
+            recipe = json.loads((ROOT / "dependencies" / (kind + ".json")).read_bytes())
+            tree = destination / identity
+            manifest = json.loads((tree / "dependency.json").read_bytes())
+            libraries = (recipe["files"] if identity == WINDOWS_GNU_RUNTIME else
+                         [dll.rsplit(".", 1)[0] + ".lib" for dll in recipe["dlls"]])
+            expected = {"targets/x64mingw/" + name for name in libraries}
+            expected.update("licenses/" + kind + "/" + name for name in recipe["notices_sha256"])
+            expected.update("sources/" + kind + "/" + name for name in (*reproduction, *extras))
+            if manifest["source"] != recipe or set(manifest["files"]) != expected:
+                raise ValueError("incomplete or unexpected Windows GNU package: " + identity)
+        if windows_gnu_inventory(destination) != json.loads((ROOT / "dependencies/windows-system-imports/inventory.json").read_bytes()):
+            raise ValueError("Windows DLL inventory differs from the reviewed complete source inventory")
+        yield destination
+
+
+def install_windows_gnu(destination, lock=LOCK, cache=CACHE):
+    """Verify and stage every dependency before replacing development link inputs."""
+    with verified_windows_gnu(lock, cache) as inputs:
+        destination.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=destination, prefix=".windows-gnu-") as temporary:
+            stage = Path(temporary)
+            for identity in WINDOWS_GNU_ARTIFACTS:
+                for source in (inputs / identity / "targets/x64mingw").iterdir():
+                    shutil.copyfile(source, stage / source.name)
+            if {path.name for path in stage.iterdir()} != set(windows_gnu_files()):
+                raise ValueError("Windows GNU development input inventory differs")
+            for name in windows_gnu_files():
+                (stage / name).replace(destination / name)
+        return json.loads((inputs / "dependencies.lock.json").read_bytes())
+
+
 @contextmanager
 def verified_windows_imports(lock=LOCK, cache=CACHE):
     with tempfile.TemporaryDirectory(prefix="signals-verified-imports-") as temporary:

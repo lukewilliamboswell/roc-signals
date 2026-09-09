@@ -84,6 +84,30 @@
       "source_sha": "67be41ff2cf58140dee3217c887fa07645bcfb8b",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/unwind-dependencies.yml"
+    },
+    "windows-system-imports-x64mingw": {
+      "name": "windows-system-imports",
+      "target": "x64mingw",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-windows-system-imports-20260909.1",
+      "asset": "windows-system-imports-x64mingw.tar",
+      "sha256": "6038a2993557f50c84ce818b72a7abe9cd70260d05668003cc21ea6da8caccd0",
+      "size": 19619840,
+      "source_sha": "94993f721fb3390d0ab3c8d8f41af193ac754e7d",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/windows-system-imports.yml"
+    },
+    "windows-gnu-runtime-x64mingw": {
+      "name": "windows-gnu-runtime",
+      "target": "x64mingw",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-windows-gnu-runtime-0.16.0-20260909.1",
+      "asset": "windows-gnu-runtime-x64mingw.tar",
+      "sha256": "bb3d49d98b45a76b5067c047fd516423eb95354e686308dcb2246db65994af07",
+      "size": 15585280,
+      "source_sha": "94993f721fb3390d0ab3c8d8f41af193ac754e7d",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/windows-gnu-runtime.yml"
     }
   }
 }

@@ -18,6 +18,106 @@ import prepare_dependencies
 
 
 class DependencyStagingTests(unittest.TestCase):
+    def test_windows_gnu_header_preserves_complete_provider_order(self):
+        import re
+        header = (prepare_dependencies.ROOT / "platform-gui/main.roc").read_text()
+        block = re.search(r'x64mingw:\s*\{\s*inputs:\s*\[(.*?)\]', header, re.S).group(1)
+        inputs = re.findall(r'"([^"\n]+)"|\b(app)\b', block)
+        observed = [left or right for left, right in inputs]
+        files = prepare_dependencies.windows_gnu_files()
+        expected = [files[0], "libsignals_gpui_host.a", "libengine.a", "signals.res", "app", *files[1:]]
+        self.assertEqual(observed, expected)
+        self.assertEqual(len(files), 361)
+        self.assertEqual(files[21], "ole32.lib")
+
+    def test_windows_gnu_release_admission_requires_source_inventory(self):
+        from build_windows_system_imports import REPRODUCTION as imports
+        from build_windows_gnu_runtime import REPRODUCTION as runtime
+        inventories = {}
+        for identity, sources, extras in (
+                (prepare_dependencies.WINDOWS_SYSTEM_IMPORTS, imports, ("source.tar.xz", "coverage.json")),
+                (prepare_dependencies.WINDOWS_GNU_RUNTIME, runtime, ("source.tar.xz",))):
+            kind = identity.removesuffix("-x64mingw")
+            recipe = json.loads((prepare_dependencies.ROOT / "dependencies" / (kind + ".json")).read_bytes())
+            names = recipe.get("files") or [dll.rsplit(".", 1)[0] + ".lib" for dll in recipe["dlls"]]
+            paths = {"targets/x64mingw/" + name for name in names}
+            paths.update("licenses/" + kind + "/" + name for name in recipe["notices_sha256"])
+            paths.update("sources/" + kind + "/" + name for name in (*sources, *extras))
+            inventories[identity] = {"source": recipe, "files": dict.fromkeys(paths, {})}
+        def materialize(lock, identities, cache, destination):
+            self.assertEqual(identities, prepare_dependencies.WINDOWS_GNU_ARTIFACTS)
+            for identity, manifest in inventories.items():
+                tree = destination / identity
+                tree.mkdir(parents=True)
+                (tree / "dependency.json").write_text(json.dumps(manifest))
+            inventory = destination / prepare_dependencies.WINDOWS_SYSTEM_IMPORTS / prepare_dependencies.WINDOWS_GNU_INVENTORY
+            inventory.parent.mkdir(parents=True)
+            inventory.write_bytes((prepare_dependencies.ROOT / "dependencies/windows-system-imports/inventory.json").read_bytes())
+        with patch.object(prepare_dependencies, "materialize", side_effect=materialize):
+            with prepare_dependencies.verified_windows_gnu() as inputs:
+                self.assertEqual(len(prepare_dependencies.windows_gnu_inventory(inputs)), 340)
+            files = inventories[prepare_dependencies.WINDOWS_GNU_RUNTIME]["files"]
+            for missing in ("targets/x64mingw/unwind.lib", "licenses/windows-gnu-runtime/LICENSE-LLVM",
+                            "sources/windows-gnu-runtime/source.tar.xz"):
+                entry = files.pop(missing)
+                with self.assertRaisesRegex(ValueError, "incomplete or unexpected"):
+                    with prepare_dependencies.verified_windows_gnu():
+                        pass
+                files[missing] = entry
+
+    def test_windows_gnu_bundle_ignores_mutable_dependencies_and_retains_receipts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, inputs, stage = root / "local", root / "verified", root / "bundle"
+            source.mkdir()
+            inputs.mkdir()
+            stage.mkdir()
+            host_names = ("libsignals_gpui_host.a", "libengine.a", "signals.res")
+            for name in host_names:
+                (source / name).write_bytes(name.encode())
+            (source / "kernel32.lib").write_bytes(b"untrusted local stub")
+            (source / "unknown.lib").write_bytes(b"untracked library")
+            receipt = {"schema_version": 1, "artifacts": {identity: {"verified": identity}
+                       for identity in prepare_dependencies.WINDOWS_GNU_ARTIFACTS}}
+            (inputs / "dependencies.lock.json").write_text(json.dumps(receipt))
+            runtime = set(json.loads((prepare_dependencies.ROOT / "dependencies/windows-gnu-runtime.json").read_bytes())["files"])
+            for identity in prepare_dependencies.WINDOWS_GNU_ARTIFACTS:
+                target = inputs / identity / "targets/x64mingw"
+                target.mkdir(parents=True)
+                for name in prepare_dependencies.windows_gnu_files():
+                    if (name in runtime) == (identity == prepare_dependencies.WINDOWS_GNU_RUNTIME):
+                        (target / name).write_bytes(b"verified " + name.encode())
+                (inputs / identity / "dependency.json").write_text(json.dumps({"identity": identity}))
+                notice = inputs / identity / "licenses" / identity / "LICENSE"
+                notice.parent.mkdir(parents=True)
+                notice.write_bytes(b"original notice")
+            @contextmanager
+            def verified():
+                yield inputs
+            with patch.object(bundle_platforms, "verified_windows_gnu", verified):
+                bundle_platforms.stage_windows_gnu_inputs(source, stage)
+            target = stage / "targets/x64mingw"
+            self.assertEqual({path.name for path in target.iterdir()}, set(host_names) | set(prepare_dependencies.windows_gnu_files()))
+            self.assertEqual((target / "kernel32.lib").read_bytes(), b"verified kernel32.lib")
+            self.assertEqual(json.loads((stage / "dependencies.lock.json").read_bytes()), receipt)
+            for identity in prepare_dependencies.WINDOWS_GNU_ARTIFACTS:
+                self.assertTrue((stage / "dependency-manifests" / (identity + ".json")).is_file())
+                self.assertEqual((stage / "licenses" / identity / "LICENSE").read_bytes(), b"original notice")
+            bundle_platforms.validate_gui_link_inputs(stage / "targets")
+            (target / "unwind.lib").unlink()
+            with self.assertRaisesRegex(ValueError, "link dependency"):
+                bundle_platforms.validate_gui_link_inputs(stage / "targets")
+
+    def test_windows_gnu_installer_verifies_before_changing_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "target"
+            destination.mkdir()
+            (destination / "crt2.obj").write_bytes(b"original")
+            with patch.object(prepare_dependencies, "verified_windows_gnu", side_effect=ValueError("untrusted signer")):
+                with self.assertRaisesRegex(ValueError, "untrusted signer"):
+                    prepare_dependencies.install_windows_gnu(destination)
+            self.assertEqual((destination / "crt2.obj").read_bytes(), b"original")
+
     def test_runtime_consumer_inventory_matches_corrected_producer_contract(self):
         import release_dependencies
         for kind, libraries, licenses, sources in (
