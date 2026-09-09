@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tempfile
 
-from prepare_dependencies import install_windows_imports, install_freetype, install_glibc, install_xkbcommon
+from prepare_dependencies import install_windows_imports, install_freetype, install_glibc, install_xkbcommon, install_unwind
 
 ROOT = Path(__file__).resolve().parent.parent
 MACOS_FRAMEWORKS = ('AppKit', 'ApplicationServices', 'Carbon', 'CoreFoundation',
@@ -89,6 +89,8 @@ def build(debug=False, jobs=2, cargo_evidence=None):
     if target == 'x64glibc':
         crt_dependencies = install_glibc(ROOT / 'platform-gui/targets/x64glibc')
         linux_dependencies['artifacts'].update(crt_dependencies['artifacts'])
+        unwind_dependencies = install_unwind(ROOT / 'platform-gui/targets/x64glibc')
+        linux_dependencies['artifacts'].update(unwind_dependencies['artifacts'])
         keyboard_dependencies = install_xkbcommon(ROOT / 'platform-gui/targets/x64glibc')
         linux_dependencies['artifacts'].update(keyboard_dependencies['artifacts'])
     subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
@@ -127,19 +129,7 @@ def build(debug=False, jobs=2, cargo_evidence=None):
             'frameworks': MACOS_FRAMEWORKS,
         }, indent=2) + '\n')
         return
-    # Copy ELF inputs, not development linker scripts with machine-local paths.
-    # Their SONAMEs retain runtime dependencies on the system's shared libraries.
-    cache = subprocess.check_output(['/sbin/ldconfig', '-p'], text=True)
     provenance = {'dependencies': linux_dependencies}
-    for name in ['gcc_s']:
-        prefix = 'lib' + name + '.so.'
-        matches = [line.split('=>')[1].strip() for line in cache.splitlines()
-                   if line.strip().startswith(prefix) and 'x86-64' in line]
-        if not matches:
-            raise SystemExit('Missing system library: ' + prefix)
-        source = Path(matches[0]).resolve()
-        shutil.copyfile(source, dest / ('lib' + name + '.so'))
-        provenance[name] = str(source)
     (dest / 'link-inputs.json').write_text(json.dumps(provenance, indent=2) + '\n')
 
 

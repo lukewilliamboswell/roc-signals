@@ -19,7 +19,7 @@ from gui_host_artifacts import verified_hosts, HOST_FILES
 from prepare_dependencies import (verified_web_dependencies, WEB_ARTIFACTS,
                                   verified_windows_imports, WINDOWS_IMPORTS,
                                   verified_freetype, FREETYPE,
-                                  verified_glibc, GLIBC,
+                                  verified_glibc, GLIBC, verified_unwind, UNWIND,
                                   verified_xkbcommon, XKBCOMMON)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -220,7 +220,7 @@ def main():
                           and (p.relative_to(tree).parts[0] != 'x64glibc'
                                or p.relative_to(tree).as_posix() in {
                                    'x64glibc/libsignals_gpui_host.a', 'x64glibc/libengine.a',
-                                   'x64glibc/libgcc_s.so', 'x64glibc/link-inputs.json'})
+                                   'x64glibc/link-inputs.json'})
                           and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json', '.tbd'}]
             if package == 'gui' and not hosts and not windows_targets:
                 raise SystemExit(f'No {package} hosts found; run without --no-build.')
@@ -237,6 +237,8 @@ def main():
                     stage_dependency_inputs(inputs, (FREETYPE,), stage)
                 with verified_glibc() as inputs:
                     stage_dependency_inputs(inputs, (GLIBC,), stage)
+                with verified_unwind() as inputs:
+                    stage_dependency_inputs(inputs, (UNWIND,), stage)
                 with verified_xkbcommon() as inputs:
                     stage_dependency_inputs(inputs, (XKBCOMMON,), stage)
             if package == 'gui':

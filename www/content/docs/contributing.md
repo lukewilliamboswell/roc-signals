@@ -326,7 +326,9 @@ standalone reproduction tree under `sources/glibc/`; run the same build command
 from that directory to reproduce the producer. Review the resulting consumer
 lock and platform link-input changes separately before adoption. Normal GUI
 builds reuse this pinned release, and bundles retain its complete source and
-notice payload alongside the link inputs.
+notice payload alongside the link inputs. Admission requires the target-specific
+header source payload plus complete glibc, LLVM and Linux header license terms;
+older artifacts missing those notices are refused.
 
 The `xkbcommon dependency releases` workflow independently builds both keyboard
 libraries from the source and tool versions pinned in `dependencies/xkbcommon.json`.
@@ -366,7 +368,9 @@ recovery and `Drop` execution. Dispatch `unwind-dependencies.yml` on `main` with
 new `deps-unwind-<version>` tag to attest and publish the tested archive. Original
 sources, notices, and reproduction inputs accompany `libunwind.a`; C++ support
 archives used only by the producer probe are excluded. Adopting the resulting
-consumer lock and replacing the platform's GCC unwinder input is separate work.
+consumer lock is a separate review. Linux GUI host builds and bundle staging
+verify that lock and use its `libunwind.a`, preserving notices and reproduction
+sources in bundles. No ambient GCC unwinder is copied into platform inputs.
 
 For host-license review, `scripts/rust_license_inventory.py` collects original
 notices from the crate archives selected by a `cargo-about --format json`

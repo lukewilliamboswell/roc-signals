@@ -118,13 +118,14 @@ payload, reproduction inputs, and receipt. Checkout copies of CRT inputs and
 obsolete glibc compatibility libraries are excluded from bundle staging.
 The platform header supplies `crt1.o`, `libc_nonshared.a`, and the libc/libm stubs
 to Roc's final link. This target does not require `crti.o` or `crtn.o`.
-The GCC unwinder remains a separate input pending its replacement.
+The LLVM unwinder is verified independently and supplied as `libunwind.a`.
+Neither host builds nor bundle staging copy `libgcc_s.so` from the build machine.
 
 ## LLVM unwinder producer
 
 `unwind.json` pins Zig's source distribution and compiler for an independently
-released Linux x86-64 `libunwind.a`. This replaces a dependency on ambient GCC
-unwinder packaging once a release is adopted. It is a static implementation,
+released Linux x86-64 `libunwind.a`. Its verified release replaces the direct
+link input previously copied from ambient GCC unwinder packaging. It is a static implementation,
 whereas the glibc producer's shared-library files are runtime link stubs.
 
 The producer builds in an offline container with private caches and fixed paths.
@@ -137,8 +138,10 @@ and publish them.
 
 The archive retains the complete original libunwind source tree, its full
 `LICENSE.TXT` including LLVM exceptions and legacy notices, Zig's license, and
-standalone reproduction inputs. The consumer lock and platform header are
-reviewed separately; this producer alone does not change existing bundles.
+standalone reproduction inputs. GUI builds verify the locked release before
+compiling the host. Bundle staging independently admits it, replaces any mutable
+checkout copy, and preserves its complete notice/source payload and receipt.
+Publication and consumer-lock adoption remain separate reviewed operations.
 
 ## Coverage and remaining boundaries
 
@@ -153,7 +156,7 @@ input or for historical platform releases.
 | Linux GUI FreeType | Independent Zig build from pinned source, native candidate tests, reproducibility checks, and verified release consumption | Supporting build libraries still come from the authenticated builder snapshot; the operating system supplies runtime font libraries. |
 | Linux GUI xkbcommon and xkbcommon-X11 | Independent Zig/Meson source build, native candidate test, reproducibility check, and verified release consumption | XCB runtime libraries and keyboard layout data remain operating-system inputs; applications resolve the system SONAMEs at runtime. |
 | Linux GUI startup and glibc link inputs | Independent generation from pinned Zig sources, native candidate tests, reproducibility check, and verified release consumption | The operating system supplies the glibc implementation; source, license, and reproduction payloads accompany the link inputs. |
-| Linux GUI GCC unwinder | `build_gui.py` copies the build machine's installed `libgcc_s.so` | An independently built and verified replacement is still required; recorded local paths do not establish provenance. |
+| Linux GUI LLVM unwinder | Independent source build, native C++ and Rust unwind probes, reproducibility check, and verified release consumption | This removes the direct GCC link input; operating-system libraries may retain their own indirect runtime dependencies. |
 | macOS framework and system link stubs | `build_gui.py` copies the selected Xcode SDK's stubs and records SDK identifiers | No independently versioned, verified SDK artifact yet. SDK origin and redistribution rights must be established; proprietary SDK stubs cannot be described as an open-source build. |
 | Rust crates embedded in the GUI host | Cargo uses the reviewed lockfile and CI caches compiled dependencies; cross-crate release LTO is disabled | The cache is not a separately released dependency artifact. Generic Rust code can be instantiated in the host, so separating it into a reusable binary requires an explicit ABI and compatibility policy. |
 | Prebuilt GUI host archives | The bundler verifies a host-release lock, producer provenance, exact inventory, and committed host source compatibility before staging extracted bytes | Host releases do not supply external system libraries or SDK stubs; included targets must have those inputs separately. |

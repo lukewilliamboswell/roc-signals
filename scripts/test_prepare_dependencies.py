@@ -18,9 +18,83 @@ import prepare_dependencies
 
 
 class DependencyStagingTests(unittest.TestCase):
+    def test_runtime_consumer_inventory_matches_corrected_producer_contract(self):
+        import release_dependencies
+        for kind, libraries, licenses, sources in (
+            ("glibc", prepare_dependencies.GLIBC_LIBRARIES, prepare_dependencies.GLIBC_LICENSES,
+             prepare_dependencies.GLIBC_SOURCE_FILES),
+            ("unwind", ("libunwind.a",), ("LICENSE.TXT", "LICENSE-ZIG"), prepare_dependencies.UNWIND_SOURCE_FILES),
+        ):
+            with self.subTest(kind=kind):
+                policy = release_dependencies.KINDS[kind]
+                self.assertEqual(set(libraries), set(policy["files"]))
+                self.assertEqual(set(licenses), set(policy["licenses"]))
+                self.assertEqual({"sources/" + kind + "/" + name for name in sources}, set(policy["extra_files"]))
+
+    def test_unwind_admission_requires_complete_release_inventory(self):
+        expected = {"targets/x64glibc/libunwind.a", "licenses/unwind/LICENSE.TXT", "licenses/unwind/LICENSE-ZIG"}
+        expected.update("sources/unwind/" + name for name in prepare_dependencies.UNWIND_SOURCE_FILES)
+        files = dict.fromkeys(expected, {})
+
+        def materialize(lock, identities, cache, destination):
+            self.assertEqual(identities, (prepare_dependencies.UNWIND,))
+            artifact = destination / prepare_dependencies.UNWIND
+            artifact.mkdir(parents=True)
+            (artifact / "dependency.json").write_text(json.dumps({"files": files}))
+
+        with patch.object(prepare_dependencies, "materialize", side_effect=materialize):
+            with prepare_dependencies.verified_unwind() as admitted:
+                self.assertTrue(admitted.is_dir())
+            for missing in sorted(expected):
+                with self.subTest(missing=missing):
+                    files = dict.fromkeys(expected - {missing}, {})
+                    with self.assertRaisesRegex(ValueError, "incomplete or unexpected LLVM"):
+                        with prepare_dependencies.verified_unwind():
+                            self.fail("incomplete inventory admitted")
+            files = dict.fromkeys(expected | {"targets/x64glibc/libgcc_s.so"}, {})
+            with self.assertRaisesRegex(ValueError, "incomplete or unexpected LLVM"):
+                with prepare_dependencies.verified_unwind():
+                    self.fail("unexpected library admitted")
+
+    def test_unwind_admission_failure_preserves_existing_library_and_prevents_build(self):
+        destination = self.root / "linux"
+        destination.mkdir()
+        library = destination / "libunwind.a"
+        library.write_bytes(b"previous")
+        with patch.object(prepare_dependencies, "verified_unwind", side_effect=ValueError("untrusted signer")):
+            with self.assertRaisesRegex(ValueError, "untrusted signer"):
+                prepare_dependencies.install_unwind(destination)
+        self.assertEqual(library.read_bytes(), b"previous")
+        with patch.object(build_gui, "host_target", return_value="x64glibc"), patch.object(
+                build_gui, "install_freetype", return_value={"artifacts": {}}), patch.object(
+                build_gui, "install_glibc", return_value={"artifacts": {}}), patch.object(
+                build_gui, "install_unwind", side_effect=ValueError("untrusted signer")), patch.object(
+                build_gui.subprocess, "run") as compiler:
+            with self.assertRaisesRegex(ValueError, "untrusted signer"):
+                build_gui.build()
+        compiler.assert_not_called()
+
+    def test_unwind_copy_failure_preserves_existing_library_and_cleans_temporary(self):
+        destination = self.root / "linux"
+        destination.mkdir()
+        library = destination / "libunwind.a"
+        library.write_bytes(b"previous")
+        with patch.object(prepare_dependencies, "verified_unwind", self.verified):
+            with self.assertRaises(FileNotFoundError):
+                prepare_dependencies.install_unwind(destination)
+            self.assertEqual(library.read_bytes(), b"previous")
+            self.assertEqual(list(destination.iterdir()), [library])
+            target = self.inputs / prepare_dependencies.UNWIND / "targets/x64glibc"
+            target.mkdir(parents=True)
+            (target / "libunwind.a").write_bytes(b"verified")
+            receipt = prepare_dependencies.install_unwind(destination)
+        self.assertEqual(library.read_bytes(), b"verified")
+        self.assertEqual(list(destination.iterdir()), [library])
+        self.assertEqual(receipt, {"schema_version": 1, "artifacts": {}})
+
     def test_glibc_admission_requires_all_link_inputs_notices_and_sources(self):
         expected = {"targets/x64glibc/" + name for name in prepare_dependencies.GLIBC_LIBRARIES}
-        expected.update("licenses/glibc/" + name for name in ("COPYING.LIB", "LICENSES", "LICENSE-ZIG"))
+        expected.update("licenses/glibc/" + name for name in prepare_dependencies.GLIBC_LICENSES)
         expected.update("sources/glibc/" + name for name in prepare_dependencies.GLIBC_SOURCE_FILES)
         files = dict.fromkeys(expected, {})
 
@@ -112,6 +186,7 @@ class DependencyStagingTests(unittest.TestCase):
         with patch.object(build_gui, "host_target", return_value="x64glibc"), patch.object(
                 build_gui, "install_freetype", return_value={"artifacts": {}}), patch.object(
                 build_gui, "install_glibc", return_value={"artifacts": {}}), patch.object(
+                build_gui, "install_unwind", return_value={"artifacts": {}}), patch.object(
                 build_gui, "install_xkbcommon", side_effect=ValueError("untrusted signer")), patch.object(
                 build_gui.subprocess, "run") as compiler:
             with self.assertRaisesRegex(ValueError, "untrusted signer"):
@@ -140,7 +215,7 @@ class DependencyStagingTests(unittest.TestCase):
     def test_gui_bundle_replaces_stale_keyboard_libraries_with_verified_release(self):
         source = self.root / "platform-gui/targets/x64glibc"
         source.mkdir(parents=True)
-        for name in ("libsignals_gpui_host.a", "libengine.a", "libfreetype.so", *prepare_dependencies.XKBCOMMON_LIBRARIES, *prepare_dependencies.GLIBC_LIBRARIES, "crti.o", "crtn.o", "libdl.so", "injected.a", "libunwind.a"):
+        for name in ("libsignals_gpui_host.a", "libengine.a", "libfreetype.so", *prepare_dependencies.XKBCOMMON_LIBRARIES, *prepare_dependencies.GLIBC_LIBRARIES, "crti.o", "crtn.o", "libdl.so", "injected.a", "libunwind.a", "libgcc_s.so"):
             (source / name).write_bytes(b"checkout bytes")
 
         @contextmanager
@@ -166,16 +241,22 @@ class DependencyStagingTests(unittest.TestCase):
             for name in prepare_dependencies.GLIBC_LIBRARIES:
                 self.assertEqual((stage / "targets/x64glibc" / name).read_bytes(), b"verified CRT " + name.encode())
             self.assertEqual((stage / "sources/glibc/source.tar.xz").read_bytes(), b"corresponding sources")
-            for name in ("crti.o", "crtn.o", "libdl.so", "injected.a", "libunwind.a"):
+            for name in ("crti.o", "crtn.o", "libdl.so", "injected.a", "libgcc_s.so"):
                 self.assertFalse((stage / "targets/x64glibc" / name).exists())
             receipt = json.loads((stage / "dependencies.lock.json").read_text())
-            self.assertEqual(set(receipt["artifacts"]), {prepare_dependencies.FREETYPE, prepare_dependencies.XKBCOMMON, prepare_dependencies.GLIBC})
+            self.assertEqual(set(receipt["artifacts"]), {prepare_dependencies.FREETYPE, prepare_dependencies.XKBCOMMON, prepare_dependencies.GLIBC, prepare_dependencies.UNWIND})
+            self.assertEqual((stage / "targets/x64glibc/libunwind.a").read_bytes(), b"verified unwinder")
+            self.assertEqual((stage / "licenses/unwind/LICENSE.TXT").read_bytes(), b"LLVM terms")
+            self.assertEqual((stage / "sources/unwind/source.tar.xz").read_bytes(), b"unwinder sources")
+            for name in prepare_dependencies.GLIBC_LICENSES:
+                self.assertEqual((stage / "licenses/glibc" / name).read_bytes(), b"original notice " + name.encode())
             self.assertTrue((stage / "dependency-manifests/xkbcommon-x64glibc.json").is_file())
             raise RuntimeError("bundle inputs inspected")
 
         crt = {"targets/x64glibc/" + name: b"verified CRT " + name.encode()
                for name in prepare_dependencies.GLIBC_LIBRARIES}
         crt["sources/glibc/source.tar.xz"] = b"corresponding sources"
+        crt.update({"licenses/glibc/" + name: b"original notice " + name.encode() for name in prepare_dependencies.GLIBC_LICENSES})
         keyboard = {"targets/x64glibc/" + name: b"verified " + name.encode()
                     for name in prepare_dependencies.XKBCOMMON_LIBRARIES}
         keyboard["licenses/xkbcommon/LICENSE"] = b"upstream notice"
@@ -185,6 +266,9 @@ class DependencyStagingTests(unittest.TestCase):
                     prepare_dependencies.FREETYPE, {"targets/x64glibc/libfreetype.so": b"verified font"})), patch.object(
                 bundle_platforms, "verified_glibc", side_effect=lambda: verified(
                     prepare_dependencies.GLIBC, crt)), patch.object(
+                bundle_platforms, "verified_unwind", side_effect=lambda: verified(
+                    prepare_dependencies.UNWIND, {"targets/x64glibc/libunwind.a": b"verified unwinder",
+                    "licenses/unwind/LICENSE.TXT": b"LLVM terms", "sources/unwind/source.tar.xz": b"unwinder sources"})), patch.object(
                 bundle_platforms, "verified_xkbcommon", side_effect=lambda: verified(
                     prepare_dependencies.XKBCOMMON, keyboard)), patch.object(
                 bundle_platforms.shutil, "copyfile", wraps=shutil.copyfile) as copy_file, patch.object(
@@ -197,7 +281,7 @@ class DependencyStagingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "bundle inputs inspected"):
                 bundle_platforms.main()
             copied_sources = {Path(call.args[0]) for call in copy_file.call_args_list}
-            for name in (*prepare_dependencies.XKBCOMMON_LIBRARIES, *prepare_dependencies.GLIBC_LIBRARIES, "crti.o", "crtn.o", "libdl.so", "injected.a", "libunwind.a"):
+            for name in (*prepare_dependencies.XKBCOMMON_LIBRARIES, *prepare_dependencies.GLIBC_LIBRARIES, "crti.o", "crtn.o", "libdl.so", "injected.a", "libunwind.a", "libgcc_s.so"):
                 self.assertNotIn(source / name, copied_sources)
 
     def test_freetype_admission_requires_complete_license_inventory(self):
