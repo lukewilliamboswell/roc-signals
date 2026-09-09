@@ -480,12 +480,11 @@ Rust's standard-library copyright report and license texts, plus Zig's license
 and complete original source archive so source-level notices are preserved.
 Use the recipe's Rust distribution for the selected target. This is review
 evidence; it does not identify which runtime components a particular host links
-or cover SDK inputs. Both inventories still need to be incorporated into the
-host archive with a reviewed dependency selection and publication validation.
+or cover SDK inputs. The release composer incorporates both inventories into the host/source pair
+with the actual compiled dependency selection and publication validation.
 
-Explicit GUI host release dispatches build only the selected Linux and/or Windows
-host targets. Pull requests still validate all three native candidates, including
-macOS; macOS publication remains excluded while its SDK boundary is unresolved.
+Explicit GUI host release dispatches build only the selected native host targets.
+Pull requests validate complete host/source pairs on Linux, Windows, and macOS.
 
 ## Coverage
 
@@ -1295,9 +1294,9 @@ That scratch target is removed when the build process exits, after the host
 archive has been copied into the platform target directory. The existing host build receipt records the selected Metal/metallib executable
 hashes and version diagnostics, Xcode/SDK identities, and GPUI shader/header/AIR/
 metallib hashes bound to the resulting host. Ordinary development builds retain
-normal Cargo caching. CI retains this Cargo evidence beside the Mac candidate
-for target-specific source/notice collection; Mac publication eligibility remains
-unchanged. No Apple SDK or tool binaries are added to the receipt. The original
+normal Cargo caching. The Mac source companion retains this evidence with the
+exact selected crate sources and compiler notices. No Apple SDK or tool binaries
+are added to the receipt. The original
 objc2 SDK-derived qualification remains preserved as an upstream declaration,
 not treated as an inferred distribution prohibition.
 
@@ -1311,10 +1310,12 @@ companions remain accessible through that lock without occupying the Roc platfor
 bundle or being downloaded for each app build. Preserve the notice archive and
 linked source access when redistributing the bundle.
 
-A main-branch manual dispatch selects Linux, Windows, or both for an independent
-`deps-gui-host-<version>` release. macOS continues native candidate tests but is
-excluded from publication while the Apple SDK-derived material needs a separate
-redistribution decision. Missing standalone license files alone are not a blanket
+A main-branch manual dispatch selects Linux, Windows, macOS, or Linux and Windows
+for an independent `deps-gui-host-<version>` release. Mac admission requires the
+complete source/notice pair and native final links/specs against regenerated
+project-authored interfaces; copied SDK stubs are not release inputs. The original
+objc2 qualification is retained alongside its declared license terms. Missing
+standalone license files alone are not a blanket
 publication prohibition: original source evidence and declarations remain visible
 in the package inventory and reviewed expression policy.
 
