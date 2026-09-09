@@ -221,7 +221,8 @@ its manifest, target files, and license notices. Existing output directories are
 rejected. There is no unsigned fallback or automatic dependency upgrade.
 
 The root `dependencies.lock.json` is the platform's reviewed dependency selection.
-To update it, adopt the lock emitted by a successful dependency release and run
+To update it, merge the selected entries from a successful dependency release's
+lock, preserve entries for other dependency families, and run
 the native and exact-bundle tests. Ordinary host builds reuse the selected release.
 The web bundler stages dependencies from newly verified archives, includes the
 selected lock, per-target manifests and license notices, and ignores mutable
@@ -241,6 +242,22 @@ pull requests restore it without publishing entries. Workspace host code remains
 outside that dependency cache and is rebuilt from the current checkout. This is
 a build acceleration mechanism, separate from verification of release inputs.
 Published-download checks continue to use fresh Roc caches.
+
+The `Windows dependency releases` workflow independently generates the ADVAPI32
+import library from the definition and license hashes in
+`dependencies/windows-imports.json`. It executes a probe linked against that
+candidate on Windows and compares two builds before signing. Dispatch it on
+`main` with a new `deps-windows-imports-<version>` tag. The emitted lock identifies
+`windows-dependencies.yml` as its signing workflow. To exercise its producer:
+
+```sh
+python3 scripts/build_windows_imports.py --output /tmp/windows-import-candidate
+python3 scripts/test_windows_import_artifact.py /tmp/windows-import-candidate/windows-imports-x64win.tar
+```
+
+The second command cross-links on Linux; native execution is required on Windows
+before publication. This artifact contains no Signals host or application
+manifest resource.
 
 ## Coverage
 
