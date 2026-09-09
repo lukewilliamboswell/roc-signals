@@ -1,6 +1,7 @@
 """Package and admit host-owned archives separately from external dependencies."""
 
 import hashlib
+import argparse
 import json
 from pathlib import Path
 import subprocess
@@ -89,3 +90,13 @@ def verified_hosts(lock_path, cache, root=ROOT):
         for identity, entry in lock["artifacts"].items():
             validate_host(destination / identity, entry["target"], expected)
         yield destination
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target", choices=sorted(HOST_FILES), required=True)
+    parser.add_argument("--source", type=Path, help="Directory containing freshly built host outputs")
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    pack_host(args.target, args.source or ROOT / "platform-gui/targets" / args.target,
+              args.output)
