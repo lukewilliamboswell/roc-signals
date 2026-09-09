@@ -243,6 +243,17 @@ outside that dependency cache and is rebuilt from the current checkout. This is
 a build acceleration mechanism, separate from verification of release inputs.
 Published-download checks continue to use fresh Roc caches.
 
+Pull-request CI selects affected jobs from the complete merge-base diff using
+`scripts/ci_changes.py`. GUI-only changes run the native GUI jobs; web changes
+run browser/native checks, published examples, and release archive checks.
+Known documentation paths run the site check. Shared engine changes, build
+infrastructure, compiler/dependency locks, and unknown paths select every area.
+Renames count at both their old and new paths. Main-branch pushes and manual
+validation still run every area, and release workflows retain their full gates.
+The required `Platform source` check verifies the selection job and requires
+success from every selected job; it accepts a skip only for an unselected area.
+New commits cancel superseded PR CI runs, but do not cancel main or release runs.
+
 The `Windows dependency releases` workflow independently generates the ADVAPI32
 import library from the definition and license hashes in
 `dependencies/windows-imports.json`. It executes a probe linked against that

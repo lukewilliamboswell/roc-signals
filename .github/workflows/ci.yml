@@ -18,8 +18,33 @@ permissions:
 env:
   GH_TOKEN: ${{ github.token }}
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    name: Select affected checks
+    runs-on: ubuntu-24.04
+    outputs:
+      smoke: ${{ steps.select.outputs.smoke }}
+      source: ${{ steps.select.outputs.source }}
+      gui: ${{ steps.select.outputs.gui }}
+      published: ${{ steps.select.outputs.published }}
+      archive: ${{ steps.select.outputs.archive }}
+      site: ${{ steps.select.outputs.site }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: python3 -m unittest discover -s scripts -p test_ci_changes.py
+      - id: select
+        run: python3 scripts/ci_changes.py
+
   smoke:
+    needs: changes
+    if: needs.changes.outputs.smoke == 'true'
     name: PR normal and smoke tests
     runs-on: ubuntu-24.04
     steps:
@@ -36,6 +61,8 @@ jobs:
       - run: python3 scripts/fuzz.py check
 
   source:
+    needs: changes
+    if: needs.changes.outputs.source == 'true'
     name: Full tests and coverage
     runs-on: macos-15
     timeout-minutes: 60
@@ -69,6 +96,8 @@ jobs:
           path: kcov-output/native-host
 
   gui:
+    needs: changes
+    if: needs.changes.outputs.gui == 'true'
     name: Native GUI build and specs
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -104,6 +133,8 @@ jobs:
           xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/gui_smoke.py --wayland
 
   gui-windows:
+    needs: changes
+    if: needs.changes.outputs.gui == 'true'
     name: Native GUI build and specs (Windows)
     runs-on: windows-2025
     timeout-minutes: 60
@@ -145,6 +176,8 @@ jobs:
           python scripts/bundle_platforms.py --package gui --no-build --output-dir "$env:RUNNER_TEMP/gui-candidate"
 
   gui-macos:
+    needs: changes
+    if: needs.changes.outputs.gui == 'true'
     name: Native GUI build and specs (macOS)
     runs-on: macos-15
     timeout-minutes: 60
@@ -176,16 +209,21 @@ jobs:
 
   platform-source:
     name: Platform source
-    needs: [smoke, source, gui, gui-windows, gui-macos]
+    needs: [changes, smoke, source, gui, gui-windows, gui-macos, published, archive, site]
     if: always()
     runs-on: ubuntu-24.04
     steps:
-      - name: Require every source job
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Require every selected job
         env:
           RESULTS: ${{ toJSON(needs) }}
-        run: python3 -c 'import json,os; assert all(job["result"] == "success" for job in json.loads(os.environ["RESULTS"]).values())'
+        run: python3 scripts/ci_changes.py --verify-results
 
   published:
+    needs: changes
+    if: needs.changes.outputs.published == 'true'
     name: Published examples
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -202,6 +240,8 @@ jobs:
       - run: python3 scripts/test.py published
 
   archive:
+    needs: changes
+    if: needs.changes.outputs.archive == 'true'
     name: Release archive
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -217,3 +257,20 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
       - run: python3 scripts/release.py prepare --version 0.2.0-rc1 --directory "$RUNNER_TEMP/candidate"
       - run: python3 scripts/release.py check --directory "$RUNNER_TEMP/candidate"
+
+  site:
+    name: Documentation and site
+    needs: changes
+    if: needs.changes.outputs.site == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install pinned Zola
+        run: |
+          curl -fsSL https://github.com/getzola/zola/releases/download/v0.22.1/zola-v0.22.1-x86_64-unknown-linux-gnu.tar.gz -o "$RUNNER_TEMP/zola.tar.gz"
+          echo "0ca09aa40376aaa9ddfb512ff9ad963262ef95edb0d0f2d5ec6961b6f5cf22ef  $RUNNER_TEMP/zola.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/zola.tar.gz" -C "$RUNNER_TEMP"
+      - name: Check documentation and templates
+        run: '"$RUNNER_TEMP/zola" --root www check'
