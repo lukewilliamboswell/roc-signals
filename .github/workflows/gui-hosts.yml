@@ -1,17 +1,13 @@
 name: GUI host link inputs
 
-# Publishes the prebuilt, app-independent GUI link inputs on their own release
-# cycle. Platform bundles pull a published set through
-# `scripts/bundle.sh --package gui --no-build --prebuilt-targets DIR`, so a
-# host rebuild happens only when the host itself changes, and nothing binary is
-# ever committed: every archive carries signed build provenance that
-# `gh attestation verify` checks against this repository.
+# Publishes host-owned archives after native tests of the extracted candidates.
+# External dependency inputs have their own release and verification policies.
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Release tag for this set of link inputs (gui-hosts-<date>)
+        description: New independent host release tag (deps-gui-host-<version>)
         type: string
         required: true
 
@@ -35,8 +31,8 @@ jobs:
             target: x64win
           - os: ubuntu-24.04
             target: x64glibc
-          # arm64mac needs a runner with Xcode's Metal toolchain component; add
-          # it here once one is validated, alongside its macos-sysroot tree.
+          - os: macos-15
+            target: arm64mac
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -53,6 +49,16 @@ jobs:
             sudo apt-get install -y libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev
           fi
           rustup toolchain install 1.95.0 --profile minimal
+      - name: Install the selected macOS Metal toolchain
+        if: runner.os == 'macOS'
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+          TOOLCHAINS: Metal
+        run: |
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain
+          echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
+          echo "TOOLCHAINS=Metal" >> "$GITHUB_ENV"
       - name: Restore compiled Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         env:
@@ -70,14 +76,11 @@ jobs:
         run: |
           python scripts/prepare_platforms.py
           python scripts/build_gui.py
-          tar -cf "gui-link-inputs-${{ matrix.target }}.tar" -C platform-gui/targets "${{ matrix.target }}"
-          python -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest(), sys.argv[1])" "gui-link-inputs-${{ matrix.target }}.tar" | tee "gui-link-inputs-${{ matrix.target }}.sha256"
+          python scripts/gui_host_artifacts.py --target "${{ matrix.target }}" --output "gui-host-${{ matrix.target }}.tar" --roc roc
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: gui-link-inputs-${{ matrix.target }}
-          path: |
-            gui-link-inputs-${{ matrix.target }}.tar
-            gui-link-inputs-${{ matrix.target }}.sha256
+          name: gui-host-${{ matrix.target }}
+          path: gui-host-${{ matrix.target }}.tar
           retention-days: 30
 
   publish:
@@ -95,7 +98,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          pattern: gui-link-inputs-*
+          pattern: gui-host-*
           merge-multiple: true
           path: ${{ runner.temp }}/link-inputs
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
@@ -105,22 +108,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          if [[ ! "$RELEASE_TAG" =~ ^gui-hosts-[0-9][A-Za-z0-9.-]*$ ]]; then
-            echo "release_tag must be a new gui-hosts-<version> identity"
-            exit 1
-          fi
-          existing=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" --jq ".[] | select(.ref == \"refs/tags/$RELEASE_TAG\") | .ref")
-          if [ -n "$existing" ]; then
-            echo "tag already exists; inspect and recover the original publication"
-            exit 1
-          fi
-          for archive in "$RUNNER_TEMP"/link-inputs/*.tar; do
-            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
-              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/gui-hosts.yml" \
-              --source-digest "$GITHUB_SHA" --source-ref refs/heads/main --deny-self-hosted-runners
-          done
-          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "GUI host link inputs $RELEASE_TAG" \
-            --latest=false \
-            --notes "Prebuilt app-independent GUI link inputs for platform-gui, built from $GITHUB_SHA. Verify with: gh attestation verify <file> --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/gui-hosts.yml --source-digest $GITHUB_SHA --source-ref refs/heads/main --deny-self-hosted-runners" \
-            "$RUNNER_TEMP"/link-inputs/*.tar "$RUNNER_TEMP"/link-inputs/*.sha256
+        run: python3 scripts/release_dependencies.py --directory "$RUNNER_TEMP/link-inputs" --tag "$RELEASE_TAG" --kind gui-host

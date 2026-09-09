@@ -50,6 +50,15 @@ KINDS = {
                   "licenses": ("LICENSE",), "workflow": "xkbcommon-dependencies.yml",
                   "inventory_error": "dependency release must include both tested xkbcommon libraries",
                   "validation": "The extracted candidate parsed and translated a self-contained keyboard map, and two clean builds produced identical archives."},
+    "gui-host": {"targets": ("x64glibc", "arm64mac", "x64win"),
+                 "files_by_target": {
+                     "x64glibc": ("libsignals_gpui_host.a", "libengine.a"),
+                     "arm64mac": ("libsignals_gpui_host.a", "libengine.a"),
+                     "x64win": ("signals_gpui_host.lib", "engine.lib", "signals.res"),
+                 },
+                 "licenses": ("LICENSE", "LICENSE-GPUI"), "workflow": "gui-hosts.yml",
+                 "inventory_error": "host release must include all three tested native targets",
+                 "validation": "Each extracted host candidate passed native GUI application specs with the pinned Roc compiler."},
     "musl": {"targets": ("x64musl", "arm64musl"), "files": ("libc.a", "crt1.o"),
              "licenses": ("COPYRIGHT",), "workflow": "dependencies.yml",
              "inventory_error": "dependency release must include both tested musl architectures",
@@ -94,11 +103,15 @@ def prepare(directory, tag, environment, kind="musl"):
             }
             verify_archive(archive, entry)
             manifest = unpack_verified(archive, entry, Path(temporary) / target)
-            required = {f"targets/{target}/{name}" for name in policy["files"]}
+            names = policy["files_by_target"][target] if "files_by_target" in policy else policy["files"]
+            required = {f"targets/{target}/{name}" for name in names}
             required.update(f"licenses/{kind}/{name}" for name in policy["licenses"])
             required.update(policy.get("extra_files", ()))
             if set(manifest["files"]) != required:
                 raise ValueError(f"{kind} release has an incomplete or unexpected file set")
+            if kind == "gui-host":
+                from gui_host_artifacts import source_fingerprint, validate_host
+                validate_host(Path(temporary) / target, target, source_fingerprint())
             artifacts[f"{kind}-{target}"] = entry
     lock = directory / "dependencies.lock.json"
     with lock.open("x") as output:
@@ -124,7 +137,8 @@ def publish(directory, tag, kind="musl"):
         "GitHub build attestations bind the archive digests to the producer.\n\n"
         "Review and commit `dependencies.lock.json` in the consuming platform; "
         "use `scripts/dependency_artifacts.py` to verify and fetch it. "
-        "This release contains no platform host or application code.\n"
+        + ("This release contains platform host code; external link dependencies are released separately.\n"
+           if kind == "gui-host" else "This release contains no platform host or application code.\n")
     )
     subprocess.run(["gh", "release", "create", tag, *map(str, assets), "--repo", REPOSITORY,
                     "--target", source, "--latest=false", "--title", f"{kind} link inputs {tag}",
