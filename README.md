@@ -137,6 +137,19 @@ guidance, and the validation expected for engine optimizations.
 
 ## Native GUI spike
 
+Try a prebuilt release candidate with Roc `nightly-2026-09-04-c125b82`:
+
+| Native target | Download |
+| --- | --- |
+| Linux x86_64 (glibc/Wayland) | [Linux starters — rc.1](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.1/signals-gui-starters.zip) |
+| Apple Silicon macOS | [Mac starters — rc.2](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.2/signals-gui-starters.zip) |
+
+Extract the archive and build Counter with `roc build --target=x64glibc --output=counter examples-gui/counter/main.roc`
+on Linux, or `roc build --target=arm64mac --output=counter examples-gui/counter/main.roc`
+on Apple Silicon. Run `./counter`. These starters need no Rust, Zig, or repository
+checkout. See [Native GUI](www/content/docs/native-gui.md) for runtime requirements.
+Windows release validation is still in progress.
+
 This worktree also contains `platform-gui`, backed by the shared Zig engine and
 an app-independent Rust GPUI host in `crates/gpui-host`. Common Roc modules
 live in `platform-shared/`; the preparation script copies its modules into each platform’s root, with the
