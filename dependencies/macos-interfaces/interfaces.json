@@ -2079,6 +2079,74 @@
           ]
         },
         {
+          "name": "_kCTFontCopyrightNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontcopyrightnamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontcopyrightnamekey.json",
+              "external_id": "c:@kCTFontCopyrightNameKey",
+              "title": "kCTFontCopyrightNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:08.960168+00:00",
+              "response_sha256": "c5f5be80456e70b49448944f1c6b5c5776c09e2016924fce14606544a18488a6"
+            }
+          ]
+        },
+        {
+          "name": "_kCTFontDescriptionNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontdescriptionnamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontdescriptionnamekey.json",
+              "external_id": "c:@kCTFontDescriptionNameKey",
+              "title": "kCTFontDescriptionNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:09.505559+00:00",
+              "response_sha256": "6e4635f310690e12a364a0a9284ccc380fe109b99f4c2bbb16913cf4132f85ba"
+            }
+          ]
+        },
+        {
+          "name": "_kCTFontDesignerNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontdesignernamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontdesignernamekey.json",
+              "external_id": "c:@kCTFontDesignerNameKey",
+              "title": "kCTFontDesignerNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:09.205615+00:00",
+              "response_sha256": "c9eb88c32de2982fd9ed1e6fea9c2b0508e3693d7af580c28829fcdd5233df85"
+            }
+          ]
+        },
+        {
+          "name": "_kCTFontDesignerURLNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontdesignerurlnamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontdesignerurlnamekey.json",
+              "external_id": "c:@kCTFontDesignerURLNameKey",
+              "title": "kCTFontDesignerURLNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:09.788895+00:00",
+              "response_sha256": "b8bf12f7a767525d8a293731f874341de4172256d68779923a5768e85ed84e3f"
+            }
+          ]
+        },
+        {
           "name": "_kCTFontFamilyNameAttribute",
           "sources": [
             {
@@ -2147,6 +2215,57 @@
           ]
         },
         {
+          "name": "_kCTFontLicenseNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontlicensenamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontlicensenamekey.json",
+              "external_id": "c:@kCTFontLicenseNameKey",
+              "title": "kCTFontLicenseNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:09.973210+00:00",
+              "response_sha256": "eb080d60652d3d566ce7ffcb9131041ebcbd4093875ac72ee6f0bdc69c6911f0"
+            }
+          ]
+        },
+        {
+          "name": "_kCTFontLicenseURLNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontlicenseurlnamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontlicenseurlnamekey.json",
+              "external_id": "c:@kCTFontLicenseURLNameKey",
+              "title": "kCTFontLicenseURLNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:10.025454+00:00",
+              "response_sha256": "9394cf3d60703efa102241326e7df51b1b205f8df53a01afe0fe1fc2d1862f3d"
+            }
+          ]
+        },
+        {
+          "name": "_kCTFontManufacturerNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontmanufacturernamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontmanufacturernamekey.json",
+              "external_id": "c:@kCTFontManufacturerNameKey",
+              "title": "kCTFontManufacturerNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:10.112911+00:00",
+              "response_sha256": "f65e65ec0f03e3bbfdfacf9cc62060be0d5be2753d3cbbb920a742bdeaeedac7"
+            }
+          ]
+        },
+        {
           "name": "_kCTFontOpenTypeFeatureTag",
           "sources": [
             {
@@ -2181,6 +2300,23 @@
           ]
         },
         {
+          "name": "_kCTFontPostScriptCIDNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontpostscriptcidnamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontpostscriptcidnamekey.json",
+              "external_id": "c:@kCTFontPostScriptCIDNameKey",
+              "title": "kCTFontPostScriptCIDNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:10.261472+00:00",
+              "response_sha256": "16ba03773161688c08ecc0d0f96941eba0e61f2a55160fa769d69cfe38468bf1"
+            }
+          ]
+        },
+        {
           "name": "_kCTFontPostScriptNameKey",
           "sources": [
             {
@@ -2194,6 +2330,23 @@
               "evidence_kind": "exact_C_identifier",
               "retrieved_at": "2026-09-09T10:06:10.365751+00:00",
               "response_sha256": "10f0862c005dee2d1998492e33247d2b69945a69b065ddaf87457fd630ee0168"
+            }
+          ]
+        },
+        {
+          "name": "_kCTFontSampleTextNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontsampletextnamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontsampletextnamekey.json",
+              "external_id": "c:@kCTFontSampleTextNameKey",
+              "title": "kCTFontSampleTextNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:10.846837+00:00",
+              "response_sha256": "5b34e66f57ab87a6a2f7bb9af6b3dd31250adb142ed3f9a0753eebf45634af0c"
             }
           ]
         },
@@ -2215,6 +2368,40 @@
           ]
         },
         {
+          "name": "_kCTFontStyleNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontstylenamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontstylenamekey.json",
+              "external_id": "c:@kCTFontStyleNameKey",
+              "title": "kCTFontStyleNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:10.931675+00:00",
+              "response_sha256": "d7f22fa7f11ea033de6a38d9aea5f0d6af8423cf45dced28f6db3c59b30c79ab"
+            }
+          ]
+        },
+        {
+          "name": "_kCTFontSubFamilyNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontsubfamilynamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontsubfamilynamekey.json",
+              "external_id": "c:@kCTFontSubFamilyNameKey",
+              "title": "kCTFontSubFamilyNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:10.504204+00:00",
+              "response_sha256": "236b5f49969b1cf02da06284c08ee968b79bb5a69bf664a4f1acd0e26afe6fae"
+            }
+          ]
+        },
+        {
           "name": "_kCTFontSymbolicTrait",
           "sources": [
             {
@@ -2228,6 +2415,74 @@
               "evidence_kind": "exact_C_identifier",
               "retrieved_at": "2026-09-09T10:06:10.936806+00:00",
               "response_sha256": "36e9443adf58a939866f053defeda4ba0d5bc44be561d426e5217c5df4030bf4"
+            }
+          ]
+        },
+        {
+          "name": "_kCTFontTrademarkNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfonttrademarknamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfonttrademarknamekey.json",
+              "external_id": "c:@kCTFontTrademarkNameKey",
+              "title": "kCTFontTrademarkNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:10.672885+00:00",
+              "response_sha256": "e389cd1dde3e18a9f0f1cbffd15abb6b5d3a6a8a7902d0eb4eb2b7a7936a613d"
+            }
+          ]
+        },
+        {
+          "name": "_kCTFontUniqueNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontuniquenamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontuniquenamekey.json",
+              "external_id": "c:@kCTFontUniqueNameKey",
+              "title": "kCTFontUniqueNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:10.907868+00:00",
+              "response_sha256": "586a4062e4a8fc55086b5f6cf6df0a169c93e6253c3b5e096e3e3fa34b0b50ad"
+            }
+          ]
+        },
+        {
+          "name": "_kCTFontVendorURLNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontvendorurlnamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontvendorurlnamekey.json",
+              "external_id": "c:@kCTFontVendorURLNameKey",
+              "title": "kCTFontVendorURLNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:11.368419+00:00",
+              "response_sha256": "d3b9acd162445b1cdd551dde396465b41d708dd45332ee69ca44799422d1250d"
+            }
+          ]
+        },
+        {
+          "name": "_kCTFontVersionNameKey",
+          "sources": [
+            {
+              "url": "https://developer.apple.com/documentation/coretext/kctfontversionnamekey",
+              "data_url": "https://developer.apple.com/tutorials/data/documentation/coretext/kctfontversionnamekey.json",
+              "external_id": "c:@kCTFontVersionNameKey",
+              "title": "kCTFontVersionNameKey",
+              "documented_modules": [
+                "Core Text"
+              ],
+              "evidence_kind": "exact_C_identifier",
+              "retrieved_at": "2026-09-09T10:06:11.686873+00:00",
+              "response_sha256": "cb8e27648f36d65f2054da8d5ad9f036dc974d47082e7bd59443a896e89f79b8"
             }
           ]
         },
