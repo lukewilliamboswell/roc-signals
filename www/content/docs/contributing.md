@@ -1117,6 +1117,28 @@ involved. Use
 `python` rather than
 `python3` in the commands below on Windows, where `python3` is often a Store
 shortcut; `build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
+The `Windows GNU host candidate` workflow is an isolated toolchain
+experiment, with inventory checks on its pull requests and manual build dispatches. Its inventory mode records the fixed Windows SDK 10.0.26100.0 FXC
+executable, its actual loaded D3DCompiler DLL, file versions, signatures and
+hashes. Build mode requires the committed hashes and Microsoft signer reviewed from
+inventory run `34343278660` (file version `10.0.26100.8249`); dispatch inputs
+cannot override them.
+Build mode captures an optimized Rust 1.95.0 gnullvm host, a GNU Zig engine,
+shader outputs and raw Cargo evidence. These candidate artifacts neither change
+the production Windows platform target nor constitute a dependency release.
+The shader compiler remains a Windows build tool; the separate experiment aims
+to remove SDK library discovery from Roc's final application link.
+
+The candidate workflow's `apps` mode consumes successful, identified CI artifacts:
+a fixed raw GNU host build, the complete Windows DLL inventory, and an explicitly
+reviewed runtime run/source/archive hash. It structurally validates COFF import
+records and descriptors before separating them, preserves implementation members
+byte-for-byte, and records the transformation. Native builds, semantic specs and
+rendering checks run for all six examples, followed by fresh-cache HTTP bundle
+consumption. This is a candidate test, not signed dependency admission. Its
+receipt explicitly identifies the still-pending complete GNU host notice payload;
+measured candidate size must not be reported as the complete release bundle size.
+
 Other native targets, including Intel macOS and Windows on Arm, are not
 implemented.
 The GUI builder selects `TOOLCHAINS=Metal` on macOS unless explicitly overridden;

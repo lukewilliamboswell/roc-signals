@@ -101,8 +101,10 @@ pub fn build(b: *std.Build) void {
     // already provide the shared runtime helpers in that link, and COFF has no
     // weak symbols to reconcile a second copy, so Zig's compiler-rt stays out.
     const gpui_windows = native_target.result.os.tag == .windows;
+    // Candidate-only ABI experiment; production Windows remains MSVC.
+    const gpui_gnu_candidate = b.option(bool, "gpui-gnu-candidate", "Build GNU Windows engine candidate") orelse false;
     const gpui_target = if (gpui_windows)
-        b.resolveTargetQuery(.{ .cpu_arch = native_target.result.cpu.arch, .os_tag = .windows, .abi = .msvc })
+        b.resolveTargetQuery(.{ .cpu_arch = native_target.result.cpu.arch, .os_tag = .windows, .abi = if (gpui_gnu_candidate) .gnu else .msvc })
     else
         native_target;
     const gpui_host = buildNativeHostLib(b, gpui_target, .ReleaseSafe, gpui_options.createModule(), true);
