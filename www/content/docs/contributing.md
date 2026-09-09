@@ -1129,6 +1129,16 @@ the production Windows platform target nor constitute a dependency release.
 The shader compiler remains a Windows build tool; the separate experiment aims
 to remove SDK library discovery from Roc's final application link.
 
+The candidate workflow's `apps` mode consumes successful, identified CI artifacts:
+a fixed raw GNU host build, the complete Windows DLL inventory, and an explicitly
+reviewed runtime run/source/archive hash. It structurally validates COFF import
+records and descriptors before separating them, preserves implementation members
+byte-for-byte, and records the transformation. Native builds, semantic specs and
+rendering checks run for all six examples, followed by fresh-cache HTTP bundle
+consumption. This is a candidate test, not signed dependency admission. Its
+receipt explicitly identifies the still-pending complete GNU host notice payload;
+measured candidate size must not be reported as the complete release bundle size.
+
 Other native targets, including Intel macOS and Windows on Arm, are not
 implemented.
 The GUI builder selects `TOOLCHAINS=Metal` on macOS unless explicitly overridden;
