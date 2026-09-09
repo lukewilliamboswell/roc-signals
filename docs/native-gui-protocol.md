@@ -1,17 +1,19 @@
 # Native GUI presentation boundary
 
-The statically linked GUI boundary uses protocol version **8**. Zig exports
+The statically linked GUI boundary uses protocol version **9**. Zig exports
 `signals_protocol_version` and `signals_node_size`; Rust checks both before
-mount. Version 8 adds the explicit placeholder text slot to the node layout.
-Version 7 added explicit event-detail dispatch, and the node layout retains
-the close-request event ID and close-decision word introduced in version 6.
+mount. Version 9 adds the explicit image-source text slot to the node layout.
+Version 8 added the placeholder text slot, version 7 added explicit
+event-detail dispatch, and the node layout retains the close-request event ID
+and close-decision word introduced in version 6.
 Both sides must be rebuilt together.
 The browser protocol and its version are unchanged.
 
 `Gui` lowers native presentation through the shared scalar descriptor machinery.
 Text field **8** is `native_style`, field **9** is `native_viewport`, field **10**
-is `native_drag_key`, field **11** is `native_window_close`, and field **12** is
-`native_placeholder`; boolean fields **4** and **5** are `selected` and
+is `native_drag_key`, field **11** is `native_window_close`, field **12** is
+`native_placeholder`, and field **13** is `native_image_source`; boolean fields
+**4** and **5** are `selected` and
 `native_drop_target`. The unused
 IDs 7 and 3 remain the existing custom text/bool field markers. Native fields
 are explicit protocol fields, not CSS, class names, test identifiers, or custom
@@ -58,6 +60,17 @@ the supplied text while a controlled field's document is empty, and a field
 without the attribute shows nothing. Labels never become placeholder text, and
 the host holds no default hint strings. The browser host rejects the field like
 every other native scalar.
+
+`Gui.image` lowers element tag `img` with its relative source text on field
+13. The source is application data, not a filesystem capability: the host
+resolves it against one process-wide assets root (`--assets-root <dir>`, else
+`ROC_SIGNALS_ASSETS_ROOT`, else `assets/` beside the executable) and refuses
+absolute paths, `..` traversal, URI schemes, backslashes, and symbolic links
+anywhere below the root. Sources are 1 to 1024 UTF-8 bytes. A source that does
+not resolve to a regular decodable image renders a neutral placeholder box
+(surface `0x1B2A33`, border `0x3A4F5C`) of the element's styled size; nothing
+is fetched remotely. The display-free spec host stores the field like every
+other native scalar and never touches the filesystem.
 
 Ordinary Tab and Shift-Tab use GPUI's committed tab-stop index after focused
 handlers decline the key. A Runtime owns one window-filtered GPUI subscription
@@ -226,7 +239,7 @@ This is presentation policy, not a second timer, observer, or reactive graph.
 factory takes a diagnostic label; the label never selects host behavior.
 `Node.TaskKind` is an explicit closed route: external=0, choose-file=1,
 choose-directory=2, choose-save-path=3, read-text=4, write-text=5, scan-directory=6,
-list-directory=7, open-path=8, read-preview=9, read-log=10.
+list-directory=7, open-path=8, read-preview=9, read-log=10, verify-assets=11.
 The browser rejects non-external task routes before command publication. Its
 existing task command wire format is unchanged.
 
@@ -278,6 +291,7 @@ Task kind defines the remaining request frames:
 | Read text / scan / list directory / open path / read preview | absolute path |
 | Read log | absolute path, position (`start`, `end`, `after`), device, inode, offset |
 | Write text | absolute path, complete UTF-8 text |
+| Verify assets | asset count, then per asset: relative name, lowercase hex SHA-256 |
 
 Choice results are `chosen, path` or `canceled`. A user dismissing a dialog is
 `Done(Choice.Canceled)`; explicit task cancellation is `Failed(Error.Canceled)`.
@@ -336,6 +350,21 @@ inventing elapsed-time values or merging queued ticks. Long waits are split into
 day-sized executor waits to avoid overflowing native clock arithmetic. Normal
 smoke checks disable clocks for deterministic assertions; `--smoke-timers`
 enables real timer delivery and waits 1.2 seconds after the requested action.
+
+### Asset verification
+
+`VerifyAssets` requests carry a canonical asset count of 1 to **256**, then a
+relative name of 1 to **1024 UTF-8 bytes** and a 64-character lowercase hex
+SHA-256 digest per asset; the Zig publication validator rejects any other
+shape. The worker hashes each named file under the committed assets root
+through the same no-follow primitives as every Files read, bounded at
+**32 MiB** per asset. Results are `count` followed by `name, status` pairs in
+manifest order; statuses are `ok`, `missing` (also covering symlinked or
+special files), and `mismatch`. A traversing name, an unreadable file, or an
+asset above the byte bound fails the whole task with its typed error. Apps
+ingest `assets/manifest.json` at compile time and start verification once at
+mount; specs settle it deterministically with the `resolve-file-assets`
+fixture.
 
 ### Directory navigation, previews, associated applications, and logs
 

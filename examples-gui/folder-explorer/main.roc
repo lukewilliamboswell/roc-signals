@@ -1,21 +1,60 @@
 app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc" }
 
 import Explorer
+import Manifest
 import Session
 import pf.Files
+import "assets/manifest.json" as manifest_json : Str
 import pf.Elem exposing [Elem]
 import pf.Gui
 import pf.Rows
 import pf.Signal
 import pf.Ui
 
-Handles : { model : Ui.State(Session.State), order : Ui.State(Explorer.Sort) }
+Handles : { model : Ui.State(Session.State), order : Ui.State(Explorer.Sort), asset_problem : Ui.State(Str) }
+
+## Parsing the ingested manifest at the top level runs at compile time, so a
+## malformed assets/manifest.json fails the build instead of the running app.
+asset_entries : List(Files.AssetEntry)
+asset_entries = Manifest.entries(manifest_json)
+
+## Folder and file rows show a small generated glyph beside their kind text; a
+## missing glyph file renders the host's neutral placeholder box instead.
+kind_glyph : Explorer.Kind -> Elem
+kind_glyph = |kind| {
+	glyph = |source, label| Gui.image({ source, label }, [Gui.style({ ..Gui.style_default, width: Px(16), height: Px(16), radius: 3 })])
+	match kind {
+		Directory => glyph("glyphs/folder.png", "Folder glyph")
+		File => glyph("glyphs/file.png", "File glyph")
+		_ => Gui.text("")
+	}
+}
+
+asset_status_text : Files.AssetStatus -> Str
+asset_status_text = |status| match status {
+	Files.AssetStatus.Ok => "ok"
+	Files.AssetStatus.Missing => "missing"
+	Files.AssetStatus.Mismatch => "altered"
+}
+
+## All-ok verification reports render as an empty (invisible) status line.
+asset_problem_text : List(Files.AssetCheck) -> Str
+asset_problem_text = |report| {
+	bad = report.keep_if(|check| check.status != Files.AssetStatus.Ok)
+	if bad.is_empty() {
+		""
+	} else {
+		names = bad.map(|check| "${check.name} (${asset_status_text(check.status)})")
+		"Problem assets: ${Str.join_with(names, ", ")}. Rows show placeholder boxes until the assets are restored."
+	}
+}
 
 Tasks : {
 	chooser : Signal.Task(Files.Choice, Files.Error),
 	listing : Signal.Task(Files.Directory, Files.Error),
 	preview : Signal.Task(Files.Preview, Files.Error),
 	open : Signal.Task(Files.Opened, Files.Error),
+	verify : Signal.Task(List(Files.AssetCheck), Files.Error),
 }
 
 ## Filtering and ordering run only when their projected inputs change. Selection
@@ -41,9 +80,12 @@ entry_row = |row, handles, selected, ready| {
 				[Gui.label(key), Gui.style({ ..Gui.style_default, grow: True, padding: 6, radius: 6, overflow_x: Clip })],
 				Ui.action(row.signal(), |entry| handles.model.update_cmd(|state| Session.activate(state, entry))),
 			),
-			Gui.column(
-				[Gui.style({ ..Gui.style_default, width: Px(90), padding: 6, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })],
-				[Gui.text_s(row.map(|entry| entry.kind.to_str()))],
+			Gui.row(
+				[Gui.style({ ..Gui.style_default, width: Px(90), padding: 6, gap: 6, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })],
+				[
+					Ui.switch(row.map(|entry| entry.kind), kind_glyph),
+					Gui.text_s(row.map(|entry| entry.kind.to_str())),
+				],
 			),
 			Gui.column(
 				[Gui.style({ ..Gui.style_default, width: Px(90), padding: 6, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })],
@@ -170,6 +212,15 @@ cancel = |tasks, phase| match phase {
 
 workflow : Handles, Tasks -> List(Elem)
 workflow = |handles, tasks| [
+	Ui.on_mount(|| Files.verify_assets(tasks.verify, asset_entries)),
+	Ui.on_change(
+		Signal.from_task(tasks.verify),
+		|status| match status {
+			Signal.TaskStatus.Loading => Signal.noop
+			Signal.TaskStatus.Failed(error) => handles.asset_problem.set_cmd("Asset verification failed: ${Files.error_text(error)}")
+			Signal.TaskStatus.Done(report) => handles.asset_problem.set_cmd(asset_problem_text(report))
+		},
+	),
 	Ui.on_change(
 		handles.model.signal().map(|state| state.phase),
 		|phase| match phase {
@@ -216,7 +267,7 @@ workflow = |handles, tasks| [
 
 explorer_view : Handles -> Elem
 explorer_view = |handles| {
-	tasks = { chooser: Files.choose_directory_task("folder-choice"), listing: Files.list_directory_task("folder-list"), preview: Files.read_preview_task("file-preview"), open: Files.open_path_task("file-open") }
+	tasks = { chooser: Files.choose_directory_task("folder-choice"), listing: Files.list_directory_task("folder-list"), preview: Files.read_preview_task("file-preview"), open: Files.open_path_task("file-open"), verify: Files.verify_assets_task("asset-verify") }
 	model = handles.model.signal()
 	dataset = model.map(|state| state.rows)
 	source = model.map(|state| state.source)
@@ -254,6 +305,10 @@ explorer_view = |handles| {
 			Gui.column(
 				[Gui.style({ ..Gui.style_default, foreground: Rgb(0xA9BFCC) })],
 				[Gui.text("Browse a folder on this computer, or explore the built-in sample workspace.")],
+			),
+			Gui.column(
+				[Gui.test_id("asset-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
+				[Gui.text_s(handles.asset_problem.signal())],
 			),
 			Gui.row(
 				[Gui.style({ ..Gui.style_default, gap: 8 })],
@@ -356,4 +411,4 @@ explorer_view = |handles| {
 }
 
 main : () -> Elem
-main = || Ui.state(Session.initial, |model| Ui.state(NameAscending, |order| explorer_view({ model, order })))
+main = || Ui.state(Session.initial, |model| Ui.state(NameAscending, |order| Ui.state("", |asset_problem| explorer_view({ model, order, asset_problem }))))

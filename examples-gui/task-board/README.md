@@ -36,6 +36,18 @@ this example. Deletion uses a scoped native dialog with Cancel and Escape.
 Semantic drop tests exercise the shared action path; the native capability
 fixtures separately cover pointer gesture delivery and stale drag rejection.
 
+## Assets
+
+Assignee avatars are tiny generated PNGs in `assets/` — regenerate them and
+`assets/manifest.json` (real SHA-256 hashes) with `python3 assets/generate.py`.
+The app ingests the manifest at compile time and verifies it at startup through
+`Files.verify_assets`; if an asset is missing or altered, a danger-colored
+status line names it and the affected cards show neutral placeholder boxes
+while everything else keeps working. When running the built binary directly,
+point the host at the app's assets with
+`--assets-root examples-gui/task-board/assets` (or `ROC_SIGNALS_ASSETS_ROOT`);
+image sources are always relative paths inside that root.
+
 ## Documents and undo
 
 The document stores version 1 JSON, explicit task identities, ordered columns,
