@@ -139,6 +139,22 @@ class DependencyStagingTests(unittest.TestCase):
         self.assertFalse((stage / "targets/x64win/injected.lib").exists())
         self.assertEqual((stage / "dependency-manifests/windows-imports-x64win.json").read_text(), "verified manifest")
 
+    def test_gui_bundle_rejects_combined_only_and_missing_engine_layouts(self):
+        for target in ("x64glibc", "arm64mac", "x64win"):
+            tree = self.root / target
+            directory = tree / target
+            directory.mkdir(parents=True)
+            (directory / ("host.lib" if target == "x64win" else "libhost.a")).write_bytes(b"old")
+            with self.assertRaisesRegex(ValueError, "missing or invalid GUI archive"):
+                bundle_platforms.validate_gui_archives(tree)
+            rust, engine = (("signals_gpui_host.lib", "engine.lib") if target == "x64win"
+                            else ("libsignals_gpui_host.a", "libengine.a"))
+            (directory / rust).write_bytes(b"rust")
+            with self.assertRaisesRegex(ValueError, "missing or invalid GUI archive"):
+                bundle_platforms.validate_gui_archives(tree)
+            (directory / engine).write_bytes(b"engine")
+            bundle_platforms.validate_gui_archives(tree)
+
     def test_windows_bundle_has_no_unsigned_fallback(self):
         source = self.source / "targets/x64win"
         source.mkdir()

@@ -58,6 +58,20 @@ def stage_dependency_inputs(inputs, identities, stage):
     shutil.copyfile(inputs / "dependencies.lock.json", stage / "dependencies.lock.json")
 
 
+def validate_gui_archives(tree):
+    """Reject incomplete or obsolete host layouts before assembling a bundle."""
+    for target in ("x64glibc", "arm64mac", "x64win"):
+        directory = tree / target
+        if not directory.exists():
+            continue
+        names = (("signals_gpui_host.lib", "engine.lib") if target == "x64win"
+                 else ("libsignals_gpui_host.a", "libengine.a"))
+        for name in names:
+            path = directory / name
+            if not path.is_file() or path.is_symlink():
+                raise ValueError(f"missing or invalid GUI archive: {path}; rebuild the target directory")
+
+
 def stage_windows_inputs(source, stage):
     """Combine the selected Windows host outputs with newly verified imports."""
     names = ("signals_gpui_host.lib", "engine.lib", "signals.res")
@@ -148,6 +162,7 @@ def main():
             for tree in trees:
                 if not tree.is_dir():
                     raise SystemExit(f'Prebuilt targets directory not found: {tree}')
+                validate_gui_archives(tree)
                 if (tree / 'x64win').is_dir():
                     windows_targets.append(tree / 'x64win')
                 hosts += [(tree, p) for p in tree.rglob('*')
