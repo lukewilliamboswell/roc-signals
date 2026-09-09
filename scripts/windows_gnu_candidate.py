@@ -65,11 +65,11 @@ def main():
     inventory["sdk_version"] = SDK
     inventory["source_commit"] = commit
     inventory["runner_image"] = os.environ.get("ImageVersion")
-    versions = subprocess.check_output(["powershell", "-NoProfile", "-Command",
+    versions = subprocess.check_output(["pwsh", "-NoProfile", "-Command",
         "$ErrorActionPreference='Stop'; Get-Item -LiteralPath '" + str(fxc) + "','" + str(dll)
         + "' | ForEach-Object { $_.VersionInfo | Select-Object FileName,FileVersion,ProductVersion } | ConvertTo-Json"], text=True)
     inventory["file_versions"] = json.loads(versions)
-    signatures = subprocess.check_output(["powershell", "-NoProfile", "-Command",
+    signatures = subprocess.check_output(["pwsh", "-NoProfile", "-Command",
         "$ErrorActionPreference='Stop'; Get-AuthenticodeSignature -LiteralPath '" + str(fxc) + "','" + str(dll)
         + "' | Select-Object Path,Status,@{n='Subject';e={$_.SignerCertificate.Subject}},"
         + "@{n='Thumbprint';e={$_.SignerCertificate.Thumbprint}} | ConvertTo-Json"], text=True)
@@ -77,7 +77,7 @@ def main():
     inventory["fxc_path"] = str(fxc)
     inventory["compiler_dll_path"] = str(dll)
     inventory["loaded_module_probe"] = json.loads(subprocess.check_output([
-        "powershell", "-NoProfile", "-File", str(ROOT / "scripts/windows_fxc_inventory.ps1"),
+        "pwsh", "-NoProfile", "-File", str(ROOT / "scripts/windows_fxc_inventory.ps1"),
         "-Fxc", str(fxc), "-OutputDirectory", str(output)], text=True))
     loaded = inventory["loaded_module_probe"]
     if Path(loaded["path"]).resolve() != dll.resolve() or loaded["sha256"].lower() != inventory[dll.name]["sha256"]:
