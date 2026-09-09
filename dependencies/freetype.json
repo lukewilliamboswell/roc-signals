@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "name": "freetype",
+  "version": "2.14.3",
+  "target": "x64glibc",
+  "source": {
+    "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz",
+    "sha256": "36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f",
+    "size": 2670220,
+    "directory": "freetype-2.14.3"
+  },
+  "cmake_options": [
+    "-DBUILD_SHARED_LIBS=ON",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DFT_REQUIRE_ZLIB=ON",
+    "-DFT_REQUIRE_BZIP2=ON",
+    "-DFT_REQUIRE_PNG=ON",
+    "-DFT_REQUIRE_HARFBUZZ=ON",
+    "-DFT_DYNAMIC_HARFBUZZ=OFF",
+    "-DFT_REQUIRE_BROTLI=ON"
+  ]
+}

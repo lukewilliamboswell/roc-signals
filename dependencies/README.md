@@ -19,6 +19,22 @@ against only the candidate ADVAPI32 import library and Zig's KERNEL32 imports,
 then calls an imported function before publication. The Windows dependency
 workflow has a separate release tag and signing identity from musl.
 
+`freetype.json` pins the upstream FreeType source archive and explicitly requires
+zlib, bzip2, PNG, HarfBuzz, and Brotli support. Its Linux producer uses the Ubuntu
+container digest and authenticated package snapshot in `linux/Dockerfile` for
+build tools and headers. Compilation then runs without network access in a clean
+container. The artifact records the complete installed package versions, builder
+image identity, recipe and probe hashes, source identity, and license notices.
+Two clean builds must produce identical archives, and each extracted candidate
+must parse and render the expected bitmap glyph before it can be published.
+
+The FreeType shared object is a link input. Its SONAME remains
+`libfreetype.so.6`, which the operating system resolves at application runtime;
+publishing this artifact does not freeze the runtime font stack. Producer support
+alone does not adopt a library: consumption requires a separately reviewed lock
+update and integration tests. Other Linux GUI link inputs remain outside this
+producer's scope.
+
 Every archive contains `dependency.json`, its exact target files, and license
 notices. The manifest records upstream identity, producer/recipe hashes, compiler
 configuration, and every payload file's size and digest. Tar metadata and paths
