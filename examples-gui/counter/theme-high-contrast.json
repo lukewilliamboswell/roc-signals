@@ -1,0 +1,16 @@
+{
+	"background": "#000000",
+	"surface": "#101010",
+	"card": "#1C1C1C",
+	"border": "#6E8998",
+	"text_primary": "#FFFFFF",
+	"text_secondary": "#D4E2EA",
+	"text_tertiary": "#B4C6D0",
+	"accent": "#1F6FB8",
+	"danger": "#FFB3AC",
+	"warning": "#FFD590",
+	"success": "#A5EBBE",
+	"radius": 2,
+	"control_padding": 12,
+	"gap": 10
+}
