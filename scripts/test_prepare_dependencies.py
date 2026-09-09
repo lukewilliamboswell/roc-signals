@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import hashlib
 import json
+import shutil
 import sys
 import subprocess
 import tempfile
@@ -17,6 +18,117 @@ import prepare_dependencies
 
 
 class DependencyStagingTests(unittest.TestCase):
+    def test_xkbcommon_admission_requires_both_libraries_and_license(self):
+        expected = {"targets/x64glibc/" + name for name in prepare_dependencies.XKBCOMMON_LIBRARIES}
+        expected.add("licenses/xkbcommon/LICENSE")
+        files = dict.fromkeys(expected, {})
+
+        def materialize(lock, identities, cache, destination):
+            self.assertEqual(identities, (prepare_dependencies.XKBCOMMON,))
+            artifact = destination / prepare_dependencies.XKBCOMMON
+            artifact.mkdir(parents=True)
+            (artifact / "dependency.json").write_text(json.dumps({"files": files}))
+
+        with patch.object(prepare_dependencies, "materialize", side_effect=materialize):
+            with prepare_dependencies.verified_xkbcommon() as admitted:
+                self.assertTrue(admitted.is_dir())
+            for missing in sorted(expected):
+                with self.subTest(missing=missing):
+                    files = dict.fromkeys(expected - {missing}, {})
+                    with self.assertRaisesRegex(ValueError, "incomplete or unexpected xkbcommon"):
+                        with prepare_dependencies.verified_xkbcommon():
+                            self.fail("incomplete inventory was admitted")
+
+    def test_xkbcommon_verification_failure_preserves_inputs_and_prevents_build(self):
+        destination = self.root / "linux"
+        destination.mkdir()
+        for name in prepare_dependencies.XKBCOMMON_LIBRARIES:
+            (destination / name).write_bytes(b"previous verified bytes")
+        with patch.object(prepare_dependencies, "verified_xkbcommon", side_effect=ValueError("untrusted signer")):
+            with self.assertRaisesRegex(ValueError, "untrusted signer"):
+                prepare_dependencies.install_xkbcommon(destination)
+        for name in prepare_dependencies.XKBCOMMON_LIBRARIES:
+            self.assertEqual((destination / name).read_bytes(), b"previous verified bytes")
+        with patch.object(build_gui, "host_target", return_value="x64glibc"), patch.object(
+                build_gui, "install_freetype", return_value={"artifacts": {}}), patch.object(
+                build_gui, "install_xkbcommon", side_effect=ValueError("untrusted signer")), patch.object(
+                build_gui.subprocess, "run") as compiler:
+            with self.assertRaisesRegex(ValueError, "untrusted signer"):
+                build_gui.build()
+        compiler.assert_not_called()
+
+    def test_xkbcommon_install_stages_both_files_before_replacing_either(self):
+        target = self.inputs / prepare_dependencies.XKBCOMMON / "targets/x64glibc"
+        target.mkdir(parents=True)
+        destination = self.root / "linux"
+        destination.mkdir()
+        for name in prepare_dependencies.XKBCOMMON_LIBRARIES:
+            (destination / name).write_bytes(b"previous")
+        (target / "libxkbcommon.so").write_bytes(b"verified core")
+        with patch.object(prepare_dependencies, "verified_xkbcommon", self.verified):
+            with self.assertRaises(FileNotFoundError):
+                prepare_dependencies.install_xkbcommon(destination)
+            for name in prepare_dependencies.XKBCOMMON_LIBRARIES:
+                self.assertEqual((destination / name).read_bytes(), b"previous")
+            (target / "libxkbcommon-x11.so").write_bytes(b"verified x11")
+            prepare_dependencies.install_xkbcommon(destination)
+        self.assertEqual((destination / "libxkbcommon.so").read_bytes(), b"verified core")
+        self.assertEqual((destination / "libxkbcommon-x11.so").read_bytes(), b"verified x11")
+        self.assertEqual({p.name for p in destination.iterdir()}, set(prepare_dependencies.XKBCOMMON_LIBRARIES))
+
+    def test_gui_bundle_replaces_stale_keyboard_libraries_with_verified_release(self):
+        source = self.root / "platform-gui/targets/x64glibc"
+        source.mkdir(parents=True)
+        for name in ("libsignals_gpui_host.a", "libengine.a", "libfreetype.so", *prepare_dependencies.XKBCOMMON_LIBRARIES):
+            (source / name).write_bytes(b"checkout bytes")
+
+        @contextmanager
+        def verified(identity, files):
+            directory = self.root / identity
+            artifact = directory / identity
+            artifact.mkdir(parents=True)
+            for name, contents in files.items():
+                path = artifact / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(contents)
+            (artifact / "dependency.json").write_text(json.dumps({"files": list(files)}))
+            (directory / "dependencies.lock.json").write_text(json.dumps({
+                "schema_version": 1, "artifacts": {identity: {"sha256": identity}},
+            }))
+            yield directory
+
+        def inspect_bundle(command, cwd, **kwargs):
+            stage = Path(cwd)
+            for name in prepare_dependencies.XKBCOMMON_LIBRARIES:
+                self.assertEqual((stage / "targets/x64glibc" / name).read_bytes(), b"verified " + name.encode())
+            self.assertEqual((stage / "licenses/xkbcommon/LICENSE").read_bytes(), b"upstream notice")
+            receipt = json.loads((stage / "dependencies.lock.json").read_text())
+            self.assertEqual(set(receipt["artifacts"]), {prepare_dependencies.FREETYPE, prepare_dependencies.XKBCOMMON})
+            self.assertTrue((stage / "dependency-manifests/xkbcommon-x64glibc.json").is_file())
+            raise RuntimeError("bundle inputs inspected")
+
+        keyboard = {"targets/x64glibc/" + name: b"verified " + name.encode()
+                    for name in prepare_dependencies.XKBCOMMON_LIBRARIES}
+        keyboard["licenses/xkbcommon/LICENSE"] = b"upstream notice"
+        with patch.object(bundle_platforms, "ROOT", self.root), patch.object(
+                bundle_platforms, "prepare_platform"), patch.object(
+                bundle_platforms, "verified_freetype", side_effect=lambda: verified(
+                    prepare_dependencies.FREETYPE, {"targets/x64glibc/libfreetype.so": b"verified font"})), patch.object(
+                bundle_platforms, "verified_xkbcommon", side_effect=lambda: verified(
+                    prepare_dependencies.XKBCOMMON, keyboard)), patch.object(
+                bundle_platforms.shutil, "copyfile", wraps=shutil.copyfile) as copy_file, patch.object(
+                bundle_platforms.subprocess, "run", side_effect=inspect_bundle), patch.object(
+                sys, "argv", ["bundle_platforms.py", "--package", "gui", "--no-build", "--output-dir", str(self.root / "out")]):
+            # Supply the host's own license, which normal source preparation preserves.
+            license_file = self.root / "crates/gpui-host/LICENSE-GPUI"
+            license_file.parent.mkdir(parents=True)
+            license_file.write_text("GPUI")
+            with self.assertRaisesRegex(RuntimeError, "bundle inputs inspected"):
+                bundle_platforms.main()
+            copied_sources = {Path(call.args[0]) for call in copy_file.call_args_list}
+            for name in prepare_dependencies.XKBCOMMON_LIBRARIES:
+                self.assertNotIn(source / name, copied_sources)
+
     def test_freetype_admission_requires_complete_license_inventory(self):
         files = {"targets/x64glibc/libfreetype.so": {}}
         files.update({"licenses/freetype/" + name: {} for name in

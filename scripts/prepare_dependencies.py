@@ -20,6 +20,36 @@ CACHE = Path.home() / ".cache/roc-signals/dependencies"
 WEB_ARTIFACTS = ("musl-x64musl", "musl-arm64musl")
 WINDOWS_IMPORTS = "windows-imports-x64win"
 FREETYPE = "freetype-x64glibc"
+XKBCOMMON = "xkbcommon-x64glibc"
+XKBCOMMON_LIBRARIES = ("libxkbcommon.so", "libxkbcommon-x11.so")
+
+
+@contextmanager
+def verified_xkbcommon(lock=LOCK, cache=CACHE):
+    """Admit both keyboard libraries and their upstream redistribution notice."""
+    with tempfile.TemporaryDirectory(prefix="signals-verified-xkbcommon-") as temporary:
+        destination = Path(temporary) / "inputs"
+        materialize(lock, (XKBCOMMON,), cache, destination)
+        manifest = json.loads((destination / XKBCOMMON / "dependency.json").read_text())
+        expected = {"targets/x64glibc/" + name for name in XKBCOMMON_LIBRARIES}
+        expected.add("licenses/xkbcommon/LICENSE")
+        if set(manifest["files"]) != expected:
+            raise ValueError("incomplete or unexpected xkbcommon inputs")
+        yield destination
+
+
+def install_xkbcommon(destination, lock=LOCK, cache=CACHE):
+    """Verify the release and stage both development inputs before replacement."""
+    with verified_xkbcommon(lock, cache) as inputs:
+        source = inputs / XKBCOMMON / "targets/x64glibc"
+        destination.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=destination, prefix=".xkbcommon-") as temporary:
+            staged = Path(temporary)
+            for name in XKBCOMMON_LIBRARIES:
+                shutil.copyfile(source / name, staged / name)
+            for name in XKBCOMMON_LIBRARIES:
+                (staged / name).replace(destination / name)
+        return json.loads((inputs / "dependencies.lock.json").read_text())
 
 
 @contextmanager

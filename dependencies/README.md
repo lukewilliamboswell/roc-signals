@@ -36,8 +36,10 @@ runtime search paths before packaging. A self-contained keyboard-map probe runs
 against the extracted candidate; publication requires identical archives from two
 clean builds and includes the upstream license. XCB build inputs come from the
 authenticated Ubuntu snapshot, and XCB runtime libraries and keyboard layout data
-remain operating-system inputs. A producer release does not adopt these libraries:
-the platform must separately pin and verify the resulting dependency lock.
+remain operating-system inputs. The root consumer lock pins the independent
+release. Linux GUI builds verify it before compilation; bundles verify it again
+in fresh staging and exclude both mutable development copies. Ordinary host,
+engine, API, and example changes reuse these released link inputs.
 
 The FreeType shared object is a link input. Its SONAME remains
 `libfreetype.so.6`, which the operating system resolves at application runtime;
@@ -104,6 +106,7 @@ input or for historical platform releases.
 | musl libc and startup objects | Independent source build, native candidate tests, reproducibility check, immutable release, and verified consumer lock | Dependency updates still require a deliberate release and lock review. |
 | Windows ADVAPI32 import library | Independent generation from pinned MinGW definitions, native candidate test, and verified release consumption | This describes the import library, not the Windows system DLL supplied by the operating system. |
 | Linux GUI FreeType | Independent Zig build from pinned source, native candidate tests, reproducibility checks, and verified release consumption | Supporting build libraries still come from the authenticated builder snapshot; the operating system supplies runtime font libraries. |
+| Linux GUI xkbcommon and xkbcommon-X11 | Independent Zig/Meson source build, native candidate test, reproducibility check, and verified release consumption | XCB runtime libraries and keyboard layout data remain operating-system inputs; applications resolve the system SONAMEs at runtime. |
 | Other Linux GUI shared libraries and startup objects | `build_gui.py` copies the build machine's installed inputs | No independent pinned producer, signed dependency receipt, or verified bundle admission yet; recorded local paths do not establish provenance. |
 | macOS framework and system link stubs | `build_gui.py` copies the selected Xcode SDK's stubs and records SDK identifiers | No independently versioned, verified SDK artifact yet. SDK origin and redistribution rights must be established; proprietary SDK stubs cannot be described as an open-source build. |
 | Rust crates embedded in the GUI host | Cargo uses the reviewed lockfile and CI caches compiled dependencies; cross-crate release LTO is disabled | The cache is not a separately released dependency artifact. Generic Rust code can be instantiated in the host, so separating it into a reusable binary requires an explicit ABI and compatibility policy. |
