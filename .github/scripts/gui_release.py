@@ -120,6 +120,7 @@ def inspect_platform(path, manifest):
                     parts = Path(name).parts
                     total += member.size
                     if (not member.isfile() or name in observed or not parts or Path(name).is_absolute()
+                            or name != Path(name).as_posix()
                             or '..' in parts or '\\' in name or total > 100 * 1024 ** 2):
                         raise ValueError('unsafe or oversized GUI platform archive')
                     with archive.extractfile(member) as source:
@@ -169,7 +170,8 @@ def extract_starters(path, destination):
         for entry in archive.infolist():
             name = Path(entry.filename)
             total += entry.file_size
-            if (entry.filename in seen or name.is_absolute() or '..' in name.parts or '\\' in entry.filename
+            if (entry.filename in seen or not name.parts or entry.filename != name.as_posix()
+                    or name.is_absolute() or '..' in name.parts or '\\' in entry.filename
                     or entry.is_dir() or (entry.external_attr >> 16) & 0o170000 == 0o120000
                     or total > 32 * 1024 ** 2):
                 raise ValueError('unsafe or oversized GUI starter archive')

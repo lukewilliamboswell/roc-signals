@@ -211,7 +211,10 @@ class GuiReleaseTests(unittest.TestCase):
             return path
         release.inspect_platform(pack(), self.manifest)
         for extra, error in (('targets/x64glibc/unverified.a', 'declared dependency inventories'),
-                             ('targets/x64win/unverified.lib', 'unselected target')):
+                             ('targets/x64win/unverified.lib', 'unselected target'),
+                             ('./targets/x64glibc/gui-host.a', 'unsafe'),
+                             ('targets//x64glibc/gui-host.a', 'unsafe'),
+                             ('targets/x64glibc/./gui-host.a', 'unsafe')):
             with self.subTest(extra=extra):
                 files[extra] = b'unverified input'
                 with self.assertRaisesRegex(ValueError, error):
@@ -227,10 +230,13 @@ class GuiReleaseTests(unittest.TestCase):
 
     def test_unsafe_starters_are_rejected(self):
         path = self.root / 'unsafe.zip'
-        with zipfile.ZipFile(path, 'w') as archive:
-            archive.writestr('../outside', b'unsafe')
-        with self.assertRaisesRegex(ValueError, 'unsafe'):
-            release.extract_starters(path, self.root / 'extract')
+        for name in ('../outside', './examples-gui/counter/main.roc',
+                     'examples-gui//counter/main.roc', 'examples-gui/counter/./main.roc'):
+            with self.subTest(name=name):
+                with zipfile.ZipFile(path, 'w') as archive:
+                    archive.writestr(name, b'unsafe')
+                with self.assertRaisesRegex(ValueError, 'unsafe'):
+                    release.extract_starters(path, self.root / 'extract')
 
     def test_publication_refuses_nonmain_and_existing_tags(self):
         with patch.dict(release.os.environ, {'GITHUB_EVENT_NAME': 'pull_request'}, clear=True), \
