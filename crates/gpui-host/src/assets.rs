@@ -22,8 +22,19 @@ pub const MAX_SOURCE_BYTES: usize = 1024;
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 /// Commits the process-wide assets root exactly once, before any resolution.
+/// A relative root is anchored to the working directory and canonicalized, so
+/// the no-follow verification primitives receive an absolute, link-free base;
+/// symlink refusal applies to everything below the root.
 pub fn set_root(path: PathBuf) {
-    ROOT.set(path).expect("assets root committed twice");
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .expect("working directory required for a relative assets root")
+            .join(path)
+    };
+    let absolute = absolute.canonicalize().unwrap_or(absolute);
+    ROOT.set(absolute).expect("assets root committed twice");
 }
 
 /// Returns the committed root, or the default `assets/` beside the executable.
