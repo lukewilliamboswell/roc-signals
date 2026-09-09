@@ -1173,24 +1173,39 @@ any executed or compiled freetype-sys build script. Changing that crate version
 requires reviewing the override. macOS needs Xcode
 with its Metal compiler component (`xcodebuild -downloadComponent MetalToolchain`).
 If Xcode reports mismatched support frameworks, complete
-`xcodebuild -runFirstLaunch` first. Windows needs the `x86_64-pc-windows-msvc`
-Rust toolchain; the optimized host build also compiles GPUI's shaders with the
-Windows SDK's `fxc.exe` (set `GPUI_FXC_PATH` if it is not discovered), and a
-development build compiles them at runtime instead. Zig supplies the archiver
-and resource compiler, Roc's own `x64win` link supplies the C runtime, and the
-one additional import library is fetched from the independently signed Windows
-dependency release pinned in `dependencies.lock.json`. Its producer uses Zig's
-MinGW-w64 definitions. Source host builds require authenticated GitHub CLI access
-and verify that dependency before compiling the host; there is no local import
-generation fallback. Windows bundle staging verifies it again and includes the
-selected lock, manifest, and license. The host build still compiles its own
-application manifest resource. The host static archive is not linked through
-MSVC, but Roc's final Windows application link still discovers installed MSVC/SDK
-inputs implicitly; the independent import release does not yet remove that
-consumer requirement. Use
-`python` rather than
-`python3` in the commands below on Windows, where `python3` is often a Store
-shortcut; `build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
+`xcodebuild -runFirstLaunch` first. Windows uses Rust's MSVC compiler host with
+its `x86_64-pc-windows-gnullvm` target (`rustup target add --toolchain 1.95.0
+x86_64-pc-windows-gnullvm`). The shared Windows builder pins Zig 0.16.0 and the
+Microsoft-signed FXC/compiler DLL pair from SDK 10.0.26100.0, file version
+10.0.26100.8249. It checks the actual loaded compiler DLL and committed hashes;
+ambient `GPUI_FXC_PATH` cannot override release shader tooling. Optimized builds
+compile GPUI shaders before packaging; development builds compile them at runtime.
+
+Windows host builds verify and reuse both independently signed dependencies in
+`dependencies.lock.json`: complete per-DLL import archives and GNU CRT inputs.
+Authenticated GitHub CLI access is required. There is no local native dependency
+build fallback. The host and engine use the GNU ABI, and the host build produces
+its own application manifest resource. Structural COFF validation separates only
+import records and exact linker helpers from the raw Rust archive, preserving
+every implementation member byte-for-byte and in order. The transformation
+receipt binds raw Cargo output to the final archive; engine/resource bytes remain
+unchanged. Complete original notices are bundled and the validated source
+companion remains a separate release asset.
+
+Roc's final Windows link explicitly selects `--target=x64mingw` and uses all
+released inputs from the platform header. For a direct Windows build, run
+`roc build --target=x64mingw examples-gui/counter/main.roc --output=Counter.exe`. It does not discover installed MSVC/SDK
+libraries. FXC remains a build-time SDK tool. Use `python` instead of `python3`
+in the commands below on Windows, where `python3` can be a Store shortcut.
+`build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
+
+The separate `Windows GNU host candidate` workflow can inventory shader tooling
+or test identified CI artifacts before release. It uses the same native builder
+and structural transformer as production. Its full app gate admits original
+notices and paired sources, then runs all six builds/specs/render checks natively
+and through a fresh HTTP bundle cache. Candidate artifacts do not substitute for
+signed production dependency admission.
+
 Other native targets, including Intel macOS and Windows on Arm, are not
 implemented.
 The GUI builder selects `TOOLCHAINS=Metal` on macOS unless explicitly overridden;
@@ -1198,8 +1213,7 @@ use the same setting for direct `cargo test` commands if Xcode's default lookup
 still reports the installed Metal component as missing.
 
 The GUI platform header lists the Rust host and Zig engine as separate link
-inputs: `libsignals_gpui_host.a` and `libengine.a` on Linux and macOS, or
-`signals_gpui_host.lib` and `engine.lib` on Windows. Roc links these with the
+inputs: `libsignals_gpui_host.a` and `libengine.a` on all supported native targets. Roc links these with the
 application object and the other declared inputs to produce the executable.
 The builder does not merge them into a combined host archive. Rebuild older
 prebuilt target directories before using them with this header.
@@ -1364,18 +1378,18 @@ See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
 ### Linux GUI release candidates
 
 `GUI release candidate` (`gui-release.yml`) packages an already published
-host for the selected `x64glibc` or `arm64mac` target. Linux includes the independently
+host for the selected `x64glibc`, `arm64mac`, or `x64mingw` target. Linux includes the independently
 verified FreeType, glibc, LLVM unwinder, and xkbcommon releases. Apple Silicon uses
 the host-owned project interface catalog; macOS supplies system implementations. It runs no Cargo or Zig host build. Use a fresh checkout with
 no `platform-gui/targets` directory and an immutable `deps-gui-host-<version>`
 release whose source fingerprint matches that checkout.
 
 Dispatch the workflow with a new `gui-X.Y.Z-rc.N` tag, the host release tag,
-`target: x64glibc` or `target: arm64mac`, and `validate_only: true` for candidate validation. The job packages the existing
+`target: x64glibc`, `target: arm64mac`, or `target: x64mingw`, and `validate_only: true` for candidate validation. The job packages the existing
 verified inputs, serves the exact Roc archive over HTTP, builds all six maintained
 GUI applications with their pinned compiler, runs every semantic spec, and opens
 the same executables on its native runner. Linux uses Weston/Xvfb with Mesa
-software Vulkan; Apple Silicon uses native macOS rendering. Rendering must
+software Vulkan; Apple Silicon and Windows use their native rendering backends. Rendering must
 report explicit success; the counter also verifies its increment interaction.
 The archive inventory check rejects missing dependency notices and receipts,
 unselected target files, and expanded payloads over Roc's 100 MiB limit.
@@ -1385,10 +1399,14 @@ all interface files, original provenance, generator identity, exact host hashes,
 and native validation record. Additional files under `targets/macos-sysroot` are
 rejected. The existing bundler runs the native link/spec validator before bundle
 creation; the RC gate then repeats builds/specs and rendering over fresh HTTP.
-Windows GNU target identity and native-check routing are supported by the helper,
-but RC preparation remains disabled until production header/input admission and
-verified host/runtime/import releases are adopted. Candidate CI inputs cannot
-substitute for those releases.
+Windows preparation requires both independently released dependency locks and
+the exact complete production header input order. The native Windows runner
+verifies the archive decoder, downloads the pinned Roc compiler, then uses the
+released GNU runtime and complete DLL import libraries without building Rust or
+Zig host inputs. A compatible signed host release and its source companion are
+still mandatory; candidate CI artifacts cannot substitute for those releases.
+All six Windows executables use `--target=x64mingw` and are checked locally over
+fresh HTTP and again from untouched public URLs after publication.
 
 A publishing dispatch must run on `main` with `validate_only: false`. It attests
 the exact tested platform archive, starter ZIP, original host lock, and

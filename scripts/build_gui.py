@@ -7,16 +7,17 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import tempfile
 
 from build_macos_stubs import install as install_macos_interfaces
-from prepare_dependencies import install_windows_imports, install_freetype, install_glibc, install_xkbcommon, install_unwind
+from prepare_dependencies import install_freetype, install_glibc, install_xkbcommon, install_unwind
 
 ROOT = Path(__file__).resolve().parent.parent
 
 def host_target():
     return {('Linux', 'x86_64'): 'x64glibc',
             ('Darwin', 'arm64'): 'arm64mac',
-            ('Windows', 'AMD64'): 'x64win'}.get((platform.system(), platform.machine()))
+            ('Windows', 'AMD64'): 'x64mingw'}.get((platform.system(), platform.machine()))
 
 
 def host_archive(target):
@@ -44,12 +45,13 @@ def build(debug=False, jobs=2, cargo_evidence=None):
         raise SystemExit('GUI build jobs must be positive.')
     if debug and cargo_evidence is not None:
         raise SystemExit('Cargo release evidence requires an optimized build.')
+    if target == 'x64mingw':
+        build_windows(debug, jobs, cargo_evidence)
+        return
     fingerprint = None
     if cargo_evidence is not None:
         from host_build_identity import source_fingerprint
         fingerprint = source_fingerprint(ROOT)
-    windows_dependencies = (install_windows_imports(ROOT / 'platform-gui/targets/x64win')
-                            if target == 'x64win' else None)
     linux_dependencies = (install_freetype(ROOT / 'platform-gui/targets/x64glibc')
                           if target == 'x64glibc' else None)
     if target == 'x64glibc':
@@ -62,7 +64,7 @@ def build(debug=False, jobs=2, cargo_evidence=None):
     subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
     dest = ROOT / 'platform-gui/targets' / target
     dest.mkdir(parents=True, exist_ok=True)
-    rust_name = 'signals_gpui_host.lib' if target == 'x64win' else 'libsignals_gpui_host.a'
+    rust_name = 'libsignals_gpui_host.a'
     if cargo_evidence is not None:
         from cargo_build_evidence import capture
         rust_host = capture(ROOT, target, cargo_evidence, jobs, build_environment(), fingerprint)
@@ -75,12 +77,8 @@ def build(debug=False, jobs=2, cargo_evidence=None):
     engine = ROOT / 'zig-out/gui/libengine.a'
     # Roc's platform header lists both archives for its final application link.
     shutil.copyfile(rust_host, dest / rust_name)
-    shutil.copyfile(engine, dest / ('engine.lib' if target == 'x64win' else 'libengine.a'))
+    shutil.copyfile(engine, dest / 'libengine.a')
     (dest / host_archive(target)).unlink(missing_ok=True)
-    if target == 'x64win':
-        build_windows_inputs(dest, windows_dependencies)
-        finish_evidence(target, dest, cargo_evidence, fingerprint)
-        return
     if platform.system() == 'Darwin':
         manifest = install_macos_interfaces(dest.parent)
         (dest / 'link-inputs.json').write_text(json.dumps({
@@ -93,30 +91,54 @@ def build(debug=False, jobs=2, cargo_evidence=None):
     finish_evidence(target, dest, cargo_evidence, fingerprint)
 
 
+def build_windows(debug, jobs, cargo_evidence):
+    """Build GNU host outputs and reuse independently verified Windows libraries."""
+    from prepare_dependencies import install_windows_gnu, verified_windows_gnu, windows_gnu_inventory
+    from windows_gnu_build import execute
+    from windows_gnu_coff import normalize
+
+    destination = ROOT / 'platform-gui/targets/x64mingw'
+    dependencies = install_windows_gnu(destination)
+    cargo_target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'))
+    if not cargo_target.is_absolute():
+        cargo_target = ROOT / cargo_target
+    # Keep captured raw Cargo bytes separate from the final distributed archive.
+    with tempfile.TemporaryDirectory(prefix='signals-windows-build-') as temporary, \
+            tempfile.TemporaryDirectory(dir=destination, prefix='.host-') as staged_path:
+        staged = Path(staged_path)
+        output = cargo_evidence or Path(temporary) / 'build'
+        payload = execute('build', output, jobs=jobs, cargo_target=cargo_target,
+                          debug=debug, capture_evidence=cargo_evidence is not None)
+        zig = output.resolve() / 'tools/zig-x86_64-windows-0.16.0/zig.exe'
+        with verified_windows_gnu() as verified:
+            inventory = windows_gnu_inventory(verified)
+            receipt = normalize(payload / 'libsignals_gpui_host.a', staged / 'libsignals_gpui_host.a', inventory, zig)
+        for name in ('libengine.a', 'signals.res'):
+            shutil.copyfile(payload / name, staged / name)
+        (staged / 'normalization.json').write_text(json.dumps(receipt, indent=2) + '\n')
+        if cargo_evidence is not None:
+            from host_notice_payload import validate_packaged_outputs
+            evidence = json.loads((output / 'evidence.json').read_text())
+            validate_packaged_outputs(json.loads((output / 'build.json').read_text()), 'x64mingw',
+                                     evidence['source_fingerprint'], evidence['host'],
+                                     {name: (staged / name).read_bytes() for name in
+                                      ('libsignals_gpui_host.a', 'libengine.a', 'signals.res')}, receipt)
+        (staged / 'link-inputs.json').write_text(json.dumps({
+            'dependencies': dependencies,
+            'rust_target': 'x86_64-pc-windows-gnullvm', 'engine_target': 'x86_64-windows-gnu',
+            'manifest': 'crates/gpui-host/windows/signals.manifest.xml',
+        }, indent=2) + '\n')
+
+        for name in ('libsignals_gpui_host.a', 'libengine.a', 'signals.res', 'normalization.json', 'link-inputs.json'):
+            (staged / name).replace(destination / name)
+
+
 def finish_evidence(target, destination, evidence_root, fingerprint):
     """Seal every host-owned output after the complete native build succeeds."""
     if evidence_root is not None:
         from host_build_identity import record_outputs
         record_outputs(ROOT, target, destination, evidence_root, fingerprint)
 
-
-def build_windows_inputs(dest, dependencies):
-    """Produce the x64win inputs beyond the host archive itself.
-
-    The application manifest is embedded into every executable Roc links: GPUI
-    imports TaskDialogIndirect at load time, which only the Common Controls 6
-    side-by-side comctl32 exports, and the manifest also declares per-monitor
-    DPI awareness. External import libraries come from their verified release.
-    """
-    dest = dest.resolve()
-    resources = ROOT / 'crates/gpui-host/windows'
-    subprocess.run(['zig', 'rc', 'signals.rc', str(dest / 'signals.res')], cwd=resources, check=True)
-    (dest / 'link-inputs.json').write_text(json.dumps({
-        'manifest': 'crates/gpui-host/windows/signals.manifest.xml',
-        'dependencies': dependencies,
-        'rust_target': 'x86_64-pc-windows-msvc',
-        'engine_target': 'x86_64-windows-msvc',
-    }, indent=2) + '\n')
 
 
 if __name__ == '__main__':

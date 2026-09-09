@@ -11,10 +11,11 @@ import tempfile
 import urllib.request
 
 from gui_host_artifacts import ROOT, HOST_FILES, check_candidate, pack_host, source_fingerprint
-from host_notice_payload import compose
+from host_notice_payload import compose, validate_packaged_outputs, validate_notices, validate_sources, SOURCE_KIND
+from dependency_artifacts import unpack_verified
 import rust_license_inventory
 import toolchain_license_inventory
-from host_build_identity import validate_outputs
+from cargo_build_evidence import same_checkout_lock
 
 
 def verified_download(url, checksum, destination, size=None):
@@ -86,28 +87,41 @@ def crate_cache(evidence, cache):
     return destination
 
 
-def prepare(target, source, evidence_root, output, cache, roc, root=ROOT):
-    """Publish a local candidate directory only after extracted native tests pass."""
+def compose_notices(target, source, evidence_root, output, cache, root=ROOT):
+    """Retain a verified notice/source pair without requiring a platform header.
+
+    Source contains captured host outputs and any normalization receipt. Root
+    must be the clean build-source checkout matching the original evidence.
+    Output is created atomically with notices/ and gui-host-sources-TARGET.tar;
+    it is candidate evidence, not release provenance or a native execution test.
+    """
     if output.exists():
         raise FileExistsError(output)
     policy = root / "dependencies/gui-host-notices"
     exclusions = json.loads((policy / "standard-terms.json").read_text())["excluded_targets"]
     if target in exclusions:
         raise ValueError(exclusions[target])
-    if (evidence_root / "Cargo.lock").read_bytes() != (root / "Cargo.lock").read_bytes():
+    if not same_checkout_lock((evidence_root / "Cargo.lock").read_bytes(), (root / "Cargo.lock").read_bytes()):
         raise ValueError("host source evidence uses a different checkout lock")
     fingerprint = source_fingerprint(root)
     evidence = json.loads((evidence_root / "evidence.json").read_text())
     if evidence["source_fingerprint"] != fingerprint:
         raise ValueError("Cargo build evidence has different source inputs")
-    validate_outputs(json.loads((evidence_root / "build.json").read_text()), target, fingerprint, evidence["host"],
-                     {name: (source / name).read_bytes() for name in HOST_FILES[target]})
+    normalization_path = source / "normalization.json"
+    normalization = json.loads(normalization_path.read_text()) if normalization_path.exists() else None
+    validate_packaged_outputs(json.loads((evidence_root / "build.json").read_text()), target, fingerprint, evidence["host"],
+                              {name: (source / name).read_bytes() for name in HOST_FILES[target]}, normalization)
     crates = crate_cache(evidence, cache)
     toolchains = json.loads((policy / "toolchains.json").read_text())
     rust = toolchains["rust"]["targets"][target]
     zig = toolchains["zig"]
     rust_archive = verified_download(rust["source_url"], rust["sha256"], cache / (rust["sha256"] + ".tar.xz"), rust.get("size"))
     zig_archive = verified_download(zig["source_url"], zig["sha256"], cache / (zig["sha256"] + ".tar.xz"), zig["size"])
+    rust_target_archive = None
+    if target == "x64mingw":
+        target_pin = toolchain_license_inventory.selected_toolchains(toolchains, target)["rust-target"]
+        rust_target_archive = verified_download(target_pin["source_url"], target_pin["sha256"],
+                                                cache / (target_pin["sha256"] + ".tar.xz"), target_pin["size"])
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output.parent, prefix=".host-release-") as temporary:
         stage = Path(temporary)
@@ -115,18 +129,42 @@ def prepare(target, source, evidence_root, output, cache, roc, root=ROOT):
         candidate.mkdir()
         rust_license_inventory.collect(evidence_root / "selection.json", evidence_root / "Cargo.lock", crates,
                                        stage / "crate-notices", policy / "manifest.json", True, policy / "review.json", True)
-        toolchain_license_inventory.collect(policy / "toolchains.json", target, rust_archive, zig_archive, stage / "toolchain-notices")
+        toolchain_license_inventory.collect(policy / "toolchains.json", target, rust_archive, zig_archive, stage / "toolchain-notices", rust_target_archive)
         source_archive = candidate / f"gui-host-sources-{target}.tar"
         normalization = source / "normalization.json"
         notices = compose(target, evidence_root, stage / "crate-notices", stage / "toolchain-notices", policy,
                           (source / HOST_FILES[target][0]).read_bytes(), source_archive, fingerprint,
                           normalization if normalization.exists() else None)
-        notice_root = stage / "notices"
+        notice_root = candidate / "notices"
         notice_root.mkdir()
         for name, data in notices.items():
             (notice_root / name).write_bytes(data)
+        outputs = {name: (source / name).read_bytes() for name in HOST_FILES[target]}
+        host = outputs[HOST_FILES[target][0]]
+        manifest, notice_data = validate_notices(notice_root, target, host, fingerprint, policy, outputs)
+        source_tree = stage / "source-tree"
+        unpack_verified(source_archive, {"name": SOURCE_KIND, "target": target}, source_tree)
+        validate_sources(source_tree, manifest, notice_data, host, (root / "Cargo.lock").read_bytes())
+        if source_fingerprint(root) != fingerprint:
+            raise ValueError("host source inputs changed during notice composition")
+        candidate.rename(output)
+    return output
+
+
+def prepare(target, source, evidence_root, output, cache, roc, root=ROOT):
+    """Publish a local candidate directory only after extracted native tests pass."""
+    if output.exists():
+        raise FileExistsError(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=output.parent, prefix=".host-release-") as temporary:
+        stage = Path(temporary)
+        composition = compose_notices(target, source, evidence_root, stage / "composition", cache, root)
+        candidate = stage / "candidate"
+        candidate.mkdir()
+        source_archive = candidate / f"gui-host-sources-{target}.tar"
+        (composition / source_archive.name).rename(source_archive)
         host_archive = candidate / f"gui-host-{target}.tar"
-        pack_host(target, source, host_archive, root, notice_root)
+        pack_host(target, source, host_archive, root, composition / "notices")
         check_candidate(host_archive, target, roc, root, source_archive)
         candidate.rename(output)
 

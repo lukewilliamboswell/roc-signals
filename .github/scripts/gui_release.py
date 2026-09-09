@@ -68,11 +68,23 @@ def require_native(target):
         raise ValueError('GUI RC execution requires a native ' + target + ' runner')
 
 
-def require_preparation_support(target):
-    # Candidate import/CRT links are not a production platform contract.
-    if target not in ('x64glibc', 'arm64mac'):
-        raise ValueError('GUI RC preparation for ' + target + ' requires completed production input admission')
-
+def require_preparation_support(target, root=ROOT):
+    if target not in TARGET_EXTERNALS:
+        raise ValueError('unsupported GUI RC target')
+    if target == 'x64mingw':
+        from prepare_dependencies import windows_gnu_files
+        lock = dependencies.read_lock(root / 'dependencies.lock.json')
+        for identity in TARGET_EXTERNALS[target]:
+            entry = lock['artifacts'].get(identity)
+            if entry is None or entry['target'] != target or entry['name'] + '-' + target != identity:
+                raise ValueError('Windows RC requires independently released runtime and complete imports')
+        header = (root / 'platform-gui/main.roc').read_text()
+        block = re.search(r'x64mingw:\s*\{\s*inputs:\s*\[(.*?)\]', header, re.S)
+        observed = [] if block is None else [left or right for left, right in re.findall(r'"([^"\n]+)"|\b(app)\b', block[1])]
+        files = windows_gnu_files()
+        expected = [files[0], 'libsignals_gpui_host.a', 'libengine.a', 'signals.res', 'app', *files[1:]]
+        if observed != expected:
+            raise ValueError('Windows RC header differs from complete reviewed link inputs and provider order')
 
 
 def run(arguments, **kwargs):
@@ -253,7 +265,7 @@ def extract_starters(path, destination):
 
 
 def prepare(tag, host_release, output, roc, root=ROOT, target=TARGET):
-    require_preparation_support(target)
+    require_preparation_support(target, root)
     require_native(target)
     if not VERSION.fullmatch(tag) or not re.fullmatch(r'deps-gui-host-[0-9][A-Za-z0-9.-]*', host_release):
         raise ValueError('use a new gui-X.Y.Z-rc.N tag and an independent host release')
