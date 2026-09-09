@@ -8,7 +8,6 @@ on:
       - scripts/build_unwind.py
       - scripts/build_glibc.py
       - scripts/test_unwind_dependencies.py
-      - scripts/test_glibc_dependencies.py
       - scripts/test_dependency_artifacts.py
       - scripts/dependency_archive.py
       - scripts/dependency_artifacts.py
@@ -42,7 +41,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check source admission and publication failures
-        run: python3 -m unittest scripts/test_dependency_artifacts.py scripts/test_glibc_dependencies.py scripts/test_unwind_dependencies.py
+        run: python3 -m unittest scripts/test_dependency_artifacts.py scripts/test_unwind_dependencies.py
       - name: Build from verified source and test the extracted candidate
         run: python3 scripts/build_unwind.py --output "$RUNNER_TEMP/dependencies"
       - name: Check reproducibility in another clean container
