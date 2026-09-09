@@ -1,4 +1,4 @@
-"""Fail-closed tool identity and target adapter checks for the private probe."""
+"""Fail-closed tool identity and target adapter checks for the shared Windows host builder."""
 import tempfile
 from contextlib import nullcontext
 from unittest.mock import patch
@@ -63,3 +63,27 @@ class CandidateTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'indexing failed'):
                     build_gui.build_windows(False, 2, None)
                 self.assertEqual(before, {p.name: p.read_bytes() for p in destination.iterdir()})
+
+    def test_changed_shader_tools_are_rejected_before_execution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fxc, dll = root / 'fxc.exe', root / 'd3dcompiler_47.dll'
+            fxc.write_bytes(b'fxc')
+            dll.write_bytes(b'compiler')
+            signatures = [{'Path': str(path), 'Status': 0, 'Thumbprint': windows_gnu_build.SIGNER}
+                          for path in (fxc, dll)]
+            with patch.object(windows_gnu_build.subprocess, 'check_output') as execute:
+                with self.assertRaisesRegex(ValueError, 'unreviewed tool identity'):
+                    windows_gnu_build.probe_fxc('build', fxc, dll, signatures, root)
+                execute.assert_not_called()
+                with patch.object(windows_gnu_build, 'FXC_SHA', identity(fxc)['sha256']), \
+                        patch.object(windows_gnu_build, 'COMPILER_SHA', identity(dll)['sha256']):
+                    signatures[1]['Status'] = 1
+                    with self.assertRaisesRegex(ValueError, 'Authenticode'):
+                        windows_gnu_build.probe_fxc('build', fxc, dll, signatures, root)
+                    execute.assert_not_called()
+                    signatures[1]['Status'] = 0
+                    execute.return_value = '{"path": "actual-loaded-dll"}'
+                    self.assertEqual(windows_gnu_build.probe_fxc('build', fxc, dll, signatures, root),
+                                     {'path': 'actual-loaded-dll'})
+                    execute.assert_called_once()

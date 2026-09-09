@@ -33,6 +33,20 @@ def verify(path, expected):
         raise ValueError(f"unreviewed tool identity: {path.name}")
 
 
+def probe_fxc(mode, fxc, dll, signatures, output):
+    """Reject unreviewed build tools before executing the loaded-DLL probe."""
+    if mode == "build":
+        if (len(signatures) != 2
+                or {Path(record["Path"]).resolve() for record in signatures} != {fxc.resolve(), dll.resolve()}
+                or any(record["Status"] != 0 or record["Thumbprint"] != SIGNER for record in signatures)):
+            raise ValueError("Windows shader tools require reviewed valid Authenticode signatures")
+        verify(fxc, FXC_SHA)
+        verify(dll, COMPILER_SHA)
+    return json.loads(subprocess.check_output([
+        "pwsh", "-NoProfile", "-File", str(ROOT / "scripts/windows_fxc_inventory.ps1"),
+        "-Fxc", str(fxc), "-OutputDirectory", str(output)], text=True))
+
+
 def compiler_args(mode, args):
     if mode == "ar":
         return ["ar", *args]
@@ -81,9 +95,7 @@ def execute(mode, output, *, jobs=2, cargo_target=None, debug=False, capture_evi
     inventory["authenticode"] = json.loads(signatures)
     inventory["fxc_path"] = str(fxc)
     inventory["compiler_dll_path"] = str(dll)
-    inventory["loaded_module_probe"] = json.loads(subprocess.check_output([
-        "pwsh", "-NoProfile", "-File", str(ROOT / "scripts/windows_fxc_inventory.ps1"),
-        "-Fxc", str(fxc), "-OutputDirectory", str(output)], text=True))
+    inventory["loaded_module_probe"] = probe_fxc(mode, fxc, dll, inventory["authenticode"], output)
     loaded = inventory["loaded_module_probe"]
     if Path(loaded["path"]).resolve() != dll.resolve() or loaded["sha256"].lower() != inventory[dll.name]["sha256"]:
         raise ValueError("FXC loaded a different compiler DLL than the inventoried SDK file")
