@@ -151,6 +151,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: 1.95.0
       TOOLCHAINS: Metal
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -159,6 +160,7 @@ jobs:
       - name: Install GUI host build dependencies
         run: |
           rustup toolchain install 1.95.0 --profile minimal
+          xcodebuild -version
           xcodebuild -downloadComponent MetalToolchain
           xcrun --find metal
       - name: Restore compiled Rust dependencies
@@ -167,7 +169,7 @@ jobs:
           shared-key: gui-dependencies
           cache-workspace-crates: false
           cache-bin: false
-          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET TOOLCHAINS
+          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET TOOLCHAINS DEVELOPER_DIR
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Verify GUI applications with separate archives
         run: python3 scripts/test.py gui --keep-output
