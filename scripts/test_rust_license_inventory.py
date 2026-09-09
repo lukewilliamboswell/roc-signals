@@ -108,6 +108,47 @@ class RustLicenseInventoryTests(unittest.TestCase):
                 inventory.collect(self.about, self.lock, self.root, output, include_sources=True)
         self.assertFalse(output.exists())
 
+    def test_review_preserves_declarations_without_reclassifying_them_as_notices(self):
+        archive, checksum = self.archive(notice=False)
+        with tarfile.open(archive) as packed:
+            original = packed.extractfile("example-1.0.0/Cargo.toml").read()
+        record = {"crate_sha256": checksum, "source_revision": None,
+                  "category": "metadata_only_in_reviewed_archive",
+                  "source_files": {"Cargo.toml": {"sha256": hashlib.sha256(original).hexdigest()}},
+                  "upstream_files": []}
+        review = self.root / "review.json"
+        review.write_text(json.dumps({"schema_version": 1, "packages": {"example@1.0.0": record}}))
+        output = self.root / "notices"
+        result = inventory.collect(self.about, self.lock, self.root, output, review=review)
+        evidence = result["packages"][0]["reviewed_source_files"]["Cargo.toml"]
+        self.assertEqual((output / evidence["path"]).read_bytes(), original)
+        self.assertEqual(result["missing_notice_files"], ["example@1.0.0"])
+        self.assertEqual(result["packages"][0]["review"]["category"], "metadata_only_in_reviewed_archive")
+        record["source_files"]["Cargo.toml"]["sha256"] = "a" * 64
+        review.write_text(json.dumps({"schema_version": 1, "packages": {"example@1.0.0": record}}))
+        with self.assertRaisesRegex(ValueError, "reviewed bytes"):
+            inventory.collect(self.about, self.lock, self.root, self.root / "refused", review=review)
+        self.assertFalse((self.root / "refused").exists())
+        record["crate_sha256"] = "a" * 64
+        with self.assertRaisesRegex(ValueError, "published crate"):
+            inventory.reviewed_source_files(archive, record, checksum, None)
+
+    def test_checked_in_review_binds_locked_sources_and_preserved_upstream_text(self):
+        root = Path(__file__).resolve().parents[1]
+        directory = root / "dependencies/gui-host-notices"
+        review = json.loads((directory / "review.json").read_text())
+        locked = {p["name"] + "@" + p["version"]: p.get("checksum")
+                  for p in tomllib.loads((root / "Cargo.lock").read_text())["package"]}
+        referenced = set()
+        for identity, record in review["packages"].items():
+            self.assertEqual(record["crate_sha256"], locked[identity])
+            for notice in record["upstream_files"]:
+                path = directory / notice["path"]
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), notice["sha256"])
+                self.assertIn("/" + record["source_revision"] + "/", notice["source_url"])
+                referenced.add(path.resolve())
+        self.assertEqual(referenced, {p.resolve() for p in (directory / "declarations").iterdir()})
+
     def test_archive_path_escape_is_rejected_even_with_valid_checksum(self):
         archive, checksum = self.archive(extra="example-1.0.0/../../escape")
         with self.assertRaisesRegex(ValueError, "unsafe crate archive member"):

@@ -24,3 +24,27 @@ distribution for its license and source-level notices. These are notice-review
 inputs, not a declaration of the components linked into a host. The toolchain
 collector verifies the distribution hashes and retains exact notice bytes.
 Contributor commands are documented in `www/content/docs/contributing.md`.
+
+`review.json` selects original source files and upstream declarations for crates
+whose published archives lack standalone notice files. Every selection binds the
+crate checksum, available published Git revision, and selected file hashes.
+`declarations/` preserves the selected upstream texts; source files are recovered
+from verified crate archives instead of copied into this repository. The
+collector's `--review` option regenerates this evidence separately from notice
+files and does not change `missing_notice_files`.
+
+The review categories describe evidence, not publication permission:
+
+- `original_source_notices` identifies original license or copyright comments.
+- `original_license_reference` identifies an original declaration that refers
+  to standard license terms without reproducing their complete text.
+- `metadata_only_in_reviewed_archive` identifies a publisher's Cargo license
+  declaration without additional notice text found in that archive.
+- `upstream_apple_sdk_caveat` preserves the upstream repository's explicit
+  discussion of its SDK-derived code. This requires separate consideration from
+  other targets and does not turn a macOS question into a Linux or Windows rule.
+
+Absence of a standalone file is not, by itself, a reason to refuse publication.
+Payload composition must retain original notices and declarations, label any
+separately supplied standard terms as such, and account for the selected target's
+dependencies without inventing copyright attribution.

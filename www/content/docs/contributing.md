@@ -372,7 +372,7 @@ report. It checks each archive against `Cargo.lock`, preserves the publisher's
 manifest separately, and reports packages without standalone notice files:
 
 ```sh
-python3 scripts/rust_license_inventory.py --about /tmp/host-about.json --lock Cargo.lock --cache /path/to/cargo/registry/cache --supplements dependencies/gui-host-notices/manifest.json --include-sources --output /tmp/host-notices
+python3 scripts/rust_license_inventory.py --about /tmp/host-about.json --lock Cargo.lock --cache /path/to/cargo/registry/cache --supplements dependencies/gui-host-notices/manifest.json --review dependencies/gui-host-notices/review.json --include-sources --output /tmp/host-notices
 python3 -m unittest scripts/test_rust_license_inventory.py
 ```
 
@@ -390,6 +390,9 @@ its locked hash. This preserves notices embedded in source comments and makes
 the published source available for review. Retaining source does not establish
 that an absent license grant exists; packages without standalone notices remain
 explicit in `missing_notice_files`.
+`--review` regenerates selected original source comments, declarations, and
+upstream caveats from the hash-bound review manifest. Its evidence categories
+do not certify permission or make standalone-file absence a publication blocker.
 
 Collect toolchain notice evidence separately from the distributions pinned in
 `dependencies/gui-host-notices/toolchains.json`:

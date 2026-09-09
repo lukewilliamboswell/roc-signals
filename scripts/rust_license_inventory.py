@@ -85,7 +85,33 @@ def upstream_notices(record, checksum, vcs, directory):
     return notices
 
 
-def collect(about, lock, cache, destination, supplements=None, include_sources=False):
+def reviewed_source_files(archive, record, checksum, vcs):
+    """Read the original source paths selected by a hash-bound notice review."""
+    revision = vcs.get("git", {}).get("sha1") if vcs else None
+    if record["crate_sha256"] != checksum or record["source_revision"] != revision:
+        raise ValueError("source notice review does not match the published crate")
+    with archive.open("rb") as source:
+        if hashlib.file_digest(source, "sha256").hexdigest() != checksum:
+            raise ValueError("crate changed before source notice review")
+        source.seek(0)
+        selected = {}
+        with tarfile.open(fileobj=source, mode="r:gz") as packed:
+            prefix = archive.name.removesuffix(".crate") + "/"
+            for name, expected in record["source_files"].items():
+                path = PurePosixPath(name)
+                if path.is_absolute() or ".." in path.parts or str(path) != name or "\\" in name:
+                    raise ValueError("unsafe reviewed source path")
+                member = packed.getmember(prefix + name)
+                if not member.isfile() or member.size > 512 * 1024 * 1024:
+                    raise ValueError("invalid reviewed source file")
+                data = packed.extractfile(member).read()
+                if hashlib.sha256(data).hexdigest() != expected["sha256"]:
+                    raise ValueError("source notice differs from reviewed bytes")
+                selected[name] = data
+    return selected
+
+
+def collect(about, lock, cache, destination, supplements=None, include_sources=False, review=None):
     """Publish a complete inventory atomically; any unknown identity stops it."""
     if destination.exists():
         raise FileExistsError(destination)
@@ -98,6 +124,10 @@ def collect(about, lock, cache, destination, supplements=None, include_sources=F
     supplemental = json.loads(supplement_bytes) if supplements else {"schema_version": 1, "packages": {}}
     if supplemental["schema_version"] != 1:
         raise ValueError("unsupported upstream notice manifest")
+    review_bytes = review.read_bytes() if review else None
+    reviewed = json.loads(review_bytes) if review else {"schema_version": 1, "packages": {}}
+    if reviewed["schema_version"] != 1:
+        raise ValueError("unsupported source notice review")
     records = []
     own_packages = []
     seen = set()
@@ -130,8 +160,17 @@ def collect(about, lock, cache, destination, supplements=None, include_sources=F
                       "crate_sha256": locked[identity], "declared_license": manifest.get("license"),
                       "authors": manifest.get("authors", []), "notice_files": {}, "declaration_files": {},
                       "upstream_notice_files": {}, "upstream_provenance": upstream}
+            review_record = reviewed["packages"].get(package["name"] + "@" + package["version"])
+            source_review = reviewed_source_files(archive, review_record, locked[identity], vcs) if review_record else {}
+            upstream_review = (upstream_notices(dict(review_record, notices=review_record["upstream_files"]),
+                                               locked[identity], vcs, review.parent)
+                               if review_record and review_record["upstream_files"] else {})
+            record["review"] = review_record
+            record["reviewed_source_files"] = {}
+            record["reviewed_upstream_files"] = {}
             for category, payload in (("notice_files", notices), ("declaration_files", declarations),
-                                      ("upstream_notice_files", extra)):
+                                      ("upstream_notice_files", extra), ("reviewed_source_files", source_review),
+                                      ("reviewed_upstream_files", upstream_review)):
                 for name, data in sorted(payload.items()):
                     relative = Path("crates") / stem / category / name
                     output = stage / relative
@@ -158,6 +197,7 @@ def collect(about, lock, cache, destination, supplements=None, include_sources=F
                      "packages": sorted(records, key=lambda p: (p["name"], p["version"])),
                      "workspace_packages": own_packages,
                      "supplements_sha256": hashlib.sha256(supplement_bytes).hexdigest() if supplements else None,
+                     "review_sha256": hashlib.sha256(review_bytes).hexdigest() if review else None,
                      "missing_notice_files": sorted(p["name"] + "@" + p["version"] for p in records
                                                     if not p["notice_files"] and not p["upstream_notice_files"])}
         (stage / "inventory.json").write_text(json.dumps(inventory, indent=2) + "\n")
@@ -173,6 +213,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--supplements", type=Path, help="Reviewed, revision-bound upstream notice manifest")
     parser.add_argument("--include-sources", action="store_true", help="Retain every selected original crate source archive")
+    parser.add_argument("--review", type=Path, help="Hash-bound review selecting original source notice evidence")
     args = parser.parse_args()
-    result = collect(args.about, args.lock, args.cache, args.output, args.supplements, args.include_sources)
+    result = collect(args.about, args.lock, args.cache, args.output, args.supplements, args.include_sources, args.review)
     print(f"Verified {len(result['packages'])} crate archives; {len(result['missing_notice_files'])} lack notice files")
