@@ -30,7 +30,7 @@ platform ""
 	targets: {
         inputs_dir: "targets/",
         arm64mac: { inputs: ["libsignals_gpui_host.a", "libengine.a", app, "../macos-sysroot/usr/lib/libobjc.tbd", "../macos-sysroot/usr/lib/libc++.tbd"] },
-        x64glibc: { inputs: ["crt1.o", "crti.o", "libsignals_gpui_host.a", "libengine.a", app, "libfreetype.so", "libxkbcommon.so", "libxkbcommon-x11.so", "libgcc_s.so", "libutil.so", "librt.so", "libpthread.so", "libm.so", "libdl.so", "libc.so", "crtn.o"] },
+        x64glibc: { inputs: ["crt1.o", "libsignals_gpui_host.a", "libengine.a", app, "libfreetype.so", "libxkbcommon.so", "libxkbcommon-x11.so", "libgcc_s.so", "libc_nonshared.a", "libm.so", "libc.so"] },
         x64win: { inputs: ["signals_gpui_host.lib", "engine.lib", "signals.res", app, "advapi32.lib"] },
     }
 

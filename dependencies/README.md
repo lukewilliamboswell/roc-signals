@@ -91,9 +91,13 @@ ordinary, hash-verified payloads, not automatically unpacked or executed by the
 consumer.
 
 The stubs retain system SONAMEs: the operating system supplies the actual glibc
-implementation at runtime. This producer does not include the GCC unwinder or
-adopt a consumer lock. Production consumption requires a separately reviewed
-release lock and platform-header update.
+implementation at runtime. Normal Linux GUI builds admit the locked release before
+compilation. Bundles independently verify it and retain its notices, source
+payload, reproduction inputs, and receipt. Checkout copies of CRT inputs and
+obsolete glibc compatibility libraries are excluded from bundle staging.
+The platform header supplies `crt1.o`, `libc_nonshared.a`, and the libc/libm stubs
+to Roc's final link. This target does not require `crti.o` or `crtn.o`.
+The GCC unwinder remains a separate input pending its replacement.
 
 ## Coverage and remaining boundaries
 
@@ -107,7 +111,8 @@ input or for historical platform releases.
 | Windows ADVAPI32 import library | Independent generation from pinned MinGW definitions, native candidate test, and verified release consumption | This describes the import library, not the Windows system DLL supplied by the operating system. |
 | Linux GUI FreeType | Independent Zig build from pinned source, native candidate tests, reproducibility checks, and verified release consumption | Supporting build libraries still come from the authenticated builder snapshot; the operating system supplies runtime font libraries. |
 | Linux GUI xkbcommon and xkbcommon-X11 | Independent Zig/Meson source build, native candidate test, reproducibility check, and verified release consumption | XCB runtime libraries and keyboard layout data remain operating-system inputs; applications resolve the system SONAMEs at runtime. |
-| Other Linux GUI shared libraries and startup objects | `build_gui.py` copies the build machine's installed inputs | No independent pinned producer, signed dependency receipt, or verified bundle admission yet; recorded local paths do not establish provenance. |
+| Linux GUI startup and glibc link inputs | Independent generation from pinned Zig sources, native candidate tests, reproducibility check, and verified release consumption | The operating system supplies the glibc implementation; source, license, and reproduction payloads accompany the link inputs. |
+| Linux GUI GCC unwinder | `build_gui.py` copies the build machine's installed `libgcc_s.so` | An independently built and verified replacement is still required; recorded local paths do not establish provenance. |
 | macOS framework and system link stubs | `build_gui.py` copies the selected Xcode SDK's stubs and records SDK identifiers | No independently versioned, verified SDK artifact yet. SDK origin and redistribution rights must be established; proprietary SDK stubs cannot be described as an open-source build. |
 | Rust crates embedded in the GUI host | Cargo uses the reviewed lockfile and CI caches compiled dependencies; cross-crate release LTO is disabled | The cache is not a separately released dependency artifact. Generic Rust code can be instantiated in the host, so separating it into a reusable binary requires an explicit ABI and compatibility policy. |
 | Prebuilt GUI host target directories | The bundler accepts host archives supplied as target directories | Those host bytes are not yet bound to an expected source commit and verified producer identity at admission. A signed dependency library does not establish the host's provenance. |
