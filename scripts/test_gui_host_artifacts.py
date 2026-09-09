@@ -113,10 +113,11 @@ class HostArtifactTests(unittest.TestCase):
     def test_release_requires_selected_target_and_attested_source_pair(self):
         environment = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
                        "GITHUB_REPOSITORY": release_dependencies.REPOSITORY, "GITHUB_SHA": "a" * 40}
-        for failure in ("missing-source", "wrong-source", "missing-license", "signature", "source-signature", None):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+        for target, failure in ((target, failure) for target in release_dependencies.POLICY["targets"]
+                                for failure in ("missing-source", "wrong-source", "missing-license",
+                                                "signature", "source-signature", None)):
+            with self.subTest(target=target, failure=failure), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                target = "x64glibc"
                 source = root / f"gui-host-sources-{target}.tar"
                 write_archive(source, {"schema_version": 1, "name": "gui-host-sources", "target": target},
                               {"licenses/gui-host-sources/source.txt": b"original source"})
@@ -154,13 +155,13 @@ class HostArtifactTests(unittest.TestCase):
                     else:
                         release_dependencies.prepare(root, "deps-gui-host-1", environment, [target])
                         lock = json.loads((root / "dependencies.lock.json").read_text())
-                        self.assertEqual(set(lock["artifacts"]), {"gui-host-x64glibc", "gui-host-sources-x64glibc"})
+                        self.assertEqual(set(lock["artifacts"]), {f"gui-host-{target}", f"gui-host-sources-{target}"})
                         self.assertEqual(verifier.call_count, 2)
                         admit.assert_called_once()
                         for entry in lock["artifacts"].values():
                             self.assertEqual(entry["signer_workflow"], gui_host_artifacts.WORKFLOW)
                             self.assertEqual(entry["source_sha"], "a" * 40)
-        for targets in (["arm64mac"], ["x64glibc", "x64glibc"], []):
+        for targets in (["unknown"], ["x64glibc", "x64glibc"], []):
             with self.assertRaisesRegex(ValueError, "eligible"):
                 release_dependencies.prepare(Path("unused"), "deps-gui-host-1", environment, targets)
 

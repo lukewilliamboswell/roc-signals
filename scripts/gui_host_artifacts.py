@@ -151,13 +151,14 @@ def check_candidate(archive, target, roc, root=ROOT, source_companion=None):
         platform = stage / "platform-gui"
         prepare_platform(root / "platform-gui", platform)
         if target == "arm64mac":
-            # Candidate-only SDK inputs retain their explicit local origin.
             (platform / "targets" / target).mkdir(parents=True)
-            shutil.copytree(root / "platform-gui/targets/macos-sysroot", platform / "targets/macos-sysroot")
         else:
             stage_candidate_dependencies(target, platform / "targets" / target, root)
         for name in HOST_FILES[target]:
             shutil.copyfile(extracted / "targets" / target / name, platform / "targets" / target / name)
+        if target == "arm64mac":
+            from build_macos_stubs import generate
+            generate(platform / "targets" / target, platform / "targets/macos-sysroot")
         shutil.copytree(root / "examples-gui", stage / "examples-gui")
         shutil.copytree(root / "vendor", stage / "vendor")
         for app in examples(stage):

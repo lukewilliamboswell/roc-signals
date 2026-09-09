@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "name": "windows-gnu-runtime",
+  "version": "0.16.0-1",
+  "target": "x64mingw",
+  "zig_version": "0.16.0",
+  "probe_roc_version": "nightly-2026-09-04-c125b82",
+  "toolchain": {
+    "url": "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz",
+    "sha256": "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00",
+    "size": 55478392,
+    "directory": "zig-x86_64-linux-0.16.0"
+  },
+  "cc_args": [
+    "-target",
+    "x86_64-windows-gnu",
+    "-mcpu=baseline",
+    "-O2",
+    "-s"
+  ],
+  "files": [
+    "api-ms-win-crt-conio-l1-1-0.lib",
+    "api-ms-win-crt-convert-l1-1-0.lib",
+    "api-ms-win-crt-environment-l1-1-0.lib",
+    "api-ms-win-crt-filesystem-l1-1-0.lib",
+    "api-ms-win-crt-heap-l1-1-0.lib",
+    "api-ms-win-crt-locale-l1-1-0.lib",
+    "api-ms-win-crt-math-l1-1-0.lib",
+    "api-ms-win-crt-multibyte-l1-1-0.lib",
+    "api-ms-win-crt-private-l1-1-0.lib",
+    "api-ms-win-crt-process-l1-1-0.lib",
+    "api-ms-win-crt-runtime-l1-1-0.lib",
+    "api-ms-win-crt-stdio-l1-1-0.lib",
+    "api-ms-win-crt-string-l1-1-0.lib",
+    "api-ms-win-crt-time-l1-1-0.lib",
+    "api-ms-win-crt-utility-l1-1-0.lib",
+    "compiler_rt.lib",
+    "crt2.obj",
+    "libmingw32.lib",
+    "ubsan_rt.lib",
+    "unwind.lib",
+    "zigc.lib"
+  ],
+  "headers": [
+    "lib/include",
+    "lib/libc/include/any-windows-any"
+  ],
+  "disclaimer": {
+    "url": "https://raw.githubusercontent.com/mingw-w64/mingw-w64/aa96035ea5edd244502bd3e1550d4a801c12033e/DISCLAIMER.PD",
+    "sha256": "87f33608570312a0f2a9745edcb2527275df813b13982e8c3b3f893d88a4141a",
+    "size": 454,
+    "note": "Original upstream notice referenced by bundled MinGW files; independently pinned notice, not a claim that all Zig MinGW sources are this revision."
+  },
+  "source_directories": [
+    "lib/libc/mingw",
+    "lib/libunwind",
+    "lib/compiler_rt",
+    "lib/std",
+    "lib/c"
+  ],
+  "source_files": [
+    "LICENSE",
+    "lib/c.zig",
+    "lib/compiler_rt.zig",
+    "lib/ubsan_rt.zig",
+    "lib/libc/musl/COPYRIGHT"
+  ],
+  "notices": {
+    "LICENSE-ZIG": "LICENSE",
+    "LICENSE-LLVM": "lib/libunwind/LICENSE.TXT",
+    "COPYING-MINGW": "lib/libc/mingw/COPYING",
+    "COPYRIGHT-MUSL": "lib/libc/musl/COPYRIGHT",
+    "WINPTHREADS-thread.c": "lib/libc/mingw/winpthreads/thread.c",
+    "GETOPT-getopt.c": "lib/libc/mingw/misc/getopt.c",
+    "FORMAT-mingw_pformat.c": "lib/libc/mingw/stdio/mingw_pformat.c"
+  },
+  "notices_sha256": {
+    "LICENSE-ZIG": "5c537d6853e005298a285d508cff9ac7192cea23576c840d485b2b586a7ff177",
+    "LICENSE-LLVM": "b5efebcaca80879234098e52d1725e6d9eb8fb96a19fce625d39184b705f7b6d",
+    "COPYING-MINGW": "99a69660981156c21336fdb5661f89341b013c94e4bf9e1c7467b4745718397f",
+    "COPYRIGHT-MUSL": "f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af",
+    "WINPTHREADS-thread.c": "5a6a30b36c8a6ba0f8918b0b488fb08041a416b02b342a4a4471157f9490a387",
+    "GETOPT-getopt.c": "f8f745fbf29c8e2e2460e11b6f5e26544f560886f54993be4530315ae944ad6a",
+    "FORMAT-mingw_pformat.c": "5db598e84cfd0ac04f927495e809d8a54e06f51eefa449ac0a96f7bf3f3462f0",
+    "DISCLAIMER.PD": "87f33608570312a0f2a9745edcb2527275df813b13982e8c3b3f893d88a4141a"
+  }
+}

@@ -5,6 +5,11 @@ assets, identified by a consumer lock containing their SHA-256, byte length,
 producer source commit, source ref, and signing workflow. A dependency release
 version is independent of the platform and compiler release versions.
 
+macOS linker interfaces are generated from the reviewed symbol catalog in
+[`macos-interfaces/`](macos-interfaces/README.md). Each selected symbol has source
+URLs, and each generated package records the exact host archive and catalog
+hashes. The GUI builder and bundler generate fresh TBD files from that catalog.
+
 `musl.json` pins the upstream source revision and Zig toolchain used to produce
 Linux musl startup and libc inputs. The pinned revision is a post-1.2.6 snapshot;
 the revision, rather than the upstream VERSION file alone, identifies its fixes.
@@ -18,6 +23,39 @@ application manifest and belongs to the host build. A Windows-native probe links
 against only the candidate ADVAPI32 import library and Zig's KERNEL32 imports,
 then calls an imported function before publication. The Windows dependency
 workflow has a separate release tag and signing identity from musl.
+
+`windows-gnu-runtime.json` independently builds the x86-64 GNU runtime from
+checksum-pinned Zig sources. Its six implementation inputs supply MinGW startup,
+Zig libc support, compiler runtime, LLVM unwinding and UBSan. Fifteen complete
+UCRT import archives contain DLL mappings and validated zero-payload weak aliases;
+Windows supplies those DLL implementations. The package contains no Microsoft SDK
+libraries and no Signals host or engine code. It is separate from the complete
+Windows system-import package and does not change the production host ABI.
+
+The source companion preserves the full selected MinGW, libunwind, compiler_rt,
+std and lib/c trees, their root Zig entry points, and exactly the two header
+directories selected by the pinned compiler. Original Zig, LLVM exception,
+MinGW, musl and per-file notices remain intact. MinGW's referenced DISCLAIMER.PD
+is supplied from an independently pinned upstream original; that notice revision
+does not assert a revision for Zig's entire MinGW tree.
+
+The producer selects runtime inputs from the compiler's actual final-link
+invocation, checks every UCRT import and alias against the complete inventory,
+and requires identical archives from two fresh offline builds. Zig's `-s` option suppresses debug metadata when compiling the CRT inputs;
+`-g0` does not set this compiler-wide option. All CRT objects remain exactly as
+produced by the compiler, including address-significance metadata. The explicit
+UBSan build uses `-fstrip` while retaining ReleaseSafe checks, and Zig ar gives
+its complete implementation object a stable archive member name. Its native Windows
+probe links through both Zig and the pinned Roc compiler and tests startup and teardown, thread-local destruction, C++ and Rust panic
+unwinding, compiler-runtime division, and an intentional UBSan failure with an
+OS-only DLL search path. A separate arithmetic executable prevents Rust's embedded
+compiler builtins from satisfying the compiler-runtime test. Diagnostic maps replay
+the exact Zig-selected link with Rust 1.95's bundled LLD and check archive providers;
+the native tests execute the original Zig-linked executables. Negative links
+using the original Zig command must fail when the candidate unwinder, UBSan or
+compiler runtime is omitted, proving those inputs are required. Publication requires
+both native success and main-workflow provenance verification. Adopting the runtime
+in a platform bundle requires a separate verified release lock and consumer change.
 
 `freetype.json` pins the upstream FreeType source archive and explicitly requires
 zlib, bzip2, PNG, HarfBuzz, and Brotli support. Its Linux producer uses the Ubuntu
@@ -40,6 +78,16 @@ remain operating-system inputs. The root consumer lock pins the independent
 release. Linux GUI builds verify it before compilation; bundles verify it again
 in fresh staging and exclude both mutable development copies. Ordinary host,
 engine, API, and example changes reuse these released link inputs.
+
+Linux host builds use Cargo's native `links` override for `freetype`, selecting
+`dylib=freetype` in `.cargo/config.toml`. Cargo skips freetype-sys 0.20.1's
+build script entirely, including its pkg-config probe and bundled C fallback.
+No FreeType headers or pkg-config installation are needed for those Rust bindings.
+Release evidence rejects any freetype-sys build-script execution or compilation;
+a version change requires reviewing this override and its metadata contract.
+Roc receives the independently verified FreeType library as a separate final
+link input. Cargo-native test executables use the verified target directory
+through the existing `LIBRARY_PATH` setup.
 
 The FreeType shared object is a link input. Its SONAME remains
 `libfreetype.so.6`, which the operating system resolves at application runtime;
@@ -143,6 +191,19 @@ compiling the host. Bundle staging independently admits it, replaces any mutable
 checkout copy, and preserves its complete notice/source payload and receipt.
 Publication and consumer-lock adoption remain separate reviewed operations.
 
+## Complete Windows system import producer
+
+`windows-system-imports.json` defines a separate, source-only producer for complete
+reviewed per-DLL import inventories. Rust compiles pinned Windows bindings with
+an explicit full module/feature closure, and Zig supplies complete MinGW import
+definitions for the GNU runtime's OS calls. The package contains 340 pure import
+archives plus original source, notice and reproduction payloads; CRT
+implementations remain a separate dependency. Two clean builds and a native
+Windows ICUUC/NTDLL/OLE32/KERNEL32 probe gate independent signed publication.
+See [the producer contract](windows-system-imports/README.md) for coverage and
+provider-order boundaries. Producer support does not adopt this package in the
+platform's consumer lock or switch its Windows ABI.
+
 ## Coverage and remaining boundaries
 
 The artifact contract above applies to dependencies selected in the root
@@ -157,7 +218,7 @@ input or for historical platform releases.
 | Linux GUI xkbcommon and xkbcommon-X11 | Independent Zig/Meson source build, native candidate test, reproducibility check, and verified release consumption | XCB runtime libraries and keyboard layout data remain operating-system inputs; applications resolve the system SONAMEs at runtime. |
 | Linux GUI startup and glibc link inputs | Independent generation from pinned Zig sources, native candidate tests, reproducibility check, and verified release consumption | The operating system supplies the glibc implementation; source, license, and reproduction payloads accompany the link inputs. |
 | Linux GUI LLVM unwinder | Independent source build, native C++ and Rust unwind probes, reproducibility check, and verified release consumption | This removes the direct GCC link input; operating-system libraries may retain their own indirect runtime dependencies. |
-| macOS framework and system link stubs | `build_gui.py` copies the selected Xcode SDK's stubs and records SDK identifiers | No independently versioned, verified SDK artifact yet. SDK origin and redistribution rights must be established; proprietary SDK stubs cannot be described as an open-source build. |
+| macOS framework and system link stubs | `build_macos_stubs.py` generates minimal TBDs from the reviewed interface catalog | Bundles generate fresh interfaces and record host archive, source catalog, generator, and output hashes. |
 | Rust crates embedded in the GUI host | Cargo uses the reviewed lockfile and cached intermediates; ThinLTO optimizes the Rust host together | The cache is not a separately released dependency artifact. Generic Rust code can be instantiated in the host, so separating it into a reusable binary requires an explicit ABI and compatibility policy. |
 | Prebuilt GUI host archives | The bundler verifies a host-release lock, producer provenance, exact inventory, and committed host source compatibility before staging extracted bytes | Host releases do not supply external system libraries or SDK stubs; included targets must have those inputs separately. |
 
