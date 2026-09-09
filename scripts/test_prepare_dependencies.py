@@ -17,6 +17,24 @@ import prepare_dependencies
 
 
 class DependencyStagingTests(unittest.TestCase):
+    def test_freetype_admission_requires_complete_license_inventory(self):
+        files = {"targets/x64glibc/libfreetype.so": {}}
+        files.update({"licenses/freetype/" + name: {} for name in
+                      ("LICENSE.TXT", "FTL.TXT", "GPLv2.TXT", "NOTICE")})
+
+        def materialize(lock, identities, cache, destination):
+            artifact = destination / prepare_dependencies.FREETYPE
+            artifact.mkdir(parents=True)
+            (artifact / "dependency.json").write_text(json.dumps({"files": files}))
+
+        with patch.object(prepare_dependencies, "materialize", side_effect=materialize):
+            with prepare_dependencies.verified_freetype() as admitted:
+                self.assertTrue(admitted.is_dir())
+            files.pop("licenses/freetype/NOTICE")
+            with self.assertRaisesRegex(ValueError, "incomplete or unexpected FreeType inputs"):
+                with prepare_dependencies.verified_freetype():
+                    self.fail("incomplete inventory was admitted")
+
     def test_bundle_merges_dependency_receipts_and_rejects_conflicting_identity(self):
         stage = self.root / "combined"
         stage.mkdir()
