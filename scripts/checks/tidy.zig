@@ -135,6 +135,9 @@ fn shouldSkipDir(path: []const u8) bool {
 fn shouldCheckFile(path: []const u8) bool {
     const repo_path = repoRelativePath(path);
     if (std.mem.startsWith(u8, repo_path, "platform-web/targets/")) return false;
+    // Preserve the upstream license's form-feed page separators. Its complete
+    // bytes are checked against the source pin by the glibc producer.
+    if (std.mem.eql(u8, repo_path, "dependencies/glibc/COPYING.LIB")) return false;
 
     // Fuzz regression inputs are arbitrary byte strings by definition: a corpus
     // that held only text would be a corpus that stopped reaching the parsers'
