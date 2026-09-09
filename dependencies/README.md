@@ -46,6 +46,16 @@ release. Linux GUI builds verify it before compilation; bundles verify it again
 in fresh staging and exclude both mutable development copies. Ordinary host,
 engine, API, and example changes reuse these released link inputs.
 
+Linux host builds use Cargo's native `links` override for `freetype`, selecting
+`dylib=freetype` in `.cargo/config.toml`. Cargo skips freetype-sys 0.20.1's
+build script entirely, including its pkg-config probe and bundled C fallback.
+No FreeType headers or pkg-config installation are needed for those Rust bindings.
+Release evidence rejects any freetype-sys build-script execution or compilation;
+a version change requires reviewing this override and its metadata contract.
+Roc receives the independently verified FreeType library as a separate final
+link input. Cargo-native test executables use the verified target directory
+through the existing `LIBRARY_PATH` setup.
+
 The FreeType shared object is a link input. Its SONAME remains
 `libfreetype.so.6`, which the operating system resolves at application runtime;
 publishing this artifact does not freeze the runtime font stack. Producer support
