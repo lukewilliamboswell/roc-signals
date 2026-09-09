@@ -29,7 +29,7 @@ Build and run with the [GUI contributor workflow](../../www/content/docs/contrib
 Native semantic journeys live in `specs/`; they check editing, filtering,
 repeated creation, dialog dismissal and deletion, selection, drops, movement, and structural
 work. These specs model interaction semantics and do not establish actual
-keyboard, focus, composition, or accessibility behavior in a Wayland session.
+keyboard, focus, composition, or accessibility behavior in a native desktop session.
 
 Collaboration, notifications, and remote synchronization are outside
 this example. Deletion uses a scoped native dialog with Cancel and Escape.

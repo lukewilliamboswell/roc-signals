@@ -4774,6 +4774,77 @@ test "native prepared render publication keeps DOM unchanged until armed apply" 
     host.configureAllocationFailure(null);
 }
 
+test "native drag publication rejects incomplete handlers without exposing metadata" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("drag publication leaked");
+    }
+    const allocator = host.hostAllocator();
+    host.engine.resetRenderTree(&host);
+    const elem_id = ids.ElemId.fromRaw(1);
+    host.engine.appendRenderNode(&host, elem_id, ids.ElemId.fromRaw(0), "div");
+    var splice = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{
+        .node_capacity = 2,
+        .text_fields = 2,
+        .bool_fields = 1,
+        .named_events = 1,
+        .named_event_wire_edits = 1,
+        .wire_commands = 4,
+    });
+    defer splice.deinit();
+    try splice.addTextField(&host.engine.render_cache, elem_id, .native_drag_key, "task-λ");
+    try splice.addTextField(&host.engine.render_cache, elem_id, .native_viewport, "1,24,0");
+    try splice.addBoolField(&host.engine.render_cache, elem_id, .native_drop_target, true);
+    // The drop flag and its detail handler must publish together. Refusal must
+    // release the prepared strings and leave every live field untouched.
+    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.prepare(&host, &splice));
+    try std.testing.expectEqual(@as(?[]const u8, null), host.dom_elements.items[1].native_drag_key);
+    try std.testing.expectEqual(@as(?[]const u8, null), host.dom_elements.items[1].native_viewport);
+    try std.testing.expect(!host.dom_elements.items[1].native_drop_target);
+    try std.testing.expectEqual(@as(usize, 0), host.dom_elements.items[1].named_events.items.len);
+    try splice.addNamedEvents(&host.engine.render_cache, elem_id, &.{.{
+        .name = "drop",
+        .binding = .{
+            .event_id = ids.EventId.fromRaw(17),
+            .delivery = .{ .requested = .native },
+            .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .detail),
+        },
+    }});
+    var publication = try NativeRenderPublication.prepare(&host, &splice);
+    defer publication.deinit();
+    try std.testing.expect(!host.dom_elements.items[1].native_drop_target);
+    host.configureAllocationFailure(1);
+    publication.apply(&host);
+    try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
+    try std.testing.expectEqualStrings("task-λ", host.dom_elements.items[1].native_drag_key.?);
+    try std.testing.expectEqualStrings("1,24,0", host.dom_elements.items[1].native_viewport.?);
+    try std.testing.expect(host.dom_elements.items[1].native_drop_target);
+    const drop = sim_dom.namedEvent(&host.dom_elements.items[1], "drop").?;
+    try std.testing.expectEqual(@as(u64, 17), drop.binding.event_id.raw());
+    host.configureAllocationFailure(null);
+}
+
+test "native task retired during publication owns one cancellation and no pending start" {
+    var host = HostEnv.init();
+    defer {
+        host.deinitTaskRecords();
+        std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("retired task leaked");
+    }
+    var publication = try NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), .external, "retired", "request", 1);
+    defer publication.deinit();
+    try std.testing.expectEqual(@as(usize, 0), host.started_tasks.items.len);
+    try std.testing.expectEqual(@as(usize, 0), host.canceled_tasks.items.len);
+    host.configureAllocationFailure(1);
+    publication.commitRetired();
+    try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
+    try std.testing.expectEqual(@as(usize, 0), host.started_tasks.items.len);
+    try std.testing.expectEqual(@as(usize, 1), host.canceled_tasks.items.len);
+    try std.testing.expectEqualStrings("retired", host.canceled_tasks.items[0].name);
+}
+
 test "native prepared render publication applies sparse child moves atomically" {
     var host = HostEnv.init();
     var roc_host = makeSignalsRocHost(&host);
@@ -6749,13 +6820,13 @@ test "signals host supplies the configured native entropy seed as little endian 
 
     const cap = testHostValueCapability(&roc_host);
     defer hv.releaseHostValueCapability(cap, &roc_host);
-    const value = host.initialEntropySeedPayload(&roc_host, cap);
+    const value = NativeCtx.initialEntropySeedPayload(&host, &roc_host, cap);
     defer testDropHostValue(&roc_host, value);
     const payload = testReadHostValueU8List(&roc_host, value);
     try std.testing.expectEqualSlices(u8, &.{ 0x53, 0x63, 0x6f, 0x72 }, payload.items());
 
     host.entropy_seed = 0;
-    const deterministic = host.initialEntropySeedPayload(&roc_host, cap);
+    const deterministic = NativeCtx.initialEntropySeedPayload(&host, &roc_host, cap);
     defer testDropHostValue(&roc_host, deterministic);
     const deterministic_payload = testReadHostValueU8List(&roc_host, deterministic);
     try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, deterministic_payload.items());
@@ -13079,5 +13150,72 @@ test "native GUI drop dispatch preserves event detail through the real engine bo
     for (1..3) |expected| {
         Gpui.dispatch(1, 3, "task-λ".ptr, "task-λ".len, 0);
         try expectHostValueI64(Gpui.host.stateValueByNodeId(state_id), @intCast(expected));
+    }
+}
+
+test "native GUI unit input and checked dispatch preserve their extraction descriptors" {
+    inline for (.{ RenderEventKind.click, RenderEventKind.input, RenderEventKind.check }) |kind| {
+        const Reducer = struct {
+            fn call(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+                const values = testErasedArgsAs(ErasedHostValueTernaryArgs, args);
+                const current = testReadHostValueI64(roc_host, values.arg0);
+                switch (kind) {
+                    .click => {},
+                    .input => {
+                        var text = testReadHostValueStr(roc_host, values.arg2);
+                        defer text.decref(roc_host);
+                        if (!std.mem.eql(u8, text.asSlice(), "edited-λ")) @panic("input changed text");
+                    },
+                    .check => if (testReadHostValueBool(roc_host, values.arg2) != (current == 0)) @panic("check changed boolean"),
+                    else => unreachable,
+                }
+                const host = hostFromRocHost(roc_host);
+                writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, current + 1)));
+            }
+        };
+        try std.testing.expect(!Gpui.live);
+        Gpui.host = HostEnv.init();
+        Gpui.roc_host = makeSignalsRocHost(&Gpui.host);
+        Gpui.host.engine.roc_host = &Gpui.roc_host;
+        Gpui.child_order = signals.native_child_order.Tree.init(Gpui.host.hostAllocator());
+        Gpui.live = true;
+        defer {
+            Gpui.live = false;
+            Gpui.clear();
+            Gpui.child_order.deinit();
+            Gpui.host.deinit();
+            std.testing.expectEqual(.ok, Gpui.host.gpa.deinit()) catch @panic("GUI event dispatch leaked");
+        }
+        const plan: EventExtractionPlanKind = switch (kind) {
+            .click => .none,
+            .input => .target_value,
+            .check => .target_checked,
+            else => unreachable,
+        };
+        const state_token = newTestBinderToken(&Gpui.roc_host);
+        const attr = testNodeEventAttrWithPlan(&Gpui.roc_host, kind, state_token, plan, &Reducer.call);
+        const target = testElementWith(&Gpui.roc_host, "input", &.{attr}, &.{});
+        const root = testNodeStateWithTokenAndInitial(&Gpui.roc_host, state_token, testHostValueI64(0), target);
+        defer root.decref(&Gpui.roc_host);
+        var stream: HostNodeDescriptorStream = .{};
+        Gpui.host.collectActiveElemRootDescriptors(&Gpui.roc_host, &stream, root, &.{});
+        _ = applyNodeDescriptorStream(&Gpui.host, &Gpui.roc_host, &stream);
+        Gpui.host.rebuildActiveEventsFromStream(&stream);
+        Gpui.host.engine.active_stream = stream;
+        const event = Gpui.host.engine.active_events.items[0];
+        const state_id = stream.scope_sites.items[0].node_id;
+        try std.testing.expect(event.payload_descriptor.eql(kind.payloadDescriptor()));
+        try std.testing.expect(!event.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .detail)));
+        const wire_kind: u32 = switch (kind) {
+            .click => 0,
+            .input => 1,
+            .check => 2,
+            else => unreachable,
+        };
+        const bytes: []const u8 = if (kind == .input) "edited-λ" else "";
+        for (1..3) |expected| {
+            Gpui.dispatch(1, wire_kind, bytes.ptr, bytes.len, if (kind == .check and expected == 1) 1 else 0);
+            try expectHostValueI64(Gpui.host.stateValueByNodeId(state_id), @intCast(expected));
+        }
     }
 }

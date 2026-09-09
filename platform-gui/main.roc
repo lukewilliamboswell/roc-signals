@@ -29,7 +29,9 @@ platform ""
 	}
 	targets: {
         inputs_dir: "targets/",
+        arm64mac: { inputs: ["libhost.a", app, "../macos-sysroot/usr/lib/libobjc.tbd", "../macos-sysroot/usr/lib/libc++.tbd"] },
         x64glibc: { inputs: ["crt1.o", "crti.o", "libhost.a", app, "libfreetype.so", "libxkbcommon.so", "libxkbcommon-x11.so", "libgcc_s.so", "libutil.so", "librt.so", "libpthread.so", "libm.so", "libdl.so", "libc.so", "crtn.o"] },
+        x64win: { inputs: ["host.lib", "signals.res", app, "advapi32.lib"] },
     }
 
 

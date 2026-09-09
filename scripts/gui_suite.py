@@ -2,7 +2,6 @@
 
 from pathlib import Path
 import os
-import platform
 import re
 import subprocess
 import sys
@@ -10,13 +9,14 @@ import tomllib
 
 import spec_driver
 import toolchain
+from build_gui import build_environment, executable_name, host_target
 
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def supported_host() -> bool:
-    return platform.system() == "Linux" and platform.machine() == "x86_64"
+    return host_target() is not None
 
 
 def examples(root: Path = ROOT) -> tuple[Path, ...]:
@@ -47,7 +47,7 @@ def fixtures(root: Path = ROOT) -> tuple[Path, ...]:
 
 def run(roc: str, args, output: Path) -> None:
     if not supported_host():
-        raise SystemExit("GUI tests require Linux x86_64 with glibc; no display is needed.")
+        raise SystemExit("GUI tests require Linux x86_64 with glibc, Apple Silicon macOS, or Windows x86_64; no display is needed.")
     apps = examples() + fixtures()
     toolchain.verify_compiler(roc, toolchain.read_pin(ROOT / "platform-gui/main.roc"))
     subprocess.run([sys.executable, ROOT / "scripts/prepare_platforms.py"], check=True)
@@ -55,8 +55,8 @@ def run(roc: str, args, output: Path) -> None:
         [sys.executable, ROOT / "scripts/build_gui.py", "--debug", "--jobs", str(args.gui_build_jobs)],
         check=True,
     )
-    environment = os.environ.copy()
-    library_path = str(ROOT / "platform-gui/targets/x64glibc")
+    environment = build_environment()
+    library_path = str(ROOT / "platform-gui/targets" / host_target())
     if environment.get("LIBRARY_PATH"):
         library_path += os.pathsep + environment["LIBRARY_PATH"]
     environment["LIBRARY_PATH"] = library_path
@@ -78,12 +78,12 @@ def run(roc: str, args, output: Path) -> None:
         matched += len(cases)
         source = app / "main.roc"
         name = app.name if app.parent.name == "examples-gui" else "fixture-" + app.name
-        executable = output / name
+        executable = output / executable_name(name)
         try:
             for command in (
                 [roc, "check", source],
                 [roc, "test", source],
-                [roc, "build", "--target=x64glibc", "--opt=dev", "--no-cache", f"--output={executable}", source],
+                [roc, "build", f"--target={host_target()}", "--opt=dev", "--no-cache", f"--output={executable}", source],
             ):
                 print("\n==> " + " ".join(map(str, command)), flush=True)
                 subprocess.run(command, cwd=output, check=True)

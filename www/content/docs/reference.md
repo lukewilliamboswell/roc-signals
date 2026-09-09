@@ -78,10 +78,12 @@ For three or more inputs use the record builder rather than nesting `map2`:
 | `cancel` | `Task(a, err) -> Cmd` |
 
 The public associated types are `Signal.Task(a, err)` and
-`Signal.TaskStatus(a, err)`. Low-level task constructors take a `TaskConfig(err)`
+`Signal.TaskStatus(a, err)`. Typed service constructors take a `TaskConfig(err)`
 record containing `name`, `reset_on_start`, `canceled: () -> err`, and
 `refused: () -> err`. The last two initializers declare terminal errors without
-requiring the host to interpret application error types.
+requiring the host to interpret application error types. The low-level external
+string-task constructor retains its published `(name, done, failed, reset_on_start)`
+calling convention so maintained examples can use their pinned release.
 
 `TaskStatus(a, err)` is `[Loading, Done(a), Failed(err)]`. Construct tasks with
 `Signal.fake_task` or the `Http` helpers. `task_source` and

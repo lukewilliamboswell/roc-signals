@@ -127,7 +127,14 @@ Http := [].{
 	## Create a task that decodes successful responses as text. Starting a new
 	## request on the same task cancels any older pending request; late results from
 	## canceled requests are ignored by the runtime.
-	get_text_task = |purpose| Signal.task_source({ name: "http:send:${purpose}", reset_on_start: False, canceled: || error_text(Canceled), refused: || error_text(ResourceLimit("too many pending requests")) }, decode_text_response_payload, decode_error_text_payload)
+	get_text_task = |purpose|
+		Signal.task_source_with_eq(
+			{ name: "http:send:${purpose}", reset_on_start: False, canceled: || error_text(Canceled), refused: || error_text(ResourceLimit("too many pending requests")) },
+			decode_text_response_payload,
+			decode_error_text_payload,
+			|left, right| left == right,
+			|left, right| left == right,
+		)
 
 	## Start a `GET` request and decode a successful response body as text.
 	get_text = |task, uri| {

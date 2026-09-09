@@ -11,36 +11,36 @@
 #   python3 scripts/wasm_size.py --write-budgets .test-out/size/<label>/report.json
 
 [baseline]
-revision = "a53e6f884591def7b1e860f393d040fa6a6bacac"
+revision = "2e3d484d830bca20ff4da0f5c1c6d6f680cac714"
 roc = "Roc compiler version nightly-2026-09-04-c125b82"
 zig = "0.16.0"
 compression = "node-zlib"
 headroom_percent = 1
 
 [fixtures.static-text]
-raw = 703105  # measured 696144
-gzip = 264281  # measured 261665
+raw = 757661  # measured 750160
+gzip = 286649  # measured 283811
 
 [fixtures.counter]
-raw = 710571  # measured 703536
-gzip = 267343  # measured 264697
+raw = 765125  # measured 757550
+gzip = 289631  # measured 286764
 
 [fixtures.branch-replacement]
-raw = 717973  # measured 710865
-gzip = 269344  # measured 266678
+raw = 772367  # measured 764720
+gzip = 291683  # measured 288796
 
 [fixtures.keyed-row-edits]
-raw = 1410301  # measured 1396338
-gzip = 490251  # measured 485398
+raw = 1465080  # measured 1450575
+gzip = 512268  # measured 507197
 
 [fixtures.two-row-types]
-raw = 1417622  # measured 1403587
-gzip = 485678  # measured 480870
+raw = 1472364  # measured 1457787
+gzip = 507411  # measured 502388
 
 [fixtures.js-framework-benchmark]
-raw = 1419706  # measured 1405650
-gzip = 493718  # measured 488830
+raw = 1472355  # measured 1457778
+gzip = 515080  # measured 509981
 
 [fixtures.recipe-scaler]
-raw = 1268487  # measured 1255928
-gzip = 440708  # measured 436345
+raw = 1314360  # measured 1301347
+gzip = 461238  # measured 456672

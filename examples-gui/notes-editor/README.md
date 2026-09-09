@@ -9,7 +9,7 @@ Run from the repository root after preparing the GUI host as described in
 [contributing](../../www/content/docs/contributing.md#native-gui-platform-spike):
 
 ```sh
-roc build --target=x64glibc --opt=dev examples-gui/notes-editor/main.roc --output=.test-out/Notes
+roc build --opt=dev examples-gui/notes-editor/main.roc --output=.test-out/Notes
 .test-out/Notes
 python3 scripts/spec_driver.py .test-out/Notes examples-gui/notes-editor/specs
 roc test examples-gui/notes-editor/main.roc

@@ -345,7 +345,7 @@ Build both app-independent hosts and create both platform bundles:
 
 ```sh
 scripts/bundle.sh
-# Build and serve web/ and gui/ bundles plus a URL-bound Counter.roc:
+# Build and serve web/ and gui/ bundles plus URL-bound GUI example sources:
 scripts/bundle.sh --serve --port 8000
 ```
 
@@ -852,10 +852,28 @@ The flat layout is intentional: nested `shared/` imports and hosted declarations
 currently fail with the pinned compiler, including when compiled from bundles.
 See `UPSTREAM_COMPILER_BUGS.md` for the observed limitations.
 
-The current GUI target is Linux x86_64 with glibc and a Wayland/GPU session.
-Host development needs Rust (tested with 1.95), Zig 0.16, a C toolchain/CRT,
-FreeType and xkbcommon development packages, and the xkbcommon-X11 runtime.
-The workspace pins GPUI 0.2.2. Other native targets are not implemented.
+The GUI targets are Apple Silicon macOS, Linux x86_64 with glibc and a
+Wayland/GPU session, and Windows x86_64. Host development needs Rust (tested
+with 1.94 on macOS, 1.95 on Linux, and 1.89 on Windows) and Zig 0.16. Linux also
+needs a C toolchain/CRT, FreeType and
+xkbcommon development packages, and the xkbcommon-X11 runtime. macOS needs Xcode
+with its Metal compiler component (`xcodebuild -downloadComponent MetalToolchain`).
+If Xcode reports mismatched support frameworks, complete
+`xcodebuild -runFirstLaunch` first. Windows needs the `x86_64-pc-windows-msvc`
+Rust toolchain; the optimized host build also compiles GPUI's shaders with the
+Windows SDK's `fxc.exe` (set `GPUI_FXC_PATH` if it is not discovered), and a
+development build compiles them at runtime instead. Zig supplies the archiver
+and resource compiler, Roc's own `x64win` link supplies the C runtime, and the
+one import library still needed is generated from the MinGW-w64 definitions
+Zig bundles, so no MSVC link step or Windows SDK libraries are involved. Use
+`python` rather than
+`python3` in the commands below on Windows, where `python3` is often a Store
+shortcut; `build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
+Other native targets, including Intel macOS and Windows on Arm, are not
+implemented.
+The GUI builder selects `TOOLCHAINS=Metal` on macOS unless explicitly overridden;
+use the same setting for direct `cargo test` commands if Xcode's default lookup
+still reports the installed Metal component as missing.
 
 ```sh
 python3 scripts/build_gui.py --debug
@@ -874,7 +892,8 @@ builds fresh executables, and runs their native semantic specs without a display
 The manifest at `examples-gui/examples.toml` must list every app directory, and
 each app must have specs. Every GUI check must pass; this suite has no known-failure
 allowlist. `--spec-filter`, `--shard`, `--jobs`, and `--fail-fast` also apply.
-The default `all` suite includes GUI checks on Linux x86_64; CI runs them in a
+The default `all` suite includes GUI checks on Linux x86_64; run `gui` explicitly
+on macOS, where it requires full Xcode and the Metal toolchain. CI runs them in a
 dedicated Linux job. GUI executables remain under `.test-out/gui` when output is kept.
 
 Normal GUI launches do not print engine metrics. Pass `--host-trace-engine` to an
@@ -887,18 +906,53 @@ app work should serialize substantial host builds. The builder cleans the local
 Rust host crate before compiling so a shared Cargo target cannot reuse another
 worktree's host implementation; dependency artifacts remain cached.
 GUI specs validate shared
-semantics; the separate Wayland smoke above checks rendering and adapter dispatch,
+semantics; the separate window smoke above checks rendering and adapter dispatch,
 and does not establish OS keyboard, pointer, or IME behavior. GPUI adapter tests
-exercise simulated input and layout; they also do not replace a real Wayland walkthrough.
+exercise simulated input and layout; they also do not replace a native desktop walkthrough.
 
-After `scripts/bundle.sh --serve`, download `http://127.0.0.1:8000/Counter.roc`
+After `scripts/bundle.sh --package gui --serve`, download `http://127.0.0.1:8000/Counter.roc`
 and run `roc build Counter.roc`. Alternatively, `roc run Counter.roc --opt=speed`
 compiles and opens the window directly. Plain `roc run` currently encounters the
 required-`main` shim collision documented in `UPSTREAM_COMPILER_BUGS.md`, case 12. The app author needs the pinned Roc compiler
-and runtime GUI libraries; Rust, Zig, and a C compiler are used only when
-preparing the platform bundle. This produces a native executable, not a desktop
-installer. The prebuilt host depends on the build machine's glibc/library ABI;
+and the target operating system (plus runtime GUI libraries on Linux).
+Rust, Zig, and the native SDK/toolchain are used only when
+preparing the platform bundle. On macOS, the package embeds compiled Metal shaders
+and copies the required SDK framework/library link stubs into
+`targets/macos-sysroot`; building a bundled app does not need Xcode. The macOS
+build is validated on macOS 26.3; older versions are not yet validated.
+This produces a native executable, not a desktop
+installer. The Linux prebuilt host depends on the build machine's glibc/library ABI;
 portable release packaging needs a deliberate sysroot and license inventory.
+
+Prebuilt link inputs come from CI on their own release cycle instead of a
+local host build, and no binary is committed. The `GUI host link inputs`
+workflow (`gui-hosts.yml`, dispatched with a `gui-hosts-<date>` tag) builds the
+optimized `platform-gui/targets/<target>` trees on each supported runner,
+records signed build provenance, and publishes them as a GitHub release of
+`gui-link-inputs-<target>.tar` archives. Rerun it only when the host changes.
+To bundle from a published set, verify and extract each archive, then pass the
+extracted `targets/` tree:
+
+```sh
+gh release download gui-hosts-2026-09-09 --pattern 'gui-link-inputs-*.tar' --dir /tmp/hosts
+gh attestation verify /tmp/hosts/gui-link-inputs-x64win.tar --repo lukewilliamboswell/roc-signals
+mkdir -p /tmp/hosts/targets && tar -xf /tmp/hosts/gui-link-inputs-x64win.tar -C /tmp/hosts/targets
+scripts/bundle.sh --package gui --no-build --prebuilt-targets /tmp/hosts/targets
+```
+
+`--prebuilt-targets` copies the tree into the staged platform alongside any
+inputs already present locally, so one bundle can carry every operating
+system's inputs.
+
+The bundle output also contains every registered GUI app under `examples-gui/`,
+including its supporting Roc modules and semantic specs. Those generated app
+headers refer to the served bundle URL. With the server still running, build an
+app directly from the output directory:
+
+```sh
+roc build .test-out/bundles/examples-gui/notes-editor/main.roc --output=.test-out/Notes
+.test-out/Notes
+```
 
 `Gui` offers typed rows, columns, panels, native styles, headings/text, enabled
 buttons, labeled inputs, and checkboxes. See the native presentation protocol in

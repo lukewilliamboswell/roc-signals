@@ -664,11 +664,11 @@ main = ||
 		|refreshes| {
 			# `reset_on_start = False` keeps the last known result on screen while a
 			# refresh is in flight, so a poll does not blank the board every 5s.
-			api_task = Signal.task_source({ name: "check:api", reset_on_start: False, canceled: || "canceled", refused: || "too many pending requests" }, parse_check, |err| err)
-			web_task = Signal.task_source({ name: "check:web", reset_on_start: False, canceled: || "canceled", refused: || "too many pending requests" }, parse_check, |err| err)
-			database_task = Signal.task_source({ name: "check:database", reset_on_start: False, canceled: || "canceled", refused: || "too many pending requests" }, parse_check, |err| err)
-			notifications_task = Signal.task_source({ name: "check:notifications", reset_on_start: False, canceled: || "canceled", refused: || "too many pending requests" }, parse_check, |err| err)
-			feed_task = Signal.task_source({ name: "incidents", reset_on_start: False, canceled: || "canceled", refused: || "too many pending requests" }, parse_feed, |err| err)
+			api_task = Signal.task_source("check:api", parse_check, |err| err, False)
+			web_task = Signal.task_source("check:web", parse_check, |err| err, False)
+			database_task = Signal.task_source("check:database", parse_check, |err| err, False)
+			notifications_task = Signal.task_source("check:notifications", parse_check, |err| err, False)
+			feed_task = Signal.task_source("incidents", parse_feed, |err| err, False)
 
 			check_of = |task| Signal.fold_task(task, pending_check, |value| value, |err| { health: Health.CheckFailed(err), uptime_bps: 0 })
 

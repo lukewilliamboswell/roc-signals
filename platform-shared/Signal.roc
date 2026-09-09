@@ -84,25 +84,32 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 			a.is_eq : a, a -> Bool,
 			err.is_eq : err, err -> Bool,
 		]
-	fake_task = |name, to_done, to_failed| Signal.task_source({ name, reset_on_start: True, canceled: || to_failed("canceled"), refused: || to_failed("refused") }, to_done, to_failed)
+	fake_task = |name, to_done, to_failed|
+		Signal.task_source_with_eq(
+			{ name, reset_on_start: True, canceled: || to_failed("canceled"), refused: || to_failed("refused") },
+			to_done,
+			to_failed,
+			|left, right| left.is_eq(right),
+			|left, right| left.is_eq(right),
+		)
 
 	## Low-level host task source constructor. `reset_on_start` controls whether
 	## starting a new request publishes `Loading` or keeps the last cached value
 	## while the runtime request is pending. Starting a request for a task source
 	## cancels any older pending request for that same source; if an older host
 	## result arrives anyway, the runtime ignores it and keeps the newer request in
-	## control. The config's canceled initializer returns the error published by
-	## explicit cancellation, without running the host failure decoder. The refused
-	## initializer supplies a terminal error when a bounded host cannot admit work;
-	## this also supersedes the source's older pending request.
-	task_source : TaskConfig(err), (Str -> a), (Str -> err) -> Task(a, err)
+	## control. This string-payload constructor retains the published calling
+	## convention used by examples. Its error decoder receives "canceled" for
+	## explicit cancellation and "too many pending requests" for capacity refusal.
+	## Typed platform services use TaskConfig through host_task_source_with_eq.
+	task_source : Str, (Str -> a), (Str -> err), Bool -> Task(a, err)
 		where [
 			a.is_eq : a, a -> Bool,
 			err.is_eq : err, err -> Bool,
 		]
-	task_source = |config, to_done, to_failed|
+	task_source = |name, to_done, to_failed, reset_on_start|
 		Signal.task_source_with_eq(
-			config,
+			{ name, reset_on_start, canceled: || to_failed("canceled"), refused: || to_failed("too many pending requests") },
 			to_done,
 			to_failed,
 			|left, right| left.is_eq(right),

@@ -1,142 +1,27 @@
-//! Bounded Linux file primitives for scope-owned worker requests.
+//! Bounded Unix file primitives for scope-owned worker requests.
 //!
 //! All path components are opened relative to owned directory handles with
 //! O_NOFOLLOW. A renamed directory remains the same opened directory, and a
 //! substituted symlink cannot redirect an in-flight operation. Scans are bounded
 //! observations, not filesystem snapshots: concurrent removals/changes can fail
 //! the entire request. No Roc value, task registry, or GUI state belongs here.
+use super::{
+    CHUNK_BYTES, DirectoryListing, Entry, FileError, Kind, LogChange, LogChunk, LogCursor,
+    LogPosition, LogState, MAX_CHUNK_BYTES, MAX_PATH_BYTES, MAX_SCAN_DEPTH, MAX_SCAN_ENTRIES,
+    MAX_SCAN_PATH_BYTES, MAX_TEXT_BYTES, Opened, Preview, Scan, TEMP_SERIAL, TextFile, Written,
+    bounded_detail, canceled, read_chunk, utf8_prefix,
+};
 use std::{
-    ffi::{CString, OsStr},
-    fs::{self, File},
+    ffi::{CStr, CString, OsStr},
+    fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
     os::{
-        fd::{AsRawFd, FromRawFd, RawFd},
+        fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd},
         unix::ffi::OsStrExt,
     },
     path::{Component, Path},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
-
-pub const MAX_PATH_BYTES: usize = 4096;
-pub const MAX_ERROR_DETAIL_BYTES: usize = 4096;
-pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
-pub const MAX_SCAN_ENTRIES: usize = 10_000;
-pub const MAX_SCAN_DEPTH: usize = 64;
-pub const MAX_SCAN_PATH_BYTES: usize = 4 * 1024 * 1024;
-pub const MAX_CHUNK_BYTES: usize = 64 * 1024;
-const CHUNK_BYTES: usize = MAX_CHUNK_BYTES;
-static TEMP_SERIAL: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct TextFile {
-    pub path: String,
-    pub text: String,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Written {
-    pub path: String,
-    pub bytes: u64,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Entry {
-    pub path: String,
-    pub kind: Kind,
-    pub bytes: u64,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Scan {
-    pub root: String,
-    pub entries: Vec<Entry>,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct DirectoryListing {
-    pub path: String,
-    pub entries: Vec<Entry>,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Preview {
-    pub path: String,
-    pub text: String,
-    pub truncated: bool,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Opened {
-    pub path: String,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LogCursor {
-    pub device: u64,
-    pub inode: u64,
-    pub offset: u64,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LogPosition {
-    Start,
-    End,
-    After(LogCursor),
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LogChange {
-    Initial,
-    Continued,
-    Rotated,
-    Truncated,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LogState {
-    More,
-    AtEnd,
-    PartialUtf8,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct LogChunk {
-    pub path: String,
-    pub text: String,
-    pub cursor: LogCursor,
-    pub change: LogChange,
-    pub state: LogState,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    File,
-    Directory,
-    SymbolicLink,
-    Other,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub enum FileError {
-    Canceled,
-    NotFound(String),
-    PermissionDenied(String),
-    InvalidUtf8(String),
-    InvalidPath(String),
-    ResourceLimit(String),
-    Io(String),
-    Unavailable(String),
-}
-
-fn canceled(cancel: &AtomicBool) -> Result<(), FileError> {
-    if cancel.load(Ordering::Acquire) {
-        Err(FileError::Canceled)
-    } else {
-        Ok(())
-    }
-}
-
-/// Bounds diagnostic text before native result framing, preserving UTF-8 and
-/// marking omitted detail. This never changes a task's error code or data result.
-pub(crate) fn bounded_detail(mut message: String) -> String {
-    const MARKER: &str = " [truncated]";
-    if message.len() > MAX_ERROR_DETAIL_BYTES {
-        let mut end = MAX_ERROR_DETAIL_BYTES - MARKER.len();
-        while !message.is_char_boundary(end) {
-            end -= 1;
-        }
-        message.truncate(end);
-        message.push_str(MARKER);
-    }
-    message
-}
 
 fn io_error(path: &str, error: io::Error) -> FileError {
     let message = bounded_detail(format!("{path}: {error}"));
@@ -191,7 +76,8 @@ fn open_at(
             parent,
             name.as_ptr(),
             flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            mode,
+            // Darwin's mode_t is u16; C variadic arguments require promotion.
+            mode as libc::c_uint,
         )
     };
     if fd < 0 {
@@ -469,6 +355,68 @@ struct ScanBudget {
     path_bytes: usize,
 }
 
+// Own one native directory stream per active recursion level. Reopening "."
+// relative to the retained directory gives the iterator an independent offset;
+// dup would share the offset and make a second scan miss entries.
+struct DirectoryStream(*mut libc::DIR);
+
+impl DirectoryStream {
+    fn open(directory: &File, path: &str) -> Result<Self, FileError> {
+        let file = open_at(
+            directory.as_raw_fd(),
+            OsStr::new("."),
+            libc::O_RDONLY | libc::O_DIRECTORY,
+            0,
+            path,
+        )?;
+        // SAFETY: file owns a live directory fd. fdopendir takes ownership only
+        // on success; on failure File still closes it.
+        let stream = unsafe { libc::fdopendir(file.as_raw_fd()) };
+        if stream.is_null() {
+            return Err(io_error(path, io::Error::last_os_error()));
+        }
+        let _owned_by_stream = file.into_raw_fd();
+        Ok(Self(stream))
+    }
+
+    fn next_name(&mut self) -> io::Result<Option<&OsStr>> {
+        // SAFETY: this stream is exclusively owned. readdir's name remains
+        // valid until the next call on this stream, bounded by the mutable borrow.
+        // Clearing thread-local errno distinguishes end-of-directory from error.
+        unsafe {
+            #[cfg(target_os = "macos")]
+            {
+                *libc::__error() = 0;
+            }
+            #[cfg(target_os = "linux")]
+            {
+                *libc::__errno_location() = 0;
+            }
+            let entry = libc::readdir(self.0);
+            if entry.is_null() {
+                let error = io::Error::last_os_error();
+                return if error.raw_os_error() == Some(0) {
+                    Ok(None)
+                } else {
+                    Err(error)
+                };
+            }
+            let name = CStr::from_ptr((*entry).d_name.as_ptr());
+            Ok(Some(OsStr::from_bytes(name.to_bytes())))
+        }
+    }
+}
+
+impl Drop for DirectoryStream {
+    fn drop(&mut self) {
+        // SAFETY: the stream owns its descriptor and is closed exactly once,
+        // including cancellation, bounded refusal, and recursive scan errors.
+        unsafe {
+            libc::closedir(self.0);
+        }
+    }
+}
+
 fn scan_directory(
     directory: &File,
     path: &str,
@@ -478,14 +426,12 @@ fn scan_directory(
     recursive: bool,
 ) -> Result<(), FileError> {
     canceled(cancel)?;
-    // /proc/self/fd resolves our still-owned descriptor, not an application path.
-    // read_dir owns its iterator handle while recursion owns each no-follow fd.
-    let listing = fs::read_dir(format!("/proc/self/fd/{}", directory.as_raw_fd()))
-        .map_err(|error| io_error(path, error))?;
-    for entry in listing {
+    let mut listing = DirectoryStream::open(directory, path)?;
+    while let Some(name) = listing.next_name().map_err(|error| io_error(path, error))? {
         canceled(cancel)?;
-        let entry = entry.map_err(|error| io_error(path, error))?;
-        let name = entry.file_name();
+        if name == "." || name == ".." {
+            continue;
+        }
         let name_text = name
             .to_str()
             .ok_or_else(|| FileError::InvalidUtf8(path.into()))?;
@@ -500,7 +446,7 @@ fn scan_directory(
         {
             return Err(FileError::ResourceLimit(path.into()));
         }
-        let stat = stat_at(directory.as_raw_fd(), &name, &entry_path)?;
+        let stat = stat_at(directory.as_raw_fd(), name, &entry_path)?;
         let entry_kind = kind(stat.st_mode);
         budget
             .entries
@@ -518,7 +464,7 @@ fn scan_directory(
             }
             let child = open_at(
                 directory.as_raw_fd(),
-                &name,
+                name,
                 libc::O_RDONLY | libc::O_DIRECTORY,
                 0,
                 &entry_path,
@@ -577,49 +523,12 @@ pub fn list_directory(path: &str, cancel: &AtomicBool) -> Result<DirectoryListin
     })
 }
 
-// Retain at most the requested byte count. A read can end between UTF-8 code
-// points; callers decide whether an incomplete tail is a prefix or pending data.
-fn read_chunk(
-    file: &mut File,
-    path: &str,
-    cancel: &AtomicBool,
-    count: usize,
-) -> Result<Vec<u8>, FileError> {
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(count)
-        .map_err(|_| FileError::ResourceLimit(path.into()))?;
-    bytes.resize(count, 0);
-    let mut used = 0;
-    while used < count {
-        canceled(cancel)?;
-        let read = file
-            .read(&mut bytes[used..])
-            .map_err(|error| io_error(path, error))?;
-        if read == 0 {
-            break;
-        }
-        used += read;
-    }
-    canceled(cancel)?;
-    bytes.truncate(used);
-    Ok(bytes)
-}
-
-fn utf8_prefix(bytes: &[u8], path: &str) -> Result<usize, FileError> {
-    match std::str::from_utf8(bytes) {
-        Ok(_) => Ok(bytes.len()),
-        Err(error) if error.error_len().is_none() => Ok(error.valid_up_to()),
-        Err(_) => Err(FileError::InvalidUtf8(path.into())),
-    }
-}
-
 /// Reads a UTF-8 prefix of at most 64 KiB, reporting omitted bytes explicitly.
 /// A code point cut by the prefix bound is excluded; invalid UTF-8 inside the
 /// prefix or an incomplete terminal code point in a complete file is refused.
 pub fn read_preview(path: &str, cancel: &AtomicBool) -> Result<Preview, FileError> {
     let (mut file, _) = regular_file(path, cancel)?;
-    let mut bytes = read_chunk(&mut file, path, cancel, MAX_CHUNK_BYTES + 1)?;
+    let mut bytes = read_chunk(&mut file, path, cancel, MAX_CHUNK_BYTES + 1, io_error)?;
     let truncated = bytes.len() > MAX_CHUNK_BYTES;
     bytes.truncate(MAX_CHUNK_BYTES);
     let valid = utf8_prefix(&bytes, path)?;
@@ -652,7 +561,9 @@ pub fn read_log(
     let (mut file, stat) = regular_file(path, cancel)?;
     let size = u64::try_from(stat.st_size).map_err(|_| FileError::InvalidPath(path.into()))?;
     let mut cursor = LogCursor {
-        device: stat.st_dev,
+        // Darwin uses signed 32-bit dev_t; this opaque cursor preserves its
+        // identity in u64 on both supported hosts.
+        device: stat.st_dev as u64,
         inode: stat.st_ino,
         offset: 0,
     };
@@ -678,7 +589,7 @@ pub fn read_log(
         // a code point. Four trailing bytes contain any complete UTF-8 endpoint.
         file.seek(SeekFrom::Start(size.saturating_sub(4)))
             .map_err(|error| io_error(path, error))?;
-        let tail = read_chunk(&mut file, path, cancel, size.min(4) as usize)?;
+        let tail = read_chunk(&mut file, path, cancel, size.min(4) as usize, io_error)?;
         if !tail.is_empty() {
             let mut start = tail.len() - 1;
             while start > 0 && tail[start] & 0xc0 == 0x80 {
@@ -697,7 +608,7 @@ pub fn read_log(
     }
     file.seek(SeekFrom::Start(cursor.offset))
         .map_err(|error| io_error(path, error))?;
-    let mut bytes = read_chunk(&mut file, path, cancel, MAX_CHUNK_BYTES + 1)?;
+    let mut bytes = read_chunk(&mut file, path, cancel, MAX_CHUNK_BYTES + 1, io_error)?;
     let more = bytes.len() > MAX_CHUNK_BYTES;
     bytes.truncate(MAX_CHUNK_BYTES);
     let valid = utf8_prefix(&bytes, path)?;
@@ -789,10 +700,10 @@ fn open_path_with_launcher(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::{
-        ffi::OsStringExt,
-        fs::{PermissionsExt, symlink},
-    };
+    use std::fs;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     struct Directory(std::path::PathBuf);
     impl Directory {
@@ -803,7 +714,9 @@ mod tests {
                 TEMP_SERIAL.fetch_add(1, Ordering::Relaxed)
             ));
             fs::create_dir(&root).unwrap();
-            Self(root)
+            // macOS temp_dir starts with /var, a symlink to /private/var.
+            // Tests need a real parent path to exercise the no-follow contract.
+            Self(root.canonicalize().unwrap())
         }
         fn path(&self, name: &str) -> String {
             self.0.join(name).to_str().unwrap().into()
@@ -1202,7 +1115,9 @@ mod tests {
     }
 
     #[test]
-    fn scan_rejects_non_utf8_entry_names_and_complete_results_over_each_bound() {
+    #[cfg(target_os = "linux")]
+    fn scan_rejects_non_utf8_entry_names() {
+        // APFS rejects this name before the scan can observe it.
         let dir = Directory::new();
         let invalid_name = dir.0.join(std::ffi::OsString::from_vec(vec![0xff]));
         fs::write(&invalid_name, "x").unwrap();
@@ -1210,7 +1125,11 @@ mod tests {
             scan(dir.root(), &active()),
             Err(FileError::InvalidUtf8(_))
         ));
-        fs::remove_file(invalid_name).unwrap();
+    }
+
+    #[test]
+    fn scan_rejects_complete_results_over_each_bound() {
+        let dir = Directory::new();
         fs::write(dir.path("entry"), "x").unwrap();
         let parts = path_parts(dir.root()).unwrap();
         let handle = directory(&parts, dir.root(), &active()).unwrap();
@@ -1254,6 +1173,31 @@ mod tests {
             ),
             Err(FileError::ResourceLimit(_))
         ));
+    }
+
+    #[test]
+    fn repeated_scans_keep_the_opened_directory_after_path_replacement() {
+        let dir = Directory::new();
+        let original = dir.path("original");
+        let moved = dir.path("moved");
+        let replacement = dir.path("replacement");
+        fs::create_dir(&original).unwrap();
+        fs::create_dir(&replacement).unwrap();
+        fs::write(format!("{original}/retained"), "old").unwrap();
+        fs::write(format!("{replacement}/redirected"), "new").unwrap();
+        let parts = path_parts(&original).unwrap();
+        let handle = directory(&parts, &original, &active()).unwrap();
+        fs::rename(&original, &moved).unwrap();
+        symlink(&replacement, &original).unwrap();
+        for _ in 0..2 {
+            let mut budget = ScanBudget {
+                entries: Vec::new(),
+                path_bytes: original.len(),
+            };
+            scan_directory(&handle, &original, 0, &active(), &mut budget, true).unwrap();
+            assert_eq!(budget.entries.len(), 1);
+            assert_eq!(budget.entries[0].path, format!("{original}/retained"));
+        }
     }
 
     #[test]

@@ -137,6 +137,6 @@ live in `platform-shared/`; the preparation script copies its modules into each 
 generated files gitignored and checked by SHA-256. `platform-web` is the
 browser platform. Run `scripts/bundle.sh --serve` to build and serve both Roc
 platform bundles, including a downloadable `Counter.roc` that builds with
-`roc build Counter.roc`. The GUI spike currently targets Linux x64/Wayland.
+`roc build Counter.roc`. The GUI spike targets Apple Silicon macOS, Linux x64/Wayland, and Windows x64.
 See [contributing](www/content/docs/contributing.md#native-gui-platform-spike)
 for prerequisites, local examples, and current limitations.
