@@ -140,7 +140,7 @@ class DependencyStagingTests(unittest.TestCase):
     def test_gui_bundle_replaces_stale_keyboard_libraries_with_verified_release(self):
         source = self.root / "platform-gui/targets/x64glibc"
         source.mkdir(parents=True)
-        for name in ("libsignals_gpui_host.a", "libengine.a", "libfreetype.so", *prepare_dependencies.XKBCOMMON_LIBRARIES, *prepare_dependencies.GLIBC_LIBRARIES, "crti.o", "crtn.o", "libdl.so"):
+        for name in ("libsignals_gpui_host.a", "libengine.a", "libfreetype.so", *prepare_dependencies.XKBCOMMON_LIBRARIES, *prepare_dependencies.GLIBC_LIBRARIES, "crti.o", "crtn.o", "libdl.so", "injected.a", "libunwind.a"):
             (source / name).write_bytes(b"checkout bytes")
 
         @contextmanager
@@ -166,7 +166,7 @@ class DependencyStagingTests(unittest.TestCase):
             for name in prepare_dependencies.GLIBC_LIBRARIES:
                 self.assertEqual((stage / "targets/x64glibc" / name).read_bytes(), b"verified CRT " + name.encode())
             self.assertEqual((stage / "sources/glibc/source.tar.xz").read_bytes(), b"corresponding sources")
-            for name in ("crti.o", "crtn.o", "libdl.so"):
+            for name in ("crti.o", "crtn.o", "libdl.so", "injected.a", "libunwind.a"):
                 self.assertFalse((stage / "targets/x64glibc" / name).exists())
             receipt = json.loads((stage / "dependencies.lock.json").read_text())
             self.assertEqual(set(receipt["artifacts"]), {prepare_dependencies.FREETYPE, prepare_dependencies.XKBCOMMON, prepare_dependencies.GLIBC})
@@ -197,7 +197,7 @@ class DependencyStagingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "bundle inputs inspected"):
                 bundle_platforms.main()
             copied_sources = {Path(call.args[0]) for call in copy_file.call_args_list}
-            for name in (*prepare_dependencies.XKBCOMMON_LIBRARIES, *prepare_dependencies.GLIBC_LIBRARIES, "crti.o", "crtn.o", "libdl.so"):
+            for name in (*prepare_dependencies.XKBCOMMON_LIBRARIES, *prepare_dependencies.GLIBC_LIBRARIES, "crti.o", "crtn.o", "libdl.so", "injected.a", "libunwind.a"):
                 self.assertNotIn(source / name, copied_sources)
 
     def test_freetype_admission_requires_complete_license_inventory(self):

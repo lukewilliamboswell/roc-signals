@@ -19,8 +19,8 @@ from gui_host_artifacts import verified_hosts, HOST_FILES
 from prepare_dependencies import (verified_web_dependencies, WEB_ARTIFACTS,
                                   verified_windows_imports, WINDOWS_IMPORTS,
                                   verified_freetype, FREETYPE,
-                                  verified_glibc, GLIBC, GLIBC_LIBRARIES,
-                                  verified_xkbcommon, XKBCOMMON, XKBCOMMON_LIBRARIES)
+                                  verified_glibc, GLIBC,
+                                  verified_xkbcommon, XKBCOMMON)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -217,10 +217,10 @@ def main():
                     windows_targets.append(tree / 'x64win')
                 hosts += [(tree, p) for p in tree.rglob('*')
                           if p.is_file() and p.relative_to(tree).parts[0] != 'x64win'
-                          and p.relative_to(tree).as_posix() != 'x64glibc/libfreetype.so'
-                          and p.relative_to(tree).as_posix() not in
-                          {'x64glibc/' + name for name in (*XKBCOMMON_LIBRARIES, *GLIBC_LIBRARIES,
-                           'crti.o', 'crtn.o', 'libutil.so', 'librt.so', 'libpthread.so', 'libdl.so')}
+                          and (p.relative_to(tree).parts[0] != 'x64glibc'
+                               or p.relative_to(tree).as_posix() in {
+                                   'x64glibc/libsignals_gpui_host.a', 'x64glibc/libengine.a',
+                                   'x64glibc/libgcc_s.so', 'x64glibc/link-inputs.json'})
                           and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json', '.tbd'}]
             if package == 'gui' and not hosts and not windows_targets:
                 raise SystemExit(f'No {package} hosts found; run without --no-build.')
