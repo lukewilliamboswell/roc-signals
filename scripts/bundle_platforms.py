@@ -18,7 +18,6 @@ from prepare_platforms import prepare_platform
 from gui_suite import examples as gui_examples
 from gui_host_artifacts import verified_hosts, HOST_FILES
 from prepare_dependencies import (verified_web_dependencies, WEB_ARTIFACTS,
-                                  verified_windows_imports, WINDOWS_IMPORTS,
                                   verified_windows_gnu, WINDOWS_GNU_ARTIFACTS, windows_gnu_files,
                                   verified_freetype, FREETYPE,
                                   verified_glibc, GLIBC, GLIBC_LIBRARIES, verified_unwind, UNWIND,
@@ -75,12 +74,13 @@ def stage_dependency_inputs(inputs, identities, stage):
 
 def validate_gui_archives(tree):
     """Reject incomplete or obsolete host layouts before assembling a bundle."""
-    for target in ("x64glibc", "arm64mac", "x64win", "x64mingw"):
+    if (tree / "x64win").exists():
+        raise ValueError("obsolete x64win host outputs; rebuild the Windows GNU target before bundling")
+    for target in ("x64glibc", "arm64mac", "x64mingw"):
         directory = tree / target
         if not directory.exists():
             continue
-        names = (("signals_gpui_host.lib", "engine.lib") if target == "x64win"
-                 else ("libsignals_gpui_host.a", "libengine.a"))
+        names = ("libsignals_gpui_host.a", "libengine.a")
         for name in names:
             path = directory / name
             if not path.is_file() or path.is_symlink():
@@ -94,8 +94,6 @@ def validate_gui_link_inputs(tree):
     if (tree / "x64glibc").is_dir():
         names = (*GLIBC_LIBRARIES, "libfreetype.so", *XKBCOMMON_LIBRARIES, "libunwind.a")
         required.extend(tree / "x64glibc" / name for name in names)
-    if (tree / "x64win").is_dir():
-        required.extend(tree / "x64win" / name for name in ("signals.res", "advapi32.lib"))
     if (tree / "x64mingw").is_dir():
         required.extend(tree / "x64mingw" / name for name in ("signals.res", *windows_gnu_files()))
     if (tree / "arm64mac").is_dir():
@@ -105,21 +103,6 @@ def validate_gui_link_inputs(tree):
     for path in required:
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"missing or invalid GUI link dependency: {path}")
-
-
-def stage_windows_inputs(source, stage):
-    """Combine the selected Windows host outputs with newly verified imports."""
-    names = ("signals_gpui_host.lib", "engine.lib", "signals.res")
-    for name in names:
-        path = source / name
-        if not path.is_file() or path.is_symlink():
-            raise ValueError(f"missing or invalid Windows host output: {path}")
-    with verified_windows_imports() as inputs:
-        destination = stage / "targets/x64win"
-        destination.mkdir(parents=True, exist_ok=True)
-        for name in names:
-            shutil.copyfile(source / name, destination / name)
-        stage_dependency_inputs(inputs, (WINDOWS_IMPORTS,), stage)
 
 
 def stage_windows_gnu_inputs(source, stage):
@@ -228,7 +211,6 @@ def main():
                     trees.extend(inputs / identity / 'targets' for identity in identities)
                     stage_dependency_inputs(inputs, identities, stage)
             hosts = []
-            windows_targets = []
             windows_gnu_targets = []
             macos_targets = []
             selected_targets = set()
@@ -258,16 +240,12 @@ def main():
                                    'x64glibc/libsignals_gpui_host.a', 'x64glibc/libengine.a',
                                    'x64glibc/link-inputs.json'})
                           and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json'}]
-            if package == 'gui' and not hosts and not windows_targets and not windows_gnu_targets and not macos_targets:
+            if package == 'gui' and not hosts and not windows_gnu_targets and not macos_targets:
                 raise SystemExit(f'No {package} hosts found; run without --no-build.')
             for tree, path in hosts:
                 dest = stage / 'targets' / path.relative_to(tree)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, dest)
-            if len(windows_targets) > 1:
-                raise ValueError('select one Windows host tree; overlapping local/prebuilt hosts are ambiguous')
-            if windows_targets:
-                stage_windows_inputs(windows_targets[0], stage)
             if len(windows_gnu_targets) > 1:
                 raise ValueError('select one Windows GNU host tree; overlapping hosts are ambiguous')
             if windows_gnu_targets:

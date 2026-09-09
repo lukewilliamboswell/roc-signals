@@ -167,13 +167,14 @@ class HostArtifactTests(unittest.TestCase):
     def test_host_only_target_is_not_a_complete_platform(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            target = root / "x64win"
+            target = root / "x64mingw"
             target.mkdir()
-            for name in gui_host_artifacts.HOST_FILES["x64win"]:
+            for name in gui_host_artifacts.HOST_FILES["x64mingw"]:
                 (target / name).write_bytes(b"host")
             with self.assertRaisesRegex(ValueError, "link dependency"):
                 bundle_platforms.validate_gui_link_inputs(root)
-            (target / "advapi32.lib").write_bytes(b"verified import")
+            for name in prepare_dependencies.windows_gnu_files():
+                (target / name).write_bytes(b"verified dependency")
             bundle_platforms.validate_gui_link_inputs(root)
 
     def test_foreign_host_producer_is_rejected_before_download(self):

@@ -542,50 +542,39 @@ class DependencyStagingTests(unittest.TestCase):
                 build_gui.build()
         compiler.assert_not_called()
 
-    def test_windows_bundle_ignores_checkout_imports_and_extra_libraries(self):
-        source = self.source / "targets/x64win"
-        source.mkdir()
-        for name in ("signals_gpui_host.lib", "engine.lib", "host.lib", "signals.res", "advapi32.lib", "injected.lib"):
-            (source / name).write_bytes(name.encode())
-        artifact = self.inputs / prepare_dependencies.WINDOWS_IMPORTS
-        (artifact / "targets/x64win").mkdir(parents=True)
-        (artifact / "targets/x64win/advapi32.lib").write_bytes(b"verified import")
-        (artifact / "dependency.json").write_text("verified manifest")
-        stage = self.root / "windows-bundle"
-        with patch.object(bundle_platforms, "verified_windows_imports", self.verified):
-            bundle_platforms.stage_windows_inputs(source, stage)
-        self.assertEqual((stage / "targets/x64win/advapi32.lib").read_bytes(), b"verified import")
-        for name in ("signals_gpui_host.lib", "engine.lib"):
-            self.assertEqual((stage / "targets/x64win" / name).read_bytes(), name.encode())
-        self.assertFalse((stage / "targets/x64win/host.lib").exists())
-        self.assertFalse((stage / "targets/x64win/injected.lib").exists())
-        self.assertEqual((stage / "dependency-manifests/windows-imports-x64win.json").read_text(), "verified manifest")
-
     def test_gui_bundle_rejects_combined_only_and_missing_engine_layouts(self):
-        for target in ("x64glibc", "arm64mac", "x64win"):
+        for target in ("x64glibc", "arm64mac", "x64mingw"):
             tree = self.root / target
             directory = tree / target
             directory.mkdir(parents=True)
-            (directory / ("host.lib" if target == "x64win" else "libhost.a")).write_bytes(b"old")
+            (directory / "libhost.a").write_bytes(b"old")
             with self.assertRaisesRegex(ValueError, "missing or invalid GUI archive"):
                 bundle_platforms.validate_gui_archives(tree)
-            rust, engine = (("signals_gpui_host.lib", "engine.lib") if target == "x64win"
-                            else ("libsignals_gpui_host.a", "libengine.a"))
+            rust, engine = ("libsignals_gpui_host.a", "libengine.a")
             (directory / rust).write_bytes(b"rust")
             with self.assertRaisesRegex(ValueError, "missing or invalid GUI archive"):
                 bundle_platforms.validate_gui_archives(tree)
             (directory / engine).write_bytes(b"engine")
             bundle_platforms.validate_gui_archives(tree)
 
-    def test_windows_bundle_has_no_unsigned_fallback(self):
-        source = self.source / "targets/x64win"
-        source.mkdir()
+    def test_gui_bundle_rejects_obsolete_windows_target_even_with_complete_archives(self):
+        tree = self.root / "obsolete"
+        target = tree / "x64win"
+        target.mkdir(parents=True)
         for name in ("signals_gpui_host.lib", "engine.lib", "signals.res", "advapi32.lib"):
+            (target / name).write_bytes(b"old complete target")
+        with self.assertRaisesRegex(ValueError, "obsolete x64win"):
+            bundle_platforms.validate_gui_link_inputs(tree)
+
+    def test_windows_bundle_has_no_unsigned_fallback(self):
+        source = self.source / "targets/x64mingw"
+        source.mkdir()
+        for name in ("libsignals_gpui_host.a", "libengine.a", "signals.res"):
             (source / name).write_bytes(b"local")
         stage = self.root / "refused-windows-bundle"
-        with patch.object(bundle_platforms, "verified_windows_imports", side_effect=ValueError("untrusted signer")):
+        with patch.object(bundle_platforms, "verified_windows_gnu", side_effect=ValueError("untrusted signer")):
             with self.assertRaisesRegex(ValueError, "untrusted signer"):
-                bundle_platforms.stage_windows_inputs(source, stage)
+                bundle_platforms.stage_windows_gnu_inputs(source, stage)
         self.assertFalse(stage.exists())
 
     def test_gui_example_package_includes_only_pinned_sources_and_rejects_drift(self):
