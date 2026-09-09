@@ -5,6 +5,7 @@ on:
     paths:
       - dependencies/freetype.json
       - dependencies/linux/Dockerfile
+      - dependencies/linux/zig-toolchain.cmake
       - scripts/build_freetype.py
       - scripts/test_freetype_dependencies.py
       - scripts/dependency_archive.py
