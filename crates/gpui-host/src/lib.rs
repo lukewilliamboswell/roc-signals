@@ -197,7 +197,7 @@ impl Render for NodeView {
             element = element.font_family(self.node.font_family.clone());
         }
         if let Some(style) = self.node.style {
-            element = apply_style(element, style);
+            element = apply_style(element, style, self.parent_direction(cx));
         }
         if self.node.selected {
             element = element.border_2().border_color(rgb(0x70c5e8));
@@ -278,7 +278,16 @@ impl Render for NodeView {
                             let mut style = StyleRefinement::default();
                             style.size.width = Some(relative(1.).into());
                             style.size.height = Some(height.into());
-                            let row = div().id(("row", id)).h(height).w_full().overflow_hidden();
+                            // A column context, like the viewport element the
+                            // rows belong to, so a Fill row resolves its axes
+                            // exactly as it would outside the virtual list.
+                            let row = div()
+                                .id(("row", id))
+                                .flex()
+                                .flex_col()
+                                .h(height)
+                                .w_full()
+                                .overflow_hidden();
                             if child.read(cx).node.kind == ControlKind::Dialog {
                                 row
                             } else {
@@ -340,6 +349,23 @@ fn missing_image(radius: u32) -> Div {
         .rounded(px(radius as f32))
 }
 
+impl NodeView {
+    /// The committed parent's layout direction (row=0, column=1) decides which
+    /// of this element's axes is the parent's main axis. An absent parent or
+    /// style is the column default: the host lays out the root column-wise.
+    fn parent_direction(&self, cx: &App) -> u32 {
+        self.node
+            .parent
+            .and_then(|id| {
+                let runtime = self.runtime.upgrade()?;
+                let runtime = runtime.read(cx);
+                let parent = runtime.nodes.get(&id)?;
+                parent.read(cx).node.style.map(|style| style.direction)
+            })
+            .unwrap_or(1)
+    }
+}
+
 /// Resolves an enabled button's hover and active backgrounds. An explicit
 /// style-v2 state color always wins. With both state fields at their inherit
 /// sentinel, a default-background button keeps the host's standard feedback,
@@ -360,7 +386,11 @@ fn button_state_backgrounds(style: Option<bridge::Style>) -> (Option<u32>, Optio
     )
 }
 
-fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div> {
+fn apply_style(
+    mut element: Stateful<Div>,
+    style: bridge::Style,
+    parent_direction: u32,
+) -> Stateful<Div> {
     element = if style.direction == 0 {
         element.flex_row()
     } else {
@@ -369,12 +399,23 @@ fn apply_style(mut element: Stateful<Div>, style: bridge::Style) -> Stateful<Div
     element = element
         .gap(px(style.gap as f32))
         .p(px(style.padding as f32));
+    // Fill means the parent's content box. On the parent's main axis a
+    // percentage would resolve against the border box (overshooting padded
+    // parents) and degenerate to the content size under the auto-height root,
+    // so Fill becomes flex distribution of the free space instead: a zero
+    // preferred size with grow and a zero minimum, so the element's own
+    // content never inflates the allocation. A Fill region owns its own
+    // overflow - it clips or scrolls rather than pushing past the padding.
+    // On the cross axis, taffy resolves the percentage against the parent's
+    // content box, which is exactly the contract.
     element = match style.width_kind {
+        1 if parent_direction == 0 => element.w(px(0.)).flex_grow().min_w_0(),
         1 => element.w_full(),
         2 => element.w(px(style.width as f32)),
         _ => element,
     };
     element = match style.height_kind {
+        1 if parent_direction == 1 => element.h(px(0.)).flex_grow().min_h_0(),
         1 => element.h_full(),
         2 => element.h(px(style.height as f32)),
         _ => element,
@@ -1864,6 +1905,103 @@ mod tests {
         let auto = original.read_with(cx, |input, _| input.viewport_bounds_for_test());
         assert_eq!(auto.size.height, px(320.));
         assert!(Engine::take_test_event().is_none());
+    }
+
+    #[gpui::test]
+    fn fill_children_stay_inside_their_padded_parents_content_box(cx: &mut TestAppContext) {
+        let sentinel = 0x1000000;
+        let colors = bridge::Style {
+            background: sentinel,
+            hover_background: sentinel,
+            active_background: sentinel,
+            foreground: sentinel,
+            border_color: sentinel,
+            ..Default::default()
+        };
+        let fill = bridge::Style {
+            direction: 1,
+            width_kind: 1,
+            height_kind: 1,
+            ..colors
+        };
+        let cx = cx.add_empty_window();
+        let runtime = cx.new(|cx| {
+            let mut runtime = runtime();
+            // The app shape every example uses: a Fill/Fill window wrapper, a
+            // padded Fill/Fill column, a fixed header, and a Fill panel.
+            let mut window = node(1, "window", &[2]);
+            window.style = Some(fill);
+            let mut parent = node(2, "div", &[3, 4]);
+            parent.test_id = "padded-parent".into();
+            parent.style = Some(bridge::Style {
+                gap: 8,
+                padding: 24,
+                ..fill
+            });
+            let mut header = node(3, "text", &[]);
+            header.test_id = "fill-header".into();
+            header.text = "Header".into();
+            header.style = Some(bridge::Style {
+                direction: 1,
+                height_kind: 2,
+                height: 40,
+                ..colors
+            });
+            let mut panel = node(4, "div", &[]);
+            panel.test_id = "fill-panel".into();
+            panel.style = Some(fill);
+            runtime.apply(vec![node(0, "root", &[1]), window, parent, header, panel], cx);
+            runtime
+        });
+        cx.draw(point(px(0.), px(0.)), size(px(500.), px(400.)), |_, _| {
+            runtime.clone()
+        });
+        let parent = cx.debug_bounds("padded-parent").unwrap();
+        let header = cx.debug_bounds("fill-header").unwrap();
+        let panel = cx.debug_bounds("fill-panel").unwrap();
+        eprintln!("parent={parent:?} header={header:?} panel={panel:?}");
+        assert_eq!(parent.size, size(px(500.), px(400.)));
+        // Fill means the parent's content box: inside the padding on every
+        // side, and after the fixed sibling plus the gap on the main axis.
+        assert_eq!(panel.left(), parent.left() + px(24.));
+        assert_eq!(panel.right(), parent.right() - px(24.));
+        assert_eq!(panel.top(), header.bottom() + px(8.));
+        assert_eq!(
+            panel.bottom(),
+            parent.bottom() - px(24.),
+            "Fill height must stop at the content box, not the border box"
+        );
+
+        // A Fill panel with oversized content keeps its allocation instead of
+        // growing past the padding: the region owns its overflow. Before the
+        // flex mapping this exact shape pushed the panel to the window edge.
+        runtime.update(cx, |runtime, cx| {
+            let mut oversized = node(5, "div", &[]);
+            oversized.test_id = "oversized".into();
+            oversized.style = Some(bridge::Style {
+                direction: 1,
+                height_kind: 2,
+                height: 900,
+                width_kind: 2,
+                width: 100,
+                ..colors
+            });
+            let mut panel = runtime.nodes[&4].read(cx).node.clone();
+            panel.child_count = 1;
+            Engine::set_test_children(4, vec![5]);
+            runtime.apply(vec![panel, oversized], cx);
+        });
+        cx.draw(point(px(0.), px(0.)), size(px(500.), px(400.)), |_, _| {
+            runtime.clone()
+        });
+        let parent = cx.debug_bounds("padded-parent").unwrap();
+        let panel = cx.debug_bounds("fill-panel").unwrap();
+        assert_eq!(parent.size, size(px(500.), px(400.)));
+        assert_eq!(
+            panel.bottom(),
+            parent.bottom() - px(24.),
+            "oversized content must not push a Fill panel past the padding"
+        );
     }
 
     #[gpui::test]
