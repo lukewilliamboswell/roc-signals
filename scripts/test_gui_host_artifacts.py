@@ -9,11 +9,49 @@ from unittest.mock import patch
 
 import gui_host_artifacts
 import bundle_platforms
+import release_dependencies
+from dependency_archive import write_archive
 from dependency_artifacts import unpack_verified
 from gui_host_artifacts import pack_host, source_fingerprint, validate_host
 
 
 class HostArtifactTests(unittest.TestCase):
+    def test_release_requires_every_target_and_matching_source(self):
+        environment = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
+                       "GITHUB_REPOSITORY": release_dependencies.REPOSITORY, "GITHUB_SHA": "a" * 40}
+        for failure in ("missing-target", "wrong-source", "missing-license", "signature", None):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for target, names in gui_host_artifacts.HOST_FILES.items():
+                    if failure == "missing-target" and target == "arm64mac":
+                        continue
+                    files = {f"targets/{target}/{name}": b"tested host" for name in names}
+                    files["licenses/gui-host/LICENSE"] = b"platform license"
+                    if failure != "missing-license":
+                        files["licenses/gui-host/LICENSE-GPUI"] = b"GPUI license"
+                    write_archive(root / f"gui-host-{target}.tar", {
+                        "schema_version": 1, "name": "gui-host", "target": target,
+                        "source_fingerprint": "wrong" if failure == "wrong-source" else "expected",
+                    }, files)
+                with patch.object(release_dependencies.subprocess, "check_output", return_value="a" * 40), \
+                        patch.object(gui_host_artifacts, "source_fingerprint", return_value="expected"), \
+                        patch.object(release_dependencies, "verify_archive") as verifier:
+                    if failure == "signature":
+                        verifier.side_effect = ValueError("invalid signature")
+                    if failure:
+                        with self.assertRaises(ValueError):
+                            release_dependencies.prepare(root, "deps-gui-host-1", environment, "gui-host")
+                        self.assertFalse((root / "dependencies.lock.json").exists())
+                    else:
+                        release_dependencies.prepare(root, "deps-gui-host-1", environment, "gui-host")
+                        lock = json.loads((root / "dependencies.lock.json").read_text())
+                        self.assertEqual(set(lock["artifacts"]), {
+                            "gui-host-" + target for target in gui_host_artifacts.HOST_FILES})
+                        self.assertEqual(verifier.call_count, 3)
+                        for entry in lock["artifacts"].values():
+                            self.assertEqual(entry["signer_workflow"], gui_host_artifacts.WORKFLOW)
+                            self.assertEqual(entry["source_sha"], "a" * 40)
+
     def test_host_only_target_is_not_a_complete_platform(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

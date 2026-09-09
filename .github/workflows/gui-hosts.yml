@@ -81,7 +81,7 @@ jobs:
           shared-key: gui-dependencies
           cache-workspace-crates: false
           cache-bin: false
-          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH
+          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH DEVELOPER_DIR TOOLCHAINS
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Build the optimized host and its link inputs
         env:
