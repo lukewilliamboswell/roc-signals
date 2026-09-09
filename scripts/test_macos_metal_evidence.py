@@ -36,6 +36,9 @@ class MetalEvidenceTests(unittest.TestCase):
 
     def test_only_complete_fresh_chain_is_accepted(self):
         self.assertEqual(set(metal.validate_invocations(self.records, self.metadata, self.target)), {'metal', 'metallib'})
+        alias = self.root / 'macos-var-alias'
+        alias.symlink_to(self.target, target_is_directory=True)
+        self.assertEqual(set(metal.validate_invocations(self.records, self.metadata, alias)), {'metal', 'metallib'})
         for records in ([], self.records[:1], self.records + self.records[:1]):
             with self.assertRaisesRegex(ValueError, 'fresh metal'):
                 metal.validate_invocations(records, self.metadata, self.target)
