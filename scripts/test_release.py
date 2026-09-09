@@ -138,6 +138,26 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(toolchain.read_pin(source), "nightly-2026-09-04-c125b82")
                 self.assertIn('"А"', toolchain.local_sources(root, ["main.roc"])["main.roc"])
 
+    def test_ci_compiler_relocation_preserves_checkout_and_refuses_external_tools(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            compiler = workspace / "download/roc"
+            compiler.parent.mkdir(parents=True)
+            compiler.write_bytes(b"compiler")
+            envfile = root / "path"
+            environment = {"GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(root),
+                           "GITHUB_PATH": str(envfile)}
+            with patch.dict(os.environ, environment), patch.object(toolchain.shutil, "which", return_value=str(compiler)):
+                toolchain.relocate_for_ci()
+            self.assertTrue(workspace.is_dir())
+            self.assertFalse(compiler.parent.exists())
+            self.assertEqual((root / "roc-toolchain/roc").read_bytes(), b"compiler")
+            self.assertEqual(envfile.read_text().strip(), str(root / "roc-toolchain"))
+            with patch.dict(os.environ, environment), patch.object(toolchain.shutil, "which", return_value=str(root / "roc-toolchain/roc")):
+                with self.assertRaisesRegex(ValueError, "immediate child"):
+                    toolchain.relocate_for_ci()
+
     def test_new_example_requires_a_pin_and_updater_registration(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

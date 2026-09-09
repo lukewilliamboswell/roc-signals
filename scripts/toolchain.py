@@ -3,8 +3,10 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 from compiler_pins import TOKEN, discover, local_sources, read_pin, version
@@ -81,12 +83,37 @@ def verify_compiler(roc: str, pin: str) -> None:
         raise ValueError(f"compiler does not match {pin}: {actual}")
 
 
+def relocate_for_ci():
+    """Move setup-roc's download out of the checkout without shell path comparisons.
+
+    Windows Git Bash and native environment variables spell the same path
+    differently. Native Path resolution keeps the containment check consistent.
+    """
+    executable = shutil.which("roc")
+    if executable is None:
+        raise ValueError("setup-roc did not install a compiler on PATH")
+    directory = Path(executable).resolve().parent
+    workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+    if directory.parent != workspace:
+        raise ValueError("downloaded compiler must be an immediate child of the checkout")
+    destination = Path(os.environ["RUNNER_TEMP"]) / "roc-toolchain"
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("compiler relocation destination already exists")
+    shutil.move(str(directory), str(destination))
+    with Path(os.environ["GITHUB_PATH"]).open("a", encoding="utf-8") as output:
+        output.write(str(destination) + "\n")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--roc-bin")
+    parser.add_argument("--relocate-for-ci", action="store_true")
     args = parser.parse_args()
-    pin = validate_roots() if args.check else development_pin()
-    if args.roc_bin:
-        verify_compiler(args.roc_bin, pin)
-    print(pin)
+    if args.relocate_for_ci:
+        relocate_for_ci()
+    else:
+        pin = validate_roots() if args.check else development_pin()
+        if args.roc_bin:
+            verify_compiler(args.roc_bin, pin)
+        print(pin)
