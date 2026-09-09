@@ -36,12 +36,12 @@ does not assert a revision for Zig's entire MinGW tree.
 
 The producer selects runtime inputs from the compiler's actual final-link
 invocation, checks every UCRT import and alias against the complete inventory,
-and requires identical archives from two fresh offline builds. LLVM objcopy from the authenticated builder snapshot removes CRT debug metadata
-containing random cache paths; every implementation section must retain its
-original contents, flags, size and resolved relocation targets. Zig ar re-indexes all retained objects under
-stable member names. The explicit UBSan build suppresses debug metadata while
-retaining ReleaseSafe checks. Its native Windows
-probe tests startup and teardown, thread-local destruction, C++ and Rust panic
+and requires identical archives from two fresh offline builds. Zig's `-s` option suppresses debug metadata when compiling the CRT inputs;
+`-g0` does not set this compiler-wide option. All CRT objects remain exactly as
+produced by the compiler, including address-significance metadata. The explicit
+UBSan build uses `-fstrip` while retaining ReleaseSafe checks, and Zig ar gives
+its complete implementation object a stable archive member name. Its native Windows
+probe links through both Zig and the pinned Roc compiler and tests startup and teardown, thread-local destruction, C++ and Rust panic
 unwinding, compiler-runtime division, and an intentional UBSan failure with an
 OS-only DLL search path. A separate arithmetic executable prevents Rust's embedded
 compiler builtins from satisfying the compiler-runtime test. Diagnostic maps replay

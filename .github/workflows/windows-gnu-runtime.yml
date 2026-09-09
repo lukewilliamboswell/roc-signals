@@ -83,6 +83,10 @@ jobs:
         with:
           name: windows-gnu-runtime-candidate
           path: ${{ runner.temp }}/candidate
+      - uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
+        with:
+          version: nightly-new-compiler
+          nightly-tag: nightly-2026-09-04-c125b82
       - name: Install the pinned Rust panic probe compiler
         run: rustup toolchain install 1.95.0 --profile minimal --target x86_64-pc-windows-gnullvm
       - name: Execute the exact runtime candidate with OS-only DLL search

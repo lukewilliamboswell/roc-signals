@@ -16,7 +16,7 @@ from windows_runtime_validation import ucrt_inventory
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def check(candidate, require_native=False, zig='zig', evidence=None):
+def check(candidate, require_native=False, zig='zig', evidence=None, roc='roc'):
     if require_native and platform.system() != 'Windows':
         raise ValueError('native Windows runtime test required')
     recipe = json.loads((ROOT / 'dependencies/windows-gnu-runtime.json').read_text())
@@ -24,6 +24,8 @@ def check(candidate, require_native=False, zig='zig', evidence=None):
         raise ValueError('unexpected Zig probe version')
     if not subprocess.check_output(['rustc', '+1.95.0', '--version'], text=True).startswith('rustc 1.95.0 '):
         raise ValueError('Rust probe requires version 1.95.0')
+    if recipe['probe_roc_version'].rsplit('-', 1)[-1] not in subprocess.check_output([roc, 'version'], text=True):
+        raise ValueError('unexpected Roc probe compiler')
     with tempfile.TemporaryDirectory(prefix='signals-windows-runtime-probe-') as temporary:
         work = Path(temporary)
         if any(c.isspace() for c in str(work)):
@@ -109,13 +111,41 @@ def check(candidate, require_native=False, zig='zig', evidence=None):
                         str(ROOT / 'test/dependencies/windows_gnu_compiler_rt.c'), '-o', str(arithmetic)],
                        env=environment, check=True)
         arithmetic_executable = link('arithmetic', [arithmetic], {'__divti3': 'compiler_rt:'}, {'compiler_rt.lib': '__divti3'})
+        # Exercise the actual Roc/lld path too: its linker settings previously
+        # exposed stale .llvm_addrsig indices that the Zig driver accepted.
+        roc_inputs = [target / 'crt2.obj', main, overflow, rust]
+        roc_inputs += [target / n for n in recipe['files'] if n != 'crt2.obj']
+        roc_inputs += [Path(p) for p in support]
+        roc_target = work / 'roc-targets/x64mingw'
+        roc_target.mkdir(parents=True)
+        for path in roc_inputs:
+            shutil.copyfile(path, roc_target / path.name)
+        entries = ', '.join(json.dumps(path.name) for path in roc_inputs)
+        platform_source = ('platform ""\n    requires { main : U64 }\n    exposes []\n'
+                           '    packages { roc: "' + recipe['probe_roc_version'] + '" }\n'
+                           '    provides { "roc_runtime_probe": main_for_host }\n'
+                           '    targets: { inputs_dir: "roc-targets/", x64mingw: { inputs: [' + entries + ', app] } }\n'
+                           'main_for_host : U64\nmain_for_host = main\n')
+        (work / 'runtime-platform.roc').write_text(platform_source)
+        app = work / 'runtime-app.roc'
+        app.write_text('app [main] { pf: platform "runtime-platform.roc" }\nmain : U64\nmain = 42\n')
+        roc_executable = work / 'roc-probe.exe'
+        roc_link = subprocess.run([roc, 'build', str(app), '--target=x64mingw', '--output=' + str(roc_executable)],
+                                  cwd=work, env=environment, capture_output=True, text=True, timeout=180)
+        if evidence is not None:
+            (evidence / 'roc-link.txt').write_text(roc_link.stdout + roc_link.stderr)
+        if roc_link.returncode:
+            raise ValueError('actual Roc final link failed: ' + roc_link.stdout + roc_link.stderr)
         if platform.system() == 'Windows':
             system = Path(os.environ['SystemRoot'])
             environment['PATH'] = str(system / 'System32') + os.pathsep + str(system)
             subprocess.run([str(arithmetic_executable)], cwd=work, env=environment, check=True, timeout=30)
+            roc_result = subprocess.run([str(roc_executable)], cwd=work, env=environment, check=True, capture_output=True, text=True, timeout=30)
             result = subprocess.run([str(executable)], cwd=work, env=environment, check=True, capture_output=True, text=True, timeout=30)
             if result.stdout.splitlines() != ['PASS: Windows GNU runtime startup threads C++ and Rust unwinding', 'PASS: Windows GNU runtime teardown']:
                 raise ValueError('candidate did not prove startup, unwinding and teardown')
+            if roc_result.stdout != result.stdout:
+                raise ValueError('Roc-linked runtime execution differs from Zig-linked probe')
             failure = subprocess.run([str(executable), 'overflow'], cwd=work, env=environment, capture_output=True, text=True, timeout=30)
             if failure.returncode == 0 or 'integer overflow' not in failure.stderr:
                 raise ValueError('candidate did not reject instrumented signed overflow')
@@ -132,5 +162,6 @@ if __name__ == '__main__':
     parser.add_argument('--require-native', action='store_true')
     parser.add_argument('--zig', default='zig')
     parser.add_argument('--evidence', type=Path)
+    parser.add_argument('--roc', default='roc')
     args = parser.parse_args()
-    check(args.candidate.resolve(), args.require_native, args.zig, args.evidence)
+    check(args.candidate.resolve(), args.require_native, args.zig, args.evidence, args.roc)

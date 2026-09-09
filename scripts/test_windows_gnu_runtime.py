@@ -11,42 +11,12 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_windows_gnu_runtime import corresponding_source, implementation_sections, RECIPE
+from build_windows_gnu_runtime import corresponding_source, RECIPE
 from release_windows_gnu_runtime import prepare
 from windows_runtime_validation import ucrt_inventory
 
 
 class RuntimeValidationTests(unittest.TestCase):
-    def test_debug_strip_guard_preserves_code_and_uninitialized_storage(self):
-        header = struct.pack('<HHIIIHH', 0x8664, 2, 0, 101, 0, 0, 0)
-        text = struct.pack('<8sIIIIIIHHI', b'.text', 0, 0, 1, 100, 0, 0, 0, 0, 0x60000020)
-        bss = struct.pack('<8sIIIIIIHHI', b'.bss', 0, 0, 8, 0, 0, 0, 0, 0, 0xC0000080)
-        body = header + text + bss + b'\xc3' + struct.pack('<I', 4)
-        expected = implementation_sections(body)
-        metadata = bytearray(body)
-        # COFF uninitialized sections have no file payload, even if a tool
-        # records a nonzero raw offset. Size and flags remain significant.
-        struct.pack_into('<I', metadata, 80, 100)
-        self.assertEqual(expected, implementation_sections(metadata))
-        metadata[100] = 0x90
-        self.assertNotEqual(expected, implementation_sections(metadata))
-        metadata[100] = 0xC3
-        struct.pack_into('<I', metadata, 76, 16)
-        self.assertNotEqual(expected, implementation_sections(metadata))
-
-    def test_debug_strip_guard_detects_retargeted_relocations(self):
-        header = struct.pack('<HHIIIHH', 0x8664, 1, 0, 71, 1, 0, 0)
-        section = struct.pack('<8sIIIIIIHHI', b'.text', 0, 0, 1, 60, 61, 0, 1, 0, 0x60000020)
-        relocation = struct.pack('<IIH', 0, 0, 4)
-        target = struct.pack('<8sIhHBB', b'original', 0, 0, 0, 2, 0)
-        body = header + section + b'\xc3' + relocation + target + struct.pack('<I', 4)
-        mutated = bytearray(body)
-        mutated[71:79] = b'retarget'
-        self.assertNotEqual(implementation_sections(body), implementation_sections(mutated))
-        mutated = bytearray(body)
-        struct.pack_into('<H', mutated, 69, 3)
-        self.assertNotEqual(implementation_sections(body), implementation_sections(mutated))
-
     def test_implementation_code_cannot_be_admitted_as_a_ucrt_alias(self):
         header = struct.pack('<HHIIIHH', 0x8664, 1, 0, 61, 0, 0, 0)
         section = struct.pack('<8sIIIIIIHHI', b'.text', 0, 0, 1, 60, 0, 0, 0, 0, 0x60000020)

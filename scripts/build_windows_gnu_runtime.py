@@ -9,7 +9,6 @@ from pathlib import Path
 import platform
 import shutil
 import shlex
-import struct
 import subprocess
 import tarfile
 import tempfile
@@ -51,72 +50,6 @@ def corresponding_source(distribution, recipe):
             entry.mode = 0o644
             archive.addfile(entry, io.BytesIO(data))
     return stream.getvalue()
-
-
-def implementation_sections(data):
-    """Compare code/data and resolved relocation targets across debug removal."""
-    machine, count, _, symbols_offset, symbol_count, optional, _ = struct.unpack_from('<HHIIIHH', data)
-    if machine != 0x8664 or optional != 0:
-        raise ValueError('expected an AMD64 COFF implementation object')
-    strings_offset = symbols_offset + symbol_count * 18
-
-    def string(offset):
-        start = strings_offset + offset
-        return data[start:data.index(b'\0', start)]
-
-    sections = [struct.unpack_from('<8sIIIIIIHHI', data, 20 + index * 40) for index in range(count)]
-    names = [string(int(row[0].rstrip(b'\0')[1:])) if row[0].startswith(b'/') else row[0].rstrip(b'\0') for row in sections]
-
-    def symbol(index, resolving=frozenset()):
-        if index >= symbol_count or index in resolving:
-            raise ValueError('invalid COFF relocation symbol')
-        offset = symbols_offset + index * 18
-        raw, value, section, kind, storage, auxiliaries = struct.unpack_from('<8sIhHBB', data, offset)
-        name = string(struct.unpack_from('<I', raw, 4)[0]) if raw[:4] == bytes(4) else raw.rstrip(b'\0')
-        target_section = names[section - 1] if section > 0 else section
-        alias = None
-        if storage == 105:
-            if auxiliaries != 1:
-                raise ValueError('unexpected weak external auxiliary record')
-            target, policy = struct.unpack_from('<II', data, offset + 18)
-            alias = (policy, symbol(target, resolving | {index}))
-        return name, value, target_section, kind, storage, alias
-
-    result = []
-    for name, row in zip(names, sections):
-        _, size_virtual, address, size, offset, relocations, _, relocation_count, _, flags = row
-        if flags & 0x01000000:
-            raise ValueError('unexpected extended relocation count')
-        if not name.startswith(b'.debug'):
-            references = []
-            for index in range(relocation_count):
-                address_relocation, target, kind = struct.unpack_from('<IIH', data, relocations + index * 10)
-                references.append((address_relocation, kind, symbol(target)))
-            result.append((name, size_virtual, address, size, flags,
-                           data[offset:offset + size] if size and not flags & 0x80 else b'', tuple(references)))
-    return result
-
-
-def strip_runtime_debug(zig, source, destination, environment):
-    """Use pinned LLVM objcopy for debug removal and Zig for deterministic indexing."""
-    directory = destination.parent / (destination.name + '-objects')
-    directory.mkdir()
-    archive = source.suffix == '.lib'
-    entries = [body for name, body in members(source.read_bytes()) if name not in ('/', '//')] if archive else [source.read_bytes()]
-    outputs = []
-    for index, body in enumerate(entries):
-        original = directory / ('original-' + str(index) + '.obj')
-        stripped = directory / (str(index).zfill(4) + '.obj')
-        original.write_bytes(body)
-        subprocess.run(['llvm-objcopy-19', '--strip-debug', str(original), str(stripped)], check=True)
-        if implementation_sections(body) != implementation_sections(stripped.read_bytes()):
-            raise ValueError('debug removal changed implementation sections')
-        outputs.append(stripped)
-    if archive:
-        subprocess.run([zig, 'ar', 'rcsD', str(destination), *(p.name for p in outputs)],
-                       cwd=directory, env=environment, check=True)
-    else:
-        shutil.copyfile(outputs[0], destination)
 
 
 def inside(output, toolchain, image_id):
@@ -173,10 +106,6 @@ def inside(output, toolchain, image_id):
         path = ubsan if name == 'ubsan_rt.lib' else link_inputs.get(name)
         if path is None:
             raise ValueError('bootstrap did not link the complete runtime input: ' + name)
-        if name in ('crt2.obj', 'libmingw32.lib', 'unwind.lib'):
-            normalized = work / ('normalized-' + name)
-            strip_runtime_debug(zig, path, normalized, environment)
-            path = normalized
         data = path.read_bytes()
         if name in expected and ucrt_inventory(data) != expected[name]:
             raise ValueError('UCRT source inventory or weak aliases changed: ' + name)
