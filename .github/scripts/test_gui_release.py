@@ -82,10 +82,18 @@ class GuiReleaseTests(unittest.TestCase):
             self.retarget(target)
             release.read_manifest(self.output)
             commands = []
+            def build(command, **kwargs):
+                commands.append(command)
+                text = Path(command[-1]).read_text()
+                url = text[slice(*release.toolchain.app_platform_span(text))]
+                self.assertTrue(url.startswith('http://127.0.0.1:'))
+                with urllib.request.urlopen(url) as response:
+                    self.assertEqual(response.read(), b'exact served platform')
+                self.assertIn('ROC_CACHE_DIR', kwargs['env'])
             with patch.object(release.platform, 'system', return_value=system), \
                     patch.object(release.platform, 'machine', return_value=machine), \
                     patch.object(release.toolchain, 'verify_compiler'), patch.object(release, 'inspect_platform'), \
-                    patch.object(release, 'run', side_effect=lambda command, **kwargs: commands.append(command)), \
+                    patch.object(release, 'run', side_effect=build), \
                     patch.object(release.spec_driver, 'run_suite', return_value=[types.SimpleNamespace(passed=True)]), \
                     patch.object(release.spec_driver, 'print_summary'), patch.object(release.gui_smoke, 'run') as smoke:
                 release.check(self.output, 'roc')
@@ -101,8 +109,26 @@ class GuiReleaseTests(unittest.TestCase):
         self.save_manifest()
         with self.assertRaisesRegex(ValueError, 'exactly one'):
             release.read_manifest(self.output)
-        with self.assertRaisesRegex(ValueError, 'production input admission'):
-            release.prepare(self.tag, 'deps-gui-host-1', self.root / 'unsupported', 'roc', target='x64mingw')
+        with self.assertRaisesRegex(ValueError, 'unsupported GUI RC target'):
+            release.require_preparation_support('unsupported')
+
+    def test_windows_preparation_requires_production_locks_and_exact_link_order(self):
+        release.require_preparation_support('x64mingw')
+        (self.root / 'platform-gui').mkdir()
+        header = (release.ROOT / 'platform-gui/main.roc').read_text()
+        (self.root / 'platform-gui/main.roc').write_text(header)
+        lock = json.loads((release.ROOT / 'dependencies.lock.json').read_bytes())
+        path = self.root / 'dependencies.lock.json'
+        path.write_text(json.dumps(lock))
+        release.require_preparation_support('x64mingw', self.root)
+        (self.root / 'platform-gui/main.roc').write_text(header.replace('"ole32.lib",', ''))
+        with self.assertRaisesRegex(ValueError, 'provider order'):
+            release.require_preparation_support('x64mingw', self.root)
+        (self.root / 'platform-gui/main.roc').write_text(header)
+        del lock['artifacts']['windows-gnu-runtime-x64mingw']
+        path.write_text(json.dumps(lock))
+        with self.assertRaisesRegex(ValueError, 'independently released'):
+            release.require_preparation_support('x64mingw', self.root)
 
     def test_mac_catalog_admission_rejects_changed_tbd_host_and_validation(self):
         import build_macos_stubs as stubs

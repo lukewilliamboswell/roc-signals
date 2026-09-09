@@ -1378,18 +1378,18 @@ See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
 ### Linux GUI release candidates
 
 `GUI release candidate` (`gui-release.yml`) packages an already published
-host for the selected `x64glibc` or `arm64mac` target. Linux includes the independently
+host for the selected `x64glibc`, `arm64mac`, or `x64mingw` target. Linux includes the independently
 verified FreeType, glibc, LLVM unwinder, and xkbcommon releases. Apple Silicon uses
 the host-owned project interface catalog; macOS supplies system implementations. It runs no Cargo or Zig host build. Use a fresh checkout with
 no `platform-gui/targets` directory and an immutable `deps-gui-host-<version>`
 release whose source fingerprint matches that checkout.
 
 Dispatch the workflow with a new `gui-X.Y.Z-rc.N` tag, the host release tag,
-`target: x64glibc` or `target: arm64mac`, and `validate_only: true` for candidate validation. The job packages the existing
+`target: x64glibc`, `target: arm64mac`, or `target: x64mingw`, and `validate_only: true` for candidate validation. The job packages the existing
 verified inputs, serves the exact Roc archive over HTTP, builds all six maintained
 GUI applications with their pinned compiler, runs every semantic spec, and opens
 the same executables on its native runner. Linux uses Weston/Xvfb with Mesa
-software Vulkan; Apple Silicon uses native macOS rendering. Rendering must
+software Vulkan; Apple Silicon and Windows use their native rendering backends. Rendering must
 report explicit success; the counter also verifies its increment interaction.
 The archive inventory check rejects missing dependency notices and receipts,
 unselected target files, and expanded payloads over Roc's 100 MiB limit.
@@ -1399,10 +1399,14 @@ all interface files, original provenance, generator identity, exact host hashes,
 and native validation record. Additional files under `targets/macos-sysroot` are
 rejected. The existing bundler runs the native link/spec validator before bundle
 creation; the RC gate then repeats builds/specs and rendering over fresh HTTP.
-Windows GNU target identity and native-check routing are supported by the helper,
-but RC preparation remains disabled until production header/input admission and
-verified host/runtime/import releases are adopted. Candidate CI inputs cannot
-substitute for those releases.
+Windows preparation requires both independently released dependency locks and
+the exact complete production header input order. The native Windows runner
+verifies the archive decoder, downloads the pinned Roc compiler, then uses the
+released GNU runtime and complete DLL import libraries without building Rust or
+Zig host inputs. A compatible signed host release and its source companion are
+still mandatory; candidate CI artifacts cannot substitute for those releases.
+All six Windows executables use `--target=x64mingw` and are checked locally over
+fresh HTTP and again from untouched public URLs after publication.
 
 A publishing dispatch must run on `main` with `validate_only: false`. It attests
 the exact tested platform archive, starter ZIP, original host lock, and
