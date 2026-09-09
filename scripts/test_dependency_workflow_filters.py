@@ -9,6 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = {
     "musl": "dependencies.yml",
     "windows": "windows-dependencies.yml",
+    "windows-system": "windows-system-imports.yml",
+    "windows-runtime": "windows-gnu-runtime.yml",
     "freetype": "freetype-dependencies.yml",
     "xkbcommon": "xkbcommon-dependencies.yml",
     "glibc": "glibc-dependencies.yml",
@@ -64,6 +66,8 @@ class DependencyWorkflowFilterTests(unittest.TestCase):
 
     def test_recipe_toolchain_and_probe_changes_select_only_their_producer(self):
         inputs = {
+            "windows-system": {"dependencies/windows-system-imports.json", "test/dependencies/windows_system_imports.c"},
+            "windows-runtime": {"dependencies/windows-gnu-runtime.json", "test/dependencies/windows_gnu_runtime.cpp"},
             "musl": {"dependencies/musl.json", "test/dependencies/musl.c"},
             "windows": {"dependencies/windows-imports.json", "test/dependencies/windows_imports.c"},
             "freetype": {"dependencies/freetype.json", "dependencies/linux/Dockerfile",

@@ -12,7 +12,8 @@ import subprocess
 import tempfile
 from contextlib import ExitStack
 
-from build_gui import build as build_gui, MACOS_FRAMEWORKS
+from build_gui import build as build_gui
+from build_macos_stubs import generate as generate_macos_interfaces, ARCHIVES as MACOS_ARCHIVES, read_catalog
 from prepare_platforms import prepare_platform
 from gui_suite import examples as gui_examples
 from gui_host_artifacts import verified_hosts, HOST_FILES
@@ -95,10 +96,9 @@ def validate_gui_link_inputs(tree):
     if (tree / "x64win").is_dir():
         required.extend(tree / "x64win" / name for name in ("signals.res", "advapi32.lib"))
     if (tree / "arm64mac").is_dir():
-        sdk = tree / "macos-sysroot"
-        required.extend(sdk / "usr/lib" / name for name in ("libSystem.tbd", "libobjc.tbd", "libc++.tbd"))
-        required.extend(sdk / "System/Library/Frameworks" / (name + ".framework") / (name + ".tbd")
-                        for name in MACOS_FRAMEWORKS)
+        interfaces = tree / "macos-sysroot"
+        required.extend(interfaces / library['path'] for library in read_catalog()['libraries'])
+        required.extend(interfaces / name for name in ('interfaces.json', 'manifest.json', 'PROVENANCE.md'))
     for path in required:
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"missing or invalid GUI link dependency: {path}")
@@ -117,6 +117,18 @@ def stage_windows_inputs(source, stage):
         for name in names:
             shutil.copyfile(source / name, destination / name)
         stage_dependency_inputs(inputs, (WINDOWS_IMPORTS,), stage)
+
+
+def stage_macos_inputs(source, stage):
+    """Generate interfaces for the selected host; never admit a copied sysroot."""
+    destination = stage / 'targets/arm64mac'
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in MACOS_ARCHIVES:
+        path = source / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f'missing or invalid macOS host archive: {path}')
+        shutil.copyfile(path, destination / name)
+    generate_macos_interfaces(destination, stage / 'targets/macos-sysroot')
 
 
 
@@ -199,6 +211,7 @@ def main():
                     stage_dependency_inputs(inputs, identities, stage)
             hosts = []
             windows_targets = []
+            macos_targets = []
             selected_targets = set()
             for tree in trees:
                 if not tree.is_dir():
@@ -214,14 +227,17 @@ def main():
                         selected_targets.add(target)
                 if (tree / 'x64win/signals_gpui_host.lib').is_file():
                     windows_targets.append(tree / 'x64win')
+                if (tree / 'arm64mac').is_dir():
+                    macos_targets.append(tree / 'arm64mac')
                 hosts += [(tree, p) for p in tree.rglob('*')
-                          if p.is_file() and p.relative_to(tree).parts[0] != 'x64win'
+                          if p.is_file() and p.relative_to(tree).parts[0] not in
+                          {'x64win', 'arm64mac', 'macos-sysroot'}
                           and (p.relative_to(tree).parts[0] != 'x64glibc'
                                or p.relative_to(tree).as_posix() in {
                                    'x64glibc/libsignals_gpui_host.a', 'x64glibc/libengine.a',
                                    'x64glibc/link-inputs.json'})
-                          and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json', '.tbd'}]
-            if package == 'gui' and not hosts and not windows_targets:
+                          and p.suffix in {'.a', '.lib', '.res', '.wasm', '.o', '.so', '.json'}]
+            if package == 'gui' and not hosts and not windows_targets and not macos_targets:
                 raise SystemExit(f'No {package} hosts found; run without --no-build.')
             for tree, path in hosts:
                 dest = stage / 'targets' / path.relative_to(tree)
@@ -231,6 +247,10 @@ def main():
                 raise ValueError('select one Windows host tree; overlapping local/prebuilt hosts are ambiguous')
             if windows_targets:
                 stage_windows_inputs(windows_targets[0], stage)
+            if len(macos_targets) > 1:
+                raise ValueError('select one macOS host tree; overlapping local/prebuilt hosts are ambiguous')
+            if macos_targets:
+                stage_macos_inputs(macos_targets[0], stage)
             if any((tree / 'x64glibc').is_dir() for tree in trees):
                 with verified_freetype() as inputs:
                     stage_dependency_inputs(inputs, (FREETYPE,), stage)
@@ -242,6 +262,9 @@ def main():
                     stage_dependency_inputs(inputs, (XKBCOMMON,), stage)
             if package == 'gui':
                 validate_gui_link_inputs(stage / 'targets')
+                if macos_targets:
+                    from check_macos_interfaces import validate_platform
+                    validate_platform(stage, roc, root=ROOT)
             for name in ['LICENSE', 'THIRD_PARTY_LICENSES.md']:
                 if (ROOT / name).is_file():
                     shutil.copyfile(ROOT / name, stage / name)

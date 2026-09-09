@@ -8,6 +8,13 @@ on:
     paths:
       - .github/workflows/gui-hosts.yml
       - scripts/build_gui.py
+      - scripts/build_macos_stubs.py
+      - scripts/check_macos_interfaces.py
+      - scripts/bundle_platforms.py
+      - scripts/test_macos_stubs.py
+      - dependencies/macos-interfaces/**
+      - .cargo/config.toml
+      - scripts/test_freetype_boundary.py
       - scripts/cargo_build_evidence.py
       - scripts/host_build_identity.py
       - scripts/test_host_build_identity.py
@@ -92,6 +99,11 @@ jobs:
             sudo apt-get install -y libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev
           fi
           rustup toolchain install 1.95.0 --profile minimal
+      - name: Verify FreeType build-script suppression
+        if: runner.os == 'Linux'
+        env:
+          SIGNALS_TEST_CARGO_BOUNDARY: '1'
+        run: python3 -m unittest discover -s scripts -p test_freetype_boundary.py
       - name: Install the selected macOS Metal toolchain
         if: runner.os == 'macOS'
         env:
