@@ -1193,7 +1193,9 @@ portable release packaging needs a deliberate sysroot and license inventory.
 
 The `GUI host link inputs` workflow (`gui-hosts.yml`) builds native candidates
 and runs all GUI application specs with the pinned Roc compiler against their
-extracted archives. Linux and Windows producers capture the actual Cargo build
+extracted archives. Candidate tests populate empty target directories from the
+independently verified Linux or Windows releases; development target copies are
+not admitted as dependency evidence. Linux and Windows producers capture the actual Cargo build
 stream, filtered metadata, and unchanged lock with `build_gui.py --cargo-evidence`.
 The notice composer selects the conservative set of compiled packages, retains
 original notices and source declarations, and supplies pinned canonical SPDX

@@ -19,8 +19,8 @@ from gui_host_artifacts import verified_hosts, HOST_FILES
 from prepare_dependencies import (verified_web_dependencies, WEB_ARTIFACTS,
                                   verified_windows_imports, WINDOWS_IMPORTS,
                                   verified_freetype, FREETYPE,
-                                  verified_glibc, GLIBC, verified_unwind, UNWIND,
-                                  verified_xkbcommon, XKBCOMMON)
+                                  verified_glibc, GLIBC, GLIBC_LIBRARIES, verified_unwind, UNWIND,
+                                  verified_xkbcommon, XKBCOMMON, XKBCOMMON_LIBRARIES)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -90,8 +90,7 @@ def validate_gui_link_inputs(tree):
     validate_gui_archives(tree)
     required = []
     if (tree / "x64glibc").is_dir():
-        names = ("crt1.o", "crti.o", "crtn.o", "libfreetype.so", "libxkbcommon.so",
-                 "libxkbcommon-x11.so", "libgcc_s.so", "libm.so", "libc.so")
+        names = (*GLIBC_LIBRARIES, "libfreetype.so", *XKBCOMMON_LIBRARIES, "libunwind.a")
         required.extend(tree / "x64glibc" / name for name in names)
     if (tree / "x64win").is_dir():
         required.extend(tree / "x64win" / name for name in ("signals.res", "advapi32.lib"))

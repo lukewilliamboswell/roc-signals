@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from contextlib import ExitStack
+import prepare_dependencies
 
 import gui_host_artifacts
 import bundle_platforms
@@ -47,6 +49,9 @@ class HostArtifactTests(unittest.TestCase):
 
             keyboard = admitted("xkbcommon-x64glibc", {"libxkbcommon.so": b"verified keyboard", "libxkbcommon-x11.so": b"verified X11"})
 
+            glibc = admitted("glibc-x64glibc", {name: b"verified CRT" for name in bundle_platforms.GLIBC_LIBRARIES})
+            unwind = admitted("unwind-x64glibc", {"libunwind.a": b"verified unwinder"})
+
             @contextmanager
             def verified(inputs):
                 yield inputs
@@ -56,7 +61,7 @@ class HostArtifactTests(unittest.TestCase):
                 self.assertEqual((cwd / "targets/x64glibc/libfreetype.so").read_bytes(), b"verified FreeType")
                 self.assertFalse((cwd / "targets/x64glibc/libutil.so").exists())
                 receipt = json.loads((cwd / "dependencies.lock.json").read_text())
-                self.assertEqual(set(receipt["artifacts"]), {"gui-host-x64glibc", "freetype-x64glibc", "xkbcommon-x64glibc"})
+                self.assertEqual(set(receipt["artifacts"]), {"gui-host-x64glibc", "freetype-x64glibc", "xkbcommon-x64glibc", "glibc-x64glibc", "unwind-x64glibc"})
                 archive = Path(command[command.index("--output-dir") + 1]) / "platform.tar.zst"
                 return subprocess.CompletedProcess(command, 0, stdout=f"Created: {archive}\n")
 
@@ -65,6 +70,8 @@ class HostArtifactTests(unittest.TestCase):
                     patch.object(bundle_platforms, "verified_hosts", side_effect=lambda *a: verified(host)), \
                     patch.object(bundle_platforms, "verified_freetype", side_effect=lambda: verified(freetype)), \
                     patch.object(bundle_platforms, "verified_xkbcommon", side_effect=lambda: verified(keyboard)), \
+                    patch.object(bundle_platforms, "verified_glibc", side_effect=lambda: verified(glibc)), \
+                    patch.object(bundle_platforms, "verified_unwind", side_effect=lambda: verified(unwind)), \
                     patch.object(bundle_platforms, "stage_example_package"), \
                     patch.object(bundle_platforms, "gui_examples", return_value=[]), \
                     patch.object(bundle_platforms.subprocess, "run", side_effect=bundle) as compiler, \
@@ -77,6 +84,31 @@ class HostArtifactTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "missing or invalid GUI host output"):
                     bundle_platforms.main()
                 self.assertEqual(compiler.call_count, 1)
+
+    def test_candidate_dependencies_are_fresh_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stale = root / "platform-gui/targets/x64glibc"
+            stale.mkdir(parents=True)
+            (stale / "libc.so").write_bytes(b"untrusted checkout")
+            destination = root / "candidate/x64glibc"
+            names = ("install_freetype", "install_glibc", "install_unwind", "install_xkbcommon")
+            with ExitStack() as stack:
+                mocks = [stack.enter_context(patch.object(prepare_dependencies, name,
+                         return_value={"artifacts": {name: {"sha256": name}}})) for name in names]
+                gui_host_artifacts.stage_candidate_dependencies("x64glibc", destination, root)
+                for mock in mocks:
+                    mock.assert_called_once_with(destination, lock=root / "dependencies.lock.json")
+                self.assertFalse((destination / "libc.so").exists())
+                receipt = json.loads((destination / "dependencies.lock.json").read_text())
+                self.assertEqual(set(receipt["artifacts"]), set(names))
+                with self.assertRaises(FileExistsError):
+                    gui_host_artifacts.stage_candidate_dependencies("x64glibc", destination, root)
+            failed = root / "failed/x64win"
+            with patch.object(prepare_dependencies, "install_windows_imports", side_effect=ValueError("invalid signature")):
+                with self.assertRaisesRegex(ValueError, "signature"):
+                    gui_host_artifacts.stage_candidate_dependencies("x64win", failed, root)
+                self.assertFalse((failed / "dependencies.lock.json").exists())
 
     def test_release_requires_selected_target_and_attested_source_pair(self):
         environment = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",

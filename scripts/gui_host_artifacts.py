@@ -136,6 +136,26 @@ def verified_hosts(lock_path, cache, root=ROOT):
         yield destination
 
 
+def stage_candidate_dependencies(target, destination, root=ROOT):
+    """Fetch independently verified link inputs into an empty candidate target."""
+    from prepare_dependencies import (install_freetype, install_glibc, install_unwind,
+                                      install_xkbcommon, install_windows_imports)
+
+    installers = {"x64glibc": (install_freetype, install_glibc, install_unwind, install_xkbcommon),
+                  "x64win": (install_windows_imports,)}
+    if target not in installers:
+        raise ValueError("candidate target has no independent dependency release policy")
+    destination.mkdir(parents=True, exist_ok=False)
+    artifacts = {}
+    for install in installers[target]:
+        receipt = install(destination, lock=root / "dependencies.lock.json")
+        if artifacts.keys() & receipt["artifacts"].keys():
+            raise ValueError("candidate dependency receipts overlap")
+        artifacts.update(receipt["artifacts"])
+    (destination / "dependencies.lock.json").write_text(json.dumps({
+        "schema_version": 1, "artifacts": artifacts}, indent=2) + "\n")
+
+
 def check_candidate(archive, target, roc, root=ROOT, source_companion=None):
     """Run native app specs using the exact extracted host archive candidate."""
     from build_gui import executable_name, host_target
@@ -163,12 +183,12 @@ def check_candidate(archive, target, roc, root=ROOT, source_companion=None):
             validate_publication_notices(extracted, sources, root)
         platform = stage / "platform-gui"
         prepare_platform(root / "platform-gui", platform)
-        # External link inputs are tested with the host, but are not claimed as
-        # host-owned payload. Their independent admission policies still apply.
-        shutil.copytree(root / "platform-gui/targets" / target, platform / "targets" / target,
-                        ignore=shutil.ignore_patterns(*HOST_FILES[target], "libhost.a", "host.lib"))
         if target == "arm64mac":
+            # Candidate-only SDK inputs retain their explicit local origin.
+            (platform / "targets" / target).mkdir(parents=True)
             shutil.copytree(root / "platform-gui/targets/macos-sysroot", platform / "targets/macos-sysroot")
+        else:
+            stage_candidate_dependencies(target, platform / "targets" / target, root)
         for name in HOST_FILES[target]:
             shutil.copyfile(extracted / "targets" / target / name, platform / "targets" / target / name)
         shutil.copytree(root / "examples-gui", stage / "examples-gui")
