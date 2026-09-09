@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package verified Linux GUI hosts, test URL downloads, and publish an RC.
+"""Package verified GUI hosts, test URL downloads, and publish an RC.
 
 This CI-only tool deliberately lives outside the host build fingerprint. It
 never compiles a host: final platform bytes come from the existing bundler's
@@ -11,6 +11,7 @@ from contextlib import ExitStack
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import shutil
@@ -40,6 +41,39 @@ MANIFEST = 'signals-gui-release.json'
 VERSION = re.compile(r'gui-(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-rc\.(?:0|[1-9][0-9]*)')
 EXTERNALS = {'freetype-x64glibc', 'glibc-x64glibc', 'unwind-x64glibc', 'xkbcommon-x64glibc'}
 HOSTS = {'gui-host-x64glibc', 'gui-host-sources-x64glibc'}
+TARGET_EXTERNALS = {
+    'x64glibc': EXTERNALS,
+    'arm64mac': set(),
+    'x64mingw': {'windows-system-imports-x64mingw', 'windows-gnu-runtime-x64mingw'},
+}
+NATIVE_TARGETS = {'x64glibc': ('Linux', {'x86_64', 'amd64'}),
+                  'arm64mac': ('Darwin', {'arm64', 'aarch64'}),
+                  'x64mingw': ('Windows', {'amd64', 'x86_64'})}
+
+
+def selected_target(manifest):
+    targets = manifest.get('targets')
+    if not isinstance(targets, list) or len(targets) != 1 or targets[0] not in TARGET_EXTERNALS:
+        raise ValueError('GUI RC requires exactly one supported target')
+    return targets[0]
+
+
+def host_identities(target):
+    return {'gui-host-' + target, 'gui-host-sources-' + target}
+
+
+def require_native(target):
+    system, machines = NATIVE_TARGETS[target]
+    if platform.system() != system or platform.machine().lower() not in machines:
+        raise ValueError('GUI RC execution requires a native ' + target + ' runner')
+
+
+def require_preparation_support(target):
+    # Candidate import/CRT links are not a production platform contract. Mac
+    # generated interface files additionally need catalog-bound RC admission.
+    if target != 'x64glibc':
+        raise ValueError('GUI RC preparation for ' + target + ' requires completed production input admission')
+
 
 
 def run(arguments, **kwargs):
@@ -81,8 +115,9 @@ def download(url, path, size):
 
 def read_manifest(directory):
     manifest = json.loads((directory / MANIFEST).read_text())
+    target = selected_target(manifest)
     if (manifest.get('schema_version') != 1 or not VERSION.fullmatch(manifest['tag'])
-            or manifest['targets'] != [TARGET] or not re.fullmatch(r'[0-9a-f]{40}', manifest['source_sha'])
+            or not re.fullmatch(r'[0-9a-f]{40}', manifest['source_sha'])
             or manifest['provenance'] != {'signer_workflow': WORKFLOW, 'source_ref': 'refs/heads/main'}):
         raise ValueError('unsupported GUI RC identity')
     if set(manifest['assets']) != {'platform', 'starters', 'host_lock'}:
@@ -98,11 +133,11 @@ def read_manifest(directory):
         raise ValueError('unexpected GUI release asset inventory')
     original = dependencies.read_lock(directory / manifest['assets']['host_lock']['name'])
     selected = manifest['dependencies']
-    if set(selected['artifacts']) != HOSTS | EXTERNALS or selected['schema_version'] != 1:
+    if set(selected['artifacts']) != host_identities(target) | TARGET_EXTERNALS[target] or selected['schema_version'] != 1:
         raise ValueError('GUI RC dependency selection is incomplete')
-    if any(selected['artifacts'][name] != original['artifacts'][name] for name in HOSTS):
+    if any(selected['artifacts'][name] != original['artifacts'][name] for name in host_identities(target)):
         raise ValueError('GUI RC host selection differs from the original host release')
-    companion = selected['artifacts']['gui-host-sources-x64glibc']
+    companion = selected['artifacts']['gui-host-sources-' + target]
     if manifest['source_companions'] != [dict(companion, url=source_url(companion))]:
         raise ValueError('GUI RC source access differs from the host lock')
     return manifest
@@ -110,6 +145,7 @@ def read_manifest(directory):
 
 def inspect_platform(path, manifest):
     """Check the expanded budget, exact receipts, and every retained dependency file."""
+    target = selected_target(manifest)
     observed, retained = {}, {}
     total = 0
     with subprocess.Popen(['zstd', '-dc', '--', str(path)], stdout=subprocess.PIPE) as decoder:
@@ -140,7 +176,7 @@ def inspect_platform(path, manifest):
                 decoder.terminate()
     if retained.get('dependencies.lock.json') != manifest['dependencies']:
         raise ValueError('bundled dependency receipt differs from the release')
-    identities = EXTERNALS | {'gui-host-x64glibc'}
+    identities = TARGET_EXTERNALS[target] | {'gui-host-' + target}
     if set(retained) != {'dependencies.lock.json'} | {'dependency-manifests/' + name + '.json' for name in identities}:
         raise ValueError('bundled dependency manifests are incomplete')
     declared_targets = {}
@@ -148,7 +184,7 @@ def inspect_platform(path, manifest):
         dependency = retained['dependency-manifests/' + identity + '.json']
         if dependency['name'] + '-' + dependency['target'] != identity:
             raise ValueError('bundled dependency identity mismatch')
-        if identity == 'gui-host-x64glibc' and dependency['source_fingerprint'] != manifest['host_source_fingerprint']:
+        if identity == 'gui-host-' + target and dependency['source_fingerprint'] != manifest['host_source_fingerprint']:
             raise ValueError('bundled host source mismatch')
         for name, expected in dependency['files'].items():
             if name.startswith('targets/'):
@@ -157,8 +193,8 @@ def inspect_platform(path, manifest):
                 declared_targets[name] = expected
             if observed.get(name) != expected:
                 raise ValueError('bundled dependency file or notice differs from its inventory')
-    if any(name.startswith('targets/') and name.split('/')[1] != TARGET for name in observed):
-        raise ValueError('Linux GUI RC contains an unselected target')
+    if any(name.startswith('targets/') and name.split('/')[1] != target for name in observed):
+        raise ValueError('GUI RC contains an unselected target')
     if {name for name in observed if name.startswith('targets/')} != set(declared_targets):
         raise ValueError('bundled target inputs differ from the declared dependency inventories')
 
@@ -179,7 +215,8 @@ def extract_starters(path, destination):
         archive.extractall(destination)
 
 
-def prepare(tag, host_release, output, roc, root=ROOT):
+def prepare(tag, host_release, output, roc, root=ROOT, target=TARGET):
+    require_preparation_support(target)
     if not VERSION.fullmatch(tag) or not re.fullmatch(r'deps-gui-host-[0-9][A-Za-z0-9.-]*', host_release):
         raise ValueError('use a new gui-X.Y.Z-rc.N tag and an independent host release')
     source = clean_sha(root)
@@ -200,14 +237,14 @@ def prepare(tag, host_release, output, roc, root=ROOT):
         lock_path = stage / 'dependencies.lock.json'
         run(['gh', 'release', 'verify-asset', host_release, lock_path, '--repo', REPOSITORY])
         original = dependencies.read_lock(lock_path)
-        selected = {'schema_version': 1, 'artifacts': {name: original['artifacts'][name] for name in sorted(HOSTS)}}
+        selected = {'schema_version': 1, 'artifacts': {name: original['artifacts'][name] for name in sorted(host_identities(target))}}
         if any(entry['release'] != host_release for entry in selected['artifacts'].values()):
             raise ValueError('downloaded host lock names a different release')
         selected_path = stage / 'selected-host.lock.json'
         selected_path.write_text(json.dumps(selected, indent=2) + '\n')
         # Verify source availability and provenance now, without placing its large
         # archive into the Roc bundle. Host admission binds this exact companion.
-        companion = selected['artifacts']['gui-host-sources-x64glibc']
+        companion = selected['artifacts']['gui-host-sources-' + target]
         dependencies.fetch(companion, stage / 'source-cache')
         environment = dict(os.environ, ROC_BIN=str(roc))
         run([sys.executable, root / 'scripts/bundle_platforms.py', '--package', 'gui', '--no-build',
@@ -239,9 +276,9 @@ def prepare(tag, host_release, output, roc, root=ROOT):
                              'The platform retains its notices and dependency lock. Preserve them when redistributing.\n')
         shutil.copyfile(lock_path, final / 'host-release.lock.json')
         external = dependencies.read_lock(root / 'dependencies.lock.json')
-        selected['artifacts'].update({name: external['artifacts'][name] for name in sorted(EXTERNALS)})
+        selected['artifacts'].update({name: external['artifacts'][name] for name in sorted(TARGET_EXTERNALS[target])})
         manifest = {'schema_version': 1, 'tag': tag, 'source_sha': source, 'host_source_fingerprint': fingerprint,
-                    'compiler_pin': pin, 'targets': [TARGET], 'examples': [app.name for app in apps],
+                    'compiler_pin': pin, 'targets': [target], 'examples': [app.name for app in apps],
                     'dependencies': selected, 'source_companions': [dict(companion, url=source_url(companion))],
                     'provenance': {'signer_workflow': WORKFLOW, 'source_ref': 'refs/heads/main'}, 'assets': {}}
         for kind, path in {'platform': platform, 'starters': final / 'signals-gui-starters.zip',
@@ -262,6 +299,8 @@ def prepare(tag, host_release, output, roc, root=ROOT):
 
 def check(directory, roc, published=False):
     manifest = read_manifest(directory)
+    target = selected_target(manifest)
+    require_native(target)
     toolchain.verify_compiler(roc, manifest['compiler_pin'])
     inspect_platform(directory / manifest['assets']['platform']['name'], manifest)
     with tempfile.TemporaryDirectory(prefix='gui-release-check-') as temporary, ExitStack() as contexts:
@@ -286,8 +325,8 @@ def check(directory, roc, published=False):
                 raise ValueError('starter platform URL or compiler pin differs from the release')
             if not published:
                 source.write_text(toolchain.replace_platform(text, url))
-            executable = binaries / app.name
-            run([roc, 'build', '--no-cache', '--target=x64glibc', f'--output={executable}', source],
+            executable = binaries / (app.name + ('.exe' if target == 'x64mingw' else ''))
+            run([roc, 'build', '--no-cache', f'--target={target}', f'--output={executable}', source],
                 cwd=stage, env=environment, timeout=180)
             results = spec_driver.run_suite(executable, app / 'specs', jobs=1)
             spec_driver.print_summary(results)
@@ -295,7 +334,7 @@ def check(directory, roc, published=False):
                 raise ValueError(f'GUI RC semantic specs failed: {app.name}')
         # This opens the same binaries just tested above. Call under xvfb-run;
         # Weston and Mesa supply the compositor/input seat/software Vulkan.
-        gui_smoke.wayland(binaries)
+        (gui_smoke.wayland if target == 'x64glibc' else gui_smoke.run)(binaries)
 
 
 def verify_attestations(directory, manifest):
@@ -346,7 +385,7 @@ def downloads(directory, roc):
         verify_attestations(stage, expected)
         for path in [stage / MANIFEST, *(stage / a['name'] for a in expected['assets'].values())]:
             run(['gh', 'release', 'verify-asset', expected['tag'], path, '--repo', REPOSITORY])
-        dependencies.fetch(expected['dependencies']['artifacts']['gui-host-sources-x64glibc'], Path(temporary) / 'source-cache')
+        dependencies.fetch(expected['dependencies']['artifacts']['gui-host-sources-' + selected_target(expected)], Path(temporary) / 'source-cache')
         check(stage, roc, published=True)
 
 
@@ -354,6 +393,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=('prepare', 'check', 'verify', 'publish', 'downloads'))
     parser.add_argument('--directory', type=Path, required=True)
+    parser.add_argument('--target', choices=sorted(TARGET_EXTERNALS), default=TARGET)
     parser.add_argument('--tag')
     parser.add_argument('--host-release')
     parser.add_argument('--roc', default='roc')
@@ -361,7 +401,7 @@ def main():
     roc = str(Path(shutil.which(args.roc) or args.roc).resolve())
     directory = args.directory.resolve()
     if args.command == 'prepare':
-        prepare(args.tag or '', args.host_release or '', directory, roc)
+        prepare(args.tag or '', args.host_release or '', directory, roc, target=args.target)
     elif args.command == 'check':
         check(directory, roc)
     elif args.command == 'verify':
