@@ -300,6 +300,7 @@ pub const SignalExpr = union(enum) {
                         .open_path => .open_path,
                         .read_preview => .read_preview,
                         .read_log => .read_log,
+                        .verify_assets => .verify_assets,
                     },
                     .payload_capability = payload.payload_cap,
                     .initial = .fromAbi(payload.initial),

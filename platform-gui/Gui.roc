@@ -338,6 +338,23 @@ Gui := [].{
 		Html.div(lower_attrs(1, { ..style_default, width: Fill, height: Px(480), grow: True }, attrs).append(viewport), children)
 	}
 
+	## Render an image from a relative path inside the host's assets root.
+	## Absolute paths, `..` traversal, and URIs never resolve; a missing or
+	## undecodable source renders a neutral placeholder box of the styled size.
+	## The label is a semantic name for the picture, never derived by the host.
+	image : { source : Str, label : Str }, List(Attr) -> Elem
+	image = |props, attrs| {
+		if props.source.is_empty() or props.source.to_utf8().len() > 1024 {
+			crash "Gui image sources contain 1 to 1024 UTF-8 bytes"
+		}
+		Elem.Element({
+			namespace: Html,
+			tag: "img",
+			attrs: lower_attrs(1, style_default, [Attribute.Label(props.label)].concat(attrs)).append(Node.Attr.StaticText({ field: { id: 13 }, name: "", value: props.source })),
+			children: [],
+		})
+	}
+
 	## Render a prominent heading.
 	heading : Str -> Elem
 	heading = |value| Html.heading(value)
