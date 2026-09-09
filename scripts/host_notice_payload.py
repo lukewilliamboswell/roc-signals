@@ -7,10 +7,11 @@ from pathlib import Path, PurePosixPath
 import re
 import tarfile
 
-from cargo_build_evidence import derive
+from cargo_build_evidence import derive, evidence_files, COMPILER_HOSTS, same_checkout_lock
 from host_build_identity import validate_outputs
 from dependency_archive import write_archive
 from rust_license_inventory import EMBEDDED_NOTICE
+from toolchain_license_inventory import selected_toolchains, component_version
 
 CATEGORIES = ("notice_files", "declaration_files", "upstream_notice_files", "reviewed_source_files",
               "reviewed_upstream_files", "embedded_notice_files")
@@ -22,7 +23,7 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def validate_normalization(receipt, target, original_host, host_bytes, outputs=None):
+def validate_normalization(receipt, target, original_host, host_bytes, outputs=None, raw_outputs=None):
     """Bind recorded compaction inputs to the bytes actually being distributed."""
     if receipt.get("schema_version") != 1 or receipt["target"] != target:
         raise ValueError("normalization receipt has a different target or schema")
@@ -34,10 +35,20 @@ def validate_normalization(receipt, target, original_host, host_bytes, outputs=N
     if (host["input"] != {k: original_host[k] for k in ("sha256", "size")}
             or host["output"] != {"sha256": digest(host_bytes), "size": len(host_bytes)}):
         raise ValueError("normalization receipt differs from original or final host bytes")
+    if target == "x64mingw":
+        if set(receipt["archives"]) != {host_name} or host.get("operation") != "separate-coff-imports-v1":
+            raise ValueError("GNU host admission permits only recorded import separation")
+        separation = host.get("separation")
+        if not isinstance(separation, dict) or separation.get("input") != host["input"] or separation.get("output") != host["output"]:
+            raise ValueError("GNU import separation differs from captured archive identities")
+        from windows_gnu_coff import validate_separation
+        validate_separation(separation, host_bytes)
     for tool in receipt["tools"].values():
         if not re.fullmatch(r"[0-9a-f]{64}", tool["sha256"]) or not tool["version"]:
             raise ValueError("normalization receipt has an invalid tool identity")
     for name, archive in receipt["archives"].items():
+        if raw_outputs is not None and archive["input"] != raw_outputs[name]:
+            raise ValueError("normalization input differs from captured build receipt")
         if not archive["steps"]:
             raise ValueError("normalization receipt omits archive steps")
         for step in archive["steps"]:
@@ -46,6 +57,27 @@ def validate_normalization(receipt, target, original_host, host_bytes, outputs=N
         if outputs is not None:
             if name not in outputs or archive["output"] != {"sha256": digest(outputs[name]), "size": len(outputs[name])}:
                 raise ValueError("normalization receipt differs from packaged archive bytes")
+
+
+def validate_packaged_outputs(build, target, fingerprint, cargo_host, outputs, normalization=None):
+    """Keep raw build identity separate from explicitly transformed host bytes."""
+    validate_outputs(build, target, fingerprint, cargo_host)
+    if normalization is None:
+        validate_outputs(build, target, fingerprint, cargo_host, outputs)
+        return
+    validate_normalization(normalization, target, cargo_host, outputs[cargo_host["name"]], outputs, build["outputs"])
+    if set(outputs) != set(build["outputs"]):
+        raise ValueError("packaged host output inventory differs from its build receipt")
+    for name, original in build["outputs"].items():
+        if name not in normalization["archives"] and original != {"sha256": digest(outputs[name]), "size": len(outputs[name])}:
+            raise ValueError("unchanged host output differs from captured build receipt")
+
+
+def compiler_host_evidence(root, target):
+    if target != "x64mingw":
+        return {}
+    return {"host_metadata_bytes": (root / "metadata-host.json").read_bytes(),
+            "compiler_host": COMPILER_HOSTS[target]}
 
 
 def checked_file(root, name, record):
@@ -130,14 +162,19 @@ def validate_notices(directory, target, host_bytes, fingerprint, policy_root, ou
     index = validate_notice_archive(data)
     if index.get("build.json") != manifest["build_receipt"]:
         raise ValueError("notice archive omits captured host build receipt")
-    validate_outputs(notice_json(data, "build.json"), target, fingerprint, manifest["cargo_host"], outputs)
+    build = notice_json(data, "build.json")
+    validate_outputs(build, target, fingerprint, manifest["cargo_host"])
+    normalization = None
     if manifest.get("normalization") is not None:
         if index.get("normalization.json") != manifest["normalization"]:
             raise ValueError("notice archive omits the normalization receipt")
         receipt = notice_json(data, "normalization.json")
-        validate_normalization(receipt, target, manifest["cargo_host"], host_bytes, outputs)
+        normalization = receipt
+        validate_normalization(receipt, target, manifest["cargo_host"], host_bytes, outputs, build["outputs"])
     elif manifest["cargo_host"] != manifest["host"]:
         raise ValueError("changed Cargo host bytes have no normalization receipt")
+    if outputs is not None:
+        validate_packaged_outputs(build, target, fingerprint, manifest["cargo_host"], outputs, normalization)
     if index.get("referenced-standard-terms/policy.json", {}).get("sha256") != digest(policy_bytes):
         raise ValueError("notice archive has a different standard-terms policy")
     seen = set()
@@ -170,9 +207,11 @@ def validate_notices(directory, target, host_bytes, fingerprint, policy_root, ou
     if (tools["target"] != target or tools["recipe_sha256"] != digest(recipe_bytes)
             or tools["toolchains"] != manifest["toolchains"]):
         raise ValueError("notice archive uses different toolchain evidence")
-    for name in ("rust", "zig"):
-        selected_recipe = recipe[name]["targets"][target] if name == "rust" else recipe[name]
-        if tools["toolchains"][name] != {"version": recipe[name]["version"],
+    selected = selected_toolchains(recipe, target)
+    if set(tools["toolchains"]) != set(selected):
+        raise ValueError("notice toolchain component inventory differs from recipe")
+    for name, selected_recipe in selected.items():
+        if tools["toolchains"][name] != {"version": component_version(recipe, name),
                                          "archive_sha256": selected_recipe["sha256"],
                                          "source_url": selected_recipe["source_url"]}:
             raise ValueError("notice toolchain differs from pinned distribution")
@@ -194,12 +233,14 @@ def validate_sources(source_tree, manifest, notice_data, host_bytes, lock_bytes)
         raise ValueError("source companion comes from different host inputs")
     prefix = "licenses/gui-host-sources/"
     evidence_root = source_tree / prefix / "evidence"
-    if (evidence_root / "Cargo.lock").read_bytes() != lock_bytes:
+    captured_lock = (evidence_root / "Cargo.lock").read_bytes()
+    if not same_checkout_lock(captured_lock, lock_bytes):
         raise ValueError("source companion uses a different Cargo.lock")
     evidence, selection = derive((evidence_root / "metadata.json").read_bytes(),
-                                 (evidence_root / "cargo.jsonl").read_bytes(), lock_bytes,
+                                 (evidence_root / "cargo.jsonl").read_bytes(), captured_lock,
                                  manifest["target"], None, manifest["cargo_host"],
-                                 fingerprint=manifest["source_fingerprint"])
+                                 fingerprint=manifest["source_fingerprint"],
+                                 **compiler_host_evidence(evidence_root, manifest["target"]))
     if (evidence != json.loads((evidence_root / "evidence.json").read_text())
             or selection != json.loads((evidence_root / "selection.json").read_text())):
         raise ValueError("source companion build evidence is inconsistent")
@@ -215,10 +256,11 @@ def validate_sources(source_tree, manifest, notice_data, host_bytes, lock_bytes)
     crates = notice_json(notice_data, "crate-inventory.json")
     tools = notice_json(notice_data, "toolchain-inventory.json")
     expected_files = {prefix + "evidence/" + name for name in
-                      ("metadata.json", "cargo.jsonl", "Cargo.lock", "evidence.json", "selection.json", "build.json")}
+                      evidence_files(manifest["target"])}
     if manifest.get("normalization") is not None:
         receipt_bytes = checked_file(source_tree, prefix + "evidence/normalization.json", manifest["normalization"])
-        validate_normalization(json.loads(receipt_bytes), manifest["target"], manifest["cargo_host"], host_bytes)
+        validate_normalization(json.loads(receipt_bytes), manifest["target"], manifest["cargo_host"], host_bytes,
+                               raw_outputs=json.loads(build_bytes)["outputs"])
         expected_files.add(prefix + "evidence/normalization.json")
     by_identity = {(p["name"], p["version"]): p for p in expected_packages.values()}
     for package in crates["packages"]:
@@ -261,11 +303,12 @@ def compose(target, evidence_root, crate_root, toolchain_root, policy_root, host
     validate_outputs(json.loads(build_bytes), target, fingerprint, recorded_evidence["host"])
     normalization_bytes = normalization.read_bytes() if normalization is not None else None
     if normalization_bytes is not None:
-        validate_normalization(json.loads(normalization_bytes), target, recorded_evidence["host"], host_bytes)
+        validate_normalization(json.loads(normalization_bytes), target, recorded_evidence["host"], host_bytes,
+                               raw_outputs=json.loads(build_bytes)["outputs"])
     evidence, selection = derive(metadata, messages, lock, target,
                                  host_bytes if normalization_bytes is None else None,
                                  recorded_evidence["host"] if normalization_bytes is not None else None,
-                                 fingerprint=fingerprint)
+                                 fingerprint=fingerprint, **compiler_host_evidence(evidence_root, target))
     if evidence != recorded_evidence:
         raise ValueError("Cargo build evidence changed before notice composition")
     if selection != json.loads((evidence_root / "selection.json").read_text()):
@@ -311,8 +354,8 @@ def compose(target, evidence_root, crate_root, toolchain_root, policy_root, host
     if (toolchains["target"] != target
             or toolchains["recipe_sha256"] != digest((policy_root / "toolchains.json").read_bytes())):
         raise ValueError("toolchain notice inventory differs from the selected target recipe")
-    required = {"notices/rust/" + p for p in toolchain_recipe["rust"]["targets"][target]["notices"]}
-    required.update("notices/zig/" + p for p in toolchain_recipe["zig"]["notices"])
+    required = {"notices/" + name + "/" + p for name, pin in selected_toolchains(toolchain_recipe, target).items()
+                for p in pin["notices"]}
     zig_source = "sources/zig-" + toolchain_recipe["zig"]["version"] + ".tar.xz"
     required.add(zig_source)
     if set(toolchains["files"]) != required:
@@ -336,7 +379,7 @@ def compose(target, evidence_root, crate_root, toolchain_root, policy_root, host
     files["crate-inventory.json"] = (crate_root / "inventory.json").read_bytes()
     files["toolchain-inventory.json"] = (toolchain_root / "inventory.json").read_bytes()
     files["referenced-standard-terms/policy.json"] = policy_bytes
-    for name in ("metadata.json", "cargo.jsonl", "Cargo.lock", "evidence.json", "selection.json", "build.json"):
+    for name in evidence_files(target):
         sources["licenses/gui-host-sources/evidence/" + name] = (evidence_root / name).read_bytes()
     notice_bytes = pack_notices(files)
     validate_notice_archive(notice_bytes)

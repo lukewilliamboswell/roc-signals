@@ -96,13 +96,11 @@ pub fn build(b: *std.Build) void {
     gpui_options.addOption(bool, "metrics", true);
     gpui_options.addOption(bool, "fuzz_fixtures", false);
     gpui_options.addOption(bool, "gpui_spike", true);
-    // Roc links x64win executables against the MSVC ABI and the UCRT, so the
-    // engine must not carry mingw runtime references. Rust's compiler builtins
-    // already provide the shared runtime helpers in that link, and COFF has no
-    // weak symbols to reconcile a second copy, so Zig's compiler-rt stays out.
+    // Windows host and engine share the GNU ABI. Independently released CRT
+    // inputs supply runtime helpers during Roc's final application link.
     const gpui_windows = native_target.result.os.tag == .windows;
     const gpui_target = if (gpui_windows)
-        b.resolveTargetQuery(.{ .cpu_arch = native_target.result.cpu.arch, .os_tag = .windows, .abi = .msvc })
+        b.resolveTargetQuery(.{ .cpu_arch = native_target.result.cpu.arch, .os_tag = .windows, .abi = .gnu })
     else
         native_target;
     const gpui_host = buildNativeHostLib(b, gpui_target, .ReleaseSafe, gpui_options.createModule(), true);

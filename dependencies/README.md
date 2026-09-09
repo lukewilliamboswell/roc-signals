@@ -289,3 +289,46 @@ list, along with recipe/probe isolation and ordinary consumer-change examples:
 ```sh
 python3 -m unittest discover -s scripts -p test_dependency_workflow_filters.py
 ```
+
+## Cross-target GUI host notice evidence
+
+The Windows GNU host uses an MSVC-hosted Rust compiler to compile the
+`x86_64-pc-windows-gnullvm` target. Notice evidence records these two identities
+separately and retains Cargo metadata filtered for each. The selected package
+set follows actual compiler messages within their combined dependency graphs,
+including compiled build tools. The original compiler archive and GNU target
+standard-library component each have independent checksums and original notices.
+
+Captured Cargo.lock bytes remain unchanged in the evidence and source companion.
+Comparison with another checkout permits only CRLF-to-LF conversion; comments,
+ordering and package changes still invalidate the comparison.
+
+A GNU host import-separation receipt retains the original Cargo archive identity
+and the final archive identity, with the structural member ledger. Notice
+admission checks the retained members against the final archive and binds the
+input to the captured build receipt. Engine and Windows resource files must
+remain byte-identical to that receipt. These checks support candidate evidence;
+production adoption still requires verified release provenance and a reviewed
+consumer lock.
+
+`prepare_gui_host_release.compose_notices` composes and re-admits the notice
+and source pair without requiring an adopted platform header. It verifies the
+source checkout against captured evidence and checks the paired payload before
+retaining it. Candidate native-link workflows can use this step independently;
+normal release preparation additionally packages and runs the native candidate.
+Composition alone does not establish native compatibility or release provenance.
+
+## Windows GNU platform consumption
+
+The `x64mingw` GUI target links the independently released complete Windows
+system imports and Zig GNU runtime alongside the host, shared engine, application
+object, and host-owned resource. Its platform header enumerates every input.
+The runtime archives precede system providers, with OLE32 first among providers
+to preserve the proven DLL binding when libraries expose overlapping symbols.
+
+Development installation and bundle staging separately verify both releases.
+The complete producer-owned DLL inventory drives host import separation; it is
+never reduced to symbols used by the current host. Bundles copy only the selected
+host, engine and resource from development outputs, then retain every released
+link input, original notice, source payload, reproduction file and lock receipt.
+Obsolete `x64win` output trees are rejected and must be rebuilt for the GNU target.

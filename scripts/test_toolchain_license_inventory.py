@@ -68,6 +68,26 @@ class ToolchainNoticeTests(unittest.TestCase):
             inventory.collect(recipe, "x64glibc", rust, zig, self.root / "refused")
         self.assertFalse((self.root / "refused").exists())
 
+    def test_cross_target_std_is_required_and_separately_identified(self):
+        host, host_pin = self.archive("host.tar.xz", [("LICENSE", b"compiler-host original notice")])
+        target, target_pin = self.archive("target.tar.xz", [("LICENSE", b"target runtime original notice")])
+        zig, zig_pin = self.archive("zig.tar.xz", [("LICENSE", b"Zig original notice")])
+        host_pin.update(compiler_host="x86_64-pc-windows-msvc", rust_target="x86_64-pc-windows-gnullvm",
+                        target_component=target_pin)
+        recipe = self.root / "recipe.json"
+        recipe.write_text(json.dumps({"schema_version": 1,
+                                      "rust": {"version": "1", "targets": {"x64mingw": host_pin}},
+                                      "zig": dict(zig_pin, version="2")}))
+        with self.assertRaisesRegex(ValueError, "target standard-library"):
+            inventory.collect(recipe, "x64mingw", host, zig, self.root / "missing")
+        with self.assertRaisesRegex(ValueError, "pinned hash"):
+            inventory.collect(recipe, "x64mingw", host, zig, self.root / "substituted", host)
+        output = self.root / "complete"
+        result = inventory.collect(recipe, "x64mingw", host, zig, output, target)
+        self.assertEqual(set(result["toolchains"]), {"rust", "rust-target", "zig"})
+        self.assertEqual((output / "notices/rust-target/LICENSE").read_bytes(), b"target runtime original notice")
+        self.assertNotEqual(result["toolchains"]["rust"]["archive_sha256"], result["toolchains"]["rust-target"]["archive_sha256"])
+
     def test_recipe_cannot_write_outside_inventory(self):
         recipe = self.root / "recipe.json"
         recipe.write_text(json.dumps({"schema_version": 1, "rust": {"version": "1"},

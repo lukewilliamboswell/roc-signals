@@ -8,6 +8,11 @@ on:
     paths:
       - .github/workflows/gui-hosts.yml
       - scripts/build_gui.py
+      - scripts/windows_gnu_build.py
+      - scripts/windows_gnu_coff.py
+      - scripts/windows_fxc_inventory.ps1
+      - scripts/test_windows_gnu_candidate.py
+      - scripts/test_windows_gnu_coff.py
       - scripts/build_macos_stubs.py
       - scripts/check_macos_interfaces.py
       - scripts/bundle_platforms.py
@@ -45,9 +50,9 @@ on:
         default: x64glibc
         options:
           - x64glibc
-          - x64win
+          - x64mingw
           - arm64mac
-          - x64glibc,x64win
+          - x64glibc,x64mingw
 
 permissions:
   contents: read
@@ -71,14 +76,14 @@ jobs:
         # PRs validate all native hosts; a release builds only its selected targets.
         include: >-
           ${{ fromJSON(github.event_name != 'workflow_dispatch'
-            && '[{"os":"windows-2025","target":"x64win"},{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"macos-15","target":"arm64mac"}]'
+            && '[{"os":"windows-2025","target":"x64mingw"},{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"macos-15","target":"arm64mac"}]'
             || inputs.release_targets == 'x64glibc'
             && '[{"os":"ubuntu-24.04","target":"x64glibc"}]'
             || inputs.release_targets == 'arm64mac'
             && '[{"os":"macos-15","target":"arm64mac"}]'
-            || inputs.release_targets == 'x64win'
-            && '[{"os":"windows-2025","target":"x64win"}]'
-            || '[{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"windows-2025","target":"x64win"}]') }}
+            || inputs.release_targets == 'x64mingw'
+            && '[{"os":"windows-2025","target":"x64mingw"}]'
+            || '[{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"windows-2025","target":"x64mingw"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -102,6 +107,9 @@ jobs:
             sudo apt-get install -y libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev
           fi
           rustup toolchain install 1.95.0 --profile minimal
+          if [ "$RUNNER_OS" = Windows ]; then
+            rustup target add --toolchain 1.95.0 x86_64-pc-windows-gnullvm
+          fi
       - name: Verify FreeType build-script suppression
         if: runner.os == 'Linux'
         env:
@@ -166,7 +174,7 @@ jobs:
           python3 - <<'PYTHON'
           import os, pathlib, shutil
           targets = os.environ["RELEASE_TARGETS"].split(",")
-          assert targets and len(set(targets)) == len(targets) and set(targets) <= {"x64glibc", "x64win", "arm64mac"}
+          assert targets and len(set(targets)) == len(targets) and set(targets) <= {"x64glibc", "x64mingw", "arm64mac"}
           root = pathlib.Path(os.environ["RUNNER_TEMP"])
           output = root / "link-inputs"
           output.mkdir()

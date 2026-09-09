@@ -55,7 +55,24 @@ def distribution_notices(archive, recipe):
     return wanted
 
 
-def collect(recipe_path, target, rust_archive, zig_archive, destination):
+def selected_toolchains(recipe, target):
+    """Keep the compiler-host and cross-target standard library pins distinct."""
+    rust = recipe["rust"]["targets"][target]
+    selected = {"rust": rust, "zig": recipe["zig"]}
+    if target == "x64mingw":
+        if (rust.get("compiler_host") != "x86_64-pc-windows-msvc"
+                or rust.get("rust_target") != "x86_64-pc-windows-gnullvm"
+                or "target_component" not in rust):
+            raise ValueError("GNU runtime notices require explicit compiler-host and target component identities")
+        selected["rust-target"] = rust["target_component"]
+    return selected
+
+
+def component_version(recipe, name):
+    return recipe["rust" if name == "rust-target" else name]["version"]
+
+
+def collect(recipe_path, target, rust_archive, zig_archive, destination, rust_target_archive=None):
     """Write a hash-indexed review inventory only after both inputs verify."""
     if destination.exists():
         raise FileExistsError(destination)
@@ -66,9 +83,15 @@ def collect(recipe_path, target, rust_archive, zig_archive, destination):
     if any(not re.fullmatch(r"[A-Za-z0-9_.+-]+", recipe[name]["version"])
            for name in ("rust", "zig")):
         raise ValueError("unsafe toolchain version")
-    selected = {"rust": recipe["rust"]["targets"][target], "zig": recipe["zig"]}
-    notices = {"rust": distribution_notices(rust_archive, selected["rust"]),
-               "zig": distribution_notices(zig_archive, selected["zig"])}
+    selected = selected_toolchains(recipe, target)
+    archives = {"rust": rust_archive, "zig": zig_archive}
+    if "rust-target" in selected:
+        if rust_target_archive is None:
+            raise ValueError("missing pinned Rust target standard-library component")
+        archives["rust-target"] = rust_target_archive
+    elif rust_target_archive is not None:
+        raise ValueError("unexpected Rust target component for a native recipe")
+    notices = {name: distribution_notices(archives[name], pin) for name, pin in selected.items()}
     # Original Zig sources preserve notices embedded in standard-library and
     # compiler-runtime files, including components not covered by its root MIT
     # license. A source archive is not a claim that every component was linked.
@@ -83,7 +106,7 @@ def collect(recipe_path, target, rust_archive, zig_archive, destination):
         stage = Path(temporary) / "inventory"
         stage.mkdir()
         for name, files in notices.items():
-            result["toolchains"][name] = {"version": recipe[name]["version"],
+            result["toolchains"][name] = {"version": component_version(recipe, name),
                                            "archive_sha256": selected[name]["sha256"],
                                            "source_url": selected[name]["source_url"]}
             for path, data in files.items():
@@ -105,9 +128,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--recipe", type=Path, default=Path(__file__).resolve().parents[1] /
                         "dependencies/gui-host-notices/toolchains.json")
-    parser.add_argument("--target", choices=("x64glibc", "arm64mac", "x64win"), required=True)
+    parser.add_argument("--target", choices=("x64glibc", "arm64mac", "x64win", "x64mingw"), required=True)
     parser.add_argument("--rust-archive", type=Path, required=True)
+    parser.add_argument("--rust-target-archive", type=Path)
     parser.add_argument("--zig-source-archive", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    collect(args.recipe, args.target, args.rust_archive, args.zig_source_archive, args.output)
+    collect(args.recipe, args.target, args.rust_archive, args.zig_source_archive, args.output, args.rust_target_archive)
