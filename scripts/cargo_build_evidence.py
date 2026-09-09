@@ -1,5 +1,6 @@
 """Bind host notice selection to a successful native Cargo build and its lock."""
 
+import atexit
 import hashlib
 import json
 import re
@@ -161,7 +162,11 @@ def capture(root, target, output, jobs, environment, expected_fingerprint=None):
     if apple_tools is not None:
         # A release receipt cannot attribute cached shaders to today's tools.
         # Keep this target alive until build_gui has copied the resulting host.
-        environment = dict(environment, CARGO_TARGET_DIR=tempfile.mkdtemp(prefix=".macos-cargo-", dir=output.parent))
+        scratch = tempfile.TemporaryDirectory(prefix=".macos-cargo-", dir=output.parent)
+        # Registering the bound cleanup retains the directory until build_gui
+        # has copied the returned host, then removes it when that process exits.
+        atexit.register(scratch.cleanup)
+        environment = dict(environment, CARGO_TARGET_DIR=scratch.name)
     with tempfile.TemporaryDirectory(dir=output.parent, prefix=".cargo-evidence-") as temporary:
         stage = Path(temporary) / "evidence"
         stage.mkdir()
