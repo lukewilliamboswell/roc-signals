@@ -7,7 +7,29 @@ on:
   pull_request:
     paths:
       - .github/workflows/gui-hosts.yml
+      - .github/actions/setup-toolchain/**
+      - src/native_host.zig
+      - src/signals/**
+      - crates/gpui-host/**
+      - platform-gui/**
+      - platform-shared/**
+      - build.zig
+      - build.zig.zon
+      - Cargo.toml
+      - Cargo.lock
+      - dependencies.lock.json
       - scripts/build_gui.py
+      - scripts/gui_suite.py
+      - scripts/audit_windows_archive.py
+      - scripts/build_glibc.py
+      - scripts/build_windows_gnu_runtime.py
+      - scripts/build_windows_system_imports.py
+      - scripts/compiler_pins.py
+      - scripts/prepare_dependencies.py
+      - scripts/prepare_platforms.py
+      - scripts/toolchain.py
+      - scripts/windows_runtime_validation.py
+      - scripts/windows_system_imports.py
       - scripts/windows_gnu_build.py
       - scripts/windows_gnu_coff.py
       - scripts/windows_fxc_inventory.ps1
@@ -37,6 +59,10 @@ on:
       - scripts/release_gui_hosts.py
       - scripts/dependency_artifacts.py
       - scripts/dependency_archive.py
+      - scripts/spec_driver.py
+      - LICENSE
+      - .gitattributes
+      - .gitignore
   workflow_dispatch:
     inputs:
       release_tag:
@@ -53,6 +79,7 @@ on:
           - x64mingw
           - arm64mac
           - x64glibc,x64mingw
+          - all
 
 permissions:
   contents: read
@@ -83,6 +110,8 @@ jobs:
             && '[{"os":"macos-15","target":"arm64mac"}]'
             || inputs.release_targets == 'x64mingw'
             && '[{"os":"windows-2025","target":"x64mingw"}]'
+            || inputs.release_targets == 'all'
+            && '[{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"windows-2025","target":"x64mingw"},{"os":"macos-15","target":"arm64mac"}]'
             || '[{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"windows-2025","target":"x64mingw"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -173,7 +202,8 @@ jobs:
         run: |
           python3 - <<'PYTHON'
           import os, pathlib, shutil
-          targets = os.environ["RELEASE_TARGETS"].split(",")
+          targets = (["x64glibc", "x64mingw", "arm64mac"] if os.environ["RELEASE_TARGETS"] == "all"
+                     else os.environ["RELEASE_TARGETS"].split(","))
           assert targets and len(set(targets)) == len(targets) and set(targets) <= {"x64glibc", "x64mingw", "arm64mac"}
           root = pathlib.Path(os.environ["RUNNER_TEMP"])
           output = root / "link-inputs"
@@ -192,7 +222,11 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
           RELEASE_TARGETS: ${{ inputs.release_targets }}
         run: |
-          IFS=',' read -ra targets <<< "$RELEASE_TARGETS"
+          if [ "$RELEASE_TARGETS" = all ]; then
+            targets=(x64glibc x64mingw arm64mac)
+          else
+            IFS=',' read -ra targets <<< "$RELEASE_TARGETS"
+          fi
           arguments=()
           for target in "${targets[@]}"; do arguments+=(--target "$target"); done
           python3 scripts/release_gui_hosts.py --directory "$RUNNER_TEMP/link-inputs" --tag "$RELEASE_TAG" "${arguments[@]}"

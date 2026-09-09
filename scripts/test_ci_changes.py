@@ -1,7 +1,7 @@
 """Guard CI selection against skipping affected or unclassified source."""
 
 import unittest
-from ci_changes import AREAS, classify, verify_results
+from ci_changes import AREAS, WEB, classify, verify_results
 
 
 class ChangeSelectionTests(unittest.TestCase):
@@ -26,12 +26,19 @@ class ChangeSelectionTests(unittest.TestCase):
 
     def test_unknown_and_shared_changes_run_every_area(self):
         for path in ("new-component/input", "build.zig", "Cargo.lock",
-                     ".github/workflows/ci.yml", "new-component/fixture.md", "src/signals/engine.zig",
-                     "platform-shared/Signal.roc", "dependencies.lock.json"):
+                     ".github/workflows/ci.yml", "new-component/fixture.md", "dependencies.lock.json"):
             self.assertEqual(self.selected([path]), AREAS, path)
 
-    def test_gui_changes_do_not_run_browser_or_web_release_jobs(self):
-        self.assertEqual(self.selected(["crates/gpui-host/src/lib.rs", "test/gui/task/main.roc"]), {"gui"})
+    def test_host_sources_are_left_to_the_dedicated_producer(self):
+        for path in ("crates/gpui-host/src/lib.rs", "platform-gui/main.roc"):
+            self.assertEqual(self.selected([path]), set())
+
+    def test_shared_engine_uses_web_and_dedicated_gui_host_validation(self):
+        for path in ("src/signals/engine.zig", "platform-shared/Signal.roc"):
+            self.assertEqual(self.selected([path]), WEB)
+
+    def test_gui_apps_and_specs_use_the_reviewed_prebuilt_host(self):
+        self.assertEqual(self.selected(["test/gui/task/main.roc", "examples-gui/counter/main.roc"]), {"gui"})
 
     def test_documentation_changes_select_site(self):
         self.assertEqual(self.selected(["www/content/docs/contributing.md"]), {"site"})

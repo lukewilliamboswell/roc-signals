@@ -202,6 +202,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--spec-timeout", type=float, default=30.0, metavar="SECONDS")
     parser.add_argument("--gui-build-jobs", type=int, default=2, metavar="N", help="Concurrent Cargo jobs for the GUI host (default: 2).")
+    parser.add_argument(
+        "--gui-host-lock",
+        type=Path,
+        default=Path(os.environ["GUI_HOST_LOCK"]) if "GUI_HOST_LOCK" in os.environ else None,
+        metavar="PATH",
+        help="Use the verified GUI host selected by this release lock instead of rebuilding it.",
+    )
     parser.add_argument("--bench-case", action="append", default=[], metavar="GLOB", help="Select Wasm benchmark cases. Repeatable.")
     parser.add_argument("--bench-warmups", type=int, default=1, metavar="N", help="Complete warm-up passes for wasm-bench.")
     parser.add_argument("--bench-iterations", type=int, default=20, metavar="N", help="Fresh paired iterations per Wasm benchmark sample.")

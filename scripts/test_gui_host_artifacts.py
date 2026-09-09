@@ -195,8 +195,8 @@ class HostArtifactTests(unittest.TestCase):
             (root / "crates/gpui-host").mkdir(parents=True)
             (root / "crates/gpui-host/LICENSE-GPUI").write_text("GPUI license")
             (root / "LICENSE").write_text("platform license")
-            (root / "src").mkdir()
-            source = root / "src/engine.zig"
+            (root / "src/signals").mkdir(parents=True)
+            source = root / "src/signals/engine.zig"
             source.write_text("original engine\n")
             subprocess.run(["git", "-C", str(root), "add", "src", "crates", "LICENSE"], check=True)
             def commit():

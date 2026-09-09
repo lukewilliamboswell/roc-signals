@@ -3,6 +3,7 @@
 from pathlib import Path
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -45,26 +46,54 @@ def fixtures(root: Path = ROOT) -> tuple[Path, ...]:
     return apps
 
 
+def install_prebuilt_host(lock: Path, target: str) -> None:
+    """Materialize one verified host and its independently released link inputs."""
+    from build_macos_stubs import generate as generate_macos_interfaces
+    from gui_host_artifacts import verified_hosts, stage_candidate_dependencies
+    from host_build_identity import HOST_FILES
+
+    destination = ROOT / "platform-gui/targets" / target
+    if destination.exists():
+        raise ValueError(f"prebuilt GUI host target must start absent: {destination}")
+    if target == "arm64mac":
+        destination.mkdir(parents=True)
+    else:
+        stage_candidate_dependencies(target, destination)
+    identity = "gui-host-" + target
+    cache = Path.home() / ".cache/roc-signals/dependencies"
+    with verified_hosts(lock.resolve(), cache, ROOT, targets=(target,)) as inputs:
+        source = inputs / identity / "targets" / target
+        for name in HOST_FILES[target]:
+            shutil.copyfile(source / name, destination / name)
+    if target == "arm64mac":
+        generate_macos_interfaces(destination, destination.parent / "macos-sysroot")
+
+
 def run(roc: str, args, output: Path) -> None:
     if not supported_host():
         raise SystemExit("GUI tests require Linux x86_64 with glibc, Apple Silicon macOS, or Windows x86_64; no display is needed.")
     apps = examples() + fixtures()
     toolchain.verify_compiler(roc, toolchain.read_pin(ROOT / "platform-gui/main.roc"))
     subprocess.run([sys.executable, ROOT / "scripts/prepare_platforms.py"], check=True)
-    subprocess.run(
-        [sys.executable, ROOT / "scripts/build_gui.py", "--debug", "--jobs", str(args.gui_build_jobs)],
-        check=True,
-    )
+    target = host_target()
+    if args.gui_host_lock is None:
+        subprocess.run(
+            [sys.executable, ROOT / "scripts/build_gui.py", "--debug", "--jobs", str(args.gui_build_jobs)],
+            check=True,
+        )
+    else:
+        install_prebuilt_host(args.gui_host_lock, target)
     environment = build_environment()
-    library_path = str(ROOT / "platform-gui/targets" / host_target())
+    library_path = str(ROOT / "platform-gui/targets" / target)
     if environment.get("LIBRARY_PATH"):
         library_path += os.pathsep + environment["LIBRARY_PATH"]
     environment["LIBRARY_PATH"] = library_path
-    subprocess.run(
-        ["cargo", "test", "--locked", "-p", "signals-gpui-host", "--lib", "-j",
-         str(args.gui_build_jobs), "--", "--test-threads=1"],
-        cwd=ROOT, env=environment, check=True,
-    )
+    if args.gui_host_lock is None:
+        subprocess.run(
+            ["cargo", "test", "--locked", "-p", "signals-gpui-host", "--lib", "-j",
+             str(args.gui_build_jobs), "--", "--test-threads=1"],
+            cwd=ROOT, env=environment, check=True,
+        )
     output.mkdir(parents=True, exist_ok=True)
     failures = []
     matched = 0
@@ -83,7 +112,7 @@ def run(roc: str, args, output: Path) -> None:
             for command in (
                 [roc, "check", source],
                 [roc, "test", source],
-                [roc, "build", f"--target={host_target()}", "--opt=dev", "--no-cache", f"--output={executable}", source],
+                [roc, "build", f"--target={target}", "--opt=dev", "--no-cache", f"--output={executable}", source],
             ):
                 print("\n==> " + " ".join(map(str, command)), flush=True)
                 subprocess.run(command, cwd=output, check=True)

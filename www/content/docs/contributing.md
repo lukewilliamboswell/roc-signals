@@ -1348,7 +1348,8 @@ companions remain accessible through that lock without occupying the Roc platfor
 bundle or being downloaded for each app build. Preserve the notice archive and
 linked source access when redistributing the bundle.
 
-A main-branch manual dispatch selects Linux, Windows, macOS, or Linux and Windows
+A main-branch manual dispatch selects Linux, Windows, macOS, Linux and Windows,
+or all three targets
 for an independent `deps-gui-host-<version>` release. Mac admission requires the
 complete source/notice pair and native final links/specs against regenerated
 project-authored interfaces; copied SDK stubs are not release inputs. The original
@@ -1372,6 +1373,14 @@ host-producing workflow. It extracts into private staging and checks host source
 compatibility before copying any host outputs. Host-related source must be clean
 and committed; documentation-only commits do not invalidate host compatibility.
 Overlapping local and prebuilt hosts for one target are errors.
+
+The GUI test driver accepts the same reviewed lock through
+`python3 scripts/test.py gui --gui-host-lock /path/to/dependencies.lock.json` or
+`GUI_HOST_LOCK`. It downloads only the host for the current operating system,
+stages that target's independently released system link inputs, and runs the
+ordinary Roc checks, builds, and semantic specs without rebuilding Cargo or Zig
+host code. Cargo host tests and fresh link-input construction remain part of the
+dedicated producer workflow when host sources or packaging change.
 
 These archives contain host code and licenses, not external system libraries or
 SDK stubs. Every included target must also have its external link inputs supplied;
