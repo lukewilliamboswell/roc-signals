@@ -47,12 +47,18 @@ build commands. Install the exact compiler named in the application's `roc`
 header. A platform archive already contains its host binaries; users need no
 Zig build or repository checkout.
 
-For native Linux x86_64 apps, download `signals-gui-starters.zip` from
-[GUI RC gui-0.1.0-rc.1](https://github.com/lukewilliamboswell/roc-signals/releases/tag/gui-0.1.0-rc.1).
-It contains six complete apps pinned to `nightly-2026-09-04-c125b82` and the
-released GUI platform. See [Native GUI](www/content/docs/native-gui.md#try-the-linux-release-candidate)
-for direct build commands and desktop requirements. This GUI release contains
-Linux inputs; macOS and Windows release validation is still in progress.
+Try a prebuilt release candidate with Roc `nightly-2026-09-04-c125b82`:
+
+| Native target | Download |
+| --- | --- |
+| Linux x86_64 (glibc/Wayland) | [Linux starters — rc.1](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.1/signals-gui-starters.zip) |
+| Apple Silicon macOS | [Mac starters — rc.2](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.2/signals-gui-starters.zip) |
+
+Extract the archive and build Counter with `roc build --target=x64glibc --output=counter examples-gui/counter/main.roc`
+on Linux, or `roc build --target=arm64mac --output=counter examples-gui/counter/main.roc`
+on Apple Silicon. Run `./counter`. These starters need no Rust, Zig, or repository
+checkout. See [Native GUI](www/content/docs/native-gui.md#try-a-release-candidate) for runtime requirements.
+Windows release validation is still in progress.
 
 Public web examples pin immutable platform/package release URLs. The nightly bot
 updates their compiler pins and the development platform pin together, tests both
@@ -136,19 +142,6 @@ guidance, and the validation expected for engine optimizations.
 - [scripts/](scripts/) contains the Python drivers and repository checks.
 
 ## Native GUI spike
-
-Try a prebuilt release candidate with Roc `nightly-2026-09-04-c125b82`:
-
-| Native target | Download |
-| --- | --- |
-| Linux x86_64 (glibc/Wayland) | [Linux starters — rc.1](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.1/signals-gui-starters.zip) |
-| Apple Silicon macOS | [Mac starters — rc.2](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.2/signals-gui-starters.zip) |
-
-Extract the archive and build Counter with `roc build --target=x64glibc --output=counter examples-gui/counter/main.roc`
-on Linux, or `roc build --target=arm64mac --output=counter examples-gui/counter/main.roc`
-on Apple Silicon. Run `./counter`. These starters need no Rust, Zig, or repository
-checkout. See [Native GUI](www/content/docs/native-gui.md) for runtime requirements.
-Windows release validation is still in progress.
 
 This worktree also contains `platform-gui`, backed by the shared Zig engine and
 an app-independent Rust GPUI host in `crates/gpui-host`. Common Roc modules
