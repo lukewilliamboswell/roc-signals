@@ -158,7 +158,5 @@
       "MIT"
     ]
   },
-  "excluded_targets": {
-    "arm64mac": "Apple SDK-derived crate and bundled SDK-stub scope require separate review."
-  }
+  "excluded_targets": {}
 }

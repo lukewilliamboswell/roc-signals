@@ -1,4 +1,4 @@
-name: Linux GUI release candidate
+name: GUI release candidate
 
 on:
   pull_request:
@@ -13,9 +13,17 @@ on:
         required: true
         type: string
       host_release:
-        description: Immutable deps-gui-host release containing the compatible Linux host
+        description: Immutable deps-gui-host release containing the compatible selected host
         required: true
         type: string
+      target:
+        description: Native target with production bundle admission
+        required: true
+        default: x64glibc
+        type: choice
+        options:
+          - x64glibc
+          - arm64mac
       validate_only:
         description: Test exact candidate downloads without publishing
         default: true
@@ -47,24 +55,33 @@ jobs:
   candidate:
     if: github.event_name == 'workflow_dispatch'
     needs: tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    runs-on: ${{ inputs.target == 'arm64mac' && 'macos-15' || 'ubuntu-24.04' }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
       - name: Install application runtime and virtual display
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libfreetype6 libxkbcommon0 libxkbcommon-x11-0 weston xvfb xauth mesa-vulkan-drivers zstd
-      - name: Package the verified Linux host and independent libraries
+      - name: Install Mac archive decoder
+        if: runner.os == 'macOS'
+        run: command -v zstd || brew install zstd
+      - name: Package the verified selected host and link inputs
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           HOST_RELEASE: ${{ inputs.host_release }}
-        run: python3 .github/scripts/gui_release.py prepare --tag "$RELEASE_TAG" --host-release "$HOST_RELEASE" --directory "$RUNNER_TEMP/gui-release"
+          RC_TARGET: ${{ inputs.target }}
+        run: python3 .github/scripts/gui_release.py prepare --target "$RC_TARGET" --tag "$RELEASE_TAG" --host-release "$HOST_RELEASE" --directory "$RUNNER_TEMP/gui-release"
       - name: Build all downloaded apps, run their specs, and confirm rendering
+        if: runner.os == 'Linux'
         run: xvfb-run -a -s '-screen 0 1280x1024x24' python3 .github/scripts/gui_release.py check --directory "$RUNNER_TEMP/gui-release"
+      - name: Build downloaded Mac apps, run specs, and confirm rendering
+        if: runner.os == 'macOS'
+        run: python3 .github/scripts/gui_release.py check --directory "$RUNNER_TEMP/gui-release"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: tested-gui-release
@@ -100,7 +117,7 @@ jobs:
 
   downloads:
     needs: publish
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.target == 'arm64mac' && 'macos-15' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -112,8 +129,16 @@ jobs:
           name: tested-gui-release
           path: ${{ runner.temp }}/gui-release
       - name: Install application runtime and virtual display
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libfreetype6 libxkbcommon0 libxkbcommon-x11-0 weston xvfb xauth mesa-vulkan-drivers zstd
+      - name: Install Mac archive decoder
+        if: runner.os == 'macOS'
+        run: command -v zstd || brew install zstd
       - name: Verify immutable downloads and run untouched published app URLs
+        if: runner.os == 'Linux'
         run: xvfb-run -a -s '-screen 0 1280x1024x24' python3 .github/scripts/gui_release.py downloads --directory "$RUNNER_TEMP/gui-release"
+      - name: Verify Mac downloads and run untouched published app URLs
+        if: runner.os == 'macOS'
+        run: python3 .github/scripts/gui_release.py downloads --directory "$RUNNER_TEMP/gui-release"

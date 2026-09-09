@@ -12,7 +12,7 @@ import tempfile
 from dependency_artifacts import sha256, unpack_verified, verify_archive, read_lock
 from release_dependencies import REPOSITORY, publish_assets
 
-POLICY = {"targets": ("x64glibc", "x64mingw"),
+POLICY = {"targets": ("x64glibc", "x64mingw", "arm64mac"),
                  "files_by_target": {
                      "x64glibc": ("libsignals_gpui_host.a", "libengine.a"),
                      "arm64mac": ("libsignals_gpui_host.a", "libengine.a"),

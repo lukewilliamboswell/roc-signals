@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 
@@ -57,6 +58,8 @@ def record_outputs(root, target, destination, evidence_root, fingerprint):
         data = path.read_bytes()
         outputs[name] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
     receipt = {"schema_version": 1, "target": target, "source_fingerprint": fingerprint, "outputs": outputs}
+    if target == "arm64mac":
+        receipt["macos"] = json.loads((evidence_root / "macos.json").read_text())
     validate_outputs(receipt, target, fingerprint, evidence["host"])
     if source_fingerprint(root) != fingerprint:
         raise ValueError("host source changed while capturing build outputs")
@@ -72,6 +75,19 @@ def validate_outputs(receipt, target, fingerprint, cargo_host, outputs=None):
         raise ValueError("host build receipt differs from source or target inventory")
     if receipt["outputs"][HOST_FILES[target][0]] != {k: cargo_host[k] for k in ("sha256", "size")}:
         raise ValueError("host build receipt differs from Cargo output")
+    if target == "arm64mac":
+        macos = receipt.get("macos", {})
+        if (macos.get("cargo_host_sha256") != cargo_host["sha256"] or macos.get("fresh_cargo_target") is not True
+                or set(macos.get("outputs", {})) != {"scene.h", "shaders.air", "shaders.metallib"}
+                or set(macos.get("toolchain", {}).get("tools", {})) != {"metal", "metallib"}):
+            raise ValueError("Mac shader evidence differs from the captured host")
+        for record in (*macos["outputs"].values(), macos.get("shader_source", {})):
+            if (not re.fullmatch(r"[0-9a-f]{64}", record.get("sha256", ""))
+                    or type(record.get("size")) is not int or record["size"] <= 0):
+                raise ValueError("invalid Mac shader input or output digest")
+        if any(not re.fullmatch(r"[0-9a-f]{64}", tool.get("sha256", ""))
+               for tool in macos["toolchain"]["tools"].values()):
+            raise ValueError("invalid Mac shader tool digest")
     if outputs is not None:
         observed = {name: {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
                     for name, data in outputs.items()}
