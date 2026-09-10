@@ -15,41 +15,18 @@ pub const Fixture = struct {
 
 /// Recognizes only the structured file-settlement vocabulary; raw task commands
 /// remain available for deliberate malformed-payload and stale-result tests.
-/// `stub-file-*` forms describe results for the synchronous `Files` primitives
-/// and share the `resolve-file-*` grammar; the leading label is diagnostic and
-/// matching uses the result's path frame.
-pub fn isStub(head: []const u8) bool {
-    return std.mem.startsWith(u8, head, "stub-file-");
-}
-
-/// Maps a stub head onto the task-resolution head whose grammar it shares.
-pub fn resolveHead(head: []const u8) []const u8 {
-    if (isStub(head)) return resolveHeadFor(head);
-    return head;
-}
-
-fn resolveHeadFor(head: []const u8) []const u8 {
-    const names = [_][]const u8{ "choice", "read", "write", "log", "directory", "preview", "open", "assets", "reject" };
-    const resolves = [_][]const u8{ "resolve-file-choice", "resolve-file-read", "resolve-file-write", "resolve-file-log", "resolve-file-directory", "resolve-file-preview", "resolve-file-open", "resolve-file-assets", "reject-file" };
-    for (names, resolves) |name, resolve| {
-        if (std.mem.eql(u8, head["stub-file-".len..], name)) return resolve;
-    }
-    return head;
-}
-
-/// Reports whether `head` is a structured Files fixture form, in either its
-/// task-settling or stub spelling.
+/// `stub-file-*` forms describe results for the hosted `Files` functions; the
+/// leading label is diagnostic and matching uses the result's path frame.
 pub fn recognizes(head: []const u8) bool {
-    if (isStub(head)) return recognizes(resolveHead(head));
-    return std.mem.eql(u8, head, "resolve-file-choice") or
-        std.mem.eql(u8, head, "resolve-file-read") or
-        std.mem.eql(u8, head, "resolve-file-write") or
-        std.mem.eql(u8, head, "resolve-file-log") or
-        std.mem.eql(u8, head, "resolve-file-directory") or
-        std.mem.eql(u8, head, "resolve-file-preview") or
-        std.mem.eql(u8, head, "resolve-file-open") or
-        std.mem.eql(u8, head, "resolve-file-assets") or
-        std.mem.eql(u8, head, "reject-file");
+    return std.mem.eql(u8, head, "stub-file-choice") or
+        std.mem.eql(u8, head, "stub-file-read") or
+        std.mem.eql(u8, head, "stub-file-write") or
+        std.mem.eql(u8, head, "stub-file-log") or
+        std.mem.eql(u8, head, "stub-file-directory") or
+        std.mem.eql(u8, head, "stub-file-preview") or
+        std.mem.eql(u8, head, "stub-file-open") or
+        std.mem.eql(u8, head, "stub-file-assets") or
+        std.mem.eql(u8, head, "stub-file-reject");
 }
 
 fn bit(kind: boundary.TaskKind) u64 {
@@ -128,8 +105,7 @@ fn frame(writer: *std.Io.Writer, value: []const u8) ParseError!void {
 
 /// Parses and encodes a complete fixture before transferring its two owned
 /// strings to the spec command. Failure releases every provisional allocation.
-pub fn parse(allocator: std.mem.Allocator, raw_head: []const u8, args: []const sexpr.Expr) ParseError!Fixture {
-    const head = resolveHead(raw_head);
+pub fn parse(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr) ParseError!Fixture {
     if (args.len < 2) return error.InvalidFormat;
     const task = try string(args[0]);
     if (task.len == 0 or !validText(task, 4096)) return error.InvalidFormat;
@@ -137,8 +113,8 @@ pub fn parse(allocator: std.mem.Allocator, raw_head: []const u8, args: []const s
     defer buffer.deinit();
     try frame(&buffer.writer, "files1");
     var kinds: u64 = 0;
-    const failed = std.mem.eql(u8, head, "reject-file");
-    if (std.mem.eql(u8, head, "resolve-file-choice")) {
+    const failed = std.mem.eql(u8, head, "stub-file-reject");
+    if (std.mem.eql(u8, head, "stub-file-choice")) {
         if (args.len != 2) return error.InvalidFormat;
         const choice = switch (args[1].value) {
             .list => |items| items,
@@ -156,7 +132,7 @@ pub fn parse(allocator: std.mem.Allocator, raw_head: []const u8, args: []const s
             try frame(&buffer.writer, "canceled");
         } else return error.InvalidFormat;
         kinds = bit(.choose_file) | bit(.choose_directory) | bit(.choose_save_path);
-    } else if (std.mem.eql(u8, head, "resolve-file-read")) {
+    } else if (std.mem.eql(u8, head, "stub-file-read")) {
         if (args.len != 5) return error.InvalidFormat;
         const path = try string(try field(args[1..], ":path"));
         const text = try string(try field(args[1..], ":text"));
@@ -164,7 +140,7 @@ pub fn parse(allocator: std.mem.Allocator, raw_head: []const u8, args: []const s
         try frame(&buffer.writer, path);
         try frame(&buffer.writer, text);
         kinds = bit(.read_text);
-    } else if (std.mem.eql(u8, head, "resolve-file-write")) {
+    } else if (std.mem.eql(u8, head, "stub-file-write")) {
         if (args.len != 5) return error.InvalidFormat;
         const path = try string(try field(args[1..], ":path"));
         const size = try unsigned(try field(args[1..], ":bytes"));
@@ -172,7 +148,7 @@ pub fn parse(allocator: std.mem.Allocator, raw_head: []const u8, args: []const s
         try frame(&buffer.writer, path);
         try numberFrame(&buffer.writer, size);
         kinds = bit(.write_text);
-    } else if (std.mem.eql(u8, head, "resolve-file-log")) {
+    } else if (std.mem.eql(u8, head, "stub-file-log")) {
         if (args.len != 15) return error.InvalidFormat;
         const path = try string(try field(args[1..], ":path"));
         const text = try string(try field(args[1..], ":text"));
@@ -192,7 +168,7 @@ pub fn parse(allocator: std.mem.Allocator, raw_head: []const u8, args: []const s
         try frame(&buffer.writer, change);
         try frame(&buffer.writer, state);
         kinds = bit(.read_log);
-    } else if (std.mem.eql(u8, head, "resolve-file-preview")) {
+    } else if (std.mem.eql(u8, head, "stub-file-preview")) {
         if (args.len != 7) return error.InvalidFormat;
         const path = try string(try field(args[1..], ":path"));
         const text = try string(try field(args[1..], ":text"));
@@ -208,13 +184,13 @@ pub fn parse(allocator: std.mem.Allocator, raw_head: []const u8, args: []const s
         try frame(&buffer.writer, text);
         try frame(&buffer.writer, if (truncated) "true" else "false");
         kinds = bit(.read_preview);
-    } else if (std.mem.eql(u8, head, "resolve-file-open")) {
+    } else if (std.mem.eql(u8, head, "stub-file-open")) {
         if (args.len != 3) return error.InvalidFormat;
         const path = try string(try field(args[1..], ":path"));
         if (!validPath(path)) return error.InvalidFormat;
         try frame(&buffer.writer, path);
         kinds = bit(.open_path);
-    } else if (std.mem.eql(u8, head, "resolve-file-directory")) {
+    } else if (std.mem.eql(u8, head, "stub-file-directory")) {
         if (args.len != 5) return error.InvalidFormat;
         const path = try string(try field(args[1..], ":path"));
         const entries = switch ((try field(args[1..], ":entries")).value) {
@@ -242,7 +218,7 @@ pub fn parse(allocator: std.mem.Allocator, raw_head: []const u8, args: []const s
             try numberFrame(&buffer.writer, bytes);
         }
         kinds = bit(.list_directory);
-    } else if (std.mem.eql(u8, head, "resolve-file-assets")) {
+    } else if (std.mem.eql(u8, head, "stub-file-assets")) {
         if (args.len != 3) return error.InvalidFormat;
         const entries = switch ((try field(args[1..], ":entries")).value) {
             .list => |items| items,
@@ -285,7 +261,7 @@ pub fn parse(allocator: std.mem.Allocator, raw_head: []const u8, args: []const s
 }
 
 test "asset fixtures frame ordered name and status pairs" {
-    var reader = sexpr.Reader.init(std.testing.allocator, "(resolve-file-assets \"asset-verify\" :entries ((ok \"avatars/maya.png\") (missing \"glyphs/λ.png\")))");
+    var reader = sexpr.Reader.init(std.testing.allocator, "(stub-file-assets \"asset-verify\" :entries ((ok \"avatars/maya.png\") (missing \"glyphs/λ.png\")))");
     const expr = try reader.readOne();
     defer expr.deinit(std.testing.allocator);
     const items = expr.value.list;
@@ -298,7 +274,7 @@ test "asset fixtures frame ordered name and status pairs" {
 }
 
 test "file fixtures frame exact UTF-8 bytes and preserve separators" {
-    var reader = sexpr.Reader.init(std.testing.allocator, "(resolve-file-read \"notes-read\" :text \"a\\nλ:\\\"\" :path \"/tmp/λ.txt\")");
+    var reader = sexpr.Reader.init(std.testing.allocator, "(stub-file-read \"notes-read\" :text \"a\\nλ:\\\"\" :path \"/tmp/λ.txt\")");
     const expr = try reader.readOne();
     defer expr.deinit(std.testing.allocator);
     const items = expr.value.list;
@@ -309,17 +285,4 @@ test "file fixtures frame exact UTF-8 bytes and preserve separators" {
     try std.testing.expect(admits(fixture.kinds, .read_text));
     try std.testing.expect(!admits(fixture.kinds, .write_text));
     try std.testing.expect(!admits(fixture.kinds, .external));
-}
-
-/// Names the expected typed service for an actionable mismatch diagnostic.
-pub fn expectedService(kinds: u64) []const u8 {
-    if (kinds == bit(.read_text)) return "read_text";
-    if (kinds == bit(.write_text)) return "write_text";
-    if (kinds == bit(.read_log)) return "read_log";
-    if (kinds == bit(.read_preview)) return "read_preview";
-    if (kinds == bit(.list_directory)) return "list_directory";
-    if (kinds == bit(.open_path)) return "open_path";
-    if (kinds == bit(.verify_assets)) return "verify_assets";
-    if (kinds == bit(.choose_file) | bit(.choose_directory) | bit(.choose_save_path)) return "file/directory/save chooser";
-    return "a native Files task";
 }

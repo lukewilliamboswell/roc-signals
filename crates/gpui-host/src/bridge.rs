@@ -1,5 +1,5 @@
 //! Single-threaded owner of the experimental native ABI. No Roc layout enters Rust.
-use crate::protocol_gen::{EFFECT_VERSION, PROTOCOL_VERSION, RawNode, TIMER_VERSION};
+use crate::protocol_gen::{PROTOCOL_VERSION, RawNode, TIMER_VERSION};
 use crate::shortcut::{MAX_PER_ELEMENT, Shortcut};
 use std::{marker::PhantomData, rc::Rc};
 
@@ -154,17 +154,6 @@ impl Slice {
             .expect("invalid host UTF-8")
     }
 }
-#[repr(C)]
-struct RawEffect {
-    op: u32,
-    kind: u32,
-    id: u64,
-    request: Slice,
-}
-pub enum Effect {
-    Start { id: u64, kind: u32, request: String },
-    Cancel(u64),
-}
 pub struct Engine {
     unmount: unsafe extern "C" fn(),
     dispatch: unsafe extern "C" fn(u64, u32, *const u8, usize, u32),
@@ -175,8 +164,6 @@ pub struct Engine {
     tick_timer: unsafe extern "C" fn(u64) -> u32,
     next_timer: unsafe extern "C" fn(*mut crate::timers::Message) -> u32,
     child_at: unsafe extern "C" fn(u64, usize) -> u64,
-    next_effect: unsafe extern "C" fn(*mut RawEffect) -> u32,
-    task_result: unsafe extern "C" fn(u64, u32, *const u8, usize),
     next_roc_effect: unsafe extern "C" fn(*mut u64) -> u32,
     run_roc_effect: unsafe extern "C" fn(u64),
     roc_effect_done: unsafe extern "C" fn(u64),
@@ -195,8 +182,6 @@ impl Engine {
                 tick_timer: signals_timer_tick,
                 next_timer: signals_timer_next,
                 child_at: signals_child_at,
-                next_effect: signals_effect_next,
-                task_result: signals_task_result,
                 next_roc_effect: signals_roc_effect_next,
                 run_roc_effect: signals_roc_effect_run,
                 roc_effect_done: signals_roc_effect_done,
@@ -212,12 +197,6 @@ impl Engine {
                 std::mem::size_of::<RawNode>(),
                 "spike bridge ABI size mismatch; rebuild with build.py"
             );
-            assert_eq!(
-                signals_effect_version(),
-                EFFECT_VERSION,
-                "native effect protocol mismatch"
-            );
-            assert_eq!(signals_effect_size(), std::mem::size_of::<RawEffect>());
             assert_eq!(
                 signals_timer_version(),
                 TIMER_VERSION,
@@ -316,34 +295,6 @@ impl Engine {
     pub fn child_at(&self, parent: u64, rank: usize) -> u64 {
         unsafe { (self.child_at)(parent, rank) }
     }
-    /// Copy one committed primitive message before another engine call can
-    /// invalidate its borrowed storage. At most sixteen requests are retained.
-    pub fn next_effect(&mut self) -> Option<Effect> {
-        let mut raw = std::mem::MaybeUninit::<RawEffect>::uninit();
-        match unsafe { (self.next_effect)(raw.as_mut_ptr()) } {
-            0 => None,
-            1 => {
-                let raw = unsafe { raw.assume_init() };
-                assert_ne!(raw.id, 0, "invalid native task identity");
-                assert!(raw.request.len <= 8 * 1024 * 1024);
-                Some(match raw.op {
-                    1 => Effect::Start {
-                        id: raw.id,
-                        kind: raw.kind,
-                        request: unsafe { raw.request.copy() },
-                    },
-                    2 if raw.kind == 0 && raw.request.len == 0 => Effect::Cancel(raw.id),
-                    _ => panic!("invalid native effect operation"),
-                })
-            }
-            _ => panic!("invalid native effect availability"),
-        }
-    }
-    pub fn task_result(&mut self, id: u64, failed: bool, payload: &str) -> Vec<Node> {
-        assert!(payload.len() <= 8 * 1024 * 1024);
-        unsafe { (self.task_result)(id, u32::from(failed), payload.as_ptr(), payload.len()) };
-        self.changes()
-    }
     /// The next prepared Roc effect. The job is an opaque engine pointer that
     /// must come back through `roc_effect_runner` on a worker thread and then
     /// `roc_effect_done` here.
@@ -394,10 +345,6 @@ unsafe extern "C" {
     fn signals_timer_version() -> u32;
     fn signals_timer_size() -> usize;
     fn signals_child_at(parent: u64, rank: usize) -> u64;
-    fn signals_effect_version() -> u32;
-    fn signals_effect_size() -> usize;
-    fn signals_effect_next(out: *mut RawEffect) -> u32;
-    fn signals_task_result(id: u64, failed: u32, ptr: *const u8, len: usize);
     fn signals_roc_effect_next(out: *mut u64) -> u32;
     fn signals_roc_effect_run(job: u64);
     fn signals_roc_effect_done(job: u64);
@@ -424,12 +371,6 @@ impl Engine {
         }
         unsafe extern "C" fn count() -> usize {
             0
-        }
-        unsafe extern "C" fn next_effect(_: *mut RawEffect) -> u32 {
-            0
-        }
-        unsafe extern "C" fn task_result(_: u64, _: u32, _: *const u8, _: usize) {
-            panic!("unexpected test task result")
         }
         unsafe extern "C" fn next_roc_effect(_: *mut u64) -> u32 {
             0
@@ -472,8 +413,6 @@ impl Engine {
             tick_timer,
             next_timer,
             child_at,
-            next_effect,
-            task_result,
             next_roc_effect,
             run_roc_effect,
             roc_effect_done,

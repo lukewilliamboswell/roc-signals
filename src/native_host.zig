@@ -31,10 +31,7 @@ const sim_dom = @import("sim_dom.zig");
 const native_style = signals.native_style;
 const roc_alloc_ledger = @import("roc_alloc_ledger.zig");
 const crash_handlers = @import("crash_handlers.zig");
-const native_tasks = @import("native_tasks.zig");
 const native_timers = @import("native_timers.zig");
-const native_files_codec = @import("native_files_codec.zig");
-const NativeTaskQueue = native_tasks.Queue(boundary.TaskKind);
 
 // Keep host-module tests discoverable when no matching root-host test uses
 // their functions. refAllDecls is a no-op in non-test builds.
@@ -46,9 +43,7 @@ comptime {
     std.testing.refAllDecls(benchmark);
     std.testing.refAllDecls(sim_dom);
     std.testing.refAllDecls(roc_alloc_ledger);
-    std.testing.refAllDecls(native_tasks);
     std.testing.refAllDecls(native_timers);
-    std.testing.refAllDecls(native_files_codec);
 }
 
 const gpui_spike = @hasDecl(build_options, "gpui_spike") and build_options.gpui_spike;
@@ -131,38 +126,16 @@ fn filesErrorPacket(gpa: std.mem.Allocator, code: []const u8, detail: []const u8
     return std.fmt.allocPrint(gpa, "6:files1{d}:{s}{d}:{s}", .{ code.len, code, detail.len, detail }) catch @panic("out of memory");
 }
 
+/// The engine's task starts are observations here: the GUI platform runs its
+/// native work as effects, and engine tasks exist only for the spec runner's
+/// task commands and the engine tests that drive them.
 const NativeTaskPublication = struct {
     host: *HostEnv,
     record: ?NativeTaskRecord = null,
-    native: ?NativeTaskQueue.Prepared = null,
     request_id: ids.TaskRequestId,
 
-    fn prepare(host: *HostEnv, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8, cancellation_count: usize) error{ OutOfMemory, ResourceLimit }!NativeTaskPublication {
+    fn prepare(host: *HostEnv, request_id: ids.TaskRequestId, _: boundary.TaskKind, task_name: []const u8, _: []const u8, cancellation_count: usize) error{ OutOfMemory, ResourceLimit }!NativeTaskPublication {
         const allocator = host.hostAllocator();
-        if (Gpui.live) {
-            const arguments: usize = switch (kind) {
-                .external => failHost("external tasks require an external task executor"),
-                .choose_file, .choose_directory => 0,
-                .read_text, .scan_directory, .list_directory, .open_path, .read_preview => 1,
-                .write_text => 2,
-                .choose_save_path => 3,
-                .read_log => 5,
-                // Asset manifests carry a count frame plus two frames per
-                // asset; the dedicated validator owns that variable shape.
-                .verify_assets => 0,
-            };
-            if (kind == .verify_assets) {
-                native_files_codec.validateAssetsRequest(request) catch failHost("malformed native asset manifest request");
-            } else {
-                native_files_codec.validateRequest(request, arguments) catch failHost("malformed native Files request");
-            }
-            if (kind == .read_log) native_files_codec.validateLogRequest(request) catch failHost("malformed native Files log cursor");
-            return .{
-                .host = host,
-                .request_id = request_id,
-                .native = try Gpui.tasks.prepare(allocator, request_id.raw(), kind, request),
-            };
-        }
         const name = try allocator.dupe(u8, task_name);
         errdefer allocator.free(name);
         try host.started_tasks.ensureUnusedCapacity(allocator, 1);
@@ -170,15 +143,9 @@ const NativeTaskPublication = struct {
         return .{ .host = host, .request_id = request_id, .record = .{ .request_id = request_id, .name = name } };
     }
 
-    /// Transfers a prepared request to the native transport or an observation
-    /// to the spec runner without allocation. Each receiver owns its copy until
-    /// resolution, cancellation before dispatch, or teardown.
+    /// Transfers a prepared observation to the spec runner without allocation.
+    /// It stays until resolution, cancellation before dispatch, or teardown.
     pub fn commit(self: *NativeTaskPublication) void {
-        if (self.native) |*native| {
-            native.commit();
-            self.native = null;
-            return;
-        }
         self.host.started_tasks.appendAssumeCapacity(self.record orelse @panic("task publication committed twice"));
         self.record = null;
     }
@@ -196,8 +163,6 @@ const NativeTaskPublication = struct {
 
     /// Releases an unpublished name without recording a task start or cancel.
     pub fn deinit(self: *NativeTaskPublication) void {
-        if (self.native) |*native| native.deinit();
-        self.native = null;
         if (self.record) |record| self.host.hostAllocator().free(record.name);
         self.record = null;
     }
@@ -581,18 +546,15 @@ const NativeCtx = struct {
     pub const TaskPublication = NativeTaskPublication;
     pub const TaskCancellationPublication = NativeTaskCancellationPublication;
 
-    /// Reserves native cancellation observations without changing live tasks.
+    /// Reserves cancellation observations without changing live tasks.
     pub fn prepareTaskCancellation(ctx: Handle, count: usize) std.mem.Allocator.Error!TaskCancellationPublication {
-        if (!Gpui.live) try ctx.canceled_tasks.ensureUnusedCapacity(ctx.hostAllocator(), count);
+        try ctx.canceled_tasks.ensureUnusedCapacity(ctx.hostAllocator(), count);
         return .{};
     }
 
-    /// Applies the fixed native transport bound before the engine publishes a
-    /// start. The source's declared refusal initializer owns the terminal value.
-    pub fn canAdmitTask(_: Handle, kind: boundary.TaskKind, payload_length: usize) bool {
-        if (!Gpui.live) return true;
-        if (kind == .external) failHost("external tasks require an external task executor");
-        return Gpui.tasks.canAdmit(payload_length);
+    /// Engine task starts are observations with no transport bound.
+    pub fn canAdmitTask(_: Handle, _: boundary.TaskKind, _: usize) bool {
+        return true;
     }
 
     /// Marks an infallible command call for the recoverable-only native sweep.
@@ -1213,20 +1175,12 @@ const HostEnv = struct {
     }
 
     fn noteTaskResolved(self: *HostEnv, request_id: ids.TaskRequestId) void {
-        if (Gpui.live) {
-            Gpui.tasks.complete(self.hostAllocator(), request_id.raw());
-            return;
-        }
         if (self.takeStartedTask(request_id)) |record| {
             self.hostAllocator().free(record.name);
         }
     }
 
     fn recordCanceledTask(self: *HostEnv, request_id: ids.TaskRequestId) void {
-        if (Gpui.live) {
-            Gpui.tasks.cancel(self.hostAllocator(), request_id.raw());
-            return;
-        }
         const record = self.takeStartedTask(request_id) orelse return;
         self.canceled_tasks.append(self.hostAllocator(), record) catch {
             self.hostAllocator().free(record.name);
@@ -3638,13 +3592,6 @@ const BenchmarkCtx = struct {
         return setElementCheckedForBenchmark(elem, checked);
     }
 
-    /// Reports the declared service of the pending fixture target before any
-    /// payload decoder runs. Labels select test work; they never infer its kind.
-    pub fn pendingTaskKind(host: *Host, name: []const u8) ?boundary.TaskKind {
-        const index = host.engine.pendingTaskIndexByName(name) orelse return null;
-        return host.engine.pending_tasks.items[index].kind;
-    }
-
     /// Delivers pending task through the same source-update and propagation path as other inputs.
     pub fn resolvePendingTask(host: *Host, roc_host: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         const counts = resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
@@ -3936,13 +3883,6 @@ const SpecRunnerCtx = struct {
         return sim_dom.textAttr(elem, name);
     }
 
-    /// Reports the declared service of the pending fixture target before any
-    /// payload decoder runs. Labels select test work; they never infer its kind.
-    pub fn pendingTaskKind(host: *Host, name: []const u8) ?boundary.TaskKind {
-        const index = host.engine.pendingTaskIndexByName(name) orelse return null;
-        return host.engine.pending_tasks.items[index].kind;
-    }
-
     /// Delivers pending task through the same source-update and propagation path as other inputs.
     pub fn resolvePendingTask(host: *Host, roc_host: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         const counts = resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
@@ -4094,10 +4034,6 @@ comptime {
             @export(&Gpui.timerSize, .{ .name = "signals_timer_size" });
             @export(&Gpui.nextTimer, .{ .name = "signals_timer_next" });
             @export(&Gpui.tickTimer, .{ .name = "signals_timer_tick" });
-            @export(&Gpui.effectVersion, .{ .name = "signals_effect_version" });
-            @export(&Gpui.effectSize, .{ .name = "signals_effect_size" });
-            @export(&Gpui.nextEffect, .{ .name = "signals_effect_next" });
-            @export(&Gpui.taskResult, .{ .name = "signals_task_result" });
             @export(&Gpui.nextRocEffect, .{ .name = "signals_roc_effect_next" });
             @export(&Gpui.runRocEffect, .{ .name = "signals_roc_effect_run" });
             @export(&Gpui.completeRocEffect, .{ .name = "signals_roc_effect_done" });
@@ -12867,16 +12803,9 @@ const Gpui = struct {
     // The extern node layout is generated from the protocol manifest, so this
     // Zig writer and the Rust reader can never disagree on field order.
     const Node = render.native_protocol.RawNode(Slice, native_style.Style, native_style.Viewport);
-    const Effect = extern struct {
-        op: u32,
-        kind: u32,
-        id: u64,
-        request: Slice,
-    };
     var host: HostEnv = undefined;
     var roc_host: abi.RocHost = undefined;
     var live = false;
-    var tasks: NativeTaskQueue = .{};
     var timers: native_timers.Registry = .{};
     // Prepared effects wait here until the Rust host collects them; each runs
     // on its own worker and its result applies whenever it completes.
@@ -12933,7 +12862,6 @@ const Gpui = struct {
         effects_running.deinit(host.hostAllocator());
         effects_running = .empty;
         host.deinit();
-        tasks.deinit(host.hostAllocator());
         timers.deinit(host.hostAllocator());
         // A thunk still running on a worker owns its job until it returns,
         // so shutting down mid-effect cannot account for those allocations.
@@ -12995,41 +12923,6 @@ const Gpui = struct {
             index += 1;
         };
         return needed;
-    }
-    fn effectVersion() callconv(.c) u32 {
-        return render.native_protocol.effect_version;
-    }
-    fn effectSize() callconv(.c) usize {
-        return @sizeOf(Effect);
-    }
-    // One borrowed transport message. Copy its primitive payload before calling
-    // into the engine again; no application value or callable crosses this ABI.
-    fn nextEffect(out: *Effect) callconv(.c) u32 {
-        if (!live) failHost("native effect read before mount");
-        const message = tasks.next() orelse return 0;
-        out.* = switch (message) {
-            .start => |start| .{ .op = 1, .kind = @intFromEnum(start.kind), .id = start.id, .request = Slice.from(start.request) },
-            .cancel => |id| .{ .op = 2, .kind = 0, .id = id, .request = Slice.from("") },
-        };
-        return 1;
-    }
-    // Result decoding and propagation run on the engine's UI thread. A canceled
-    // or disposed request is rejected before calling any declaration-owned decoder.
-    fn taskResult(id: u64, failed: u32, ptr: [*]const u8, len: usize) callconv(.c) void {
-        if (!live or failed > 1 or len > native_tasks.max_payload_bytes) failHost("invalid native task completion");
-        if (!std.unicode.utf8ValidateSlice(ptr[0..len])) failHost("native task completion is not UTF-8");
-        clear();
-        const request_id = ids.TaskRequestId.fromRaw(id);
-        if (tasks.isCanceled(id)) {
-            if (host.engine.classifyTaskResolution(request_id) != .superseded) failHost("canceled native task remained pending");
-            tasks.complete(host.hostAllocator(), id);
-            host.engine.noteStaleTaskResolutionIgnored();
-            return;
-        }
-        const index = host.engine.pendingTaskIndexByRequestId(request_id) orelse failHost("native completion has no pending request");
-        _ = tryResolvePendingTaskAt(&host, &roc_host, index, ptr[0..len], failed == 1) catch |err| failPreparedStateDispatch(err);
-        finishHostMetrics(&host);
-        drainEffects(&host, &roc_host);
     }
     // Every slice is borrowed until the next mount/dispatch/unmount call. Rust
     // copies it before another host call and never owns any Roc allocation.

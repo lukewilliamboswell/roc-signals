@@ -1,177 +1,81 @@
-//! Native service adapter. Only owned primitive requests leave the UI thread;
-//! all task identity, cancellation state, and result propagation belong to Zig.
+//! Native filesystem services for the hosted `Files` functions: requests
+//! arrive from effect workers, run to completion there, and choosers are the
+//! one kind that waits for the UI thread to show a dialog.
 use crate::protocol_gen::task_kind;
 use crate::{
     Runtime,
     assets::{self, AssetStatus},
-    bridge::Effect,
     file_io::{self, FileError, Kind, LogChange, LogCursor, LogPosition, LogState},
 };
 use crate::workers;
 use gpui::{Context, PathPromptOptions};
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        Arc, mpsc,
+        mpsc,
         atomic::{AtomicBool, Ordering},
     },
 };
 
-const MAX_REQUESTS: usize = 16;
 const MAX_PACKET: usize = 8 * 1024 * 1024;
 
-#[derive(Default)]
-pub(crate) struct Manager {
-    jobs: HashMap<u64, Arc<AtomicBool>>,
-}
-
-impl Manager {
-    pub(crate) fn accept(&mut self, message: Effect, cx: &mut Context<Runtime>) {
-        match message {
-            Effect::Cancel(id) => self
-                .jobs
-                .get(&id)
-                .expect("cancel for unknown native worker")
-                .store(true, Ordering::Release),
-            Effect::Start { id, kind, request } => {
-                assert!(
-                    self.jobs.len() < MAX_REQUESTS,
-                    "engine exceeded native task capacity"
-                );
-                let request =
-                    Request::decode(kind, &request).expect("malformed native Files request");
-                let cancel = Arc::new(AtomicBool::new(false));
-                assert!(
-                    self.jobs.insert(id, cancel.clone()).is_none(),
-                    "duplicate native task identity"
-                );
-                match request {
-                    Request::ChooseFile
-                    | Request::ChooseDirectory
-                    | Request::ChooseSavePath { .. } => self.deliver(
-                        id,
-                        Err(FileError::Unavailable(
-                            "file choosers are hosted effects, not tasks".into(),
-                        )),
-                        cancel,
-                        cx,
-                    ),
-                    request => {
-                        let worker_cancel = cancel.clone();
-                        let worker = cx.background_executor().spawn(async move {
-                            run_request(request, &worker_cancel, id)
-                        });
-                        cx.spawn(async move |runtime, cx| {
-                            // A successful save may already have committed its rename.
-                            // The engine still rejects canceled delivery by request ID.
-                            let result = worker.await;
-                            let (failed, payload) = encode_result(result);
-                            let _ = runtime.update(cx, |runtime, cx| {
-                                runtime.complete_task(id, failed, &payload, cx)
-                            });
-                        })
-                        .detach();
-                    }
-                }
-            }
-        }
-    }
-
-    fn deliver(
-        &self,
-        id: u64,
-        result: Result<String, FileError>,
-        cancel: Arc<AtomicBool>,
-        cx: &mut Context<Runtime>,
-    ) {
-        cx.spawn(async move |runtime, cx| {
-            let (failed, payload) = settle(result, &cancel);
-            let _ = runtime.update(cx, |runtime, cx| {
-                runtime.complete_task(id, failed, &payload, cx)
+/// Shows the dialog a worker asked for and answers it when the dialog closes.
+/// The worker is blocked on `reply` in `signals_files_run`.
+pub(crate) fn prompt(waiting: ChooserRequest, cx: &mut Context<Runtime>) {
+    let ChooserRequest { request, reply } = waiting;
+    match request {
+        Request::ChooseFile | Request::ChooseDirectory => {
+            let directories = matches!(request, Request::ChooseDirectory);
+            let receiver = cx.prompt_for_paths(PathPromptOptions {
+                files: !directories,
+                directories,
+                multiple: false,
+                prompt: None,
             });
-        })
-        .detach();
-    }
-
-    pub(crate) fn complete(&mut self, id: u64) {
-        assert!(
-            self.jobs.remove(&id).is_some(),
-            "completion for unknown native worker"
-        );
-    }
-
-    /// Shows the dialog a worker asked for and answers it when the dialog
-    /// closes. The worker is blocked on `reply` in `signals_files_run`.
-    pub(crate) fn prompt(&mut self, waiting: ChooserRequest, cx: &mut Context<Runtime>) {
-        let ChooserRequest { request, reply } = waiting;
-        match request {
-            Request::ChooseFile | Request::ChooseDirectory => {
-                let directories = matches!(request, Request::ChooseDirectory);
-                let receiver = cx.prompt_for_paths(PathPromptOptions {
-                    files: !directories,
-                    directories,
-                    multiple: false,
-                    prompt: None,
-                });
-                cx.spawn(async move |_, _| {
-                    let result = match receiver.await {
-                        Ok(Ok(Some(mut paths))) if paths.len() == 1 => choice(Some(paths.remove(0))),
-                        Ok(Ok(None)) => choice(None),
-                        Ok(Ok(Some(_))) => Err(FileError::Unavailable(
-                            "single-path chooser returned an invalid selection count".into(),
-                        )),
-                        Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
-                        Err(error) => Err(FileError::Unavailable(error.to_string())),
-                    };
-                    let _ = reply.send(result);
-                })
-                .detach();
-            }
-            Request::ChooseSavePath {
-                directory,
-                suggested_name,
-            } => {
-                let directory = match directory
-                    .resolve()
-                    .and_then(|directory| validate_save_options(&directory, &suggested_name).map(|_| directory))
-                {
-                    Ok(directory) => directory,
-                    Err(error) => {
-                        let _ = reply.send(Err(error));
-                        return;
-                    }
+            cx.spawn(async move |_, _| {
+                let result = match receiver.await {
+                    Ok(Ok(Some(mut paths))) if paths.len() == 1 => choice(Some(paths.remove(0))),
+                    Ok(Ok(None)) => choice(None),
+                    Ok(Ok(Some(_))) => Err(FileError::Unavailable(
+                        "single-path chooser returned an invalid selection count".into(),
+                    )),
+                    Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
+                    Err(error) => Err(FileError::Unavailable(error.to_string())),
                 };
-                let receiver = cx.prompt_for_new_path(Path::new(&directory), Some(&suggested_name));
-                cx.spawn(async move |_, _| {
-                    let result = match receiver.await {
-                        Ok(Ok(path)) => choice(path),
-                        Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
-                        Err(error) => Err(FileError::Unavailable(error.to_string())),
-                    };
-                    let _ = reply.send(result);
-                })
-                .detach();
-            }
-            _ => {
-                let _ = reply.send(Err(FileError::Unavailable(
-                    "only choosers wait on the UI thread".into(),
-                )));
-            }
+                let _ = reply.send(result);
+            })
+            .detach();
         }
-    }
-
-    pub(crate) fn shutdown(&mut self) {
-        for cancel in self.jobs.values() {
-            cancel.store(true, Ordering::Release);
+        Request::ChooseSavePath {
+            directory,
+            suggested_name,
+        } => {
+            let directory = match directory
+                .resolve()
+                .and_then(|directory| validate_save_options(&directory, &suggested_name).map(|_| directory))
+            {
+                Ok(directory) => directory,
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
+            };
+            let receiver = cx.prompt_for_new_path(Path::new(&directory), Some(&suggested_name));
+            cx.spawn(async move |_, _| {
+                let result = match receiver.await {
+                    Ok(Ok(path)) => choice(path),
+                    Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
+                    Err(error) => Err(FileError::Unavailable(error.to_string())),
+                };
+                let _ = reply.send(result);
+            })
+            .detach();
         }
-        self.jobs.clear();
-    }
-}
-
-impl Drop for Manager {
-    fn drop(&mut self) {
-        self.shutdown();
+        _ => {
+            let _ = reply.send(Err(FileError::Unavailable(
+                "only choosers wait on the UI thread".into(),
+            )));
+        }
     }
 }
 
@@ -560,14 +464,6 @@ pub unsafe extern "C" fn signals_files_release(ptr: *mut u8, len: usize) {
     drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) });
 }
 
-fn settle(result: Result<String, FileError>, cancel: &AtomicBool) -> (bool, String) {
-    encode_result(if cancel.load(Ordering::Acquire) {
-        Err(FileError::Canceled)
-    } else {
-        result
-    })
-}
-
 fn encode_result(result: Result<String, FileError>) -> (bool, String) {
     match result {
         Ok(payload) => (false, payload),
@@ -768,13 +664,8 @@ mod tests {
     }
 
     #[test]
-    fn chooser_cancellation_and_explicit_cancellation_are_distinct() {
+    fn chooser_choices_and_save_options_are_validated() {
         assert_eq!(choice(None).unwrap(), packet(&["canceled"]));
-        let cancel = AtomicBool::new(true);
-        assert_eq!(
-            settle(choice(None), &cancel),
-            (true, packet(&["canceled", ""]))
-        );
         assert!(validate_save_options("/tmp", "../escape").is_err());
         assert!(validate_save_options("relative", "note.txt").is_err());
         assert_eq!(

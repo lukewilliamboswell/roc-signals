@@ -696,12 +696,12 @@ fn appendDecodedForm(
     if (items.len == 0) return ParseError.InvalidFormat;
     const head = exprSymbol(items[0]) orelse return ParseError.InvalidFormat;
 
-    if (file_fixtures.recognizes(head) and (!is_setup or file_fixtures.isStub(head))) {
+    if (file_fixtures.recognizes(head)) {
         const fixture = try file_fixtures.parse(allocator, head, items[1..]);
         errdefer allocator.free(fixture.task_name);
         errdefer allocator.free(fixture.payload);
         try commands.append(allocator, .{
-            .cmd_type = if (!file_fixtures.isStub(head)) (if (fixture.failed) .reject_task else .resolve_task) else if (is_setup) .seed_file_result else .stub_file_result,
+            .cmd_type = if (is_setup) .seed_file_result else .stub_file_result,
             .locator = emptyLocator(),
             .task_name = fixture.task_name,
             .expected_task_kinds = fixture.kinds,
@@ -1235,16 +1235,16 @@ test "S-expression spec parser decodes native shortcuts" {
 
 test "file fixture forms reject malformed values and release partial allocations" {
     const invalid = [_][]const u8{
-        "(resolve-file-choice \"open\" (chosen \"relative\"))",
-        "(resolve-file-choice \"open\" (canceled \"extra\"))",
-        "(resolve-file-choice \"open\" (chosen \"/tmp/a\") \"extra\")",
-        "(resolve-file-read \"read\" :path \"/tmp/a\" :path \"duplicate\")",
-        "(resolve-file-read \"read\" :path \"/tmp/a\" :wrong \"value\")",
-        "(resolve-file-read \"read\" :path \"/tmp/a\" :text false)",
-        "(resolve-file-write \"write\" :path \"/tmp/a\" :bytes -1)",
-        "(resolve-file-write \"write\" :path \"/tmp/a\" :bytes 1048577)",
-        "(reject-file \"read\" :kind invented :detail \"no\")",
-        "(reject-file \"read\" :kind canceled :detail \"not empty\")",
+        "(stub-file-choice \"open\" (chosen \"relative\"))",
+        "(stub-file-choice \"open\" (canceled \"extra\"))",
+        "(stub-file-choice \"open\" (chosen \"/tmp/a\") \"extra\")",
+        "(stub-file-read \"read\" :path \"/tmp/a\" :path \"duplicate\")",
+        "(stub-file-read \"read\" :path \"/tmp/a\" :wrong \"value\")",
+        "(stub-file-read \"read\" :path \"/tmp/a\" :text false)",
+        "(stub-file-write \"write\" :path \"/tmp/a\" :bytes -1)",
+        "(stub-file-write \"write\" :path \"/tmp/a\" :bytes 1048577)",
+        "(stub-file-reject \"read\" :kind invented :detail \"no\")",
+        "(stub-file-reject \"read\" :kind canceled :detail \"not empty\")",
     };
     for (invalid) |form| {
         const content = try std.fmt.allocPrint(std.testing.allocator, "(test \"invalid\" (steps {s}))", .{form});
@@ -1257,17 +1257,19 @@ fn parseFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
     var parsed = try parseSExprTestSpec(allocator,
         \\(test "file workflow"
         \\  (steps
-        \\    (resolve-file-choice "open" (chosen "/tmp/λ:note.txt"))
-        \\    (resolve-file-choice "save" (canceled))
-        \\    (resolve-file-read "read" :path "/tmp/a" :text "first\nλ")
-        \\    (resolve-file-write "write" :bytes 0 :path "/tmp/a")
-        \\    (reject-file "read" :detail "not allowed" :kind permission-denied)))
+        \\    (stub-file-choice "open" (chosen "/tmp/λ:note.txt"))
+        \\    (stub-file-choice "save" (canceled))
+        \\    (stub-file-read "read" :path "/tmp/a" :text "first\nλ")
+        \\    (stub-file-write "write" :bytes 0 :path "/tmp/a")
+        \\    (stub-file-reject "read" :detail "not allowed" :kind permission-denied)))
     );
     defer parsed.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 5), parsed.commands.len);
     try std.testing.expectEqualStrings("6:files18:canceled", parsed.commands[1].expected_text.?);
     try std.testing.expectEqualStrings("6:files16:/tmp/a1:0", parsed.commands[3].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.reject_task, parsed.commands[4].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.stub_file_result, parsed.commands[4].cmd_type);
+    try std.testing.expect(parsed.commands[4].expected_bool.?);
+    try std.testing.expect(!parsed.commands[0].expected_bool.?);
     try std.testing.expectEqual(@as(usize, 4), parsed.commands[1].line_num);
 }
 
@@ -1290,10 +1292,10 @@ fn parseExtendedFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
     var parsed = try parseSExprTestSpec(allocator,
         \\(test "native content"
         \\ (steps
-        \\  (resolve-file-log "tail" :path "/tmp/log" :text "λ\n" :device 18446744073709551615 :inode 13 :offset 3 :change rotated :state partial-utf8)
-        \\  (resolve-file-directory "folder" :path "/tmp" :entries ((file "/tmp/λ" 18446744073709551615) (directory "/tmp/child" 0) (symbolic-link "/tmp/link" 9)))
-        \\  (resolve-file-preview "preview" :path "/tmp/λ" :text "first\nsecond" :truncated true)
-        \\  (resolve-file-open "launch" :path "/tmp/λ")))
+        \\  (stub-file-log "tail" :path "/tmp/log" :text "λ\n" :device 18446744073709551615 :inode 13 :offset 3 :change rotated :state partial-utf8)
+        \\  (stub-file-directory "folder" :path "/tmp" :entries ((file "/tmp/λ" 18446744073709551615) (directory "/tmp/child" 0) (symbolic-link "/tmp/link" 9)))
+        \\  (stub-file-preview "preview" :path "/tmp/λ" :text "first\nsecond" :truncated true)
+        \\  (stub-file-open "launch" :path "/tmp/λ")))
     );
     defer parsed.deinit(allocator);
     try std.testing.expectEqualStrings("6:files18:/tmp/log3:λ\n20:184467440737095516152:131:37:rotated12:partial-utf8", parsed.commands[0].expected_text.?);
@@ -1311,17 +1313,17 @@ test "extended file fixtures preserve full unsigned cursors under allocation fai
 
 test "extended file fixtures reject noncanonical unsigned numbers and unknown tags" {
     for ([_][]const u8{ "-1", "+1", "00", "01", "18446744073709551616", "\"123\"" }) |number| {
-        const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"bad cursor\" (steps (resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device {s} :inode 1 :offset 0 :change initial :state at-end)))", .{number});
+        const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"bad cursor\" (steps (stub-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device {s} :inode 1 :offset 0 :change initial :state at-end)))", .{number});
         defer std.testing.allocator.free(text);
         try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
     }
     for ([_][]const u8{
-        "(resolve-file-preview \"preview\" :path \"/tmp/a\" :text \"x\" :truncated \"true\")",
-        "(resolve-file-directory \"folder\" :path \"/tmp\" :entries ((imaginary \"/tmp/a\" 1)))",
-        "(resolve-file-directory \"folder\" :path \"/tmp\" :entries ((file \"/tmp/a\" +1)))",
-        "(resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change replaced :state at-end)",
-        "(resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change initial :state finished)",
-        "(resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change initial :change at-end)",
+        "(stub-file-preview \"preview\" :path \"/tmp/a\" :text \"x\" :truncated \"true\")",
+        "(stub-file-directory \"folder\" :path \"/tmp\" :entries ((imaginary \"/tmp/a\" 1)))",
+        "(stub-file-directory \"folder\" :path \"/tmp\" :entries ((file \"/tmp/a\" +1)))",
+        "(stub-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change replaced :state at-end)",
+        "(stub-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change initial :state finished)",
+        "(stub-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change initial :change at-end)",
     }) |form| {
         const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"bad native content\" (steps {s}))", .{form});
         defer std.testing.allocator.free(text);
@@ -1333,7 +1335,7 @@ test "extended file fixtures reject oversized preview text before settlement" {
     const oversized = try std.testing.allocator.alloc(u8, 65537);
     defer std.testing.allocator.free(oversized);
     @memset(oversized, 'a');
-    const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"too large\" (steps (resolve-file-preview \"preview\" :path \"/tmp/a\" :text \"{s}\" :truncated false)))", .{oversized});
+    const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"too large\" (steps (stub-file-preview \"preview\" :path \"/tmp/a\" :text \"{s}\" :truncated false)))", .{oversized});
     defer std.testing.allocator.free(text);
     try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
 }

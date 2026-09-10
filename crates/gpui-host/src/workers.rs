@@ -84,7 +84,7 @@ pub(crate) fn listen(cx: &mut Context<Runtime>) {
             let message = NextMessage.await;
             let delivered = runtime.update(cx, |runtime, cx| match message {
                 Message::Completed(job) => runtime.complete_roc_effect(job, cx),
-                Message::Chooser(request) => runtime.effects.prompt(request, cx),
+                Message::Chooser(request) => crate::effects::prompt(request, cx),
             });
             if delivered.is_err() {
                 break;

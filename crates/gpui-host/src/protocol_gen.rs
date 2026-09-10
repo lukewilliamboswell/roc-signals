@@ -9,13 +9,10 @@ use crate::bridge::{Slice, Style};
 /// Version of the statically linked native GUI presentation boundary.
 pub const PROTOCOL_VERSION: u32 = 10;
 
-/// Version of the separate native effects (task transport) boundary.
-pub const EFFECT_VERSION: u32 = 2;
-
 /// Version of the separate native timer boundary.
 pub const TIMER_VERSION: u32 = 1;
 
-/// Closed task service routes carried in native effect messages.
+/// Closed service routes for hosted `Files` requests.
 #[allow(dead_code)]
 pub mod task_kind {
     /// App-declared external task; the only route the browser host accepts.

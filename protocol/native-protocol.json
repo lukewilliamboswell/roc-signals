@@ -2,7 +2,6 @@
   "schema_version": 1,
   "comment": "Single authority for the native GUI protocol tables. Edit this file, then run `python3 scripts/generate_protocol.py` to regenerate the committed Zig, Rust, Roc, and docs artifacts. `docs/native-gui-protocol.md` documents the add-a-field procedure.",
   "protocol_version": 10,
-  "effect_version": 2,
   "timer_version": 1,
   "custom_text_field_id": 7,
   "custom_bool_field_id": 3,

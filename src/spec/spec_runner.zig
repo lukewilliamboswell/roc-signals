@@ -832,7 +832,6 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "task command had no task name");
                             return 1;
                         };
-                        if (!validateTaskFixture(Ctx, host, cmd)) return 1;
                         const payload = cmd.expected_text orelse "";
                         if (cmd.cmd_type == .resolve_stale_task) {
                             _ = Ctx.resolveStalePendingTask(host, roc_host, task_name, payload, false);
@@ -2135,39 +2134,4 @@ test "spec runner resolves runtime metric names" {
     try std.testing.expectEqual(@as(?i64, 7), TestRunner.runtimeMetricValue(metrics, "rows_reused"));
     try std.testing.expectEqual(@as(?i64, -2), TestRunner.runtimeMetricValue(metrics, "retained_alloc_delta"));
     try std.testing.expectEqual(@as(?i64, null), TestRunner.runtimeMetricValue(metrics, "missing_metric"));
-}
-
-/// Rejects a fixture aimed at a missing request or a different typed service
-/// before constructing a Roc payload. Raw task commands intentionally bypass it.
-pub fn validateTaskFixture(comptime Ctx: type, host: *Ctx.Host, cmd: SpecCommand) bool {
-    if (cmd.expected_task_kinds == 0) return true;
-    const name = cmd.task_name orelse "";
-    const kind = if (comptime @hasDecl(Ctx, "pendingTaskKind")) Ctx.pendingTaskKind(host, name) else null;
-    if (kind) |actual| {
-        if (file_fixtures.admits(cmd.expected_task_kinds, actual)) return true;
-    }
-    var buffer: [512]u8 = undefined;
-    const message = std.fmt.bufPrint(&buffer, "TEST FAILED at line {d}: file fixture for task \"{s}\" expected: {s}; actual: {s}\n", .{ cmd.line_num, name[0..@min(name.len, 200)], file_fixtures.expectedService(cmd.expected_task_kinds), if (kind) |actual| @tagName(actual) else "no pending request" }) catch "TEST FAILED: file fixture task-kind mismatch\n";
-    Ctx.writeStderr(message);
-    return false;
-}
-
-test "file fixture admission rejects wrong kinds and missing requests before decoding" {
-    const TestCtx = struct {
-        pub const Host = struct { kind: ?boundary.TaskKind };
-        /// Supplies the declared test route independently of a task's label.
-        pub fn pendingTaskKind(host: *Host, _: []const u8) ?boundary.TaskKind {
-            return host.kind;
-        }
-        /// Keeps expected rejection diagnostics out of the unit-test console.
-        pub fn writeStderr(_: []const u8) void {}
-    };
-    var parsed = try spec_parser.parseSExprTestSpec(std.testing.allocator, "(test \"typed\" (steps (resolve-file-read \"save\" :path \"/tmp/a\" :text \"abc\")))");
-    defer parsed.deinit(std.testing.allocator);
-    var host = TestCtx.Host{ .kind = .write_text };
-    try std.testing.expect(!validateTaskFixture(TestCtx, &host, parsed.commands[0]));
-    host.kind = null;
-    try std.testing.expect(!validateTaskFixture(TestCtx, &host, parsed.commands[0]));
-    host.kind = .read_text;
-    try std.testing.expect(validateTaskFixture(TestCtx, &host, parsed.commands[0]));
 }

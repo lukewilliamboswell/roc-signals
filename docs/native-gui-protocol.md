@@ -11,9 +11,8 @@ document stays hand-written.
 
 <!-- BEGIN GENERATED PROTOCOL TABLES (scripts/generate_protocol.py; edit protocol/native-protocol.json) -->
 
-The statically linked GUI boundary uses protocol version **10**;
-the separate native effects boundary is version **2** and the
-separate timer boundary is version **1**.
+The statically linked GUI boundary uses protocol version **10**
+and the separate timer boundary is version **1**.
 
 | Version | Change |
 | --- | --- |
@@ -345,55 +344,38 @@ Follow-tail positions the final matching row at the bottom when the list is
 updated while enabled. Turning it off leaves scrolling under user control.
 This is presentation policy, not a second timer, observer, or reactive graph.
 
-## Native Files and task transport
+## Native Files
 
-`Files` declares native chooser, read, write, and recursive scan tasks. Each
-factory takes a diagnostic label; the label never selects host behavior.
-`Node.TaskKind` is an explicit closed route; the generated task-kind table
-above is the authoritative numbering.
-The browser rejects non-external task routes before command publication. Its
-existing task command wire format is unchanged.
+`Files` exposes native choosers, reads, writes, scans, directory listings,
+previews, incremental log reads, associated-application launches, and asset
+verification as hosted effectful functions. Each call runs to completion on
+the effect worker that made it and returns a typed result; nothing is queued,
+tracked, or canceled by the engine. `Node.TaskKind` is the closed route number
+a call carries to the host; the generated task-kind table above is the
+authoritative numbering. The browser platform has no `Files` and rejects
+non-external task routes before command publication.
 
-Task declarations own separate initializers for cancellation and capacity
-refusal. `Signal.cancel(task)` publishes the declared terminal error and retires
-the pending request in one shared source transaction. Canceling an already
-settled task has no effect. Saturation publishes the declared refusal value and
-supersedes older work for that source. Files uses `Error.Canceled` and
-`Error.ResourceLimit`. Neither case invokes a failure decoder with invented text.
-Scope disposal cancels without creating a new application-visible value.
+A call crosses the boundary through `roc_files_run(kind, request)`, which the
+Zig host answers by calling the Rust `signals_files_run(kind, pointer, length,
+out_pointer, out_length)` on the calling thread and copying the result packet
+into a Roc string before releasing it with `signals_files_release`. The return
+value is one when the packet is an error packet. The spec host answers the same
+calls from declared `stub-file-*` results instead and never touches the
+filesystem. No Roc value, callable, layout, or pointer leaves the worker that
+made the call.
 
-The separate native effects boundary is version **2**. Rust checks
-`signals_effect_version()` and `signals_effect_size()` before mount.
-`signals_effect_next(out)` returns zero when empty or one after writing an
-`extern` record: `op: u32`, `kind: u32`, `id: u64`, and request pointer/length.
-Start has op=1 and an explicit kind; cancel has op=2, kind=0, and an empty request.
-The UI thread copies request bytes before the next engine call. Results enter
-through `signals_task_result(id, failed, pointer, length)`, where failed is zero
-or one and text is strict UTF-8. No Roc value, callable, layout, or pointer leaves
-the engine thread.
-
-The host reserves at most **16** operations, including queued work, running work,
-canceled workers, and completed results awaiting UI-thread delivery. It reserves
-and copies requests before engine commit; publication allocates nothing. A queued
-request canceled before dispatch releases immediately. A running request retains
-its reservation until completion; late canceled results are rejected before any
-Roc decoder runs. Result commit releases the reservation before observers launch
-follow-up work. Rust only schedules copied primitive work and returns results;
-identity, scope lifetime, replacement, and propagation remain in the engine.
-
-GPUI dialogs use the desktop portal. Explicit cancellation invalidates result
-delivery; the pinned GPUI API provides no handle for closing an already open
-dialog, so its receiver keeps a reservation until the dialog actually settles.
-Closing the host invalidates worker flags and callbacks before engine teardown.
-Workers check cancellation between bounded chunks or entries; a blocked operating
-system call can delay completion. Capacity remains bounded during that delay.
+Choosers need the windowing event loop. The worker posts the request to the UI
+thread's mailbox and blocks on a reply channel; the UI thread shows the desktop
+portal dialog and replies when it settles. Other effects keep running on their
+own workers meanwhile. The pinned GPUI API provides no handle for closing an
+already open dialog, so a chooser settles only when the user does. Closing the
+window while a chooser is open answers the waiting worker with `Unavailable`.
 
 Files uses a strict private `files1` codec. Each frame is a canonical decimal UTF-8
 byte length, a colon, and exactly that many bytes. Every packet begins with the
 frame `6:files1`, has at most **8 MiB**, and has no trailing fields. Lengths have
-no signs or leading zeroes. Native publication validates request framing before
-publishing work; both adapter and Roc result decoder reject malformed packets.
-Task kind defines the remaining request frames:
+no signs or leading zeroes. The Rust adapter and the Roc result decoder both reject malformed packets.
+The route kind defines the remaining request frames:
 
 | Kind | Request frames |
 | --- | --- |
@@ -405,7 +387,7 @@ Task kind defines the remaining request frames:
 | Verify assets | asset count, then per asset: relative name, lowercase hex SHA-256 |
 
 Choice results are `chosen, path` or `canceled`. A user dismissing a dialog is
-`Done(Choice.Canceled)`; explicit task cancellation is `Failed(Error.Canceled)`.
+`Ok(Choice.Canceled)`; `Error.Canceled` is reserved for work the host abandoned.
 Read results are `path, text`; write results are `path, byte count`; scan results
 are `root, entry count` followed by `path, kind, bytes` for each entry. Entry kinds
 are `file`, `directory`, `symbolic-link`, and `other`. Errors have `code, detail`;
@@ -432,9 +414,8 @@ without traversal. Limits refuse the entire operation instead of truncating it.
 Writes create a temporary sibling, write and synchronize the immutable submitted
 text, and rename it into place. This guarantees atomic replacement; the parent
 directory is not synchronized, so power-loss durability is not guaranteed.
-Failure or cancellation before commit attempts to remove the temporary file;
-failed cleanup returns `Io` and may leave that file behind. Cancellation cannot
-undo a rename that has already committed.
+Failure before commit attempts to remove the temporary file; failed cleanup
+returns `Io` and may leave that file behind.
 
 
 ## Native timers
@@ -466,16 +447,15 @@ enables real timer delivery and waits 1.2 seconds after the requested action.
 
 `VerifyAssets` requests carry a canonical asset count of 1 to **256**, then a
 relative name of 1 to **1024 UTF-8 bytes** and a 64-character lowercase hex
-SHA-256 digest per asset; the Zig publication validator rejects any other
-shape. The worker hashes each named file under the committed assets root
+SHA-256 digest per asset; the Rust request decoder rejects any other shape. The worker hashes each named file under the committed assets root
 through the same no-follow primitives as every Files read, bounded at
 **32 MiB** per asset. Results are `count` followed by `name, status` pairs in
 manifest order; statuses are `ok`, `missing` (also covering symlinked or
 special files), and `mismatch`. A traversing name, an unreadable file, or an
-asset above the byte bound fails the whole task with its typed error. Apps
-ingest `assets/manifest.json` at compile time and start verification once at
-mount; specs settle it deterministically with the `resolve-file-assets`
-fixture.
+asset above the byte bound fails the whole verification with its typed error.
+Apps ingest `assets/manifest.json` at compile time and verify it once from a
+mount effect; specs answer it deterministically with a `stub-file-assets`
+result.
 
 ### Directory navigation, previews, associated applications, and logs
 

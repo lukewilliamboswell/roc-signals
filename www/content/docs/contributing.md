@@ -979,10 +979,6 @@ the missing stub. The stub vocabulary mirrors the native services:
 (stub-file-assets "verify" :entries ((ok "avatars/maya.png") (missing "avatars/jon.png")))
 ```
 
-The `resolve-file-*` and `reject-file` forms with the same fields settle a
-pending engine task of that kind; no GUI example starts one any more, but the
-grammar stays shared with the stubs.
-
 Log changes are `initial`, `continued`, `rotated`, or `truncated`; states are
 `more`, `at-end`, or `partial-utf8`. Cursor numbers and directory file sizes are
 canonical unsigned decimal U64 values, including values above signed I64's
@@ -1000,19 +996,13 @@ valid UTF-8, and at most 4096 bytes. Read text and write byte counts have the
 native one-MiB bound, and error detail is bounded to 4096 UTF-8 bytes. Unknown
 fields, duplicate fields, invalid types, and oversized values reject the spec.
 
-A task settlement checks the pending task's declared service before calling
-its Roc result decoder. Read fixtures cannot settle write tasks; choice fixtures
-accept file, directory, and save choosers; error fixtures accept native Files
-tasks. A mismatch reports the source line, task label, expected service, and
-actual service or missing request. A task label locates a request for the
-harness; it does not determine service semantics.
-
-These commands simulate results and perform no filesystem IO. They establish
+These stubs simulate results and perform no filesystem IO. They establish
 application response and state behavior; real filesystem and native chooser
-behavior need host tests and a native walkthrough. Keep raw `resolve-task`,
-`reject-task`, and `resolve-stale-task` when deliberately testing malformed
-payloads or stale delivery. The Board and Notes journeys demonstrate save
-snapshots, failed loads, dismissed choosers, retries, and retained drafts.
+behavior need host tests and a native walkthrough. The raw `resolve-task`,
+`reject-task`, and `resolve-stale-task` commands settle engine tasks, which
+the browser platform still uses; no GUI example starts one. The Board and
+Notes journeys demonstrate save snapshots, failed loads, dismissed choosers,
+retries, and retained drafts.
 
 A supplied result does not assert the request payload the app emitted. For
 example, resolving a write with `:bytes 14` does not prove that the app submitted
