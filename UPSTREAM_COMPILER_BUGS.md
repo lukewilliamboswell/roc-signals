@@ -22,8 +22,8 @@ export ROC_BIN=/path/to/pinned-roc/roc
 | 11 | Native GPUI sample cannot link as Shared or PIE | not filed | `examples-gui/keyed-rows/` | normal Roc executable linkage |
 | 10 | Unit-state capability callbacks produce invalid dev Wasm | not filed | `repro/unit-state-wasm-dev/` | no; size backend validates |
 | 14 | `roc bundle --output-dir` fails across filesystems | not filed | commands below | stage on the output filesystem |
-| 16 | `Ui.each` applications fail during monotype code generation | not filed | `repro/recursive-each-codegen/` | no |
-| 17 | Markdown Editor retains Roc allocations after native specs | not filed | commands below | no |
+| 16 | `Ui.each` applications fail during monotype code generation | [#11265](https://github.com/roc-lang/roc/issues/11265) | `repro/recursive-each-codegen/` | no |
+| 17 | Markdown Editor retains Roc allocations after native specs | [#11269](https://github.com/roc-lang/roc/issues/11269) | commands below | no |
 
 For #1, camelCase field names longer than ten bytes are corrupted on wasm32 at
 byte four, while native is unaffected; `favoritesCount` exposed it. For #2, the
