@@ -1462,13 +1462,13 @@ those interfaces host-build dependencies.
 
 ### Validate generated macOS bundles
 
-Local macOS bundles, including `--no-build`, require native Apple Silicon.
-Before creating the bundle, admission links every maintained GUI example with
-the selected released host archives and interface inputs, then runs its native
-specs without modifying either artifact. Mac CI consumes the immutable host and
-interface locks and then exercises the resulting archive over HTTP with an empty
-Roc cache; it does not install Rust, build Cargo, build the Zig engine, download
-the Metal toolchain, or regenerate TBDs:
+Creating a bundle from the reviewed locks is platform-independent. Native Apple
+Silicon validation happens after bundling: the macOS runner downloads the same
+candidate as the other smoke runners, serves it over HTTP with an empty Roc
+cache, final-links every maintained GUI example against the selected released
+host archives and interface inputs, and runs its native specs. It does not
+install Rust, build Cargo, build the Zig engine, download the Metal toolchain,
+or regenerate TBDs:
 
 ```sh
 GUI_HOST_LOCK=gui-host.lock.json python3 scripts/minici gui
