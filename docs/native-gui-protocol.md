@@ -438,8 +438,10 @@ Diagnostic detail is at most **4096 UTF-8 bytes**, including an explicit
 paths, text, and metadata results are never truncated.
 
 `choose_save_path` takes `{directory: [Home, At(Str)], suggested_name: Str}`.
-`Home` resolves the native environment's UTF-8 `HOME`; a missing or non-UTF-8 value
-returns `Unavailable`. `At` supplies an explicit initial directory. Both paths
+`Home` resolves the native user's profile root: `HOME` on Linux and macOS, and
+`USERPROFILE` (falling back to `HOMEDRIVE` plus `HOMEPATH`) on Windows, where an
+ordinary process has no `HOME`. Only an environment that names no UTF-8 directory
+at all returns `Unavailable`. `At` supplies an explicit initial directory. Both paths
 must be absolute and valid. In the private request record `home` requires an
 empty directory frame; `at` carries the supplied path. No empty-path convention
 is exposed to applications. Suggested names must be a single nonempty file name

@@ -109,8 +109,9 @@ Commands start or supersede work for that declared task.
 | `read_log_task(label)` | `read_log(task, { path, position })` | `LogChunk` |
 
 `Choice` is `[Chosen(Str), Canceled]`. The save chooser's `directory` is
-`Home` or `At(absolute_path)`. `Home` resolves the native user's home directory;
-a missing or non-UTF-8 environment value returns `Unavailable`. Scan entries
+`Home` or `At(absolute_path)`. `Home` resolves the native user's profile root (`HOME` on
+Linux and macOS, `USERPROFILE` on Windows); only an environment that names no
+UTF-8 directory at all returns `Unavailable`. Scan entries
 have `{ path, kind, bytes }`; kinds are `File`, `Directory`, `SymbolicLink`, and
 `Other`. Paths are absolute UTF-8 in the operating system's own spelling, so a
 Windows worker returns drive-rooted or UNC paths written with backslashes. Byte

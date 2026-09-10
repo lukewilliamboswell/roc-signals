@@ -233,11 +233,43 @@ enum Directory {
 impl Directory {
     fn resolve(self) -> Result<String, FileError> {
         match self {
-            Self::Home => std::env::var("HOME")
-                .map_err(|_| FileError::Unavailable("HOME is missing or is not UTF-8".into())),
+            Self::Home => home_directory(|name| std::env::var(name).ok()),
             Self::At(path) => Ok(path),
         }
     }
+}
+
+/// Resolves the native user's profile root from the environment an ordinary
+/// process of this operating system is started with. POSIX systems publish
+/// `HOME`; a Windows process launched from a shortcut or Explorer has no `HOME`
+/// at all and names the profile through `USERPROFILE`, with `HOMEDRIVE` and
+/// `HOMEPATH` as the older pair. `Unavailable` is reserved for an environment
+/// that names no usable directory, so a Windows launch outside a POSIX shell
+/// can still open the save dialog.
+fn home_directory(variable: impl Fn(&str) -> Option<String>) -> Result<String, FileError> {
+    let candidates: &[&str] = if cfg!(windows) {
+        &["USERPROFILE", "HOME"]
+    } else {
+        &["HOME"]
+    };
+    let mut found = candidates
+        .iter()
+        .filter_map(|name| variable(name))
+        .find(|value| !value.is_empty());
+    if found.is_none() && cfg!(windows) {
+        found = match (variable("HOMEDRIVE"), variable("HOMEPATH")) {
+            (Some(drive), Some(path)) if !drive.is_empty() && !path.is_empty() => {
+                Some(format!("{drive}{path}"))
+            }
+            _ => None,
+        };
+    }
+    found.ok_or_else(|| {
+        FileError::Unavailable(format!(
+            "the home directory is unknown: {} is missing or is not UTF-8",
+            candidates.join(" and ")
+        ))
+    })
 }
 
 impl Request {
@@ -688,6 +720,25 @@ mod tests {
             }
         );
         assert!(Request::decode(3, &packet(&["home", "/tmp", "note.txt"])).is_err());
+        assert_eq!(
+            home_directory(|name| (name == "HOME").then(|| "/home/lee".to_string())).unwrap(),
+            "/home/lee"
+        );
+        assert!(home_directory(|_| None).is_err());
+        assert!(home_directory(|_| Some(String::new())).is_err());
+        if cfg!(windows) {
+            let profile = |name: &str| match name {
+                "USERPROFILE" => Some(r"C:\Users\Lee".to_string()),
+                _ => None,
+            };
+            assert_eq!(home_directory(profile).unwrap(), r"C:\Users\Lee");
+            let legacy = |name: &str| match name {
+                "HOMEDRIVE" => Some("C:".to_string()),
+                "HOMEPATH" => Some(r"\Users\Lee".to_string()),
+                _ => None,
+            };
+            assert_eq!(home_directory(legacy).unwrap(), r"C:\Users\Lee");
+        }
         assert_eq!(
             Request::decode(3, &packet(&["at", "/tmp", "note.txt"])).unwrap(),
             Request::ChooseSavePath {

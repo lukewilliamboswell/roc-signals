@@ -395,7 +395,9 @@ Files := [].{
 	choose_directory = |task| file_start(Node.TaskKind.ChooseDirectory, task, [])
 
 	## Ask for a save path at the user's home or an absolute initial directory.
-	## Home returns Unavailable if the native environment has no UTF-8 HOME value.
+	## Home is the native user's profile root: HOME on Linux and macOS, USERPROFILE
+	## (or HOMEDRIVE and HOMEPATH) on Windows. It returns Unavailable only when the
+	## environment names no UTF-8 directory at all.
 	## The suggestion is one nonempty file name of at most 255 UTF-8 bytes.
 	choose_save_path : Signal.Task(Choice, Error), { directory : [Home, At(Str)], suggested_name : Str } -> Node.Cmd
 	choose_save_path = |task, options| {
