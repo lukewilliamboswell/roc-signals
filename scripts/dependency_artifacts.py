@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Fetch locked dependency releases and verify provenance before extraction.
+"""Fetch locked dependency releases and verify reviewed content before extraction.
 
 A cache is transport storage, never a trust authority: every use checks the
-locked digest and verifies the expected signing workflow and source identity.
+locked size and digest. Published attestations provide optional provenance
+evidence, but consuming a reviewed lock does not depend on an online service.
 """
 
 import argparse
@@ -12,7 +13,6 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
-import subprocess
 import tarfile
 import tempfile
 from urllib.request import urlopen
@@ -61,12 +61,6 @@ def read_lock(path):
 def verify_archive(path, entry):
     if path.is_symlink() or path.stat().st_size != entry["size"] or sha256(path) != entry["sha256"]:
         raise ValueError("dependency archive differs from its locked digest or size")
-    subprocess.run([
-        "gh", "attestation", "verify", str(path), "--repo", entry["repository"],
-        "--signer-workflow", entry["signer_workflow"],
-        "--source-digest", entry["source_sha"], "--source-ref", entry["source_ref"],
-        "--deny-self-hosted-runners",
-    ], check=True)
 
 
 def fetch(entry, cache):

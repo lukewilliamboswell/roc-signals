@@ -18,8 +18,8 @@ WORKFLOWS = {
 }
 
 
-def workflow(name):
-    path = ROOT / ".github/workflows" / WORKFLOWS[name]
+def workflow_text(filename):
+    path = ROOT / ".github/workflows" / filename
     text = path.read_text()
     # These workflows deliberately use a plain literal list. Refuse unsupported
     # glob/negation syntax rather than approximating GitHub's matching semantics.
@@ -30,6 +30,10 @@ def workflow(name):
     if any(re.search(r"[*?!\[\]{}]", path) for path in paths):
         raise ValueError("producer filters must name exact inputs")
     return path.relative_to(ROOT).as_posix(), set(paths), text.split("\njobs:\n", 1)[1]
+
+
+def workflow(name):
+    return workflow_text(WORKFLOWS[name])
 
 
 def script_inputs(jobs):
@@ -102,6 +106,17 @@ class DependencyWorkflowFilterTests(unittest.TestCase):
                     self.assertTrue((ROOT / filename).is_file())
                     selected = {name for name in WORKFLOWS if filename in workflow(name)[1]}
                     self.assertEqual(selected, {owner})
+
+    def test_macos_interface_inputs_select_only_the_interface_producer(self):
+        _, paths, jobs = workflow_text("macos-interface-dependencies.yml")
+        for filename in ("dependencies/macos-interfaces/interfaces.json",
+                         "dependencies/macos-interfaces/PROVENANCE.md",
+                         "scripts/build_macos_interfaces.py", "scripts/build_macos_stubs.py"):
+            with self.subTest(input=filename):
+                self.assertIn(filename, paths)
+                self.assertFalse(any(filename in workflow(name)[1] for name in WORKFLOWS))
+        self.assertIn("--host-lock gui-host.lock.json", jobs)
+        self.assertNotIn("scripts/build_gui.py", jobs)
 
     def test_shared_admission_and_publication_changes_select_every_producer(self):
         for path in ("scripts/dependency_archive.py", "scripts/dependency_artifacts.py",

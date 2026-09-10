@@ -14,24 +14,8 @@ HOST_FILES = {
     "x64mingw": ("libsignals_gpui_host.a", "libengine.a", "signals.res"),
 }
 SOURCE_PATHS = (
-    "src/native_host.zig", "src/signals", "crates/gpui-host", "platform-gui", "platform-shared",
-    ".cargo/config.toml",
-    "scripts/audit_windows_archive.py", "scripts/build_glibc.py", "scripts/build_gui.py",
-    "scripts/build_macos_stubs.py", "scripts/build_windows_gnu_runtime.py",
-    "scripts/build_windows_system_imports.py", "scripts/cargo_build_evidence.py",
-    "scripts/compiler_pins.py", "scripts/dependency_archive.py", "scripts/dependency_artifacts.py",
-    "scripts/gui_host_artifacts.py", "scripts/gui_suite.py", "scripts/host_build_identity.py",
-    "scripts/host_notice_payload.py", "scripts/prepare_dependencies.py",
-    "scripts/prepare_gui_host_release.py", "scripts/prepare_platforms.py",
-    "scripts/release_dependencies.py", "scripts/release_gui_hosts.py",
-    "scripts/rust_license_inventory.py", "scripts/spec_driver.py", "scripts/toolchain.py",
-    "scripts/toolchain_license_inventory.py", "scripts/windows_gnu_build.py",
-    "scripts/windows_gnu_coff.py", "scripts/windows_runtime_validation.py",
-    "scripts/windows_system_imports.py",
-    "dependencies/gui-host-notices", "dependencies/macos-interfaces",
-    ".github/actions/setup-toolchain", ".github/workflows/gui-hosts.yml",
-    "build.zig", "build.zig.zon", "Cargo.toml", "Cargo.lock", "dependencies.lock.json", "LICENSE",
-    ".gitattributes", ".gitignore",
+    "src/native_host.zig", "src/signals", "crates/gpui-host", ".cargo/config.toml",
+    "build.zig", "build.zig.zon", "Cargo.toml", "Cargo.lock",
 )
 
 
@@ -54,6 +38,21 @@ def source_fingerprint(root=ROOT):
         if record and not record.startswith((b"100644 blob ", b"100755 blob ")):
             raise ValueError("host source inventory must contain regular files")
     return hashlib.sha256(tree).hexdigest()
+
+
+def compatible_source(root, source_sha, archived_fingerprint):
+    """Accept an older receipt only when every actual host source is unchanged."""
+    if archived_fingerprint == source_fingerprint(root):
+        return archived_fingerprint
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise ValueError("invalid GUI host source revision")
+    exists = subprocess.run(["git", "cat-file", "-e", source_sha + "^{commit}"], cwd=root).returncode
+    changed = subprocess.run([
+        "git", "diff", "--quiet", source_sha, "HEAD", "--", *SOURCE_PATHS,
+    ], cwd=root).returncode
+    if exists or changed:
+        raise ValueError("GUI host archive does not match this checkout's source inputs")
+    return archived_fingerprint
 
 
 def record_outputs(root, target, destination, evidence_root, fingerprint):

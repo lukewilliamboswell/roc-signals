@@ -17,7 +17,8 @@ Install:
 
 - Zig 0.16.0,
 - Python 3,
-- GitHub CLI (`gh`), authenticated for dependency attestation verification,
+- GitHub CLI (`gh`), authenticated for release operations and optional
+  attestation inspection,
 - Node.js,
 - Zola,
 - the Tailwind CSS 3.4.17 standalone CLI (the site uses the v3 configuration),
@@ -196,8 +197,11 @@ zig build run-test-zig -Dtest-filter="signals host"
 
 `zig build build-test-hosts` builds our host and installs independently released
 musl inputs from `dependencies.lock.json` into Roc's platform target layout.
-It verifies cached or downloaded dependency archives with `gh attestation verify`;
-it never rebuilds musl or accepts existing local libraries as a fallback:
+It verifies cached or downloaded dependency archives against the reviewed size
+and SHA-256 pins in `dependencies.lock.json`; it never rebuilds musl or accepts
+existing local libraries as a fallback. Published attestations remain available
+for external provenance inspection, but ordinary builds do not require GitHub's
+attestation service:
 
 - `platform-web/targets/x64mac/libhost.a`
 - `platform-web/targets/arm64mac/libhost.a`
@@ -261,6 +265,18 @@ catalog, provenance statement, archive identities, and generated-file hashes.
 After changing the catalog or host, validate final application links, native
 specs, desktop smoke tests, and consumption through a bundled platform URL.
 
+The `macOS interface dependency releases` workflow generates the catalog-only
+`.tbd` archive twice, compares the exact bytes, and then performs final Roc
+application links and native GUI specs against the attested host selected by
+`gui-host.lock.json`. An explicit dispatch on `main` with a fresh
+`deps-macos-interfaces-<version>` tag publishes the tested archive and its
+consumer lock with GitHub build provenance. Generation reads neither host nor
+SDK bytes; the host is an independently released validation input, not part of
+the generated artifact's identity. Review and adopt the emitted lock entry
+separately. Until that adoption lands, existing bundle code continues to
+generate interfaces locally and must not be described as consuming the new
+release.
+
 ### musl
 
 The `Dependency releases` workflow builds musl from `dependencies/musl.json`,
@@ -279,16 +295,16 @@ python3 -m unittest scripts/test_dependency_artifacts.py
 ```
 
 Use a fresh output directory for each build. Local candidate testing establishes
-link behavior; release consumption additionally requires CI-signed provenance.
-Review the published `dependencies.lock.json` before adopting it. Fetch and verify
-a selected locked artifact with the GitHub CLI installed:
+link behavior; producer attestations provide optional external provenance evidence.
+Review the published `dependencies.lock.json` before adopting its exact size and
+SHA-256 pins. Fetch and verify a selected locked artifact with Python alone:
 
 ```sh
 python3 scripts/dependency_artifacts.py --lock dependencies.lock.json --artifact musl-x64musl --output /tmp/verified-musl
 ```
 
 The default download cache is `~/.cache/roc-signals/dependencies`; `--cache` selects
-another directory. Digest and provenance verification also run on cached bytes.
+another directory. Digest verification also runs on cached bytes.
 The output retains the selected lock and a directory for each artifact, containing
 its manifest, target files, and license notices. Existing output directories are
 rejected. There is no unsigned fallback or automatic dependency upgrade.
@@ -1363,24 +1379,26 @@ the reviewed lock directly to the bundler:
 
 ```sh
 gh release download "$HOST_RELEASE" --pattern dependencies.lock.json --dir /tmp/hosts
-gh release verify-asset "$HOST_RELEASE" /tmp/hosts/dependencies.lock.json
 scripts/bundle.sh --package gui --no-build --prebuilt-host-lock /tmp/hosts/dependencies.lock.json
 ```
 
 The bundler downloads and verifies every selected archive, including cached
-copies, against the locked digest, source commit, main ref, and this repository's
-host-producing workflow. It extracts into private staging and checks host source
-compatibility before copying any host outputs. Host-related source must be clean
-and committed; documentation-only commits do not invalidate host compatibility.
-Overlapping local and prebuilt hosts for one target are errors.
+copies, against the reviewed size and SHA-256. The lock also records its producer
+repository, source commit, main ref, and workflow for optional provenance
+inspection. It extracts into private staging and checks whether the actual Rust
+host, Zig engine, Cargo manifest, lock, or build configuration changed since the
+host release. Platform Roc APIs, applications, semantic specs, documentation,
+packaging, and external linker inputs do not invalidate a compatible host.
+Host-related source must be clean and committed. Overlapping local and prebuilt
+hosts for one target are errors.
 
 The GUI test driver accepts the same reviewed lock through
 `python3 scripts/test.py gui --gui-host-lock /path/to/dependencies.lock.json` or
 `GUI_HOST_LOCK`. It downloads only the host for the current operating system,
 stages that target's independently released system link inputs, and runs the
 ordinary Roc checks, builds, and semantic specs without rebuilding Cargo or Zig
-host code. Cargo host tests and fresh link-input construction remain part of the
-dedicated producer workflow when host sources or packaging change.
+host code. Cargo host tests and fresh host-output construction remain part of the
+dedicated producer workflow when actual host inputs or producer machinery change.
 
 These archives contain host code and licenses, not external system libraries or
 SDK stubs. Every included target must also have its external link inputs supplied;

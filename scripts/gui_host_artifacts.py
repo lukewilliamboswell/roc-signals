@@ -15,7 +15,7 @@ from host_notice_payload import NOTICE_FILES, SOURCE_KIND, validate_notices, val
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "lukewilliamboswell/roc-signals"
 WORKFLOW = REPOSITORY + "/.github/workflows/gui-hosts.yml"
-from host_build_identity import HOST_FILES, SOURCE_PATHS, source_fingerprint
+from host_build_identity import HOST_FILES, SOURCE_PATHS, compatible_source, source_fingerprint
 
 
 def pack_host(target, source, output, root=ROOT, notices=None):
@@ -41,7 +41,7 @@ def pack_host(target, source, output, root=ROOT, notices=None):
     }, files)
 
 
-def validate_host(tree, target, expected_fingerprint, root=ROOT):
+def validate_host(tree, target, expected_fingerprint, root=ROOT, source_sha=None):
     """Check the verified archive's inventory and checkout compatibility."""
     manifest = json.loads((tree / "dependency.json").read_text())
     expected = {f"targets/{target}/{name}" for name in HOST_FILES[target]}
@@ -51,11 +51,15 @@ def validate_host(tree, target, expected_fingerprint, root=ROOT):
         expected.update("licenses/gui-host/" + name for name in NOTICE_FILES)
     if set(manifest["files"]) != expected:
         raise ValueError("incomplete or unexpected GUI host archive inventory")
-    if manifest.get("source_fingerprint") != expected_fingerprint:
-        raise ValueError("GUI host archive does not match this checkout's source inputs")
+    fingerprint = manifest.get("source_fingerprint")
+    if source_sha is None:
+        if fingerprint != expected_fingerprint:
+            raise ValueError("GUI host archive does not match this checkout's source inputs")
+    else:
+        fingerprint = compatible_source(root, source_sha, fingerprint)
     if has_notices:
         validate_notices(tree / "licenses/gui-host", target,
-                         (tree / "targets" / target / HOST_FILES[target][0]).read_bytes(), expected_fingerprint,
+                         (tree / "targets" / target / HOST_FILES[target][0]).read_bytes(), fingerprint,
                          root / "dependencies/gui-host-notices",
                          {name: (tree / "targets" / target / name).read_bytes() for name in HOST_FILES[target]})
 
@@ -82,7 +86,6 @@ def verified_hosts(lock_path, cache, root=ROOT, targets=None):
                 or identity != entry["name"] + "-" + entry["target"]
                 or entry["repository"] != REPOSITORY or entry["signer_workflow"] != WORKFLOW):
             raise ValueError("host lock must select this repository's GUI host producer")
-    expected = source_fingerprint(root)
     hosts = {identity: entry for identity, entry in lock["artifacts"].items() if entry["name"] == "gui-host"}
     if not hosts or set(lock["artifacts"]) != set(hosts) | {SOURCE_KIND + "-" + e["target"] for e in hosts.values()}:
         raise ValueError("host lock must include exactly one source companion per host")
@@ -96,7 +99,7 @@ def verified_hosts(lock_path, cache, root=ROOT, targets=None):
         destination = Path(temporary) / "inputs"
         materialize(lock_path, tuple(selected), cache, destination)
         for identity, entry in selected.items():
-            validate_host(destination / identity, entry["target"], expected, root)
+            validate_host(destination / identity, entry["target"], None, root, entry["source_sha"])
             notice = json.loads((destination / identity / "licenses/gui-host/NOTICE.json").read_text())
             companion = lock["artifacts"][SOURCE_KIND + "-" + entry["target"]]
             if (any(companion[k] != notice["source_companion"][k] for k in ("name", "target", "asset", "sha256", "size"))

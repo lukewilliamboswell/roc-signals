@@ -19,8 +19,9 @@ For the checkout workflow on this page:
   in `platform-web/main.roc` (the `roc` entry under `packages`).
 - **Zig 0.16.0** to build the platform hosts.
 - **Python 3** to run the native spec driver.
-- **GitHub CLI (`gh`)** authenticated for artifact provenance verification when
-  building hosts from a checkout. Published platform users do not need it.
+- **GitHub CLI (`gh`)** authenticated for release operations or optional artifact
+  provenance inspection. Building hosts from a checkout and using published
+  platform packages do not require it.
 
 Release starters need only their pinned Roc compiler; their platform archives
 include the host binaries.
