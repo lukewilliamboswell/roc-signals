@@ -12,6 +12,14 @@ desktop interaction also reproduced cross-task native undo contamination.
 The passing suite therefore does not establish that the examples are correct
 or usable at the supported window sizes.
 
+Windows pass added 2026-09-10 at `c5cc2188bc96ee037b868277b4aedfd43519e89e`
+with the attested `x64mingw` host:
+[Windows evidence](gui-examples-review/2026-09-10-windows/README.md).
+The same suite passes on Windows, and the same four diagnostics fail. Real
+Windows runs add one crash (GUI-29), two dead workflows (GUI-27, GUI-32),
+and confirm GUI-05 end to end. Items GUI-25 onward come from that pass;
+Windows notes under earlier items say "Windows:" explicitly.
+
 P1 = data integrity or core workflow obstruction; P2 = substantive correctness,
 usability, or maintainability; P3 = refinement. **All items below are open.**
 “Reproduced” means executed here; “source” means a traced code path;
@@ -45,6 +53,15 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 | GUI-22 | P3 | Correct maintained docs and small presentation-copy defects | Source + screenshots | Example/reference docs |
 | GUI-23 | P3 | Finish the remaining application-controlled chrome/theming surface | Source; design | GUI/GPUI boundary |
 | GUI-24 | P3 | Optional visual refinements, after operability | Design | Examples + narrowly justified API work |
+| GUI-25 | P2 | Windows: window chrome, title bar theme, and icon | Windows screenshots + source | GPUI host window creation |
+| GUI-26 | P2 | Windows: dark-theme host scrollbars are the only small-window fallback | Windows screenshots | Host scroll fallback; feeds GUI-03/10/12/14 |
+| GUI-27 | P1 | Windows: `Home` directory is unresolvable, so Board Save and first Notes Save As never open a dialog | Windows reproduction + source | Files boundary + Board/Notes |
+| GUI-28 | P2 | Notes: CRLF, BOM, and paste line-ending handling | Windows reproduction + file bytes | Notes + native input |
+| GUI-29 | P1 | Activity: closing the window while following a log crashes the process | Windows reproduction + WinDbg stack | GPUI host file/timer lifecycle |
+| GUI-30 | P3 | Windows: native dialog defaults (filters, start folder, titles) | Windows screenshots | Files boundary + examples |
+| GUI-31 | P2 | Windows contributor workflow: local host build, docs, and spec fixtures | Local build failure + source | Scripts/docs/fixtures |
+| GUI-32 | P1 | Explorer: Preview text and Open in app are inert for real Windows folders | Windows reproduction | Explorer + host hit-testing/effects |
+| GUI-33 | P2 | Windows file-service edge cases: UNC, reparse points, sharing violations | Source; unverified | Windows file worker |
 
 ## Correctness and operability
 
@@ -133,10 +150,19 @@ The host currently permits a 360×240 minimum window. Notes supplies a complete
 style without a width constraint; the centered dialog can keep its intrinsic
 content width. The fixed default dialog width must be audited too.
 
+Windows: the Notes discard dialog and the Board close dialog clip on both
+sides at the 376-pixel outer width, losing the heading's first word and the
+safe action's label
+([Notes](gui-examples-review/2026-09-10-windows/notes-win-discard-dialog-360.png),
+[Board](gui-examples-review/2026-09-10-windows/board-win-close-dialog-360.png));
+both are readable at 1200×820
+([Board close](gui-examples-review/2026-09-10-windows/board-win-close-dialog.png),
+[Notes close](gui-examples-review/2026-09-10-windows/notes-win-close-dialog.png)).
+
 Acceptance: dialog bounds, wrapping, internal scrolling, and action layout
 work within every allowed viewport. Verify safe initial focus, visible focused
 controls, Tab/Shift+Tab, Escape, resize while open, and long copy. Cover board
-delete/replace/close dialogs too; those were not desktop-captured in this pass.
+delete/replace dialogs too; those were not desktop-captured on either OS.
 Preserve modal admission and engine-owned lifecycle semantics.
 
 ### GUI-05 — Windows paths and fixture expressiveness
@@ -151,11 +177,36 @@ workers return OS paths, including backslashes on Windows.
 Reproduced application failures:
 [Notes filename](gui-examples-review/2026-09-10/repros/notes-windows-name.scm),
 [Explorer breadcrumbs](gui-examples-review/2026-09-10/repros/explorer-windows-breadcrumbs.scm).
-These inject Windows-shaped results on Linux; native Windows dialogs were not
-run. The typed fixture parser in
-[file_fixtures.zig](../src/spec/file_fixtures.zig), `absolutePath`, rejects a
-path unless its first byte is `/`, so the diagnostics currently use raw task
-frames. That is a test-boundary gap, not a recommended application technique.
+These inject Windows-shaped results on Linux. The typed fixture parser in
+[file_fixtures.zig](../src/spec/file_fixtures.zig), `validPath` (previously
+named `absolutePath`), rejects a path unless its first byte is `/`, so the
+diagnostics currently use raw task frames. That is a test-boundary gap, not a
+recommended application technique. The guard is also wrong in the other
+direction: it admits `/tmp`, which the real Windows worker refuses, so no
+maintained spec can reproduce any Windows path failure.
+
+Windows: reproduced end to end with real native dialogs on 2026-09-10.
+Notes shows the whole `C:\…\Ideas.txt` path as the document title, which
+widens the page and turns on the host's horizontal scroll fallback
+([title](gui-examples-review/2026-09-10-windows/notes-win-opened-windows-path.png));
+Save As then fails before any dialog with `Invalid path: /`
+([error](gui-examples-review/2026-09-10-windows/notes-win-after-save-as-click.png))
+because `Workflow.parent_path` returns `/`, which is not absolute on Windows.
+Explorer renders breadcrumbs as `/` plus the entire path, labels every row
+with its full path wrapped and clipped so no file name is readable, keeps Up
+enabled everywhere, and Up produces `Invalid path:` with an empty path plus a
+Retry button, including at `C:\`
+([folder](gui-examples-review/2026-09-10-windows/explorer-win-project-folder.png),
+[Up](gui-examples-review/2026-09-10-windows/explorer-win-up.png),
+[root Up](gui-examples-review/2026-09-10-windows/explorer-win-drive-root-up.png),
+[labels](gui-examples-review/2026-09-10-windows/explorer-win-fixtures.png)).
+Board shows the saved document's full path as the board name, pushing the
+Task details panel off-screen
+([board](gui-examples-review/2026-09-10-windows/board-win-after-save-as.png)).
+Source sites: [Session.roc](../examples-gui/notes-editor/Session.roc) line 90,
+[Workflow.roc](../examples-gui/notes-editor/Workflow.roc) line 85,
+[Explorer.roc](../examples-gui/folder-explorer/Explorer.roc) lines 69 and 79,
+[Session.roc](../examples-gui/folder-explorer/Session.roc) line 274.
 
 Acceptance: define platform-correct parent/name/root handling at a documented
 typed boundary; cover drive roots, UNC paths, Unix root, Unicode, trailing
@@ -374,8 +425,9 @@ lesson to Keyed Rows' fixed 520-pixel body and long teaching text
 
 [lib.rs](../crates/gpui-host/src/lib.rs), window creation, hardcodes
 `Roc Signals` for every example. Different apps/documents are indistinguishable
-by title in the desktop switcher. Kiosk screenshots omit frame chrome; this
-finding comes from source, not the screenshots.
+by title in the desktop switcher. Kiosk screenshots omit frame chrome; on
+Windows every capture shows the generic title and the default executable icon
+in the OS title bar (see GUI-25).
 
 Acceptance: a deliberate public GUI title route, initial app identity, and
 document/dirty-state updates where useful. Reuse the shared engine's command
@@ -460,6 +512,15 @@ Application shortcuts use `control: True, meta: False`; native macOS convention
 and interaction with input-local shortcuts need explicit cross-OS testing.
 Repeated `Edit`/`Inspect N` labels lack the context of the item they activate.
 
+Windows: `meta` maps to `Modifiers::platform`, which is the Windows key, and
+the shell intercepts most Win-key chords; no example uses `meta: True`, but
+the public docs give it no per-OS meaning. The editor has no Ctrl+Left/Right
+word motion, Ctrl+Shift+arrow word selection, or Ctrl+Backspace/Delete: after
+Ctrl+End, Ctrl+Left, typing `Y` lands at the end of the document
+([capture](gui-examples-review/2026-09-10-windows/notes-win-ctrl-left.png)).
+Board domain redo is Ctrl+Shift+Z only, while the text editor also accepts
+Ctrl+Y, so Ctrl+Y means different things depending on focus.
+
 Acceptance: discoverable, accurate shortcut help; meaningful control names;
 predictable Tab order and visible focus; keyboard access to preview and all
 detail actions; platform-appropriate modifiers without duplicate dispatch.
@@ -487,7 +548,14 @@ GUI-08. Prefer existing language facilities and clear numeric literals such as
 `gio open`, while the native file services have Windows/macOS implementations;
 it says 64-pixel virtual rows while the app declares 44. Both asset READMEs
 overpromise verified placeholders (GUI-09). Counter's whole-palette promise
-needs GUI-14.
+needs GUI-14. `gio open` is also named as the mechanism in
+[native-gui-protocol.md](../docs/native-gui-protocol.md) line 486 and
+[reference.md](../www/content/docs/reference.md) line 121, while Windows uses
+`rundll32 url.dll,FileProtocolHandler`. Three example READMEs tell Windows
+users to run `python3`, which is usually the Store stub there.
+[native-gui.md](../www/content/docs/native-gui.md) says native CI "confirmed
+rendering for every app"; that is the two-second `--smoke` render count, not
+a check of any Windows file operation, chrome, or dialog.
 
 Acceptance: synchronize examples, public references, platform modules, specs,
 and contributor commands when fixing each item. Clearly distinguish supported
@@ -506,7 +574,9 @@ drop highlight. See [lib.rs](../crates/gpui-host/src/lib.rs),
 [drag.rs](../crates/gpui-host/src/drag.rs). A Fill/Fill application
 root can already cover the host background; that is not the same as owning
 window chrome. Button hover/active and editor foreground/background/cursor/
-selection support are already available.
+selection support are already available. Windows: the drag ghost is a chip
+showing the row key `task-1` rather than the card
+([hover](gui-examples-review/2026-09-10-windows/board-win-drag-hover-complete.png)).
 
 Acceptance: select explicit application-controlled values only where examples
 need them; preserve accessible defaults and non-layout-shifting state styling.
@@ -527,10 +597,216 @@ keep help available to keyboard users, avoid relying on color alone for danger,
 and consider reduced motion if animation is introduced. No fixed API shape or
 mandatory spacing/color dogma is approved by this backlog.
 
+## Windows
+
+All captures here are real framed windows at 96 DPI; see the
+[Windows evidence README](gui-examples-review/2026-09-10-windows/README.md)
+for build identity, conditions, and reproduction scripts. Notes' `HOME`
+behavior was observed both with Git Bash's `HOME` present and with it removed;
+the latter is what a shortcut or Explorer launch gives a Windows app.
+
+### GUI-25 — Windows window chrome, title bar theme, and icon
+
+[lib.rs](../crates/gpui-host/src/lib.rs) line 948 requests
+`WindowDecorations::Client`, and [window_frame.rs](../crates/gpui-host/src/window_frame.rs)
+draws the custom frame only when the platform reports client decorations.
+GPUI 0.2.2's Windows backend never does, so every app renders inside a
+standard light DWM caption with the default executable icon and the generic
+`Roc Signals` title, above a dark application
+([Counter](gui-examples-review/2026-09-10-windows/counter-1200x820.png)).
+The custom frame's close/minimize affordances and dark styling are
+Linux/macOS-only in practice. A 360-pixel logical minimum becomes 540 or 720
+physical pixels at common laptop scaling, so the small-window findings are
+reached at different physical sizes on Windows; scaling itself was not tested.
+
+Acceptance: decide the Windows chrome contract explicitly. Either accept the
+server frame and make it coherent (immersive dark caption via
+`DWMWA_USE_IMMERSIVE_DARK_MODE`, a real application icon resource, GUI-15
+titles) or request a transparent title bar and extend the custom frame with
+Windows hit-testing for drag, snap, and the system menu. Test both system
+themes, maximize/restore, snap layouts, and 125 %/150 % scaling. Keep window
+policy in the host; no example-level chrome code.
+
+### GUI-26 — Host scrollbars are the only small-window fallback on Windows
+
+At 800×600 every application, and at 376×600 even Counter and Keyed Rows,
+shows the host's window-level horizontal scrollbar, drawn as a wide light
+thumb across the bottom of the dark window; Board, Explorer, and Activity add
+a vertical one
+([Board](gui-examples-review/2026-09-10-windows/task-board-800x600.png),
+[Explorer](gui-examples-review/2026-09-10-windows/folder-explorer-800x600.png),
+[Activity](gui-examples-review/2026-09-10-windows/activity-monitor-800x600.png),
+[Notes 376](gui-examples-review/2026-09-10-windows/notes-editor-360x600.png),
+[Counter 376](gui-examples-review/2026-09-10-windows/counter-360x600.png)).
+The clipped Board detail panel and Explorer preview from GUI-03 and GUI-10
+reproduce unchanged on Windows. This item exists so the Windows evidence has a
+home; the fixes belong to GUI-03/10/12/14 and, for the scrollbar treatment,
+GUI-23.
+
+Acceptance: once those layouts are bounded, recapture the same three sizes on
+Windows and confirm the fallback scrollbars appear only for genuine overflow.
+If the fallback remains, style it consistently with the application theme and
+give it a keyboard path.
+
+### GUI-27 — `Home` is unresolvable on Windows
+
+[effects.rs](../crates/gpui-host/src/effects.rs) line 236 resolves
+`Directory.Home` from the `HOME` environment variable, which ordinary Windows
+processes do not have. Board always passes `Home` for Save and Save As
+([main.roc](../examples-gui/task-board/main.roc), `choose_save_path` call), and
+Notes uses it for an untitled note's first Save As
+([Workflow.roc](../examples-gui/notes-editor/Workflow.roc), line 37). Started
+without `HOME`, both show
+`Native service unavailable: HOME is missing or is not UTF-8` and never open a
+dialog
+([Board](gui-examples-review/2026-09-10-windows/board-save-as-nohome-after-click.png),
+[Notes](gui-examples-review/2026-09-10-windows/notes-save-as-nohome-after-click.png)).
+Board documents therefore cannot be created at all from a normal Windows
+launch. With Git Bash's `HOME` the dialog opens in the profile root, not
+Documents ([dialog](gui-examples-review/2026-09-10-windows/board-win-save-as-dialog.png)).
+
+Acceptance: resolve the typed home/documents directory per platform inside the
+Files boundary (`USERPROFILE` or the known-folder API on Windows, `HOME`
+elsewhere) and keep `Unavailable` for genuine failures only. Decide whether
+`Home` should mean the profile root or Documents and document it in the
+protocol reference. Make the apps survive `Unavailable` by falling back to the
+dialog's own default folder instead of refusing the workflow. Cover this with
+a native spec once fixtures can express a Windows directory (GUI-31), and run
+the GUI smoke on Windows without `HOME`.
+
+### GUI-28 — Notes line endings and BOM
+
+Opening a CRLF file, typing a new line, and saving writes mixed endings:
+`First idea\r\nSecond idea with CRLF endings\r\n\nThird idea typed on Windows`
+([after Ctrl+S](gui-examples-review/2026-09-10-windows/notes-win-after-ctrl-s.png)).
+A UTF-8 BOM is kept as an invisible first character: after Ctrl+Home and one
+Right, typing `X` yields `XBOM line one`, and the footer counts the BOM
+([caret](gui-examples-review/2026-09-10-windows/notes-win-bom-caret-after-one-right.png)).
+[input.rs](../crates/gpui-host/src/input.rs) splits lines on `\n` only and
+pastes multiline clipboard text verbatim, and its single-line paste turns
+each CRLF into two spaces. CRLF rendering showed no stray glyph in these
+captures; caret math past `\r` was not measured. Activity's line stream
+already handles CRLF correctly and needs no change.
+
+Acceptance: choose a document line-ending policy (preserve the file's
+dominant ending on save, or normalize on load and write back one ending) and
+strip or preserve a BOM deliberately; state it in the Notes README. Test load,
+edit, paste from a CRLF source, save, and round-trip on all three OSes, with
+the footer counts and native undo agreeing with the visible text. Keep the
+policy in the application or the typed Files boundary, not in the host's
+generic input.
+
+### GUI-29 — Activity Monitor crashes on close while following a log
+
+Open any small UTF-8 log, wait until at least the seventh 500 ms poll, then
+close the window: the process dies with access violation `0xC0000005`.
+Six of six runs with a dwell of 3.5 s or more crashed; three with 2.5 s or
+less, one after Pause following, and one with simulated replay running for
+6 s exited cleanly. The WinDbg stack
+([log](gui-examples-review/2026-09-10-windows/activity-close-crash-windbg.txt))
+is on the main thread inside the window procedure dispatched from
+`DispatchMessageWorker`, reading a byte at offset `0xF8` of freed heap memory;
+the attested host carries no symbols, so frames are module offsets. The
+symptom points at teardown ordering between the polling task/timer and the
+runtime it reports into, not at the Roc application.
+
+Acceptance: reproduce under a symbolized debug host on Windows and on Linux
+(same runtime code; only observed on Windows so far), then fix the ownership
+so that pending file-follow work cannot touch a dropped runtime. Add a host
+test that closes the window with an active follow task, and a GUI smoke
+variant (`--smoke-timers` plus a real log fixture) that exits through the
+normal close path on all three CI targets.
+
+### GUI-30 — Native dialog defaults on Windows
+
+Open dialogs have no file-type filter at all, Save As offers only
+`All files`, Save As opens in the profile root while Open opens in Documents,
+and dialog titles are the generic `Open`/`Save As`/`Select Folder`
+([Open](gui-examples-review/2026-09-10-windows/notes-win-open-dialog.png),
+[Save As](gui-examples-review/2026-09-10-windows/notes-win-save-as-untitled.png),
+[Select Folder](gui-examples-review/2026-09-10-windows/explorer-win-choose-folder-dialog.png)).
+Board's suggested name `My project.board.json` appears as `My project.board`
+because Explorer hides the known extension; that is expected, but nothing
+verifies the saved name still ends in `.json`.
+
+Acceptance: add optional typed filters and titles to the choose requests only
+if the examples need them; otherwise document the defaults. Verify the
+extension handling and the start folder on Windows and macOS once GUI-27
+settles what `Home` means.
+
+### GUI-31 — Windows contributor workflow and spec fixtures
+
+`python scripts/build_gui.py --debug` on Windows fails before compiling
+because [windows_gnu_build.py](../scripts/windows_gnu_build.py) shells out to
+`pwsh`, requires the 10.0.26100 SDK's FXC, and pins rustup 1.95.0 with the
+`gnullvm` target; none of that is checked or explained up front, and the
+contributing page only lists the toolchain. The CI path
+(`GUI_HOST_LOCK=gui-host.lock.json python scripts/test.py gui`) works locally
+but needs authenticated `gh` and an absent `platform-gui/targets/x64mingw`.
+`gui_smoke.py` is Linux-flavored (`wayland`) and the smoke assertion is a
+render count. The typed fixture guard rejects every Windows path (GUI-05), so
+all 39 specs inject `/tmp` paths and the Windows CI job cannot regress any
+item in this section. The Rust request-codec tests also hard-code `/tmp`
+where `ABSOLUTE_DIRECTORY` exists for that purpose.
+
+Acceptance: fail fast with a clear message listing missing Windows build
+prerequisites, or accept Windows PowerShell 5.1 where `pwsh` is only used for
+`Get-AuthenticodeSignature`; document the host-lock path as the supported
+local verification route. Teach `validPath` platform-shaped absolute paths
+(drive, UNC, POSIX) behind an explicit fixture platform tag, port the Linux
+diagnostics to real Windows shapes, and extend the smoke to exercise one real
+file operation per OS. This is the tooling half of GUI-16.
+
+### GUI-32 — Explorer preview and open are inert for real Windows folders
+
+After choosing a real folder and selecting a file, Preview text and Open in
+app are enabled but clicking either changes nothing: the notice line stays
+`3 entries loaded.`, the status stays `No preview loaded.`, no error appears,
+the button never takes focus, and no external application starts. This holds
+for a 47-character path with no layout overflow
+([selected](gui-examples-review/2026-09-10-windows/explorer-win-short-path-selected.png),
+[after click](gui-examples-review/2026-09-10-windows/explorer-win-short-path-preview.png))
+and for a deep path
+([after click](gui-examples-review/2026-09-10-windows/explorer-win-tall-readme-preview.png)).
+In the sample workspace the same click previews immediately and focuses the
+button ([sample](gui-examples-review/2026-09-10-windows/explorer-win-sample-readme-preview.png)).
+`Session.preview_selected` would set the notice to `Reading a preview of …`
+before any worker result, so the transition is not running; whether the click
+never reaches the button or the action is dropped before the update is
+undetermined. Tab from the list moves focus to the toolbar's Up, not to the
+details buttons.
+
+Acceptance: reproduce with `--host-trace-engine` and a native spec that
+selects a `Folder` source entry and invokes the preview action, on Linux as
+well as Windows. Fix the dispatch or state gap, then verify a CRLF preview
+renders (GUI-11 read-only presentation) and that Open in app reports the
+`rundll32` launch honestly (an unassociated extension still returns success).
+
+### GUI-33 — Windows file-service edge cases
+
+Source-traced in [windows.rs](../crates/gpui-host/src/file_io/windows.rs),
+not exercised here: `path_parts` refuses UNC prefixes while `validate_path`
+in [effects.rs](../crates/gpui-host/src/effects.rs) accepts them, so a
+network-share pick fails only at read time; any reparse point is reported as
+`SymbolicLink`, which would classify OneDrive placeholders and junctions as
+links and refuse previews (this machine's OneDrive holds only `desktop.ini`,
+so it was not observed); sharing violations map to `PermissionDenied`, which
+matters for tailing a log a Win32 writer holds without `FILE_SHARE_READ`;
+listed entry paths inherit the separator spelling of the requested root; and
+an executable on a UNC share yields an unusable default assets root.
+
+Acceptance: decide UNC support explicitly and make both validators agree;
+distinguish symbolic links from other reparse points (cloud placeholders,
+junctions, mount points) with the reparse tag; give sharing violations their
+own error text and a Retry hint in Activity; normalize separators at the
+boundary. Cover each with a fixture that a Windows CI job actually runs.
+
 ## Delivery sequence
 
 1. Reproduce and fix GUI-01/02 with native input history coverage; address
    GUI-03/04 core reachability in parallel with their presentation tests.
+   Fix the Windows P1s at the same time: GUI-29 (crash), GUI-27 (`Home`),
+   GUI-32 (inert preview), and the GUI-05 path handling they depend on.
 2. Close GUI-05/06 boundary and accounting defects. Add GUI-16/17 regressions
    alongside each fix, not only at the end.
 3. Resolve GUI-07's codec compatibility gate and migrate GUI-08. These simplify
