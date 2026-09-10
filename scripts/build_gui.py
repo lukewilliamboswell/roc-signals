@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import tempfile
 
-from build_macos_stubs import install as install_macos_interfaces
 from prepare_dependencies import install_freetype, install_glibc, install_xkbcommon, install_unwind
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -80,10 +79,6 @@ def build(debug=False, jobs=2, cargo_evidence=None):
     shutil.copyfile(engine, dest / 'libengine.a')
     (dest / host_archive(target)).unlink(missing_ok=True)
     if platform.system() == 'Darwin':
-        manifest = install_macos_interfaces(dest.parent)
-        (dest / 'link-inputs.json').write_text(json.dumps({
-            'macos_interfaces': manifest,
-        }, indent=2) + '\n')
         finish_evidence(target, dest, cargo_evidence, fingerprint)
         return
     provenance = {'dependencies': linux_dependencies}

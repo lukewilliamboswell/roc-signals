@@ -136,6 +136,15 @@ class DependencyWorkflowFilterTests(unittest.TestCase):
             with self.subTest(input=path):
                 self.assertFalse(any(path in workflow(name)[1] for name in WORKFLOWS))
 
+    def test_ordinary_gui_ci_consumes_releases_without_host_or_interface_build_tools(self):
+        text = (ROOT / ".github/workflows/ci.yml").read_text()
+        gui = text.split("  gui:\n", 1)[1].split("  platform-source:\n", 1)[0]
+        self.assertEqual(gui.count("GUI_HOST_LOCK: gui-host.lock.json"), 3)
+        for forbidden in ("rustup", "rust-cache", "cargo", "build_gui.py",
+                          "MetalToolchain", "build_macos_stubs.py"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, gui)
+
 
 if __name__ == "__main__":
     unittest.main()

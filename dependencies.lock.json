@@ -108,6 +108,18 @@
       "source_sha": "94993f721fb3390d0ab3c8d8f41af193ac754e7d",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/windows-gnu-runtime.yml"
+    },
+    "macos-interfaces-macos-sysroot": {
+      "name": "macos-interfaces",
+      "target": "macos-sysroot",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-macos-interfaces-20260910.1",
+      "asset": "macos-interfaces-macos-sysroot.tar",
+      "sha256": "e61d3fb97d56b1f889e8dd766baff504d521efb36a702e703b9ba1b22d34c84b",
+      "size": 399360,
+      "source_sha": "cc19c282efcace4308f2c4abeee9f848c0781a07",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/macos-interface-dependencies.yml"
     }
   }
 }

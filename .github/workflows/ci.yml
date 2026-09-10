@@ -59,29 +59,18 @@ jobs:
     name: Native GUI build and specs
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      GUI_HOST_LOCK: gui-host.lock.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
-      - name: Install GUI host build dependencies
+      - name: Install GUI runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev
-          rustup toolchain install 1.95.0 --profile minimal
-      - name: Restore compiled Rust dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        env:
-          RUSTUP_TOOLCHAIN: 1.95.0
-        with:
-          shared-key: gui-dependencies
-          cache-workspace-crates: false
-          cache-bin: false
-          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          sudo apt-get install -y libfreetype6 libxkbcommon0 libxkbcommon-x11-0
       - name: Verify GUI discovery and applications
-        env:
-          RUSTUP_TOOLCHAIN: 1.95.0
         run: python3 scripts/minici gui
       - name: Open GUI examples with software Vulkan
         run: |
@@ -94,6 +83,8 @@ jobs:
     name: Native GUI build and specs (Windows)
     runs-on: windows-2025
     timeout-minutes: 60
+    env:
+      GUI_HOST_LOCK: gui-host.lock.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -102,28 +93,8 @@ jobs:
         with:
           python-version: '3.12'
       - uses: ./.github/actions/setup-toolchain
-      - name: Install GUI host build dependencies
-        run: rustup toolchain install 1.95.0 --profile minimal --target x86_64-pc-windows-gnullvm
-      - name: Restore compiled Rust dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        env:
-          RUSTUP_TOOLCHAIN: 1.95.0
-        with:
-          shared-key: gui-dependencies
-          cache-workspace-crates: false
-          cache-bin: false
-          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Verify GUI discovery and applications
-        env:
-          RUSTUP_TOOLCHAIN: 1.95.0
         run: python scripts/minici gui
-      # Distributable inputs are published with provenance by gui-hosts.yml on
-      # their own release cycle; this job only proves the optimized build works.
-      - name: Build the distributable Windows link inputs
-        env:
-          RUSTUP_TOOLCHAIN: 1.95.0
-        run: python scripts/build_gui.py
       - name: Record Windows archive dependency declarations
         run: |
           python -m unittest discover -s scripts -p 'test_windows_archive_audit.py'
@@ -150,33 +121,16 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     env:
-      RUSTUP_TOOLCHAIN: 1.95.0
-      TOOLCHAINS: Metal
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      GUI_HOST_LOCK: gui-host.lock.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
-      - name: Install GUI host build dependencies
-        run: |
-          rustup toolchain install 1.95.0 --profile minimal
-          xcodebuild -version
-          xcodebuild -downloadComponent MetalToolchain
-          xcrun --find metal
-      - name: Restore compiled Rust dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        with:
-          shared-key: gui-dependencies
-          cache-workspace-crates: false
-          cache-bin: false
-          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET TOOLCHAINS DEVELOPER_DIR
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Verify GUI applications with separate archives
         run: python3 scripts/minici gui
       - name: Build and validate the optimized macOS bundle
         run: |
-          python3 scripts/build_gui.py
           python3 scripts/bundle_platforms.py --package gui --no-build --output-dir "$RUNNER_TEMP/macos-bundle"
           python3 scripts/check_macos_interfaces.py --bundle "$RUNNER_TEMP/macos-bundle"
 

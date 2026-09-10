@@ -534,6 +534,23 @@ class DependencyStagingTests(unittest.TestCase):
         self.assertEqual((destination / "host.lib").read_bytes(), b"own host")
         self.assertEqual((destination / "advapi32.lib").read_bytes(), b"verified import")
 
+    def test_macos_install_copies_exact_released_tree_without_host_outputs(self):
+        source = self.inputs / prepare_dependencies.MACOS_INTERFACES / "targets/macos-sysroot"
+        source.mkdir(parents=True)
+        (source / "usr/lib").mkdir(parents=True)
+        (source / "usr/lib/libSystem.tbd").write_bytes(b"exact released interface")
+        (source / "manifest.json").write_text("{}")
+        lock = {"schema_version": 1, "artifacts": {
+            prepare_dependencies.MACOS_INTERFACES: "reviewed entry"}}
+        (self.inputs / "dependencies.lock.json").write_text(json.dumps(lock))
+        destination = self.root / "macos-sysroot"
+        with patch.object(prepare_dependencies, "verified_macos_interfaces", self.verified):
+            actual = prepare_dependencies.install_macos_interfaces(destination)
+        self.assertEqual(actual, lock)
+        self.assertEqual((destination / "usr/lib/libSystem.tbd").read_bytes(),
+                         b"exact released interface")
+        self.assertFalse((destination / "libengine.a").exists())
+
     def test_windows_verification_failure_prevents_compilation(self):
         with patch.object(build_gui, "host_target", return_value="x64mingw"), patch.object(
                 prepare_dependencies, "install_windows_gnu", side_effect=ValueError("untrusted signer")), patch.object(

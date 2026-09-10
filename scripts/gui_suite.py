@@ -48,9 +48,9 @@ def fixtures(root: Path = ROOT) -> tuple[Path, ...]:
 
 def install_prebuilt_host(lock: Path, target: str) -> None:
     """Materialize one verified host and its independently released link inputs."""
-    from build_macos_stubs import generate as generate_macos_interfaces
     from gui_host_artifacts import verified_hosts, stage_candidate_dependencies
     from host_build_identity import HOST_FILES
+    from prepare_dependencies import install_macos_interfaces
 
     destination = ROOT / "platform-gui/targets" / target
     if destination.exists():
@@ -66,7 +66,7 @@ def install_prebuilt_host(lock: Path, target: str) -> None:
         for name in HOST_FILES[target]:
             shutil.copyfile(source / name, destination / name)
     if target == "arm64mac":
-        generate_macos_interfaces(destination, destination.parent / "macos-sysroot")
+        install_macos_interfaces(destination.parent / "macos-sysroot")
 
 
 def run(roc: str, args, output: Path) -> None:

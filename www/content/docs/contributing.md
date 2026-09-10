@@ -250,20 +250,20 @@ and supported compiler.
 
 The reviewed catalog in `dependencies/macos-interfaces/interfaces.json` selects
 symbols for generated TBD files and records the source URLs for each interface.
-The generator consumes this catalog and hashes the matching host archives:
+The producer consumes this catalog without reading host or SDK bytes:
 
 ```sh
 python3 scripts/build_macos_stubs.py \
-  --archives platform-gui/targets/arm64mac \
   --output /tmp/macos-interfaces-candidate
 ```
 
-`build_gui.py` installs freshly generated interfaces after building the host.
-`bundle_platforms.py` generates them again from the selected archives in fresh
-staging, including when using prebuilt hosts. Each output includes the source
-catalog, provenance statement, archive identities, and generated-file hashes.
-After changing the catalog or host, validate final application links, native
-specs, desktop smoke tests, and consumption through a bundled platform URL.
+`dependencies.lock.json` selects `deps-macos-interfaces-20260910.1` by exact
+archive size and SHA-256. Ordinary GUI tests and `bundle_platforms.py` stage its
+exact TBDs, catalog, provenance statement, manifest, and dependency receipt;
+they never invoke the generator. Changing the catalog requires a new producer
+release and reviewed lock update. Changing a host requires only final-link
+validation against the selected interface release; it does not regenerate or
+relabel those linker inputs.
 
 The `macOS interface dependency releases` workflow generates the catalog-only
 `.tbd` archive twice, compares the exact bytes, and then performs final Roc
@@ -273,9 +273,8 @@ application links and native GUI specs against the attested host selected by
 consumer lock with GitHub build provenance. Generation reads neither host nor
 SDK bytes; the host is an independently released validation input, not part of
 the generated artifact's identity. Review and adopt the emitted lock entry
-separately. Until that adoption lands, existing bundle code continues to
-generate interfaces locally and must not be described as consuming the new
-release.
+separately. The adopted entry is consumed by ordinary CI and GUI package
+bundling without an online attestation check.
 
 ### musl
 
@@ -1367,8 +1366,8 @@ linked source access when redistributing the bundle.
 A main-branch manual dispatch selects Linux, Windows, macOS, Linux and Windows,
 or all three targets
 for an independent `deps-gui-host-<version>` release. Mac admission requires the
-complete source/notice pair and native final links/specs against regenerated
-project-authored interfaces; copied SDK stubs are not release inputs. The original
+complete source/notice pair and native final links/specs against the independently
+released project-authored interfaces; copied SDK stubs are not release inputs. The original
 objc2 qualification is retained alongside its declared license terms. Missing
 standalone license files alone are not a blanket
 publication prohibition: original source evidence and declarations remain visible
@@ -1445,11 +1444,11 @@ report explicit success; the counter also verifies its increment interaction.
 The archive inventory check rejects missing dependency notices and receipts,
 unselected target files, and expanded payloads over Roc's 100 MiB limit.
 
-Mac archive admission regenerates the catalog's expected TBD bytes and checks
-all interface files, original provenance, generator identity, exact host hashes,
-and native validation record. Additional files under `targets/macos-sysroot` are
-rejected. The existing bundler runs the native link/spec validator before bundle
-creation; the RC gate then repeats builds/specs and rendering over fresh HTTP.
+Mac archive admission verifies the independently released dependency manifest,
+reviewed lock digest, exact TBD bytes, catalog, and provenance without regenerating
+anything. Additional files under `targets/macos-sysroot` are rejected. The bundler
+runs the native link/spec validator before bundle creation without modifying those
+bytes; the RC gate then repeats builds/specs and rendering over fresh HTTP.
 Windows preparation requires both independently released dependency locks and
 the exact complete production header input order. The native Windows runner
 verifies the archive decoder, downloads the pinned Roc compiler, then uses the
@@ -1488,18 +1487,17 @@ existing web release workflow and supported web release are independent.
 
 Local macOS bundles, including `--no-build`, require native Apple Silicon.
 Before creating the bundle, admission links every maintained GUI example with
-the selected host archives and generated interfaces, then runs its native specs.
-The generated validation record binds these exact inputs; regeneration alone
-is not accepted as compatibility evidence. Mac CI repeats this with the Rust
-1.95.0 optimized host and consumes the resulting archive over HTTP with an empty
-Roc cache:
+the selected released host archives and interface inputs, then runs its native
+specs without modifying either artifact. Mac CI consumes the immutable host and
+interface locks and then exercises the resulting archive over HTTP with an empty
+Roc cache; it does not install Rust, build Cargo, build the Zig engine, download
+the Metal toolchain, or regenerate TBDs:
 
 ```sh
-python3 scripts/build_gui.py
+GUI_HOST_LOCK=gui-host.lock.json python3 scripts/minici gui
 python3 scripts/bundle_platforms.py --package gui --no-build --output-dir /tmp/macos-bundle
 python3 scripts/check_macos_interfaces.py --bundle /tmp/macos-bundle
 ```
 
-These are candidate checks. Mac host source/notice eligibility and signed
-publication remain separate requirements. Cross-platform bundling of future
-Mac prebuilts will require a verified compatibility receipt.
+These are candidate checks. Mac host and interface production remain separate
+release cycles; ordinary consumers use their reviewed content hashes.
