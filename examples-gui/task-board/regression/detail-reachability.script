@@ -1,6 +1,6 @@
 # size: 1200x820
-# diagnostic: GUI-03. At the review size the detail panel is 1047 logical
-# pixels tall inside an 820 pixel window, so its movement and deletion controls
-# are laid out below the viewport. The board region clips both axes and the
-# detail panel declares no scroll region of its own.
+# The detail panel owns its own vertical scroll region, so its movement and
+# deletion controls stay reachable at the review size however tall the panel's
+# content becomes. This guards the fix for the defect where the panel grew to
+# its intrinsic height inside a board region that clipped both axes.
 expect-onscreen #task-detail

@@ -312,7 +312,7 @@ column_view = |handles, column, selected| {
 	rows = column_state(handles, column).signal()
 	visible = Signal.map2(rows, handles.filter.signal(), visible_rows)
 	Gui.column(
-		[Gui.disabled_s(handles.edit_disabled), Gui.test_id("column-${column.to_str()}"), Gui.drop_target(drop_message(handles, column, End)), Gui.style({ ..Gui.style_default, grow: True, gap: 12, padding: 12, radius: 10, background: Rgb(0x1B2A33) })],
+		[Gui.disabled_s(handles.edit_disabled), Gui.test_id("column-${column.to_str()}"), Gui.drop_target(drop_message(handles, column, End)), Gui.style({ ..Gui.style_default, width: Px(256), height: Fill, gap: 12, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Scroll })],
 		[
 			Gui.heading(column.to_str()),
 			Gui.column(
@@ -445,7 +445,7 @@ delete_confirmation = |handles| {
 detail_view : Handles -> Elem
 detail_view = |handles|
 	Gui.panel(
-		[Gui.test_id("task-detail"), Gui.style({ ..Gui.style_default, width: Px(320), padding: 16, gap: 12, background: Rgb(0x283A47), radius: 8 })],
+		[Gui.test_id("task-detail"), Gui.style({ ..Gui.style_default, width: Px(320), height: Fill, padding: 16, gap: 12, background: Rgb(0x283A47), radius: 8, overflow_y: Scroll })],
 		[
 			Gui.heading("Task details"),
 			Ui.when(
@@ -602,7 +602,7 @@ board_view = |handles| {
 		},
 		[
 			Gui.column(
-				[Gui.style({ ..Gui.style_default, padding: 24, gap: 12, width: Fill }), Gui.test_id("launch-board"), Gui.on_shortcut(chord, actions.save), Gui.on_shortcut({ ..chord, shift: True }, actions.save_as), Gui.on_shortcut({ ..chord, key: "o" }, actions.open), Gui.on_shortcut({ ..chord, key: "z" }, history_message(handles, False)), Gui.on_shortcut({ ..chord, key: "z", shift: True }, history_message(handles, True))],
+				[Gui.style({ ..Gui.style_default, padding: 24, gap: 12, width: Fill, height: Fill }), Gui.test_id("launch-board"), Gui.on_shortcut(chord, actions.save), Gui.on_shortcut({ ..chord, shift: True }, actions.save_as), Gui.on_shortcut({ ..chord, key: "o" }, actions.open), Gui.on_shortcut({ ..chord, key: "z" }, history_message(handles, False)), Gui.on_shortcut({ ..chord, key: "z", shift: True }, history_message(handles, True))],
 				[
 					Ui.on_change_initial(window_title, Gui.set_title),
 					Gui.heading("Launch Board"),
@@ -626,9 +626,9 @@ board_view = |handles| {
 						],
 					),
 					Gui.row(
-						[Gui.style({ ..Gui.style_default, gap: 20, grow: True, overflow_x: Clip, overflow_y: Clip })],
+						[Gui.style({ ..Gui.style_default, gap: 20, height: Fill, grow: True, overflow_x: Clip, overflow_y: Clip })],
 						[
-							Gui.row([Gui.style({ ..Gui.style_default, gap: 16, grow: True, overflow_x: Scroll })], Board.columns.map(|column| column_view(handles, column, selected))),
+							Gui.row([Gui.style({ ..Gui.style_default, gap: 16, width: Fill, height: Fill, overflow_x: Scroll })], Board.columns.map(|column| column_view(handles, column, selected))),
 							detail_view(handles),
 						],
 					),
