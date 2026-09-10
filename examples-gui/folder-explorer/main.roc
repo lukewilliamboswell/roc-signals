@@ -88,8 +88,6 @@ entry_row = |row, handles, selected, ready| {
 					radius: 4,
 					background: Rgb(0x1B2A33),
 					overflow_x: Clip,
-					hover_background: Default,
-					active_background: Default,
 				},
 				Ui.action(row.signal(), |entry| handles.model.update_cmd(|state| Session.activate(state, entry))),
 			),
@@ -127,7 +125,7 @@ inspect_view = |handles| {
 		},
 	)
 	Gui.panel(
-		{ test_id: "file-details", width: Px(340), gap: 12, padding: 16, background: Rgb(0x283A47), radius: 8, border_color: Default, border_width: 0 },
+		{ test_id: "file-details", width: Px(340), gap: 12, padding: 16, background: Rgb(0x283A47), radius: 8 },
 		[
 			Gui.heading("File details"),
 			Gui.text_s(
@@ -162,7 +160,7 @@ inspect_view = |handles| {
 			Gui.row(
 				{ gap: 8 },
 				[
-					Gui.action_button({ caption: Signal.const("Preview text"), enabled: can_preview, padding: 8, radius: 6, background: Rgb(0x2E6FA3), hover_background: Default, active_background: Default }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.preview_selected))),
+					Gui.action_button({ caption: Signal.const("Preview text"), enabled: can_preview, padding: 8, radius: 6, background: Rgb(0x2E6FA3) }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.preview_selected))),
 					Gui.action_button({ caption: Signal.const("Open in app"), enabled: can_open }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.open_selected))),
 				],
 			),

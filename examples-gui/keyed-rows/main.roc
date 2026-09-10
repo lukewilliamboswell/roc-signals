@@ -79,8 +79,6 @@ main = || Ui.state(
 												padding: 8,
 												radius: 6,
 												background: Rgb(0x2E6FA3),
-												hover_background: Default,
-												active_background: Default,
 											},
 											rows.on_unit(move_first),
 										),

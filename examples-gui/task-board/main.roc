@@ -414,7 +414,7 @@ delete_confirmation = |handles, column| {
 detail_view : Handles -> Elem
 detail_view = |handles|
 	Gui.panel(
-		{ test_id: "task-detail", width: Px(320), padding: 16, gap: 12, background: Rgb(0x283A47), radius: 8, border_color: Default, border_width: 0 },
+		{ test_id: "task-detail", width: Px(320), padding: 16, gap: 12, background: Rgb(0x283A47), radius: 8 },
 		[
 			Gui.heading("Task details"),
 			Ui.when(

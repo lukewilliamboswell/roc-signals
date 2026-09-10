@@ -245,7 +245,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 						],
 					),
 					Gui.panel(
-						{ width: Px(340), padding: 16, gap: 12, radius: 8, background: Rgb(0x283A47), overflow_x: Scroll, overflow_y: Scroll, border_color: Default, border_width: 0 },
+						{ width: Px(340), padding: 16, gap: 12, radius: 8, background: Rgb(0x283A47), overflow_x: Scroll, overflow_y: Scroll },
 						[
 							Gui.heading("Event inspector"),
 							Gui.column(

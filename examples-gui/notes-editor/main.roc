@@ -195,10 +195,6 @@ main = || Ui.state(
 												gap: theme.gap,
 												background: Rgb(theme.card),
 												radius: theme.radius,
-												width: Auto,
-												foreground: Default,
-												border_color: Default,
-												border_width: 0,
 											},
 											[
 												Gui.heading("Discard your changes?"),
