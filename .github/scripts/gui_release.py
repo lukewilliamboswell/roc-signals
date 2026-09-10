@@ -43,7 +43,7 @@ EXTERNALS = {'freetype-x64glibc', 'glibc-x64glibc', 'unwind-x64glibc', 'xkbcommo
 HOSTS = {'gui-host-x64glibc', 'gui-host-sources-x64glibc'}
 TARGET_EXTERNALS = {
     'x64glibc': EXTERNALS,
-    'arm64mac': set(),
+    'arm64mac': {'macos-interfaces-macos-sysroot'},
     'x64mingw': {'windows-system-imports-x64mingw', 'windows-gnu-runtime-x64mingw'},
 }
 NATIVE_TARGETS = {'x64glibc': ('Linux', {'x86_64', 'amd64'}),
@@ -154,39 +154,6 @@ def read_manifest(directory):
     return manifest
 
 
-def macos_interfaces(observed, retained, manifest):
-    """Admit only exact project catalog outputs bound to the selected host bytes."""
-    import build_macos_stubs as stubs
-    prefix = 'targets/macos-sysroot/'
-    catalog = stubs.CATALOG.read_bytes()
-    provenance = stubs.PROVENANCE.read_bytes()
-    generated = stubs.render(stubs.validate_catalog(json.loads(catalog)))
-    generated.update({'interfaces.json': catalog, 'PROVENANCE.md': provenance})
-    record_path = prefix + 'manifest.json'
-    recorded = retained.get(record_path)
-    expected = {'schema_version': 1, 'origin': 'project-generated-macos-interfaces',
-                'target': 'arm64-macos',
-                'host_archives_sha256': {name: observed['targets/arm64mac/' + name]['sha256'] for name in stubs.ARCHIVES},
-                'catalog_sha256': stubs.digest(catalog), 'generator_sha256': stubs.digest(Path(stubs.__file__).read_bytes()),
-                'provenance_sha256': stubs.digest(provenance),
-                'files_sha256': {name: stubs.digest(data) for name, data in generated.items()
-                                 if name not in ('interfaces.json', 'PROVENANCE.md')}}
-    if recorded != expected:
-        raise ValueError('Mac interface manifest differs from project catalog or selected host')
-    validation = retained.get(prefix + 'validation.json', {})
-    if (set(validation) != {'schema_version', 'compiler_pin', 'examples', 'interface_manifest_sha256'}
-            or validation['schema_version'] != 1 or validation['compiler_pin'] != manifest['compiler_pin']
-            or validation['interface_manifest_sha256'] != observed[record_path]['sha256']
-            or set(validation['examples']) != set(manifest['examples'])
-            or any(type(count) is not int or count <= 0 for count in validation['examples'].values())):
-        raise ValueError('Mac interface native validation differs from the selected bundle')
-    expected_files = {prefix + name: {'sha256': stubs.digest(data), 'size': len(data)} for name, data in generated.items()}
-    expected_files.update({name: observed[name] for name in (record_path, prefix + 'validation.json')})
-    if any(observed.get(name) != entry for name, entry in expected_files.items()):
-        raise ValueError('Mac interface bytes differ from project-generated catalog outputs')
-    return expected_files
-
-
 def inspect_platform(path, manifest):
     """Check the expanded budget, exact receipts, and every retained dependency file."""
     target = selected_target(manifest)
@@ -204,8 +171,7 @@ def inspect_platform(path, manifest):
                             or '..' in parts or '\\' in name or total > 100 * 1024 ** 2):
                         raise ValueError('unsafe or oversized GUI platform archive')
                     with archive.extractfile(member) as source:
-                        if (name == 'dependencies.lock.json' or name.startswith('dependency-manifests/')
-                                or name in ('targets/macos-sysroot/manifest.json', 'targets/macos-sysroot/validation.json')):
+                        if name == 'dependencies.lock.json' or name.startswith('dependency-manifests/'):
                             if member.size > 4 * 1024 ** 2:
                                 raise ValueError('oversized dependency manifest')
                             data = source.read()
@@ -222,8 +188,7 @@ def inspect_platform(path, manifest):
     if retained.get('dependencies.lock.json') != manifest['dependencies']:
         raise ValueError('bundled dependency receipt differs from the release')
     identities = TARGET_EXTERNALS[target] | {'gui-host-' + target}
-    interface_records = {'targets/macos-sysroot/manifest.json', 'targets/macos-sysroot/validation.json'} if target == 'arm64mac' else set()
-    if set(retained) != {'dependencies.lock.json'} | interface_records | {'dependency-manifests/' + name + '.json' for name in identities}:
+    if set(retained) != {'dependencies.lock.json'} | {'dependency-manifests/' + name + '.json' for name in identities}:
         raise ValueError('bundled dependency manifests are incomplete')
     declared_targets = {}
     for identity in identities:
@@ -239,8 +204,6 @@ def inspect_platform(path, manifest):
                 declared_targets[name] = expected
             if observed.get(name) != expected:
                 raise ValueError('bundled dependency file or notice differs from its inventory')
-    if target == 'arm64mac':
-        declared_targets.update(macos_interfaces(observed, retained, manifest))
     allowed = {target, 'macos-sysroot'} if target == 'arm64mac' else {target}
     if any(name.startswith('targets/') and name.split('/')[1] not in allowed for name in observed):
         raise ValueError('GUI RC contains an unselected target')

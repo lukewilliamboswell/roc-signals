@@ -153,6 +153,10 @@ class DependencyTests(unittest.TestCase):
                 deps.read_lock(self.lock())
             self.entry[field] = previous
 
+        self.entry["input_fingerprint"] = "not-a-content-hash"
+        with self.assertRaisesRegex(ValueError, "input fingerprint"):
+            deps.read_lock(self.lock())
+
     def test_download_limits_and_digest_failures_leave_no_cached_artifact(self):
         archive = self.archive()
         original = archive.read_bytes()

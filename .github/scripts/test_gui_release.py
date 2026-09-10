@@ -130,37 +130,10 @@ class GuiReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'independently released'):
             release.require_preparation_support('x64mingw', self.root)
 
-    def test_mac_catalog_admission_rejects_changed_tbd_host_and_validation(self):
-        import build_macos_stubs as stubs
-        archives = self.root / 'host'
-        archives.mkdir()
-        for name in stubs.ARCHIVES:
-            (archives / name).write_bytes(name.encode())
-        directory = self.root / 'interfaces'
-        stubs.generate(archives, directory)
-        prefix = 'targets/macos-sysroot/'
-        observed = {'targets/arm64mac/' + name: {'sha256': stubs.digest((archives / name).read_bytes()),
-                                               'size': (archives / name).stat().st_size} for name in stubs.ARCHIVES}
-        for path in directory.rglob('*'):
-            if path.is_file():
-                observed[prefix + path.relative_to(directory).as_posix()] = {'sha256': stubs.digest(path.read_bytes()), 'size': path.stat().st_size}
-        validation = {'schema_version': 1, 'compiler_pin': self.pin, 'examples': {name: 1 for name in self.slugs},
-                      'interface_manifest_sha256': observed[prefix + 'manifest.json']['sha256']}
-        data = json.dumps(validation).encode()
-        observed[prefix + 'validation.json'] = {'sha256': stubs.digest(data), 'size': len(data)}
-        retained = {prefix + 'manifest.json': json.loads((directory / 'manifest.json').read_bytes()),
-                    prefix + 'validation.json': validation}
-        expected = release.macos_interfaces(observed, retained, self.manifest)
-        self.assertEqual(set(expected), {name for name in observed if name.startswith(prefix)})
-        tbd = prefix + next(iter(stubs.render(stubs.read_catalog())))
-        for name in (tbd, 'targets/arm64mac/libengine.a'):
-            altered = {key: dict(value) for key, value in observed.items()}
-            altered[name]['sha256'] = '0' * 64
-            with self.assertRaises(ValueError):
-                release.macos_interfaces(altered, retained, self.manifest)
-        validation['interface_manifest_sha256'] = '0' * 64
-        with self.assertRaisesRegex(ValueError, 'native validation'):
-            release.macos_interfaces(observed, retained, self.manifest)
+    def test_mac_release_selection_includes_independent_interfaces(self):
+        self.retarget('arm64mac')
+        parsed = release.read_manifest(self.output)
+        self.assertIn('macos-interfaces-macos-sysroot', parsed['dependencies']['artifacts'])
 
     def test_manifest_rejects_changed_assets_sources_and_extra_files(self):
         release.read_manifest(self.output)

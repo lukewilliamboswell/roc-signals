@@ -67,13 +67,18 @@ class MacosInterfacesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'source evidence'):
             stubs.generate(self.archives, self.root / 'rejected', self.catalog_path)
 
-    def test_bundle_regenerates_instead_of_copying_stale_interfaces(self):
+    def test_bundle_uses_exact_released_interfaces_instead_of_local_stale_bytes(self):
         stale = self.root / 'macos-sysroot'
         stale.mkdir()
         (stale / 'SDK-only.tbd').write_text('old SDK payload')
-        def generate(archives, destination):
-            return stubs.generate(archives, destination, self.catalog_path)
-        with patch.object(bundle_platforms, 'generate_macos_interfaces', side_effect=generate):
+        inputs = self.root / 'released'
+        released = inputs / bundle_platforms.MACOS_INTERFACES / 'targets/macos-sysroot'
+        stubs.generate(self.archives, released, self.catalog_path)
+        (inputs / bundle_platforms.MACOS_INTERFACES / 'dependency.json').write_text(json.dumps({
+            'schema_version': 1, 'name': 'macos-interfaces', 'target': 'macos-sysroot', 'files': {}}))
+        (inputs / 'dependencies.lock.json').write_text(json.dumps({'schema_version': 1, 'artifacts': {}}))
+        with patch.object(bundle_platforms, 'verified_macos_interfaces') as verified:
+            verified.return_value.__enter__.return_value = inputs
             bundle_platforms.stage_macos_inputs(self.archives, self.root / 'stage')
         staged = self.root / 'stage/targets/macos-sysroot'
         self.assertFalse((staged / 'SDK-only.tbd').exists())
@@ -114,12 +119,12 @@ class MacosInterfacesTests(unittest.TestCase):
         self.assertEqual(calls, [app.name for app in gui_suite.examples()])
         self.assertEqual(len(result['examples']), 6)
 
-    def test_compatibility_proof_rejects_input_drift(self):
+    def test_final_link_validation_rejects_interface_mutation_without_writing_proof(self):
         import check_macos_interfaces as check
         stage = self.root / 'platform'
         shutil.copytree(self.archives, stage / 'targets/arm64mac')
         directory = stage / 'targets/macos-sysroot'
-        manifest = stubs.generate(stage / 'targets/arm64mac', directory, self.catalog_path)
+        stubs.generate(stage / 'targets/arm64mac', directory, self.catalog_path)
         for relative in ('interfaces.json', 'PROVENANCE.md', 'usr/lib/libSystem.tbd'):
             with self.subTest(input=relative):
                 path = directory / relative
@@ -133,10 +138,9 @@ class MacosInterfacesTests(unittest.TestCase):
                 self.assertFalse((directory / 'validation.json').exists())
                 path.write_bytes(original)
         with patch.object(check, 'check_apps', return_value={'compiler_pin': 'pin', 'examples': {'counter': 1}}):
-            check.validate_platform(stage, 'roc')
-        proof = json.loads((directory / 'validation.json').read_text())
-        self.assertEqual(proof['interface_manifest_sha256'], hashlib.sha256((directory / 'manifest.json').read_bytes()).hexdigest())
-        self.assertEqual(manifest['host_archives_sha256'], json.loads((directory / 'manifest.json').read_text())['host_archives_sha256'])
+            result = check.validate_platform(stage, 'roc')
+        self.assertEqual(result['examples'], {'counter': 1})
+        self.assertFalse((directory / 'validation.json').exists())
 
     def test_committed_catalog_has_reviewed_provider_structure(self):
         catalog = stubs.read_catalog()

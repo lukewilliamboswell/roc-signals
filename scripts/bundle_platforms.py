@@ -13,7 +13,7 @@ import tempfile
 from contextlib import ExitStack
 
 from build_gui import build as build_gui
-from build_macos_stubs import generate as generate_macos_interfaces, ARCHIVES as MACOS_ARCHIVES, read_catalog
+from build_macos_stubs import ARCHIVES as MACOS_ARCHIVES, read_catalog
 from prepare_platforms import prepare_platform
 from gui_suite import examples as gui_examples
 from gui_host_artifacts import verified_hosts, HOST_FILES
@@ -22,6 +22,7 @@ from prepare_dependencies import (verified_web_dependencies, WEB_ARTIFACTS,
                                   verified_freetype, FREETYPE,
                                   verified_glibc, GLIBC, GLIBC_LIBRARIES, verified_unwind, UNWIND,
                                   verified_xkbcommon, XKBCOMMON, XKBCOMMON_LIBRARIES)
+from prepare_dependencies import verified_macos_interfaces, MACOS_INTERFACES
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -121,7 +122,7 @@ def stage_windows_gnu_inputs(source, stage):
 
 
 def stage_macos_inputs(source, stage):
-    """Generate interfaces for the selected host; never admit a copied sysroot."""
+    """Combine selected host outputs with exact independently released interfaces."""
     destination = stage / 'targets/arm64mac'
     destination.mkdir(parents=True, exist_ok=True)
     for name in MACOS_ARCHIVES:
@@ -129,7 +130,8 @@ def stage_macos_inputs(source, stage):
         if path.is_symlink() or not path.is_file():
             raise ValueError(f'missing or invalid macOS host archive: {path}')
         shutil.copyfile(path, destination / name)
-    generate_macos_interfaces(destination, stage / 'targets/macos-sysroot')
+    with verified_macos_interfaces() as inputs:
+        stage_dependency_inputs(inputs, (MACOS_INTERFACES,), stage)
 
 
 

@@ -1,4 +1,4 @@
-"""Validate generated macOS interfaces against exact host bytes and HTTP bundles."""
+"""Final-link released macOS interfaces with selected hosts and HTTP bundles."""
 
 import argparse
 from functools import partial
@@ -52,28 +52,15 @@ def check_apps(platform_path, roc, *, root=ROOT, url=None):
 
 
 def validate_platform(stage, roc, *, root=ROOT):
-    """Reject unvalidated changed hosts before the bundler publishes its archive."""
-    directory = stage / 'targets/macos-sysroot'
-    manifest = (directory / 'manifest.json').read_bytes()
+    """Final-link and execute apps without rewriting the released interface tree."""
+    before = {path.relative_to(stage).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in (stage / 'targets/macos-sysroot').rglob('*') if path.is_file()}
     result = check_apps(stage, roc, root=root)
-    # Bind the proof to the exact generated outputs, including both host hashes.
-    recorded = json.loads(manifest)
-    from build_macos_stubs import __file__ as generator_path
-    if hashlib.sha256(Path(generator_path).read_bytes()).hexdigest() != recorded['generator_sha256']:
-        raise ValueError('macOS generator changed during link validation')
-    for name, field in [('interfaces.json', 'catalog_sha256'), ('PROVENANCE.md', 'provenance_sha256')]:
-        if hashlib.sha256((directory / name).read_bytes()).hexdigest() != recorded[field]:
-            raise ValueError('macOS catalog or provenance changed during link validation')
-    for name, expected in recorded['host_archives_sha256'].items():
-        if hashlib.sha256((stage / 'targets/arm64mac' / name).read_bytes()).hexdigest() != expected:
-            raise ValueError('macOS host changed during link validation')
-    for name, expected in recorded['files_sha256'].items():
-        if hashlib.sha256((directory / name).read_bytes()).hexdigest() != expected:
-            raise ValueError('macOS interface changed during link validation')
-    if (directory / 'manifest.json').read_bytes() != manifest:
-        raise ValueError('macOS interface manifest changed during validation')
-    result.update(schema_version=1, interface_manifest_sha256=hashlib.sha256(manifest).hexdigest())
-    (directory / 'validation.json').write_text(json.dumps(result, indent=2) + '\n')
+    after = {path.relative_to(stage).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+             for path in (stage / 'targets/macos-sysroot').rglob('*') if path.is_file()}
+    if after != before:
+        raise ValueError('macOS interface inputs changed during final-link validation')
+    return result
 
 
 def check_bundle(directory, roc):

@@ -7,6 +7,7 @@ mutable development copies as evidence of a dependency's origin.
 
 import argparse
 from contextlib import contextmanager
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -41,6 +42,43 @@ UNWIND_SOURCE_FILES = (
     "scripts/build_unwind.py", "scripts/build_glibc.py", "scripts/test_unwind_rust.py",
     "scripts/dependency_archive.py", "scripts/dependency_artifacts.py",
 )
+
+MACOS_INTERFACES = "macos-interfaces-macos-sysroot"
+
+
+@contextmanager
+def verified_macos_interfaces(lock=LOCK, cache=CACHE):
+    """Admit the reviewed project-authored interfaces used only by final linking."""
+    from build_macos_stubs import CATALOG, read_catalog
+    with tempfile.TemporaryDirectory(prefix="signals-verified-macos-interfaces-") as temporary:
+        destination = Path(temporary) / "inputs"
+        materialize(lock, (MACOS_INTERFACES,), cache, destination)
+        tree = destination / MACOS_INTERFACES
+        manifest = json.loads((tree / "dependency.json").read_text())
+        target = tree / "targets/macos-sysroot"
+        expected = {"targets/macos-sysroot/" + item["path"] for item in read_catalog()["libraries"]}
+        expected.update({"targets/macos-sysroot/interfaces.json", "targets/macos-sysroot/manifest.json",
+                         "targets/macos-sysroot/PROVENANCE.md"})
+        catalog = (ROOT / CATALOG.relative_to(ROOT)).read_bytes()
+        if (set(manifest["files"]) != expected
+                or manifest.get("catalog_sha256") != hashlib.sha256(catalog).hexdigest()
+                or (target / "interfaces.json").read_bytes() != catalog):
+            raise ValueError("macOS interface release differs from the reviewed catalog or inventory")
+        yield destination
+
+
+def install_macos_interfaces(destination, lock=LOCK, cache=CACHE):
+    """Replace development interfaces only with exact bytes from the reviewed release."""
+    with verified_macos_interfaces(lock, cache) as inputs:
+        source = inputs / MACOS_INTERFACES / "targets/macos-sysroot"
+        if destination.exists() or destination.is_symlink():
+            raise ValueError(f"macOS interface destination must start absent: {destination}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=destination.parent, prefix=".macos-interfaces-") as temporary:
+            stage = Path(temporary) / destination.name
+            shutil.copytree(source, stage)
+            stage.rename(destination)
+        return json.loads((inputs / "dependencies.lock.json").read_text())
 
 
 @contextmanager
