@@ -17,7 +17,6 @@ on:
       - scripts/dependency_artifacts.py
       - scripts/release_dependencies.py
       - scripts/test_dependency_artifacts.py
-      - scripts/test.py
       - LICENSE
   workflow_dispatch:
     inputs:
