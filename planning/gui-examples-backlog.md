@@ -27,7 +27,6 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 | GUI-10 | P2 | Explorer: fit list, inspector, and preview at smaller heights | Screenshots + wheel attempts | Explorer layout |
 | GUI-11 | P2 | Explorer: present successful previews as readable content | Screenshot + source | Explorer; possibly public read-only control |
 | GUI-13 | P2 | Give cards and event rows coherent activation and selection | Screenshots + source | Examples + GUI interaction API |
-| GUI-14 | P2 | Complete the Counter theme demonstration | Source + baseline screenshot | Counter theme/view |
 | GUI-16 | P2 | Extend desktop regression coverage to Linux and richer environments | Executed on macOS only | GUI tests/tooling |
 | GUI-18 | P2 | Make toolbars, inspectors, and tabular content easier to scan | Screenshots; design | Board/Explorer/Activity views |
 | GUI-19 | P2 | Review minimal typography/alignment/truncation capabilities | Source; design | Public GUI style protocol |
@@ -163,31 +162,6 @@ evaluate composition with existing controls; if a composite button or explicit
 activation attribute is necessary, specify event admission, nested interactive
 children, drag-versus-click behavior, and lifetime validation across all layers.
 Do not attach unguarded host callbacks to arbitrary containers.
-
-### GUI-14 — Counter theme completeness and small-example sizing
-
-The Counter says switching its imported JSON rebuilds the whole app in the
-alternate palette. Its root never uses `theme.background`, Decrement/Reset use
-host-default buttons, and panel radius is hardcoded. The high-contrast file
-therefore cannot control the whole presentation. The fixed 380-pixel panel
-also overflows a 360-pixel window:
-[wide](gui-examples-review/2026-09-10/counter-wide.png),
-[narrow](gui-examples-review/2026-09-10/counter-360x600.png).
-
-The scripted regression run added by GUI-16 found the same class of defect at
-the smallest window the host permits: `counter/minimum-window-layout` records
-the counter reading laid out past the bottom and right edges of a 360×240
-window, so the example's own headline value is readable only through the host's
-window-scroll fallback. It stays a stated diagnostic until this item closes.
-
-Acceptance: define the intended coverage of the theme example and make it true;
-use the declared palette for root and controls, or narrow the promise explicitly.
-Verify default and high-contrast screenshots including interaction states.
-Keep Counter minimal and readable after GUI-08. Apply the same bounded-width
-lesson to Keyed Rows' fixed 520-pixel body and long teaching text
-([narrow](gui-examples-review/2026-09-10/keyed-rows-360x600.png)).
-
-## Verification and maintainability
 
 ### GUI-16 — Desktop regression coverage
 
