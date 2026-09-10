@@ -16,8 +16,11 @@ import pf.Ui
 asset_entries : List(Files.AssetEntry)
 asset_entries = Manifest.entries(manifest_json)
 
-## A missing avatar file renders the host's neutral placeholder box; an
-## assignee without a generated avatar simply shows no picture.
+## An avatar file the host cannot resolve or decode renders the host's neutral
+## placeholder box; an assignee without a generated avatar simply shows no
+## picture. Nothing here consults asset verification: a file that is still a
+## valid image renders whatever it now contains, whether or not its bytes match
+## the manifest digest.
 avatar : Str, U32 -> Elem
 avatar = |assignee, size| match Board.avatar_source(assignee) {
 	Some(source) => Gui.image({ source, label: "${assignee} avatar" }, [Gui.style({ ..Gui.style_default, width: Px(size), height: Px(size), radius: size })])
@@ -31,6 +34,13 @@ asset_status_text = |status| match status {
 	Files.AssetStatus.Mismatch => "altered"
 }
 
+## Verification is advisory. It reports the integrity of the shipped files at
+## startup and decides nothing about what a card draws: the host resolves and
+## decodes each avatar independently, so an altered file that is still a valid
+## image keeps rendering its new contents, and only a file the host cannot
+## resolve or decode becomes a placeholder box. The check also runs once, so a
+## file restored afterwards is reported by the next run, not by this line.
+##
 ## All-ok verification reports render as an empty (invisible) status line.
 asset_problem_text : List(Files.AssetCheck) -> Str
 asset_problem_text = |report| {
@@ -39,7 +49,26 @@ asset_problem_text = |report| {
 		""
 	} else {
 		names = bad.map(|check| "${check.name} (${asset_status_text(check.status)})")
-		"Problem assets: ${Str.join_with(names, ", ")}. Cards show placeholder boxes until the assets are restored."
+		"Problem assets: ${Str.join_with(names, ", ")}. Startup check only: avatars the host cannot load show placeholder boxes. Restart to re-check after restoring them."
+	}
+}
+
+## An advisory report names every problem file and says nothing once every
+## asset verifies, including on the run after a restored file is verified.
+expect {
+	problems = asset_problem_text([
+		{ name: "avatars/maya.png", status: Files.AssetStatus.Ok },
+		{ name: "avatars/jon.png", status: Files.AssetStatus.Missing },
+		{ name: "avatars/sam.png", status: Files.AssetStatus.Mismatch },
+	])
+	restored = asset_problem_text([
+		{ name: "avatars/maya.png", status: Files.AssetStatus.Ok },
+		{ name: "avatars/jon.png", status: Files.AssetStatus.Ok },
+		{ name: "avatars/sam.png", status: Files.AssetStatus.Ok },
+	])
+	{ problems, restored } == {
+		problems: "Problem assets: avatars/jon.png (missing), avatars/sam.png (altered). Startup check only: avatars the host cannot load show placeholder boxes. Restart to re-check after restoring them.",
+		restored: "",
 	}
 }
 

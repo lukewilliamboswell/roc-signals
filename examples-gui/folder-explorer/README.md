@@ -45,8 +45,17 @@ Folder and file rows carry small generated glyph PNGs from `assets/` —
 regenerate them and `assets/manifest.json` (real SHA-256 hashes) with
 `python3 assets/generate.py`. The app ingests the manifest at compile time and
 verifies it at startup through `Files.verify_assets`; a missing or altered
-glyph is named in a danger-colored status line and its rows show neutral
-placeholder boxes while browsing continues. When running the built binary
+glyph is named in a danger-colored status line while browsing continues.
+
+That report is advisory and does not gate rendering. Drawing a glyph is the
+host's own resolution and decoding of the file: a glyph the host cannot resolve
+or decode — missing, unreadable, or not a valid image — shows a neutral
+placeholder box, while a file that was altered but is still a valid image
+renders its new contents. So "altered" in the status line does not imply a
+placeholder, and a placeholder does not require a failed verification. The
+check runs once at mount; restoring a file afterwards is reported by the next
+run, not by the live status line. `regression/assets-problem/` holds a prepared
+assets root exercising all three cases at once. When running the built binary
 directly, pass `--assets-root examples-gui/folder-explorer/assets` (or set
 `ROC_SIGNALS_ASSETS_ROOT`); image sources are always relative paths inside
 that root.
