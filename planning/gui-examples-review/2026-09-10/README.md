@@ -29,8 +29,11 @@ libengine.a             88d2f2717f60c9751b21c00dfde518d2985ee2e85c7162cd449cb447
 | Activity | Pass / pass | 55 passed | 5 passed |
 
 The imported-test counts overlap; do not sum them as distinct tests.
-All 42 maintained semantic specs passed. The four additional diagnostics below
-fail at their intended assertions. The codec probe passes five tests and the
+All 42 maintained semantic specs passed at the reviewed commit. Four additional
+diagnostics failed at their intended assertions. The two editor-lifetime
+diagnostics have since been fixed; maintained specs in
+`examples-gui/notes-editor/specs/` and `examples-gui/task-board/specs/` now
+cover that behavior, so only the two Windows-path diagnostics remain below. The codec probe passes five tests and the
 cross-module style probe passes six. `zig build run-check-tidy` passed.
 
 For setup and staging, use the maintained
@@ -88,9 +91,7 @@ are labeled as such in the backlog.
 | Board initial, 1200×820 | [wide](task-board-wide.png) | GUI-03/13/18 |
 | Board initial, 800×600 | [smaller](task-board-800x600.png) | GUI-03 |
 | Board after five wheel-down events over notes | [detail wheel](task-board-wide-after-scroll.png) | GUI-03 |
-| Board after adding first task | [new task](task-board-new-task.png) | GUI-02/03 |
-| Second task before native undo | [before](task-board-second-before-undo.png) | GUI-02 |
-| Second task after native undo | [after](task-board-second-after-undo.png) | GUI-02 |
+| Board after adding first task | [new task](task-board-new-task.png) | GUI-03 |
 | Board after five wheel-down events over outer margin | [outer wheel](task-board-root-scroll.png) | GUI-03 |
 | Explorer initial, 1200×820 | [wide](folder-explorer-wide.png) | GUI-10/18 |
 | Explorer initial, 800×600 | [smaller](folder-explorer-800x600.png) | GUI-10 |
@@ -101,22 +102,6 @@ are labeled as such in the backlog.
 | Activity after five Step replay clicks, 1200×820 | [populated](activity-monitor-populated.png) | GUI-12/13/18 |
 | Activity with Inspect 1 selected, 1200×820 | [inspector](activity-monitor-inspector.png) | GUI-13/18 |
 | Same populated/selected Activity after resize to 800×600 | [populated smaller](activity-monitor-populated-800x600.png) | GUI-12 |
-
-## Native undo reproduction: GUI-02
-
-1. Launch a fresh Board at 1200×820.
-2. Enter `duplicate` into New task title and click Add task.
-3. In its Task notes field, type `private`, then Ctrl+A and Backspace.
-4. Enter `second` into New task title and click Add task.
-5. Observe that `second` has empty notes; capture
-   [before](task-board-second-before-undo.png).
-6. Focus `second`'s Task notes field and press Ctrl+Z.
-7. Observe `private` in `second`'s notes; capture
-   [after](task-board-second-after-undo.png).
-
-Both tasks remain on the board; this is the input's native history restoring
-text from another task, not domain undo deleting the newly created task.
-No save or external file write is required.
 
 For the dialog reproduction, type `draft` into a fresh Notes editor, click New,
 then resize the open discard confirmation from 1200×820 to 360×600.
@@ -131,15 +116,13 @@ editor tests; a scope count alone cannot prove history isolation.
 
 | Diagnostic | Executable | Observed failure |
 | --- | --- | --- |
-| [notes-open-lifetime.scm](repros/notes-open-lifetime.scm) | Notes | `bind_event` delta expected 1, actual 0 |
-| [board-editor-lifetime.scm](repros/board-editor-lifetime.scm) | Board | `scopes_created` delta expected 1, actual 0 |
 | [notes-windows-name.scm](repros/notes-windows-name.scm) | Notes | Expected `Ideas.txt`; actual `C:\Users\Lee\Ideas.txt` |
 | [explorer-windows-breadcrumbs.scm](repros/explorer-windows-breadcrumbs.scm) | Explorer | `Go to C:\Users` locator absent |
 
 Example command from the repository root:
 
 ```sh
-"$review_output/notes-editor" --run-spec-json planning/gui-examples-review/2026-09-10/repros/notes-open-lifetime.scm
+"$review_output/notes-editor" --run-spec-json planning/gui-examples-review/2026-09-10/repros/notes-windows-name.scm
 ```
 
 The two Windows cases use current raw `files1` task frames because typed file
