@@ -17,6 +17,8 @@ from build_macos_stubs import ARCHIVES as MACOS_ARCHIVES, read_catalog
 from prepare_platforms import prepare_platform
 from gui_suite import examples as gui_examples
 from gui_host_artifacts import verified_hosts, HOST_FILES
+from web_host_artifacts import IDENTITIES as WEB_HOSTS, OUTPUTS as WEB_HOST_OUTPUTS
+from web_host_artifacts import verified_hosts as verified_web_hosts
 from prepare_dependencies import (verified_web_dependencies, WEB_ARTIFACTS,
                                   verified_windows_gnu, WINDOWS_GNU_ARTIFACTS, windows_gnu_files,
                                   verified_freetype, FREETYPE,
@@ -27,24 +29,34 @@ from prepare_dependencies import verified_macos_interfaces, MACOS_INTERFACES
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def stage_web_inputs(source, stage):
+def stage_web_inputs(source, stage, host_lock=None):
     """Bundle current host outputs with freshly verified dependency releases.
 
     An explicit host inventory prevents ignored files left by other builds from
     entering a release. Mutable development libc copies are never bundled.
     """
-    hosts = [f"{target}/libhost.a" for target in ("x64mac", "arm64mac", "x64musl", "arm64musl")]
-    hosts.append("wasm32/host.wasm")
-    for name in hosts:
-        path = source / "targets" / name
-        if not path.is_file() or path.is_symlink():
-            raise ValueError(f"missing or invalid web host output: {path}")
-    with verified_web_dependencies() as inputs:
-        for name in hosts:
+    hosts = tuple(f"{target}/{name}" for target, name in WEB_HOST_OUTPUTS.items())
+    with ExitStack() as resources:
+        dependency_inputs = resources.enter_context(verified_web_dependencies())
+        if host_lock is None:
+            host_sources = {name: source / "targets" / name for name in hosts}
+            host_inputs = None
+        else:
+            host_inputs = resources.enter_context(verified_web_hosts(
+                host_lock.resolve(), Path.home() / ".cache/roc-signals/dependencies", ROOT))
+            host_sources = {
+                f"{target}/{name}": host_inputs / ("web-host-" + target) / "targets" / target / name
+                for target, name in WEB_HOST_OUTPUTS.items()
+            }
+        for name, path in host_sources.items():
+            if not path.is_file() or path.is_symlink():
+                raise ValueError(f"missing or invalid web host output: {path}")
             destination = stage / "targets" / name
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source / "targets" / name, destination)
-        stage_dependency_inputs(inputs, WEB_ARTIFACTS, stage)
+            shutil.copyfile(path, destination)
+        if host_lock is not None:
+            stage_dependency_inputs(host_inputs, WEB_HOSTS, stage)
+        stage_dependency_inputs(dependency_inputs, WEB_ARTIFACTS, stage)
 
 
 def stage_dependency_inputs(inputs, identities, stage, *, target_scoped_licenses=False):
@@ -177,6 +189,8 @@ def main():
     parser.add_argument('--debug-gui', action='store_true')
     parser.add_argument('--prebuilt-host-lock', type=Path, action='append', default=[],
                         help='Verified GUI host release lock to include alongside local targets')
+    parser.add_argument('--prebuilt-web-host-lock', type=Path,
+                        help='Verified complete web host release lock to use instead of local targets')
     parser.add_argument('--output-dir', type=Path, default=Path(os.environ.get('BUNDLE_OUT_DIR', str(ROOT / '.test-out/bundles'))))
     parser.add_argument('--serve', action='store_true')
     parser.add_argument('--port', type=int, default=8000)
@@ -204,7 +218,7 @@ def main():
             prepare_platform(source, stage)
             trees = []
             if package == 'web':
-                stage_web_inputs(source, stage)
+                stage_web_inputs(source, stage, args.prebuilt_web_host_lock)
             if package == 'gui':
                 trees = [source / 'targets'] if (source / 'targets').is_dir() else []
                 for lock in args.prebuilt_host_lock:

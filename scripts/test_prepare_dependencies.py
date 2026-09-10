@@ -523,6 +523,34 @@ class DependencyStagingTests(unittest.TestCase):
                 bundle_platforms.stage_web_inputs(self.source, self.root / "stage")
         self.assertFalse((self.root / "stage").exists())
 
+    def test_web_bundle_uses_only_the_complete_verified_host_set_when_locked(self):
+        host_inputs = self.root / "verified-hosts"
+        artifacts = {}
+        for target, filename in bundle_platforms.WEB_HOST_OUTPUTS.items():
+            identity = "web-host-" + target
+            artifacts[identity] = {"target": target, "sha256": identity}
+            output = host_inputs / identity / "targets" / target / filename
+            output.parent.mkdir(parents=True)
+            output.write_bytes(("released " + target).encode())
+            (host_inputs / identity / "dependency.json").write_text(identity)
+        (host_inputs / "dependencies.lock.json").write_text(json.dumps({
+            "schema_version": 1, "artifacts": artifacts,
+        }))
+
+        @contextmanager
+        def verified_hosts(*args):
+            yield host_inputs
+
+        stage = self.root / "locked-stage"
+        with patch.object(bundle_platforms, "verified_web_hosts", verified_hosts), \
+                patch.object(bundle_platforms, "verified_web_dependencies", self.verified):
+            bundle_platforms.stage_web_inputs(self.source, stage, self.root / "web-host.lock.json")
+        for target, filename in bundle_platforms.WEB_HOST_OUTPUTS.items():
+            self.assertEqual((stage / "targets" / target / filename).read_bytes(),
+                             ("released " + target).encode())
+        receipt = json.loads((stage / "dependencies.lock.json").read_text())
+        self.assertEqual(set(receipt["artifacts"]), set(artifacts))
+
     def test_failed_verification_never_falls_back_to_checkout_libc(self):
         (self.source / "targets/x64musl/libc.a").write_bytes(b"local libc")
         with patch.object(bundle_platforms, "verified_web_dependencies", side_effect=ValueError("untrusted signer")):
