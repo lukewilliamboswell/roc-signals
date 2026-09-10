@@ -1,0 +1,30 @@
+# size: 1200x820
+# diagnostic: GUI-02. The detail editors switch only on the task's column, so
+# two tasks in one column share the native input lifetimes. Once two tasks in
+# one column hold equal notes, selecting the second one retains the first
+# task's editor — and with it the first task's undo history, which an ordinary
+# Ctrl+Z then pastes into the wrong task. Native history depth is the
+# observation neither the semantic specs nor a first-frame screenshot can make.
+click #edit-task-2
+wait 400
+focus "Task notes"
+key ctrl-a
+key backspace
+wait 600
+expect-value "Task notes"
+click #edit-task-1
+wait 400
+focus "Task notes"
+key ctrl-a
+key backspace
+wait 600
+type "Task notes" private
+wait 600
+key ctrl-a
+key backspace
+wait 600
+expect-value "Task notes"
+click #edit-task-2
+wait 600
+expect-value "Task notes"
+expect-history "Task notes" 0

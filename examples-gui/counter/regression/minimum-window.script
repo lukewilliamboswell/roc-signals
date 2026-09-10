@@ -1,0 +1,11 @@
+# size: 360x240
+# The smallest window the host allows. The reading a person came for and the
+# actions they take must both still work there; only the *layout* at that size
+# is a separate, currently-failing diagnostic.
+expect-text Counter
+click Increment
+wait 150
+expect-text 1
+click Reset
+wait 150
+expect-text 0

@@ -1,0 +1,5 @@
+# size: 360x240
+# diagnostic: The counter reading is laid out past the bottom and right edges of
+# the smallest window the host permits, so it is readable only by scrolling the
+# window fallback. Not on the backlog: reported alongside GUI-16.
+expect-onscreen #count
