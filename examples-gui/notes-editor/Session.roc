@@ -1,4 +1,5 @@
 import Document
+import pf.Files
 import pf.Gui
 
 ## A document operation owns its submitted snapshot until its task settles.
@@ -85,9 +86,11 @@ Session := [].{
 			_ => False
 		}
 
-	## A file's final path segment supplies the document's displayed name.
+	## A file's final path component supplies the document's displayed name.
+	## The native worker returns the operating system's own spelling, so the
+	## component is located through the typed `Files.Path` boundary.
 	file_name : Str -> Str
-	file_name = |path| path.split_on("/").fold(path, |_, segment| segment)
+	file_name = |path| Files.parse_path(path).name()
 
 	## Capture a save snapshot before any dialog or write begins.
 	begin_save : { state : State, draft : Document.Snapshot, save_as : Bool } -> State
