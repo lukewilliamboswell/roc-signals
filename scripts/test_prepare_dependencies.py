@@ -421,6 +421,24 @@ class DependencyStagingTests(unittest.TestCase):
             bundle_platforms.stage_dependency_inputs(self.inputs, ("freetype-x64glibc",), stage)
         self.assertEqual((stage / "dependencies.lock.json").read_bytes(), original)
 
+    def test_bundle_keeps_target_specific_gui_host_notices(self):
+        stage = self.root / "combined-hosts"
+        stage.mkdir()
+        artifacts = {}
+        for target, data in (("x64glibc", b"unix\n"), ("x64mingw", b"windows\r\n")):
+            identity = "gui-host-" + target
+            artifacts[identity] = {"target": target, "sha256": identity}
+            notice = self.inputs / identity / "licenses/gui-host/LICENSE"
+            notice.parent.mkdir(parents=True)
+            notice.write_bytes(data)
+        (self.inputs / "dependencies.lock.json").write_text(json.dumps({
+            "schema_version": 1, "artifacts": artifacts,
+        }))
+        bundle_platforms.stage_dependency_inputs(
+            self.inputs, tuple(artifacts), stage, target_scoped_licenses=True)
+        self.assertEqual((stage / "licenses/gui-host/x64glibc/LICENSE").read_bytes(), b"unix\n")
+        self.assertEqual((stage / "licenses/gui-host/x64mingw/LICENSE").read_bytes(), b"windows\r\n")
+
     def test_freetype_verification_failure_preserves_existing_input_and_prevents_build(self):
         destination = self.root / "linux"
         destination.mkdir()

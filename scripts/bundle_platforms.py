@@ -47,7 +47,8 @@ def stage_web_inputs(source, stage):
         stage_dependency_inputs(inputs, WEB_ARTIFACTS, stage)
 
 
-def stage_dependency_inputs(inputs, identities, stage):
+def stage_dependency_inputs(inputs, identities, stage, *, target_scoped_licenses=False):
+    """Stage admitted inputs, optionally retaining per-target notice variants."""
     receipt = json.loads((inputs / "dependencies.lock.json").read_text())
     receipt_path = stage / "dependencies.lock.json"
     if receipt_path.exists():
@@ -63,6 +64,8 @@ def stage_dependency_inputs(inputs, identities, stage):
             relative = path.relative_to(inputs / identity)
             if relative.as_posix() == "dependency.json":
                 relative = Path("dependency-manifests") / (identity + ".json")
+            elif target_scoped_licenses and relative.parts[:2] == ("licenses", "gui-host"):
+                relative = Path("licenses/gui-host") / receipt["artifacts"][identity]["target"] / Path(*relative.parts[2:])
             destination = stage / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             if destination.exists():
@@ -211,7 +214,7 @@ def main():
                     identities = tuple(identity for identity, entry in receipt['artifacts'].items()
                                        if entry.get('name') != 'gui-host-sources')
                     trees.extend(inputs / identity / 'targets' for identity in identities)
-                    stage_dependency_inputs(inputs, identities, stage)
+                    stage_dependency_inputs(inputs, identities, stage, target_scoped_licenses=True)
             hosts = []
             windows_gnu_targets = []
             macos_targets = []
