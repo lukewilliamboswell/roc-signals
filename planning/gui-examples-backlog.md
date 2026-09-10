@@ -22,7 +22,6 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 | ID | Priority | Work item | Evidence | Primary owner |
 | --- | --- | --- | --- | --- |
 | GUI-08 | P2 | Defaulted nominal `Gui.Style` records | Pinned compiler probes | Public Roc GUI API |
-| GUI-09 | P2 | Make asset-verification warnings match rendered behavior | Source | Board/Explorer asset views |
 | GUI-10 | P2 | Explorer: fit list, inspector, and preview at smaller heights | Screenshots + wheel attempts | Explorer layout |
 | GUI-11 | P2 | Explorer: present successful previews as readable content | Screenshot + source | Explorer; possibly public read-only control |
 | GUI-13 | P2 | Give cards and event rows coherent activation and selection | Screenshots + source | Examples + GUI interaction API |
@@ -34,6 +33,7 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 | GUI-22 | P3 | Correct maintained docs and small presentation-copy defects | Source + screenshots | Example/reference docs |
 | GUI-23 | P3 | Finish the remaining application-controlled chrome/theming surface | Source; design | GUI/GPUI boundary |
 | GUI-24 | P3 | Optional visual refinements, after operability | Design | Examples + narrowly justified API work |
+| GUI-25 | P2 | Lay out status text that first appears after mount | Live `expect-onscreen` probes | GPUI host layout |
 
 ## Correctness and operability
 
@@ -76,23 +76,6 @@ partial merging or special “unset” semantics. Preserve the encoded v2 fields
 and validation; a nominal type change alone should not change the wire format.
 
 ## Visual and interaction backlog
-
-### GUI-09 — Truthful asset verification
-
-Both apps promise placeholder boxes for missing **or mismatched** assets
-([board](../examples-gui/task-board/main.roc), `asset_problem_text`;
-[explorer](../examples-gui/folder-explorer/main.roc), `asset_problem_text`).
-Verification only changes warning text. `avatar`/`kind_glyph` do not depend on
-verification, and [GPUI rendering](../crates/gpui-host/src/lib.rs) resolves and
-renders an existing image independently. An altered but valid image is not
-necessarily replaced by a placeholder. Startup verification is also not a
-continuous watch for later restoration.
-
-Acceptance: decide whether verification is advisory or gates image rendering,
-then make messages, README claims, bindings, and tests agree. Test missing,
-altered-but-decodable, invalid image, healthy, and restored assets. If gating
-is chosen, use explicit application data/signal dependencies and specify retry
-behavior; do not infer reactive policy inside the image loader.
 
 ### GUI-10 — Explorer height/overflow
 
@@ -253,9 +236,8 @@ the handwritten JSON grammar. Prefer existing language facilities and clear nume
 
 [Explorer README](../examples-gui/folder-explorer/README.md) says Linux and
 `gio open`, while the native file services have Windows/macOS implementations;
-it says 64-pixel virtual rows while the app declares 44. Both asset READMEs
-overpromise verified placeholders (GUI-09). Counter's whole-palette promise
-needs GUI-14.
+it says 64-pixel virtual rows while the app declares 44. Counter's
+whole-palette promise needs GUI-14.
 
 Acceptance: synchronize examples, public references, platform modules, specs,
 and contributor commands when fixing each item. Clearly distinguish supported
@@ -295,12 +277,28 @@ keep help available to keyboard users, avoid relying on color alone for danger,
 and consider reduced motion if animation is introduced. No fixed API shape or
 mandatory spacing/color dogma is approved by this backlog.
 
+### GUI-25 — Status text that appears after mount is never laid out
+
+A status line rendered empty at mount keeps zero area forever: writing text into
+it later updates the semantic tree, and both the specs and `expect-text` see the
+new text, but `expect-onscreen` reports "no area" and the window never paints it.
+It is not a repaint-timing artifact — the zero area survives later interactions,
+a `Ui.when` that mounts the element fresh, and a static (non-signal) text child;
+the same element laid out with text already present has ordinary area and then
+updates correctly. GUI-09 worked around it in both examples by starting the asset
+status line at "Checking assets…" instead of "", but the board's document
+`problem` line and any other initially empty status text have the same defect.
+
+Acceptance: find why the host keeps the collapsed layout and fix it there, then
+drop the workaround from at least one example and cover the transition with a
+scenario asserting `expect-onscreen` after the text arrives.
+
 ## Delivery sequence
 
 1. Add GUI-16/17 regressions alongside each fix, not only at the end.
 2. Migrate GUI-08. This simplifies later example edits without needing new
    rendering semantics.
-3. Apply current-API layout/readability fixes (GUI-09-11, GUI-13, GUI-18); use evidence
+3. Apply current-API layout/readability fixes (GUI-10/11, GUI-13, GUI-18); use evidence
    from them to scope GUI-19/20/23.
 4. Finish structure/docs and optional polish (GUI-21/22/24), then recapture the
    same states. Remove resolved work from this queue; do not treat a fresh

@@ -50,8 +50,17 @@ Assignee avatars are tiny generated PNGs in `assets/` — regenerate them and
 `assets/manifest.json` (real SHA-256 hashes) with `python3 assets/generate.py`.
 The app ingests the manifest at compile time and verifies it at startup through
 `Files.verify_assets`; if an asset is missing or altered, a danger-colored
-status line names it and the affected cards show neutral placeholder boxes
-while everything else keeps working. When running the built binary directly,
+status line names it while everything else keeps working.
+
+That report is advisory and does not gate rendering. Drawing an avatar is the
+host's own resolution and decoding of the file: an avatar the host cannot
+resolve or decode — missing, unreadable, or not a valid image — shows a neutral
+placeholder box, while a file that was altered but is still a valid image
+renders its new contents. So "altered" in the status line does not imply a
+placeholder, and a placeholder does not require a failed verification. The
+check runs once at mount; restoring a file afterwards is reported by the next
+run, not by the live status line. `regression/assets-problem/` holds a prepared
+assets root exercising all three cases at once. When running the built binary directly,
 point the host at the app's assets with
 `--assets-root examples-gui/task-board/assets` (or `ROC_SIGNALS_ASSETS_ROOT`);
 image sources are always relative paths inside that root.

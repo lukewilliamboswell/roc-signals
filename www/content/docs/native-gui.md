@@ -155,7 +155,11 @@ paths, `..` traversal, URIs, and symbolic links never resolve, and a missing or
 undecodable image shows a neutral placeholder box instead of nothing.
 Ship an `assets/manifest.json` next to `main.roc`, ingest it at compile time,
 and start `Files.verify_assets` at mount to report each asset as ok, missing,
-or altered; the task-board and folder-explorer examples show the pattern.
+or altered; the task-board and folder-explorer examples show the pattern. That
+report is advisory data, not a gate on rendering: the placeholder above comes
+from the host's own resolution and decoding, so an altered but still decodable
+image keeps rendering, and the check is one startup reading rather than a watch
+that notices a restored file.
 
 Use `Gui.test_id` for stable spec locators and `Gui.label` for semantic names.
 Labels do not establish native screen-reader support, which is not implemented.

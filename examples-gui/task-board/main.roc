@@ -16,8 +16,11 @@ import pf.Ui
 asset_entries : List(Files.AssetEntry)
 asset_entries = Manifest.entries(manifest_json)
 
-## A missing avatar file renders the host's neutral placeholder box; an
-## assignee without a generated avatar simply shows no picture.
+## An avatar file the host cannot resolve or decode renders the host's neutral
+## placeholder box; an assignee without a generated avatar simply shows no
+## picture. Nothing here consults asset verification: a file that is still a
+## valid image renders whatever it now contains, whether or not its bytes match
+## the manifest digest.
 avatar : Str, U32 -> Elem
 avatar = |assignee, size| match Board.avatar_source(assignee) {
 	Some(source) => Gui.image({ source, label: "${assignee} avatar" }, [Gui.style({ ..Gui.style_default, width: Px(size), height: Px(size), radius: size })])
@@ -31,7 +34,21 @@ asset_status_text = |status| match status {
 	Files.AssetStatus.Mismatch => "altered"
 }
 
-## All-ok verification reports render as an empty (invisible) status line.
+## The status line starts with this while the startup check is still running.
+## It is never empty at mount on purpose: a status column that is laid out with
+## no area keeps that area when its text arrives, so a warning written into an
+## initially empty line is in the semantic tree but never visible to a person.
+asset_checking : Str
+asset_checking = "Checking assets…"
+
+## Verification is advisory. It reports the integrity of the shipped files at
+## startup and decides nothing about what a card draws: the host resolves and
+## decodes each avatar independently, so an altered file that is still a valid
+## image keeps rendering its new contents, and only a file the host cannot
+## resolve or decode becomes a placeholder box. The check also runs once, so a
+## file restored afterwards is reported by the next run, not by this line.
+##
+## An all-ok report empties the status line, collapsing it out of the layout.
 asset_problem_text : List(Files.AssetCheck) -> Str
 asset_problem_text = |report| {
 	bad = report.keep_if(|check| check.status != Files.AssetStatus.Ok)
@@ -39,7 +56,26 @@ asset_problem_text = |report| {
 		""
 	} else {
 		names = bad.map(|check| "${check.name} (${asset_status_text(check.status)})")
-		"Problem assets: ${Str.join_with(names, ", ")}. Cards show placeholder boxes until the assets are restored."
+		"Problem assets: ${Str.join_with(names, ", ")}. Startup check only: avatars the host cannot load show placeholder boxes. Restart to re-check after restoring them."
+	}
+}
+
+## An advisory report names every problem file and says nothing once every
+## asset verifies, including on the run after a restored file is verified.
+expect {
+	problems = asset_problem_text([
+		{ name: "avatars/maya.png", status: Files.AssetStatus.Ok },
+		{ name: "avatars/jon.png", status: Files.AssetStatus.Missing },
+		{ name: "avatars/sam.png", status: Files.AssetStatus.Mismatch },
+	])
+	restored = asset_problem_text([
+		{ name: "avatars/maya.png", status: Files.AssetStatus.Ok },
+		{ name: "avatars/jon.png", status: Files.AssetStatus.Ok },
+		{ name: "avatars/sam.png", status: Files.AssetStatus.Ok },
+	])
+	{ problems, restored } == {
+		problems: "Problem assets: avatars/jon.png (missing), avatars/sam.png (altered). Startup check only: avatars the host cannot load show placeholder boxes. Restart to re-check after restoring them.",
+		restored: "",
 	}
 }
 
@@ -680,7 +716,7 @@ main = || Ui.state(
 																							Ui.state(
 																								Close.KeepEditing,
 																								|close| Ui.state(
-																									"",
+																									asset_checking,
 																									|asset_problem| {
 																										editable = document.signal().map(|doc| can_edit(doc.phase))
 																										edit_disabled = editable.map(|value| !value)
@@ -926,7 +962,24 @@ document_toolbar = |handles, actions| {
 			),
 			Ui.when(handles.document.signal().map(|doc| doc.phase != Phase.Idle and doc.phase != Phase.ConfirmOpen), || Gui.button("Cancel operation", actions.cancel), || Gui.text("")),
 			Gui.column(
-				[Gui.test_id("asset-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
+				[
+					Gui.test_id("asset-status"),
+					Gui.style_s(
+						handles.asset_problem.signal().map(
+							|text| {
+								..Gui.style_default,
+								font_size: 13,
+								# Only a real problem earns the danger color; the
+								# in-progress line is ordinary secondary text.
+								foreground: if text == asset_checking {
+									Rgb(0xA9BFCC)
+								} else {
+									Rgb(0xF09A93)
+								},
+							},
+						),
+					),
+				],
 				[Gui.text_s(handles.asset_problem.signal())],
 			),
 			close_dialog(handles),

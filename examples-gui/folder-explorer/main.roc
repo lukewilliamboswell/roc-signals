@@ -19,7 +19,10 @@ asset_entries : List(Files.AssetEntry)
 asset_entries = Manifest.entries(manifest_json)
 
 ## Folder and file rows show a small generated glyph beside their kind text; a
-## missing glyph file renders the host's neutral placeholder box instead.
+## glyph file the host cannot resolve or decode renders the host's neutral
+## placeholder box instead. Nothing here consults asset verification: a glyph
+## that is still a valid image renders whatever it now contains, whether or not
+## its bytes match the manifest digest.
 kind_glyph : Explorer.Kind -> Elem
 kind_glyph = |kind| {
 	glyph = |source, label| Gui.image({ source, label }, [Gui.style({ ..Gui.style_default, width: Px(16), height: Px(16), radius: 3 })])
@@ -37,7 +40,21 @@ asset_status_text = |status| match status {
 	Files.AssetStatus.Mismatch => "altered"
 }
 
-## All-ok verification reports render as an empty (invisible) status line.
+## The status line starts with this while the startup check is still running.
+## It is never empty at mount on purpose: a status column that is laid out with
+## no area keeps that area when its text arrives, so a warning written into an
+## initially empty line is in the semantic tree but never visible to a person.
+asset_checking : Str
+asset_checking = "Checking assets…"
+
+## Verification is advisory. It reports the integrity of the shipped files at
+## startup and decides nothing about what a row draws: the host resolves and
+## decodes each glyph independently, so an altered file that is still a valid
+## image keeps rendering its new contents, and only a file the host cannot
+## resolve or decode becomes a placeholder box. The check also runs once, so a
+## file restored afterwards is reported by the next run, not by this line.
+##
+## An all-ok report empties the status line, collapsing it out of the layout.
 asset_problem_text : List(Files.AssetCheck) -> Str
 asset_problem_text = |report| {
 	bad = report.keep_if(|check| check.status != Files.AssetStatus.Ok)
@@ -45,7 +62,24 @@ asset_problem_text = |report| {
 		""
 	} else {
 		names = bad.map(|check| "${check.name} (${asset_status_text(check.status)})")
-		"Problem assets: ${Str.join_with(names, ", ")}. Rows show placeholder boxes until the assets are restored."
+		"Problem assets: ${Str.join_with(names, ", ")}. Startup check only: glyphs the host cannot load show placeholder boxes. Restart to re-check after restoring them."
+	}
+}
+
+## An advisory report names every problem file and says nothing once every
+## asset verifies, including on the run after a restored file is verified.
+expect {
+	problems = asset_problem_text([
+		{ name: "glyphs/folder.png", status: Files.AssetStatus.Ok },
+		{ name: "glyphs/file.png", status: Files.AssetStatus.Mismatch },
+	])
+	restored = asset_problem_text([
+		{ name: "glyphs/folder.png", status: Files.AssetStatus.Ok },
+		{ name: "glyphs/file.png", status: Files.AssetStatus.Ok },
+	])
+	{ problems, restored } == {
+		problems: "Problem assets: glyphs/file.png (altered). Startup check only: glyphs the host cannot load show placeholder boxes. Restart to re-check after restoring them.",
+		restored: "",
 	}
 }
 
@@ -426,7 +460,24 @@ explorer_view = |handles| {
 			# Trailing problem line: empty on healthy runs, so it pays no gap
 			# rhythm between the always-visible bands above.
 			Gui.column(
-				[Gui.test_id("asset-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
+				[
+					Gui.test_id("asset-status"),
+					Gui.style_s(
+						handles.asset_problem.signal().map(
+							|text| {
+								..Gui.style_default,
+								font_size: 13,
+								# Only a real problem earns the danger color; the
+								# in-progress line is ordinary secondary text.
+								foreground: if text == asset_checking {
+									Rgb(0xA9BFCC)
+								} else {
+									Rgb(0xF09A93)
+								},
+							},
+						),
+					),
+				],
 				[Gui.text_s(handles.asset_problem.signal())],
 			),
 		]),
@@ -434,4 +485,4 @@ explorer_view = |handles| {
 }
 
 main : () -> Elem
-main = || Ui.state(Session.initial, |model| Ui.state(NameAscending, |order| Ui.state("", |asset_problem| explorer_view({ model, order, asset_problem }))))
+main = || Ui.state(Session.initial, |model| Ui.state(NameAscending, |order| Ui.state(asset_checking, |asset_problem| explorer_view({ model, order, asset_problem }))))

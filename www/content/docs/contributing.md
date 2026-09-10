@@ -1349,6 +1349,13 @@ whose size does not match the request; no region of your desktop is captured.
 Pass `--no-capture` to run the scripts alone, `--scenario SUBSTRING` to select
 some of them, and `--artifacts PATH` to write elsewhere.
 
+A scenario runs against its example's own `assets/` directory. A script whose
+front matter carries `# assets: <path relative to the example>` runs against a
+prepared root instead, which is how the asset scenarios show a missing, altered
+or unreadable file without a script damaging the working tree; the named
+directory must exist. See `examples-gui/task-board/regression/assets-problem/`,
+whose `generate.py` derives that root from the shipped assets.
+
 A script whose front matter carries `# diagnostic:` documents a defect owned
 elsewhere. It runs and its failure is reported, but it does not fail the run —
 and a diagnostic that starts passing *does* fail the run, so a fix cannot leave
