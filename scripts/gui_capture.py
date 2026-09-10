@@ -34,15 +34,26 @@ def locator() -> Path:
     return built
 
 
-def window(helper: Path, owner: str, deadline: float) -> tuple[str, int, int]:
-    """Waits for the application's window, returning its id and captured size."""
+def window(helper: Path, pid: int, deadline: float) -> tuple[str, int, int]:
+    """Waits for the application's window to appear and settle at its final size.
+
+    A window measured while it is still opening reports an intermediate size, so
+    the reading is only trusted once it repeats: a capture whose recorded size
+    does not match the size it was asked for is not usable as evidence.
+    """
+    previous = None
     while True:
-        found = subprocess.run([str(helper), owner], capture_output=True, text=True)
+        found = subprocess.run([str(helper), str(pid)], capture_output=True, text=True)
         if found.returncode == 0:
             identifier, width, height = found.stdout.split()
-            return identifier, int(width), int(height)
+            current = (identifier, int(width), int(height))
+            if current == previous:
+                return current
+            previous = current
+        elif time.monotonic() >= deadline:
+            raise SystemExit(f"process {pid} never opened a window: {found.stderr.strip()}")
         if time.monotonic() >= deadline:
-            raise SystemExit(f"{owner} never opened a window: {found.stderr.strip()}")
+            raise SystemExit(f"process {pid} never settled at one window size")
         time.sleep(0.2)
 
 
@@ -56,7 +67,15 @@ def capture(executable: Path, destination: Path, size: str, settle: float,
     application = subprocess.Popen(command, env=environment,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        identifier, width, height = window(helper, executable.stem, time.monotonic() + timeout)
+        identifier, width, height = window(helper, application.pid, time.monotonic() + timeout)
+        requested = tuple(int(part) for part in size.lower().split("x"))
+        # The recorded window frame includes the titlebar and can differ from the
+        # requested content size by a few points of client decoration, but a
+        # capture that silently came back at another size is not evidence.
+        if abs(width - requested[0]) > 32 or abs(height - requested[1]) > 64:
+            raise SystemExit(
+                f"captured a {width}x{height} window after requesting {size}; "
+                "the application did not honour --window-size")
         time.sleep(settle)
         subprocess.run(["screencapture", "-x", "-o", "-t", "png", f"-l{identifier}",
                         str(destination)], check=True)
