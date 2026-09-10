@@ -83,6 +83,29 @@ class DependencyTests(unittest.TestCase):
             self.assertEqual(command[command.index(flag) + 1], value)
         self.assertIn("--deny-self-hosted-runners", command)
         self.assertTrue(verifier.call_args.kwargs["check"])
+        self.assertTrue(verifier.call_args.kwargs["capture_output"])
+        self.assertTrue(verifier.call_args.kwargs["text"])
+
+    def test_signature_verifier_retries_only_transient_service_failures(self):
+        archive = self.archive()
+        unavailable = subprocess.CalledProcessError(
+            1, "gh", stderr="HTTP 503: trust-metadata-api service unavailable")
+        success = subprocess.CompletedProcess("gh", 0, stdout="", stderr="")
+        with patch.object(deps.subprocess, "run", side_effect=[unavailable, unavailable, success]) as verifier, \
+                patch.object(deps.time, "sleep") as sleep:
+            deps.verify_archive(archive, self.entry)
+        self.assertEqual(verifier.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 10])
+
+    def test_signature_verifier_does_not_retry_a_rejection(self):
+        archive = self.archive()
+        rejected = subprocess.CalledProcessError(1, "gh", stderr="verification failed")
+        with patch.object(deps.subprocess, "run", side_effect=rejected) as verifier, \
+                patch.object(deps.time, "sleep") as sleep:
+            with self.assertRaises(subprocess.CalledProcessError):
+                deps.verify_archive(archive, self.entry)
+        verifier.assert_called_once()
+        sleep.assert_not_called()
 
     def test_tampering_is_rejected_before_signature_verification(self):
         archive = self.archive()
