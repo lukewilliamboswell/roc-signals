@@ -250,6 +250,24 @@ impl TextInput {
         }
     }
 
+    /// The draft text this editor is currently showing.
+    ///
+    /// Scripted regression checks read the editor rather than the engine value
+    /// so that an assertion about what a person can see cannot be satisfied by
+    /// state the presentation layer never applied.
+    pub(crate) fn draft(&self) -> &str {
+        self.content.as_ref()
+    }
+
+    /// How many native undo entries this editor is holding.
+    ///
+    /// Native editing history belongs to one document. A replacement document
+    /// that reuses this editor must therefore start at zero, and that is not
+    /// observable from the application's own state — only from here.
+    pub(crate) fn undo_depth(&self) -> usize {
+        self.history.undo.len()
+    }
+
     #[cfg(test)]
     pub(crate) fn viewport_bounds_for_test(&self) -> Bounds<Pixels> {
         self.scroll.bounds()
