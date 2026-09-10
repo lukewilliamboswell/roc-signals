@@ -114,7 +114,9 @@ inspect_view = |handles| {
 		},
 	)
 	Gui.panel(
-		[Gui.test_id("file-details"), Gui.style({ ..Gui.style_default, width: Px(340), gap: 12, padding: 16, background: Rgb(0x283A47), radius: 8 })],
+		# A fixed-width column beside a Fill list: it keeps its width, bounds
+		# itself to the content row, and scrolls a long path or error itself.
+		[Gui.test_id("file-details"), Gui.style({ ..Gui.style_default, width: Px(340), height: Fill, gap: 12, padding: 16, background: Rgb(0x283A47), radius: 8, overflow_y: Scroll })],
 		[
 			Gui.heading("File details"),
 			Gui.text_s(
@@ -194,7 +196,7 @@ inspect_view = |handles| {
 						},
 					),
 				},
-				[Gui.test_id("text-preview"), Gui.placeholder("Preview a file to read it here."), Gui.disabled_s(Signal.const(True)), Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True })],
+				[Gui.test_id("text-preview"), Gui.placeholder("Preview a file to read it here."), Gui.disabled_s(Signal.const(True)), Gui.style({ ..Gui.style_default, width: Fill, height: Px(220) })],
 				handles.model.on_str(|state, _| state),
 			),
 		],
@@ -292,7 +294,9 @@ explorer_view = |handles| {
 	Gui.column(
 		[
 			Gui.test_id("explorer"),
-			Gui.style({ ..Gui.style_default, gap: 12, padding: 24, width: Fill, height: Fill, overflow_y: Clip }),
+			# The root bounds itself to the window and hands the free height to
+			# the content row, so the chrome bands below it stay on screen.
+			Gui.style({ ..Gui.style_default, gap: 12, padding: 24, width: Fill, height: Fill }),
 			Gui.on_shortcut({ key: "o", control: True, shift: False, alt: False, meta: False }, choose_action),
 			Gui.on_shortcut({ key: "F5", control: False, shift: False, alt: False, meta: False }, refresh_action),
 			Gui.on_shortcut({ key: "Escape", control: False, shift: False, alt: False, meta: False }, cancel_action),
@@ -312,10 +316,17 @@ explorer_view = |handles| {
 				),
 				Gui.set_title,
 			),
-			Gui.heading("Folder Explorer"),
-			Gui.column(
-				[Gui.style({ ..Gui.style_default, foreground: Rgb(0xA9BFCC) })],
-				[Gui.text("Browse a folder on this computer, or explore the built-in sample workspace.")],
+			# Heading and standing invitation share one band: at 800x600 every
+			# line of chrome above the list is height the preview does not get.
+			Gui.row(
+				[Gui.style({ ..Gui.style_default, gap: 16, width: Fill, overflow_x: Clip })],
+				[
+					Gui.heading("Folder Explorer"),
+					Gui.column(
+						[Gui.style({ ..Gui.style_default, grow: True, font_size: 13, foreground: Rgb(0xA9BFCC), overflow_x: Clip })],
+						[Gui.text("Browse a folder on this computer, or explore the built-in sample workspace.")],
+					),
+				],
 			),
 			Gui.row(
 				[Gui.style({ ..Gui.style_default, gap: 8 })],
@@ -361,11 +372,13 @@ explorer_view = |handles| {
 					),
 				],
 			),
+			# One status band: where the listing came from, what the last
+			# operation did, and what the folder and the filter contain.
 			Gui.row(
-				[Gui.style({ ..Gui.style_default, gap: 16 })],
+				[Gui.style({ ..Gui.style_default, gap: 16, width: Fill, overflow_x: Clip })],
 				[
 					Gui.column(
-						[Gui.test_id("dataset-source"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+						[Gui.test_id("dataset-source"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC), overflow_x: Clip })],
 						[
 							Gui.text_s(
 								model.map(
@@ -381,29 +394,29 @@ explorer_view = |handles| {
 							),
 						],
 					),
-					Gui.column([Gui.test_id("operation-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC) })], [Gui.text_s(model.map(|state| state.notice))]),
+					Gui.column([Gui.test_id("operation-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC), overflow_x: Clip })], [Gui.text_s(model.map(|state| state.notice))]),
+					Gui.column([Gui.test_id("dataset-summary"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })], [Gui.text_s(total.map(|summary| "${summary.files.to_str()} files · ${summary.folders.to_str()} folders · ${summary.links.to_str()} links · ${summary.other.to_str()} other · ${summary.bytes.to_str()} B"))]),
+					Gui.column([Gui.test_id("results-summary"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })], [Gui.text_s(visible.map(|entries| "${Rows.len(entries).to_str()} matching entries"))]),
 				],
 			),
+			# Filtering and ordering are the same decision about what the list
+			# shows, so they share one band instead of two.
 			Gui.row(
-				[Gui.style({ ..Gui.style_default, gap: 8 })],
+				[Gui.style({ ..Gui.style_default, gap: 8, width: Fill, overflow_x: Clip })],
 				[
 					Gui.text_input({ label: "Filter this folder", value: model.map(|state| state.query) }, [Gui.placeholder("Filter this folder…"), Gui.disabled_s(ready.map(|value| !value)), Gui.style({ ..Gui.style_default, width: Px(240), gap: 4 })], handles.model.on_str(|state, text| { ..state, query: text })),
 					Gui.action_button({ label: Signal.const("Clear filter"), enabled: model.map(|state| state.phase == Idle and !state.query.is_empty()) }, [], handles.model.on_unit(|state| { ..state, query: "" })),
-				],
+				].concat(Explorer.sorts.map(|order| Gui.action_button({ label: Signal.const(order.to_str()), enabled: ready }, [Gui.selected_s(handles.order.signal().map(|current| current == order))], handles.order.on_unit(|_| order)))),
 			),
-			Gui.row([Gui.style({ ..Gui.style_default, gap: 8 })], Explorer.sorts.map(|order| Gui.action_button({ label: Signal.const(order.to_str()), enabled: ready }, [Gui.selected_s(handles.order.signal().map(|current| current == order))], handles.order.on_unit(|_| order)))),
+			# The content row takes the height the bands above and below leave.
+			# Each side then scrolls its own overflow rather than growing.
 			Gui.row(
-				[Gui.style({ ..Gui.style_default, gap: 16 })],
-				[
-					Gui.column([Gui.test_id("dataset-summary"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })], [Gui.text_s(total.map(|summary| "${summary.files.to_str()} files · ${summary.folders.to_str()} folders · ${summary.links.to_str()} links · ${summary.other.to_str()} other · ${summary.bytes.to_str()} B"))]),
-					Gui.column([Gui.test_id("results-summary"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })], [Gui.text_s(visible.map(|entries| "${Rows.len(entries).to_str()} matching entries"))]),
-				],
-			),
-			Gui.row(
-				[Gui.style({ ..Gui.style_default, gap: 16, width: Fill, grow: True })],
+				[Gui.style({ ..Gui.style_default, gap: 16, width: Fill, height: Fill, grow: True, overflow_x: Clip, overflow_y: Clip })],
 				[
 					Gui.column(
-						[Gui.test_id("file-list"), Gui.style({ ..Gui.style_default, grow: True, gap: 0, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip })],
+						# The list clips; its virtual viewport owns the scrolling, so a
+					# second scroller here would nest two independent offsets.
+					[Gui.test_id("file-list"), Gui.style({ ..Gui.style_default, width: Fill, height: Fill, gap: 0, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip })],
 						[
 							Ui.when(
 								visible.map(|entries| Rows.len(entries) == 0),
@@ -419,15 +432,20 @@ explorer_view = |handles| {
 					inspect_view(handles),
 				],
 			),
+			# One footer band. The trailing problem line is empty on healthy
+			# runs, so it pays no gap rhythm above the shortcut hint.
 			Gui.column(
-				[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
-				[Gui.text("Alt+Left / Right: history · Alt+Up: parent · F5: refresh · Ctrl+O: choose folder · Esc: cancel")],
-			),
-			# Trailing problem line: empty on healthy runs, so it pays no gap
-			# rhythm between the always-visible bands above.
-			Gui.column(
-				[Gui.test_id("asset-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
-				[Gui.text_s(handles.asset_problem.signal())],
+				[Gui.style({ ..Gui.style_default, gap: 2, width: Fill, overflow_x: Clip })],
+				[
+					Gui.column(
+						[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
+						[Gui.text("Alt+Left / Right: history · Alt+Up: parent · F5: refresh · Ctrl+O: choose folder · Esc: cancel")],
+					),
+					Gui.column(
+						[Gui.test_id("asset-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
+						[Gui.text_s(handles.asset_problem.signal())],
+					),
+				],
 			),
 		]),
 	)

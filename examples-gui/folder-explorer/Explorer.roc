@@ -50,6 +50,9 @@ Explorer :: [].{
 		{ path: "docs/launch-checklist.md", kind: File, bytes: 3584 },
 		{ path: "docs/research-notes.md", kind: File, bytes: 12288 },
 		{ path: "docs/日本語.md", kind: File, bytes: 2048 },
+		# One deliberately long name. Real projects produce paths the inspector
+		# cannot fit on a line, and that panel has to stay readable for them.
+		{ path: "docs/2026-09-architecture-decision-record-native-presentation-boundary.md", kind: File, bytes: 6144 },
 		{ path: "src", kind: Directory, bytes: 0 },
 		{ path: "src/Editor.roc", kind: File, bytes: 16384 },
 		{ path: "src/Model.roc", kind: File, bytes: 8192 },
@@ -223,7 +226,7 @@ expect {
 ## Search preserves exact international path identity and folds ASCII case.
 expect {
 	actual = Explorer.filter(Explorer.sample_entries, " DOCS/ ").map(|entry| entry.path)
-	actual == ["docs/launch-checklist.md", "docs/research-notes.md", "docs/日本語.md"]
+	actual == ["docs/launch-checklist.md", "docs/research-notes.md", "docs/日本語.md", "docs/2026-09-architecture-decision-record-native-presentation-boundary.md"]
 }
 
 ## A completed rescan refreshes the selected metadata for a surviving path.
@@ -268,7 +271,7 @@ expect {
 }
 
 expect Explorer.sample_children("").map(|entry| entry.path) == ["assets", "docs", "src", "test", "README.md", "release-notes.md"]
-expect Explorer.sample_children("docs").map(|entry| entry.path) == ["docs/launch-checklist.md", "docs/research-notes.md", "docs/日本語.md"]
+expect Explorer.sample_children("docs").map(|entry| entry.path) == ["docs/launch-checklist.md", "docs/research-notes.md", "docs/日本語.md", "docs/2026-09-architecture-decision-record-native-presentation-boundary.md"]
 expect Explorer.parent_path("/tmp/project/") == "/tmp" and Explorer.parent_path("/tmp") == "/" and Explorer.parent_path("/") == "/" and Explorer.parent_path("docs/file.txt") == "docs"
 
 ## Windows locations keep their own drive root and separators, and a backslash
