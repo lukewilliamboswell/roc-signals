@@ -31,7 +31,6 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 | GUI-09 | P2 | Make asset-verification warnings match rendered behavior | Source | Board/Explorer asset views |
 | GUI-10 | P2 | Explorer: fit list, inspector, and preview at smaller heights | Screenshots + wheel attempts | Explorer layout |
 | GUI-11 | P2 | Explorer: present successful previews as readable content | Screenshot + source | Explorer; possibly public read-only control |
-| GUI-12 | P2 | Activity: preserve useful event space at 800×600 | Populated screenshots | Activity layout |
 | GUI-13 | P2 | Give cards and event rows coherent activation and selection | Screenshots + source | Examples + GUI interaction API |
 | GUI-14 | P2 | Complete the Counter theme demonstration | Source + baseline screenshot | Counter theme/view |
 | GUI-15 | P2 | Give windows application/document identity | Source | GUI title boundary + examples |
@@ -274,22 +273,6 @@ proper read-only presentation contract or a selectable text view; do not merely
 enable the textarea and ignore its change events, leaving native text divergent
 from the authoritative source.
 
-### GUI-12 — Activity content area
-
-At 800×600 five sample events occupy a region showing roughly two complete
-rows, with message text cut off horizontally by the fixed inspector. The
-banner, source controls, status, replay controls, counters, and filters consume
-most of the height:
-[populated wide](gui-examples-review/2026-09-10/activity-monitor-populated.png),
-[populated small](gui-examples-review/2026-09-10/activity-monitor-populated-800x600.png).
-The list can scroll; this is severe space allocation, not evidence that events
-are lost.
-
-Acceptance: consolidate controls/status, phase-gate irrelevant Retry/Cancel,
-and size/reflow the inspector so messages remain useful. Preserve the explicit
-simulated-versus-real source label. Test long log messages, follow-tail on/off,
-selection, resize, paused replay, and file-reading/error states.
-
 ### GUI-13 — Row/card affordances and focus
 
 Board cards are inert outside their repeated `Edit` buttons; Activity places
@@ -398,6 +381,13 @@ semibold treatment; this is not a total absence of font weight. Missing
 alignment encourages padded-wrapper workarounds; hard clipping leaves long
 messages without a clear truncation affordance.
 
+Evidence from the closed GUI-12 work: reflowing Activity within the current
+vocabulary fixed 800×600, but 360×600 still scrolls sideways because the
+toolbar buttons and the filter input are intrinsically wider than the window
+and nothing in the style record expresses wrapping, percentage or min/max
+lengths. `Gui.heading` also ignores `font_size`, which forced a fixed-width
+label column. Those are concrete requirements, not a general wish list.
+
 Acceptance: choose the smallest additions justified by GUI-03/10/12/18 and
 test them in real examples before expanding the whole style vocabulary.
 Review semantics against `design.md`; update Roc producer, native ABI/typed
@@ -488,7 +478,7 @@ mandatory spacing/color dogma is approved by this backlog.
    alongside each fix, not only at the end.
 3. Migrate GUI-08. This simplifies later example edits without needing new
    rendering semantics.
-4. Apply current-API layout/readability fixes (GUI-09–14, GUI-18); use evidence
+4. Apply current-API layout/readability fixes (GUI-09–11, GUI-13/14, GUI-18); use evidence
    from them to scope GUI-19/20/23. Window titles (GUI-15) are a distinct boundary
    change, not a styling workaround.
 5. Finish structure/docs and optional polish (GUI-21/22/24), then recapture the
