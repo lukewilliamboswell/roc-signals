@@ -67,7 +67,7 @@ campaigns. Platform-specific linking and archive checks still run on their
 corresponding CI runners.
 
 During investigation, pass one or more target names, such as
-`python3 scripts/minici gui gui-smoke`, but run the complete command before
+`python3 scripts/minici gui gui-smoke gui-scenarios`, but run the complete command before
 pushing.
 
 ## Test Driver
@@ -140,7 +140,7 @@ To replay a reported coordinate directly, copy the command printed after
 `replay:`. The worker interface is:
 
 ```sh
-app --run-spec-json --fail-on-allocation 7 path/to/case.scm
+app --host-run-spec-json --host-fail-on-allocation 7 path/to/case.scm
 ```
 
 Roc allocator internals are excluded from host coordinates: their physical
@@ -1019,8 +1019,11 @@ fixtures each require their corresponding declared service.
 Fields may appear in any order; each documented field is required exactly once. Choice tags
 are `chosen` and `canceled`. Error kinds are `canceled`, `not-found`,
 `permission-denied`, `invalid-utf8`, `invalid-path`, `resource-limit`, `io`, and
-`unavailable`; canceled errors require empty detail. Paths must be absolute,
-valid UTF-8, and at most 4096 bytes. Read text and write byte counts have the
+`unavailable`; canceled errors require empty detail. Paths must be valid UTF-8,
+at most 4096 bytes, and absolute in one of the spellings a native worker returns:
+POSIX-rooted (`/tmp/note.txt`), drive-rooted (`C:\Users\Lee` or `C:/Users/Lee`),
+or a UNC prefix (`\\server\share\docs`). A typed fixture can therefore express a
+Windows result directly instead of hand-writing a raw task frame. Read text and write byte counts have the
 native one-MiB bound, and error detail is bounded to 4096 UTF-8 bytes. Unknown
 fields, duplicate fields, invalid types, and oversized values reject the spec.
 
@@ -1109,7 +1112,7 @@ hosts; use `python3 scripts/test.py bench --native always` to force the focused
 bench gate. A built app binary also accepts benchmark flags directly:
 
 ```sh
-.test-out/bench-bin/signals-data-grid-bench --bench-app --bench-name signals-data-grid --bench-iterations 100 --bench-samples 3 examples-web/data-grid/specs/initial-mount.scm
+.test-out/bench-bin/signals-data-grid-bench --host-bench-app --host-bench-name signals-data-grid --host-bench-iterations 100 --host-bench-samples 3 examples-web/data-grid/specs/initial-mount.scm
 ```
 
 The host initializes a fresh app per iteration, applies the initial command
@@ -1282,9 +1285,9 @@ python3 scripts/build_gui.py --debug
 roc build examples-gui/counter/main.roc --output=.test-out/Counter
 .test-out/Counter
 # Same executable, display-free semantic check:
-.test-out/Counter --run-spec-json examples-gui/counter/specs/counting.scm
+.test-out/Counter --host-run-spec-json examples-gui/counter/specs/counting.scm
 # Brief rendering/adapter integration check:
-.test-out/Counter --smoke --smoke-click Increment --smoke-expect '1'
+.test-out/Counter --host-smoke --host-smoke-click Increment --host-smoke-expect '1'
 ```
 
 `python3 scripts/test.py gui --roc-bin /path/to/pinned/roc --keep-output`
@@ -1307,9 +1310,79 @@ and fails on a crash or a 30-second timeout. This checks the GPUI window/renderi
 path separately from the display-free specs. Run the same script on a desktop
 after the GUI suite to exercise the local graphics driver.
 
+## Scripted GUI regression scenarios
+
+`gui_smoke.py` answers one question: did the application mount and render. That
+is not enough to catch a control laid out beyond the window or a native editor
+that kept the previous document's undo history — both of which the maintained
+semantic specs also cannot see, because they run without a presentation layer.
+
+`python3 scripts/gui_regression.py --directory .test-out/gui` runs the scenarios
+stored beside each example in `examples-gui/<app>/regression/*.script`, covering
+initial, populated, selected, focused, disabled/read-only, modal, error/loading
+and resized states. Each scenario is a line-per-step script executed against the
+real window by the host's `--host-script` flag:
+
+```text
+# size: 800x600
+click #edit-task-4
+wait 400
+expect-selected #task-4
+expect-value "Task title" Polish the project sidebar
+expect-history "Task notes" 0
+expect-onscreen #task-detail
+snapshot task-4-selected
+```
+
+Controls are named by the application's own `Gui.test_id` or by the label a
+person reads — never by pixel coordinates, so the scenarios survive layout work.
+Besides the ordinary state assertions, two observations exist only here:
+`expect-history` reads how many native undo entries an editor is holding, which
+is how document ownership becomes testable, and `expect-onscreen` reads a
+control's laid-out bounds. `expect-onscreen` means *visible without scrolling*;
+the host's window-scroll fallback means a failure is a usability finding rather
+than a proof that nothing can reach the control.
+
+Every run writes a JSON report of every observation under
+`.test-out/gui-regression/<app>/`, and on macOS also photographs the
+application's own window in the state the script finished in — including the
+state a failing assertion stopped at. Captures go through `gui_capture.py`, so
+they find the window by the process id the driver started and refuse a window
+whose size does not match the request; no region of your desktop is captured.
+Pass `--no-capture` to run the scripts alone, `--scenario SUBSTRING` to select
+some of them, and `--artifacts PATH` to write elsewhere.
+
+The scenarios themselves are platform-neutral, because the interpreter lives in
+the host rather than in the driver: the same checks run on every system the GUI
+supports. Only the captures are macOS-only, and the driver says which half it
+ran rather than reporting a pass for evidence it never gathered. On Linux the
+scenarios need the same private display as the smoke checks, which
+`python3 scripts/minici gui-scenarios` arranges — under Weston on an Xvfb
+display there, and directly on macOS and Windows. CI runs that target after
+`gui-smoke` and keeps the JSON reports when it fails.
+
+A scenario runs against its example's own `assets/` directory. A script whose
+front matter carries `# assets: <path relative to the example>` runs against a
+prepared root instead, which is how the asset scenarios show a missing, altered
+or unreadable file without a script damaging the working tree; the named
+directory must exist. See `examples-gui/task-board/regression/assets-problem/`,
+whose `generate.py` derives that root from the shipped assets.
+
+A script whose front matter carries `# diagnostic:` documents a defect owned
+elsewhere. It runs and its failure is reported, but it does not fail the run —
+and a diagnostic that starts passing *does* fail the run, so a fix cannot leave
+a stale exclusion behind. Never weaken an assertion to make a scenario pass;
+state the reason in the script and let it run as a diagnostic instead.
+
+Window captures are implemented for macOS only. On Linux the driver runs the
+scripts without captures; the scripts themselves, including `expect-onscreen`,
+work anywhere the examples run, but this repository has only executed them on
+Apple Silicon macOS so far.
+
 Normal GUI launches do not print engine metrics. Pass `--host-trace-engine` to an
-app executable to log event-turn metrics to stderr; `--smoke` prints its explicit
-validation result. Host errors remain visible without tracing.
+app executable to log event-turn metrics to stderr; `--host-smoke` prints its explicit
+validation result, and `--host-script` prints its own pass or failure line. Host
+errors remain visible without tracing.
 
 Host builds default to two Cargo workers. Use `scripts/build_gui.py --jobs N`
 or `scripts/test.py gui --gui-build-jobs N` to adjust memory pressure. Parallel
@@ -1414,6 +1487,22 @@ ordinary Roc checks, builds, and semantic specs without rebuilding Cargo or Zig
 host code. Cargo host tests and fresh host-output construction remain part of the
 dedicated producer workflow when actual host inputs or producer machinery change.
 
+A reviewed host release can only be published from `main`, so a branch that
+changes the host sources has no matching release yet. When the lock does not
+describe the checkout's host inputs, the driver says so and builds and tests the
+host from source for that run instead of refusing to start — otherwise a host
+change could never reach `main` to be released from. Asking for the verified
+host itself still refuses a mismatched lock: the fallback is the test driver's
+decision, never something a release or a bundle can inherit. The macOS bundle
+step is skipped in that case for the same reason — there is no released archive
+for it to validate.
+
+Because that job may build the host, its runner needs the host's build inputs:
+the FreeType and xkbcommon development packages on Linux, and the
+`x86_64-pc-windows-gnullvm` Rust target on Windows. Generating the macOS
+interface catalog remains outside ordinary CI; that has its own producer and
+review.
+
 These archives contain host code and licenses, not external system libraries or
 SDK stubs. Every included target must also have its external link inputs supplied;
 the bundler rejects incomplete targets. Windows ADVAPI32 imports and all declared
@@ -1451,7 +1540,8 @@ The web archive contains its native spec hosts and Wasm browser host.
 
 Packaging changes do not rebuild either host. `web-host.lock.json` and
 `gui-host.lock.json` select immutable host releases whose narrow source
-fingerprints must match the checkout. `dependencies.lock.json` independently
+fingerprints must match the checkout; packaging and publication refuse a lock
+that does not, and only the GUI test driver falls back to a source build. `dependencies.lock.json` independently
 selects the external linker inputs, including the catalog-derived macOS TBDs.
 Ordinary admission uses the recorded byte counts and SHA-256 hashes without an
 attestation service. The publishing job additionally attests the exact two bundles,

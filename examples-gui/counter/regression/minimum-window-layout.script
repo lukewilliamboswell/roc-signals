@@ -1,0 +1,9 @@
+# size: 360x240
+# The counter's own headline value fits inside the smallest window the host
+# permits, without relying on the window-scroll fallback to reveal it. This
+# guards the fix for the fixed 380-pixel panel and the oversized paddings that
+# put the reading past the bottom and right edges.
+expect-onscreen #count
+expect-onscreen #Increment
+expect-onscreen #Decrement
+expect-onscreen #Reset

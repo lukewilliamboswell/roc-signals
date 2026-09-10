@@ -22,6 +22,7 @@ export ROC_BIN=/path/to/pinned-roc/roc
 | 11 | Native GPUI sample cannot link as Shared or PIE | not filed | `examples-gui/keyed-rows/` | normal Roc executable linkage |
 | 10 | Unit-state capability callbacks produce invalid dev Wasm | not filed | `repro/unit-state-wasm-dev/` | Wasm smoke builds use size; TODO: restore dev after upstream fix |
 | 14 | `roc bundle --output-dir` fails across filesystems | not filed | commands below | stage on the output filesystem |
+| 15 | A hand-written `parser_for` cannot be annotated | not filed | `examples-gui/counter/Theme.roc` | omit the annotation |
 
 For #1, camelCase field names longer than ten bytes are corrupted on wasm32 at
 byte four, while native is unaffected; `favoritesCount` exposed it. For #2, the
@@ -153,3 +154,48 @@ Do not interpret a successful local-file build or compressed archive size as
 proof of URL consumption. Package layout and host size still need to satisfy
 the expanded transitive budget or callers must pass the explicit implemented
 override. No compiler change is made here.
+
+## 15. A hand-written `parser_for` cannot carry a type annotation
+
+Reproduced on `nightly-2026-09-04-c125b82`. A nominal type may implement the
+`parser_for` codec hook itself, and doing so works — `Theme.Doc` in
+`examples-gui/counter/Theme.roc` collects a JSON object into a list so the
+theme can reject duplicate keys, which a derived record cannot see. What does
+not work is annotating that method.
+
+Naming the concrete builtin types is not possible: `JsonEncoding` and
+`JsonState` are `undeclared type` outside the builtin module. Writing the
+method generically, in the shape the builtins themselves use, is rejected as a
+type mismatch instead:
+
+```roc
+Value := [Color(Str), Layout(U32)].{
+	parser_for : encoding -> (state -> Try({ value : Value, rest : state }, [InvalidJson(Str), ..]))
+		where [
+			encoding.parse_str : encoding, state -> Try({ value : Str, rest : state }, [InvalidJson(Str)]),
+			encoding.parse_u32 : encoding, state -> Try({ value : U32, rest : state }, [InvalidJson(Str)]),
+		]
+	parser_for = |encoding|
+		|state|
+			match encoding.parse_str(state) {
+				Ok(parsed) => Ok({ value: Value.Color(parsed.value), rest: parsed.rest })
+				Err(_) =>
+					match encoding.parse_u32(state) {
+						Ok(parsed) => Ok({ value: Value.Layout(parsed.value), rest: parsed.rest })
+						Err(err) => Err(err)
+					}
+			}
+}
+```
+
+The reported type of the returned lambda is
+`state -> [Err([InvalidJson(Str)]), Ok({ rest: state, value: Value })]`, which
+the checker will not unify with the annotated `Try(...)`. Closing the error
+row, opening it, adding `MissingRequiredField(Str)`, and spelling the `Ok`
+constructor as `Try.Ok` all produce the same mismatch. The same body checks and
+runs correctly with the annotation removed.
+
+Workaround: the `Value.parser_for` and `Doc.parser_for` methods in
+`examples-gui/counter/Theme.roc`, and in its byte-identical copy in
+`examples-gui/notes-editor/Theme.roc`, are left unannotated and each carries a
+comment pointing here. Restore the annotations once the checker accepts them.

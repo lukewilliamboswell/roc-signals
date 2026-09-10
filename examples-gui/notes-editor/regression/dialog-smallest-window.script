@@ -1,0 +1,10 @@
+# size: 360x240
+# The host permits a 360x240 window, so a dialog has to work there too — this is
+# the size at which an unbounded dialog is worst. The scenario deliberately ends
+# with the dialog open so the captured frame is evidence of where it was laid
+# out; Escape is covered at 360x600.
+type "Note text" hi
+wait 400
+click New
+wait 400
+expect-text Discard your changes?

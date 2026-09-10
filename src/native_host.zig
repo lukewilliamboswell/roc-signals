@@ -417,6 +417,7 @@ const NativeRenderPublication = struct {
                 },
                 .selected => node.selected = entry.next orelse false,
                 .native_drop_target => node.native_drop_target = entry.next orelse false,
+                .native_read_only => node.native_read_only = entry.next orelse false,
                 .disabled => {
                     node.disabled = entry.next orelse false;
                     node.disabled_update_count += 1;
@@ -726,7 +727,7 @@ fn writeStderr(bytes: []const u8) void {
 }
 
 fn writeUsage() void {
-    writeStderr("Usage: ./app [--verbose] [--trace-allocations] [--run-spec-json] [--entropy-seed U32] [--fail-on-allocation N] <case.scm>\n       ./app --bench-app [--bench-name NAME] [--bench-warmup N] [--bench-iterations N] [--bench-samples N] <case.scm>\n");
+    writeStderr("Usage: ./app [--host-verbose] [--host-trace-allocations] [--host-run-spec-json] [--host-entropy-seed U32] [--host-fail-on-allocation N] <case.scm>\n       ./app --host-bench-app [--host-bench-name NAME] [--host-bench-warmup N] [--host-bench-iterations N] [--host-bench-samples N] <case.scm>\n");
 }
 
 const SpecJsonFailure = struct {
@@ -1045,6 +1046,10 @@ const HostEnv = struct {
     online: boundary.OnlineSnapshot = .online,
     storage_entries: std.ArrayListUnmanaged(NativeStorageEntry) = .empty,
     document_title: ?[]u8 = null,
+    /// Bumped only when the applied title text actually changes, so a host that
+    /// observes the title can skip a native window update the engine already
+    /// pruned. It is an observation counter, never an alternate title route.
+    document_title_revision: u64 = 0,
 
     fn init() HostEnv {
         return .{
@@ -1713,9 +1718,12 @@ const HostEnv = struct {
     }
 
     fn setDocumentTitle(self: *HostEnv, title: []const u8) void {
+        if (std.mem.eql(u8, self.currentDocumentTitle(), title)) return;
         const allocator = self.hostAllocator();
+        const copy = allocator.dupe(u8, title) catch @panic("out of memory");
         self.clearDocumentTitle();
-        self.document_title = allocator.dupe(u8, title) catch @panic("out of memory");
+        self.document_title = copy;
+        self.document_title_revision +%= 1;
     }
 
     fn currentDocumentTitle(self: *const HostEnv) []const u8 {
@@ -3776,6 +3784,12 @@ const SpecRunnerCtx = struct {
         return host.currentDocumentTitle();
     }
 
+    /// Provides the document title revision so a host or spec can tell a repeated
+    /// title from a re-applied one without inspecting engine internals.
+    pub fn documentTitleRevision(host: *const Host) u64 {
+        return host.document_title_revision;
+    }
+
     /// Provides finish host metrics for native semantic observation without duplicating engine behavior.
     pub fn finishHostMetrics(host: *Host) void {
         finishHostMetricsForBenchmark(host);
@@ -3852,6 +3866,7 @@ comptime {
             @export(&Gpui.childAt, .{ .name = "signals_child_at" });
             @export(&Gpui.readShortcuts, .{ .name = "signals_read_shortcuts" });
             @export(&Gpui.metrics, .{ .name = "signals_metrics" });
+            @export(&Gpui.documentTitle, .{ .name = "signals_document_title" });
             @export(&Gpui.timerVersion, .{ .name = "signals_timer_version" });
             @export(&Gpui.timerSize, .{ .name = "signals_timer_size" });
             @export(&Gpui.nextTimer, .{ .name = "signals_timer_next" });
@@ -3869,124 +3884,185 @@ comptime {
 
 fn __main() callconv(.c) void {}
 
-fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
-    var verbose = false;
-    var trace_allocations = false;
-    var result_json = false;
-    var fail_on_allocation: ?usize = null;
-    var entropy_seed: u32 = default_native_entropy_seed;
-    var bench_app = false;
-    var bench_name: []const u8 = "app_dispatch";
-    var bench_warmup: usize = 0;
-    var bench_iterations: usize = 100;
-    var bench_samples: usize = 3;
-    var spec_file: ?[]const u8 = null;
+/// The most arguments a host command line may carry. A native host takes a spec
+/// file and a handful of controls; a longer command line is a mistake worth
+/// naming rather than a buffer worth growing.
+const max_host_args: usize = 64;
 
-    var i: usize = 1;
-    const arg_count: usize = @intCast(argc);
-    while (i < arg_count) : (i += 1) {
-        const arg = std.mem.span(argv[i]);
-        if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v")) {
-            verbose = true;
-        } else if (std.mem.eql(u8, arg, "--trace-allocations")) {
-            trace_allocations = true;
-        } else if (std.mem.eql(u8, arg, "--run-spec-json")) {
-            result_json = true;
-        } else if (std.mem.eql(u8, arg, "--entropy-seed")) {
+/// Every command-line option the shared native host owns.
+///
+/// Host controls live in the reserved `--host-` namespace so an application can
+/// use the plain argument namespace without a host quietly capturing one of its
+/// flags (roc-signals#55).
+const HostOptions = struct {
+    verbose: bool = false,
+    trace_allocations: bool = false,
+    result_json: bool = false,
+    fail_on_allocation: ?usize = null,
+    entropy_seed: u32 = default_native_entropy_seed,
+    bench_app: bool = false,
+    bench_name: []const u8 = "app_dispatch",
+    bench_warmup: usize = 0,
+    bench_iterations: usize = 100,
+    bench_samples: usize = 3,
+    spec_file: ?[]const u8 = null,
+};
+
+const RenamedFlag = struct { old: []const u8, new: []const u8 };
+
+/// The host spellings that existed before the `--host-` namespace was reserved.
+///
+/// They are reported by name instead of falling through to the application: a
+/// stale command that silently ran with allocation tracing or a fixed entropy
+/// seed switched off would report a pass for a run it never performed. The
+/// short `-v` alias is gone with them; no unprefixed spelling remains.
+const renamed_host_flags = [_]RenamedFlag{
+    .{ .old = "-v", .new = "--host-verbose" },
+    .{ .old = "--verbose", .new = "--host-verbose" },
+    .{ .old = "--trace-allocations", .new = "--host-trace-allocations" },
+    .{ .old = "--run-spec-json", .new = "--host-run-spec-json" },
+    .{ .old = "--entropy-seed", .new = "--host-entropy-seed" },
+    .{ .old = "--fail-on-allocation", .new = "--host-fail-on-allocation" },
+    .{ .old = "--bench-app", .new = "--host-bench-app" },
+    .{ .old = "--bench-name", .new = "--host-bench-name" },
+    .{ .old = "--bench-iterations", .new = "--host-bench-iterations" },
+    .{ .old = "--bench-warmup", .new = "--host-bench-warmup" },
+    .{ .old = "--bench-samples", .new = "--host-bench-samples" },
+};
+
+const HostArgResult = union(enum) {
+    options: HostOptions,
+    usage,
+    message: []const u8,
+    renamed: RenamedFlag,
+};
+
+fn renamedHostFlag(arg: []const u8) ?RenamedFlag {
+    for (renamed_host_flags) |flag| {
+        if (std.mem.eql(u8, arg, flag.old)) return flag;
+    }
+    return null;
+}
+
+/// Reads the host options out of a command line, left to right.
+///
+/// The scan consumes each option's values as values, so a value that looks like
+/// a flag stays a value: `--host-bench-name --host-verbose` names a benchmark,
+/// it does not also turn verbose output on.
+fn parseHostArgs(args: []const []const u8) HostArgResult {
+    var options = HostOptions{};
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--host-verbose")) {
+            options.verbose = true;
+        } else if (std.mem.eql(u8, arg, "--host-trace-allocations")) {
+            options.trace_allocations = true;
+        } else if (std.mem.eql(u8, arg, "--host-run-spec-json")) {
+            options.result_json = true;
+        } else if (std.mem.eql(u8, arg, "--host-entropy-seed")) {
             i += 1;
-            if (i >= arg_count) {
-                writeStderr("Error: --entropy-seed requires a value\n");
-                return 1;
-            }
-            entropy_seed = std.fmt.parseInt(u32, std.mem.span(argv[i]), 10) catch {
-                writeStderr("Error: Invalid --entropy-seed value\n");
-                return 1;
+            if (i >= args.len) return .{ .message = "Error: --host-entropy-seed requires a value\n" };
+            options.entropy_seed = std.fmt.parseInt(u32, args[i], 10) catch {
+                return .{ .message = "Error: Invalid --host-entropy-seed value\n" };
             };
-        } else if (std.mem.eql(u8, arg, "--fail-on-allocation")) {
+        } else if (std.mem.eql(u8, arg, "--host-fail-on-allocation")) {
             i += 1;
-            if (i >= arg_count) {
-                writeStderr("Error: --fail-on-allocation requires a value\n");
-                return 1;
-            }
-            fail_on_allocation = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
-                writeStderr("Error: Invalid --fail-on-allocation value\n");
-                return 1;
+            if (i >= args.len) return .{ .message = "Error: --host-fail-on-allocation requires a value\n" };
+            options.fail_on_allocation = std.fmt.parseInt(usize, args[i], 10) catch {
+                return .{ .message = "Error: Invalid --host-fail-on-allocation value\n" };
             };
-            if (fail_on_allocation.? == 0) {
-                writeStderr("Error: --fail-on-allocation must be greater than zero\n");
-                return 1;
+            if (options.fail_on_allocation.? == 0) {
+                return .{ .message = "Error: --host-fail-on-allocation must be greater than zero\n" };
             }
-        } else if (std.mem.eql(u8, arg, "--bench-app")) {
-            bench_app = true;
-        } else if (std.mem.eql(u8, arg, "--bench-name")) {
+        } else if (std.mem.eql(u8, arg, "--host-bench-app")) {
+            options.bench_app = true;
+        } else if (std.mem.eql(u8, arg, "--host-bench-name")) {
             i += 1;
-            if (i >= arg_count) {
-                writeUsage();
-                return 1;
-            }
-            bench_name = std.mem.span(argv[i]);
-        } else if (std.mem.eql(u8, arg, "--bench-iterations")) {
+            if (i >= args.len) return .usage;
+            options.bench_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--host-bench-iterations")) {
             i += 1;
-            if (i >= arg_count) {
-                writeUsage();
-                return 1;
-            }
-            bench_iterations = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
-                writeStderr("Error: Invalid --bench-iterations value\n");
-                return 1;
+            if (i >= args.len) return .usage;
+            options.bench_iterations = std.fmt.parseInt(usize, args[i], 10) catch {
+                return .{ .message = "Error: Invalid --host-bench-iterations value\n" };
             };
-            if (bench_iterations == 0) {
-                writeStderr("Error: --bench-iterations must be greater than zero\n");
-                return 1;
+            if (options.bench_iterations == 0) {
+                return .{ .message = "Error: --host-bench-iterations must be greater than zero\n" };
             }
-        } else if (std.mem.eql(u8, arg, "--bench-warmup")) {
+        } else if (std.mem.eql(u8, arg, "--host-bench-warmup")) {
             i += 1;
-            if (i >= arg_count) {
-                writeStderr("Error: --bench-warmup requires a value\n");
-                return 1;
-            }
-            bench_warmup = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
-                writeStderr("Error: Invalid --bench-warmup value\n");
-                return 1;
+            if (i >= args.len) return .{ .message = "Error: --host-bench-warmup requires a value\n" };
+            options.bench_warmup = std.fmt.parseInt(usize, args[i], 10) catch {
+                return .{ .message = "Error: Invalid --host-bench-warmup value\n" };
             };
-        } else if (std.mem.eql(u8, arg, "--bench-samples")) {
+        } else if (std.mem.eql(u8, arg, "--host-bench-samples")) {
             i += 1;
-            if (i >= arg_count) {
-                writeUsage();
-                return 1;
-            }
-            bench_samples = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
-                writeStderr("Error: Invalid --bench-samples value\n");
-                return 1;
+            if (i >= args.len) return .usage;
+            options.bench_samples = std.fmt.parseInt(usize, args[i], 10) catch {
+                return .{ .message = "Error: Invalid --host-bench-samples value\n" };
             };
-            if (bench_samples == 0) {
-                writeStderr("Error: --bench-samples must be greater than zero\n");
-                return 1;
+            if (options.bench_samples == 0) {
+                return .{ .message = "Error: --host-bench-samples must be greater than zero\n" };
             }
+        } else if (renamedHostFlag(arg)) |flag| {
+            return .{ .renamed = flag };
         } else if (arg.len > 0 and arg[0] != '-') {
-            spec_file = arg;
+            options.spec_file = arg;
         } else {
+            return .usage;
+        }
+    }
+
+    if (options.spec_file == null) return .usage;
+
+    if (options.fail_on_allocation != null and !options.result_json) {
+        return .{ .message = "Error: --host-fail-on-allocation requires --host-run-spec-json\n" };
+    }
+
+    return .{ .options = options };
+}
+
+fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
+    var arg_storage: [max_host_args][]const u8 = undefined;
+    const arg_count: usize = if (argc > 0) @intCast(argc) else 1;
+    if (arg_count > max_host_args + 1) {
+        writeStderr("Error: too many command-line arguments\n");
+        return 1;
+    }
+    var i: usize = 1;
+    while (i < arg_count) : (i += 1) {
+        arg_storage[i - 1] = std.mem.span(argv[i]);
+    }
+    const args = arg_storage[0 .. arg_count - 1];
+
+    const options = switch (parseHostArgs(args)) {
+        .options => |parsed| parsed,
+        .usage => {
             writeUsage();
             return 1;
-        }
-    }
+        },
+        .message => |text| {
+            writeStderr(text);
+            return 1;
+        },
+        .renamed => |flag| {
+            writeStderr("Error: ");
+            writeStderr(flag.old);
+            writeStderr(" is now ");
+            writeStderr(flag.new);
+            writeStderr("\n");
+            return 1;
+        },
+    };
 
-    if (spec_file == null) {
-        writeUsage();
-        return 1;
-    }
-
-    if (fail_on_allocation != null and !result_json) {
-        writeStderr("Error: --fail-on-allocation requires --run-spec-json\n");
-        return 1;
-    }
-
-    if (bench_app) {
+    if (options.bench_app) {
         if (builtin.mode != .ReleaseFast) {
-            writeStderr("Error: --bench-app requires a ReleaseFast host; run `zig build build-test-hosts -Doptimize=ReleaseFast` before building the Roc app\n");
+            writeStderr("Error: --host-bench-app requires a ReleaseFast host; run `zig build build-test-hosts -Doptimize=ReleaseFast` before building the Roc app\n");
             return 1;
         }
-        return runAppBenchmarks(spec_file.?, bench_name, bench_warmup, bench_iterations, bench_samples, verbose) catch |err| {
+        return runAppBenchmarks(options.spec_file.?, options.bench_name, options.bench_warmup, options.bench_iterations, options.bench_samples, options.verbose) catch |err| {
             writeStderr("HOST ERROR: ");
             writeStderr(@errorName(err));
             writeStderr("\n");
@@ -3994,7 +4070,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         };
     }
 
-    return platform_main(spec_file.?, verbose, trace_allocations, result_json, fail_on_allocation, entropy_seed) catch |err| {
+    return platform_main(options.spec_file.?, options.verbose, options.trace_allocations, options.result_json, options.fail_on_allocation, options.entropy_seed) catch |err| {
         writeStderr("HOST ERROR: ");
         writeStderr(@errorName(err));
         writeStderr("\n");
@@ -6792,6 +6868,19 @@ test "signals host browser environment sources and commands update native state"
         defer releaseTestCmd(&roc_host, cmd);
         try std.testing.expectEqual(@as(u64, 0), host.engine.runCommand(&host, &roc_host, ids.ScopeId.fromRaw(0), cmd).total);
         try std.testing.expectEqualStrings("Ops ready", host.currentDocumentTitle());
+        try std.testing.expectEqual(@as(u64, 1), host.document_title_revision);
+    }
+
+    {
+        // Re-applying the same title is an equality cutoff at this boundary: a
+        // window host observing the revision must not be asked to re-title.
+        const cmd = testDocumentTitleCmd(&roc_host, "Ops ready");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        _ = host.engine.runCommand(&host, &roc_host, ids.ScopeId.fromRaw(0), cmd);
+        try std.testing.expectEqualStrings("Ops ready", host.currentDocumentTitle());
+        try std.testing.expectEqual(@as(u64, 1), host.document_title_revision);
     }
 
     {
@@ -6801,6 +6890,7 @@ test "signals host browser environment sources and commands update native state"
         defer releaseTestCmd(&roc_host, cmd);
         _ = host.engine.runCommand(&host, &roc_host, ids.ScopeId.fromRaw(0), cmd);
         try std.testing.expectEqualStrings("Ops steady", host.currentDocumentTitle());
+        try std.testing.expectEqual(@as(u64, 2), host.document_title_revision);
     }
 }
 
@@ -12734,6 +12824,16 @@ const Gpui = struct {
         };
         return needed;
     }
+    // Reports the window identity the graph has already decided. The slice
+    // borrows engine-owned storage that stays valid until the next engine turn,
+    // so the caller must copy before dispatching again. The revision lets the
+    // host skip a native window update for a title that did not change; it is
+    // an observation of the SetDocumentTitle command, not a second title route.
+    fn documentTitle(out: *Slice) callconv(.c) u64 {
+        if (!live) failHost("native title read before mount");
+        out.* = Slice.from(host.currentDocumentTitle());
+        return host.document_title_revision;
+    }
     fn effectVersion() callconv(.c) u32 {
         return render.native_protocol.effect_version;
     }
@@ -12795,6 +12895,7 @@ const Gpui = struct {
             .checked = @intFromBool(elem.checked),
             .disabled = @intFromBool(elem.disabled),
             .selected = @intFromBool(elem.selected),
+            .read_only = @intFromBool(elem.native_read_only),
             .style_present = @intFromBool(elem.native_style != null),
             .style = if (elem.native_style) |bytes| native_style.decode(bytes) catch unreachable else .{},
             .viewport = if (elem.native_viewport) |bytes| native_style.decodeViewport(bytes) catch unreachable else .{},
@@ -13205,4 +13306,95 @@ test "native GUI unit input and checked dispatch preserve their extraction descr
             try expectHostValueI64(Gpui.host.stateValueByNodeId(state_id), @intCast(expected));
         }
     }
+}
+
+test "host argument parsing keeps values out of the flag namespace" {
+    // A value that looks like a flag must stay a value: the benchmark name is
+    // whatever follows the option, and no second control may switch on.
+    const args = [_][]const u8{ "--host-bench-app", "--host-bench-name", "--host-verbose", "case.scm" };
+    const parsed = parseHostArgs(&args);
+    try std.testing.expect(parsed == .options);
+    try std.testing.expect(parsed.options.bench_app);
+    try std.testing.expectEqualStrings("--host-verbose", parsed.options.bench_name);
+    try std.testing.expect(!parsed.options.verbose);
+    try std.testing.expectEqualStrings("case.scm", parsed.options.spec_file.?);
+}
+
+test "host argument parsing accepts the renamed controls" {
+    const args = [_][]const u8{
+        "--host-verbose",
+        "--host-trace-allocations",
+        "--host-run-spec-json",
+        "--host-entropy-seed",
+        "77",
+        "--host-fail-on-allocation",
+        "3",
+        "case.scm",
+    };
+    const parsed = parseHostArgs(&args);
+    try std.testing.expect(parsed == .options);
+    try std.testing.expect(parsed.options.verbose);
+    try std.testing.expect(parsed.options.trace_allocations);
+    try std.testing.expect(parsed.options.result_json);
+    try std.testing.expectEqual(@as(u32, 77), parsed.options.entropy_seed);
+    try std.testing.expectEqual(@as(?usize, 3), parsed.options.fail_on_allocation);
+}
+
+test "host argument parsing rejects missing and invalid values" {
+    {
+        const args = [_][]const u8{ "--host-entropy-seed", "case.scm" };
+        const parsed = parseHostArgs(&args);
+        try std.testing.expect(parsed == .message);
+        try std.testing.expectEqualStrings("Error: Invalid --host-entropy-seed value\n", parsed.message);
+    }
+    {
+        const args = [_][]const u8{"--host-entropy-seed"};
+        const parsed = parseHostArgs(&args);
+        try std.testing.expect(parsed == .message);
+        try std.testing.expectEqualStrings("Error: --host-entropy-seed requires a value\n", parsed.message);
+    }
+    {
+        const args = [_][]const u8{ "--host-fail-on-allocation", "0", "--host-run-spec-json", "case.scm" };
+        const parsed = parseHostArgs(&args);
+        try std.testing.expect(parsed == .message);
+        try std.testing.expectEqualStrings("Error: --host-fail-on-allocation must be greater than zero\n", parsed.message);
+    }
+    {
+        const args = [_][]const u8{ "--host-fail-on-allocation", "2", "case.scm" };
+        const parsed = parseHostArgs(&args);
+        try std.testing.expect(parsed == .message);
+        try std.testing.expectEqualStrings("Error: --host-fail-on-allocation requires --host-run-spec-json\n", parsed.message);
+    }
+    {
+        const args = [_][]const u8{ "--host-bench-iterations", "0", "case.scm" };
+        const parsed = parseHostArgs(&args);
+        try std.testing.expect(parsed == .message);
+    }
+    {
+        const args = [_][]const u8{"--host-bench-name"};
+        try std.testing.expect(parseHostArgs(&args) == .usage);
+    }
+}
+
+test "host argument parsing names the pre-rename spellings instead of ignoring them" {
+    const cases = [_]struct { old: []const u8, new: []const u8 }{
+        .{ .old = "-v", .new = "--host-verbose" },
+        .{ .old = "--verbose", .new = "--host-verbose" },
+        .{ .old = "--run-spec-json", .new = "--host-run-spec-json" },
+        .{ .old = "--trace-allocations", .new = "--host-trace-allocations" },
+        .{ .old = "--bench-app", .new = "--host-bench-app" },
+    };
+    for (cases) |case| {
+        const args = [_][]const u8{ case.old, "case.scm" };
+        const parsed = parseHostArgs(&args);
+        try std.testing.expect(parsed == .renamed);
+        try std.testing.expectEqualStrings(case.old, parsed.renamed.old);
+        try std.testing.expectEqualStrings(case.new, parsed.renamed.new);
+    }
+}
+
+test "host argument parsing still requires a spec file and rejects unknown options" {
+    try std.testing.expect(parseHostArgs(&[_][]const u8{}) == .usage);
+    try std.testing.expect(parseHostArgs(&[_][]const u8{"--host-verbose"}) == .usage);
+    try std.testing.expect(parseHostArgs(&[_][]const u8{ "--nonsense", "case.scm" }) == .usage);
 }

@@ -179,6 +179,40 @@ class HostArtifactTests(unittest.TestCase):
                 (target / name).write_bytes(b"verified dependency")
             bundle_platforms.validate_gui_link_inputs(root)
 
+    def test_a_lock_describing_this_checkout_is_usable(self):
+        entry = {"input_fingerprint": "abc"}
+        with patch.object(gui_host_artifacts, "read_lock",
+                          return_value={"artifacts": {"gui-host-x64glibc": entry}}), \
+                patch.object(gui_host_artifacts, "source_fingerprint", return_value="abc"):
+            self.assertTrue(gui_host_artifacts.lock_matches_sources(Path("unused")))
+
+    def test_a_lock_from_before_a_host_change_is_reported_not_raised(self):
+        # The caller builds the host from source in this case, so the answer has
+        # to be a value it can act on rather than an exception that stops the run.
+        entry = {"input_fingerprint": "stale"}
+        with patch.object(gui_host_artifacts, "read_lock",
+                          return_value={"artifacts": {"gui-host-x64glibc": entry}}), \
+                patch.object(gui_host_artifacts, "source_fingerprint", return_value="abc"), \
+                patch.object(gui_host_artifacts, "materialize") as download:
+            self.assertFalse(gui_host_artifacts.lock_matches_sources(Path("unused")))
+        download.assert_not_called()
+
+    def test_a_mismatched_lock_is_still_refused_when_a_prebuilt_host_is_demanded(self):
+        # Falling back is the caller's decision. Asking for the verified host
+        # itself must still refuse rather than hand back a mismatched archive.
+        entry = {"name": "gui-host", "target": "x64glibc", "repository": gui_host_artifacts.REPOSITORY,
+                 "signer_workflow": gui_host_artifacts.WORKFLOW, "input_fingerprint": "stale"}
+        source = dict(entry, name=gui_host_artifacts.SOURCE_KIND)
+        with patch.object(gui_host_artifacts, "read_lock", return_value={"artifacts": {
+                "gui-host-x64glibc": entry,
+                gui_host_artifacts.SOURCE_KIND + "-x64glibc": source}}), \
+                patch.object(gui_host_artifacts, "source_fingerprint", return_value="abc"), \
+                patch.object(gui_host_artifacts, "materialize") as download:
+            with self.assertRaisesRegex(ValueError, "does not match this checkout"):
+                with gui_host_artifacts.verified_hosts(Path("unused"), Path("unused-cache")):
+                    self.fail("mismatched host admitted")
+        download.assert_not_called()
+
     def test_foreign_host_producer_is_rejected_before_download(self):
         entry = {"name": "gui-host", "target": "x64glibc", "repository": "other/repository",
                  "signer_workflow": gui_host_artifacts.WORKFLOW}

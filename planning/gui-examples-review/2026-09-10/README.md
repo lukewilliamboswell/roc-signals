@@ -1,7 +1,7 @@
 # Evidence for the open GUI examples backlog
 
-[Current backlog](../../gui-examples-backlog.md). These captures and probes
-support its open items; they are not a screenshot approval baseline or a claim
+[Current backlog](../../gui-examples-backlog.md). These captures support its
+open items; they are not a screenshot approval baseline or a claim
 that every GUI state has been reviewed. Retire planning evidence when the
 relevant regression coverage and fixes land.
 
@@ -29,9 +29,11 @@ libengine.a             88d2f2717f60c9751b21c00dfde518d2985ee2e85c7162cd449cb447
 | Activity | Pass / pass | 55 passed | 5 passed |
 
 The imported-test counts overlap; do not sum them as distinct tests.
-All 42 maintained semantic specs passed. The four additional diagnostics below
-fail at their intended assertions. The codec probe passes five tests and the
-cross-module style probe passes six. `zig build run-check-tidy` passed.
+All 42 maintained semantic specs passed at the reviewed commit. Four additional
+diagnostics failed at their intended assertions. All four have since been fixed and their cases live in the maintained suites.
+Both pinned-compiler probes have been retired too: the behaviour the codec probe
+characterised is asserted by the theme tests, and the style probe's by the
+platform's own nominal style tests. `zig build run-check-tidy` passed.
 
 For setup and staging, use the maintained
 [contributor workflow](../../../www/content/docs/contributing.md).
@@ -88,106 +90,26 @@ are labeled as such in the backlog.
 | Board initial, 1200×820 | [wide](task-board-wide.png) | GUI-03/13/18 |
 | Board initial, 800×600 | [smaller](task-board-800x600.png) | GUI-03 |
 | Board after five wheel-down events over notes | [detail wheel](task-board-wide-after-scroll.png) | GUI-03 |
-| Board after adding first task | [new task](task-board-new-task.png) | GUI-02/03 |
-| Second task before native undo | [before](task-board-second-before-undo.png) | GUI-02 |
-| Second task after native undo | [after](task-board-second-after-undo.png) | GUI-02 |
+| Board after adding first task | [new task](task-board-new-task.png) | GUI-03 |
 | Board after five wheel-down events over outer margin | [outer wheel](task-board-root-scroll.png) | GUI-03 |
 | Explorer initial, 1200×820 | [wide](folder-explorer-wide.png) | GUI-10/18 |
 | Explorer initial, 800×600 | [smaller](folder-explorer-800x600.png) | GUI-10 |
 | Explorer after three wheel-down events over inspector, 800×600 | [after wheel](folder-explorer-800x600-after-scroll.png) | GUI-10 |
 | Explorer sample README selected and previewed, 1200×820 | [preview](folder-explorer-preview.png) | GUI-10/11/18 |
-| Activity initial, 1200×820 | [wide](activity-monitor-wide.png) | GUI-12/18 |
-| Activity initial, 800×600 | [smaller](activity-monitor-800x600.png) | GUI-12 |
-| Activity after five Step replay clicks, 1200×820 | [populated](activity-monitor-populated.png) | GUI-12/13/18 |
+| Activity initial, 1200×820 | [wide](activity-monitor-wide.png) | GUI-18 |
+| Activity after five Step replay clicks, 1200×820 | [populated](activity-monitor-populated.png) | GUI-13/18 |
 | Activity with Inspect 1 selected, 1200×820 | [inspector](activity-monitor-inspector.png) | GUI-13/18 |
-| Same populated/selected Activity after resize to 800×600 | [populated smaller](activity-monitor-populated-800x600.png) | GUI-12 |
-
-## Native undo reproduction: GUI-02
-
-1. Launch a fresh Board at 1200×820.
-2. Enter `duplicate` into New task title and click Add task.
-3. In its Task notes field, type `private`, then Ctrl+A and Backspace.
-4. Enter `second` into New task title and click Add task.
-5. Observe that `second` has empty notes; capture
-   [before](task-board-second-before-undo.png).
-6. Focus `second`'s Task notes field and press Ctrl+Z.
-7. Observe `private` in `second`'s notes; capture
-   [after](task-board-second-after-undo.png).
-
-Both tasks remain on the board; this is the input's native history restoring
-text from another task, not domain undo deleting the newly created task.
-No save or external file write is required.
 
 For the dialog reproduction, type `draft` into a fresh Notes editor, click New,
 then resize the open discard confirmation from 1200×820 to 360×600.
 For the Explorer preview, select the sample `README.md` and click Preview text.
 
-## Failing diagnostic specs
+## Retired diagnostic specs
 
-These are deliberately outside the maintained suite while their backlog items
-are open. They document observed failures, not new permanent metric contracts.
-Choose the final lifetime assertions alongside the fix and add real native
-editor tests; a scope count alone cannot prove history isolation.
-
-| Diagnostic | Executable | Observed failure |
-| --- | --- | --- |
-| [notes-open-lifetime.scm](repros/notes-open-lifetime.scm) | Notes | `bind_event` delta expected 1, actual 0 |
-| [board-editor-lifetime.scm](repros/board-editor-lifetime.scm) | Board | `scopes_created` delta expected 1, actual 0 |
-| [notes-windows-name.scm](repros/notes-windows-name.scm) | Notes | Expected `Ideas.txt`; actual `C:\Users\Lee\Ideas.txt` |
-| [explorer-windows-breadcrumbs.scm](repros/explorer-windows-breadcrumbs.scm) | Explorer | `Go to C:\Users` locator absent |
-
-Example command from the repository root:
-
-```sh
-"$review_output/notes-editor" --run-spec-json planning/gui-examples-review/2026-09-10/repros/notes-open-lifetime.scm
-```
-
-The two Windows cases use current raw `files1` task frames because typed file
-fixtures reject non-`/`-prefixed paths. They are boundary diagnostics, not
-examples of application-facing Files usage or a proposed private-wire API.
-Replace them with typed fixtures when GUI-05 makes those values expressible.
-
-## Pinned Roc probes: GUI-07/08
-
-```sh
-"$ROC_BIN" test --no-cache planning/gui-examples-review/2026-09-10/probes/CodecProbe.roc
-"$ROC_BIN" test --no-cache planning/gui-examples-review/2026-09-10/probes/StyleProbe.roc
-```
-
-[CodecProbe.roc](probes/CodecProbe.roc) verifies structural and nominal codecs,
-round-trip encoding, snake_case field names, leading-zero rejection, and the
-important duplicate-key behavior. Its final test characterizes last-value-wins;
-it does **not** endorse that behavior for themes, whose existing contract
-rejects duplicates.
-
-[StyleApi.roc](probes/StyleApi.roc) and [StyleProbe.roc](probes/StyleProbe.roc)
-verify cross-module transparent nominal defaults, explicit zero, record update,
-shorthand with a comma, and equality. They model the type/call-boundary idea,
-not the complete platform `style_s`/ABI migration.
-
-Additional rejected call forms during investigation:
-
-```roc
-StyleApi.style({})             # {} does not coerce to StyleApi.Style on this pin.
-padding = 16.U32
-StyleApi.style({ padding })    # This is a block returning U32, not a record.
-```
-
-`StyleApi.style(StyleApi.Style.{})` and
-`StyleApi.style({ padding, })` pass. The one-field block/record distinction is
-documented language syntax, not a compiler defect to work around in the GUI API.
-
-Local primary references inspected in the sibling `roc` checkout at
-`53863b31f951daa8307ccd22f343bf7e39870046`:
-
-- `docs/langref/static-dispatch.md`: derived `parser_for`, `encoder_for`, and
-  nominal opt-in; structural derivation.
-- `docs/langref/types.md`: transparent nominal record literal construction.
-- `docs/langref/expressions.md`: `{ x }` is a block, unlike a record literal.
-- `test/cli/BoxyOptionalRecordFields.roc`: nominal fields with `??` defaults.
-- `test/cli/JsonOptionalFieldKinds.roc`: defaulted JSON fields and nominal hooks.
-
-The dedicated `records.md` default-field and `parsers.md` reference sections
-are still placeholders in that checkout; executable probes on the actual pin
-are the evidence for readiness. No compiler or application fixes were made as
-part of this triage.
+The four diagnostics this review shipped — the Notes and Board editor-lifetime
+cases and the two Windows-path cases — have been fixed and now live in the
+maintained suites under `examples-gui/notes-editor/specs/`,
+`examples-gui/task-board/specs/` and `examples-gui/folder-explorer/specs/`.
+Their scope counts prove editor *replacement*, not native undo isolation; that
+distinction is still real and is why GUI-16 asks for native interaction
+coverage.

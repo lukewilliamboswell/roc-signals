@@ -352,6 +352,7 @@ mod tests {
             effects: crate::effects::Manager::default(),
             dialogs: Dialogs::default(),
             window_lifecycle: crate::window_lifecycle::Lifecycle::default(),
+            pending_title: None,
             nodes: HashMap::new(),
             roots: vec![],
             renders: Rc::new(Cell::new(0)),

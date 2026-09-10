@@ -17,7 +17,7 @@ main = || Ui.state(
 				|| Gui.panel(
 					[
 						Gui.test_id("styled-branch"),
-						Gui.style({ ..Gui.style_default, padding: 12, background: Rgb(0x24323E) }),
+						Gui.style({ padding: 12, background: Rgb(0x24323E) }),
 						Gui.selected_s(Signal.const(True)),
 					],
 					[Gui.text("First branch")],
@@ -25,7 +25,7 @@ main = || Ui.state(
 				|| Gui.panel(
 					[
 						Gui.test_id("styled-branch"),
-						Gui.style({ ..Gui.style_default, padding: 20, background: Rgb(0x354452) }),
+						Gui.style({ padding: 20, background: Rgb(0x354452) }),
 						Gui.selected_s(Signal.const(False)),
 					],
 					[Gui.text("Second branch")],

@@ -67,13 +67,25 @@ jobs:
       - name: Install GUI runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfreetype6 libxkbcommon0 libxkbcommon-x11-0
+          # The development packages are needed whenever this job builds the host
+          # itself, which it does when the lock predates a host change.
+          sudo apt-get install -y libfreetype6 libxkbcommon0 libxkbcommon-x11-0 \
+            libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev
       - name: Verify GUI discovery and applications
         run: python3 scripts/minici gui
       - name: Open GUI examples with software Vulkan
         run: |
           sudo apt-get install -y weston xvfb xauth mesa-vulkan-drivers
           python3 scripts/minici gui-smoke
+      - name: Drive the scripted GUI scenarios
+        run: python3 scripts/minici gui-scenarios
+      - name: Keep the scenario reports on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: gui-scenario-reports
+          path: .test-out/gui-regression
+          if-no-files-found: ignore
 
   gui-windows:
     needs: changes
@@ -91,6 +103,13 @@ jobs:
         with:
           python-version: '3.12'
       - uses: ./.github/actions/setup-toolchain
+      - name: Install the Windows host Rust target
+        shell: bash
+        run: |
+          # Only needed when this job builds the host, but installing it
+          # unconditionally keeps the two paths from diverging silently.
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup target add --toolchain 1.95.0 x86_64-pc-windows-gnullvm
       - name: Verify GUI discovery and applications
         run: python scripts/minici gui
       - name: Record Windows archive dependency declarations
@@ -129,6 +148,11 @@ jobs:
         run: python3 scripts/minici gui
       - name: Build and validate the optimized macOS bundle
         run: |
+          if ! python3 -c "import sys; sys.path.insert(0, 'scripts'); from pathlib import Path; from gui_host_artifacts import lock_matches_sources; sys.exit(0 if lock_matches_sources(Path('gui-host.lock.json')) else 1)"; then
+            echo "The host lock does not describe this checkout, so there is no released"
+            echo "archive to bundle; the previous step built the host from source instead."
+            exit 0
+          fi
           python3 scripts/bundle_platforms.py --package gui --no-build --output-dir "$RUNNER_TEMP/macos-bundle"
           python3 scripts/check_macos_interfaces.py --bundle "$RUNNER_TEMP/macos-bundle"
 

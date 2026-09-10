@@ -69,10 +69,25 @@ all 39 specs, and confirmed rendering for every app.
 ## Controls and layout
 
 `Gui.row`, `Gui.column`, and `Gui.panel` take an attribute list followed by a
-child list. `Gui.style` accepts a complete record based on `Gui.style_default`;
-`Gui.style_s` changes that record through normal signal propagation. Each element
-accepts one style. A supplied style replaces the control's defaults, so include
-padding or borders explicitly when you want them.
+child list. `Gui.style` accepts a complete presentation record; `Gui.style_s`
+changes that record through normal signal propagation. Each element accepts one
+style. A supplied style replaces the control's defaults, so include padding or
+borders explicitly when you want them.
+
+`Gui.Style` is a nominal record whose every field has its neutral default, so a
+style literal names only the fields it sets and the value is still complete:
+`Gui.style({ padding: 16, width: Fill })`. Omitting a field is not "unset" - it
+selects the default, and an explicit `gap: 0` overrides the default `8`.
+Omitting the style attribute altogether still selects the control helper's own
+defaults; there is no partial merging between a supplied style and those.
+`Gui.style_default` remains the complete neutral value, useful when you want it
+by name, and `{ ..some_style, gap: 4 }` updates an existing style.
+
+Two spellings are worth knowing. A single-field style needs the trailing comma,
+because `{ padding }` is a block expression and `{ padding, }` is a record. And
+where the expected type is not already known - inside the closure passed to
+`Signal.map`, for instance - construct the type by name:
+`Gui.style_s(state.map(|value| Gui.Style.{ padding: 12, }))`.
 
 Styles specify logical-pixel dimensions, spacing, padding, colors, borders,
 radius, font size, and overflow. Lengths are `Auto`, `Fill`, or `Px(value)`;
@@ -148,14 +163,18 @@ navigation while open.
 `Gui.image({ source, label }, attrs)` renders a picture from a relative path
 inside the host's assets root, sized and rounded by its style, for example
 `Gui.image({ source: "avatars/maya.png", label: "Maya avatar" },
-[Gui.style({ ..Gui.style_default, width: Px(24), height: Px(24), radius: 24 })])`.
-Launch the host with `--assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
+[Gui.style({ width: Px(24), height: Px(24), radius: 24 })])`.
+Launch the host with `--host-assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
 choose the root; the default is `assets/` beside the executable. Absolute
 paths, `..` traversal, URIs, and symbolic links never resolve, and a missing or
 undecodable image shows a neutral placeholder box instead of nothing.
 Ship an `assets/manifest.json` next to `main.roc`, ingest it at compile time,
 and start `Files.verify_assets` at mount to report each asset as ok, missing,
-or altered; the task-board and folder-explorer examples show the pattern.
+or altered; the task-board and folder-explorer examples show the pattern. That
+report is advisory data, not a gate on rendering: the placeholder above comes
+from the host's own resolution and decoding, so an altered but still decodable
+image keeps rendering, and the check is one startup reading rather than a watch
+that notices a restored file.
 
 Use `Gui.test_id` for stable spec locators and `Gui.label` for semantic names.
 Labels do not establish native screen-reader support, which is not implemented.
@@ -311,3 +330,27 @@ requests while awaiting a decision are ignored. Disposing or replacing the
 wrapper cancels its pending request; the native adapter validates registration
 lifetime and binding. Apps without a wrapper close immediately. The Notes
 example demonstrates Save and close, Discard and close, and Keep editing.
+
+## Window identity
+
+`Gui.set_title` names the window. It is the same `SetDocumentTitle` command the
+browser platform's `Browser.set_title` issues, so a title reaches the desktop
+through the ordinary propagation path: an equal title is pruned before it is
+applied, and no separate title channel exists.
+
+Emit it like any other command, usually with `Ui.on_change_initial` so the
+window is named on the first frame and renamed whenever the signal changes:
+
+```roc
+Ui.on_change_initial(Signal.const("Counter - Roc Signals"), Gui.set_title)
+```
+
+Give the application a stable name, and fold the open document and its unsaved
+state into the same string when they are meaningful. Notes publishes
+`"Untitled note - Notes"` and marks an unsaved draft as
+`"* Untitled note - Notes"`; Task Board does the same with its board file. An
+app that never sets a title keeps the host's `Roc Signals` default.
+
+The title is observable in a native semantic spec with
+`(expect-document-title "…")`, so document and dirty-state naming is tested
+without a display.

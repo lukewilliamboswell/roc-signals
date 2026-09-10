@@ -7,8 +7,8 @@ for build and bundle commands. The workspace lockfile pins GPUI 0.2.2.
 
 `examples-gui/counter` is the minimal app; `examples-gui/keyed-rows` exercises
 row-local drafts, stable keys, conditional disposal, and a scoped clock.
-The executable accepts `--run-spec-json path.scm` to use the shared native spec
-runner without a display. `--smoke --smoke-click Increment --smoke-expect 'Count: 1'`
+The executable accepts `--host-run-spec-json path.scm` to use the shared native spec
+runner without a display. `--host-smoke --host-smoke-click Increment --host-smoke-expect 'Count: 1'`
 opens Counter briefly, dispatches through the normal adapter, and checks its
 retained model after rendering. This is not an OS mouse/keyboard test.
 Normal launches are quiet; `--host-trace-engine` explicitly enables event-turn
@@ -120,7 +120,7 @@ For a real Task Board adapter-to-engine drop smoke, build the current host and
 app together, then run:
 
 ```sh
-./main --smoke --smoke-drop task-1 'column-In progress'
+./main --host-smoke --host-smoke-drop task-1 'column-In progress'
 ```
 
 This invokes the same guarded drop callback as pointer delivery, crosses the

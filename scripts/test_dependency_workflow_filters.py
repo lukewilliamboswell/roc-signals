@@ -149,12 +149,24 @@ class DependencyWorkflowFilterTests(unittest.TestCase):
             with self.subTest(input=path):
                 self.assertFalse(any(path in workflow(name)[1] for name in WORKFLOWS))
 
-    def test_ordinary_gui_ci_consumes_releases_without_host_or_interface_build_tools(self):
+    def test_ordinary_gui_ci_selects_the_reviewed_host_release(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text()
         gui = text.split("  gui:\n", 1)[1].split("  platform-source:\n", 1)[0]
         self.assertEqual(gui.count("GUI_HOST_LOCK: gui-host.lock.json"), 3)
-        for forbidden in ("rustup", "rust-cache", "cargo", "build_gui.py",
-                          "MetalToolchain", "build_macos_stubs.py"):
+
+    def test_ordinary_gui_ci_never_produces_macos_interfaces(self):
+        """The host may be built here; the macOS interface catalog may not.
+
+        A checkout that changes the host sources has no release describing it,
+        so ordinary GUI CI builds and tests that host itself — installing the
+        Rust target it needs is part of that. Generating the interface catalog
+        is a different thing entirely: it has its own producer, its own review,
+        and its bytes are an input to admission rather than something a test job
+        may reproduce.
+        """
+        text = (ROOT / ".github/workflows/ci.yml").read_text()
+        gui = text.split("  gui:\n", 1)[1].split("  platform-source:\n", 1)[0]
+        for forbidden in ("MetalToolchain", "build_macos_stubs.py", "release_gui_hosts.py"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, gui)
 

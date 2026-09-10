@@ -1,9 +1,10 @@
 ## Compile-time theming. A flat `theme.json` next to `main.roc` is imported as
-## a string and parsed by this module while the compiler evaluates top-level
+## a string and decoded by this module while the compiler evaluates top-level
 ## definitions, so a malformed theme fails `roc build` with a message naming
-## the file and the offending key. Colors are `"#RRGGBB"` strings and layout
-## knobs are unsigned integers; nesting, escapes, and other JSON forms are
-## rejected because a theme never needs them.
+## the file and the offending key. The JSON grammar itself — strings, escapes,
+## `\uXXXX`, numbers, whitespace — belongs to the builtin `Json` parser; this
+## module only adds the theme's own rules: `"#RRGGBB"` colors, layout bounds,
+## and required, unknown, and duplicate keys.
 Theme := [].{
 	Palette : {
 		background : U32,
@@ -24,51 +25,160 @@ Theme := [].{
 		gap : U32,
 	}
 
-	Value := [Color(U32), Number(U32)].{
+	## Every rejection carries the finished message, so `decode` can be tested
+	## for the exact text the build would print.
+	Error := [Invalid(Str)].{
 		is_eq : _
+	}
+
+	## Every theme value is a JSON string or a JSON unsigned integer. Which one
+	## a key requires is checked later, so a wrong type names its key.
+	Value := [Color(Str), Layout(U32)].{
+		is_eq : _
+
+		# The pinned compiler rejects every spelling of an explicit annotation
+		# on a hand-written `parser_for`, so this method is inferred. See
+		# UPSTREAM_COMPILER_BUGS.md entry 15.
+		parser_for = |encoding|
+			|state|
+				match encoding.parse_str(state) {
+					Ok(parsed) => Ok({ value: Value.Color(parsed.value), rest: parsed.rest })
+					Err(_) =>
+						match encoding.parse_u32(state) {
+							Ok(parsed) => Ok({ value: Value.Layout(parsed.value), rest: parsed.rest })
+							Err(err) => Err(err)
+						}
+				}
 	}
 
 	Entry : { key : Str, value : Value }
 
-	## Parse a theme document, crashing the build on any problem.
-	## `file` is only used to point error messages at the right theme.json.
-	from_json : Str, Str -> Palette
-	from_json = |file, json| {
-		entries = parse_object(file, json)
-		{
-			background: color(entries, file, "background"),
-			surface: color(entries, file, "surface"),
-			card: color(entries, file, "card"),
-			border: color(entries, file, "border"),
-			text_primary: color(entries, file, "text_primary"),
-			text_secondary: color(entries, file, "text_secondary"),
-			text_tertiary: color(entries, file, "text_tertiary"),
-			accent: color(entries, file, "accent"),
-			accent_hover: color(entries, file, "accent_hover"),
-			accent_active: color(entries, file, "accent_active"),
-			danger: color(entries, file, "danger"),
-			warning: color(entries, file, "warning"),
-			success: color(entries, file, "success"),
-			radius: number(entries, file, "radius"),
-			control_padding: number(entries, file, "control_padding"),
-			gap: number(entries, file, "gap"),
+	## A theme document in source order. A derived record and a `Dict` both keep
+	## only the last of two same-named keys, and the theme contract rejects
+	## duplicates, so the object is collected into a list instead. The bytes are
+	## still tokenized entirely by the builtin parser's object hooks.
+	Doc := [Doc(List(Entry))].{
+		# Inferred for the same reason as `Value.parser_for` above.
+		parser_for = |encoding| {
+			parse_value = Value.parser_for(encoding)
+
+			|state| {
+				started = encoding.parse_dict_start(state)?
+				var $cursor = match started {
+					Counted(counted) => counted.rest
+					Uncounted(rest) => rest
+				}
+				var $entries = []
+				while True {
+					match encoding.parse_dict_next($cursor)? {
+						Done(rest) => return Ok({ value: Doc.Doc($entries), rest })
+						Entry(rest) => {
+							key = encoding.parse_key_str(rest)?
+							after_key = encoding.parse_dict_after_key(key.rest)?
+							parsed = parse_value(after_key)?
+							$entries = $entries.append({ key: key.value, value: parsed.value })
+							match encoding.parse_dict_after_entry(parsed.rest)? {
+								Continue(next) => {
+									$cursor = next
+								}
+								Done(done) => return Ok({ value: Doc.Doc($entries), rest: done })
+							}
+						}
+					}
+				}
+				Ok({ value: Doc.Doc($entries), rest: $cursor })
+			}
 		}
 	}
 
-	color : List(Entry), Str, Str -> U32
-	color = |entries, file, key|
-		match lookup(entries, key) {
-			Ok(Value.Color(value)) => value
-			Ok(Value.Number(_)) => crash "${file}: key \"${key}\" must be a \"#RRGGBB\" color string, not a number"
-			Err(Missing) => crash "${file}: missing key \"${key}\""
+	color_keys : List(Str)
+	color_keys = ["background", "surface", "card", "border", "text_primary", "text_secondary", "text_tertiary", "accent", "accent_hover", "accent_active", "danger", "warning", "success"]
+
+	layout_keys : List(Str)
+	layout_keys = ["radius", "control_padding", "gap"]
+
+	## Layout knobs are pixel counts on one control, not arbitrary U32 values.
+	max_layout : U32
+	max_layout = 512
+
+	## Parse a theme document, crashing the build on any problem.
+	## `file` is only used to point error messages at the right theme.json.
+	from_json : Str, Str -> Palette
+	from_json = |file, json|
+		match decode(file, json) {
+			Ok(palette) => palette
+			Err(Invalid(message)) => crash message
 		}
 
-	number : List(Entry), Str, Str -> U32
+	## The whole contract as a value, so every rejection is testable.
+	decode : Str, Str -> Try(Palette, Error)
+	decode = |file, json| {
+		entries = parse_object(file, json)?
+		Ok(
+			{
+				background: color(entries, file, "background")?,
+				surface: color(entries, file, "surface")?,
+				card: color(entries, file, "card")?,
+				border: color(entries, file, "border")?,
+				text_primary: color(entries, file, "text_primary")?,
+				text_secondary: color(entries, file, "text_secondary")?,
+				text_tertiary: color(entries, file, "text_tertiary")?,
+				accent: color(entries, file, "accent")?,
+				accent_hover: color(entries, file, "accent_hover")?,
+				accent_active: color(entries, file, "accent_active")?,
+				danger: color(entries, file, "danger")?,
+				warning: color(entries, file, "warning")?,
+				success: color(entries, file, "success")?,
+				radius: number(entries, file, "radius")?,
+				control_padding: number(entries, file, "control_padding")?,
+				gap: number(entries, file, "gap")?,
+			},
+		)
+	}
+
+	## Decode `{ "key": value, ... }` with the builtin JSON parser, then apply
+	## the theme's own key rules. Duplicate keys are refused so a typo cannot
+	## silently shadow an earlier definition, and unknown keys are refused so a
+	## misspelled key is not silently ignored.
+	parse_object : Str, Str -> Try(List(Entry), Error)
+	parse_object = |file, json| {
+		decoded : Try(Doc, [InvalidJson(Str)])
+		decoded = Json.parse(json)
+		entries = match decoded {
+			Ok(Doc.Doc(list)) => list
+			Err(InvalidJson(_)) => return Err(Invalid("${file}: a theme must be a JSON object whose values are \"#RRGGBB\" color strings or unsigned integers"))
+		}
+		for entry in entries {
+			if entries.keep_if(|other| other.key == entry.key).len() > 1 {
+				return Err(Invalid("${file}: duplicate key \"${entry.key}\""))
+			}
+			if !color_keys.contains(entry.key) and !layout_keys.contains(entry.key) {
+				return Err(Invalid("${file}: unknown key \"${entry.key}\""))
+			}
+		}
+		Ok(entries)
+	}
+
+	color : List(Entry), Str, Str -> Try(U32, Error)
+	color = |entries, file, key|
+		match lookup(entries, key) {
+			Ok(Value.Color(text)) => parse_color(file, key, text)
+			Ok(Value.Layout(_)) => Err(Invalid("${file}: key \"${key}\" must be a \"#RRGGBB\" color string, not a number"))
+			Err(Missing) => Err(Invalid("${file}: missing key \"${key}\""))
+		}
+
+	number : List(Entry), Str, Str -> Try(U32, Error)
 	number = |entries, file, key|
 		match lookup(entries, key) {
-			Ok(Value.Number(value)) => value
-			Ok(Value.Color(_)) => crash "${file}: key \"${key}\" must be an unsigned integer, not a color string"
-			Err(Missing) => crash "${file}: missing key \"${key}\""
+			Ok(Value.Layout(value)) =>
+				if value > max_layout {
+					Err(Invalid("${file}: key \"${key}\" must be at most ${max_layout.to_str()} pixels"))
+				} else {
+					Ok(value)
+				}
+
+			Ok(Value.Color(_)) => Err(Invalid("${file}: key \"${key}\" must be an unsigned integer, not a color string"))
+			Err(Missing) => Err(Invalid("${file}: missing key \"${key}\""))
 		}
 
 	lookup : List(Entry), Str -> Try(Value, [Missing])
@@ -81,150 +191,38 @@ Theme := [].{
 		Err(Missing)
 	}
 
-	## Parse `{ "key": value, ... }` where every value is a `"#RRGGBB"` string
-	## or a bare unsigned integer. Duplicate keys are refused so a typo cannot
-	## silently shadow an earlier definition.
-	parse_object : Str, Str -> List(Entry)
-	parse_object = |file, json| {
-		bytes = json.to_utf8()
-		var $i = skip_ws(bytes, 0)
-		if bytes.get($i) ?? 0 != 123 {
-			crash "${file}: a theme must be a single JSON object starting with \"{\""
-		}
-		$i = skip_ws(bytes, $i + 1)
-		var $entries = []
-		if bytes.get($i) ?? 0 == 125 {
-			return check_trailing(file, bytes, $i + 1, $entries)
-		}
-		while True {
-			key = parse_string(file, bytes, $i, "an object key")
-			$i = skip_ws(bytes, key.next)
-			if bytes.get($i) ?? 0 != 58 {
-				crash "${file}: expected \":\" after key \"${key.value}\""
-			}
-			$i = skip_ws(bytes, $i + 1)
-			value = parse_value(file, bytes, $i, key.value)
-			if $entries.any(|entry| entry.key == key.value) {
-				crash "${file}: duplicate key \"${key.value}\""
-			}
-			$entries = $entries.append({ key: key.value, value: value.value })
-			$i = skip_ws(bytes, value.next)
-			match bytes.get($i) ?? 0 {
-				44 => {
-					$i = skip_ws(bytes, $i + 1)
-				}
-				125 => return check_trailing(file, bytes, $i + 1, $entries)
-				_ => crash "${file}: expected \",\" or \"}\" after the value for key \"${key.value}\""
-			}
-		}
-		$entries
-	}
-
-	check_trailing : Str, List(U8), U64, List(Entry) -> List(Entry)
-	check_trailing = |file, bytes, index, entries| {
-		if skip_ws(bytes, index) != bytes.len() {
-			crash "${file}: unexpected content after the closing \"}\""
-		}
-		entries
-	}
-
-	parse_value : Str, List(U8), U64, Str -> { value : Value, next : U64 }
-	parse_value = |file, bytes, index, key|
-		match bytes.get(index) ?? 0 {
-			34 => {
-				text = parse_string(file, bytes, index, "the value for key \"${key}\"")
-				{ value: Value.Color(parse_color(file, key, text.value)), next: text.next }
-			}
-			byte if byte >= 48 and byte <= 57 => parse_number(file, bytes, index, key)
-			_ => crash "${file}: key \"${key}\" must be a \"#RRGGBB\" color string or an unsigned integer"
-		}
-
-	## Strings carry hex colors only, so escapes are refused rather than decoded.
-	parse_string : Str, List(U8), U64, Str -> { value : Str, next : U64 }
-	parse_string = |file, bytes, index, what| {
-		if bytes.get(index) ?? 0 != 34 {
-			crash "${file}: expected a quoted string for ${what}"
-		}
-		var $i = index + 1
-		var $content = []
-		while True {
-			match bytes.get($i) {
-				Ok(34) => {
-					text = Str.from_utf8($content) ?? crash "${file}: invalid UTF-8 in ${what}"
-					return { value: text, next: $i + 1 }
-				}
-				Ok(92) => crash "${file}: escape sequences are not supported, in ${what}"
-				Ok(byte) => {
-					$content = $content.append(byte)
-					$i = $i + 1
-				}
-				Err(_) => crash "${file}: unterminated string for ${what}"
-			}
-		}
-		{ value: "", next: $i }
-	}
-
-	parse_number : Str, List(U8), U64, Str -> { value : Value, next : U64 }
-	parse_number = |file, bytes, index, key| {
-		var $i = index
-		var $value = 0.U32
-		while True {
-			match bytes.get($i) {
-				Ok(byte) if byte >= 48 and byte <= 57 => {
-					if $value > 429496728 {
-						crash "${file}: the number for key \"${key}\" does not fit in a U32"
-					}
-					$value = $value * 10 + (byte - 48).to_u32()
-					$i = $i + 1
-				}
-				_ => return { value: Value.Number($value), next: $i }
-			}
-		}
-		{ value: Value.Number($value), next: $i }
-	}
-
-	parse_color : Str, Str, Str -> U32
+	parse_color : Str, Str, Str -> Try(U32, Error)
 	parse_color = |file, key, text| {
 		digits = text.to_utf8()
 		if digits.len() != 7 or digits.get(0) ?? 0 != 35 {
-			crash "${file}: key \"${key}\" must be a \"#RRGGBB\" color, got \"${text}\""
+			return Err(Invalid("${file}: key \"${key}\" must be a \"#RRGGBB\" color, got \"${text}\""))
 		}
-		digits.drop_first(1).fold(
-			0.U32,
-			|acc, byte| {
-				digit = if byte >= 48 and byte <= 57 {
-					byte - 48
-				} else if byte >= 65 and byte <= 70 {
-					byte - 55
-				} else if byte >= 97 and byte <= 102 {
-					byte - 87
-				} else {
-					crash "${file}: key \"${key}\" has a non-hex digit in \"${text}\""
-				}
-				acc * 16 + digit.to_u32()
-			},
-		)
-	}
-
-	skip_ws : List(U8), U64 -> U64
-	skip_ws = |bytes, start| {
-		var $i = start
-		while True {
-			match bytes.get($i) {
-				Ok(32) | Ok(9) | Ok(10) | Ok(13) => {
-					$i = $i + 1
-				}
-				_ => return $i
+		var $value = 0.U32
+		for byte in digits.drop_first(1) {
+			digit = if byte >= 48 and byte <= 57 {
+				byte - 48
+			} else if byte >= 65 and byte <= 70 {
+				byte - 55
+			} else if byte >= 97 and byte <= 102 {
+				byte - 87
+			} else {
+				return Err(Invalid("${file}: key \"${key}\" has a non-hex digit in \"${text}\""))
 			}
+			$value = $value * 16 + digit.to_u32()
 		}
-		$i
+		Ok($value)
 	}
 }
 
+file : Str
+file = "test/theme.json"
+
+complete_theme : Str
+complete_theme = "{\n\t\"background\": \"#16252C\",\n\t\"surface\": \"#1B2A33\",\n\t\"card\": \"#283A47\",\n\t\"border\": \"#3A4F5C\",\n\t\"text_primary\": \"#F2F5F6\",\n\t\"text_secondary\": \"#A9BFCC\",\n\t\"text_tertiary\": \"#93A9B6\",\n\t\"accent\": \"#2E6FA3\",\n\t\"accent_hover\": \"#3A80B8\",\n\t\"accent_active\": \"#265D89\",\n\t\"danger\": \"#F09A93\",\n\t\"warning\": \"#E8C27A\",\n\t\"success\": \"#8FD4A8\",\n\t\"radius\": 6,\n\t\"control_padding\": 10,\n\t\"gap\": 8\n}\n"
+
 ## A complete theme parses to the exact color and layout values it spells out.
 expect {
-	json = "{\n\t\"background\": \"#16252C\",\n\t\"surface\": \"#1B2A33\",\n\t\"card\": \"#283A47\",\n\t\"border\": \"#3A4F5C\",\n\t\"text_primary\": \"#F2F5F6\",\n\t\"text_secondary\": \"#A9BFCC\",\n\t\"text_tertiary\": \"#93A9B6\",\n\t\"accent\": \"#2E6FA3\",\n\t\"accent_hover\": \"#3A80B8\",\n\t\"accent_active\": \"#265D89\",\n\t\"danger\": \"#F09A93\",\n\t\"warning\": \"#E8C27A\",\n\t\"success\": \"#8FD4A8\",\n\t\"radius\": 6,\n\t\"control_padding\": 10,\n\t\"gap\": 8\n}\n"
-	theme = Theme.from_json("test/theme.json", json)
+	theme = Theme.from_json(file, complete_theme)
 	theme.background == 0x16252C
 	and theme.accent == 0x2E6FA3
 	and theme.accent_hover == 0x3A80B8
@@ -237,19 +235,119 @@ expect {
 
 ## Lowercase hex digits and compact whitespace both parse.
 expect {
-	entries = Theme.parse_object("test/theme.json", "{\"accent\":\"#2e6fa3\",\"gap\":12}")
-	Theme.color(entries, "test/theme.json", "accent") == 0x2E6FA3
-	and Theme.number(entries, "test/theme.json", "gap") == 12
+	entries = Theme.parse_object(file, "{\"accent\":\"#2e6fa3\",\"gap\":12}")?
+	Theme.color(entries, file, "accent")? == 0x2E6FA3
+	and Theme.number(entries, file, "gap")? == 12
 }
 
 ## An empty object parses to no entries; lookups on it report Missing.
 expect {
-	entries = Theme.parse_object("test/theme.json", "{}")
+	entries = Theme.parse_object(file, "{}")?
 	entries.is_empty() and Theme.lookup(entries, "accent") == Err(Missing)
 }
 
-## Numbers accumulate digit by digit rather than stopping at the first one.
+## Multi-digit layout numbers are read whole, not truncated at the first digit.
 expect {
-	entries = Theme.parse_object("test/theme.json", "{ \"radius\": 4095 }")
-	Theme.number(entries, "test/theme.json", "radius") == 4095
+	entries = Theme.parse_object(file, "{ \"radius\": 409 }")?
+	Theme.number(entries, file, "radius")? == 409
+}
+
+## Duplicate keys are rejected rather than silently keeping the last one, which
+## is what a derived record or a `Dict` would do.
+expect Theme.parse_object(file, "{\"gap\":8,\"gap\":9}") == Err(Invalid("${file}: duplicate key \"gap\""))
+
+## A duplicate is caught even when the two spellings disagree in type.
+expect Theme.parse_object(file, "{\"accent\":\"#2E6FA3\",\"accent\":4}") == Err(Invalid("${file}: duplicate key \"accent\""))
+
+## A misspelled key is refused instead of leaving its intended key missing.
+expect Theme.parse_object(file, "{\"acccent\":\"#2E6FA3\"}") == Err(Invalid("${file}: unknown key \"acccent\""))
+
+## Malformed JSON is refused by the builtin parser, not by a local grammar.
+expect Theme.parse_object(file, "{\"gap\": 8") == Err(Invalid("${file}: a theme must be a JSON object whose values are \"#RRGGBB\" color strings or unsigned integers"))
+
+## A trailing comma is not valid JSON.
+expect Theme.parse_object(file, "{\"gap\": 8,}") == Err(Invalid("${file}: a theme must be a JSON object whose values are \"#RRGGBB\" color strings or unsigned integers"))
+
+## Content after the closing brace is refused.
+expect Theme.parse_object(file, "{\"gap\": 8} junk") == Err(Invalid("${file}: a theme must be a JSON object whose values are \"#RRGGBB\" color strings or unsigned integers"))
+
+## A theme is an object, not an array or a bare scalar.
+expect Theme.parse_object(file, "[]") == Err(Invalid("${file}: a theme must be a JSON object whose values are \"#RRGGBB\" color strings or unsigned integers"))
+
+## Nested objects, booleans, and nulls are not theme values.
+expect Theme.parse_object(file, "{\"gap\": {\"x\": 1}}") == Err(Invalid("${file}: a theme must be a JSON object whose values are \"#RRGGBB\" color strings or unsigned integers"))
+
+## A leading zero is not a valid JSON number, and the builtin parser says so.
+expect Theme.parse_object(file, "{\"gap\": 01}") == Err(Invalid("${file}: a theme must be a JSON object whose values are \"#RRGGBB\" color strings or unsigned integers"))
+
+## A number too large for U32 is rejected by the builtin parser.
+expect Theme.parse_object(file, "{\"gap\": 4294967296}") == Err(Invalid("${file}: a theme must be a JSON object whose values are \"#RRGGBB\" color strings or unsigned integers"))
+
+## U32's maximum still parses; the theme's own bound rejects it as a layout.
+expect {
+	entries = Theme.parse_object(file, "{\"gap\": 4294967295}")?
+	Theme.number(entries, file, "gap") == Err(Invalid("${file}: key \"gap\" must be at most 512 pixels"))
+}
+
+## The layout bound admits its own edge and refuses the next pixel.
+expect {
+	entries = Theme.parse_object(file, "{\"gap\": 512, \"radius\": 513}")?
+	Theme.number(entries, file, "gap")? == 512
+	and Theme.number(entries, file, "radius") == Err(Invalid("${file}: key \"radius\" must be at most 512 pixels"))
+}
+
+## Zero is a usable layout value.
+expect {
+	entries = Theme.parse_object(file, "{\"gap\": 0}")?
+	Theme.number(entries, file, "gap")? == 0
+}
+
+## JSON escapes are decoded by the builtin parser instead of being refused, so
+## a color may be written with `\u` escapes. The old handwritten grammar could
+## not read this document at all.
+expect {
+	entries = Theme.parse_object(file, "{\"accent\": \"\\u0023\\u0032E6FA3\"}")?
+	Theme.color(entries, file, "accent")? == 0x2E6FA3
+}
+
+## Non-ASCII text decodes, and then fails the color rule rather than the grammar.
+expect {
+	entries = Theme.parse_object(file, "{\"accent\": \"#\\u00E9FA3C\"}")?
+	Theme.color(entries, file, "accent") == Err(Invalid("${file}: key \"accent\" has a non-hex digit in \"#éFA3C\""))
+}
+
+## A missing key names itself.
+expect {
+	entries = Theme.parse_object(file, "{\"gap\": 8}")?
+	Theme.color(entries, file, "accent") == Err(Invalid("${file}: missing key \"accent\""))
+}
+
+## A number where a color belongs names the key and the expected form.
+expect {
+	entries = Theme.parse_object(file, "{\"accent\": 8}")?
+	Theme.color(entries, file, "accent") == Err(Invalid("${file}: key \"accent\" must be a \"#RRGGBB\" color string, not a number"))
+}
+
+## A color string where a layout number belongs names the key too.
+expect {
+	entries = Theme.parse_object(file, "{\"gap\": \"#2E6FA3\"}")?
+	Theme.number(entries, file, "gap") == Err(Invalid("${file}: key \"gap\" must be an unsigned integer, not a color string"))
+}
+
+## A color needs the leading `#` and exactly six hex digits.
+expect {
+	entries = Theme.parse_object(file, "{\"accent\": \"2E6FA3\"}")?
+	Theme.color(entries, file, "accent") == Err(Invalid("${file}: key \"accent\" must be a \"#RRGGBB\" color, got \"2E6FA3\""))
+}
+
+## Non-hex digits inside a well-shaped color are reported separately.
+expect {
+	entries = Theme.parse_object(file, "{\"accent\": \"#2E6FAZ\"}")?
+	Theme.color(entries, file, "accent") == Err(Invalid("${file}: key \"accent\" has a non-hex digit in \"#2E6FAZ\""))
+}
+
+## A theme missing one key reports that key through `decode`.
+expect {
+	json = complete_theme.replace_first(",\n\t\"gap\": 8", "")
+	Theme.decode(file, json) == Err(Invalid("${file}: missing key \"gap\""))
 }

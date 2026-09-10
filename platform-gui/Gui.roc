@@ -9,27 +9,9 @@ Color : [Default, Rgb(U32)]
 
 Overflow : [Visible, Clip, Scroll]
 
-Presentation : {
-	gap : U32,
-	padding : U32,
-	width : Length,
-	height : Length,
-	grow : Bool,
-	background : Color,
-	hover_background : Color,
-	active_background : Color,
-	foreground : Color,
-	border_color : Color,
-	border_width : U32,
-	radius : U32,
-	font_size : U32,
-	overflow_x : Overflow,
-	overflow_y : Overflow,
-}
-
 Attribute := [
-	Presentation(Presentation),
-	PresentationSignal(Signal(Presentation)),
+	Presentation(Gui.Style),
+	PresentationSignal(Signal(Gui.Style)),
 	Label(Str),
 	Placeholder(Str),
 	FontFamily(Str),
@@ -37,6 +19,7 @@ Attribute := [
 	TestId(Str),
 	Selected(Signal(Bool)),
 	Enabled(Signal(Bool)),
+	ReadOnly(Signal(Bool)),
 	Shortcut(Node.KeyChord, Node.Msg),
 	DragSource(Str),
 	DropTarget(Node.Msg),
@@ -76,6 +59,9 @@ selected_field = { id: 4 }
 # Marks an internal drop target that must bind a string-detail drop event.
 native_drop_target_field : Node.BoolField
 native_drop_target_field = { id: 5 }
+# Refuses user edits and edit history while the control stays available at full contrast and in tab order.
+native_read_only_field : Node.BoolField
+native_read_only_field = { id: 6 }
 # END GENERATED PROTOCOL
 
 dimension : Length -> { kind : U32, value : U32 }
@@ -104,7 +90,7 @@ overflow_number = |overflow| match overflow {
 
 # Native presentation protocol v2: fixed, canonical decimal fields. The host
 # validates the complete record before publication; these are not CSS strings.
-encode_style : U32, Presentation -> Str
+encode_style : U32, Gui.Style -> Str
 encode_style = |direction, style| {
 	width = dimension(style.width)
 	height = dimension(style.height)
@@ -171,10 +157,10 @@ encode_fonts = |fonts| {
 	Str.join_with(lines, "\n")
 }
 
-style_attr : U32, Presentation -> Node.Attr
+style_attr : U32, Gui.Style -> Node.Attr
 style_attr = |direction, style| Node.Attr.StaticText({ field: native_style_field, name: "", value: encode_style(direction, style) })
 
-lower_attrs : U32, Presentation, List(Attribute) -> List(Node.Attr)
+lower_attrs : U32, Gui.Style, List(Attribute) -> List(Node.Attr)
 lower_attrs = |direction, defaults, attrs| {
 	styles = attrs.keep_if(
 		|attr| match attr {
@@ -227,6 +213,10 @@ lower_attrs = |direction, defaults, attrs| {
 					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: disabled_field })
 					_ => crash "expected a signal bool descriptor"
 				}
+				Attribute.ReadOnly(value) => match Html.bool_attr_s("", value) {
+					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: native_read_only_field })
+					_ => crash "expected a signal bool descriptor"
+				}
 				Attribute.DragSource(key) => Node.Attr.StaticText({ field: native_drag_key_field, name: "", value: key })
 				Attribute.DropTarget(msg) => Node.Attr.On({
 					kind: { id: 0 },
@@ -253,7 +243,28 @@ lower_attrs = |direction, defaults, attrs| {
 ## Styles are typed native properties, independent of CSS and semantic locators.
 Gui := [].{
 	Attr : Attribute
-	Style : Presentation
+	## Complete native presentation. Every field has its neutral default, so a
+	## style literal names only what it changes; the value is still complete.
+	Style := {
+		gap : U32 ?? 8,
+		padding : U32 ?? 0,
+		width : Length ?? Auto,
+		height : Length ?? Auto,
+		grow : Bool ?? False,
+		background : Color ?? Default,
+		hover_background : Color ?? Default,
+		active_background : Color ?? Default,
+		foreground : Color ?? Default,
+		border_color : Color ?? Default,
+		border_width : U32 ?? 0,
+		radius : U32 ?? 0,
+		font_size : U32 ?? 0,
+		overflow_x : Overflow ?? Visible,
+		overflow_y : Overflow ?? Visible,
+	}.{
+		is_eq : _
+	}
+
 	Length : Length
 	Color : Color
 	Overflow : Overflow
@@ -276,6 +287,14 @@ Gui := [].{
 	drop_target : Msg -> Attr
 	drop_target = |message| Attribute.DropTarget(message)
 
+	## Set the window identity shown by the desktop switcher and the titlebar.
+	## The command travels the ordinary propagation path, so an unchanged title
+	## is pruned before it reaches the window. Give the application a stable
+	## name, and fold the open document and its unsaved state into the same
+	## string when they are meaningful, as `"* Notes - draft"`.
+	set_title : Str -> Cmd
+	set_title = |title| Node.Cmd.SetDocumentTitle({ title: title })
+
 	## Bind an exact key and all modifiers within this focused region. The nearest
 	## matching ancestor receives one unit event and consumes the keystroke.
 	## Letters are lowercase a-z; digits and the documented named keys are valid.
@@ -283,28 +302,19 @@ Gui := [].{
 	on_shortcut : KeyChord, Msg -> Attr
 	on_shortcut = |chord, message| Attribute.Shortcut(chord, message)
 
-	## Neutral column presentation. Zero font size and Default colors inherit.
-	## Dimensions, spacing and font size are logical pixels, bounded at 16384.
+	## The neutral presentation every omitted field falls back to. Zero font
+	## size and Default colors inherit. Dimensions, spacing and font size are
+	## logical pixels, bounded at 16384. `Gui.style({ padding: 16 })` already
+	## carries these defaults, so spreading this value is never required; it
+	## stays available for code that wants the complete record by name.
 	style_default : Style
-	style_default = {
-		gap: 8,
-		padding: 0,
-		width: Auto,
-		height: Auto,
-		grow: False,
-		background: Default,
-		hover_background: Default,
-		active_background: Default,
-		foreground: Default,
-		border_color: Default,
-		border_width: 0,
-		radius: 0,
-		font_size: 0,
-		overflow_x: Visible,
-		overflow_y: Visible,
-	}
+	style_default = Style.{}
 
 	## Apply a complete presentation record. Each element accepts one style.
+	## Omitted fields take their neutral default from `style_default`, so
+	## `Gui.style({ padding: 16 })` sets padding and leaves everything neutral.
+	## Supplying a style replaces the control helper's own defaults outright;
+	## there is no partial merging with them.
 	style : Style -> Attr
 	style = |value| Attribute.Presentation(value)
 
@@ -352,6 +362,15 @@ Gui := [].{
 	disabled_s : Signal(Bool) -> Attr
 	disabled_s = |value| Attribute.Enabled(value.map(|disabled| !disabled))
 
+	## Refuse user edits to an input while it stays available: full contrast,
+	## still in the tab order, still selectable, copyable and scrollable, and
+	## still refreshed by its authoritative value. This is not `disabled_s`,
+	## which says a control is unavailable and dims it out of the tab order.
+	## Edits and native edit history are refused, so the displayed document
+	## cannot diverge from the value the application published.
+	read_only_s : Signal(Bool) -> Attr
+	read_only_s = |value| Attribute.ReadOnly(value)
+
 	## Lay out children horizontally with the supplied native presentation.
 	row : List(Attr), List(Elem) -> Elem
 	row = |attrs, children| Html.div(lower_attrs(0, style_default, attrs), children)
@@ -362,7 +381,7 @@ Gui := [].{
 
 	## Group content in a padded, bordered vertical panel. A style replaces defaults.
 	panel : List(Attr), List(Elem) -> Elem
-	panel = |attrs, children| Html.div(lower_attrs(1, { ..style_default, padding: 16, border_width: 1, radius: 8, border_color: Rgb(4743275) }, attrs), children)
+	panel = |attrs, children| Html.div(lower_attrs(1, { padding: 16, border_width: 1, radius: 8, border_color: Rgb(4743275) }, attrs), children)
 
 	## A native close request enters the ordinary event graph. KeepOpen cancels
 	## it, AwaitDecision retains one pending request, and Close completes that
@@ -388,7 +407,7 @@ Gui := [].{
 			namespace: Html,
 			tag: "window",
 			attrs: [
-				style_attr(1, { ..style_default, width: Fill, height: Fill }),
+				style_attr(1, { width: Fill, height: Fill }),
 				policy_attr,
 				Node.Attr.On({
 					kind: { id: 0 },
@@ -413,7 +432,7 @@ Gui := [].{
 		tag: "dialog",
 		attrs: lower_attrs(
 			1,
-			{ ..style_default, padding: 24, gap: 16, width: Px(520), background: Rgb(2174263), foreground: Rgb(15658730), border_width: 1, border_color: Rgb(4743275), radius: 8 },
+			{ padding: 24, gap: 16, width: Px(520), background: Rgb(2174263), foreground: Rgb(15658730), border_width: 1, border_color: Rgb(4743275), radius: 8 },
 			[
 				Attribute.Label(props.label),
 				Attribute.Shortcut({ key: "Escape", control: False, shift: False, alt: False, meta: False }, props.on_dismiss),
@@ -443,7 +462,7 @@ Gui := [].{
 			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: native_viewport_field })
 			_ => crash "expected a signal text descriptor"
 		}
-		Html.div(lower_attrs(1, { ..style_default, width: Fill, height: Px(480), grow: True }, attrs).append(viewport), children)
+		Html.div(lower_attrs(1, { width: Fill, height: Px(480), grow: True }, attrs).append(viewport), children)
 	}
 
 	## Render an image from a relative path inside the host's assets root.
@@ -485,12 +504,12 @@ Gui := [].{
 	## record, including its hover and active backgrounds.
 	button_attrs : Str, List(Attr), Msg -> Elem
 	button_attrs = |value, attrs, message|
-		Html.button_attrs(value, lower_attrs(1, { ..style_default, padding: 8, radius: 6, background: Rgb(3232873), hover_background: Rgb(0x3F6175), active_background: Rgb(0x2B4452) }, attrs), message)
+		Html.button_attrs(value, lower_attrs(1, { padding: 8, radius: 6, background: Rgb(3232873), hover_background: Rgb(0x3F6175), active_background: Rgb(0x2B4452) }, attrs), message)
 
 	## Create a button whose label and availability change independently.
 	action_button : { label : Signal(Str), enabled : Signal(Bool) }, List(Attr), Msg -> Elem
 	action_button = |props, attrs, message|
-		Html.action_button_attrs(props.label, props.enabled.map(|enabled| !enabled), lower_attrs(1, { ..style_default, padding: 8, radius: 6, background: Rgb(3232873), hover_background: Rgb(0x3F6175), active_background: Rgb(0x2B4452) }, attrs), message)
+		Html.action_button_attrs(props.label, props.enabled.map(|enabled| !enabled), lower_attrs(1, { padding: 8, radius: 6, background: Rgb(3232873), hover_background: Rgb(0x3F6175), active_background: Rgb(0x2B4452) }, attrs), message)
 
 	## Edit one controlled line; the label is a semantic name, not placeholder text.
 	text_input : { label : Str, value : Signal(Str) }, List(Attr), Msg -> Elem
@@ -512,6 +531,37 @@ Gui := [].{
 
 ## The native default encoding is a canonical v2 record shared with the Zig decoder.
 expect encode_style(1, Gui.style_default) == "2,1,8,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0"
+
+## An omitted field takes its neutral default, so a one-field style still
+## encodes the complete v2 record; naming a default explicitly changes nothing.
+expect encode_style(1, { padding: 16 }) == "2,1,8,16,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0"
+expect encode_style(1, { padding: 16, gap: 8 }) == encode_style(1, { padding: 16 })
+
+## An explicit zero is a value, not an absence: `gap: 0` overrides the default 8.
+expect encode_style(1, { gap: 0 }) == "2,1,0,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0"
+
+## A style built outside a call, and updated with `..`, is the same complete record.
+expect {
+	base : Gui.Style
+	base = { padding: 16 }
+	encode_style(1, { ..base, gap: 4 }) == encode_style(1, { padding: 16, gap: 4 })
+}
+
+## A single-field shorthand needs the trailing comma; `{ padding }` is a block.
+expect {
+	padding = 16.U32
+	encode_style(1, { padding, }) == encode_style(1, { padding: 16 })
+}
+
+## Derived equality compares field values, so omitted and explicit defaults are
+## equal and a style signal prunes an update that changes nothing.
+expect {
+	left : Gui.Style
+	left = { padding: 16.U32 }
+	right : Gui.Style
+	right = { padding: 16.U32, gap: 8.U32 }
+	left == right and left != Gui.Style.{ padding: 17.U32 } and Gui.Style.{} == Gui.style_default
+}
 
 ## Base64 matches the canonical RFC 4648 vectors at every padding length.
 expect encode_base64("foo".to_utf8()) == "Zm9v"

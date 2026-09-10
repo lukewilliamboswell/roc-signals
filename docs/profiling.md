@@ -13,7 +13,7 @@ into a native app. Rebuild that host before measuring:
 zig build build-test-hosts -Doptimize=ReleaseFast
 ```
 
-`--bench-app` rejects hosts built in another optimization mode. In particular,
+`--host-bench-app` rejects hosts built in another optimization mode. In particular,
 Debug enables expensive engine assertions whose scaling can overwhelm the code
 being investigated. Roc's `--opt=speed` does not change the optimization mode
 of a previously built Zig host.
@@ -89,11 +89,11 @@ roc build \
   examples-web/_fixtures/js-framework-benchmark/main.roc
 
 .test-out/profile/js-framework-benchmark \
-  --bench-app \
-  --bench-name replace_1k \
-  --bench-warmup 5 \
-  --bench-iterations 1 \
-  --bench-samples 7 \
+  --host-bench-app \
+  --host-bench-name replace_1k \
+  --host-bench-warmup 5 \
+  --host-bench-iterations 1 \
+  --host-bench-samples 7 \
   examples-web/_fixtures/js-framework-benchmark/specs/replace_1k.scm
 ```
 
@@ -110,7 +110,7 @@ The native benchmark CSV separates:
   patches, and allocation counts.
 
 Report the median and range from multiple samples. One sample is useful only
-for finding very large regressions. Avoid increasing `--bench-iterations` for
+for finding very large regressions. Avoid increasing `--host-bench-iterations` for
 large cases until one iteration is known to finish quickly.
 
 ## Measure the production Wasm and JavaScript path
@@ -364,10 +364,10 @@ Start with hardware counters:
 perf stat -r 7 \
   -e cycles,instructions,cache-references,cache-misses,branches,branch-misses,page-faults \
   -- .test-out/profile/js-framework-benchmark \
-  --bench-app \
-  --bench-name create_10k \
-  --bench-iterations 1 \
-  --bench-samples 1 \
+  --host-bench-app \
+  --host-bench-name create_10k \
+  --host-bench-iterations 1 \
+  --host-bench-samples 1 \
   examples-web/_fixtures/js-framework-benchmark/specs/create_10k.scm
 ```
 
@@ -376,10 +376,10 @@ Then collect a sampling profile:
 ```sh
 perf record -g -o .test-out/profile/perf.data -- \
   .test-out/profile/js-framework-benchmark \
-  --bench-app \
-  --bench-name create_10k \
-  --bench-iterations 1 \
-  --bench-samples 1 \
+  --host-bench-app \
+  --host-bench-name create_10k \
+  --host-bench-iterations 1 \
+  --host-bench-samples 1 \
   examples-web/_fixtures/js-framework-benchmark/specs/create_10k.scm
 
 perf report -i .test-out/profile/perf.data

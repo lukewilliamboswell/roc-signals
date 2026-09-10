@@ -55,6 +55,10 @@ is not an accessibility audit.
 | Exact visible text | `(text "Submit status: idle")` |
 | Test id | `(test-id "traffic-chart")` |
 
+Locator strings use the same escapes as any other spec string: `\\` is one
+backslash, `\"` one quote, and `\n` a newline. A locator can therefore name an
+element whose text contains a separator, such as a Windows path in a breadcrumb.
+
 A locator must resolve to exactly one element. Matching several is an error
 (*locator matched 2 elements*). Repeated controls may legitimately share a name;
 use a unique test id when the role and name cannot distinguish the target.
@@ -260,6 +264,18 @@ should require, then compare small and large fixtures when testing scaling.
 Copying an observed number into a test without that reasoning can preserve an
 existing regression.
 
+Say which kind of path an assertion is about. Selecting a row, appending an
+event, or moving one item is *changed-set* work: assert the structural counters
+exactly, and expect zero rows created, removed or rebuilt for anything the
+change did not touch. Filtering, sorting and importing are *whole-dataset* work
+by construction — every item is examined — so the claim worth asserting there is
+not a small number but that identity survives: rows reused rather than rebuilt,
+and scopes disposed only for items that really left. Repeating an action that
+changes nothing belongs in the same specs as an equality no-op
+(`propagation_prunes`), and a disposed branch should be shown to cancel the
+timers and tasks it owned, with any late result refused
+(`stale_task_results_ignored`) rather than applied.
+
 `derived_calls_into_roc` counts derived evaluations, while `dirty_source_roots`
 counts changed sources. One source can wake many transforms. `propagation_prunes`
 records equality cutoffs; interpret it alongside the graph and visible result,
@@ -270,10 +286,10 @@ kinds. Use row and scope counters for structural behaviour and benchmark
 telemetry to track overall command traffic.
 
 For a retained-allocation delta that should not be there, rerun the built native
-app with `--trace-allocations`:
+app with `--host-trace-allocations`:
 
 ```sh
-.test-out/bin/signals-my-example --trace-allocations examples-web/my-example/specs/case.scm
+.test-out/bin/signals-my-example --host-trace-allocations examples-web/my-example/specs/case.scm
 ```
 
 The host writes an allocation checkpoint after mount and after every spec
@@ -313,6 +329,22 @@ host debug allocator is non-empty after the runtime is dismantled. The Wasm
 mount harness checks that the HostValue registry is empty after `unmount` and
 also checks the exported Roc allocation count and byte total. Those latter
 checks establish ledger balance only when the host has the ledger enabled.
+
+## Desktop regression scenarios
+
+Native specs run without a presentation layer, so they cannot see a control laid
+out beyond the window or a native editor that kept the previous document's undo
+history. For the GUI examples those states are covered by scripted scenarios in
+`examples-gui/<app>/regression/*.script`, run by
+`python3 scripts/gui_regression.py`. They drive the real window through the
+host's `--host-script` flag, name controls by test id or visible label rather than by
+pixel coordinates, and record their observations — and on macOS the window
+itself — as artifacts. See [Contributing](@/docs/contributing.md) for the step
+vocabulary, the diagnostic convention, and what is macOS-only.
+
+Keep the two apart. Semantic and work-budget assertions belong in the specs
+above; presentation assertions belong in the scenarios. A scenario is not the
+place to re-check what a spec already proves.
 
 ## What belongs where
 
