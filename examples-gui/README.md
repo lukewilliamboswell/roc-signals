@@ -18,9 +18,11 @@ text previews, and opening files in their associated application. Notes Editor r
 app's source and specs for the state transitions and error handling.
 
 [Counter](counter/) and [Keyed Rows](keyed-rows/) remain small starting points.
-Counter and Notes Editor read their palettes from a `theme.json` parsed during
-compile-time evaluation, so a malformed theme fails `roc build` with a message
-naming the file and key.
+Counter and Notes Editor read their palettes from a `theme.json` decoded during
+compile-time evaluation by the builtin `Json` codecs, so a malformed theme fails
+`roc build` with a message naming the file and key. Their `Theme.roc` modules
+are byte-identical shared copies of one contract; `zig build run-check-tidy`
+fails if they drift.
 The [native GUI guide](../www/content/docs/native-gui.md) describes public controls;
 [contributing](../www/content/docs/contributing.md#native-gui-platform-spike)
 covers the pinned compiler, host build, executable commands, and validation.

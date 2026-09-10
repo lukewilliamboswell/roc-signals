@@ -147,18 +147,16 @@ fixtures reject non-`/`-prefixed paths. They are boundary diagnostics, not
 examples of application-facing Files usage or a proposed private-wire API.
 Replace them with typed fixtures when GUI-05 makes those values expressible.
 
-## Pinned Roc probes: GUI-07/08
+## Pinned Roc probes: GUI-08
 
 ```sh
-"$ROC_BIN" test --no-cache planning/gui-examples-review/2026-09-10/probes/CodecProbe.roc
 "$ROC_BIN" test --no-cache planning/gui-examples-review/2026-09-10/probes/StyleProbe.roc
 ```
 
-[CodecProbe.roc](probes/CodecProbe.roc) verifies structural and nominal codecs,
-round-trip encoding, snake_case field names, leading-zero rejection, and the
-important duplicate-key behavior. Its final test characterizes last-value-wins;
-it does **not** endorse that behavior for themes, whose existing contract
-rejects duplicates.
+The GUI-07 codec probe has been retired. Everything it characterized — builtin
+JSON syntax, snake_case field names, leading-zero rejection, numeric bounds, and
+duplicate-key handling — is now asserted by the maintained tests in
+`examples-gui/counter/Theme.roc`.
 
 [StyleApi.roc](probes/StyleApi.roc) and [StyleProbe.roc](probes/StyleProbe.roc)
 verify cross-module transparent nominal defaults, explicit zero, record update,
