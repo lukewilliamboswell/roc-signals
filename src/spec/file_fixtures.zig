@@ -65,8 +65,23 @@ fn symbol(expr: sexpr.Expr) ParseError![]const u8 {
 fn validText(text: []const u8, limit: usize) bool {
     return text.len <= limit and std.unicode.utf8ValidateSlice(text);
 }
+fn driveLetter(byte: u8) bool {
+    return (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z');
+}
+/// Recognizes the absolute-path spellings a native worker can actually return,
+/// so a typed fixture can express a Windows result without dropping to a raw
+/// task frame. A path is absolute when it is POSIX-rooted (`/`), drive-rooted
+/// (`C:\` or `C:/`), or a UNC prefix (`\\server\share`). Backslashes are only
+/// separators inside the Windows spellings; a POSIX path may contain them as
+/// ordinary file-name bytes, which is why nothing here rewrites a byte.
+fn absolutePath(path: []const u8) bool {
+    if (path.len == 0) return false;
+    if (path[0] == '/') return true;
+    if (path.len >= 2 and path[0] == '\\' and path[1] == '\\') return true;
+    return path.len >= 3 and driveLetter(path[0]) and path[1] == ':' and (path[2] == '\\' or path[2] == '/');
+}
 fn validPath(path: []const u8) bool {
-    return validText(path, 4096) and path.len != 0 and path[0] == '/' and std.mem.indexOfScalar(u8, path, 0) == null;
+    return validText(path, 4096) and absolutePath(path) and std.mem.indexOfScalar(u8, path, 0) == null;
 }
 fn field(items: []const sexpr.Expr, name: []const u8) ParseError!sexpr.Expr {
     if (items.len == 0 or items.len % 2 != 0) return error.InvalidFormat;
@@ -283,6 +298,30 @@ test "file fixtures frame exact UTF-8 bytes and preserve separators" {
     try std.testing.expect(admits(fixture.kinds, .read_text));
     try std.testing.expect(!admits(fixture.kinds, .write_text));
     try std.testing.expect(!admits(fixture.kinds, .external));
+}
+
+test "path fixtures admit every absolute spelling a native worker returns" {
+    try std.testing.expect(validPath("/tmp/note.txt"));
+    try std.testing.expect(validPath("/tmp/a\\b.txt"));
+    try std.testing.expect(validPath("C:\\Users\\Lee\\Ideas.txt"));
+    try std.testing.expect(validPath("c:/Users/Lee"));
+    try std.testing.expect(validPath("\\\\server\\share\\docs"));
+    try std.testing.expect(!validPath(""));
+    try std.testing.expect(!validPath("docs/notes.txt"));
+    try std.testing.expect(!validPath("C:notes.txt"));
+    try std.testing.expect(!validPath("\\single\\backslash"));
+}
+
+test "file choice fixtures carry Windows paths byte for byte" {
+    var reader = sexpr.Reader.init(std.testing.allocator, "(resolve-file-choice \"notes-open\" (chosen \"C:\\\\Users\\\\Lee\\\\Ideas.txt\"))");
+    const expr = try reader.readOne();
+    defer expr.deinit(std.testing.allocator);
+    const items = expr.value.list;
+    const fixture = try parse(std.testing.allocator, try symbol(items[0]), items[1..]);
+    defer std.testing.allocator.free(fixture.task_name);
+    defer std.testing.allocator.free(fixture.payload);
+    try std.testing.expectEqualStrings("6:files16:chosen22:C:\\Users\\Lee\\Ideas.txt", fixture.payload);
+    try std.testing.expect(admits(fixture.kinds, .choose_file));
 }
 
 /// Names the expected typed service for an actionable mismatch diagnostic.
