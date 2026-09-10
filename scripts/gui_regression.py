@@ -44,6 +44,10 @@ class Scenario:
         # about damaged assets names a prepared root instead, because a script
         # cannot damage the working tree and put it back.
         self.assets = app / "assets"
+        # A native dialog cannot be driven from a script, so a scenario that
+        # needs a real file or folder names it up front; the host hands each
+        # path to the next chooser in order instead of prompting.
+        self.choices = []
         self.diagnostic = None
         note = []
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -56,6 +60,11 @@ class Scenario:
                 self.assets = app / comment[len("assets:"):].strip()
                 if not self.assets.is_dir():
                     raise SystemExit(f"{path}: '# assets:' names no directory: {self.assets}")
+            elif comment.startswith("choose:"):
+                choice = app / comment[len("choose:"):].strip()
+                if not choice.exists():
+                    raise SystemExit(f"{path}: '# choose:' names nothing on disk: {choice}")
+                self.choices.append(choice)
             elif comment.startswith("diagnostic:"):
                 note = [comment[len("diagnostic:"):].strip()]
             elif note:
@@ -98,6 +107,8 @@ def arguments_for(scenario: Scenario, report: Path) -> list[str]:
                  "--host-script-report", str(report.resolve())]
     if scenario.assets.is_dir():
         arguments += ["--host-assets-root", str(scenario.assets.resolve())]
+    for choice in scenario.choices:
+        arguments += ["--host-choose", str(choice.resolve())]
     return arguments
 
 
@@ -119,14 +130,30 @@ def run_scenario(executable: Path, scenario: Scenario, artifacts: Path,
     else:
         command = [str(executable.resolve()), "--host-window-size", scenario.size, *arguments]
         print("==> " + " ".join(command), flush=True)
-        subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=180, env=environment)
+        completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", timeout=180, env=environment)
+        # A scenario that closes its window leaves the report first and then
+        # the process; a crash in that teardown is only visible here, as an
+        # exit the report knows nothing about.
+        if completed.returncode != 0:
+            return False, exit_failure(completed)
     if not report.is_file():
         return False, "the application exited without writing a report"
     import json
 
     observed = json.loads(report.read_text(encoding="utf-8"))
     return bool(observed["passed"]), observed.get("failure", "")
+
+
+def exit_failure(completed: subprocess.CompletedProcess) -> str:
+    """Describes an abnormal exit, keeping the host's own last words when it left any."""
+    status = completed.returncode
+    if status < 0:
+        detail = f"the application died from signal {-status}"
+    else:
+        detail = f"the application exited with status {status}"
+    tail = [line for line in (completed.stderr or "").splitlines() if line.strip()][-3:]
+    return detail + (": " + " | ".join(tail) if tail else "")
 
 
 def run(directory: Path, artifacts: Path, patterns=(), capture=True,

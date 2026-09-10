@@ -44,12 +44,12 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 | GUI-24 | P3 | Optional visual refinements, after operability | Design | Examples + narrowly justified API work |
 | GUI-25 | P2 | Windows: window chrome, title bar theme, and icon | Windows screenshots + source | GPUI host window creation |
 | GUI-26 | P2 | Windows: dark-theme host scrollbars are the only small-window fallback | Windows screenshots | Host scroll fallback; feeds GUI-10/23 |
-| GUI-27 | P1 | Windows: `Home` directory is unresolvable, so Board Save and first Notes Save As never open a dialog | Windows reproduction + source | Files boundary + Board/Notes |
+| GUI-27 | P1 | Windows: `Home` directory is unresolvable, so Board Save and first Notes Save As never open a dialog | Windows reproduction + source; host fix landed 2026-09-11, unverified on Windows | Files boundary + Board/Notes |
 | GUI-28 | P2 | Notes: CRLF, BOM, and paste line-ending handling | Windows reproduction + file bytes | Notes + native input |
-| GUI-29 | P1 | Activity: closing the window while following a log crashes the process | Windows reproduction + WinDbg stack | GPUI host file/timer lifecycle |
+| GUI-29 | P1 | Activity: closing the window while following a log crashes the process | Windows reproduction + WinDbg stack; exits cleanly on Linux | GPUI host file/timer lifecycle |
 | GUI-30 | P3 | Windows: native dialog defaults (filters, start folder, titles) | Windows screenshots | Files boundary + examples |
 | GUI-31 | P2 | Windows contributor workflow: local host build, docs, and spec fixtures | Local build failure + source | Scripts/docs/fixtures |
-| GUI-32 | P1 | Explorer: Preview text and Open in app are inert for real Windows folders | Windows reproduction | Explorer + host hit-testing/effects |
+| GUI-32 | P1 | Explorer: Preview text and Open in app are inert for real Windows folders | Windows reproduction; works on Linux | Explorer + host hit-testing/effects |
 | GUI-33 | P2 | Windows file-service edge cases: UNC, reparse points, sharing violations | Source; unverified | Windows file worker |
 | GUI-34 | P1 | Re-verify on Windows the items closed on macOS | Windows evidence predates the fixes | Windows validation |
 
@@ -338,14 +338,20 @@ Board documents therefore cannot be created at all from a normal Windows
 launch. With Git Bash's `HOME` the dialog opens in the profile root, not
 Documents ([dialog](gui-examples-review/2026-09-10-windows/board-win-save-as-dialog.png)).
 
-Acceptance: resolve the typed home/documents directory per platform inside the
-Files boundary (`USERPROFILE` or the known-folder API on Windows, `HOME`
-elsewhere) and keep `Unavailable` for genuine failures only. Decide whether
-`Home` should mean the profile root or Documents and document it in the
-protocol reference. Make the apps survive `Unavailable` by falling back to the
-dialog's own default folder instead of refusing the workflow. Cover this with
-a native spec once fixtures can express a Windows directory (GUI-31), and run
-the GUI smoke on Windows without `HOME`.
+Landed 2026-09-11, on Linux: the host resolves `Home` from `HOME` on Linux and
+macOS and from `USERPROFILE`, then `HOMEDRIVE` plus `HOMEPATH`, on Windows;
+`Unavailable` now means the environment names no directory at all. `Home` is
+the profile root on every system, and the protocol reference, module docs and
+public reference say so. The resolver is unit-tested with a Windows-shaped
+environment, but the Windows build has not been run without `HOME` since.
+
+Remaining: run Board Save As and Notes' first Save As on Windows from a
+shortcut or Explorer launch and confirm the dialog opens in the profile root.
+The apps still refuse the workflow on a genuine `Unavailable` rather than
+falling back to the dialog's own default folder; that fallback needs a way to
+ask the platform for a dialog without an initial directory, which the current
+save-chooser request does not have. Cover the resolution with a native spec once
+fixtures can express a Windows directory (GUI-31).
 
 ### GUI-28 — Notes line endings and BOM
 
@@ -383,12 +389,20 @@ the attested host carries no symbols, so frames are module offsets. The
 symptom points at teardown ordering between the polling task/timer and the
 runtime it reports into, not at the Roc application.
 
-Acceptance: reproduce under a symbolized debug host on Windows and on Linux
-(same runtime code; only observed on Windows so far), then fix the ownership
-so that pending file-follow work cannot touch a dropped runtime. Add a host
-test that closes the window with an active follow task, and a GUI smoke
-variant (`--smoke-timers` plus a real log fixture) that exits through the
-normal close path on all three CI targets.
+Linux, 2026-09-11: `activity-monitor/follow-and-close` opens the real
+`regression/fixtures/events.log` through the worker, follows it for four
+seconds (eight polls), and closes the window through the host's own close
+request; the process exits cleanly under Wayland with the debug host. The
+scenario is an ordinary check, and the driver now fails a scenario whose
+process dies after writing its report, so the Windows crash would be caught
+by `scripts/minici gui-scenarios` there rather than only by hand. That run has
+not happened yet.
+
+Acceptance: reproduce under a symbolized debug host on Windows (the same
+runtime code exits cleanly on Linux), then fix the ownership so that pending
+file-follow work cannot touch a dropped runtime. Add a host test that closes
+the window with an active follow task; the scripted scenario is the
+normal-close-path check on all three CI targets.
 
 ### GUI-30 — Native dialog defaults on Windows
 
@@ -450,11 +464,18 @@ never reaches the button or the action is dropped before the update is
 undetermined. Tab from the list moves focus to the toolbar's Up, not to the
 details buttons.
 
-Acceptance: reproduce with `--host-trace-engine` and a native spec that
-selects a `Folder` source entry and invokes the preview action, on Linux as
-well as Windows. Fix the dispatch or state gap, then verify a CRLF preview
-renders in the read-only preview and that Open in app reports the
-`rundll32` launch honestly (an unassociated extension still returns success).
+Linux, 2026-09-11: not reproduced. `folder-explorer/real-folder-preview`
+chooses the real `regression/fixtures/project` folder through the worker,
+selects `note.txt`, and Preview text loads it; the CRLF fixture `crlf.txt`
+previews with its `\r\n` endings intact in the read-only editor. The maintained
+`preview-open.scm` spec already selects a `Folder` source entry and invokes the
+preview action, and it passes on Windows too, so whatever is wrong there is in
+the presentation layer or the Windows worker, not in the session model.
+
+Acceptance: run the scenario on Windows with `--host-trace-engine` to see
+whether the click reaches the engine at all. Fix the dispatch or worker gap,
+then verify that Open in app reports the `rundll32` launch honestly (an
+unassociated extension still returns success).
 
 ### GUI-33 — Windows file-service edge cases
 

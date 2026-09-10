@@ -1343,6 +1343,21 @@ control's laid-out bounds. `expect-onscreen` means *visible without scrolling*;
 the host's window-scroll fallback means a failure is a usability finding rather
 than a proof that nothing can reach the control.
 
+A native file or folder dialog cannot be driven from a script. A scenario that
+needs a real file names it in its front matter, `# choose: <path relative to
+the example>`, once per chooser in the order the script opens them; the driver
+passes each as `--host-choose` and the host hands it to the next chooser instead
+of prompting, after the same path validation the dialog's own answer receives.
+Everything past the chooser — the listing, preview, log-follow or open worker —
+is the real one, which is what separates these scenarios from the specs that
+resolve the worker's result by name. The `close` step, which must be last,
+leaves through the window's own close request the way the frame's close button
+does: an application with unsaved work may answer with a dialog and keep the
+window. The report is written before the window goes, so the driver also reads
+the process exit status; a crash during teardown is reported as the failure
+even when every assertion passed. `activity-monitor/follow-and-close` and
+`folder-explorer/real-folder-preview` are the scenarios built on this.
+
 Every run writes a JSON report of every observation under
 `.test-out/gui-regression/<app>/`, and on macOS also photographs the
 application's own window in the state the script finished in — including the

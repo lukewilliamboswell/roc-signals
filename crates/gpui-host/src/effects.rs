@@ -9,7 +9,7 @@ use crate::{
 };
 use gpui::{Context, PathPromptOptions};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -23,9 +23,21 @@ const MAX_PACKET: usize = 8 * 1024 * 1024;
 #[derive(Default)]
 pub(crate) struct Manager {
     jobs: HashMap<u64, Arc<AtomicBool>>,
+    /// Paths a scripted run has queued as the answers to the next choosers, in
+    /// order. A native dialog cannot be driven from a script, and the display-free
+    /// specs resolve choosers by name; this is the scripted window's equivalent,
+    /// so a scenario can open a real file or folder and exercise the real worker.
+    scripted_choices: VecDeque<PathBuf>,
 }
 
 impl Manager {
+    /// Queues the paths the next file and folder choosers will return instead
+    /// of opening a dialog. Only a scripted run supplies these; an ordinary
+    /// launch always prompts.
+    pub(crate) fn answer_choosers(&mut self, paths: Vec<PathBuf>) {
+        self.scripted_choices.extend(paths);
+    }
+
     pub(crate) fn accept(&mut self, message: Effect, cx: &mut Context<Runtime>) {
         match message {
             Effect::Cancel(id) => self
@@ -47,6 +59,13 @@ impl Manager {
                 );
                 match request {
                     Request::ChooseFile | Request::ChooseDirectory => {
+                        if let Some(path) = self.scripted_choices.pop_front() {
+                            // The scripted answer takes the same validated path
+                            // the dialog's own result would; nothing downstream
+                            // can tell the two apart.
+                            self.deliver(id, choice(Some(path)), cancel, cx);
+                            return;
+                        }
                         let directories = matches!(request, Request::ChooseDirectory);
                         let receiver = cx.prompt_for_paths(PathPromptOptions {
                             files: !directories,

@@ -78,6 +78,10 @@ pub(crate) enum Action {
     ExpectHistory(Locator, usize),
     /// Record the rendered tree under a name, for evidence rather than assertion.
     Snapshot(String),
+    /// Close the window through the platform's ordinary close path. It must be
+    /// the last step: the runtime is gone once the window is, so nothing after
+    /// it could be observed.
+    Close,
 }
 
 /// A parsed step, keeping its source line so a failure can be located.
@@ -109,6 +113,16 @@ pub(crate) fn parse(source: &str) -> Result<Vec<Step>, String> {
     }
     if steps.is_empty() {
         return Err("a script must contain at least one step".into());
+    }
+    if let Some(position) = steps
+        .iter()
+        .position(|step| step.action == Action::Close)
+        .filter(|position| position + 1 != steps.len())
+    {
+        return Err(format!(
+            "line {}: close must be the last step",
+            steps[position].line
+        ));
     }
     Ok(steps)
 }
@@ -185,6 +199,10 @@ fn parse_action(verb: &str, rest: &str) -> Result<Action, String> {
                 .map_err(|_| format!("expect-history expects a count, got {depth:?}"))?;
             Ok(Action::ExpectHistory(locator, depth))
         }
+        "close" => rest
+            .is_empty()
+            .then_some(Action::Close)
+            .ok_or_else(|| "close takes no arguments".to_string()),
         "snapshot" => (!rest.is_empty())
             .then(|| Action::Snapshot(rest.to_string()))
             .ok_or_else(|| "snapshot expects a name".into()),
@@ -605,6 +623,15 @@ mod tests {
         assert!(parse("click #ok\nwiggle #ok\n").unwrap_err().contains("line 2"));
         assert!(parse("wait soon").unwrap_err().contains("milliseconds"));
         assert!(parse("# only a comment\n").is_err());
+    }
+
+    #[test]
+    fn close_ends_a_script_and_nothing_may_follow_it() {
+        let steps = parse("click Open\nwait 4000\nclose\n").expect("valid script");
+        assert_eq!(steps[2].action, Action::Close);
+        let error = parse("close\nexpect-text Gone\n").unwrap_err();
+        assert!(error.contains("line 1") && error.contains("last step"), "{error}");
+        assert!(parse("close now\n").unwrap_err().contains("no arguments"));
     }
 
     #[test]

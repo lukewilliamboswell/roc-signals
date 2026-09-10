@@ -1,6 +1,7 @@
 """Unit tests for the GUI regression scenario driver."""
 
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -55,6 +56,52 @@ class ScenarioTests(unittest.TestCase):
             (root / "counter").mkdir()
             with self.assertRaises(SystemExit):
                 gui_regression.scenarios([root / "counter"])
+
+    def test_front_matter_queues_real_files_for_the_choosers_in_order(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixtures = root / "activity" / "regression" / "fixtures"
+            fixtures.mkdir(parents=True)
+            (fixtures / "events.log").write_text("one\n", encoding="utf-8")
+            (fixtures / "project").mkdir()
+            path = write(root, "activity", "follow",
+                         "# choose: regression/fixtures/events.log\n"
+                         "# choose: regression/fixtures/project\n"
+                         "click \"Open log…\"\nclose\n")
+            scenario = gui_regression.Scenario(root / "activity", path)
+            self.assertEqual(scenario.choices, [fixtures / "events.log", fixtures / "project"])
+            arguments = gui_regression.arguments_for(scenario, root / "report.json")
+            self.assertEqual(arguments.count("--host-choose"), 2)
+            self.assertLess(arguments.index(str((fixtures / "events.log").resolve())),
+                            arguments.index(str((fixtures / "project").resolve())))
+
+    def test_a_choice_that_names_nothing_on_disk_is_refused_up_front(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = write(root, "activity", "follow",
+                         "# choose: regression/fixtures/missing.log\nclose\n")
+            with self.assertRaises(SystemExit):
+                gui_regression.Scenario(root / "activity", path)
+
+    def test_an_abnormal_exit_fails_the_scenario_even_with_a_passing_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = write(root, "activity", "follow", "close\n")
+            scenario = gui_regression.Scenario(root / "activity", path)
+            artifacts = root / "artifacts"
+
+            def fake_run(command, **_):
+                report = Path(command[command.index("--host-script-report") + 1])
+                report.parent.mkdir(parents=True, exist_ok=True)
+                report.write_text('{"passed": true}', encoding="utf-8")
+                return subprocess.CompletedProcess(command, -11, "", "PASS: follow\n")
+
+            with patch.object(gui_regression.subprocess, "run", fake_run):
+                passed, detail = gui_regression.run_scenario(
+                    root / "app", scenario, artifacts, capture=False)
+            self.assertFalse(passed)
+            self.assertIn("signal 11", detail)
+            self.assertIn("PASS: follow", detail)
 
     def test_comments_inside_a_script_body_do_not_extend_the_diagnostic(self):
         with tempfile.TemporaryDirectory() as temporary:
