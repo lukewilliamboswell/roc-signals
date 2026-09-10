@@ -34,6 +34,13 @@ asset_status_text = |status| match status {
 	Files.AssetStatus.Mismatch => "altered"
 }
 
+## The status line starts with this while the startup check is still running.
+## It is never empty at mount on purpose: a status column that is laid out with
+## no area keeps that area when its text arrives, so a warning written into an
+## initially empty line is in the semantic tree but never visible to a person.
+asset_checking : Str
+asset_checking = "Checking assets…"
+
 ## Verification is advisory. It reports the integrity of the shipped files at
 ## startup and decides nothing about what a card draws: the host resolves and
 ## decodes each avatar independently, so an altered file that is still a valid
@@ -41,7 +48,7 @@ asset_status_text = |status| match status {
 ## resolve or decode becomes a placeholder box. The check also runs once, so a
 ## file restored afterwards is reported by the next run, not by this line.
 ##
-## All-ok verification reports render as an empty (invisible) status line.
+## An all-ok report empties the status line, collapsing it out of the layout.
 asset_problem_text : List(Files.AssetCheck) -> Str
 asset_problem_text = |report| {
 	bad = report.keep_if(|check| check.status != Files.AssetStatus.Ok)
@@ -709,7 +716,7 @@ main = || Ui.state(
 																							Ui.state(
 																								Close.KeepEditing,
 																								|close| Ui.state(
-																									"",
+																									asset_checking,
 																									|asset_problem| {
 																										editable = document.signal().map(|doc| can_edit(doc.phase))
 																										edit_disabled = editable.map(|value| !value)
@@ -955,7 +962,24 @@ document_toolbar = |handles, actions| {
 			),
 			Ui.when(handles.document.signal().map(|doc| doc.phase != Phase.Idle and doc.phase != Phase.ConfirmOpen), || Gui.button("Cancel operation", actions.cancel), || Gui.text("")),
 			Gui.column(
-				[Gui.test_id("asset-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xF09A93) })],
+				[
+					Gui.test_id("asset-status"),
+					Gui.style_s(
+						handles.asset_problem.signal().map(
+							|text| {
+								..Gui.style_default,
+								font_size: 13,
+								# Only a real problem earns the danger color; the
+								# in-progress line is ordinary secondary text.
+								foreground: if text == asset_checking {
+									Rgb(0xA9BFCC)
+								} else {
+									Rgb(0xF09A93)
+								},
+							},
+						),
+					),
+				],
 				[Gui.text_s(handles.asset_problem.signal())],
 			),
 			close_dialog(handles),
