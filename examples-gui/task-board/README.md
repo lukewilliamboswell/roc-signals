@@ -21,6 +21,14 @@ selected task does not evaluate every card.
 The detail panel retains its current task value in an ancestor scope. Field
 actions write that value and the owning column atomically. Cross-column moves
 write both columns and the editor together when the moved task is selected.
+
+The editor also carries an explicit lifetime that names which task its native
+inputs belong to. It is an allocated number, never inferred from the task's text
+or from a key hidden in a label, and it changes exactly when the thing being
+edited changes: selecting another task, creating one, undo, redo, and opening a
+document all retire the current inputs, while editing, reordering, moving, and
+filtering keep them. That is what stops one task's native selection and undo
+history from reappearing in another whose fields happen to be equal.
 Pointer drops and the explicit controls use the same domain reducer. The old card scope is disposed and
 a new card scope is created at the destination; the application does not claim
 that independent keyed-list sites transfer scopes.
@@ -62,7 +70,10 @@ invalid fields or an oversized document without writing anything; shorten the
 draft and retry. Native individual text controls also have a one-MiB input bound.
 
 Open asks before replacing an unsaved board. Cancel or a failed read leaves the
-board and its previous path intact, even after choosing to discard. Saving holds
+board and its previous path intact, even after choosing to discard. A document
+that loads successfully selects nothing, so no editor survives the replacement:
+its tasks may reuse the previous document's keys, and picking one opens fresh
+inputs on the new document. Saving holds
 an immutable snapshot from the moment Save was requested, including time spent
 in the chooser. Editing can continue while choosing a destination or writing;
 success marks only that submitted snapshot saved. Later edits stay dirty. A
@@ -72,7 +83,11 @@ does not undo a filesystem rename that already committed.
 Undo/Redo covers field changes, priority, creation, deletion, and movement.
 Changing a field creates one history entry per delivered edit. History holds at
 most 50 snapshots and four MiB of conservatively charged task text/key payload
-across both stacks; oldest entries retire first. Fixed collection overhead is
+across both stacks; oldest entries retire first. Each snapshot is charged for
+its column rows and, separately, for the editor task it retains, whether that
+duplicates a live row or is a value no row holds any more. Live drafts, the
+saved baseline, and a pending save's captured snapshot are separate retentions
+outside this budget, bounded by the 500-task and document decoding limits. Fixed collection overhead is
 separately bounded by 500 tasks per snapshot. Oversized snapshots are not
 retained, but the live operation still succeeds. New edits clear redo. Undoing
 creation never rewinds the next-key allocator, so a different new task receives
