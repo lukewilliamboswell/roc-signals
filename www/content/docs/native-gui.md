@@ -149,7 +149,7 @@ navigation while open.
 inside the host's assets root, sized and rounded by its style, for example
 `Gui.image({ source: "avatars/maya.png", label: "Maya avatar" },
 [Gui.style({ ..Gui.style_default, width: Px(24), height: Px(24), radius: 24 })])`.
-Launch the host with `--assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
+Launch the host with `--host-assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
 choose the root; the default is `assets/` beside the executable. Absolute
 paths, `..` traversal, URIs, and symbolic links never resolve, and a missing or
 undecodable image shows a neutral placeholder box instead of nothing.

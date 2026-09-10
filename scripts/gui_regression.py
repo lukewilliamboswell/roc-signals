@@ -94,10 +94,10 @@ def arguments_for(scenario: Scenario, report: Path) -> list[str]:
     """The host flags one scenario needs, including the assets root it chose."""
     # The window size is the capture harness's argument to give, so it is not
     # repeated here; a script run without a capture supplies it separately.
-    arguments = ["--script", str(scenario.path.resolve()),
-                 "--script-report", str(report.resolve())]
+    arguments = ["--host-script", str(scenario.path.resolve()),
+                 "--host-script-report", str(report.resolve())]
     if scenario.assets.is_dir():
-        arguments += ["--assets-root", str(scenario.assets.resolve())]
+        arguments += ["--host-assets-root", str(scenario.assets.resolve())]
     return arguments
 
 
@@ -113,11 +113,11 @@ def run_scenario(executable: Path, scenario: Scenario, artifacts: Path,
 
         gui_capture.capture(
             executable, artifacts / f"{scenario.name}.png", scenario.size,
-            settle=0.4, arguments=[*arguments, "--script-hold"],
+            settle=0.4, arguments=[*arguments, "--host-script-hold"],
             environment=environment, ready=report.is_file,
         )
     else:
-        command = [str(executable.resolve()), "--window-size", scenario.size, *arguments]
+        command = [str(executable.resolve()), "--host-window-size", scenario.size, *arguments]
         print("==> " + " ".join(command), flush=True)
         subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", timeout=180, env=environment)

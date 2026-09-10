@@ -140,7 +140,7 @@ To replay a reported coordinate directly, copy the command printed after
 `replay:`. The worker interface is:
 
 ```sh
-app --run-spec-json --fail-on-allocation 7 path/to/case.scm
+app --host-run-spec-json --host-fail-on-allocation 7 path/to/case.scm
 ```
 
 Roc allocator internals are excluded from host coordinates: their physical
@@ -1109,7 +1109,7 @@ hosts; use `python3 scripts/test.py bench --native always` to force the focused
 bench gate. A built app binary also accepts benchmark flags directly:
 
 ```sh
-.test-out/bench-bin/signals-data-grid-bench --bench-app --bench-name signals-data-grid --bench-iterations 100 --bench-samples 3 examples-web/data-grid/specs/initial-mount.scm
+.test-out/bench-bin/signals-data-grid-bench --host-bench-app --host-bench-name signals-data-grid --host-bench-iterations 100 --host-bench-samples 3 examples-web/data-grid/specs/initial-mount.scm
 ```
 
 The host initializes a fresh app per iteration, applies the initial command
@@ -1282,9 +1282,9 @@ python3 scripts/build_gui.py --debug
 roc build examples-gui/counter/main.roc --output=.test-out/Counter
 .test-out/Counter
 # Same executable, display-free semantic check:
-.test-out/Counter --run-spec-json examples-gui/counter/specs/counting.scm
+.test-out/Counter --host-run-spec-json examples-gui/counter/specs/counting.scm
 # Brief rendering/adapter integration check:
-.test-out/Counter --smoke --smoke-click Increment --smoke-expect '1'
+.test-out/Counter --host-smoke --host-smoke-click Increment --host-smoke-expect '1'
 ```
 
 `python3 scripts/test.py gui --roc-bin /path/to/pinned/roc --keep-output`
@@ -1318,7 +1318,7 @@ semantic specs also cannot see, because they run without a presentation layer.
 stored beside each example in `examples-gui/<app>/regression/*.script`, covering
 initial, populated, selected, focused, disabled/read-only, modal, error/loading
 and resized states. Each scenario is a line-per-step script executed against the
-real window by the host's `--script` flag:
+real window by the host's `--host-script` flag:
 
 ```text
 # size: 800x600
@@ -1368,8 +1368,8 @@ work anywhere the examples run, but this repository has only executed them on
 Apple Silicon macOS so far.
 
 Normal GUI launches do not print engine metrics. Pass `--host-trace-engine` to an
-app executable to log event-turn metrics to stderr; `--smoke` prints its explicit
-validation result, and `--script` prints its own pass or failure line. Host
+app executable to log event-turn metrics to stderr; `--host-smoke` prints its explicit
+validation result, and `--host-script` prints its own pass or failure line. Host
 errors remain visible without tracing.
 
 Host builds default to two Cargo workers. Use `scripts/build_gui.py --jobs N`

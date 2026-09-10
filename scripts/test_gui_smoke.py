@@ -14,7 +14,7 @@ class GuiSmokeTests(unittest.TestCase):
     def test_counter_smoke_checks_the_rendered_value(self):
         self.assertEqual(
             gui_smoke.COUNTER_ARGUMENTS,
-            ("--smoke-click", "Increment", "--smoke-expect", "1"),
+            ("--host-smoke-click", "Increment", "--host-smoke-expect", "1"),
         )
 
     def test_requires_success_and_explicit_render_result(self):
@@ -30,9 +30,9 @@ class GuiSmokeTests(unittest.TestCase):
     def test_successful_render_has_bounded_process_lifetime(self):
         with patch.object(gui_smoke.subprocess, "run", return_value=subprocess.CompletedProcess(
                 [], 0, stdout="", stderr=gui_smoke.MARKER + "1 retained views\n")) as run:
-            gui_smoke.check(Path("counter"), ("--smoke-click", "Increment"))
+            gui_smoke.check(Path("counter"), ("--host-smoke-click", "Increment"))
         self.assertEqual(run.call_args.kwargs["timeout"], 30)
-        self.assertIn("--smoke", run.call_args.args[0])
+        self.assertIn("--host-smoke", run.call_args.args[0])
 
 
 if __name__ == "__main__":
