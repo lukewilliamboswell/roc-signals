@@ -22,7 +22,7 @@ export ROC_BIN=/path/to/pinned-roc/roc
 | 11 | Native GPUI sample cannot link as Shared or PIE | not filed | `examples-gui/keyed-rows/` | normal Roc executable linkage |
 | 10 | Unit-state capability callbacks produce invalid dev Wasm | not filed | `repro/unit-state-wasm-dev/` | no; size backend validates |
 | 14 | `roc bundle --output-dir` fails across filesystems | not filed | commands below | stage on the output filesystem |
-| 16 | Recursive keyed row rendering segfaults during code generation | not filed | `repro/recursive-each-codegen/` | no |
+| 16 | `Ui.each` applications fail during monotype code generation | not filed | `repro/recursive-each-codegen/` | no |
 | 17 | Markdown Editor retains Roc allocations after native specs | not filed | commands below | no |
 
 For #1, camelCase field names longer than ten bytes are corrupted on wasm32 at
@@ -154,27 +154,39 @@ proof of URL consumption. Package layout and host size still need to satisfy
 the expanded transitive budget; there is no validated CLI workaround for this
 compiler pin. No compiler change is made here.
 
-## 16. Recursive keyed row rendering segfaults during code generation
+## 16. `Ui.each` applications fail during monotype code generation
 
-Reproduced with `nightly-2026-09-09-7dadc35` on Apple Silicon macOS.
-`roc check` and `roc test` succeed, but native and Wasm builds terminate with
-`SIGSEGV` at fault address `0x3f8` before producing an artifact. The failure
-is deterministic with the compiler cache disabled and one worker. The reduced
-case retains a recursive nominal tree, `Ui.each`, and the row builder's call
-back into the group renderer:
+Reproduced with `nightly-2026-09-09-7dadc35` on Apple Silicon macOS and Linux
+x64. `roc check` and `roc test` succeed, but native and Wasm builds terminate
+with `SIGSEGV` before producing an artifact. The failure is deterministic with
+the compiler cache disabled and one worker. The original reduction retained a
+recursive nominal tree and a row-builder call back into its group renderer:
 
 ```sh
 roc build -j1 --target=wasm32 --opt=size --no-cache \
   repro/recursive-each-codegen/main.roc
 ```
 
-Replacing the recursive row-builder call with a static element compiles.
-Preserving its zero-argument thunk shape by wrapping the call in
-`Ui.component(|| ...)` still crashes. The same nightly also reproduces a
-code-generation crash for `pomodoro-tracker`, `form-builder`,
-`split-the-bill`, `conduit`, GUI `keyed-rows`, and the GUI
-`compound-disposal` fixture; smaller examples and the size-fixture set still
-build. Those applications have not all been reduced to this exact construct.
+Further reduction shows recursion is not required. `simple-each.roc` contains
+only state, a derived `Rows` signal, and derived row text;
+`compound-disposal.roc` contains a constant two-row signal and static row body.
+Both build with `nightly-2026-09-04-c125b82` and crash with the September 9
+nightly. Their full GUI keyed-rows and compound-disposal counterparts fail at
+the same address: `0x3f8` on Apple Silicon macOS and `0x378` on Linux x64.
+
+A current debug compiler turns both small cases into an explicit invariant in
+`postcheck/monotype/lower.zig:mergeCheckedEvidenceContract`: checked target
+contract evidence differs from substitution-derived evidence while lowering a
+platform-required procedure. The producer-authoritative
+`retain_constraint_relation` rule was incorrectly nested under the derived
+target arm, so structural derived evidence reached the invariant before that
+rule could apply. Postcheck monotype lowering is the confirmed compiler area;
+the precise bad release dereference remains unsymbolized. See the repro README
+for exact good/bad commands and output.
+
+The same nightly also crashes while generating `pomodoro-tracker`,
+`form-builder`, `split-the-bill`, and `conduit`; those applications have not
+all been reduced to the minimal `Ui.each` shape.
 Changing Query Builder's recursive editor would remove supported behavior
 rather than work around the compiler. No source workaround or known-failure
 entry is applied.
@@ -183,16 +195,30 @@ entry is applied.
 
 Reproduced with `nightly-2026-09-09-7dadc35` on Linux x64 in hosted CI.
 Markdown Editor builds and every semantic assertion reports success, but each
-spec process exits with the native host's allocation ledger still holding Roc
-allocations. The initial-render spec retains 30 allocations and 2176 bytes;
-other specs retain different nonzero sets.
+of its 11 isolated spec processes exits with the native host's allocation
+ledger holding exactly 30 Roc allocations and 2176 bytes. All retained values
+were allocated during mount (`phase=0`) from one generated caller address. The
+smallest known behavioral reproduction is the initial-render spec alone:
 
 ```sh
+GOOD=/path/to/roc_nightly-linux_x86_64-2026-09-04-c125b82/roc
+BAD=/path/to/roc_nightly-linux_x86_64-2026-09-09-7dadc35/roc
+
 python3 scripts/test.py native --native always \
-  --spec-filter 'markdown-editor/*' --roc-bin /path/to/pinned/roc
+  --spec-filter 'markdown-editor/initial-render-*' --roc-bin "$BAD"
+python3 scripts/test.py native --native always \
+  --spec-filter 'markdown-editor/initial-render-*' --roc-bin "$GOOD"
 ```
 
-The same specs release all allocations with `nightly-2026-09-04-c125b82`.
+Expected, and actual with the good nightly: the semantic result is `passed`,
+the process exits successfully, and no Roc allocation remains. Actual with the
+bad nightly: the semantic result is still `passed`, then shutdown reports
+`native host shutdown retained 30 Roc allocations / 2176 bytes` and exits 1.
+Wasm build, mount, and unmount of the same application release all tracked Roc
+allocations, narrowing the regression to generated native ownership code. The
+exact compiler subsystem has not been confirmed; native reference-count
+insertion or specialization is suspected.
+
 The ledger failure remains a hard test failure: passing visible behavior does
 not make ownership imbalance acceptable. No known-failure entry or host cleanup
 workaround is applied.

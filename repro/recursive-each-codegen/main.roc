@@ -1,4 +1,4 @@
-app [main] { roc: "nightly-2026-09-09-7dadc35", pf: platform "../../platform-web/main.roc" }
+app [main] { pf: platform "../../platform-web/main.roc", roc: "nightly-2026-09-09-7dadc35" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -38,11 +38,12 @@ render_group = |tree, node| {
 
 render_node : Ui.State(QNode), Signal.Signal(QNode) -> Elem
 render_node = |tree, node| {
-	is_group = node.map(|value| match value { Group(_) => True, Leaf => False })
+	is_group = node.map(|value| match value {
+		Group(_) => True
+		Leaf => False
+	})
 	Ui.when(is_group, || render_group(tree, node), || Html.text("leaf"))
 }
 
 main : () -> Elem
 main = || Ui.state(QNode.Group([QNode.Leaf]), |tree| render_group(tree, tree.signal()))
-
-
