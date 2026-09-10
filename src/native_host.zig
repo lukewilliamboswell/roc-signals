@@ -26,6 +26,7 @@ const FaultAllocator = signals.fault_allocator.FaultAllocator;
 const spec_parser = @import("spec/spec_parser.zig");
 const spec_runner = @import("spec/spec_runner.zig");
 const spec_file_fixtures = @import("spec/file_fixtures.zig");
+const spec_http_fixtures = @import("spec/http_fixtures.zig");
 const benchmark = @import("bench/benchmark.zig");
 const sim_dom = @import("sim_dom.zig");
 const native_style = signals.native_style;
@@ -106,7 +107,32 @@ fn stubbedFilesResult(host: *HostEnv, gpa: std.mem.Allocator, kind: boundary.Tas
     return .{ .failed = true, .payload = filesErrorPacket(gpa, "unavailable", message) };
 }
 
-/// Reads frame `index` (0 is the codec version) of a `files1` packet, or "".
+/// One declared answer for the hosted `Http` function in the spec host: the
+/// request URI it answers, or any URI for an error, and the `http1` packet.
+const HttpStub = struct {
+    uri: []const u8,
+    payload: []const u8,
+    failed: bool,
+};
+
+/// Answers a hosted `Http` request in the spec host from the declared stubs:
+/// the first stub whose URI matches the request's, or any error stub. Consumed
+/// stubs are removed so a spec can sequence results. No stub is an error result.
+fn stubbedHttpResult(host: *HostEnv, gpa: std.mem.Allocator, request: []const u8) struct { failed: bool, payload: []const u8 } {
+    const request_uri = filesFrame(request, 2);
+    for (host.http_stubs.items, 0..) |stub, index| {
+        if (!stub.failed and !std.mem.eql(u8, stub.uri, request_uri)) continue;
+        const taken = host.http_stubs.orderedRemove(index);
+        gpa.free(taken.uri);
+        return .{ .failed = taken.failed, .payload = taken.payload };
+    }
+    const message = std.fmt.allocPrint(gpa, "no spec stub for {s}", .{request_uri}) catch @panic("out of memory");
+    defer gpa.free(message);
+    const payload = std.fmt.allocPrint(gpa, "5:http111:unavailable{d}:{s}", .{ message.len, message }) catch @panic("out of memory");
+    return .{ .failed = true, .payload = payload };
+}
+
+/// Reads frame `index` (0 is the codec version) of a length-prefixed packet, or "".
 fn filesFrame(packet: []const u8, index: usize) []const u8 {
     var rest = packet;
     var current: usize = 0;
@@ -1051,6 +1077,7 @@ const HostEnv = struct {
     /// Spec-declared results for the synchronous `Files` primitives, consumed
     /// oldest first as requests arrive; only the display-free spec host uses them.
     file_stubs: std.ArrayListUnmanaged(FileStub) = .empty,
+    http_stubs: std.ArrayListUnmanaged(HttpStub) = .empty,
     canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
     location_index: usize = 0,
@@ -1138,11 +1165,25 @@ const HostEnv = struct {
         self.file_stubs.append(gpa, .{ .kinds = kinds, .payload = gpa.dupe(u8, payload) catch @panic("out of memory"), .failed = failed }) catch @panic("out of memory");
     }
 
+    /// Declares one result for the hosted `Http` function in spec mode.
+    fn stubHttp(self: *HostEnv, uri: []const u8, payload: []const u8, failed: bool) void {
+        const gpa = self.hostAllocator();
+        const uri_copy = gpa.dupe(u8, uri) catch @panic("out of memory");
+        const payload_copy = gpa.dupe(u8, payload) catch @panic("out of memory");
+        self.http_stubs.append(gpa, .{ .uri = uri_copy, .payload = payload_copy, .failed = failed }) catch @panic("out of memory");
+    }
+
     fn deinitTaskRecords(self: *HostEnv) void {
         const allocator = self.hostAllocator();
         for (self.file_stubs.items) |stub| allocator.free(stub.payload);
         self.file_stubs.deinit(allocator);
         self.file_stubs = .empty;
+        for (self.http_stubs.items) |stub| {
+            allocator.free(stub.uri);
+            allocator.free(stub.payload);
+        }
+        self.http_stubs.deinit(allocator);
+        self.http_stubs = .empty;
         for (self.started_tasks.items) |record| {
             allocator.free(record.name);
         }
@@ -2493,6 +2534,28 @@ fn hostEnvVar(name: abi.RocStr) callconv(.c) abi.EnvVarResult {
 /// packet buffer it hands back. Both link from the GPUI host crate.
 extern fn signals_files_run(kind: u32, request_ptr: [*]const u8, request_len: usize, out_ptr: *[*]u8, out_len: *usize) callconv(.c) u32;
 extern fn signals_files_release(ptr: [*]u8, len: usize) callconv(.c) void;
+extern fn signals_http_run(request_ptr: [*]const u8, request_len: usize, out_ptr: *[*]u8, out_len: *usize) callconv(.c) u32;
+extern fn signals_http_release(ptr: [*]u8, len: usize) callconv(.c) void;
+
+/// Hosted `Http.run!`: performs one request on the calling worker. The spec
+/// host answers from declared stubs and never touches the network.
+fn hostHttpRun(request: abi.RocListWith(u8, false)) callconv(.c) abi.HttpRun {
+    const roc_host = currentRocHost();
+    defer request.decref(roc_host);
+    const bytes: []const u8 = if (request.elements_ptr) |ptr| ptr[0..request.length] else "";
+    if (!Gpui.live) {
+        const host = currentHost();
+        const gpa = host.hostAllocator();
+        const stubbed = stubbedHttpResult(host, gpa, bytes);
+        defer gpa.free(stubbed.payload);
+        return .{ .bytes = abi.RocListWith(u8, false).fromSlice(stubbed.payload, roc_host), .failed = stubbed.failed };
+    }
+    var out_ptr: [*]u8 = undefined;
+    var out_len: usize = 0;
+    const failed = signals_http_run(bytes.ptr, bytes.len, &out_ptr, &out_len);
+    defer signals_http_release(out_ptr, out_len);
+    return .{ .bytes = abi.RocListWith(u8, false).fromSlice(out_ptr[0..out_len], roc_host), .failed = failed == 1 };
+}
 
 /// Hosted `Files.run!`: performs one filesystem request on the calling thread
 /// through the Rust host and returns its `files1` packet. Roc transfers the
@@ -3609,6 +3672,11 @@ const BenchmarkCtx = struct {
         host.stubFile(kinds, payload, failed);
     }
 
+    /// Declares one result for the hosted `Http` function; see `stubbedHttpResult`.
+    pub fn stubHttpResult(host: *Host, uri: []const u8, payload: []const u8, failed: bool) void {
+        host.stubHttp(uri, payload, failed);
+    }
+
     /// Advances interval source through the shared propagation queue.
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
         return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
@@ -3900,6 +3968,11 @@ const SpecRunnerCtx = struct {
         host.stubFile(kinds, payload, failed);
     }
 
+    /// Declares one result for the hosted `Http` function; see `stubbedHttpResult`.
+    pub fn stubHttpResult(host: *Host, uri: []const u8, payload: []const u8, failed: bool) void {
+        host.stubHttp(uri, payload, failed);
+    }
+
     /// Advances interval source through the shared propagation queue.
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
         const counts = tickIntervalSourceForBenchmark(host, roc_host, period_ms);
@@ -3998,6 +4071,7 @@ comptime {
         @export(&hostDbg, .{ .name = "roc_dbg", .visibility = .hidden });
         @export(&hostEnvVar, .{ .name = "roc_env_var", .visibility = .hidden });
         @export(&hostFilesRun, .{ .name = "roc_files_run", .visibility = .hidden });
+        @export(&hostHttpRun, .{ .name = "roc_http_run", .visibility = .hidden });
         @export(&hostExpectFailed, .{ .name = "roc_expect_failed", .visibility = .hidden });
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });
         @export(&eachBoolSinkPush, .{ .name = "roc_each_bool_sink_push", .visibility = .hidden });
@@ -4207,6 +4281,7 @@ fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void
                 host.setOnline(onlineSnapshotFromSpecText(text));
             },
             .seed_file_result => host.stubFile(cmd.expected_task_kinds, cmd.expected_text orelse "", cmd.expected_bool orelse false),
+            .seed_http_result => host.stubHttp(cmd.task_name orelse "", cmd.expected_text orelse "", cmd.expected_bool orelse false),
             .seed_local_storage, .seed_session_storage => {
                 const key = cmd.task_name orelse failHost("seed storage command is missing key text");
                 const value = cmd.expected_text orelse failHost("seed storage command is missing value text");

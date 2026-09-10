@@ -979,6 +979,18 @@ the missing stub. The stub vocabulary mirrors the native services:
 (stub-file-assets "verify" :entries ((ok "avatars/maya.png") (missing "avatars/jon.png")))
 ```
 
+The hosted `Http` functions are stubbed the same way. A response stub answers
+the next request for its URL; a reject stub answers the next request for any
+URL. Error kinds are `invalid-request`, `network`, `timeout`, `too-large`, and
+`unavailable`; `timeout` requires empty detail. Headers are optional:
+
+```lisp
+(stub-http "feed" :url "https://example.test/feed" :status 200 :body "{\"items\":[]}")
+(stub-http "feed" :url "https://example.test/feed" :status 201
+  :headers (("content-type" "text/plain")) :body "")
+(stub-http-reject "feed" :kind timeout :detail "")
+```
+
 Log changes are `initial`, `continued`, `rotated`, or `truncated`; states are
 `more`, `at-end`, or `partial-utf8`. Cursor numbers and directory file sizes are
 canonical unsigned decimal U64 values, including values above signed I64's

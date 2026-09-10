@@ -317,7 +317,8 @@ Elem.button("Save", Action.run(draft.signal(), |_|
 ```
 
 The effect is where `!` functions are called: hosted primitives such as
-`Env.var!`, and any effectful function a package exposes. It runs on a worker
+`Env.var!`, `Files.read_text!`, and `Http.get!`, and any effectful function a
+package exposes. It runs on a worker
 thread after the event's transaction commits, so `Saving` is on screen before
 the write starts, the window keeps rendering and handling input while the
 write runs, and the result enters the graph only as the next action, applied

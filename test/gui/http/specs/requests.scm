@@ -1,0 +1,18 @@
+(test "Http primitives decode stubbed responses and report typed errors"
+  (steps
+    (expect-text (text "Idle") "Idle")
+    (stub-http "fetch" :url "http://127.0.0.1:8765/hello.txt" :status 200 :body "hello λ")
+    (click (role button :name "Fetch"))
+    (expect-text (text "Fetched: hello λ") "Fetched: hello λ")
+    (stub-http "fetch" :url "http://127.0.0.1:8765/hello.txt" :status 404 :body "missing")
+    (click (role button :name "Fetch"))
+    (expect-text (text "HTTP status 404") "HTTP status 404")
+    (stub-http-reject "fetch" :kind timeout :detail "")
+    (click (role button :name "Fetch"))
+    (expect-text (text "The request timed out") "The request timed out")
+    (stub-http "send" :url "http://127.0.0.1:8765/hello.txt" :status 201 :headers (("content-type" "text/plain") ("x-echo" "ping")) :body "")
+    (click (role button :name "Send"))
+    (expect-text (text "Status 201 with 2 headers") "Status 201 with 2 headers")
+    (click (role button :name "Fetch"))
+    (expect-text (text "Native service unavailable: no spec stub for http://127.0.0.1:8765/hello.txt") "Native service unavailable: no spec stub for http://127.0.0.1:8765/hello.txt")
+  ))

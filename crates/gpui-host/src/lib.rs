@@ -5,6 +5,7 @@ mod controls;
 mod dialog;
 mod drag;
 mod effects;
+mod http;
 mod workers;
 mod file_io;
 mod input;

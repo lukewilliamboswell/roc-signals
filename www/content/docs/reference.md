@@ -173,7 +173,30 @@ entry points are its only effectful exports: the first decodes the snapshot on
 the UI thread, the second runs the effect on the worker.
 
 `Env.var!(name)` is a hosted effectful function returning `Try(Str, [Missing])`;
-it and the `Files` functions can only be called from inside an effect.
+it, the `Files` functions, and the `Http` functions can only be called from
+inside an effect.
+
+## Native Http
+
+Import `pf.Http` with `platform-gui`. Requests and responses are the
+`roc-lang/http` package's `Request` and `Response` values, so an app that
+imports that package can build them with its helpers and pass them straight
+through:
+
+| Function | Result |
+| --- | --- |
+| `send!(request)` | `Try(Response, Error)` |
+| `get!(uri)` | `Try(Response, Error)`, with a 30 second timeout |
+| `get_text!(uri)` | `Try(Str, Error)`, a 2xx UTF-8 body |
+| `error_text(error)` | `Str` |
+
+`Error` is `[InvalidRequest(Str), Network(Str), Timeout, TooLarge(Str),
+Status(U16), InvalidUtf8, Unavailable(Str)]`. `send!` treats any status as a
+success and follows redirects; `get_text!` returns `Status` for a status
+outside 200-299. A request's `NoTimeout` waits as long as the server does.
+Request and response bodies are bounded at 8 MiB, and diagnostic detail at
+4,096 UTF-8 bytes. TLS uses the native root certificates. The spec host never
+touches the network; it answers each call from a `stub-http` result.
 
 ## Ui
 
@@ -501,6 +524,7 @@ one case as `(test "name" (steps ...))`. See [Testing](@/docs/testing.md).
 (expect-canceled-task "<name>" <count>)
 (stub-file-choice "<label>" (chosen "<path>"))
 (stub-file-read "<label>" :path "<path>" :text "<text>")
+(stub-http "<label>" :url "<url>" :status <code> :body "<text>")
 (tick-interval <period-ms>)
 (tick-interval-if-active <period-ms>)
 (expect-interval <period-ms> <count>)

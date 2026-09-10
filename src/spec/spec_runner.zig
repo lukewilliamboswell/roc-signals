@@ -420,7 +420,7 @@ pub fn Runner(comptime Ctx: type) type {
                         metrics_mark = Ctx.lastRuntimeMetrics(host);
                     },
 
-                    .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result => {},
+                    .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result => {},
 
                     .set_visibility => {
                         if (comptime !@hasDecl(Ctx, "setVisibility")) {
@@ -843,6 +843,14 @@ pub fn Runner(comptime Ctx: type) type {
 
                     .stub_file_result => {
                         Ctx.stubFileResult(host, cmd.expected_task_kinds, cmd.expected_text orelse "", cmd.expected_bool orelse false);
+                    },
+
+                    .stub_http_result => {
+                        if (comptime !@hasDecl(Ctx, "stubHttpResult")) {
+                            writeLocatorFailure(cmd.line_num, "http stubs are not supported by this runner");
+                            return 1;
+                        }
+                        Ctx.stubHttpResult(host, cmd.task_name orelse "", cmd.expected_text orelse "", cmd.expected_bool orelse false);
                     },
 
                     .tick_interval => {

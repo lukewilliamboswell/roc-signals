@@ -2,7 +2,7 @@ platform ""
 	requires {
 		main : () -> Elem
 	}
-	exposes [Elem, Event, Action, Env, Signal, Gui, Ui, Rows, Files]
+	exposes [Elem, Event, Action, Env, Signal, Gui, Ui, Rows, Files, Http]
 	packages {
 		roc: "nightly-2026-09-04-c125b82",
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
@@ -20,6 +20,7 @@ platform ""
 		"roc_rows_snapshot_sink_push": EachSink.push_snapshot!,
 		"roc_env_var": Env.var!,
 		"roc_files_run": Files.run!,
+		"roc_http_run": Http.run!,
 		"roc_host_value_clone": HostValue.clone!,
 		"roc_host_value_get_with_capability": HostValue.get_with_capability!,
 		"roc_host_value_get_with_split": HostValue.get_with_split!,
@@ -46,6 +47,7 @@ import Event
 import Action
 import Env
 import Files
+import Http
 import Ui
 import Rows
 

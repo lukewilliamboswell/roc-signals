@@ -5,6 +5,7 @@ const signals = @import("signals");
 const boundary = signals.boundary;
 const sexpr = @import("sexpr.zig");
 const file_fixtures = @import("file_fixtures.zig");
+const http_fixtures = @import("http_fixtures.zig");
 
 pub const SpecCommandType = enum {
     click,
@@ -42,6 +43,8 @@ pub const SpecCommandType = enum {
     reject_task,
     stub_file_result,
     seed_file_result,
+    stub_http_result,
+    seed_http_result,
     tick_interval,
     tick_interval_if_active,
     expect_cleanup,
@@ -705,6 +708,23 @@ fn appendDecodedForm(
             .locator = emptyLocator(),
             .task_name = fixture.task_name,
             .expected_task_kinds = fixture.kinds,
+            .expected_text = fixture.payload,
+            .expected_count = null,
+            .expected_bool = fixture.failed,
+            .line_num = form.span.line,
+        });
+        return;
+    }
+
+    if (http_fixtures.recognizes(head)) {
+        const fixture = try http_fixtures.parse(allocator, head, items[1..]);
+        errdefer allocator.free(fixture.uri);
+        errdefer allocator.free(fixture.payload);
+        try commands.append(allocator, .{
+            .cmd_type = if (is_setup) .seed_http_result else .stub_http_result,
+            .locator = emptyLocator(),
+            .task_name = fixture.uri,
+            .expected_task_kinds = 0,
             .expected_text = fixture.payload,
             .expected_count = null,
             .expected_bool = fixture.failed,
