@@ -165,14 +165,15 @@ guaranteed. Failed temporary cleanup returns `Io` and may leave the file behind.
 
 `Action(a)` is what a handler returns, where `a` is the type of the handler's
 declared reads. `Action.update(changes)` commits a batch; `Action.then(changes,
-effect)` commits the batch, runs `effect : a => Action(a)` on the UI thread
+effect)` commits the batch, runs `effect : a => Action(a)` on a worker thread
 after that commit with a fresh snapshot of the reads, and continues with its
-result. `Action.run`, `run_str`, `run_bool`, `run_detail`, and `run_key` bind an
+result on the UI thread. Effects run serially in queue order. `Action.run`, `run_str`, `run_bool`, `run_detail`, and `run_key` bind an
 action to an event; `Action.on_change`, `on_change_initial`, `on_mount`, and
 `every` bind one to a signal, mount, or interval. `Action.none` changes
 nothing. `state.write(f)` is a reducer applied at commit; `state.set(v)`
-replaces the value. The platform's `roc_run_effect` entry point is the one
-effectful export of the platform.
+replaces the value. The platform's `roc_prepare_effect` and `roc_run_effect`
+entry points are its only effectful exports: the first decodes the snapshot on
+the UI thread, the second runs the effect on the worker.
 
 `Env.var!(name)` is a hosted effectful function returning `Try(Str, [Missing])`;
 it and the `Files` functions can only be called from inside an effect.

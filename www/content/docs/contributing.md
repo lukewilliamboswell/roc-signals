@@ -1173,7 +1173,7 @@ roc glue <path-to-roc>/src/glue/src/ZigGlue.roc src/signals platform-gui/main.ro
 zig fmt src/signals/roc_platform_abi.zig
 ```
 
-Use the `ZigGlue.roc` from the same Roc commit named by the `roc` header in `platform-gui/main.roc`. Generate from the native platform: its header additionally provides `roc_run_effect`, which the native host links, while the two platforms otherwise declare the same hosted and provided symbols. The host
+Use the `ZigGlue.roc` from the same Roc commit named by the `roc` header in `platform-gui/main.roc`. Generate from the native platform: its header additionally provides `roc_prepare_effect` and `roc_run_effect`, which the native host links, while the two platforms otherwise declare the same hosted and provided symbols. The host
 uses the generated types' public `incref` and `decref` methods; generated helper
 functions are implementation details and must not be made public by hand.
 

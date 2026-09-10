@@ -7,7 +7,7 @@ platform ""
 		roc: "nightly-2026-09-04-c125b82",
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
 	}
-	provides { "roc_ui_init": ui_init, "roc_run_effect": run_effect! }
+	provides { "roc_ui_init": ui_init, "roc_prepare_effect": prepare_effect!, "roc_run_effect": run_effect! }
 	hosted {
 		"roc_each_bool_sink_push": EachSink.push_bool!,
 		"roc_rows_delta_clear_sink_push": EachSink.push_delta_clear!,
@@ -54,11 +54,20 @@ ui_init = || {
 	Box.box(main())
 }
 
-## Runs the effect of one `Action.then` for the host: `effect` is the boxed
+## Prepares the effect of one `Action.then` for the host: `effect` is the boxed
 ## effectful closure the action carries, `snapshot` the fresh reads value, and
-## `capability` the authority that validates it. Returns the next command.
-run_effect! : Box((HostValue, HostValue.CapabilityHandle => Node.Cmd)), HostValue, HostValue.CapabilityHandle => Node.Cmd
-run_effect! = |effect_box, snapshot, capability| {
+## `capability` the authority that validates it. Decoding the snapshot touches
+## host-owned values, so this runs on the UI thread and returns the thunk the
+## effect worker runs.
+prepare_effect! : Box((HostValue, HostValue.CapabilityHandle => Box((() => Node.Cmd)))), HostValue, HostValue.CapabilityHandle => Box((() => Node.Cmd))
+prepare_effect! = |effect_box, snapshot, capability| {
 	effect! = Box.unbox(effect_box)
 	effect!(snapshot, capability)
+}
+
+## Runs a prepared effect thunk; the worker thread calls this.
+run_effect! : Box((() => Node.Cmd)) => Node.Cmd
+run_effect! = |thunk_box| {
+	thunk! = Box.unbox(thunk_box)
+	thunk!()
 }

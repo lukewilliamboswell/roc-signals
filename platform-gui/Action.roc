@@ -31,14 +31,18 @@ Action(a) := [Action(Node.Cmd)].{
 	then = |changes, effect!| {
 		# The engine hands back the snapshot and the capability that validates it,
 		# so nothing here has to capture a capability: with a capture-free
-		# effect this closure is itself capture-free.
-		run_effect! : HostValue, HostValue.CapabilityHandle => Node.Cmd
-		run_effect! = |snapshot_hv, capability| {
+		# effect this closure is itself capture-free. Decoding the snapshot
+		# touches host-owned values, so it happens on the UI thread; the thunk
+		# it returns holds plain Roc values and runs on the effect worker.
+		prepare_effect! : HostValue, HostValue.CapabilityHandle => Box((() => Node.Cmd))
+		prepare_effect! = |snapshot_hv, capability| {
 			snapshot : a
 			snapshot = Box.unbox(HostValue.get_with_capability!(snapshot_hv, capability))
-			to_cmd(effect!(snapshot))
+			run! : () => Node.Cmd
+			run! = || to_cmd(effect!(snapshot))
+			Box.box(run!)
 		}
-		Action(Node.Cmd.Then({ changes, effect: Box.box(run_effect!) }))
+		Action(Node.Cmd.Then({ changes, effect: Box.box(prepare_effect!) }))
 	}
 
 	to_cmd : Action(a) -> Node.Cmd

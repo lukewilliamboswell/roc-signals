@@ -177,6 +177,9 @@ pub struct Engine {
     child_at: unsafe extern "C" fn(u64, usize) -> u64,
     next_effect: unsafe extern "C" fn(*mut RawEffect) -> u32,
     task_result: unsafe extern "C" fn(u64, u32, *const u8, usize),
+    next_roc_effect: unsafe extern "C" fn(*mut u64) -> u32,
+    run_roc_effect: unsafe extern "C" fn(u64),
+    roc_effect_done: unsafe extern "C" fn(u64),
     _main_thread: PhantomData<Rc<()>>,
 }
 impl Engine {
@@ -194,6 +197,9 @@ impl Engine {
                 child_at: signals_child_at,
                 next_effect: signals_effect_next,
                 task_result: signals_task_result,
+                next_roc_effect: signals_roc_effect_next,
+                run_roc_effect: signals_roc_effect_run,
+                roc_effect_done: signals_roc_effect_done,
                 _main_thread: PhantomData,
             };
             assert_eq!(
@@ -338,6 +344,29 @@ impl Engine {
         unsafe { (self.task_result)(id, u32::from(failed), payload.as_ptr(), payload.len()) };
         self.changes()
     }
+    /// The next prepared Roc effect, once the engine's worker slot is free.
+    /// The job is an opaque engine pointer that must come back through
+    /// `roc_effect_runner` on a worker thread and then `roc_effect_done` here.
+    pub fn next_roc_effect(&mut self) -> Option<u64> {
+        let mut job = 0u64;
+        match unsafe { (self.next_roc_effect)(&mut job) } {
+            0 => None,
+            1 => {
+                assert_ne!(job, 0, "invalid Roc effect job");
+                Some(job)
+            }
+            _ => panic!("invalid Roc effect availability"),
+        }
+    }
+    /// The engine entry point that runs a prepared effect. It touches only
+    /// the job and Roc code, so a background thread may call it.
+    pub fn roc_effect_runner(&self) -> unsafe extern "C" fn(u64) {
+        self.run_roc_effect
+    }
+    pub fn roc_effect_done(&mut self, job: u64) -> Vec<Node> {
+        unsafe { (self.roc_effect_done)(job) };
+        self.changes()
+    }
     pub fn metrics(&self) -> [u64; 3] {
         let mut result = [0; 3];
         unsafe { (self.metrics)(result.as_mut_ptr()) };
@@ -369,6 +398,9 @@ unsafe extern "C" {
     fn signals_effect_size() -> usize;
     fn signals_effect_next(out: *mut RawEffect) -> u32;
     fn signals_task_result(id: u64, failed: u32, ptr: *const u8, len: usize);
+    fn signals_roc_effect_next(out: *mut u64) -> u32;
+    fn signals_roc_effect_run(job: u64);
+    fn signals_roc_effect_done(job: u64);
 }
 
 #[cfg(test)]
@@ -398,6 +430,15 @@ impl Engine {
         }
         unsafe extern "C" fn task_result(_: u64, _: u32, _: *const u8, _: usize) {
             panic!("unexpected test task result")
+        }
+        unsafe extern "C" fn next_roc_effect(_: *mut u64) -> u32 {
+            0
+        }
+        unsafe extern "C" fn run_roc_effect(_: u64) {
+            panic!("unexpected test Roc effect run")
+        }
+        unsafe extern "C" fn roc_effect_done(_: u64) {
+            panic!("unexpected test Roc effect completion")
         }
         unsafe extern "C" fn read(_: usize, _: *mut RawNode) {
             panic!("unexpected test node read")
@@ -433,6 +474,9 @@ impl Engine {
             child_at,
             next_effect,
             task_result,
+            next_roc_effect,
+            run_roc_effect,
+            roc_effect_done,
             _main_thread: PhantomData,
         }
     }

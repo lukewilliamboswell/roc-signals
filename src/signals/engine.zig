@@ -154,6 +154,16 @@ pub const PendingEffect = struct {
     reads: HostSignalBinding,
 };
 
+/// An effect the host has handed to its worker. The engine keeps the declared
+/// reads so the command the effect returns can snapshot them, and marks the
+/// effect canceled when its owning scope is disposed before it finishes.
+pub const RunningEffect = struct {
+    id: u64,
+    owner_scope_id: ids.ScopeId,
+    reads: HostSignalBinding,
+    canceled: bool = false,
+};
+
 const HostPendingOnChangeCommand = struct {
     scope_id: u64,
     cmd: erased_calls.Cmd,
@@ -799,6 +809,7 @@ pub fn Engine(comptime Ctx: type) type {
         /// Effects accepted by committed `Then` commands, in start order, until
         /// the host runs them once the turn has settled.
         pending_effects: shared_buffer.List(PendingEffect) = .empty,
+        running_effects: shared_buffer.List(RunningEffect) = .empty,
         next_effect_id: u64 = 1,
         /// The declared reads of whatever handler, sink, or effect is having its
         /// command applied right now; a `Then` snapshots them for its effect.
@@ -17019,15 +17030,40 @@ pub fn Engine(comptime Ctx: type) type {
         pub fn releasePendingEffect(self: *Self, ctx: Ctx.Handle, effect: *PendingEffect) void {
             const roc_host = self.roc_host orelse @panic("pending effect cannot release its closure without a Roc host");
             abi.decrefErasedCallable(effect.effect, roc_host);
-            self.releaseRanEffect(ctx, effect);
+            self.releaseEffectReads(ctx, &effect.reads);
+            effect.* = undefined;
         }
 
-        /// Releases the reads reference of an effect whose closure Roc has
-        /// already consumed.
-        pub fn releaseRanEffect(self: *Self, ctx: Ctx.Handle, effect: *PendingEffect) void {
-            const roc_host = self.roc_host orelse @panic("pending effect cannot release its reads without a Roc host");
-            effect.reads.deinit(Ctx.allocator(ctx), ctx, roc_host, &self.pending_roc_metrics);
+        /// Records an effect whose closure the host has prepared for its worker,
+        /// taking over the reads reference until the effect finishes.
+        pub fn trackRunningEffect(self: *Self, ctx: Ctx.Handle, effect: *PendingEffect) void {
+            self.running_effects.ensureUnusedCapacity(Ctx.allocator(ctx), 1) catch @panic("out of memory");
+            self.running_effects.appendAssumeCapacity(.{
+                .id = effect.id,
+                .owner_scope_id = effect.owner_scope_id,
+                .reads = effect.reads,
+            });
             effect.* = undefined;
+        }
+
+        /// Removes a finished effect's record. A canceled record has already
+        /// released its reads; the host must not apply that effect's command.
+        pub fn finishRunningEffect(self: *Self, effect_id: u64) RunningEffect {
+            for (self.running_effects.items, 0..) |running, index| {
+                if (running.id == effect_id) return self.running_effects.orderedRemove(index);
+            }
+            @panic("finished effect was not running");
+        }
+
+        /// Releases the reads of a finished effect the host has applied or discarded.
+        pub fn releaseFinishedEffect(self: *Self, ctx: Ctx.Handle, running: *RunningEffect) void {
+            if (!running.canceled) self.releaseEffectReads(ctx, &running.reads);
+            running.* = undefined;
+        }
+
+        fn releaseEffectReads(self: *Self, ctx: Ctx.Handle, reads: *HostSignalBinding) void {
+            const roc_host = self.roc_host orelse @panic("effect cannot release its reads without a Roc host");
+            reads.deinit(Ctx.allocator(ctx), ctx, roc_host, &self.pending_roc_metrics);
         }
 
         fn dropPendingEffectsInScopeSubtree(self: *Self, ctx: Ctx.Handle, scope_id: ids.ScopeId, scope_lookup: anytype) void {
@@ -17041,6 +17077,11 @@ pub fn Engine(comptime Ctx: type) type {
                 write_index += 1;
             }
             self.pending_effects.items.len = write_index;
+            for (self.running_effects.items) |*running| {
+                if (running.canceled or !scope_lookup.descendantOrSelf(running.owner_scope_id, scope_id)) continue;
+                self.releaseEffectReads(ctx, &running.reads);
+                running.canceled = true;
+            }
         }
 
         fn clearPendingEffects(self: *Self, ctx: Ctx.Handle) void {
@@ -17048,6 +17089,13 @@ pub fn Engine(comptime Ctx: type) type {
             self.pending_effects.items.len = 0;
             self.pending_effects.deinit(Ctx.allocator(ctx));
             self.pending_effects = .empty;
+            for (self.running_effects.items) |*running| {
+                if (!running.canceled) self.releaseEffectReads(ctx, &running.reads);
+                running.canceled = true;
+            }
+            self.running_effects.items.len = 0;
+            self.running_effects.deinit(Ctx.allocator(ctx));
+            self.running_effects = .empty;
         }
 
         fn onChangeIndexOf(self: *Self, desc: *const HostNodeOnChangeDesc) usize {

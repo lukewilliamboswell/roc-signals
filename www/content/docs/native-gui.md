@@ -316,13 +316,16 @@ Elem.button("Save", Action.run(draft.signal(), |_|
 ```
 
 The effect is where `!` functions are called: hosted primitives such as
-`Env.var!`, and any effectful function a package exposes. It runs on the UI
+`Env.var!`, and any effectful function a package exposes. It runs on a worker
 thread after the event's transaction commits, so `Saving` is on screen before
-the write starts, and its result enters the graph only as the next action.
-Keep effects short; a long one blocks rendering until it returns. An effect
-whose owning scope is disposed before it runs is dropped. Prefer a named
-top-level function for the effect and pass it the state handles it writes, so
-it captures nothing. `Action.on_change`, `Action.on_change_initial`,
+the write starts, the window keeps rendering and handling input while the
+write runs, and the result enters the graph only as the next action, applied
+on the UI thread. Effects run one at a time in the order they were queued, so
+a slow effect delays the ones behind it but never reorders them. An effect
+whose owning scope is disposed before it runs is dropped, and one whose scope
+is disposed while it runs has its result discarded. Prefer a named top-level
+function for the effect and pass it the state handles it writes, so it
+captures nothing. `Action.on_change`, `Action.on_change_initial`,
 `Action.on_mount`, and `Action.every` bind actions to signal changes, mount,
 and scoped intervals. The browser platform does not run `then` effects.
 

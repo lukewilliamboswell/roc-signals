@@ -124,7 +124,7 @@ Node := [].{
 		Then(
 			{
 				changes : List(StateChange),
-				effect : Box((HostValue, HostValue.CapabilityHandle => Cmd)),
+				effect : Box((HostValue, HostValue.CapabilityHandle => Box((() => Cmd)))),
 			},
 		),
 	]

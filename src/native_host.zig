@@ -2412,8 +2412,15 @@ fn rocAllocFn(roc_host: *abi.RocHost, length: usize, alignment: usize) callconv(
     return rocAllocAt(roc_host, length, alignment, @returnAddress());
 }
 
+/// Roc code runs on the UI thread and on the effect worker, and both reach the
+/// allocation ledger through these hooks, so the ledger and its metrics are
+/// updated under one lock.
+var roc_alloc_lock: std.Io.Mutex = .init;
+
 fn rocAllocAt(roc_host: *abi.RocHost, length: usize, alignment: usize, return_address: usize) ?*anyopaque {
     const host = hostFromRocHost(roc_host);
+    std.Io.Threaded.mutexLock(&roc_alloc_lock);
+    defer std.Io.Threaded.mutexUnlock(&roc_alloc_lock);
     const previous_origin = host.allocation_sweep.origin;
     host.allocation_sweep.origin = .roc;
     defer host.allocation_sweep.origin = previous_origin;
@@ -2425,6 +2432,8 @@ fn rocAllocAt(roc_host: *abi.RocHost, length: usize, alignment: usize, return_ad
 
 fn rocDeallocFn(roc_host: *abi.RocHost, ptr: *anyopaque, alignment: usize) callconv(.c) void {
     const host = hostFromRocHost(roc_host);
+    std.Io.Threaded.mutexLock(&roc_alloc_lock);
+    defer std.Io.Threaded.mutexUnlock(&roc_alloc_lock);
     const previous_origin = host.allocation_sweep.origin;
     host.allocation_sweep.origin = .roc;
     defer host.allocation_sweep.origin = previous_origin;
@@ -2439,6 +2448,8 @@ fn rocReallocFn(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alig
 
 fn rocReallocAt(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alignment_arg: usize, return_address: usize) ?*anyopaque {
     const host = hostFromRocHost(roc_host);
+    std.Io.Threaded.mutexLock(&roc_alloc_lock);
+    defer std.Io.Threaded.mutexUnlock(&roc_alloc_lock);
     const previous_origin = host.allocation_sweep.origin;
     host.allocation_sweep.origin = .roc;
     defer host.allocation_sweep.origin = previous_origin;
@@ -2487,11 +2498,16 @@ fn hostRealloc(ptr: *anyopaque, new_length: usize, alignment: usize) callconv(.c
     return rocReallocAt(currentRocHost(), ptr, new_length, alignment, @returnAddress());
 }
 
+/// Libc's environment block. It is declared here rather than through `std.c`
+/// so the musl hosts, which resolve libc only when the application links,
+/// can still reference it.
+extern var environ: [*:null]?[*:0]u8;
+
 /// The running process's environment as the standard library's handle. Windows
 /// reads the live block; POSIX targets view libc's `environ` in place.
 fn processEnviron() std.process.Environ {
     if (comptime std.process.Environ.Block == std.process.Environ.GlobalBlock) return .{ .block = .global };
-    const c_environ = std.c.environ;
+    const c_environ = environ;
     var count: usize = 0;
     while (c_environ[count] != null) : (count += 1) {}
     return .{ .block = .{ .slice = c_environ[0..count :null] } };
@@ -3186,19 +3202,40 @@ fn acceptInitElem(host: *HostEnv, roc_host: *abi.RocHost, root_box: ElemBox) voi
 /// Calls the platform's `roc_run_effect` entry point, which consumes the
 /// closure and returns the next command. Host fixtures link no Roc
 /// application, so they cannot run one.
-fn runEffectClosure(effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) erased_calls.Cmd {
+/// One effect between its UI-thread preparation and the application of its
+/// result. The worker touches only `thunk` and `cmd`; everything else about
+/// the effect stays with the engine's running-effect record.
+const EffectJob = struct {
+    id: u64,
+    thunk: abi.RocErasedCallable,
+    cmd: erased_calls.Cmd = undefined,
+};
+
+fn prepareEffectThunk(effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
     if (comptime host_fixtures) {
         failHost("effect closures cannot run in host fixtures");
     } else {
-        return abi.roc_run_effect(effect, snapshot.toRaw(), cap);
+        return abi.roc_prepare_effect(effect, snapshot.toRaw(), cap);
     }
 }
 
-/// Runs the effects queued by the turns that just committed, on the UI
-/// thread, oldest first. Each effect receives a fresh snapshot of its origin's
-/// declared reads, and the command it returns is applied with those same reads
-/// as the origin, so a chain of `Then`s keeps snapshotting the same signals.
-/// An effect that queues further effects extends the same drain.
+/// The worker's entry point. It runs Roc code that reaches the host only
+/// through the allocation hooks and the hosted effectful primitives.
+fn runEffectJob(job: *EffectJob) void {
+    if (comptime host_fixtures) {
+        failHost("effect closures cannot run in host fixtures");
+    } else {
+        job.cmd = abi.roc_run_effect(job.thunk);
+    }
+}
+
+/// Prepares the effects queued by the turns that just committed, oldest
+/// first, on the UI thread: each effect's closure receives a fresh snapshot of
+/// its origin's declared reads and returns the thunk the worker runs. The live
+/// host hands the thunks to its worker one at a time; the spec host runs each
+/// on a worker thread it joins at once, so specs stay deterministic while
+/// still exercising the cross-thread path. An effect that queues further
+/// effects extends the same drain.
 fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
     while (host.engine.takeNextPendingEffect()) |taken| {
         var effect = taken;
@@ -3206,16 +3243,37 @@ fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
         const snapshot = host.engine.evalHostSignalBinding(host, roc_host, &effect.reads);
         const caps = [_]HostValueCapability{cap};
         signals.retained_values.pushCapabilities(NativeCtx, host, &caps);
-        const cmd = runEffectClosure(effect.effect, snapshot, cap);
+        const thunk = prepareEffectThunk(effect.effect, snapshot, cap);
         signals.retained_values.popCapabilities(NativeCtx, host);
         callHostValueToUnitWithCapability(host, roc_host, cap, hv.hostValueCapabilityDrop(cap), snapshot);
-        host.engine.effect_origin = &effect.reads;
-        _ = host.engine.tryRunCommand(host, roc_host, effect.owner_scope_id, cmd) catch |err| failPreparedStateDispatch(err);
-        host.engine.effect_origin = null;
-        cmd.decref(roc_host);
-        host.engine.releaseRanEffect(host, &effect);
-        finishHostMetrics(host);
+        const job = host.hostAllocator().create(EffectJob) catch @panic("out of memory");
+        job.* = .{ .id = effect.id, .thunk = thunk };
+        host.engine.trackRunningEffect(host, &effect);
+        if (Gpui.live) {
+            Gpui.queueEffectJob(job);
+        } else {
+            const worker = std.Thread.spawn(.{}, runEffectJob, .{job}) catch failHost("effect worker thread failed to start");
+            worker.join();
+            completeEffectJob(host, roc_host, job);
+        }
     }
+}
+
+/// Applies the command a finished effect returned, with the effect's declared
+/// reads as the origin so a chain of `Then`s keeps snapshotting the same
+/// signals. An effect whose owning scope was disposed while it ran has its
+/// command discarded.
+fn completeEffectJob(host: *HostEnv, roc_host: *abi.RocHost, job: *EffectJob) void {
+    var running = host.engine.finishRunningEffect(job.id);
+    if (!running.canceled) {
+        host.engine.effect_origin = &running.reads;
+        _ = host.engine.tryRunCommand(host, roc_host, running.owner_scope_id, job.cmd) catch |err| failPreparedStateDispatch(err);
+        host.engine.effect_origin = null;
+    }
+    job.cmd.decref(roc_host);
+    host.engine.releaseFinishedEffect(host, &running);
+    host.hostAllocator().destroy(job);
+    finishHostMetrics(host);
 }
 
 fn failPreparedStateDispatch(err: HostEngine.CollectionError) noreturn {
@@ -4039,6 +4097,9 @@ comptime {
             @export(&Gpui.effectSize, .{ .name = "signals_effect_size" });
             @export(&Gpui.nextEffect, .{ .name = "signals_effect_next" });
             @export(&Gpui.taskResult, .{ .name = "signals_task_result" });
+            @export(&Gpui.nextRocEffect, .{ .name = "signals_roc_effect_next" });
+            @export(&Gpui.runRocEffect, .{ .name = "signals_roc_effect_run" });
+            @export(&Gpui.completeRocEffect, .{ .name = "signals_roc_effect_done" });
         } else @export(&main, .{ .name = "main" });
         if (@import("builtin").os.tag == .windows) {
             @export(&__main, .{ .name = "__main" });
@@ -12816,6 +12877,10 @@ const Gpui = struct {
     var live = false;
     var tasks: NativeTaskQueue = .{};
     var timers: native_timers.Registry = .{};
+    // Prepared effects wait here until the worker is free; the live host runs
+    // one at a time so their results apply in the order they were queued.
+    var effect_jobs: std.ArrayListUnmanaged(*EffectJob) = .empty;
+    var effect_in_flight: ?*EffectJob = null;
     var child_order: signals.native_child_order.Tree = undefined;
     var lifetimes: [limit]u64 = @splat(0);
     var changed: [limit]u64 = undefined;
@@ -12857,10 +12922,19 @@ const Gpui = struct {
     fn unmount() callconv(.c) void {
         if (!live) return;
         child_order.deinit();
+        for (effect_jobs.items) |job| {
+            abi.decrefErasedCallable(job.thunk, &roc_host);
+            host.hostAllocator().destroy(job);
+        }
+        effect_jobs.deinit(host.hostAllocator());
+        effect_jobs = .empty;
         host.deinit();
         tasks.deinit(host.hostAllocator());
         timers.deinit(host.hostAllocator());
-        if (host.gpa.deinit() == .leak) failHost("GPUI spike leaked host allocations");
+        // A thunk still running on the worker owns its job until it returns,
+        // so shutting down mid-effect cannot account for that one allocation.
+        if (host.gpa.deinit() == .leak and effect_in_flight == null) failHost("GPUI spike leaked host allocations");
+        effect_in_flight = null;
         current_host = null;
         current_roc_host = null;
         live = false;
@@ -12994,6 +13068,34 @@ const Gpui = struct {
     fn childAt(parent: u64, rank: usize) callconv(.c) u64 {
         if (!live) failHost("GPUI child query before mount");
         return (child_order.childAt(ids.ElemId.fromRaw(parent), rank) catch failHost("invalid GPUI child rank")).raw();
+    }
+    fn queueEffectJob(job: *EffectJob) void {
+        effect_jobs.append(host.hostAllocator(), job) catch @panic("out of memory");
+    }
+    // Hands the Rust host the next prepared effect once the worker is free.
+    // The job pointer is opaque to Rust; it comes back through `runRocEffect`
+    // on a worker thread and `completeRocEffect` on the UI thread.
+    fn nextRocEffect(out: *u64) callconv(.c) u32 {
+        if (!live) failHost("effect read before mount");
+        if (effect_in_flight != null or effect_jobs.items.len == 0) return 0;
+        const job = effect_jobs.orderedRemove(0);
+        effect_in_flight = job;
+        out.* = @intFromPtr(job);
+        return 1;
+    }
+    // Runs on the Rust host's worker thread: only the job and Roc code.
+    fn runRocEffect(job_raw: u64) callconv(.c) void {
+        const job: *EffectJob = @ptrFromInt(job_raw);
+        runEffectJob(job);
+    }
+    fn completeRocEffect(job_raw: u64) callconv(.c) void {
+        if (!live) failHost("effect completion before mount");
+        const job: *EffectJob = @ptrFromInt(job_raw);
+        if (effect_in_flight != job) failHost("effect completion does not match the running effect");
+        effect_in_flight = null;
+        clear();
+        completeEffectJob(&host, &roc_host, job);
+        drainEffects(&host, &roc_host);
     }
     fn timerVersion() callconv(.c) u32 {
         return render.native_protocol.timer_version;
