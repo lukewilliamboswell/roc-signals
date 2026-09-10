@@ -2033,6 +2033,20 @@ external application or a stable file snapshot. Failures and unsupported native
 services remain typed results, never fabricated success. OS-specific mechanisms
 belong to the native adapter and its documented capability contract.
 
+An `Effect` task kind lets application code run Roc effectful closures without
+a second effect mechanism. `Effect.run` is an ordinary task start whose request
+value is the closure; the engine takes an independently owned reference and
+retains it with the pending task instead of request bytes. After the starting
+turn commits, the native host runs the closure on the UI thread through the
+platform's `roc_run_effect` entry point and resolves the pending task with the
+returned text through the same decoder, supersession, cancellation, and
+scope-disposal rules as every other task. The closure therefore never observes
+the engine mid-transaction and its outcome enters propagation only as a task
+status. The browser host refuses the kind through the declared refusal value.
+Running on the UI thread is a deliberate first step: a worker-thread executor
+needs the closure and its captures handed off under the atomic reference
+counts the compiler already provides, and can be added behind the same command.
+
 Native intervals use exact engine-issued tokens, owning scopes, and the common
 propagation scheduler. At most 256 intervals are committed or reserved, with a
 bounded notification pool covering starts and cancellations. Reservation failure

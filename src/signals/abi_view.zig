@@ -298,6 +298,7 @@ pub const SignalExpr = union(enum) {
                         .scan_directory => .scan_directory,
                         .list_directory => .list_directory,
                         .open_path => .open_path,
+                        .effect => .effect,
                         .read_preview => .read_preview,
                         .read_log => .read_log,
                         .verify_assets => .verify_assets,
@@ -1329,7 +1330,7 @@ test "EventMessage.fromAbi preserves action reads payload capability and command
         .eq = testCallableToken(0x15000),
     };
     const callback = testCallableToken(0x16000);
-    const raw = abi.NodeMsg{
+    const raw = abi.NodeHandler{
         .event_extraction_plan = testEventExtractionPlan(.none),
         .handler = .{ .payload = .{ .action = .{
             .reads = &reads,

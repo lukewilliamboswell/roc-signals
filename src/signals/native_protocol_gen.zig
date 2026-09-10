@@ -142,6 +142,8 @@ pub const TaskKind = enum(u32) {
     read_log = 10,
     /// Hash a bounded manifest of relative assets against expected SHA-256 digests.
     verify_assets = 11,
+    /// App-supplied Roc effect closure run by the platform's roc_run_effect entry point on the UI thread; the request carries no bytes.
+    effect = 12,
 };
 
 /// The extern node record served through `signals_read_changed`. Zig and Rust

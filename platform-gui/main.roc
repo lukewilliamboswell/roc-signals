@@ -2,12 +2,12 @@ platform ""
 	requires {
 		main : () -> Elem
 	}
-	exposes [Elem, Event, Signal, Gui, Ui, Rows, Files]
+	exposes [Elem, Event, Effect, Signal, Gui, Ui, Rows, Files]
 	packages {
 		roc: "nightly-2026-09-04-c125b82",
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
 	}
-	provides { "roc_ui_init": ui_init }
+	provides { "roc_ui_init": ui_init, "roc_run_effect": run_effect! }
 	hosted {
 		"roc_each_bool_sink_push": EachSink.push_bool!,
 		"roc_rows_delta_clear_sink_push": EachSink.push_delta_clear!,
@@ -40,6 +40,7 @@ import HostValue
 import Signal
 import Gui
 import Event
+import Effect
 import Files
 import Ui
 import Rows
@@ -48,3 +49,7 @@ ui_init : () -> Box(Elem)
 ui_init = || {
 	Box.box(main())
 }
+
+## Runs one app effect closure for the host; see `Effect.run`.
+run_effect! : Box((() => Try(Str, Str))) => { failed : Bool, text : Str }
+run_effect! = |closure_box| Effect.run_boxed!(closure_box)

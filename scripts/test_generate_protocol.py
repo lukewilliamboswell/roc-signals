@@ -72,7 +72,7 @@ class ManifestValidationTests(unittest.TestCase):
 
     def test_external_task_route_is_pinned_to_zero(self):
         bad = manifest()
-        bad["task_kinds"][0]["id"] = 12
+        bad["task_kinds"][0]["id"] = max(kind["id"] for kind in bad["task_kinds"]) + 1
         with self.assertRaisesRegex(SystemExit, "external route"):
             gen.validate(bad)
 

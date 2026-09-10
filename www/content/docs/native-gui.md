@@ -282,6 +282,36 @@ bounds. A dismissed chooser returns `Choice.Canceled`; explicit task cancellatio
 returns `Error.Canceled`. Keep the submitted write snapshot separate from the
 editable draft so a completed save cannot incorrectly mark later edits as saved.
 
+## Effects
+
+`main` and every handler are pure, so the only place effectful Roc code can run
+is inside the closure given to `Effect.run`. Declare an effect task, return the
+command from a handler, and read the outcome from the task's status signal, the
+same way native file tasks work:
+
+```roc
+fetch = Effect.task("fetch-article", |text| text, |err| err)
+
+Elem.button("Load", Ui.action(id.signal(), |article_id|
+    Effect.run(fetch, || some_package.fetch_article!(article_id))
+))
+
+Elem.text_s(Signal.fold_task(fetch, "Loading…", |article| article, |err| "Failed: ${err}"))
+```
+
+The closure has type `() => Try(Str, Str)`: `Ok` text reaches the task's
+`Done` decoder and `Err` text its `Failed` decoder. The host runs the closure
+on the UI thread after the event's transaction commits and delivers the result
+through ordinary task propagation, so a closure never observes or mutates the
+engine directly. Starting a task whose closure is still queued cancels the
+older request; a closure that has begun cannot be interrupted, and its result
+is discarded if a newer request superseded it. Because the closure blocks the
+UI thread, keep it short or move long work behind a dedicated native task.
+
+Effect closures can call `!` functions from packages and any effectful
+primitives the platform hosts. The browser platform does not run effect tasks;
+a start there resolves to the task's declared refusal value.
+
 ## Example coverage
 
 The collection in `examples-gui/` exercises platform features through ordinary

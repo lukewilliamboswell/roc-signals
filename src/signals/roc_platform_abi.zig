@@ -1271,7 +1271,7 @@ comptime {
 pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     kind: NodeFixedEventKind,
     key_chord: NoneOrSome,
-    msg: NodeMsg,
+    msg: NodeHandler,
     name: RocStr,
     delivery: NodeEventDelivery,
     policy: __AnonStruct_b2fd8769c5bbb26a,
@@ -1299,7 +1299,7 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
 } else extern struct {
     kind: NodeFixedEventKind,
     key_chord: NoneOrSome,
-    msg: NodeMsg,
+    msg: NodeHandler,
     name: RocStr,
     delivery: NodeEventDelivery,
     policy: __AnonStruct_b2fd8769c5bbb26a,
@@ -1473,8 +1473,8 @@ comptime {
     }
 }
 
-/// Element type for Node.Msg
-pub const NodeMsg = if (@sizeOf(usize) == 4) extern struct {
+/// Element type for Node.Handler
+pub const NodeHandler = if (@sizeOf(usize) == 4) extern struct {
     event_extraction_plan: NodeEventExtractionPlan,
     handler: NodeEventHandler,
     /// Recursively decrement Roc-owned fields.
@@ -1510,12 +1510,12 @@ pub const NodeMsg = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeMsg) != 104) @compileError("NodeMsg size mismatch");
-        if (@alignOf(NodeMsg) != 8) @compileError("NodeMsg alignment mismatch");
+        if (@sizeOf(NodeHandler) != 104) @compileError("NodeHandler size mismatch");
+        if (@alignOf(NodeHandler) != 8) @compileError("NodeHandler alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeMsg) != 52) @compileError("NodeMsg size mismatch");
-        if (@alignOf(NodeMsg) != 4) @compileError("NodeMsg alignment mismatch");
+        if (@sizeOf(NodeHandler) != 52) @compileError("NodeHandler size mismatch");
+        if (@alignOf(NodeHandler) != 4) @compileError("NodeHandler alignment mismatch");
     }
 }
 
@@ -2939,6 +2939,48 @@ comptime {
     }
 }
 
+/// Element type for __AnonStruct_687b4c9bc544096f
+pub const __AnonStruct_687b4c9bc544096f = if (@sizeOf(usize) == 4) extern struct {
+    text: RocStr,
+    failed: bool,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.text.decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.text.incref(amount);
+    }
+} else extern struct {
+    text: RocStr,
+    failed: bool,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.text.decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.text.incref(amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_687b4c9bc544096f) != 32) @compileError("__AnonStruct_687b4c9bc544096f size mismatch");
+        if (@alignOf(__AnonStruct_687b4c9bc544096f) != 8) @compileError("__AnonStruct_687b4c9bc544096f alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_687b4c9bc544096f) != 16) @compileError("__AnonStruct_687b4c9bc544096f size mismatch");
+        if (@alignOf(__AnonStruct_687b4c9bc544096f) != 4) @compileError("__AnonStruct_687b4c9bc544096f alignment mismatch");
+    }
+}
+
 /// Tag discriminant for Elem.
 pub const ElemTag = enum(u8) {
     Cleanup = 0,
@@ -3580,15 +3622,16 @@ pub const NodeTaskKind = enum(u8) {
     choose_directory = 0,
     choose_file = 1,
     choose_save_path = 2,
-    external = 3,
-    list_directory = 4,
-    open_path = 5,
-    read_log = 6,
-    read_preview = 7,
-    read_text = 8,
-    scan_directory = 9,
-    verify_assets = 10,
-    write_text = 11,
+    effect = 3,
+    external = 4,
+    list_directory = 5,
+    open_path = 6,
+    read_log = 7,
+    read_preview = 8,
+    read_text = 9,
+    scan_directory = 10,
+    verify_assets = 11,
+    write_text = 12,
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         _ = self;
@@ -4005,6 +4048,72 @@ comptime {
     if (@sizeOf(usize) == 4) {
         if (@sizeOf(HtmlOrSvg) != 1) @compileError("HtmlOrSvg size mismatch");
         if (@alignOf(HtmlOrSvg) != 1) @compileError("HtmlOrSvg alignment mismatch");
+    }
+}
+
+/// Tag discriminant for Try.
+pub const TryTag = enum(u8) {
+    Err = 0,
+    Ok = 1,
+};
+
+/// Payload union for Try.
+pub const TryPayload = extern union {
+    err: RocStr,
+    ok: RocStr,
+};
+
+/// Tag union: Try
+pub const Try = if (@sizeOf(usize) == 4) extern struct {
+    payload: [12]u8 align(4),
+    tag: TryTag,
+    pub fn payload_err(self: *const @This()) RocStr {
+        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_ok(self: *const @This()) RocStr {
+        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefTry(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfTry(self, amount);
+    }
+} else extern struct {
+    payload: TryPayload,
+    tag: TryTag,
+    pub fn payload_err(self: *const @This()) RocStr {
+        return self.payload.err;
+    }
+    pub fn payload_ok(self: *const @This()) RocStr {
+        return self.payload.ok;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefTry(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfTry(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(Try) != 32) @compileError("Try size mismatch");
+        if (@alignOf(Try) != 8) @compileError("Try alignment mismatch");
+        if (@offsetOf(Try, "tag") != 24) @compileError("Try tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(Try) != 16) @compileError("Try size mismatch");
+        if (@alignOf(Try) != 4) @compileError("Try alignment mismatch");
+        if (@offsetOf(Try, "tag") != 12) @compileError("Try tag offset mismatch");
     }
 }
 
@@ -4806,6 +4915,7 @@ pub const ElemWhenConditionStorageSource = HostValueCapabilityHandle;
 pub const ElemWhenConditionTaskSource = __AnonStruct_5fe2a3b67ba6ca28;
 pub const ElemWhenConditionVisibilitySource = HostValueCapabilityHandle;
 pub const ElemWhenOps = __AnonStruct_307321b22282236a;
+pub const Run_effect = __AnonStruct_687b4c9bc544096f;
 
 // Generated Refcount Helpers
 
@@ -5265,8 +5375,8 @@ pub const NodeFixedEventKindRelease = struct {
     }
 };
 
-pub const NodeMsgRelease = struct {
-    pub fn release(value: NodeMsg, roc_host: *RocHost) void {
+pub const NodeHandlerRelease = struct {
+    pub fn release(value: NodeHandler, roc_host: *RocHost) void {
         value.decref(roc_host);
     }
 };
@@ -5551,6 +5661,40 @@ pub const __AnonStruct_307321b22282236aRelease = struct {
     }
 };
 
+fn decrefTry(value: Try, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .Err => {
+            value.payload_err().decref(roc_host);
+        },
+        .Ok => {
+            value.payload_ok().decref(roc_host);
+        },
+    }
+}
+
+fn increfTry(value: Try, amount: isize) void {
+    switch (value.tag) {
+        .Err => {
+            value.payload_err().incref(amount);
+        },
+        .Ok => {
+            value.payload_ok().incref(amount);
+        },
+    }
+}
+
+pub const TryRelease = struct {
+    pub fn release(value: Try, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_687b4c9bc544096fRelease = struct {
+    pub fn release(value: __AnonStruct_687b4c9bc544096f, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
 /// Release one owned reference to a `RocList(NodeSignalExpr)`.
 ///
 /// The allocation's final reference is claimed atomically before any element
@@ -5626,7 +5770,7 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == NodeEventBinding) return NodeEventBindingRelease;
     if (T == NoneOrSome) return NoneOrSomeRelease;
     if (T == __AnonStruct_4099dda3c41fcec7) return __AnonStruct_4099dda3c41fcec7Release;
-    if (T == NodeMsg) return NodeMsgRelease;
+    if (T == NodeHandler) return NodeHandlerRelease;
     if (T == NodeEventExtractionPlan) return NodeEventExtractionPlanRelease;
     if (T == RocListWith(u8, false)) return RocListSpineRelease(RocListWith(u8, false));
     if (T == NodeEventHandler) return NodeEventHandlerRelease;
@@ -5658,6 +5802,8 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == __AnonStruct_e8f8b3c0e45c6fd1) return __AnonStruct_e8f8b3c0e45c6fd1Release;
     if (T == __AnonStruct_355e5277e4150238) return __AnonStruct_355e5277e4150238Release;
     if (T == __AnonStruct_307321b22282236a) return __AnonStruct_307321b22282236aRelease;
+    if (T == Try) return TryRelease;
+    if (T == __AnonStruct_687b4c9bc544096f) return __AnonStruct_687b4c9bc544096fRelease;
     @compileError("generated glue has no recursive release policy for " ++ @typeName(T));
 }
 
@@ -5925,3 +6071,6 @@ pub fn makeRocHost(env: *RocEnv) RocHost {
 
 /// Entrypoint: ui_init
 pub extern fn roc_ui_init() callconv(.c) *Elem;
+
+/// Entrypoint: run_effect!
+pub extern fn roc_run_effect(arg0: RocErasedCallable) callconv(.c) __AnonStruct_687b4c9bc544096f;

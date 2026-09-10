@@ -153,6 +153,17 @@ sibling and rename; cancellation cannot undo an already committed rename.
 Replacement is atomic, but parent-directory power-loss durability is not
 guaranteed. Failed temporary cleanup returns `Io` and may leave the file behind.
 
+
+## Native Effects
+
+`Effect.task(name, to_done, to_failed)` declares a task whose work is a Roc
+closure, and `Effect.run(task, closure)` returns the command that runs it. The
+closure is `() => Try(Str, Str)`; the text it returns is decoded by `to_done`
+or `to_failed` exactly like a native task result. Results, cancellation,
+supersession, and scope disposal follow the task rules above. The closure runs
+on the UI thread after the starting transaction commits, so the platform's
+`roc_run_effect` entry point is the one effectful export of the platform.
+
 ## Ui
 
 | Function | Type | Purpose |

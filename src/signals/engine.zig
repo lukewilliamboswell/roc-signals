@@ -3501,6 +3501,17 @@ pub fn Engine(comptime Ctx: type) type {
             return effects_runtime.pendingTaskIndexByRequestId(self.pending_tasks.items, request_id);
         }
 
+        /// Hands the host an `.effect` task's closure exactly once, transferring
+        /// ownership; a task that was canceled, already run, or is not an effect
+        /// yields null so the host skips it.
+        pub fn takeEffectClosure(self: *Self, request_id: ids.TaskRequestId) abi.RocErasedCallable {
+            const index = self.pendingTaskIndexByRequestId(request_id) orelse return null;
+            const task = &self.pending_tasks.items[index];
+            const closure = task.effect_closure;
+            task.effect_closure = null;
+            return closure;
+        }
+
         /// Performs classify task resolution inside the shared engine while preserving transaction and changed-set invariants.
         pub fn classifyTaskResolution(self: *Self, request_id: ids.TaskRequestId) TaskResolutionClass {
             if (self.pendingTaskIndexByRequestId(request_id) != null) return .pending;
@@ -16767,15 +16778,27 @@ pub fn Engine(comptime Ctx: type) type {
                 @panic("StartTask task name does not match the referenced task source");
             }
 
+            // An effect request carries the app's closure instead of request text.
+            // A host without a closure runner refuses it through the declared
+            // refusal value; a host with one takes an independently owned reference
+            // that the pending task retains until the host runs it after commit.
+            const is_effect = task_payload.kind == .effect;
+            if (comptime !@hasDecl(Ctx, "takeEffectClosure")) {
+                if (is_effect) return self.tryRefuseTaskCommand(ctx, roc_host, .{ .task_token = cmd.task_token });
+            }
             const request_value = erased_calls.callValueInitThunk(roc_host, cmd.request_init);
             defer callHostValueToUnitWithCapability(ctx, roc_host, cmd.request_read.capability, hv.hostValueCapabilityDrop(cmd.request_read.capability), request_value);
-            const request = callHostValueToStrWithCapability(ctx, roc_host, cmd.request_read.capability, cmd.request_read.read, request_value);
+            const effect_closure: abi.RocErasedCallable = if (comptime @hasDecl(Ctx, "takeEffectClosure")) (if (is_effect) Ctx.takeEffectClosure(ctx, request_value, cmd.request_read.capability) else null) else null;
+            var closure_owned_here = true;
+            defer if (closure_owned_here) abi.decrefErasedCallable(effect_closure, roc_host);
+            const request = if (is_effect) abi.RocStr.empty() else callHostValueToStrWithCapability(ctx, roc_host, cmd.request_read.capability, cmd.request_read.read, request_value);
             defer request.decref(roc_host);
             if (comptime @hasDecl(Ctx, "canAdmitTask")) {
                 if (!Ctx.canAdmitTask(ctx, task_payload.kind, request.asSlice().len)) return self.tryRefuseTaskCommand(ctx, roc_host, .{ .task_token = cmd.task_token });
             }
 
-            var pending = try effects_runtime.PreparedPendingTask.prepare(Ctx.allocator(ctx), &self.pending_tasks, self.next_task_request_id, owner_scope_id, task_token, cmd.task_name.asSlice(), request.asSlice(), task_payload.kind);
+            var pending = try effects_runtime.PreparedPendingTask.prepare(Ctx.allocator(ctx), &self.pending_tasks, self.next_task_request_id, owner_scope_id, task_token, cmd.task_name.asSlice(), request.asSlice(), task_payload.kind, effect_closure);
+            closure_owned_here = false;
             defer pending.deinit(Ctx.allocator(ctx), roc_host);
             const loading_transaction = if (task_payload.reset_on_start) blk: {
                 const loading = erased_calls.callValueInitThunk(roc_host, task_payload.initial.toAbi());

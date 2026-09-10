@@ -89,12 +89,20 @@ const NativeTaskPublication = struct {
     record: ?NativeTaskRecord = null,
     native: ?NativeTaskQueue.Prepared = null,
     request_id: ids.TaskRequestId,
+    /// An effect task is queued for the UI thread instead of the native transport.
+    effect: bool = false,
 
     fn prepare(host: *HostEnv, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8, cancellation_count: usize) error{ OutOfMemory, ResourceLimit }!NativeTaskPublication {
         const allocator = host.hostAllocator();
+        if (kind == .effect) {
+            try host.pending_effects.ensureUnusedCapacity(allocator, 1);
+            try host.effect_requests.ensureUnusedCapacity(allocator, 1);
+            return .{ .host = host, .request_id = request_id, .effect = true };
+        }
         if (Gpui.live) {
             const arguments: usize = switch (kind) {
                 .external => failHost("external tasks require an external task executor"),
+                .effect => unreachable,
                 .choose_file, .choose_directory => 0,
                 .read_text, .scan_directory, .list_directory, .open_path, .read_preview => 1,
                 .write_text => 2,
@@ -127,6 +135,12 @@ const NativeTaskPublication = struct {
     /// to the spec runner without allocation. Each receiver owns its copy until
     /// resolution, cancellation before dispatch, or teardown.
     pub fn commit(self: *NativeTaskPublication) void {
+        if (self.effect) {
+            self.host.effect_requests.putAssumeCapacity(self.request_id.raw(), {});
+            self.host.pending_effects.appendAssumeCapacity(self.request_id);
+            self.effect = false;
+            return;
+        }
         if (self.native) |*native| {
             native.commit();
             self.native = null;
@@ -541,9 +555,17 @@ const NativeCtx = struct {
     /// Applies the fixed native transport bound before the engine publishes a
     /// start. The source's declared refusal initializer owns the terminal value.
     pub fn canAdmitTask(_: Handle, kind: boundary.TaskKind, payload_length: usize) bool {
-        if (!Gpui.live) return true;
+        if (!Gpui.live or kind == .effect) return true;
         if (kind == .external) failHost("external tasks require an external task executor");
         return Gpui.tasks.canAdmit(payload_length);
+    }
+
+    /// Takes an independently owned reference to an effect task's closure from
+    /// the request value the app stored under `capability`. The engine keeps it
+    /// with the pending task until the host runs it on the UI thread.
+    pub fn takeEffectClosure(ctx: Handle, value: HostValue, capability: HostValueCapability) abi.RocErasedCallable {
+        const retained = signals.retained_values.retainHostValueCapability(capability, &ctx.engine.pending_roc_metrics);
+        return @ptrCast(ctx.getHostValueWithCapability(value, retained));
     }
 
     /// Marks an infallible command call for the recoverable-only native sweep.
@@ -1038,6 +1060,12 @@ const HostEnv = struct {
     spec_window_closed: bool = false,
     started_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
+    /// Effect tasks accepted by the last committed turn, in start order, waiting
+    /// for the UI thread to run their closures once the turn has settled.
+    pending_effects: std.ArrayListUnmanaged(ids.TaskRequestId) = .empty,
+    /// Every live effect request id, so completion and cancellation bypass the
+    /// native transport queue that never saw them.
+    effect_requests: std.AutoHashMapUnmanaged(u64, void) = .empty,
     location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
     location_index: usize = 0,
     entropy_seed: u32 = default_native_entropy_seed,
@@ -1130,6 +1158,20 @@ const HostEnv = struct {
         }
         self.canceled_tasks.deinit(allocator);
         self.canceled_tasks = .empty;
+        self.pending_effects.deinit(allocator);
+        self.pending_effects = .empty;
+        self.effect_requests.deinit(allocator);
+        self.effect_requests = .empty;
+    }
+
+    /// Forgets a queued effect whose request was canceled before it ran.
+    fn dropPendingEffect(self: *HostEnv, request_id: ids.TaskRequestId) void {
+        for (self.pending_effects.items, 0..) |queued, index| {
+            if (queued == request_id) {
+                _ = self.pending_effects.orderedRemove(index);
+                return;
+            }
+        }
     }
 
     fn recordStartedTask(self: *HostEnv, request_id: ids.TaskRequestId, task_name: []const u8) void {
@@ -1152,6 +1194,7 @@ const HostEnv = struct {
     }
 
     fn noteTaskResolved(self: *HostEnv, request_id: ids.TaskRequestId) void {
+        if (self.effect_requests.remove(request_id.raw())) return;
         if (Gpui.live) {
             Gpui.tasks.complete(self.hostAllocator(), request_id.raw());
             return;
@@ -1162,6 +1205,10 @@ const HostEnv = struct {
     }
 
     fn recordCanceledTask(self: *HostEnv, request_id: ids.TaskRequestId) void {
+        if (self.effect_requests.remove(request_id.raw())) {
+            self.dropPendingEffect(request_id);
+            return;
+        }
         if (Gpui.live) {
             Gpui.tasks.cancel(self.hostAllocator(), request_id.raw());
             return;
@@ -3062,6 +3109,31 @@ fn acceptInitElem(host: *HostEnv, roc_host: *abi.RocHost, root_box: ElemBox) voi
     acceptInitElemWithStats(host, roc_host, root_box, null, null);
 }
 
+/// Runs the effect closures queued by the turns that just committed, on the UI
+/// thread, resolving each outcome through the same path as a native task
+/// result. A closure that starts further effects extends the same drain.
+fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
+    while (host.pending_effects.items.len > 0) {
+        const request_id = host.pending_effects.orderedRemove(0);
+        const index = host.engine.pendingTaskIndexByRequestId(request_id) orelse continue;
+        const closure = host.engine.takeEffectClosure(request_id) orelse continue;
+        const outcome = runEffectClosure(closure);
+        defer outcome.decref(roc_host);
+        _ = tryResolvePendingTaskAt(host, roc_host, index, outcome.text.asSlice(), outcome.failed) catch |err| failPreparedStateDispatch(err);
+        finishHostMetrics(host);
+    }
+}
+
+/// Calls the platform's `roc_run_effect` entry point, which consumes the
+/// closure. Host fixtures link no Roc application, so they cannot run one.
+fn runEffectClosure(closure: abi.RocErasedCallable) abi.Run_effect {
+    if (comptime host_fixtures) {
+        failHost("effect closures cannot run in host fixtures");
+    } else {
+        return abi.roc_run_effect(closure);
+    }
+}
+
 fn failPreparedStateDispatch(err: HostEngine.CollectionError) noreturn {
     switch (err) {
         error.OutOfMemory => failHost("out of memory preparing atomic state transaction"),
@@ -3652,6 +3724,7 @@ const SpecRunnerCtx = struct {
     /// Dispatches roc event through validated routing and dependency-ordered propagation.
     pub fn dispatchRocEvent(host: *Host, roc_host: *RocHost, event_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue) void {
         dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, null);
+        drainEffects(host, roc_host);
     }
 
     /// Materializes unit as a capability-owned host value for boundary delivery.
@@ -3728,7 +3801,9 @@ const SpecRunnerCtx = struct {
 
     /// Advances interval source through the shared propagation queue.
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
-        return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
+        const counts = tickIntervalSourceForBenchmark(host, roc_host, period_ms);
+        drainEffects(host, roc_host);
+        return counts;
     }
 
     /// Publishes a location change and refreshes active location sources in the same engine turn.
@@ -4088,6 +4163,7 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
     applyPreMountSpecCommands(&host_env, host_env.test_state.commands);
     if (!result_json) {
         acceptInitElem(&host_env, &roc_host, abi.roc_ui_init());
+        drainEffects(&host_env, &roc_host);
     } else {
         const root_box = abi.roc_ui_init();
         if (host_env.engine.root_elem != null) failHost("Roc root Elem initialized more than once");
@@ -4121,6 +4197,8 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
         host_env.dumpDom();
     }
 
+    // Mount-time effects run before the first spec command observes the tree.
+    drainEffects(&host_env, &roc_host);
     const result = SpecRunner.run(&host_env, &roc_host, host_env.test_state.commands, verbose);
     host_env.allocation_sweep.tracking = false;
     if (fail_on_allocation != null and !host_env.allocation_sweep.selected_seen) {
@@ -12669,6 +12747,7 @@ const Gpui = struct {
         current_roc_host = &roc_host;
         live = true;
         acceptInitElem(&host, &roc_host, abi.roc_ui_init());
+        drainEffects(&host, &roc_host);
     }
     fn unmount() callconv(.c) void {
         if (!live) return;
@@ -12711,6 +12790,7 @@ const Gpui = struct {
             else => unreachable,
         };
         dispatchRocEvent(&host, &roc_host, ids.EventId.fromRaw(event), descriptor, payload);
+        drainEffects(&host, &roc_host);
     }
     fn count() callconv(.c) usize {
         return changed_len;
@@ -12767,6 +12847,7 @@ const Gpui = struct {
         const index = host.engine.pendingTaskIndexByRequestId(request_id) orelse failHost("native completion has no pending request");
         _ = tryResolvePendingTaskAt(&host, &roc_host, index, ptr[0..len], failed == 1) catch |err| failPreparedStateDispatch(err);
         finishHostMetrics(&host);
+        drainEffects(&host, &roc_host);
     }
     // Every slice is borrowed until the next mount/dispatch/unmount call. Rust
     // copies it before another host call and never owns any Roc allocation.
@@ -12825,6 +12906,7 @@ const Gpui = struct {
         clear();
         if (!timers.isActive(token)) return 0;
         _ = host.engine.tickIntervalSourceByRuntimeToken(&host, &roc_host, token);
+        drainEffects(&host, &roc_host);
         return 1;
     }
     fn metrics(out: [*]u64) callconv(.c) void {
