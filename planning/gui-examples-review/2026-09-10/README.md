@@ -96,11 +96,9 @@ are labeled as such in the backlog.
 | Explorer initial, 800×600 | [smaller](folder-explorer-800x600.png) | GUI-10 |
 | Explorer after three wheel-down events over inspector, 800×600 | [after wheel](folder-explorer-800x600-after-scroll.png) | GUI-10 |
 | Explorer sample README selected and previewed, 1200×820 | [preview](folder-explorer-preview.png) | GUI-10/11/18 |
-| Activity initial, 1200×820 | [wide](activity-monitor-wide.png) | GUI-12/18 |
-| Activity initial, 800×600 | [smaller](activity-monitor-800x600.png) | GUI-12 |
-| Activity after five Step replay clicks, 1200×820 | [populated](activity-monitor-populated.png) | GUI-12/13/18 |
+| Activity initial, 1200×820 | [wide](activity-monitor-wide.png) | GUI-18 |
+| Activity after five Step replay clicks, 1200×820 | [populated](activity-monitor-populated.png) | GUI-13/18 |
 | Activity with Inspect 1 selected, 1200×820 | [inspector](activity-monitor-inspector.png) | GUI-13/18 |
-| Same populated/selected Activity after resize to 800×600 | [populated smaller](activity-monitor-populated-800x600.png) | GUI-12 |
 
 ## Native undo reproduction: GUI-02
 
