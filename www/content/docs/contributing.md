@@ -33,12 +33,12 @@ is no npm dependency or package manifest.
 
 Pull requests and pushes to `main` run a bounded hosted source gate: Zig and
 browser contracts, Roc checks and tests, Wasm builds and size budgets, fuzz
-corpus replay, and ordinary native semantic specs. Change selection adds GUI,
-published-example, archive, and site jobs only when their inputs are affected.
-The required checks are `Platform source`, `Published examples`, and `Release
-archive`. The release workflow validates exact candidate archives on Linux
-x64/arm64 and Intel/Apple Silicon macOS. Pages deploys the supported release,
-not development builds from ordinary pushes.
+corpus replay, and ordinary native semantic specs. Change selection adds GUI
+and site jobs only when their inputs are affected. `Platform source` is the
+required aggregate check. Exact archive creation and release-URL example smoke
+tests belong to the combined release workflow, which validates the same
+candidate on Linux, macOS, and Windows before publication. Pages deploys the
+supported release, not development builds from ordinary pushes.
 
 Compiler pins live in both platform headers and every web and GUI example
 header, including internal web fixtures. `.github/roc-nightly.json` selects all
@@ -98,7 +98,6 @@ python3 scripts/test.py fault --native always
 python3 scripts/test.py bundle --bundle always
 python3 scripts/test.py bench --native always
 python3 scripts/test.py size --roc-bin /path/to/roc
-python3 scripts/test.py published
 ```
 
 `size` builds the ReleaseSmall browser host and the fixed fixture set in

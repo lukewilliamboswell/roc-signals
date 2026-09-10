@@ -15,7 +15,6 @@ import platform
 import shutil
 import subprocess
 import sys
-import tempfile
 
 from toolchain import validate_roots, verify_compiler
 
@@ -95,19 +94,6 @@ def selection() -> None:
         run(sys.executable, "-m", "unittest", "discover", "-s", "scripts", "-p", pattern)
 
 
-def published() -> None:
-    shared_sources()
-    run(sys.executable, "scripts/test.py", "published")
-
-
-def archive() -> None:
-    shared_sources()
-    with tempfile.TemporaryDirectory(prefix="signals-release-") as temporary:
-        candidate = str(Path(temporary) / "candidate")
-        run(sys.executable, "scripts/release.py", "prepare", "--version", "0.2.0-rc1", "--directory", candidate)
-        run(sys.executable, "scripts/release.py", "check", "--directory", candidate)
-
-
 def site() -> None:
     if not shutil.which("zola"):
         raise SystemExit("site requires the pinned Zola executable on PATH")
@@ -138,8 +124,6 @@ TARGETS = {
     "source": source,
     "gui": gui,
     "gui-smoke": gui_smoke,
-    "published": published,
-    "archive": archive,
     "site": site,
     "coverage": coverage,
 }
@@ -151,7 +135,7 @@ def main() -> None:
     args = parser.parse_args()
     targets = args.targets or [
         "selection", "smoke", "source", "coverage", "gui", "gui-smoke",
-        "published", "archive", "site",
+        "site",
     ]
     if any(target not in {"selection", "site"} for target in targets):
         ensure_pinned_roc()
