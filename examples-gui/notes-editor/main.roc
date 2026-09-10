@@ -56,6 +56,14 @@ main = || Ui.state(
 			},
 		)
 		cancel = Ui.action(phase, |value| Workflow.cancel(session, tasks, value))
+		# The window identity names the open document and marks unsaved work, so
+		# the desktop switcher tells two notes apart the way the header does.
+		window_title = state.map(
+			|value| {
+				mark = if Document.is_dirty({ draft: Session.draft(value), baseline: value.baseline }) { "* " } else { "" }
+				"${mark}${value.baseline.title} - Notes"
+			},
+		)
 		chord = { key: "s", control: True, shift: False, alt: False, meta: False }
 		Gui.window_lifecycle(
 			{ on_close_requested: session.on_unit(Session.request_close), decision: state.map(Session.close_decision) },
@@ -71,6 +79,7 @@ main = || Ui.state(
 						Gui.on_shortcut({ ..chord, key: "Escape", control: False }, cancel),
 					],
 					[
+						Ui.on_change_initial(window_title, Gui.set_title),
 						Gui.heading("Notes"),
 						Gui.column(
 							[Gui.style({ ..Gui.style_default, foreground: Rgb(theme.text_secondary) })],

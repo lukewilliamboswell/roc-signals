@@ -29,6 +29,7 @@ main = || Ui.state(
 		Gui.column(
 			[Gui.style({ ..Gui.style_default, padding: 32, gap: 20 })],
 			[
+				Ui.on_change_initial(Signal.const("Counter - Roc Signals"), Gui.set_title),
 				Gui.heading("Counter"),
 				Gui.column(
 					[Gui.style({ ..Gui.style_default, foreground: Rgb(theme.text_secondary) })],

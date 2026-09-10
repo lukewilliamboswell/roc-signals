@@ -85,6 +85,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 	Gui.column(
 		[Gui.style({ ..Gui.style_default, padding: 20, gap: 10, width: Fill, height: Fill, overflow_y: Clip }), Gui.embedded_fonts([{ family: feed_font, bytes: source_code_pro }])],
 		[
+			Ui.on_change_initial(Signal.const("Activity Monitor - Roc Signals"), Gui.set_title),
 			# The heading shares its line with the source banner: the explicit
 			# simulated-versus-real label is deliberate honesty, not decoration,
 			# so it stays visible while costing no separate row of height.

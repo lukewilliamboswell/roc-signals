@@ -311,3 +311,27 @@ requests while awaiting a decision are ignored. Disposing or replacing the
 wrapper cancels its pending request; the native adapter validates registration
 lifetime and binding. Apps without a wrapper close immediately. The Notes
 example demonstrates Save and close, Discard and close, and Keep editing.
+
+## Window identity
+
+`Gui.set_title` names the window. It is the same `SetDocumentTitle` command the
+browser platform's `Browser.set_title` issues, so a title reaches the desktop
+through the ordinary propagation path: an equal title is pruned before it is
+applied, and no separate title channel exists.
+
+Emit it like any other command, usually with `Ui.on_change_initial` so the
+window is named on the first frame and renamed whenever the signal changes:
+
+```roc
+Ui.on_change_initial(Signal.const("Counter - Roc Signals"), Gui.set_title)
+```
+
+Give the application a stable name, and fold the open document and its unsaved
+state into the same string when they are meaningful. Notes publishes
+`"Untitled note - Notes"` and marks an unsaved draft as
+`"* Untitled note - Notes"`; Task Board does the same with its board file. An
+app that never sets a title keeps the host's `Roc Signals` default.
+
+The title is observable in a native semantic spec with
+`(expect-document-title "…")`, so document and dirty-state naming is tested
+without a display.

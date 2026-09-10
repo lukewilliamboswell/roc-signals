@@ -276,6 +276,14 @@ Gui := [].{
 	drop_target : Msg -> Attr
 	drop_target = |message| Attribute.DropTarget(message)
 
+	## Set the window identity shown by the desktop switcher and the titlebar.
+	## The command travels the ordinary propagation path, so an unchanged title
+	## is pruned before it reaches the window. Give the application a stable
+	## name, and fold the open document and its unsaved state into the same
+	## string when they are meaningful, as `"* Notes - draft"`.
+	set_title : Str -> Cmd
+	set_title = |title| Node.Cmd.SetDocumentTitle({ title: title })
+
 	## Bind an exact key and all modifiers within this focused region. The nearest
 	## matching ancestor receives one unit event and consumes the keystroke.
 	## Letters are lowercase a-z; digits and the documented named keys are valid.

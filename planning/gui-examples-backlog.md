@@ -29,7 +29,6 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 | GUI-11 | P2 | Explorer: present successful previews as readable content | Screenshot + source | Explorer; possibly public read-only control |
 | GUI-13 | P2 | Give cards and event rows coherent activation and selection | Screenshots + source | Examples + GUI interaction API |
 | GUI-14 | P2 | Complete the Counter theme demonstration | Source + baseline screenshot | Counter theme/view |
-| GUI-15 | P2 | Give windows application/document identity | Source | GUI title boundary + examples |
 | GUI-16 | P2 | Extend desktop regression coverage to Linux and richer environments | Executed on macOS only | GUI tests/tooling |
 | GUI-18 | P2 | Make toolbars, inspectors, and tabular content easier to scan | Screenshots; design | Board/Explorer/Activity views |
 | GUI-19 | P2 | Review minimal typography/alignment/truncation capabilities | Source; design | Public GUI style protocol |
@@ -216,18 +215,6 @@ Keep Counter minimal and readable after GUI-08. Apply the same bounded-width
 lesson to Keyed Rows' fixed 520-pixel body and long teaching text
 ([narrow](gui-examples-review/2026-09-10/keyed-rows-360x600.png)).
 
-### GUI-15 — Window identity
-
-[lib.rs](../crates/gpui-host/src/lib.rs), window creation, hardcodes
-`Roc Signals` for every example. Different apps/documents are indistinguishable
-by title in the desktop switcher. Kiosk screenshots omit frame chrome; this
-finding comes from source, not the screenshots.
-
-Acceptance: a deliberate public GUI title route, initial app identity, and
-document/dirty-state updates where useful. Reuse the shared engine's command
-model and observability; audit existing title support before inventing another
-route. Verify close/reopen/lifetime behavior and all native OS integrations.
-
 ## Verification and maintainability
 
 ### GUI-16 — Desktop regression coverage
@@ -384,8 +371,7 @@ mandatory spacing/color dogma is approved by this backlog.
 3. Migrate GUI-08. This simplifies later example edits without needing new
    rendering semantics.
 4. Apply current-API layout/readability fixes (GUI-09–11, GUI-13/14, GUI-18); use evidence
-   from them to scope GUI-19/20/23. Window titles (GUI-15) are a distinct boundary
-   change, not a styling workaround.
+   from them to scope GUI-19/20/23.
 5. Finish structure/docs and optional polish (GUI-21/22/24), then recapture the
    same states. Remove resolved work from this queue; do not treat a fresh
    screenshot alone as proof of lifecycle, performance, or cross-OS correctness.

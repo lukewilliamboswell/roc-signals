@@ -541,6 +541,11 @@ struct Runtime {
     effects: effects::Manager,
     dialogs: dialog::Dialogs,
     window_lifecycle: window_lifecycle::Lifecycle,
+    /// Window identity decided by the graph but not yet handed to the platform
+    /// window. `Runtime::new` runs before a window exists and a title-only turn
+    /// touches no render slot, so the decision is carried to the next frame
+    /// rather than applied from inside the engine turn.
+    pending_title: Option<String>,
     nodes: HashMap<u64, Entity<NodeView>>,
     roots: Vec<Entity<NodeView>>,
     renders: Rc<Cell<u64>>,
@@ -575,6 +580,24 @@ impl Runtime {
         self.event(binding.event, Payload::Unit, cx);
         true
     }
+    /// Collects the window identity the engine decided in this turn. Returns
+    /// whether a redraw is owed: a title-only turn touches no render slot, so
+    /// without this the frame that applies the title would never be scheduled.
+    fn take_document_title(&mut self) -> bool {
+        let Some(title) = self.engine.changed_document_title() else {
+            return false;
+        };
+        self.pending_title = Some(title);
+        true
+    }
+    /// Hands a decided window identity to the platform window exactly once.
+    /// The engine has already pruned an unchanged title, so this never re-enters
+    /// the native windowing system for a repeated value.
+    fn apply_document_title(&mut self, window: &mut Window) {
+        if let Some(title) = self.pending_title.take() {
+            window.set_window_title(&title);
+        }
+    }
     fn new(clock: bool, cx: &mut Context<Self>) -> Self {
         let engine = Engine::open();
         let initial = engine.changes();
@@ -587,6 +610,7 @@ impl Runtime {
             effects: crate::effects::Manager::default(),
             dialogs: crate::dialog::Dialogs::default(),
             window_lifecycle: crate::window_lifecycle::Lifecycle::default(),
+            pending_title: None,
             nodes: HashMap::new(),
             roots: vec![],
             renders: Rc::new(Cell::new(0)),
@@ -800,7 +824,8 @@ impl Runtime {
             }
         }
         self.sync_window_lifecycle(&changes, cx);
-        if self.sync_dialogs(&changes, cx) || roots_changed {
+        let title_changed = self.take_document_title();
+        if self.sync_dialogs(&changes, cx) || roots_changed || title_changed {
             cx.notify();
         }
     }
@@ -843,6 +868,7 @@ impl Render for Runtime {
                 cx.stop_propagation();
             }));
         }
+        self.apply_document_title(window);
         self.prepare_window_lifecycle(window, cx);
         self.prepare_dialog_focus(window, cx);
         let mut root = div()
@@ -1472,6 +1498,7 @@ mod tests {
             effects: crate::effects::Manager::default(),
             dialogs: crate::dialog::Dialogs::default(),
             window_lifecycle: crate::window_lifecycle::Lifecycle::default(),
+            pending_title: None,
             nodes: HashMap::new(),
             roots: vec![],
             renders: Rc::new(Cell::new(0)),
@@ -1479,6 +1506,45 @@ mod tests {
             timers: crate::timers::Manager::new(false),
             fonts: crate::fonts::Registry::default(),
         }
+    }
+
+    #[test]
+    fn document_title_reaches_the_window_once_per_decided_change() {
+        let mut runtime = runtime();
+        Engine::set_test_document_title(0, "");
+        assert!(
+            !runtime.take_document_title(),
+            "an engine that decided no title must not owe a frame"
+        );
+        assert_eq!(runtime.pending_title, None);
+
+        Engine::set_test_document_title(1, "Notes");
+        assert!(runtime.take_document_title());
+        assert_eq!(runtime.pending_title.as_deref(), Some("Notes"));
+
+        // A second turn at the same revision is the engine's equality cutoff:
+        // it must not re-enter the native windowing system, and it must not
+        // discard a decision the window has not applied yet.
+        assert!(!runtime.take_document_title());
+        assert_eq!(runtime.pending_title.as_deref(), Some("Notes"));
+
+        Engine::set_test_document_title(2, "* Notes");
+        assert!(runtime.take_document_title());
+        assert_eq!(runtime.pending_title.as_deref(), Some("* Notes"));
+    }
+
+    #[test]
+    fn a_remounted_engine_reapplies_its_window_identity() {
+        // Close/reopen builds a fresh Engine whose applied revision starts at
+        // zero, so the identity of the reopened window is decided again rather
+        // than inherited from the process's previous window.
+        Engine::set_test_document_title(3, "Task Board");
+        let mut first = runtime();
+        assert!(first.take_document_title());
+        assert_eq!(first.pending_title.as_deref(), Some("Task Board"));
+        let mut second = runtime();
+        assert!(second.take_document_title());
+        assert_eq!(second.pending_title.as_deref(), Some("Task Board"));
     }
 
     fn node(id: u64, tag: &str, children: &[u64]) -> Node {

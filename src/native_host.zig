@@ -1045,6 +1045,10 @@ const HostEnv = struct {
     online: boundary.OnlineSnapshot = .online,
     storage_entries: std.ArrayListUnmanaged(NativeStorageEntry) = .empty,
     document_title: ?[]u8 = null,
+    /// Bumped only when the applied title text actually changes, so a host that
+    /// observes the title can skip a native window update the engine already
+    /// pruned. It is an observation counter, never an alternate title route.
+    document_title_revision: u64 = 0,
 
     fn init() HostEnv {
         return .{
@@ -1713,9 +1717,12 @@ const HostEnv = struct {
     }
 
     fn setDocumentTitle(self: *HostEnv, title: []const u8) void {
+        if (std.mem.eql(u8, self.currentDocumentTitle(), title)) return;
         const allocator = self.hostAllocator();
+        const copy = allocator.dupe(u8, title) catch @panic("out of memory");
         self.clearDocumentTitle();
-        self.document_title = allocator.dupe(u8, title) catch @panic("out of memory");
+        self.document_title = copy;
+        self.document_title_revision +%= 1;
     }
 
     fn currentDocumentTitle(self: *const HostEnv) []const u8 {
@@ -3776,6 +3783,12 @@ const SpecRunnerCtx = struct {
         return host.currentDocumentTitle();
     }
 
+    /// Provides the document title revision so a host or spec can tell a repeated
+    /// title from a re-applied one without inspecting engine internals.
+    pub fn documentTitleRevision(host: *const Host) u64 {
+        return host.document_title_revision;
+    }
+
     /// Provides finish host metrics for native semantic observation without duplicating engine behavior.
     pub fn finishHostMetrics(host: *Host) void {
         finishHostMetricsForBenchmark(host);
@@ -3852,6 +3865,7 @@ comptime {
             @export(&Gpui.childAt, .{ .name = "signals_child_at" });
             @export(&Gpui.readShortcuts, .{ .name = "signals_read_shortcuts" });
             @export(&Gpui.metrics, .{ .name = "signals_metrics" });
+            @export(&Gpui.documentTitle, .{ .name = "signals_document_title" });
             @export(&Gpui.timerVersion, .{ .name = "signals_timer_version" });
             @export(&Gpui.timerSize, .{ .name = "signals_timer_size" });
             @export(&Gpui.nextTimer, .{ .name = "signals_timer_next" });
@@ -6792,6 +6806,19 @@ test "signals host browser environment sources and commands update native state"
         defer releaseTestCmd(&roc_host, cmd);
         try std.testing.expectEqual(@as(u64, 0), host.engine.runCommand(&host, &roc_host, ids.ScopeId.fromRaw(0), cmd).total);
         try std.testing.expectEqualStrings("Ops ready", host.currentDocumentTitle());
+        try std.testing.expectEqual(@as(u64, 1), host.document_title_revision);
+    }
+
+    {
+        // Re-applying the same title is an equality cutoff at this boundary: a
+        // window host observing the revision must not be asked to re-title.
+        const cmd = testDocumentTitleCmd(&roc_host, "Ops ready");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        _ = host.engine.runCommand(&host, &roc_host, ids.ScopeId.fromRaw(0), cmd);
+        try std.testing.expectEqualStrings("Ops ready", host.currentDocumentTitle());
+        try std.testing.expectEqual(@as(u64, 1), host.document_title_revision);
     }
 
     {
@@ -6801,6 +6828,7 @@ test "signals host browser environment sources and commands update native state"
         defer releaseTestCmd(&roc_host, cmd);
         _ = host.engine.runCommand(&host, &roc_host, ids.ScopeId.fromRaw(0), cmd);
         try std.testing.expectEqualStrings("Ops steady", host.currentDocumentTitle());
+        try std.testing.expectEqual(@as(u64, 2), host.document_title_revision);
     }
 }
 
@@ -12733,6 +12761,16 @@ const Gpui = struct {
             index += 1;
         };
         return needed;
+    }
+    // Reports the window identity the graph has already decided. The slice
+    // borrows engine-owned storage that stays valid until the next engine turn,
+    // so the caller must copy before dispatching again. The revision lets the
+    // host skip a native window update for a title that did not change; it is
+    // an observation of the SetDocumentTitle command, not a second title route.
+    fn documentTitle(out: *Slice) callconv(.c) u64 {
+        if (!live) failHost("native title read before mount");
+        out.* = Slice.from(host.currentDocumentTitle());
+        return host.document_title_revision;
     }
     fn effectVersion() callconv(.c) u32 {
         return render.native_protocol.effect_version;
