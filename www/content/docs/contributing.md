@@ -1304,9 +1304,63 @@ and fails on a crash or a 30-second timeout. This checks the GPUI window/renderi
 path separately from the display-free specs. Run the same script on a desktop
 after the GUI suite to exercise the local graphics driver.
 
+## Scripted GUI regression scenarios
+
+`gui_smoke.py` answers one question: did the application mount and render. That
+is not enough to catch a control laid out beyond the window or a native editor
+that kept the previous document's undo history — both of which the maintained
+semantic specs also cannot see, because they run without a presentation layer.
+
+`python3 scripts/gui_regression.py --directory .test-out/gui` runs the scenarios
+stored beside each example in `examples-gui/<app>/regression/*.script`, covering
+initial, populated, selected, focused, disabled/read-only, modal, error/loading
+and resized states. Each scenario is a line-per-step script executed against the
+real window by the host's `--script` flag:
+
+```text
+# size: 800x600
+click #edit-task-4
+wait 400
+expect-selected #task-4
+expect-value "Task title" Polish the project sidebar
+expect-history "Task notes" 0
+expect-onscreen #task-detail
+snapshot task-4-selected
+```
+
+Controls are named by the application's own `Gui.test_id` or by the label a
+person reads — never by pixel coordinates, so the scenarios survive layout work.
+Besides the ordinary state assertions, two observations exist only here:
+`expect-history` reads how many native undo entries an editor is holding, which
+is how document ownership becomes testable, and `expect-onscreen` reads a
+control's laid-out bounds. `expect-onscreen` means *visible without scrolling*;
+the host's window-scroll fallback means a failure is a usability finding rather
+than a proof that nothing can reach the control.
+
+Every run writes a JSON report of every observation under
+`.test-out/gui-regression/<app>/`, and on macOS also photographs the
+application's own window in the state the script finished in — including the
+state a failing assertion stopped at. Captures go through `gui_capture.py`, so
+they find the window by the process id the driver started and refuse a window
+whose size does not match the request; no region of your desktop is captured.
+Pass `--no-capture` to run the scripts alone, `--scenario SUBSTRING` to select
+some of them, and `--artifacts PATH` to write elsewhere.
+
+A script whose front matter carries `# diagnostic:` documents a defect owned
+elsewhere. It runs and its failure is reported, but it does not fail the run —
+and a diagnostic that starts passing *does* fail the run, so a fix cannot leave
+a stale exclusion behind. Never weaken an assertion to make a scenario pass;
+state the reason in the script and let it run as a diagnostic instead.
+
+Window captures are implemented for macOS only. On Linux the driver runs the
+scripts without captures; the scripts themselves, including `expect-onscreen`,
+work anywhere the examples run, but this repository has only executed them on
+Apple Silicon macOS so far.
+
 Normal GUI launches do not print engine metrics. Pass `--host-trace-engine` to an
 app executable to log event-turn metrics to stderr; `--smoke` prints its explicit
-validation result. Host errors remain visible without tracing.
+validation result, and `--script` prints its own pass or failure line. Host
+errors remain visible without tracing.
 
 Host builds default to two Cargo workers. Use `scripts/build_gui.py --jobs N`
 or `scripts/test.py gui --gui-build-jobs N` to adjust memory pressure. Parallel
