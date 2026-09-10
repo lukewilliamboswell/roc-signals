@@ -944,34 +944,28 @@ Supported assertions:
 ### Readable native file fixtures
 
 Use structured Files results for application workflows so specs do not need
-hand-counted UTF-8 frames or knowledge of the private `files1` payload. Chooser
-tasks settle with `resolve-file-choice` once they are pending. The effectful
+hand-counted UTF-8 frames or knowledge of the private `files1` payload. The
 `Files` functions run synchronously inside an effect, so their results are
 declared ahead of time with `stub-file-*` forms, either in `setup` for
 mount-time effects or in `steps` before the step that triggers the call:
 
 ```lisp
+(stub-file-choice "notes-open" (chosen "/tmp/meeting.txt"))
 (stub-file-read "notes-read" :path "/tmp/meeting.txt" :text "First line\nSecond line: λ")
 (click (role button :name "Open…"))
-(expect-pending-task "notes-open" 1)
-(resolve-file-choice "notes-open" (chosen "/tmp/meeting.txt"))
 (expect-value (label "Note text") "First line\nSecond line: λ")
 ```
 
 Each stub answers one call. A read, write, directory, preview, log, or launch
-stub is consumed by the first call of its kind whose path matches; a
-`stub-file-reject` answers the next `Files` call of any kind; an assets stub
-answers the next verification. A call with no matching stub returns
-`Unavailable` naming the missing stub. The chooser vocabulary is:
+stub is consumed by the first call of its kind whose path matches; a choice or
+assets stub answers the next chooser or verification; a `stub-file-reject`
+answers the next `Files` call of any kind, so declare it after any choice stub
+the same step needs. A call with no matching stub returns `Unavailable` naming
+the missing stub. The stub vocabulary mirrors the native services:
 
 ```lisp
-(resolve-file-choice "save-path" (canceled))
-(resolve-file-choice "save-path" (chosen "/tmp/project.board.json"))
-```
-
-The stub vocabulary mirrors the native services:
-
-```lisp
+(stub-file-choice "save-path" (canceled))
+(stub-file-choice "save-path" (chosen "/tmp/project.board.json"))
 (stub-file-read "read" :path "/tmp/note.txt" :text "Contents")
 (stub-file-write "write" :path "/tmp/note.txt" :bytes 8)
 (stub-file-reject "read" :kind permission-denied :detail "/tmp/note.txt")
@@ -986,8 +980,8 @@ The stub vocabulary mirrors the native services:
 ```
 
 The `resolve-file-*` and `reject-file` forms with the same fields settle a
-pending task of that kind, which platform fixtures still use to exercise the
-task machinery directly.
+pending engine task of that kind; no GUI example starts one any more, but the
+grammar stays shared with the stubs.
 
 Log changes are `initial`, `continued`, `rotated`, or `truncated`; states are
 `more`, `at-end`, or `partial-utf8`. Cursor numbers and directory file sizes are
@@ -1006,20 +1000,19 @@ valid UTF-8, and at most 4096 bytes. Read text and write byte counts have the
 native one-MiB bound, and error detail is bounded to 4096 UTF-8 bytes. Unknown
 fields, duplicate fields, invalid types, and oversized values reject the spec.
 
-A fixture checks the pending task's declared service before calling its Roc
-result decoder. Read fixtures cannot settle write tasks; choice fixtures accept
-file, directory, and save choosers; error fixtures accept native Files tasks.
-A mismatch reports the source line, task label, expected service, and actual
-service or missing request. A task label locates a request for the harness; it
-does not determine service semantics. Settlements still use ordinary engine
-propagation and task ownership.
+A task settlement checks the pending task's declared service before calling
+its Roc result decoder. Read fixtures cannot settle write tasks; choice fixtures
+accept file, directory, and save choosers; error fixtures accept native Files
+tasks. A mismatch reports the source line, task label, expected service, and
+actual service or missing request. A task label locates a request for the
+harness; it does not determine service semantics.
 
 These commands simulate results and perform no filesystem IO. They establish
-application response, cancellation, and state behavior; real filesystem and
-native chooser behavior need host tests and a native walkthrough. Keep raw
-`resolve-task`, `reject-task`, and `resolve-stale-task` when deliberately testing
-malformed payloads or stale delivery. The Board and Notes journeys demonstrate
-save snapshots, failed loads, cancellation, retries, and retained drafts.
+application response and state behavior; real filesystem and native chooser
+behavior need host tests and a native walkthrough. Keep raw `resolve-task`,
+`reject-task`, and `resolve-stale-task` when deliberately testing malformed
+payloads or stale delivery. The Board and Notes journeys demonstrate save
+snapshots, failed loads, dismissed choosers, retries, and retained drafts.
 
 A supplied result does not assert the request payload the app emitted. For
 example, resolving a write with `:bytes 14` does not prove that the app submitted

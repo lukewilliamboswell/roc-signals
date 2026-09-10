@@ -64,10 +64,9 @@ draft and retry. Native individual text controls also have a one-MiB input bound
 Open asks before replacing an unsaved board. Cancel or a failed read leaves the
 board and its previous path intact, even after choosing to discard. Saving holds
 an immutable snapshot from the moment Save was requested, including time spent
-in the chooser. Editing can continue while choosing a destination; the write
-then runs as one synchronous call inside an effect, and success marks only that
-submitted snapshot saved. Later edits stay dirty. A failed write or a dismissed
-chooser preserves the board and lets Save retry.
+in the chooser. The chooser and the write run as one effect; success marks
+only that submitted snapshot saved, and later edits stay dirty. A failed write
+or a dismissed chooser preserves the board and lets Save retry.
 
 Undo/Redo covers field changes, priority, creation, deletion, and movement.
 Changing a field creates one history entry per delivered edit. History holds at
@@ -97,6 +96,6 @@ Focused native text inputs keep their standard text-editing undo/redo precedence
 the toolbar buttons explicitly undo or redo board changes. Keyboard semantic
 specs dispatch the declared shortcuts; they do not emulate OS keyboard routing.
 
-Opening a replacement disables mutations until its read completes. Save chooser
-and write phases allow editing. Exhausted task identities stop creation with an
+Opening a replacement disables mutations until its read completes. The save
+phases allow editing. Exhausted task identities stop creation with an
 explanation while existing tasks remain editable and saveable; IDs never wrap.

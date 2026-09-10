@@ -46,6 +46,6 @@ directly, so the repository carries exactly one copy of the font.
 
 Run `scripts/test.py gui` with the pinned Roc compiler, as described in the
 contributor guide. The semantic journeys exercise replay, chunk assembly,
-sequential reads, chooser cancellation, error retry, rotation and
+sequential reads, error retry, rotation and
 truncation. They stub Files results; focused native file tests exercise
 actual IO and the GPUI adapter tests exercise native interaction.

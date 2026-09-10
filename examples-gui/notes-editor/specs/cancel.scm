@@ -1,20 +1,12 @@
-(test "Cancel preserves the draft and prevents stale chooser results from replacing it"
+(test "Dismissed choosers preserve the draft and the document name"
   (steps
+    (stub-file-choice "notes-open" (canceled))
     (shortcut (test-id "notes-editor") "o" 1)
-    (expect-pending-task "notes-open" 1)
-    (click (role button :name "Cancel operation"))
-    (expect-pending-task "notes-open" 0)
-    (expect-canceled-task "notes-open" 1)
     (expect-text (test-id "note-status") "No changes")
     (fill (label "Note text") "Current draft")
-    (resolve-stale-task "notes-open" "late chooser result is ignored")
-    (expect-value (label "Note text") "Current draft")
     (expect-text (test-id "document-name") "Untitled note")
+    (stub-file-choice "notes-save-path" (canceled))
     (shortcut (test-id "notes-editor") "s" 1)
-    (expect-pending-task "notes-save-path" 1)
-    (shortcut (test-id "notes-editor") "Escape" 0)
-    (expect-pending-task "notes-save-path" 0)
-    (expect-canceled-task "notes-save-path" 1)
     (expect-value (label "Note text") "Current draft")
     (expect-text (test-id "note-status") "Unsaved changes")
     (expect-text (test-id "document-name") "Untitled note")

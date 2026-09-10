@@ -9,7 +9,7 @@ public API; it is not a catalog of every GPUI capability.
 | --- | --- | --- |
 | [Task Board](task-board/) | Open and save board documents, undo edits and moves, protect unsaved work | Keyed rows, atomic commands, drag/drop, history, files, close decisions |
 | [Notes Editor](notes-editor/) | Edit and undo wrapped text, save snapshots, protect drafts on close | Multiline input, clipboard, shortcuts, document lifetimes, native file effects |
-| [Folder Explorer](folder-explorer/) | Navigate folders with history and breadcrumbs, preview text, open files | Directory effects, chooser cancel/retry, shortcuts, bounded previews, virtual lists |
+| [Folder Explorer](folder-explorer/) | Navigate folders with history and breadcrumbs, preview text, open files | Directory effects, chooser dismissal, retry, shortcuts, bounded previews, virtual lists |
 | [Activity Monitor](activity-monitor/) | Follow a real log or run explicit replay, pause, retry, filter, and inspect | Incremental file effects, scoped timers, bounded history, virtual lists |
 
 Activity Monitor separates simulated replay from explicitly chosen real log files.

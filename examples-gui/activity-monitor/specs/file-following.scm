@@ -1,10 +1,10 @@
 (test "A real log drains chunks and assembles records before polling"
   (steps
     (click (role button :name "Step replay"))
-    (click (role button :name "Open log…"))
+    (stub-file-choice "activity-open" (chosen "/tmp/events.log"))
     (stub-file-log "activity-read" :path "/tmp/events.log" :text "first\npar" :device 1 :inode 2 :offset 9 :change initial :state more)
     (stub-file-log "activity-read" :path "/tmp/events.log" :text "tial\n" :device 1 :inode 2 :offset 14 :change continued :state at-end)
-    (resolve-file-choice "activity-open" (chosen "/tmp/events.log"))
+    (click (role button :name "Open log…"))
     (expect-absent (test-id "event-1"))
     (expect-visible (test-id "event-2"))
     (expect-visible (test-id "event-3"))

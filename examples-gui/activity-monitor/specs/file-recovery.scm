@@ -1,8 +1,8 @@
 (test "Pausing, failing, and retrying log reads preserves accepted history"
   (steps
-    (click (role button :name "Open log…"))
+    (stub-file-choice "activity-open" (chosen "/tmp/events.log"))
     (stub-file-log "activity-read" :path "/tmp/events.log" :text "first\n" :device 1 :inode 2 :offset 6 :change initial :state at-end)
-    (resolve-file-choice "activity-open" (chosen "/tmp/events.log"))
+    (click (role button :name "Open log…"))
     (stub-file-log "activity-read" :path "/tmp/events.log" :text "" :device 1 :inode 2 :offset 6 :change continued :state at-end)
     (tick-interval 500)
     (click (role button :name "Pause following"))

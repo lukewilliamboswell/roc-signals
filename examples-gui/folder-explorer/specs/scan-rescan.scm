@@ -1,8 +1,8 @@
 (test "Direct-child navigation refresh and breadcrumbs reconcile accepted paths"
   (steps
-    (click (role button :name "Choose folder"))
+    (stub-file-choice "folder-choice" (chosen "/tmp/project"))
     (stub-file-directory "folder-list" :path "/tmp/project" :entries ((directory "/tmp/project/docs" 4096) (file "/tmp/project/notes.txt" 12) (symbolic-link "/tmp/project/current" 9) (other "/tmp/project/events.pipe" 0)))
-    (resolve-file-choice "folder-choice" (chosen "/tmp/project"))
+    (click (role button :name "Choose folder"))
     (expect-visible (text "1 files · 1 folders · 1 links · 1 other · 12 B"))
     (expect-visible (text "notes.txt"))
     (click (role button :name "/tmp/project/notes.txt"))

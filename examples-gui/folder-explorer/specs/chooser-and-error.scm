@@ -1,15 +1,11 @@
 (test "Chooser dismissal and navigation failure keep the accepted folder and history"
   (steps
+    (stub-file-choice "folder-choice" (canceled))
     (shortcut (test-id "explorer") "o" 1)
-    (resolve-file-choice "folder-choice" (canceled))
     (expect-visible (text "Folder selection canceled."))
-    (click (role button :name "Choose folder"))
-    (shortcut (test-id "explorer") "Escape" 0)
-    (expect-canceled-task "folder-choice" 1)
-    (resolve-stale-task "folder-choice" "late chooser result is ignored")
-    (click (role button :name "Choose folder"))
+    (stub-file-choice "folder-choice" (chosen "/tmp/project"))
     (stub-file-reject "folder-list" :kind permission-denied :detail "/tmp/project")
-    (resolve-file-choice "folder-choice" (chosen "/tmp/project"))
+    (click (role button :name "Choose folder"))
     (expect-visible (text "Permission denied: /tmp/project"))
     (expect-text (test-id "dataset-source") "Sample workspace")
     (expect-visible (text "6 matching entries"))

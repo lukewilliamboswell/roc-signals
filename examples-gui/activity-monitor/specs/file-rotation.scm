@@ -1,8 +1,8 @@
 (test "File replacement and truncation retire old records and partial lines"
   (steps
-    (click (role button :name "Open log…"))
+    (stub-file-choice "activity-open" (chosen "/tmp/events.log"))
     (stub-file-log "activity-read" :path "/tmp/events.log" :text "old\nunfinished" :device 1 :inode 2 :offset 14 :change initial :state at-end)
-    (resolve-file-choice "activity-open" (chosen "/tmp/events.log"))
+    (click (role button :name "Open log…"))
     (click (role button :name "Inspect 1"))
     (stub-file-log "activity-read" :path "/tmp/events.log" :text "new\n" :device 1 :inode 3 :offset 4 :change rotated :state at-end)
     (tick-interval 500)

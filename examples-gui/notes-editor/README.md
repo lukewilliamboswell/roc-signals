@@ -16,8 +16,8 @@ roc test examples-gui/notes-editor/main.roc
 ```
 
 Control+N creates a document, Control+O opens one, Control+S saves, and
-Control+Shift+S chooses a new destination. Escape cancels an operation or closes
-the discard confirmation. Native editor selection, movement, and clipboard
+Control+Shift+S chooses a new destination. Escape closes the discard
+confirmation, and the native choosers handle their own Escape. Native editor selection, movement, and clipboard
 bindings retain their usual behavior. Paragraphs wrap to the viewport; Control+Z
 undoes typing and Control+Shift+Z or Control+Y redoes it. The editor owns bounded
 history (128 boundaries and 8 MiB), cleared on a new document lifetime even when
@@ -55,9 +55,8 @@ still visits the complete changed document. GPUI retains responsibility for
 native shaping, caret interaction, and IME behavior.
 
 `Session.roc` holds the pure document operation state machine. `Workflow.roc`
-observes only its phase: choosers start as tasks whose results enter ordinary
-shared engine propagation, and reads and writes run inside an action's effect.
-The native semantic specs supply typed chooser outcomes and file stubs to check
-cancellation, failures, stale results, repeat saves, and snapshot ownership
-deterministically. Filesystem worker tests and actual GPUI interaction tests
+observes only its phase: each phase runs one `Files` call inside an action's
+effect, and a chooser blocks that effect until the user answers. The native
+semantic specs stub chooser outcomes and file results to check dismissal,
+failures, repeat saves, and snapshot ownership deterministically. Filesystem worker tests and actual GPUI interaction tests
 cover the native boundaries separately.

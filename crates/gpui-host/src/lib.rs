@@ -567,6 +567,7 @@ impl Runtime {
             fonts: fonts::Registry::default(),
         };
         runtime.apply(initial, cx);
+        crate::effects::Manager::listen(cx);
         runtime.drain_effects(cx);
         runtime
     }

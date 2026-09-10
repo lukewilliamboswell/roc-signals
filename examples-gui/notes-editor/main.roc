@@ -23,7 +23,6 @@ main = || Ui.state(
 	|session| Ui.state(
 		"",
 		|body| {
-			tasks = Workflow.create_tasks()
 			view = { state: session.signal(), body: body.signal() }.Signal
 			ready = session.read(Session.can_start)
 			phase = session.read(|state| state.phase)
@@ -54,7 +53,7 @@ main = || Ui.state(
 					}
 				},
 			)
-			cancel = Action.run(phase, |value| Workflow.cancel(session, tasks, value))
+			cancel = Action.run(phase, |value| Workflow.cancel(session, value))
 			chord = { key: "s", control: True, shift: False, alt: False, meta: False }
 			Elem.window_lifecycle(
 				{ on_close_requested: session.update_with(body, Session.request_close), decision: session.read(Session.close_decision) },
@@ -259,7 +258,7 @@ main = || Ui.state(
 									),
 								],
 							),
-						].concat(Workflow.bindings(session, body, tasks)),
+						].concat(Workflow.bindings(session, body)),
 					),
 				],
 			)

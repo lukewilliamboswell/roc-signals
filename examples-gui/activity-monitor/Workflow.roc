@@ -5,41 +5,32 @@ import pf.Signal
 import pf.Ui
 import Session
 
-## The log chooser stays a scope-owned task because it needs the window's
-## event loop. Reads run inside actions: entering the Reading phase runs one
-## synchronous `Files.read_log!`, and caught-up files use a scoped timer to
-## re-enter that phase.
+## Every native step runs as one `Files` call inside an action's effect,
+## against the phase as it is after the change committed: entering Choosing
+## opens the log chooser and waits for its answer, entering Reading reads one
+## chunk with `Files.read_log!`, and caught-up files use a scoped timer to
+## re-enter Reading.
 Workflow := [].{
-	Tasks : { choose : Signal.Task(Files.Choice, Files.Error) }
-
-	create : () -> Tasks
-	create = || { choose: Files.choose_file_task("activity-open") }
-
-	bindings : Ui.State(Session.Accepted), Tasks -> List(Elem)
-	bindings = |model, tasks| [
+	bindings : Ui.State(Session.Accepted) -> List(Elem)
+	bindings = |model| [
 		Action.on_change(
 			model.read(|value| value.session.phase),
 			|phase| match phase {
-				Session.Phase.Choosing => Files.choose_file(tasks.choose)
-				Session.Phase.Reading(_) => Action.then([], |current| read_chunk!(model, current))
+				Session.Phase.Choosing | Session.Phase.Reading(_) => Action.then([], |current| advance!(model, current))
 				_ => Action.none
-			},
-		),
-		Action.on_change(
-			Signal.from_task(tasks.choose),
-			|status| match status {
-				Signal.TaskStatus.Loading => Action.none
-				Signal.TaskStatus.Done(choice) => Action.update([model.write(|value| { ..value, session: Session.chosen(value.session, choice) })])
-				Signal.TaskStatus.Failed(error) => failed(model, error)
 			},
 		),
 		Ui.when(model.read(|value| value.session.phase == Session.Phase.Waiting), || Action.every(500, |_| Action.update([model.write(|value| { ..value, session: Session.read_next(value.session) })])), || Elem.text("")),
 	]
 
-	## Runs the read the current phase asks for, against the phase as it is
-	## after the change committed; a phase that moved on reads nothing.
-	read_chunk! : Ui.State(Session.Accepted), Session.Phase => Action(Session.Phase)
-	read_chunk! = |model, phase| match phase {
+	## Runs the chooser or read the current phase asks for; a phase that moved
+	## on runs nothing.
+	advance! : Ui.State(Session.Accepted), Session.Phase => Action(Session.Phase)
+	advance! = |model, phase| match phase {
+		Session.Phase.Choosing => match Files.choose_file!() {
+			Ok(choice) => Action.update([model.write(|value| { ..value, session: Session.chosen(value.session, choice) })])
+			Err(error) => failed(model, error)
+		}
 		Session.Phase.Reading(request) => match Files.read_log!(request) {
 			Ok(chunk) => Action.update([model.write(|value| Session.accept(value.session, value.history, chunk))])
 			Err(error) => failed(model, error)
@@ -47,9 +38,10 @@ Workflow := [].{
 		_ => Action.none
 	}
 
-	cancel : Ui.State(Session.Accepted), Tasks, Session.Phase -> Action(a)
-	cancel = |model, tasks, phase| match phase {
-		Session.Phase.Choosing => Files.cancel(tasks.choose)
+	## The chooser dialog dismisses itself; every other phase pauses.
+	cancel : Ui.State(Session.Accepted), Session.Phase -> Action(a)
+	cancel = |model, phase| match phase {
+		Session.Phase.Choosing => Action.none
 		_ => Action.update([model.write(|value| { ..value, session: Session.pause(value.session) })])
 	}
 

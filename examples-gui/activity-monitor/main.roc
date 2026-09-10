@@ -76,7 +76,6 @@ main = || Ui.state(
 
 view : Ui.State(Session.Accepted), Ui.State(Bool), Ui.State(Str), Ui.State(Bool), Ui.State(Str), Ui.State(Bool) -> Elem
 view = |model, running, query, errors_only, selected, follow_tail| {
-	tasks = Workflow.create()
 	history = model.read(|value| value.history)
 	session = model.read(|value| value.session)
 	replay = session.map(|state| state.source == Session.Source.Replay)
@@ -173,7 +172,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 						caption: Signal.const("Retry read"),
 						enabled: session.map(|state| state.phase == Session.Phase.Paused and state.retry != None),
 					}, model.update(|value| { ..value, session: Session.retry_read(value.session) })),
-					Elem.action_button({ caption: Signal.const("Cancel operation"), enabled: busy }, Action.run(session, |state| Workflow.cancel(model, tasks, state.phase))),
+					Elem.action_button({ caption: Signal.const("Cancel operation"), enabled: busy }, Action.run(session, |state| Workflow.cancel(model, state.phase))),
 				],
 			),
 			Elem.col({ test_id: "activity-status", font_size: 13, fg: Rgb(0xA9BFCC) }, [Elem.text_s(session.map(|state| state.notice))]),
@@ -224,7 +223,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 								|state| if state.phase == Session.Phase.Paused {
 									Action.update([model.write(|value| { ..value, session: Session.read_next(value.session) })])
 								} else {
-									Workflow.cancel(model, tasks, state.phase)
+									Workflow.cancel(model, state.phase)
 								},
 							),
 						),
@@ -342,6 +341,6 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 				|| Action.every(500, |_| append()),
 				|| Elem.text(""),
 			),
-		].concat(Workflow.bindings(model, tasks)),
+		].concat(Workflow.bindings(model)),
 	)
 }

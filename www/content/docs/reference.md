@@ -91,11 +91,14 @@ calling convention so maintained examples can use their pinned release.
 
 ## Native Files
 
-Import `pf.Files` with `platform-gui`. File operations are effectful
-functions that run inside an action's effect and return `Try(value, Error)`:
+Import `pf.Files` with `platform-gui`. Every operation is an effectful
+function that runs inside an action's effect and returns `Try(value, Error)`:
 
 | Function | Successful value |
 | --- | --- |
+| `choose_file!()` | `Choice` |
+| `choose_directory!()` | `Choice` |
+| `choose_save_path!({ directory, suggested_name })` | `Choice` |
 | `read_text!(path)` | `{ path, text }` |
 | `write_text!({ path, text })` | `{ path, bytes }` |
 | `scan!(root)` | `{ root, entries }` |
@@ -105,15 +108,9 @@ functions that run inside an action's effect and return `Try(value, Error)`:
 | `read_log!({ path, position })` | `LogChunk` |
 | `verify_assets!(entries)` | `List(AssetCheck)` |
 
-Choosers need the window's event loop, so each is a task. A task factory takes
-a diagnostic label; construct it once in the owning scope, observe it with
-`Signal.from_task`, and start it with the action its start function returns.
-
-| Task factory | Start action | Successful value |
-| --- | --- | --- |
-| `choose_file_task(label)` | `choose_file(task)` | `Choice` |
-| `choose_directory_task(label)` | `choose_directory(task)` | `Choice` |
-| `choose_save_path_task(label)` | `choose_save_path(task, { directory, suggested_name })` | `Choice` |
+The choosers show their dialog on the UI thread and block the calling effect
+until the user answers; effects queued behind them wait for the dialog to
+close.
 
 `Choice` is `[Chosen(Str), Canceled]`. The save chooser's `directory` is
 `Home` or `At(absolute_path)`. `Home` resolves the native user's home directory;
@@ -139,17 +136,17 @@ invalid bytes are errors. Applications assemble partial lines and bound history.
 endpoint; skipped history is not validated. Same-inode truncate-and-regrow between
 observations cannot be distinguished from continuation.
 
-`Files.cancel(task)` publishes `Failed(Error.Canceled)` and invalidates late
-results. Dismissing a chooser instead produces `Done(Choice.Canceled)`.
-`Files.error_text(error)` formats errors for display. Other errors are
+Dismissing a chooser produces `Ok(Choice.Canceled)`; `Error.Canceled` is
+reserved for work the host abandoned. `Files.error_text(error)` formats errors
+for display. Other errors are
 `NotFound`, `PermissionDenied`, `InvalidUtf8`, `InvalidPath`, `ResourceLimit`,
 `Io`, and `Unavailable`, each with a diagnostic string. Diagnostic text is bounded
 at 4,096 UTF-8 bytes and ends with ` [truncated]` when detail was omitted; the error
 case remains unchanged. Save suggestions must be single nonempty file names of
 at most 255 UTF-8 bytes.
 
-The native host retains at most 16 operations, including canceled portal
-dialogs awaiting completion. Saturation returns `ResourceLimit`. Paths
+The native host retains at most 16 operations. Saturation returns
+`ResourceLimit`. Paths
 are at most 4,096 bytes; text reads and writes are at most 1 MiB. A scan returns
 one complete metadata result of at most 10,000 entries, 64 levels, and 4 MiB of
 paths including the root. Concurrent filesystem changes can fail a scan. Symlinks
@@ -502,6 +499,7 @@ one case as `(test "name" (steps ...))`. See [Testing](@/docs/testing.md).
 (reject-task "<name>" "<payload>")
 (expect-pending-task "<name>" <count>)
 (expect-canceled-task "<name>" <count>)
+(stub-file-choice "<label>" (chosen "<path>"))
 (stub-file-read "<label>" :path "<path>" :text "<text>")
 (tick-interval <period-ms>)
 (tick-interval-if-active <period-ms>)

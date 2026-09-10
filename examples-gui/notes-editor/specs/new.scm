@@ -11,5 +11,4 @@
     (expect-value (label "Note text") "")
     (expect-text (test-id "note-status") "No changes")
     (expect-text (test-id "document-name") "Untitled note")
-    (expect-pending-task "notes-open" 0)
 ))

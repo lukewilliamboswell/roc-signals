@@ -66,30 +66,10 @@ finish = |rest| {
 	{}
 }
 
-file_task : Node.TaskKind, Str, (Str -> a) -> Signal.Task(a, Files.Error)
-	where [a.is_eq : a, a -> Bool]
-file_task = |kind, name, decode|
-	Signal.host_task_source_with_eq(
-		kind,
-		{ name, reset_on_start: True, canceled: || Files.Error.Canceled, refused: || Files.Error.ResourceLimit("native task capacity is full") },
-		decode,
-		Files.decode_error,
-		|left, right| left.is_eq(right),
-		|left, right| left == right,
-	)
-
-file_start : Node.TaskKind, Signal.Task(a, Files.Error), List(Str) -> Node.Cmd
-file_start = |kind, task, fields| {
-	if task.source.kind != kind {
-		crash "Files command used a different task kind"
-	}
-	Signal.start_str(task, packet(fields))
-}
-
-## Native file dialogs and bounded background filesystem work. Paths are absolute
-## UTF-8 strings of at most 4096 bytes. Every completion uses the shared task
-## signal and scope lifetime. At most 16 native operations, including canceled
-## workers awaiting completion, may be retained; saturation returns ResourceLimit.
+## Native file dialogs and bounded filesystem work as effectful functions,
+## called from an action's effect. Paths are absolute UTF-8 strings of at most
+## 4096 bytes. A chooser blocks the effect until the user answers; at most 16
+## native operations may be retained, and saturation returns ResourceLimit.
 Files := [].{
 	Choice := [Canceled, Chosen(Str)].{
 		is_eq : _
@@ -222,41 +202,27 @@ Files := [].{
 		)
 	}
 
-	## Create one file-choice task. The label is diagnostic and never routes work.
-	choose_file_task : Str -> Signal.Task(Choice, Error)
-	choose_file_task = |name| file_task(Node.TaskKind.ChooseFile, name, decode_choice)
+	## Open the platform's single-file chooser and wait for the user's answer.
+	## Dismissing the dialog is the successful `Canceled` choice.
+	choose_file! : () => Try(Choice, Error)
+	choose_file! = || call!(Node.TaskKind.ChooseFile, [], decode_choice)
 
-	## Create one folder-choice task.
-	choose_directory_task : Str -> Signal.Task(Choice, Error)
-	choose_directory_task = |name| file_task(Node.TaskKind.ChooseDirectory, name, decode_choice)
+	## Open the platform's single-folder chooser and wait for the user's answer.
+	choose_directory! : () => Try(Choice, Error)
+	choose_directory! = || call!(Node.TaskKind.ChooseDirectory, [], decode_choice)
 
-	## Create one save-destination task. Dialog cancellation is a successful Choice.
-	choose_save_path_task : Str -> Signal.Task(Choice, Error)
-	choose_save_path_task = |name| file_task(Node.TaskKind.ChooseSavePath, name, decode_choice)
-
-	## Open the platform's single-file chooser.
-	choose_file : Signal.Task(Choice, Error) -> Action(a)
-	choose_file = |task| Action.Action(file_start(Node.TaskKind.ChooseFile, task, []))
-
-	## Open the platform's single-folder chooser.
-	choose_directory : Signal.Task(Choice, Error) -> Action(a)
-	choose_directory = |task| Action.Action(file_start(Node.TaskKind.ChooseDirectory, task, []))
-
-	## Ask for a save path at the user's home or an absolute initial directory.
-	## Home returns Unavailable if the native environment has no UTF-8 HOME value.
-	## The suggestion is one nonempty file name of at most 255 UTF-8 bytes.
-	choose_save_path : Signal.Task(Choice, Error), { directory : [Home, At(Str)], suggested_name : Str } -> Action(a)
-	choose_save_path = |task, options| {
+	## Ask for a save path at the user's home or an absolute initial directory
+	## and wait for the user's answer. Home returns Unavailable if the native
+	## environment has no UTF-8 HOME value. The suggestion is one nonempty file
+	## name of at most 255 UTF-8 bytes.
+	choose_save_path! : { directory : [Home, At(Str)], suggested_name : Str } => Try(Choice, Error)
+	choose_save_path! = |options| {
 		location = match options.directory {
 			Home => ["home", ""]
 			At(path) => ["at", path]
 		}
-		Action.Action(file_start(Node.TaskKind.ChooseSavePath, task, location.append(options.suggested_name)))
+		call!(Node.TaskKind.ChooseSavePath, location.append(options.suggested_name), decode_choice)
 	}
-
-	## Cancel a chooser that is still open; its task settles as `Canceled`.
-	cancel : Signal.Task(Choice, Error) -> Action(a)
-	cancel = |task| Action.Action(Signal.cancel(task))
 
 	AssetStatus := [Ok, Missing, Mismatch].{
 		is_eq : _

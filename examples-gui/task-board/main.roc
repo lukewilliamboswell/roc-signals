@@ -82,8 +82,6 @@ Close := [KeepEditing, Confirm, Saving, Closing].{
 
 DocumentState : { path : [None, Some(Str)], baseline : [None, Some(BoardSnapshot)], phase : Phase, problem : Str }
 
-Tasks : { open : Signal.Task(Files.Choice, Files.Error), save : Signal.Task(Files.Choice, Files.Error) }
-
 Context : { board : BoardSnapshot, history : History, document : DocumentState }
 
 Handles : {
@@ -102,7 +100,6 @@ Handles : {
 	bytes : Ui.State(U64),
 	document : Ui.State(DocumentState),
 	asset_problem : Ui.State(Str),
-	tasks : Tasks,
 	close : Ui.State(Close),
 	editable : Signal.Signal(Bool),
 	edit_disabled : Signal.Signal(Bool),
@@ -665,7 +662,6 @@ main = || Ui.state(
 																						{ path: None, baseline: None, phase: Phase.Idle, problem: "" },
 																						|document| {
 																							context = { board: movement, history: history.signal(), document: document.signal() }.Signal
-																							tasks = { open: Files.choose_file_task("board-open"), save: Files.choose_save_path_task("board-save-path") }
 																							Ui.state(
 																								Close.KeepEditing,
 																								|close| Ui.state(
@@ -673,7 +669,7 @@ main = || Ui.state(
 																									|asset_problem| {
 																										editable = document.read(|doc| can_edit(doc.phase))
 																										edit_disabled = editable.map(|value| !value)
-																										board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete, movement, context, history, bytes, document, asset_problem, tasks, close, editable, edit_disabled })
+																										board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete, movement, context, history, bytes, document, asset_problem, close, editable, edit_disabled })
 																									},
 																								),
 																							)
@@ -928,12 +924,11 @@ failed_file = |handles, error| Action.update([handles.document.write(
 	},
 )])
 
-choice_result : Handles, Signal.TaskStatus(Files.Choice, Files.Error) -> Action(a)
-choice_result = |handles, status| match status {
-	Signal.TaskStatus.Loading => Action.none
-	Signal.TaskStatus.Failed(error) => failed_file(handles, error)
-	Signal.TaskStatus.Done(Files.Choice.Canceled) => failed_file(handles, Files.Error.Canceled)
-	Signal.TaskStatus.Done(Files.Choice.Chosen(path)) => Action.update([handles.document.write(
+chosen : Handles, Try(Files.Choice, Files.Error) -> Action(a)
+chosen = |handles, result| match result {
+	Err(error) => failed_file(handles, error)
+	Ok(Files.Choice.Canceled) => failed_file(handles, Files.Error.Canceled)
+	Ok(Files.Choice.Chosen(path)) => Action.update([handles.document.write(
 		|doc| {
 			..doc,
 			phase: match doc.phase {
@@ -982,30 +977,27 @@ load_document = |handles, file| match Codec.decode(file.text) {
 	}
 }
 
-## The choosers stay scope-owned tasks because they need the window's event
-## loop. Reading, writing, and asset verification run as one synchronous
-## `Files` call inside an effect, against the phase as it is after the change
-## committed.
+## Choosing, reading, writing, and asset verification each run as one `Files`
+## call inside an effect, against the phase as it is after the change
+## committed. A chooser blocks that effect until the user answers.
 document_bindings : Handles -> List(Elem)
 document_bindings = |handles| [
 	Action.on_mount(|| Action.then([], |_| verify_assets!(handles))),
 	Action.on_change(
 		handles.document.read(|doc| doc.phase),
 		|phase| match phase {
-			Phase.ChoosingOpen => Files.choose_file(handles.tasks.open)
-			Phase.ChoosingSave(_) => Files.choose_save_path(handles.tasks.save, { directory: Home, suggested_name: "My project.board.json" })
-			Phase.Reading(_) | Phase.Writing(_) => Action.then([], |current| transfer!(handles, current))
+			Phase.ChoosingOpen | Phase.ChoosingSave(_) | Phase.Reading(_) | Phase.Writing(_) => Action.then([], |current| transfer!(handles, current))
 			_ => Action.none
 		},
 	),
-	Action.on_change(Signal.from_task(handles.tasks.open), |status| choice_result(handles, status)),
-	Action.on_change(Signal.from_task(handles.tasks.save), |status| choice_result(handles, status)),
 ]
 
-## Runs the read or write the current phase asks for; a phase that moved on
-## runs nothing.
+## Runs the chooser, read, or write the current phase asks for; a phase that
+## moved on runs nothing.
 transfer! : Handles, Phase => Action(Phase)
 transfer! = |handles, phase| match phase {
+	Phase.ChoosingOpen => chosen(handles, Files.choose_file!())
+	Phase.ChoosingSave(_) => chosen(handles, Files.choose_save_path!({ directory: Home, suggested_name: "My project.board.json" }))
 	Phase.Reading(path) => match Files.read_text!(path) {
 		Ok(file) => load_document(handles, file)
 		Err(error) => failed_file(handles, error)
@@ -1192,9 +1184,7 @@ document_actions = |handles| {
 	cancel = Action.run(
 		handles.document.signal(),
 		|doc| match doc.phase {
-			Phase.ChoosingOpen => Files.cancel(handles.tasks.open)
-			Phase.ChoosingSave(_) => Files.cancel(handles.tasks.save)
-			Phase.Reading(_) | Phase.Writing(_) => Action.none
+			Phase.ChoosingOpen | Phase.ChoosingSave(_) | Phase.Reading(_) | Phase.Writing(_) => Action.none
 			_ => Action.update([handles.document.set({ ..doc, phase: Phase.Idle })])
 		},
 	)

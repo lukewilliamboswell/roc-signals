@@ -9,12 +9,15 @@ use crate::{
 };
 use gpui::{Context, PathPromptOptions};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex, mpsc,
         atomic::{AtomicBool, Ordering},
     },
+    task::{Context as TaskContext, Poll, Waker},
 };
 
 const MAX_REQUESTS: usize = 16;
@@ -46,64 +49,16 @@ impl Manager {
                     "duplicate native task identity"
                 );
                 match request {
-                    Request::ChooseFile | Request::ChooseDirectory => {
-                        let directories = matches!(request, Request::ChooseDirectory);
-                        let receiver = cx.prompt_for_paths(PathPromptOptions {
-                            files: !directories,
-                            directories,
-                            multiple: false,
-                            prompt: None,
-                        });
-                        cx.spawn(async move |runtime, cx| {
-                            let result = match receiver.await {
-                                Ok(Ok(Some(mut paths))) if paths.len() == 1 => {
-                                    choice(Some(paths.remove(0)))
-                                }
-                                Ok(Ok(None)) => choice(None),
-                                Ok(Ok(Some(_))) => Err(FileError::Unavailable(
-                                    "single-path chooser returned an invalid selection count"
-                                        .into(),
-                                )),
-                                Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
-                                Err(error) => Err(FileError::Unavailable(error.to_string())),
-                            };
-                            let (failed, payload) = settle(result, &cancel);
-                            let _ = runtime.update(cx, |runtime, cx| {
-                                runtime.complete_task(id, failed, &payload, cx)
-                            });
-                        })
-                        .detach();
-                    }
-                    Request::ChooseSavePath {
-                        directory,
-                        suggested_name,
-                    } => {
-                        let directory = match directory.resolve() {
-                            Ok(directory) => directory,
-                            Err(error) => {
-                                self.deliver(id, Err(error), cancel, cx);
-                                return;
-                            }
-                        };
-                        if let Err(error) = validate_save_options(&directory, &suggested_name) {
-                            self.deliver(id, Err(error), cancel, cx);
-                            return;
-                        }
-                        let receiver =
-                            cx.prompt_for_new_path(Path::new(&directory), Some(&suggested_name));
-                        cx.spawn(async move |runtime, cx| {
-                            let result = match receiver.await {
-                                Ok(Ok(path)) => choice(path),
-                                Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
-                                Err(error) => Err(FileError::Unavailable(error.to_string())),
-                            };
-                            let (failed, payload) = settle(result, &cancel);
-                            let _ = runtime.update(cx, |runtime, cx| {
-                                runtime.complete_task(id, failed, &payload, cx)
-                            });
-                        })
-                        .detach();
-                    }
+                    Request::ChooseFile
+                    | Request::ChooseDirectory
+                    | Request::ChooseSavePath { .. } => self.deliver(
+                        id,
+                        Err(FileError::Unavailable(
+                            "file choosers are hosted effects, not tasks".into(),
+                        )),
+                        cancel,
+                        cx,
+                    ),
                     request => {
                         let worker_cancel = cancel.clone();
                         let worker = cx.background_executor().spawn(async move {
@@ -148,6 +103,92 @@ impl Manager {
         );
     }
 
+    /// Starts the UI-thread listener that shows choosers for effects waiting
+    /// on the worker. One runtime listens at a time; a dropped runtime frees
+    /// the slot for the next.
+    pub(crate) fn listen(cx: &mut Context<Runtime>) {
+        {
+            let mut queue = CHOOSERS.lock().unwrap();
+            if queue.listening {
+                return;
+            }
+            queue.listening = true;
+        }
+        cx.spawn(async move |runtime, cx| {
+            loop {
+                let request = NextChooser.await;
+                if runtime
+                    .update(cx, |runtime, cx| runtime.effects.prompt(request, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            CHOOSERS.lock().unwrap().listening = false;
+        })
+        .detach();
+    }
+
+    /// Shows the dialog a worker asked for and answers it when the dialog
+    /// closes. The worker is blocked on `reply` in `signals_files_run`.
+    fn prompt(&mut self, waiting: ChooserRequest, cx: &mut Context<Runtime>) {
+        let ChooserRequest { request, reply } = waiting;
+        match request {
+            Request::ChooseFile | Request::ChooseDirectory => {
+                let directories = matches!(request, Request::ChooseDirectory);
+                let receiver = cx.prompt_for_paths(PathPromptOptions {
+                    files: !directories,
+                    directories,
+                    multiple: false,
+                    prompt: None,
+                });
+                cx.spawn(async move |_, _| {
+                    let result = match receiver.await {
+                        Ok(Ok(Some(mut paths))) if paths.len() == 1 => choice(Some(paths.remove(0))),
+                        Ok(Ok(None)) => choice(None),
+                        Ok(Ok(Some(_))) => Err(FileError::Unavailable(
+                            "single-path chooser returned an invalid selection count".into(),
+                        )),
+                        Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
+                        Err(error) => Err(FileError::Unavailable(error.to_string())),
+                    };
+                    let _ = reply.send(result);
+                })
+                .detach();
+            }
+            Request::ChooseSavePath {
+                directory,
+                suggested_name,
+            } => {
+                let directory = match directory
+                    .resolve()
+                    .and_then(|directory| validate_save_options(&directory, &suggested_name).map(|_| directory))
+                {
+                    Ok(directory) => directory,
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                        return;
+                    }
+                };
+                let receiver = cx.prompt_for_new_path(Path::new(&directory), Some(&suggested_name));
+                cx.spawn(async move |_, _| {
+                    let result = match receiver.await {
+                        Ok(Ok(path)) => choice(path),
+                        Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
+                        Err(error) => Err(FileError::Unavailable(error.to_string())),
+                    };
+                    let _ = reply.send(result);
+                })
+                .detach();
+            }
+            _ => {
+                let _ = reply.send(Err(FileError::Unavailable(
+                    "only choosers wait on the UI thread".into(),
+                )));
+            }
+        }
+    }
+
     pub(crate) fn shutdown(&mut self) {
         for cancel in self.jobs.values() {
             cancel.store(true, Ordering::Release);
@@ -160,6 +201,63 @@ impl Drop for Manager {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+/// A chooser a worker effect is waiting on. The worker blocks on the other
+/// end of `reply` until the dialog closes.
+struct ChooserRequest {
+    request: Request,
+    reply: mpsc::Sender<Result<String, FileError>>,
+}
+
+struct ChooserQueue {
+    requests: VecDeque<ChooserRequest>,
+    waker: Option<Waker>,
+    listening: bool,
+}
+
+static CHOOSERS: Mutex<ChooserQueue> = Mutex::new(ChooserQueue {
+    requests: VecDeque::new(),
+    waker: None,
+    listening: false,
+});
+
+/// Resolves with the next chooser request; the worker's push wakes it on the
+/// UI thread's executor.
+struct NextChooser;
+
+impl Future for NextChooser {
+    type Output = ChooserRequest;
+    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<ChooserRequest> {
+        let mut queue = CHOOSERS.lock().unwrap();
+        if let Some(request) = queue.requests.pop_front() {
+            return Poll::Ready(request);
+        }
+        queue.waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+/// Asks the UI thread to show a chooser and blocks the calling worker until
+/// the user answers. Without a listening window there is nobody to show it.
+fn wait_for_chooser(request: Request) -> Result<String, FileError> {
+    let (reply, receiver) = mpsc::channel();
+    let waker = {
+        let mut queue = CHOOSERS.lock().unwrap();
+        if !queue.listening {
+            return Err(FileError::Unavailable(
+                "no window is open to show a file chooser".into(),
+            ));
+        }
+        queue.requests.push_back(ChooserRequest { request, reply });
+        queue.waker.take()
+    };
+    if let Some(waker) = waker {
+        waker.wake();
+    }
+    receiver.recv().map_err(|_| {
+        FileError::Unavailable("the window closed before the file chooser answered".into())
+    })?
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -203,6 +301,12 @@ impl Directory {
 }
 
 impl Request {
+    fn is_chooser(&self) -> bool {
+        matches!(
+            self,
+            Self::ChooseFile | Self::ChooseDirectory | Self::ChooseSavePath { .. }
+        )
+    }
     fn decode(kind: u32, payload: &str) -> Result<Self, &'static str> {
         if payload.len() > MAX_PACKET {
             return Err("packet limit");
@@ -426,9 +530,9 @@ fn choice(path: Option<PathBuf>) -> Result<String, FileError> {
 }
 
 /// Performs one filesystem request to completion on the calling thread and
-/// returns its result packet. Choosers need the windowing event loop and are
-/// refused here; the worker path and the synchronous `Files` primitives share
-/// everything else.
+/// returns its result packet. Choosers need the windowing event loop and go
+/// through `wait_for_chooser` instead; the task worker and the hosted `Files`
+/// functions share everything else.
 fn run_request(request: Request, cancel: &AtomicBool, id: u64) -> Result<String, FileError> {
         match request {
             Request::ReadText(path) => {
@@ -468,7 +572,7 @@ fn run_request(request: Request, cancel: &AtomicBool, id: u64) -> Result<String,
                 assets::verify(&entries, cancel).map(assets_packet)
             }
             Request::ChooseFile | Request::ChooseDirectory | Request::ChooseSavePath { .. } => Err(FileError::Unavailable(
-            "file choosers need a task; they cannot run synchronously".into(),
+            "file choosers wait on the UI thread; see wait_for_chooser".into(),
         )),
         }
 }
@@ -495,6 +599,7 @@ pub unsafe extern "C" fn signals_files_run(
     let request_bytes = unsafe { std::slice::from_raw_parts(request_ptr, request_len) };
     let result = match std::str::from_utf8(request_bytes) {
         Ok(text) => match Request::decode(kind, text) {
+            Ok(request) if request.is_chooser() => wait_for_chooser(request),
             Ok(request) => run_request(request, &AtomicBool::new(false), next_sync_request_id()),
             Err(reason) => Err(FileError::InvalidPath(format!("malformed Files request: {reason}"))),
         },

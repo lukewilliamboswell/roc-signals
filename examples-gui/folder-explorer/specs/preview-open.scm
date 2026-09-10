@@ -1,8 +1,8 @@
 (test "Preview and associated launch report typed results without losing content"
   (steps
-    (click (role button :name "Choose folder"))
+    (stub-file-choice "folder-choice" (chosen "/tmp/project"))
     (stub-file-directory "folder-list" :path "/tmp/project" :entries ((file "/tmp/project/note.txt" 70000) (symbolic-link "/tmp/project/link" 4)))
-    (resolve-file-choice "folder-choice" (chosen "/tmp/project"))
+    (click (role button :name "Choose folder"))
     (click (role button :name "/tmp/project/note.txt"))
     (stub-file-preview "file-preview" :path "/tmp/project/note.txt" :text "First line\nλ" :truncated true)
     (click (role button :name "Preview text"))

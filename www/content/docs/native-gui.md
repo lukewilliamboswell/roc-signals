@@ -204,7 +204,7 @@ Use `Elem.dialog({ label, on_dismiss, ... }, children)` inside `Ui.when` so
 mounting and disposal explicitly own the modal lifetime. `label` supplies the
 semantic dialog name; `on_dismiss` is a normal unit message bound to Escape.
 Closing the dialog is the application's state transition, never hidden host
-state. Native file choosers are separate `Files` tasks.
+state. Native file choosers are `Files` functions called from an effect.
 
 The host focuses the first enabled button, checkbox, or text control when a
 dialog opens. Tab and Shift-Tab wrap through its current child order. Buttons
@@ -273,18 +273,19 @@ job and rejects any stale callback. Native transactions reserve at most 256 live
 or newly declared timers. Activity Monitor uses a 500 ms interval whose scope is
 present only while replay is running or a followed log is waiting for more data.
 
-`pf.Files` provides UTF-8 reads, atomic text writes, recursive scans,
-direct-child directory listings, bounded previews, incremental log reads,
-associated-application launches, and asset verification as effectful functions
-(`Files.read_text!`, `Files.write_text!`, ...) that return `Try(value, Error)`.
-Call them from an action's effect. Native file and directory choosers are the
-exception: they need the window's event loop, so each is a scope-owned task
-started by an action (`Files.choose_file(task)`), observed with
-`Signal.from_task`, and canceled with `Files.cancel(task)`. See the
-[Files reference](@/docs/reference.md#native-files) for signatures, errors, and
-bounds. A dismissed chooser returns `Choice.Canceled`; explicit cancellation
-returns `Error.Canceled`. Keep the submitted write snapshot separate from the
-editable draft so a completed save cannot incorrectly mark later edits as saved.
+`pf.Files` provides native file, directory, and save-path choosers, UTF-8
+reads, atomic text writes, recursive scans, direct-child directory listings,
+bounded previews, incremental log reads, associated-application launches, and
+asset verification as effectful functions (`Files.choose_file!`,
+`Files.read_text!`, `Files.write_text!`, ...) that return `Try(value, Error)`.
+Call them from an action's effect. A chooser shows its dialog on the UI thread
+and blocks the effect until the user answers, so the code after the call can
+use the choice directly; the window keeps rendering meanwhile, and other
+effects wait in the queue until the dialog closes. A dismissed chooser returns
+`Choice.Canceled`. See the [Files reference](@/docs/reference.md#native-files)
+for signatures, errors, and bounds. Keep the submitted write snapshot separate
+from the editable draft so a completed save cannot incorrectly mark later
+edits as saved.
 
 ## Actions
 

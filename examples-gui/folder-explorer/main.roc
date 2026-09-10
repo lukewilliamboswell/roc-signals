@@ -50,8 +50,6 @@ asset_problem_text = |report| {
 	}
 }
 
-Tasks : { chooser : Signal.Task(Files.Choice, Files.Error) }
-
 ## Filtering and ordering run only when their projected inputs change. Selection
 ## remains independent of this explicit operation over the current directory.
 visible_entries : Rows.Rows(Explorer.Entry), Str, Explorer.Sort -> Rows.Rows(Explorer.Entry)
@@ -238,40 +236,26 @@ inspect_view = |handles| {
 	)
 }
 
-cancel : Tasks, Session.Phase -> Action(a)
-cancel = |tasks, phase| match phase {
-	Choosing => Files.cancel(tasks.chooser)
-	_ => Action.none
-}
-
-## The chooser stays a scope-owned task because it needs the window's event
-## loop; every other phase runs one synchronous `Files` call in an effect
-## against the phase as it is after the change committed.
-workflow : Handles, Tasks -> List(Elem)
-workflow = |handles, tasks| [
+## Every phase but Idle runs one `Files` call in an effect against the phase
+## as it is after the change committed; the folder chooser blocks that effect
+## until the user answers.
+workflow : Handles -> List(Elem)
+workflow = |handles| [
 	Action.on_mount(|| Action.then([], |_| verify_assets!(handles.asset_problem))),
 	Action.on_change(
 		handles.model.read(|state| state.phase),
 		|phase| match phase {
 			Idle => Action.none
-			Choosing => Files.choose_directory(tasks.chooser)
 			_ => Action.then([], |current| advance!(handles.model, current))
-		},
-	),
-	Action.on_change(
-		Signal.from_task(tasks.chooser),
-		|status| match status {
-			Signal.TaskStatus.Loading => Action.none
-			Signal.TaskStatus.Done(result) => Action.update([handles.model.write(|state| Session.chosen(state, result))])
-			Signal.TaskStatus.Failed(error) => Action.update([handles.model.write(|state| Session.failed(state, error))])
 		},
 	),
 ]
 
-## Runs the file operation the current phase asks for; a phase that moved on
-## runs nothing.
+## Runs the chooser or file operation the current phase asks for; a phase
+## that moved on runs nothing.
 advance! : Ui.State(Session.State), Session.Phase => Action(Session.Phase)
 advance! = |model, phase| match phase {
+	Choosing => settle(model, Files.choose_directory!(), Session.chosen)
 	Listing(visit) => settle(model, Files.list_directory!(Session.path(visit.destination)), Session.loaded)
 	Previewing(path) => settle(model, Files.read_preview!(path), Session.previewed)
 	Opening(path) => settle(model, Files.open_path!(path), Session.opened)
@@ -292,7 +276,6 @@ verify_assets! = |asset_problem| match Files.verify_assets!(asset_entries) {
 
 explorer_view : Handles -> Elem
 explorer_view = |handles| {
-	tasks = { chooser: Files.choose_directory_task("folder-choice") }
 	model = handles.model.signal()
 	dataset = model.map(|state| state.rows)
 	source = model.map(|state| state.source)
@@ -312,7 +295,6 @@ explorer_view = |handles| {
 	back_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.backward)]))
 	forward_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.forward)]))
 	up_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.up)]))
-	cancel_action = Action.run(phase, |value| cancel(tasks, value))
 	crumbs = source.map(|location| Rows.from_list(Session.breadcrumbs(location), |crumb| crumb.path) ?? crash "Breadcrumb paths must be unique")
 	Elem.col(
 		{
@@ -322,9 +304,9 @@ explorer_view = |handles| {
 			width: Fill,
 			height: Fill,
 			overflow_y: Clip,
-			shortcuts: [{ chord: { key: "o", control: True, shift: False, alt: False, meta: False }, msg: choose_action }, { chord: { key: "F5", control: False, shift: False, alt: False, meta: False }, msg: refresh_action }, { chord: { key: "Escape", control: False, shift: False, alt: False, meta: False }, msg: cancel_action }, { chord: { key: "ArrowLeft", control: False, shift: False, alt: True, meta: False }, msg: back_action }, { chord: { key: "ArrowRight", control: False, shift: False, alt: True, meta: False }, msg: forward_action }, { chord: { key: "ArrowUp", control: False, shift: False, alt: True, meta: False }, msg: up_action }],
+			shortcuts: [{ chord: { key: "o", control: True, shift: False, alt: False, meta: False }, msg: choose_action }, { chord: { key: "F5", control: False, shift: False, alt: False, meta: False }, msg: refresh_action }, { chord: { key: "ArrowLeft", control: False, shift: False, alt: True, meta: False }, msg: back_action }, { chord: { key: "ArrowRight", control: False, shift: False, alt: True, meta: False }, msg: forward_action }, { chord: { key: "ArrowUp", control: False, shift: False, alt: True, meta: False }, msg: up_action }],
 		},
-		workflow(handles, tasks).concat([
+		workflow(handles).concat([
 			Elem.heading("Folder Explorer"),
 			Elem.col(
 				{ fg: Rgb(0xA9BFCC) },
@@ -356,13 +338,8 @@ explorer_view = |handles| {
 						active_bg: Rgb(0x265D89),
 					}, choose_action),
 					Elem.action_button({ caption: Signal.const("Use sample"), enabled: ready }, Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.load_sample)]))),
-					# Cancel and Retry are rare-phase controls: they render only in
-					# the phases where they apply instead of resting disabled.
-					Ui.when(
-						ready.map(|value| !value),
-						|| Elem.action_button({ caption: Signal.const("Cancel"), enabled: ready.map(|value| !value) }, cancel_action),
-						|| Elem.text(""),
-					),
+					# Retry is a rare-phase control: it renders only in the phase
+					# where it applies instead of resting disabled.
 					Ui.when(
 						model.map(|state| state.phase == Idle and state.retry != NoRetry),
 						|| Elem.action_button({
