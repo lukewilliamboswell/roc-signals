@@ -16,30 +16,31 @@ files have explicit sample previews and cannot launch nonexistent local files.
 Symbolic links and special files remain visible as metadata, without traversal.
 
 The accepted folder, results, selection, preview, and navigation history remain
-visible throughout loading, cancellation, or failure. A successful directory
-result commits the destination and history together. **Retry** repeats the exact
-failed destination or file operation. Late canceled results cannot replace a
-newer request. A refresh updates selected metadata and clears an older preview.
+visible throughout a chooser, its cancellation, or a failure. A successful
+directory result commits the destination and history together. **Retry** repeats
+the exact failed choice, destination, or file operation. A late result from a
+canceled chooser cannot replace a newer request. A refresh updates selected metadata and clears an older preview.
 
 Keyboard controls are Ctrl+O to choose a folder, Alt+Left/Right for history,
-Alt+Up for the parent, F5 to refresh, and Escape to cancel pending work. Buttons
+Alt+Up for the parent, F5 to refresh, and Escape to dismiss the chooser. Buttons
 also work through ordinary Tab and Enter/Space navigation. The result list uses
 64-pixel virtual rows and stable full-path keys; visible labels use file names.
 
-Directory observations use the public `Files.list_directory` task and its
+Directory observations use `Files.list_directory!` and its
 10,000-entry/four-MiB aggregate-path bounds. Concurrent filesystem changes can
-refuse an entire listing. Preview and launch use separate typed `Files` tasks;
-all cancellation and stale-result handling belongs to the shared engine. Launch
-cancellation cannot undo a handoff already accepted by the desktop. The external
-application subsequently resolves its pathname under its own access policy.
+refuse an entire listing. Listing, preview, and launch each run as one
+synchronous `Files` call inside an action's effect; only the folder chooser is a
+cancellable task, and its stale-result handling belongs to the shared engine.
+The external application resolves a launched pathname under its own access
+policy.
 
 Filtering, ordering, and complete directory replacements are explicit operations
 over the current dataset. Projected row/query/order signals keep selection-only
 updates independent. The pure `Session` module owns accepted navigation,
 64-location history bounds, pending work, retry, and preview state. The native
-semantic specs use typed file-result fixtures and cover direct-child browsing,
-breadcrumbs, keyboard history, refresh, failure/cancel/retry, preview contents,
-associated launch outcomes, and stale result refusal.
+semantic specs use typed file-result stubs and cover direct-child browsing,
+breadcrumbs, keyboard history, refresh, failure/retry, chooser cancellation,
+preview contents, associated launch outcomes, and stale chooser result refusal.
 
 Folder and file rows carry small generated glyph PNGs from `assets/` —
 regenerate them and `assets/manifest.json` (real SHA-256 hashes) with

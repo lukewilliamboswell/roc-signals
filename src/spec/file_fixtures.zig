@@ -15,7 +15,32 @@ pub const Fixture = struct {
 
 /// Recognizes only the structured file-settlement vocabulary; raw task commands
 /// remain available for deliberate malformed-payload and stale-result tests.
+/// `stub-file-*` forms describe results for the synchronous `Files` primitives
+/// and share the `resolve-file-*` grammar; the leading label is diagnostic and
+/// matching uses the result's path frame.
+pub fn isStub(head: []const u8) bool {
+    return std.mem.startsWith(u8, head, "stub-file-");
+}
+
+/// Maps a stub head onto the task-resolution head whose grammar it shares.
+pub fn resolveHead(head: []const u8) []const u8 {
+    if (isStub(head)) return resolveHeadFor(head);
+    return head;
+}
+
+fn resolveHeadFor(head: []const u8) []const u8 {
+    const names = [_][]const u8{ "choice", "read", "write", "log", "directory", "preview", "open", "assets", "reject" };
+    const resolves = [_][]const u8{ "resolve-file-choice", "resolve-file-read", "resolve-file-write", "resolve-file-log", "resolve-file-directory", "resolve-file-preview", "resolve-file-open", "resolve-file-assets", "reject-file" };
+    for (names, resolves) |name, resolve| {
+        if (std.mem.eql(u8, head["stub-file-".len..], name)) return resolve;
+    }
+    return head;
+}
+
+/// Reports whether `head` is a structured Files fixture form, in either its
+/// task-settling or stub spelling.
 pub fn recognizes(head: []const u8) bool {
+    if (isStub(head)) return recognizes(resolveHead(head));
     return std.mem.eql(u8, head, "resolve-file-choice") or
         std.mem.eql(u8, head, "resolve-file-read") or
         std.mem.eql(u8, head, "resolve-file-write") or
@@ -103,7 +128,8 @@ fn frame(writer: *std.Io.Writer, value: []const u8) ParseError!void {
 
 /// Parses and encodes a complete fixture before transferring its two owned
 /// strings to the spec command. Failure releases every provisional allocation.
-pub fn parse(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr) ParseError!Fixture {
+pub fn parse(allocator: std.mem.Allocator, raw_head: []const u8, args: []const sexpr.Expr) ParseError!Fixture {
+    const head = resolveHead(raw_head);
     if (args.len < 2) return error.InvalidFormat;
     const task = try string(args[0]);
     if (task.len == 0 or !validText(task, 4096)) return error.InvalidFormat;

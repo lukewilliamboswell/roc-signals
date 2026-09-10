@@ -77,10 +77,10 @@ Action(a) := [Action(Node.Cmd)].{
 	on_change_initial : Signal(a), (a -> Action(a)) -> Elem
 	on_change_initial = |signal, to_action| Ui.on_change_initial(signal, |value| to_cmd(to_action(value)))
 
-	## Run an action when the owning scope first mounts. There are no reads,
-	## so an effect in the chain receives `{}`.
+	## Run an action when the owning scope first mounts. The reads are the
+	## unit value, so an effect in the chain receives `{}`.
 	on_mount : (() -> Action({})) -> Elem
-	on_mount = |to_action| Ui.on_mount(|| to_cmd(to_action()))
+	on_mount = |to_action| Ui.on_change_initial(Signal.const({}), |_| to_cmd(to_action()))
 
 	## Run an action on every tick of a scoped interval; the reads are the
 	## tick count.

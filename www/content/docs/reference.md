@@ -91,22 +91,29 @@ calling convention so maintained examples can use their pinned release.
 
 ## Native Files
 
-Import `pf.Files` with `platform-gui`. Each task factory takes a diagnostic label;
-construct it once in the owning scope and observe it with `Signal.from_task`.
-Commands start or supersede work for that declared task.
+Import `pf.Files` with `platform-gui`. File operations are effectful
+functions that run inside an action's effect and return `Try(value, Error)`:
 
-| Task factory | Start command | Successful value |
+| Function | Successful value |
+| --- | --- |
+| `read_text!(path)` | `{ path, text }` |
+| `write_text!({ path, text })` | `{ path, bytes }` |
+| `scan!(root)` | `{ root, entries }` |
+| `list_directory!(path)` | `{ path, entries }` |
+| `open_path!(path)` | `{ path }` |
+| `read_preview!(path)` | `{ path, text, truncated }` |
+| `read_log!({ path, position })` | `LogChunk` |
+| `verify_assets!(entries)` | `List(AssetCheck)` |
+
+Choosers need the window's event loop, so each is a task. A task factory takes
+a diagnostic label; construct it once in the owning scope, observe it with
+`Signal.from_task`, and start it with the action its start function returns.
+
+| Task factory | Start action | Successful value |
 | --- | --- | --- |
 | `choose_file_task(label)` | `choose_file(task)` | `Choice` |
 | `choose_directory_task(label)` | `choose_directory(task)` | `Choice` |
 | `choose_save_path_task(label)` | `choose_save_path(task, { directory, suggested_name })` | `Choice` |
-| `read_text_task(label)` | `read_text(task, path)` | `{ path, text }` |
-| `write_text_task(label)` | `write_text(task, { path, text })` | `{ path, bytes }` |
-| `scan_task(label)` | `scan(task, root)` | `{ root, entries }` |
-| `list_directory_task(label)` | `list_directory(task, path)` | `{ path, entries }` |
-| `open_path_task(label)` | `open_path(task, path)` | `{ path }` |
-| `read_preview_task(label)` | `read_preview(task, path)` | `{ path, text, truncated }` |
-| `read_log_task(label)` | `read_log(task, { path, position })` | `LogChunk` |
 
 `Choice` is `[Chosen(Str), Canceled]`. The save chooser's `directory` is
 `Home` or `At(absolute_path)`. `Home` resolves the native user's home directory;
@@ -132,7 +139,7 @@ invalid bytes are errors. Applications assemble partial lines and bound history.
 endpoint; skipped history is not validated. Same-inode truncate-and-regrow between
 observations cannot be distinguished from continuation.
 
-`Signal.cancel(task)` publishes `Failed(Error.Canceled)` and invalidates late
+`Files.cancel(task)` publishes `Failed(Error.Canceled)` and invalidates late
 results. Dismissing a chooser instead produces `Done(Choice.Canceled)`.
 `Files.error_text(error)` formats errors for display. Other errors are
 `NotFound`, `PermissionDenied`, `InvalidUtf8`, `InvalidPath`, `ResourceLimit`,
@@ -141,15 +148,15 @@ at 4,096 UTF-8 bytes and ends with ` [truncated]` when detail was omitted; the e
 case remains unchanged. Save suggestions must be single nonempty file names of
 at most 255 UTF-8 bytes.
 
-The native host retains at most 16 operations, including canceled workers or
-portal dialogs awaiting completion. Saturation returns `ResourceLimit`. Paths
+The native host retains at most 16 operations, including canceled portal
+dialogs awaiting completion. Saturation returns `ResourceLimit`. Paths
 are at most 4,096 bytes; text reads and writes are at most 1 MiB. A scan returns
 one complete metadata result of at most 10,000 entries, 64 levels, and 4 MiB of
 paths including the root. Concurrent filesystem changes can fail a scan. Symlinks
 are reported without traversal. Limits reject the operation
-rather than truncating scan/list results. The preview and incremental-log tasks
+rather than truncating scan/list results. The preview and incremental-log reads
 report their explicit prefix boundaries. Writes replace the destination through a temporary
-sibling and rename; cancellation cannot undo an already committed rename.
+sibling and rename.
 Replacement is atomic, but parent-directory power-loss durability is not
 guaranteed. Failed temporary cleanup returns `Io` and may leave the file behind.
 
@@ -168,7 +175,7 @@ replaces the value. The platform's `roc_run_effect` entry point is the one
 effectful export of the platform.
 
 `Env.var!(name)` is a hosted effectful function returning `Try(Str, [Missing])`;
-it can only be called from inside an effect.
+it and the `Files` functions can only be called from inside an effect.
 
 ## Ui
 
@@ -494,6 +501,7 @@ one case as `(test "name" (steps ...))`. See [Testing](@/docs/testing.md).
 (reject-task "<name>" "<payload>")
 (expect-pending-task "<name>" <count>)
 (expect-canceled-task "<name>" <count>)
+(stub-file-read "<label>" :path "<path>" :text "<text>")
 (tick-interval <period-ms>)
 (tick-interval-if-active <period-ms>)
 (expect-interval <period-ms> <count>)

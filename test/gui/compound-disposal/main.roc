@@ -1,4 +1,5 @@
 app [main] { pf: platform "../../../platform-gui/main.roc" }
+import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
 import pf.Rows
 import pf.Ui
@@ -15,12 +16,12 @@ main = || Ui.state(
 					|confirm| Elem.col(
 						Elem.ColProps.{},
 						[
-							Elem.button("Add", Ui.action(rows.signal(), |current| Ui.update_states([rows.set(Rows.apply(current, [Append(["c"])]) ?? crash "unique"), editing.set(True), confirm.set(True)]))),
+							Elem.button("Add", Action.run(rows.signal(), |current| Action.update([rows.set(Rows.apply(current, [Append(["c"])]) ?? crash "unique"), editing.set(True), confirm.set(True)]))),
 							Elem.button(
 								"Delete",
-								Ui.action(
+								Action.run(
 									rows.signal(),
-									|current| Ui.update_states([
+									|current| Action.update([
 										rows.set(Rows.apply(current, [RemoveKey("c")]) ?? crash "exists"),
 										editing.set(False),
 										confirm.set(False),

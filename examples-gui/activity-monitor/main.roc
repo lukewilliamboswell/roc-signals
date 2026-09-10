@@ -1,5 +1,6 @@
 app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc" }
 
+import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
 import pf.Gui exposing [Px]
 import pf.Signal
@@ -87,7 +88,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 			_ => False
 		},
 	)
-	append = model.update_cmd(|value| { ..value, history: Feed.append(value.history) })
+	append = || Action.update([model.write(|value| { ..value, history: Feed.append(value.history) })])
 	projection = { history, query: query.signal(), errors: errors_only.signal() }.Signal
 	visible = projection.map(|value| Feed.visible(value.history, value.query, value.errors))
 	inspection = { history, selected: selected.signal() }.Signal
@@ -145,9 +146,9 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							hover_bg: Rgb(0x3A80B8),
 							active_bg: Rgb(0x265D89),
 						},
-						Ui.action(
+						Action.run(
 							model.signal(),
-							|value| Ui.update_states([
+							|value| Action.update([
 								model.set({ ..value, session: Session.choose(value.session) }),
 								running.set(False),
 								errors_only.set(False),
@@ -159,9 +160,9 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							caption: Signal.const("Use simulated replay"),
 							enabled: { busy, replay }.Signal.map(|value| !value.busy and !value.replay),
 						},
-						Ui.action(
+						Action.run(
 							history,
-							|current| Ui.update_states([
+							|current| Action.update([
 								model.set({ session: Session.initial, history: Feed.clear(current) }),
 								running.set(False),
 								errors_only.set(False),
@@ -172,7 +173,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 						caption: Signal.const("Retry read"),
 						enabled: session.map(|state| state.phase == Session.Phase.Paused and state.retry != None),
 					}, model.update(|value| { ..value, session: Session.retry_read(value.session) })),
-					Elem.action_button({ caption: Signal.const("Cancel operation"), enabled: busy }, Ui.action(session, |state| Workflow.cancel(model, tasks, state.phase))),
+					Elem.action_button({ caption: Signal.const("Cancel operation"), enabled: busy }, Action.run(session, |state| Workflow.cancel(model, tasks, state.phase))),
 				],
 			),
 			Elem.col({ test_id: "activity-status", font_size: 13, fg: Rgb(0xA9BFCC) }, [Elem.text_s(session.map(|state| state.notice))]),
@@ -194,7 +195,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							},
 							running.update(|active| !active),
 						),
-						Elem.action_button({ caption: Signal.const("Step replay"), enabled: busy.map(|value| !value) }, Ui.action(Signal.const({}), |_| append)),
+						Elem.action_button({ caption: Signal.const("Step replay"), enabled: busy.map(|value| !value) }, Action.run(Signal.const({}), |_| append())),
 						Ui.when(
 							running.signal(),
 							|| Elem.text(""),
@@ -218,10 +219,10 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 									},
 								),
 							},
-							Ui.action(
+							Action.run(
 								session,
 								|state| if state.phase == Session.Phase.Paused {
-									model.update_cmd(|value| { ..value, session: Session.read_next(value.session) })
+									Action.update([model.write(|value| { ..value, session: Session.read_next(value.session) })])
 								} else {
 									Workflow.cancel(model, tasks, state.phase)
 								},
@@ -338,7 +339,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 			),
 			Ui.when(
 				{ running: running.signal(), replay }.Signal.map(|value| value.running and value.replay),
-				|| Ui.on_change(Signal.interval(500), |_| append),
+				|| Action.every(500, |_| append()),
 				|| Elem.text(""),
 			),
 		].concat(Workflow.bindings(model, tasks)),

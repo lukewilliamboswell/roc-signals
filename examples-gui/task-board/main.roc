@@ -5,6 +5,7 @@ import Codec
 import Manifest
 import pf.Files
 import "assets/manifest.json" as manifest_json : Str
+import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
 import pf.Event
 import pf.Gui exposing [Px]
@@ -81,7 +82,7 @@ Close := [KeepEditing, Confirm, Saving, Closing].{
 
 DocumentState : { path : [None, Some(Str)], baseline : [None, Some(BoardSnapshot)], phase : Phase, problem : Str }
 
-Tasks : { open : Signal.Task(Files.Choice, Files.Error), save : Signal.Task(Files.Choice, Files.Error), read : Signal.Task(Files.TextFile, Files.Error), write : Signal.Task(Files.Written, Files.Error), verify : Signal.Task(List(Files.AssetCheck), Files.Error) }
+Tasks : { open : Signal.Task(Files.Choice, Files.Error), save : Signal.Task(Files.Choice, Files.Error) }
 
 Context : { board : BoardSnapshot, history : History, document : DocumentState }
 
@@ -144,11 +145,11 @@ find_task = |snapshot, key|
 ## Pointer drops and explicit controls share the same domain move. The native
 ## host authenticates the drag lifetime; the reducer resolves current task data
 ## by its key and preserves the independently owned detail editor.
-move_task : Handles, Context, Str, Board.Column, Rows.Before -> Gui.Cmd
+move_task : Handles, Context, Str, Board.Column, Rows.Before -> Action(a)
 move_task = |handles, context, key, destination_column, before| {
 	current = context.board
 	match find_task(current, key) {
-		Err(_) => Ui.update_states([])
+		Err(_) => Action.update([])
 		Ok(found) => {
 			source = column_state(handles, found.column)
 			destination = column_state(handles, destination_column)
@@ -157,11 +158,11 @@ move_task = |handles, context, key, destination_column, before| {
 				Key(target) => target == key
 			}
 			if drop_on_self and found.column == destination_column {
-				Ui.update_states([])
+				Action.update([])
 			} else if found.column == destination_column {
 				next = Rows.apply(column_rows(current, found.column), [MoveKeyBefore({ key, before })]) ?? crash "The target card must belong to its column"
 				if next == column_rows(current, found.column) {
-					Signal.noop
+					Action.none
 				} else {
 					remember(handles, context, [source.set(next)])
 				}
@@ -185,7 +186,7 @@ move_task = |handles, context, key, destination_column, before| {
 
 drop_message : Handles, Board.Column, Rows.Before -> Event.Handler
 drop_message = |handles, column, before|
-	Ui.action_detail(handles.context, |current, key| move_task(handles, current, key, column, before))
+	Action.run_detail(handles.context, |current, key| move_task(handles, current, key, column, before))
 
 ## The unfiltered view forwards its Rows generation unchanged, preserving sparse
 ## updates. An active text search explicitly examines that column's tasks.
@@ -260,9 +261,9 @@ task_card = |row, column, handles, selected| {
 								caption: Signal.const("Edit"),
 								test_id: "edit-${key}",
 							},
-							Ui.action(
+							Action.run(
 								row.signal(),
-								|task| Ui.update_states([
+								|task| Action.update([
 									handles.editor.set({ column, task }),
 									handles.editing.set(True),
 									handles.confirm_delete.set(False),
@@ -322,13 +323,13 @@ edit_field = |field, handles, column, label, update, read| {
 		label,
 		handles.editor.read(|editor| read(editor.task)),
 		handles.edit_disabled,
-		Ui.action_str(
+		Action.run_str(
 			reads,
 			|context, text| {
 				current = context.board
 				task = update(current.editor.task, text)
 				if task == current.editor.task {
-					return Signal.noop
+					return Action.none
 				}
 				rows = Rows.apply(column_rows(current, column), [SetKey({ key: task.key, item: task })]) ?? crash "The active editor must name a live task"
 				remember(handles, context, [owner.set(rows), handles.editor.set({ column, task }), handles.bytes.set(current.bytes - task_bytes(current.editor.task) + task_bytes(task))])
@@ -348,13 +349,13 @@ priority_button = |handles, column, priority_key, priority| {
 			label: "${priority.to_str()} priority",
 			selected: Signal.select(priority_key, priority.to_str()),
 		},
-		Ui.action(
+		Action.run(
 			reads,
 			|context| {
 				current = context.board
 				task = { ..current.editor.task, priority }
 				if task == current.editor.task {
-					return Signal.noop
+					return Action.none
 				}
 				rows = Rows.apply(column_rows(current, column), [SetKey({ key: task.key, item: task })]) ?? crash "The active editor must name a live task"
 				remember(handles, context, [owner.set(rows), handles.editor.set({ column, task })])
@@ -365,7 +366,7 @@ priority_button = |handles, column, priority_key, priority| {
 
 move_button : Handles, Board.Column -> Elem
 move_button = |handles, to|
-	Elem.action_button({ caption: Signal.const("Move to ${to.to_str()}"), enabled: handles.editable }, Ui.action(handles.context, |current| move_task(handles, current, current.board.editor.task.key, to, End)))
+	Elem.action_button({ caption: Signal.const("Move to ${to.to_str()}"), enabled: handles.editable }, Action.run(handles.context, |current| move_task(handles, current, current.board.editor.task.key, to, End)))
 
 reorder_buttons : Handles, Board.Column -> Elem
 reorder_buttons = |handles, column|
@@ -377,7 +378,7 @@ reorder_buttons = |handles, column|
 					caption: Signal.const("Move to top"),
 					enabled: handles.editable,
 				},
-				Ui.action(
+				Action.run(
 					handles.context,
 					|context| {
 						current = context.board
@@ -386,7 +387,7 @@ reorder_buttons = |handles, column|
 					},
 				),
 			),
-			Elem.action_button({ caption: Signal.const("Move to bottom"), enabled: handles.editable }, Ui.action(handles.context, |current| move_task(handles, current, current.board.editor.task.key, column, End))),
+			Elem.action_button({ caption: Signal.const("Move to bottom"), enabled: handles.editable }, Action.run(handles.context, |current| move_task(handles, current, current.board.editor.task.key, column, End))),
 		],
 	)
 
@@ -410,7 +411,7 @@ delete_confirmation = |handles, column| {
 						Elem.button("Cancel deletion", handles.confirm_delete.update(|_| False)),
 						Elem.button(
 							"Confirm delete",
-							Ui.action(
+							Action.run(
 								reads,
 								|context| {
 									current = context.board
@@ -510,17 +511,17 @@ new_task_form = |handles| {
 					caption: Signal.const("Add task"),
 					enabled: Signal.map2(handles.draft.signal(), handles.editable, |title, editable| editable and !title.trim().is_empty()),
 				},
-				Ui.action(
+				Action.run(
 					reads,
 					|current| {
 						if current.title.trim().is_empty() {
-							return Signal.noop
+							return Action.none
 						}
 						if total_tasks(current.context.board) >= 500 {
-							return handles.document.set_cmd({ ..current.context.document, problem: "This board already has 500 tasks. Delete a task before adding another; your new task draft is retained." })
+							return Action.update([handles.document.set({ ..current.context.document, problem: "This board already has 500 tasks. Delete a task before adding another; your new task draft is retained." })])
 						}
 						if current.next_id == 18446744073709551615 {
-							return handles.document.set_cmd({ ..current.context.document, problem: "This board has exhausted its task identities. Existing tasks can still be edited and saved." })
+							return Action.update([handles.document.set({ ..current.context.document, problem: "This board has exhausted its task identities. Existing tasks can still be edited and saved." })])
 						}
 						task = Board.new_task(current.next_id, current.title)
 						rows = Rows.apply(current.context.board.planned, [Append([task])]) ?? crash "The next task ID must be unique"
@@ -559,15 +560,15 @@ board_view = |handles| {
 	)
 	Elem.window_lifecycle(
 		{
-			on_close_requested: Ui.action(
+			on_close_requested: Action.run(
 				handles.context,
-				|context| handles.close.set_cmd(
+				|context| Action.update([handles.close.set(
 					if dirty(context) or context.document.phase != Phase.Idle {
 						Close.Confirm
 					} else {
 						Close.Closing
 					},
-				),
+				)]),
 			),
 			decision: handles.close.read(
 				|intent| match intent {
@@ -664,7 +665,7 @@ main = || Ui.state(
 																						{ path: None, baseline: None, phase: Phase.Idle, problem: "" },
 																						|document| {
 																							context = { board: movement, history: history.signal(), document: document.signal() }.Signal
-																							tasks = { open: Files.choose_file_task("board-open"), save: Files.choose_save_path_task("board-save-path"), read: Files.read_text_task("board-read"), write: Files.write_text_task("board-write"), verify: Files.verify_assets_task("asset-verify") }
+																							tasks = { open: Files.choose_file_task("board-open"), save: Files.choose_save_path_task("board-save-path") }
 																							Ui.state(
 																								Close.KeepEditing,
 																								|close| Ui.state(
@@ -726,11 +727,11 @@ trim_history = |items| {
 	$kept
 }
 
-remember : Handles, Context, List(Ui.StateWrite) -> Gui.Cmd
+remember : Handles, Context, List(Ui.StateWrite) -> Action(a)
 remember = |handles, context, writes| if can_edit(context.document.phase) {
-	Ui.update_states(writes.append(handles.history.set({ past: trim_history([context.board].concat(context.history.past)), future: [] })))
+	Action.update(writes.append(handles.history.set({ past: trim_history([context.board].concat(context.history.past)), future: [] })))
 } else {
-	Signal.noop
+	Action.none
 }
 
 history_button : Handles, Bool -> Elem
@@ -759,11 +760,11 @@ history_button = |handles, redo| Elem.action_button(
 )
 
 history_message : Handles, Bool -> Event.Handler
-history_message = |handles, redo| Ui.action(
+history_message = |handles, redo| Action.run(
 	handles.context,
 	|context| {
 		if !can_edit(context.document.phase) {
-			return Signal.noop
+			return Action.none
 		}
 		stack = if redo {
 			context.history.future
@@ -771,14 +772,14 @@ history_message = |handles, redo| Ui.action(
 			context.history.past
 		}
 		match stack.first() {
-			Err(_) => Signal.noop
+			Err(_) => Action.none
 			Ok(previous) => {
 				history = if redo {
 					{ past: trim_history([context.board].concat(context.history.past)), future: stack.drop_first(1) }
 				} else {
 					{ past: stack.drop_first(1), future: trim_history([context.board].concat(context.history.future)) }
 				}
-				Ui.update_states([
+				Action.update([
 					handles.planned.set(previous.planned),
 					handles.progress.set(previous.progress),
 					handles.complete.set(previous.complete),
@@ -915,8 +916,8 @@ document_toolbar = |handles, actions| {
 	)
 }
 
-failed_file : Handles, Files.Error -> Gui.Cmd
-failed_file = |handles, error| handles.document.update_cmd(
+failed_file : Handles, Files.Error -> Action(a)
+failed_file = |handles, error| Action.update([handles.document.write(
 	|doc| {
 		..doc,
 		phase: Phase.Idle,
@@ -925,14 +926,14 @@ failed_file = |handles, error| handles.document.update_cmd(
 			_ => Files.error_text(error)
 		},
 	},
-)
+)])
 
-choice_result : Handles, Signal.TaskStatus(Files.Choice, Files.Error) -> Gui.Cmd
+choice_result : Handles, Signal.TaskStatus(Files.Choice, Files.Error) -> Action(a)
 choice_result = |handles, status| match status {
-	Signal.TaskStatus.Loading => Signal.noop
+	Signal.TaskStatus.Loading => Action.none
 	Signal.TaskStatus.Failed(error) => failed_file(handles, error)
 	Signal.TaskStatus.Done(Files.Choice.Canceled) => failed_file(handles, Files.Error.Canceled)
-	Signal.TaskStatus.Done(Files.Choice.Chosen(path)) => handles.document.update_cmd(
+	Signal.TaskStatus.Done(Files.Choice.Chosen(path)) => Action.update([handles.document.write(
 		|doc| {
 			..doc,
 			phase: match doc.phase {
@@ -941,12 +942,12 @@ choice_result = |handles, status| match status {
 				_ => doc.phase
 			},
 		},
-	)
+	)])
 }
 
-load_document : Handles, Files.TextFile -> Gui.Cmd
+load_document : Handles, Files.TextFile -> Action(a)
 load_document = |handles, file| match Codec.decode(file.text) {
-	Err(Codec.Error.Invalid(problem)) => handles.document.update_cmd(|doc| { ..doc, phase: Phase.Idle, problem })
+	Err(Codec.Error.Invalid(problem)) => Action.update([handles.document.write(|doc| { ..doc, phase: Phase.Idle, problem })])
 	Ok(decoded) => {
 		planned = Rows.from_list(decoded.planned, |task| task.key) ?? crash "Validated board keys must be unique"
 		progress = Rows.from_list(decoded.progress, |task| task.key) ?? crash "Validated board keys must be unique"
@@ -964,7 +965,7 @@ load_document = |handles, file| match Codec.decode(file.text) {
 		bytes = decoded.planned.concat(decoded.progress).concat(decoded.complete).fold(0.U64, |sum, task| sum + task_bytes(task))
 		editing = Rows.len(planned) + Rows.len(progress) + Rows.len(complete) > 0
 		snapshot = { planned, progress, complete, editor, editing, bytes }
-		Ui.update_states([
+		Action.update([
 			handles.planned.set(planned),
 			handles.progress.set(progress),
 			handles.complete.set(complete),
@@ -981,51 +982,51 @@ load_document = |handles, file| match Codec.decode(file.text) {
 	}
 }
 
+## The choosers stay scope-owned tasks because they need the window's event
+## loop. Reading, writing, and asset verification run as one synchronous
+## `Files` call inside an effect, against the phase as it is after the change
+## committed.
 document_bindings : Handles -> List(Elem)
 document_bindings = |handles| [
-	Ui.on_mount(|| Files.verify_assets(handles.tasks.verify, asset_entries)),
-	Ui.on_change(
-		Signal.from_task(handles.tasks.verify),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Failed(error) => handles.asset_problem.set_cmd("Asset verification failed: ${Files.error_text(error)}")
-			Signal.TaskStatus.Done(report) => handles.asset_problem.set_cmd(asset_problem_text(report))
-		},
-	),
-	Ui.on_change(
+	Action.on_mount(|| Action.then([], |_| verify_assets!(handles))),
+	Action.on_change(
 		handles.document.read(|doc| doc.phase),
 		|phase| match phase {
 			Phase.ChoosingOpen => Files.choose_file(handles.tasks.open)
-			Phase.Reading(path) => Files.read_text(handles.tasks.read, path)
 			Phase.ChoosingSave(_) => Files.choose_save_path(handles.tasks.save, { directory: Home, suggested_name: "My project.board.json" })
-			Phase.Writing(write) => Files.write_text(handles.tasks.write, { path: write.path, text: write.save.text })
-			_ => Signal.noop
+			Phase.Reading(_) | Phase.Writing(_) => Action.then([], |current| transfer!(handles, current))
+			_ => Action.none
 		},
 	),
-	Ui.on_change(Signal.from_task(handles.tasks.open), |status| choice_result(handles, status)),
-	Ui.on_change(Signal.from_task(handles.tasks.save), |status| choice_result(handles, status)),
-	Ui.on_change(
-		Signal.from_task(handles.tasks.read),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Failed(error) => failed_file(handles, error)
-			Signal.TaskStatus.Done(file) => load_document(handles, file)
-		},
-	),
-	Ui.on_change(
-		Signal.from_task(handles.tasks.write),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Failed(error) => failed_file(handles, error)
-			Signal.TaskStatus.Done(result) => handles.document.update_cmd(
-				|doc| match doc.phase {
-					Phase.Writing(write) if write.path == result.path => { ..doc, path: Some(result.path), baseline: Some(write.save.snapshot), phase: Phase.Idle, problem: "" }
-					_ => doc
-				},
-			)
-		},
-	),
+	Action.on_change(Signal.from_task(handles.tasks.open), |status| choice_result(handles, status)),
+	Action.on_change(Signal.from_task(handles.tasks.save), |status| choice_result(handles, status)),
 ]
+
+## Runs the read or write the current phase asks for; a phase that moved on
+## runs nothing.
+transfer! : Handles, Phase => Action(Phase)
+transfer! = |handles, phase| match phase {
+	Phase.Reading(path) => match Files.read_text!(path) {
+		Ok(file) => load_document(handles, file)
+		Err(error) => failed_file(handles, error)
+	}
+	Phase.Writing(write) => match Files.write_text!({ path: write.path, text: write.save.text }) {
+		Ok(result) => Action.update([handles.document.write(
+			|doc| match doc.phase {
+				Phase.Writing(pending) if pending.path == result.path => { ..doc, path: Some(result.path), baseline: Some(pending.save.snapshot), phase: Phase.Idle, problem: "" }
+				_ => doc
+			},
+		)])
+		Err(error) => failed_file(handles, error)
+	}
+	_ => Action.none
+}
+
+verify_assets! : Handles => Action({})
+verify_assets! = |handles| match Files.verify_assets!(asset_entries) {
+	Ok(report) => Action.update([handles.asset_problem.set(asset_problem_text(report))])
+	Err(error) => Action.update([handles.asset_problem.set("Asset verification failed: ${Files.error_text(error)}")])
+}
 
 ## Evict the oldest opposite-direction entries when a large current draft enters
 ## history. The live edit always succeeds; an oversized snapshot has no undo entry.
@@ -1079,17 +1080,17 @@ expect {
 }
 
 ## Save and Save-and-close share exact immutable snapshot ownership.
-save_document : Handles, Context, U64, { save_as : Bool, close_after : Bool } -> Gui.Cmd
+save_document : Handles, Context, U64, { save_as : Bool, close_after : Bool } -> Action(a)
 save_document = |handles, context, next, options| {
 	if context.document.phase != Phase.Idle {
-		return Signal.noop
+		return Action.none
 	}
 	text = Codec.encode({ next, planned: Rows.to_list(context.board.planned), progress: Rows.to_list(context.board.progress), complete: Rows.to_list(context.board.complete) })
 	if text.to_utf8().len() > 1048576 {
-		return handles.document.set_cmd({ ..context.document, problem: "The encoded board exceeds one MiB. Shorten task notes before saving." })
+		return Action.update([handles.document.set({ ..context.document, problem: "The encoded board exceeds one MiB. Shorten task notes before saving." })])
 	}
 	match Codec.decode(text) {
-		Err(Codec.Error.Invalid(problem)) => return handles.document.set_cmd({ ..context.document, problem: "Cannot save: ${problem}. Your draft is retained." })
+		Err(Codec.Error.Invalid(problem)) => return Action.update([handles.document.set({ ..context.document, problem: "Cannot save: ${problem}. Your draft is retained." })])
 		Ok(_) => {}
 	}
 	save = { text, snapshot: context.board }
@@ -1098,7 +1099,7 @@ save_document = |handles, context, next, options| {
 		_ => Phase.ChoosingSave(save)
 	}
 	writes = [handles.document.set({ ..context.document, phase, problem: "" })]
-	Ui.update_states(
+	Action.update(
 		if options.close_after {
 			writes.append(handles.close.set(Close.Saving))
 		} else {
@@ -1130,7 +1131,7 @@ close_dialog = |handles| {
 						Elem.action_button({
 							caption: Signal.const("Save and close"),
 							enabled: handles.document.read(|doc| doc.phase == Phase.Idle),
-						}, Ui.action({ context: handles.context, next: handles.next_id.signal() }.Signal, |{ context, next }| save_document(handles, context, next, { save_as: False, close_after: True }))),
+						}, Action.run({ context: handles.context, next: handles.next_id.signal() }.Signal, |{ context, next }| save_document(handles, context, next, { save_as: False, close_after: True }))),
 					],
 				),
 			],
@@ -1147,18 +1148,18 @@ close_dialog = |handles| {
 					Elem.heading("Saving your board…"),
 					"The window stays open until the submitted board is saved.",
 					Elem.button("Keep window open", keep),
-					Ui.on_change(
+					Action.on_change(
 						handles.context,
 						|context| if context.document.phase == Phase.Idle {
-							handles.close.set_cmd(
+							Action.update([handles.close.set(
 								if dirty(context) {
 									Close.Confirm
 								} else {
 									Close.Closing
 								},
-							)
+							)])
 						} else {
-							Signal.noop
+							Action.none
 						},
 					),
 				],
@@ -1171,13 +1172,13 @@ close_dialog = |handles| {
 document_actions : Handles -> DocumentActions
 document_actions = |handles| {
 	save_reads = { context: handles.context, next: handles.next_id.signal() }.Signal
-	save_message = |save_as| Ui.action(save_reads, |{ context, next }| save_document(handles, context, next, { save_as, close_after: False }))
-	open = Ui.action(
+	save_message = |save_as| Action.run(save_reads, |{ context, next }| save_document(handles, context, next, { save_as, close_after: False }))
+	open = Action.run(
 		handles.context,
 		|context| if context.document.phase != Phase.Idle {
-			Signal.noop
+			Action.none
 		} else {
-			handles.document.set_cmd({
+			Action.update([handles.document.set({
 				..context.document,
 				phase: if dirty(context) {
 					Phase.ConfirmOpen
@@ -1185,17 +1186,16 @@ document_actions = |handles| {
 					Phase.ChoosingOpen
 				},
 				problem: "",
-			})
+			})])
 		},
 	)
-	cancel = Ui.action(
+	cancel = Action.run(
 		handles.document.signal(),
 		|doc| match doc.phase {
-			Phase.ChoosingOpen => Signal.cancel(handles.tasks.open)
-			Phase.ChoosingSave(_) => Signal.cancel(handles.tasks.save)
-			Phase.Reading(_) => Signal.cancel(handles.tasks.read)
-			Phase.Writing(_) => Signal.cancel(handles.tasks.write)
-			_ => handles.document.set_cmd({ ..doc, phase: Phase.Idle })
+			Phase.ChoosingOpen => Files.cancel(handles.tasks.open)
+			Phase.ChoosingSave(_) => Files.cancel(handles.tasks.save)
+			Phase.Reading(_) | Phase.Writing(_) => Action.none
+			_ => Action.update([handles.document.set({ ..doc, phase: Phase.Idle })])
 		},
 	)
 	{ open, save: save_message(False), save_as: save_message(True), cancel }

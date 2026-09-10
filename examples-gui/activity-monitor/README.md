@@ -3,8 +3,8 @@
 Follow a UTF-8 plain-text log on this computer, or use the explicitly labeled
 simulated replay to explore the interface without a file. Open log starts at
 the beginning and drains existing data in sequential 64 KiB reads. Once caught
-up, a scoped 500 ms timer polls for appended bytes. There is at most one read
-in flight; pausing cancels that work and disposes the polling timer.
+up, a scoped 500 ms timer polls for appended bytes. Each read runs as one
+synchronous call inside an effect; pausing disposes the polling timer.
 
 Each newline-delimited record gets a monotonic sequence identity. Plain text
 uses the `TEXT` label, without guessing severity from message contents; the
@@ -46,6 +46,6 @@ directly, so the repository carries exactly one copy of the font.
 
 Run `scripts/test.py gui` with the pinned Roc compiler, as described in the
 contributor guide. The semantic journeys exercise replay, chunk assembly,
-sequential reads, cancellation and stale results, error retry, rotation and
-truncation. They simulate Files results; focused native file tests exercise
+sequential reads, chooser cancellation, error retry, rotation and
+truncation. They stub Files results; focused native file tests exercise
 actual IO and the GPUI adapter tests exercise native interaction.

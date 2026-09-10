@@ -165,8 +165,8 @@ choose the root; the default is `assets/` beside the executable. Absolute
 paths, `..` traversal, URIs, and symbolic links never resolve, and a missing or
 undecodable image shows a neutral placeholder box instead of nothing.
 Ship an `assets/manifest.json` next to `main.roc`, ingest it at compile time,
-and start `Files.verify_assets` at mount to report each asset as ok, missing,
-or altered; the task-board and folder-explorer examples show the pattern.
+and call `Files.verify_assets!` from a mount effect to report each asset as ok,
+missing, or altered; the task-board and folder-explorer examples show the pattern.
 
 Use the `test_id` field for stable spec locators and `label` for semantic
 names; on an `action_button`, `label` replaces the live `caption` as the name.
@@ -273,12 +273,16 @@ job and rejects any stale callback. Native transactions reserve at most 256 live
 or newly declared timers. Activity Monitor uses a 500 ms interval whose scope is
 present only while replay is running or a followed log is waiting for more data.
 
-`pf.Files` provides native file/directory choosers, UTF-8 reads, atomic text
-writes, recursive scans, direct-child directory listings, bounded previews,
-incremental log reads, and associated-application launches as typed tasks. Use `Signal.from_task` to
-observe results and `Signal.cancel` to invalidate pending work. See the
-[task reference](@/docs/reference.md#native-files) for signatures, errors, and
-bounds. A dismissed chooser returns `Choice.Canceled`; explicit task cancellation
+`pf.Files` provides UTF-8 reads, atomic text writes, recursive scans,
+direct-child directory listings, bounded previews, incremental log reads,
+associated-application launches, and asset verification as effectful functions
+(`Files.read_text!`, `Files.write_text!`, ...) that return `Try(value, Error)`.
+Call them from an action's effect. Native file and directory choosers are the
+exception: they need the window's event loop, so each is a scope-owned task
+started by an action (`Files.choose_file(task)`), observed with
+`Signal.from_task`, and canceled with `Files.cancel(task)`. See the
+[Files reference](@/docs/reference.md#native-files) for signatures, errors, and
+bounds. A dismissed chooser returns `Choice.Canceled`; explicit cancellation
 returns `Error.Canceled`. Keep the submitted write snapshot separate from the
 editable draft so a completed save cannot incorrectly mark later edits as saved.
 
@@ -301,7 +305,7 @@ an effect never writes a value captured before the effect ran.
 
 ```roc
 save! : Ui.State(Status), Str => Action(Str)
-save! = |status, text| match Files.write_text!("/tmp/notes.txt", text) {
+save! = |status, text| match Files.write_text!({ path: "/tmp/notes.txt", text }) {
     Ok(_) => Action.update([status.set(Saved)])
     Err(err) => Action.update([status.set(Failed(Files.error_text(err)))])
 }

@@ -1,5 +1,6 @@
 app [main] { pf: platform "../../../platform-gui/main.roc" }
 
+import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
 import pf.Signal
 import pf.Ui
@@ -16,7 +17,7 @@ main = || Ui.state(
 				Ui.when(
 					count.read(|value| value < 2),
 					|| {
-						Ui.on_change(Signal.interval(100), |value| count.update_cmd(|_| value))
+						Action.on_change(Signal.interval(100), |value| Action.update([count.write(|_| value)]))
 					},
 					|| Elem.text("Paused after 2 ticks"),
 				),

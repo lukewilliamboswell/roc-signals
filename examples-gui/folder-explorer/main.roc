@@ -5,6 +5,7 @@ import Manifest
 import Session
 import pf.Files
 import "assets/manifest.json" as manifest_json : Str
+import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
 import pf.Gui exposing [Px]
 import pf.Rows
@@ -49,13 +50,7 @@ asset_problem_text = |report| {
 	}
 }
 
-Tasks : {
-	chooser : Signal.Task(Files.Choice, Files.Error),
-	listing : Signal.Task(Files.Directory, Files.Error),
-	preview : Signal.Task(Files.Preview, Files.Error),
-	open : Signal.Task(Files.Opened, Files.Error),
-	verify : Signal.Task(List(Files.AssetCheck), Files.Error),
-}
+Tasks : { chooser : Signal.Task(Files.Choice, Files.Error) }
 
 ## Filtering and ordering run only when their projected inputs change. Selection
 ## remains independent of this explicit operation over the current directory.
@@ -89,7 +84,7 @@ entry_row = |row, handles, selected, ready| {
 					bg: Rgb(0x1B2A33),
 					overflow_x: Clip,
 				},
-				Ui.action(row.signal(), |entry| handles.model.update_cmd(|state| Session.activate(state, entry))),
+				Action.run(row.signal(), |entry| Action.update([handles.model.write(|state| Session.activate(state, entry))])),
 			),
 			Elem.row(
 				{
@@ -186,8 +181,8 @@ inspect_view = |handles| {
 						padding: 8,
 						radius: 6,
 						bg: Rgb(0x2E6FA3),
-					}, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.preview_selected))),
-					Elem.action_button({ caption: Signal.const("Open in app"), enabled: can_open }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.open_selected))),
+					}, Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.preview_selected)]))),
+					Elem.action_button({ caption: Signal.const("Open in app"), enabled: can_open }, Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.open_selected)]))),
 				],
 			),
 			Elem.col(
@@ -243,73 +238,61 @@ inspect_view = |handles| {
 	)
 }
 
-cancel : Tasks, Session.Phase -> Gui.Cmd
+cancel : Tasks, Session.Phase -> Action(a)
 cancel = |tasks, phase| match phase {
-	Choosing => Signal.cancel(tasks.chooser)
-	Listing(_) => Signal.cancel(tasks.listing)
-	Previewing(_) => Signal.cancel(tasks.preview)
-	Opening(_) => Signal.cancel(tasks.open)
-	Idle => Signal.noop
+	Choosing => Files.cancel(tasks.chooser)
+	_ => Action.none
 }
 
+## The chooser stays a scope-owned task because it needs the window's event
+## loop; every other phase runs one synchronous `Files` call in an effect
+## against the phase as it is after the change committed.
 workflow : Handles, Tasks -> List(Elem)
 workflow = |handles, tasks| [
-	Ui.on_mount(|| Files.verify_assets(tasks.verify, asset_entries)),
-	Ui.on_change(
-		Signal.from_task(tasks.verify),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Failed(error) => handles.asset_problem.set_cmd("Asset verification failed: ${Files.error_text(error)}")
-			Signal.TaskStatus.Done(report) => handles.asset_problem.set_cmd(asset_problem_text(report))
-		},
-	),
-	Ui.on_change(
+	Action.on_mount(|| Action.then([], |_| verify_assets!(handles.asset_problem))),
+	Action.on_change(
 		handles.model.read(|state| state.phase),
 		|phase| match phase {
-			Idle => Signal.noop
+			Idle => Action.none
 			Choosing => Files.choose_directory(tasks.chooser)
-			Listing(visit) => Files.list_directory(tasks.listing, Session.path(visit.destination))
-			Previewing(path) => Files.read_preview(tasks.preview, path)
-			Opening(path) => Files.open_path(tasks.open, path)
+			_ => Action.then([], |current| advance!(handles.model, current))
 		},
 	),
-	Ui.on_change(
+	Action.on_change(
 		Signal.from_task(tasks.chooser),
 		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Done(result) => handles.model.update_cmd(|state| Session.chosen(state, result))
-			Signal.TaskStatus.Failed(error) => handles.model.update_cmd(|state| Session.failed(state, error))
-		},
-	),
-	Ui.on_change(
-		Signal.from_task(tasks.listing),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Done(result) => handles.model.update_cmd(|state| Session.loaded(state, result))
-			Signal.TaskStatus.Failed(error) => handles.model.update_cmd(|state| Session.failed(state, error))
-		},
-	),
-	Ui.on_change(
-		Signal.from_task(tasks.preview),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Done(result) => handles.model.update_cmd(|state| Session.previewed(state, result))
-			Signal.TaskStatus.Failed(error) => handles.model.update_cmd(|state| Session.failed(state, error))
-		},
-	),
-	Ui.on_change(
-		Signal.from_task(tasks.open),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Done(result) => handles.model.update_cmd(|state| Session.opened(state, result))
-			Signal.TaskStatus.Failed(error) => handles.model.update_cmd(|state| Session.failed(state, error))
+			Signal.TaskStatus.Loading => Action.none
+			Signal.TaskStatus.Done(result) => Action.update([handles.model.write(|state| Session.chosen(state, result))])
+			Signal.TaskStatus.Failed(error) => Action.update([handles.model.write(|state| Session.failed(state, error))])
 		},
 	),
 ]
 
+## Runs the file operation the current phase asks for; a phase that moved on
+## runs nothing.
+advance! : Ui.State(Session.State), Session.Phase => Action(Session.Phase)
+advance! = |model, phase| match phase {
+	Listing(visit) => settle(model, Files.list_directory!(Session.path(visit.destination)), Session.loaded)
+	Previewing(path) => settle(model, Files.read_preview!(path), Session.previewed)
+	Opening(path) => settle(model, Files.open_path!(path), Session.opened)
+	_ => Action.none
+}
+
+settle : Ui.State(Session.State), Try(a, Files.Error), (Session.State, a -> Session.State) -> Action(reads)
+settle = |model, result, accept| match result {
+	Ok(value) => Action.update([model.write(|state| accept(state, value))])
+	Err(error) => Action.update([model.write(|state| Session.failed(state, error))])
+}
+
+verify_assets! : Ui.State(Str) => Action({})
+verify_assets! = |asset_problem| match Files.verify_assets!(asset_entries) {
+	Ok(report) => Action.update([asset_problem.set(asset_problem_text(report))])
+	Err(error) => Action.update([asset_problem.set("Asset verification failed: ${Files.error_text(error)}")])
+}
+
 explorer_view : Handles -> Elem
 explorer_view = |handles| {
-	tasks = { chooser: Files.choose_directory_task("folder-choice"), listing: Files.list_directory_task("folder-list"), preview: Files.read_preview_task("file-preview"), open: Files.open_path_task("file-open"), verify: Files.verify_assets_task("asset-verify") }
+	tasks = { chooser: Files.choose_directory_task("folder-choice") }
 	model = handles.model.signal()
 	dataset = model.map(|state| state.rows)
 	source = model.map(|state| state.source)
@@ -324,12 +307,12 @@ explorer_view = |handles| {
 		},
 	)
 	total = dataset.map(|entries| Explorer.summary(Rows.to_list(entries)))
-	choose_action = Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.begin_choose))
-	refresh_action = Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.refresh))
-	back_action = Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.backward))
-	forward_action = Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.forward))
-	up_action = Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.up))
-	cancel_action = Ui.action(phase, |value| cancel(tasks, value))
+	choose_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.begin_choose)]))
+	refresh_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.refresh)]))
+	back_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.backward)]))
+	forward_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.forward)]))
+	up_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.up)]))
+	cancel_action = Action.run(phase, |value| cancel(tasks, value))
 	crumbs = source.map(|location| Rows.from_list(Session.breadcrumbs(location), |crumb| crumb.path) ?? crash "Breadcrumb paths must be unique")
 	Elem.col(
 		{
@@ -372,7 +355,7 @@ explorer_view = |handles| {
 						hover_bg: Rgb(0x3A80B8),
 						active_bg: Rgb(0x265D89),
 					}, choose_action),
-					Elem.action_button({ caption: Signal.const("Use sample"), enabled: ready }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.load_sample))),
+					Elem.action_button({ caption: Signal.const("Use sample"), enabled: ready }, Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.load_sample)]))),
 					# Cancel and Retry are rare-phase controls: they render only in
 					# the phases where they apply instead of resting disabled.
 					Ui.when(
@@ -385,7 +368,7 @@ explorer_view = |handles| {
 						|| Elem.action_button({
 							caption: Signal.const("Retry"),
 							enabled: model.map(|state| state.phase == Idle and state.retry != NoRetry),
-						}, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.retry_last))),
+						}, Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.retry_last)]))),
 						|| Elem.text(""),
 					),
 				],
@@ -405,7 +388,7 @@ explorer_view = |handles| {
 									"Go to ${row.key()}"
 								},
 							},
-							Ui.action(row.signal(), |crumb| handles.model.update_cmd(|state| Session.navigate(state, crumb.path))),
+							Action.run(row.signal(), |crumb| Action.update([handles.model.write(|state| Session.navigate(state, crumb.path))])),
 						),
 					),
 				],

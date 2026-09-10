@@ -943,39 +943,51 @@ Supported assertions:
 
 ### Readable native file fixtures
 
-Use structured Files settlements for application workflows so specs do not need
-hand-counted UTF-8 frames or knowledge of the private `files1` payload:
+Use structured Files results for application workflows so specs do not need
+hand-counted UTF-8 frames or knowledge of the private `files1` payload. Chooser
+tasks settle with `resolve-file-choice` once they are pending. The effectful
+`Files` functions run synchronously inside an effect, so their results are
+declared ahead of time with `stub-file-*` forms, either in `setup` for
+mount-time effects or in `steps` before the step that triggers the call:
 
 ```lisp
+(stub-file-read "notes-read" :path "/tmp/meeting.txt" :text "First line\nSecond line: λ")
 (click (role button :name "Open…"))
 (expect-pending-task "notes-open" 1)
 (resolve-file-choice "notes-open" (chosen "/tmp/meeting.txt"))
-(resolve-file-read "notes-read" :path "/tmp/meeting.txt" :text "First line\nSecond line: λ")
 (expect-value (label "Note text") "First line\nSecond line: λ")
 ```
 
-The complete initial vocabulary is:
+Each stub answers one call. A read, write, directory, preview, log, or launch
+stub is consumed by the first call of its kind whose path matches; a
+`stub-file-reject` answers the next `Files` call of any kind; an assets stub
+answers the next verification. A call with no matching stub returns
+`Unavailable` naming the missing stub. The chooser vocabulary is:
 
 ```lisp
 (resolve-file-choice "save-path" (canceled))
 (resolve-file-choice "save-path" (chosen "/tmp/project.board.json"))
-(resolve-file-read "read" :path "/tmp/note.txt" :text "Contents")
-(resolve-file-write "write" :path "/tmp/note.txt" :bytes 8)
-(reject-file "read" :kind permission-denied :detail "/tmp/note.txt")
 ```
 
-Directory browsing, previews, native launch, and incremental logs use the same
-structured vocabulary:
+The stub vocabulary mirrors the native services:
 
 ```lisp
-(resolve-file-directory "folder" :path "/tmp" :entries
+(stub-file-read "read" :path "/tmp/note.txt" :text "Contents")
+(stub-file-write "write" :path "/tmp/note.txt" :bytes 8)
+(stub-file-reject "read" :kind permission-denied :detail "/tmp/note.txt")
+(stub-file-directory "folder" :path "/tmp" :entries
   ((file "/tmp/readme.txt" 123) (directory "/tmp/project" 0)
    (symbolic-link "/tmp/latest" 12) (other "/tmp/socket" 0)))
-(resolve-file-preview "preview" :path "/tmp/readme.txt" :text "First page" :truncated true)
-(resolve-file-open "launch" :path "/tmp/readme.txt")
-(resolve-file-log "tail" :path "/tmp/app.log" :text "Ready\n"
+(stub-file-preview "preview" :path "/tmp/readme.txt" :text "First page" :truncated true)
+(stub-file-open "launch" :path "/tmp/readme.txt")
+(stub-file-log "tail" :path "/tmp/app.log" :text "Ready\n"
   :device 7 :inode 13 :offset 6 :change initial :state at-end)
+(stub-file-assets "verify" :entries ((ok "avatars/maya.png") (missing "avatars/jon.png")))
 ```
+
+The `resolve-file-*` and `reject-file` forms with the same fields settle a
+pending task of that kind, which platform fixtures still use to exercise the
+task machinery directly.
 
 Log changes are `initial`, `continued`, `rotated`, or `truncated`; states are
 `more`, `at-end`, or `partial-utf8`. Cursor numbers and directory file sizes are
@@ -983,8 +995,8 @@ canonical unsigned decimal U64 values, including values above signed I64's
 maximum. Signs, leading zeros, quoted numbers, and overflow are refused. Preview
 and log text are bounded to 64 KiB. Direct directory fixtures accept up to
 10,000 entries and four MiB of combined root/entry path bytes. Directory fixtures
-settle `list_directory` tasks, not recursive scans; preview, log, and launch
-fixtures each require their corresponding declared service.
+answer `list_directory!`, not recursive scans; preview, log, and launch
+fixtures each answer their corresponding service.
 
 Fields may appear in any order; each documented field is required exactly once. Choice tags
 are `chosen` and `canceled`. Error kinds are `canceled`, `not-found`,

@@ -160,10 +160,12 @@ pub fn assertHostValueCapabilitiesMatch(actual: HostValueCapability, expected: H
     if (!hv.hostValueCapabilitiesMatch(actual, expected)) @panic(message);
 }
 
+/// Opens a capability frame so app-compiled code can decode the erased values it names.
 pub fn pushCapabilities(comptime Ctx: type, ctx: Ctx.Handle, caps: []const HostValueCapability) void {
     Ctx.pushHostValueCapabilities(ctx, caps);
 }
 
+/// Closes the capability frame opened by `pushCapabilities`.
 pub fn popCapabilities(comptime Ctx: type, ctx: Ctx.Handle) void {
     Ctx.popHostValueCapabilities(ctx);
 }

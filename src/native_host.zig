@@ -25,6 +25,7 @@ const DebugPhase = signals.debug_phase.Phase;
 const FaultAllocator = signals.fault_allocator.FaultAllocator;
 const spec_parser = @import("spec/spec_parser.zig");
 const spec_runner = @import("spec/spec_runner.zig");
+const spec_file_fixtures = @import("spec/file_fixtures.zig");
 const benchmark = @import("bench/benchmark.zig");
 const sim_dom = @import("sim_dom.zig");
 const native_style = signals.native_style;
@@ -83,6 +84,52 @@ const NativeTaskCancellationPublication = struct {
     /// Uncommitted cancellation owns no additional payload or registration.
     pub fn deinit(_: *@This()) void {}
 };
+
+/// One spec-declared result for a synchronous `Files` request: the task kinds
+/// it may answer, the `files1` packet to return, and whether it is an error.
+const FileStub = struct {
+    kinds: u64,
+    payload: []const u8,
+    failed: bool,
+};
+
+/// Answers a synchronous `Files` request in the spec host from the declared
+/// stubs: the first stub admitting the kind whose result path frame matches
+/// the request's path frame, or any stub for a kind without a path. Consumed
+/// stubs are removed so a spec can sequence results. No stub is an error result.
+fn stubbedFilesResult(host: *HostEnv, gpa: std.mem.Allocator, kind: boundary.TaskKind, request: []const u8) struct { failed: bool, payload: []const u8 } {
+    const request_path = filesFrame(request, 1);
+    for (host.file_stubs.items, 0..) |stub, index| {
+        if (!spec_file_fixtures.admits(stub.kinds, kind)) continue;
+        const keyed = kind != .verify_assets and kind != .choose_file and kind != .choose_directory and kind != .choose_save_path;
+        if (keyed and !stub.failed and !std.mem.eql(u8, filesFrame(stub.payload, 1), request_path)) continue;
+        const taken = host.file_stubs.orderedRemove(index);
+        return .{ .failed = taken.failed, .payload = taken.payload };
+    }
+    const message = std.fmt.allocPrint(gpa, "no spec stub for {s} {s}", .{ @tagName(kind), request_path }) catch @panic("out of memory");
+    defer gpa.free(message);
+    return .{ .failed = true, .payload = filesErrorPacket(gpa, "unavailable", message) };
+}
+
+/// Reads frame `index` (0 is the codec version) of a `files1` packet, or "".
+fn filesFrame(packet: []const u8, index: usize) []const u8 {
+    var rest = packet;
+    var current: usize = 0;
+    while (rest.len > 0) : (current += 1) {
+        const colon = std.mem.indexOfScalar(u8, rest, ':') orelse return "";
+        const len = std.fmt.parseInt(usize, rest[0..colon], 10) catch return "";
+        if (rest.len < colon + 1 + len) return "";
+        const value = rest[colon + 1 .. colon + 1 + len];
+        if (current == index) return value;
+        rest = rest[colon + 1 + len ..];
+    }
+    return "";
+}
+
+/// Encodes a `files1` error packet the Roc `Files` decoder understands.
+fn filesErrorPacket(gpa: std.mem.Allocator, code: []const u8, detail: []const u8) []const u8 {
+    return std.fmt.allocPrint(gpa, "6:files1{d}:{s}{d}:{s}", .{ code.len, code, detail.len, detail }) catch @panic("out of memory");
+}
 
 const NativeTaskPublication = struct {
     host: *HostEnv,
@@ -1039,6 +1086,9 @@ const HostEnv = struct {
     spec_pending_close: ?struct { node: u64, event: ids.EventId } = null,
     spec_window_closed: bool = false,
     started_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
+    /// Spec-declared results for the synchronous `Files` primitives, consumed
+    /// oldest first as requests arrive; only the display-free spec host uses them.
+    file_stubs: std.ArrayListUnmanaged(FileStub) = .empty,
     canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
     location_index: usize = 0,
@@ -1120,8 +1170,17 @@ const HostEnv = struct {
         return .{ .ptr = self, .vtable = &HostAllocator.vtable };
     }
 
+    /// Declares one result for the synchronous `Files` primitives in spec mode.
+    fn stubFile(self: *HostEnv, kinds: u64, payload: []const u8, failed: bool) void {
+        const gpa = self.hostAllocator();
+        self.file_stubs.append(gpa, .{ .kinds = kinds, .payload = gpa.dupe(u8, payload) catch @panic("out of memory"), .failed = failed }) catch @panic("out of memory");
+    }
+
     fn deinitTaskRecords(self: *HostEnv) void {
         const allocator = self.hostAllocator();
+        for (self.file_stubs.items) |stub| allocator.free(stub.payload);
+        self.file_stubs.deinit(allocator);
+        self.file_stubs = .empty;
         for (self.started_tasks.items) |record| {
             allocator.free(record.name);
         }
@@ -2471,6 +2530,16 @@ extern fn signals_files_release(ptr: [*]u8, len: usize) callconv(.c) void;
 fn hostFilesRun(kind: u32, request: abi.RocStr) callconv(.c) abi.FilesRun {
     const roc_host = currentRocHost();
     defer request.decref(roc_host);
+    if (!Gpui.live) {
+        // The display-free spec host answers from declared stubs and never
+        // touches the filesystem.
+        const host = currentHost();
+        const gpa = host.hostAllocator();
+        const task_kind = std.enums.fromInt(boundary.TaskKind, kind) orelse failHost("unknown Files request kind");
+        const stubbed = stubbedFilesResult(host, gpa, task_kind, request.asSlice());
+        defer gpa.free(stubbed.payload);
+        return .{ .text = abi.RocStr.fromSlice(stubbed.payload, roc_host), .failed = stubbed.failed };
+    }
     var out_ptr: [*]u8 = undefined;
     var out_len: usize = 0;
     const failed = signals_files_run(kind, request.asSlice().ptr, request.asSlice().len, &out_ptr, &out_len);
@@ -3519,12 +3588,19 @@ const BenchmarkCtx = struct {
 
     /// Delivers pending task through the same source-update and propagation path as other inputs.
     pub fn resolvePendingTask(host: *Host, roc_host: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
-        return resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
+        const counts = resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
+        drainEffects(host, roc_host);
+        return counts;
     }
 
     /// Consumes a deliberately stale task result for lifecycle testing without reviving canceled work.
     pub fn resolveStalePendingTask(host: *Host, _: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
+    }
+
+    /// Declares one result for the synchronous `Files` primitives; see `stubbedFilesResult`.
+    pub fn stubFileResult(host: *Host, kinds: u64, payload: []const u8, failed: bool) void {
+        host.stubFile(kinds, payload, failed);
     }
 
     /// Advances interval source through the shared propagation queue.
@@ -3810,12 +3886,19 @@ const SpecRunnerCtx = struct {
 
     /// Delivers pending task through the same source-update and propagation path as other inputs.
     pub fn resolvePendingTask(host: *Host, roc_host: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
-        return resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
+        const counts = resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
+        drainEffects(host, roc_host);
+        return counts;
     }
 
     /// Consumes a deliberately stale task result for lifecycle testing without reviving canceled work.
     pub fn resolveStalePendingTask(host: *Host, _: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
+    }
+
+    /// Declares one result for the synchronous `Files` primitives; see `stubbedFilesResult`.
+    pub fn stubFileResult(host: *Host, kinds: u64, payload: []const u8, failed: bool) void {
+        host.stubFile(kinds, payload, failed);
     }
 
     /// Advances interval source through the shared propagation queue.
@@ -4125,6 +4208,7 @@ fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void
                 const text = cmd.expected_text orelse failHost("set_initial_online command is missing online text");
                 host.setOnline(onlineSnapshotFromSpecText(text));
             },
+            .seed_file_result => host.stubFile(cmd.expected_task_kinds, cmd.expected_text orelse "", cmd.expected_bool orelse false),
             .seed_local_storage, .seed_session_storage => {
                 const key = cmd.task_name orelse failHost("seed storage command is missing key text");
                 const value = cmd.expected_text orelse failHost("seed storage command is missing value text");

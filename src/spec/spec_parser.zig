@@ -40,6 +40,8 @@ pub const SpecCommandType = enum {
     resolve_task,
     resolve_stale_task,
     reject_task,
+    stub_file_result,
+    seed_file_result,
     tick_interval,
     tick_interval_if_active,
     expect_cleanup,
@@ -694,18 +696,18 @@ fn appendDecodedForm(
     if (items.len == 0) return ParseError.InvalidFormat;
     const head = exprSymbol(items[0]) orelse return ParseError.InvalidFormat;
 
-    if (!is_setup and file_fixtures.recognizes(head)) {
+    if (file_fixtures.recognizes(head) and (!is_setup or file_fixtures.isStub(head))) {
         const fixture = try file_fixtures.parse(allocator, head, items[1..]);
         errdefer allocator.free(fixture.task_name);
         errdefer allocator.free(fixture.payload);
         try commands.append(allocator, .{
-            .cmd_type = if (fixture.failed) .reject_task else .resolve_task,
+            .cmd_type = if (!file_fixtures.isStub(head)) (if (fixture.failed) .reject_task else .resolve_task) else if (is_setup) .seed_file_result else .stub_file_result,
             .locator = emptyLocator(),
             .task_name = fixture.task_name,
             .expected_task_kinds = fixture.kinds,
             .expected_text = fixture.payload,
             .expected_count = null,
-            .expected_bool = null,
+            .expected_bool = fixture.failed,
             .line_num = form.span.line,
         });
         return;

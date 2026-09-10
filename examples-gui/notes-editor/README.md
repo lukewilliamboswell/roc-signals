@@ -28,10 +28,10 @@ changes after another edit. Revert restores the last accepted file snapshot.
 New and Open ask before replacing unsaved text; canceling the confirmation or
 file chooser preserves it. Errors leave the draft available for retry.
 
-A write captures its complete text before background work begins. Editing can
-continue while it saves; completion accepts the submitted snapshot, so later
-edits remain dirty. File operations are serialized for this document. Canceling
-a save cannot undo a rename that has already committed. See the
+A write captures its complete text when the destination is chosen and runs as
+one synchronous call inside an effect; completion accepts the submitted
+snapshot, so later edits remain dirty. File operations are serialized for this
+document. See the
 [native Files contract](../../docs/native-gui-protocol.md) for limits and path
 handling. Text files are limited to one MiB; oversized editor replacements are
 refused as complete operations. Files and filenames must be valid UTF-8.
@@ -40,9 +40,9 @@ The discard dialog focuses Keep editing, contains Tab/Shift-Tab navigation,
 and restores the prior live control when dismissed. Enter/Space activate
 focused buttons; Escape keeps the current draft. Closing an edited document
 asks whether to Save and close, Discard and close, or Keep editing. A closing
-save freezes editing and waits for successful completion; cancellation or failure
-keeps the window and draft open. Closing during another file operation asks the
-user to finish or cancel it first.
+save freezes editing and waits for successful completion; a dismissed chooser
+or a failure keeps the window and draft open. Closing during another file
+operation asks the user to finish or cancel it first.
 Statistics use the pinned [Roc Unicode package](../../vendor/unicode/README.md).
 Characters are Unicode 17 extended grapheme clusters, including whitespace:
 `é` and `é` each count as one, as do joined emoji and flag sequences; CRLF
@@ -55,8 +55,9 @@ still visits the complete changed document. GPUI retains responsibility for
 native shaping, caret interaction, and IME behavior.
 
 `Session.roc` holds the pure document operation state machine. `Workflow.roc`
-observes only its phase to start tasks, and task results enter ordinary shared
-engine propagation. The native semantic specs supply typed task outcomes to
-check cancellation, failures, stale results, repeat saves, and snapshot ownership
+observes only its phase: choosers start as tasks whose results enter ordinary
+shared engine propagation, and reads and writes run inside an action's effect.
+The native semantic specs supply typed chooser outcomes and file stubs to check
+cancellation, failures, stale results, repeat saves, and snapshot ownership
 deterministically. Filesystem worker tests and actual GPUI interaction tests
 cover the native boundaries separately.

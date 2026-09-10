@@ -420,7 +420,7 @@ pub fn Runner(comptime Ctx: type) type {
                         metrics_mark = Ctx.lastRuntimeMetrics(host);
                     },
 
-                    .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage => {},
+                    .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result => {},
 
                     .set_visibility => {
                         if (comptime !@hasDecl(Ctx, "setVisibility")) {
@@ -840,6 +840,10 @@ pub fn Runner(comptime Ctx: type) type {
                             _ = Ctx.resolvePendingTask(host, roc_host, task_name, payload, cmd.cmd_type == .reject_task);
                         }
                         Ctx.finishHostMetrics(host);
+                    },
+
+                    .stub_file_result => {
+                        Ctx.stubFileResult(host, cmd.expected_task_kinds, cmd.expected_text orelse "", cmd.expected_bool orelse false);
                     },
 
                     .tick_interval => {

@@ -41,7 +41,7 @@ fixtures separately cover pointer gesture delivery and stale drag rejection.
 Assignee avatars are tiny generated PNGs in `assets/` — regenerate them and
 `assets/manifest.json` (real SHA-256 hashes) with `python3 assets/generate.py`.
 The app ingests the manifest at compile time and verifies it at startup through
-`Files.verify_assets`; if an asset is missing or altered, a danger-colored
+`Files.verify_assets!`; if an asset is missing or altered, a danger-colored
 status line names it and the affected cards show neutral placeholder boxes
 while everything else keeps working. When running the built binary directly,
 point the host at the app's assets with
@@ -64,10 +64,10 @@ draft and retry. Native individual text controls also have a one-MiB input bound
 Open asks before replacing an unsaved board. Cancel or a failed read leaves the
 board and its previous path intact, even after choosing to discard. Saving holds
 an immutable snapshot from the moment Save was requested, including time spent
-in the chooser. Editing can continue while choosing a destination or writing;
-success marks only that submitted snapshot saved. Later edits stay dirty. A
-failed or canceled write preserves the board and lets Save retry; cancellation
-does not undo a filesystem rename that already committed.
+in the chooser. Editing can continue while choosing a destination; the write
+then runs as one synchronous call inside an effect, and success marks only that
+submitted snapshot saved. Later edits stay dirty. A failed write or a dismissed
+chooser preserves the board and lets Save retry.
 
 Undo/Redo covers field changes, priority, creation, deletion, and movement.
 Changing a field creates one history entry per delivered edit. History holds at

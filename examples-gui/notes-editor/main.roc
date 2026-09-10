@@ -1,5 +1,6 @@
 app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc", unicode: "../../vendor/unicode/main.roc" }
 
+import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
 import pf.Gui exposing [Px]
 import pf.Signal
@@ -30,30 +31,30 @@ main = || Ui.state(
 			save = session.update_with(body, |state, text| Session.begin_save({ state, draft: Session.draft(state, text), save_as: False }))
 			save_as = session.update_with(body, |state, text| Session.begin_save({ state, draft: Session.draft(state, text), save_as: True }))
 			open = session.update_with(body, |state, text| Session.begin_open({ state, draft: Session.draft(state, text) }))
-			new = Ui.action(
+			new = Action.run(
 				view,
 				|{ state, body: text }| {
 					if !Session.can_start(state) {
-						Signal.noop
+						Action.none
 					}
 						else if Document.is_dirty({ draft: Session.draft(state, text), baseline: state.baseline }) {
-							session.set_cmd({ ..state, phase: Session.Phase.ConfirmDiscard(Session.Destination.NewDocument), problem: None })
+							Action.update([session.set({ ..state, phase: Session.Phase.ConfirmDiscard(Session.Destination.NewDocument), problem: None })])
 						} else {
-							Ui.update_states([session.set(Session.new_document(state)), body.set("")])
+							Action.update([session.set(Session.new_document(state)), body.set("")])
 						}
 				},
 			)
-			revert = Ui.action(
+			revert = Action.run(
 				view,
 				|{ state, body: text }| {
 					if Session.can_start(state) and Document.is_dirty({ draft: Session.draft(state, text), baseline: state.baseline }) {
-						session.set_cmd({ ..state, phase: Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument), problem: None })
+						Action.update([session.set({ ..state, phase: Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument), problem: None })])
 					} else {
-						Signal.noop
+						Action.none
 					}
 				},
 			)
-			cancel = Ui.action(phase, |value| Workflow.cancel(session, tasks, value))
+			cancel = Action.run(phase, |value| Workflow.cancel(session, tasks, value))
 			chord = { key: "s", control: True, shift: False, alt: False, meta: False }
 			Elem.window_lifecycle(
 				{ on_close_requested: session.update_with(body, Session.request_close), decision: session.read(Session.close_decision) },
@@ -217,13 +218,13 @@ main = || Ui.state(
 														Elem.button("Keep editing", session.update(Session.cancel)),
 														Elem.button(
 															"Discard changes",
-															Ui.action(
+															Action.run(
 																session.signal(),
 																|state| match state.phase {
-																	Session.Phase.ConfirmDiscard(Session.Destination.NewDocument) => Ui.update_states([session.set(Session.new_document(state)), body.set("")])
-																	Session.Phase.ConfirmDiscard(Session.Destination.OpenDocument) => session.set_cmd({ ..state, phase: Session.Phase.ChoosingOpen })
-																	Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument) => Ui.update_states([session.set({ ..Session.cancel(state), document_generation: Session.next_generation(state) }), body.set(state.baseline.body)])
-																	_ => Signal.noop
+																	Session.Phase.ConfirmDiscard(Session.Destination.NewDocument) => Action.update([session.set(Session.new_document(state)), body.set("")])
+																	Session.Phase.ConfirmDiscard(Session.Destination.OpenDocument) => Action.update([session.set({ ..state, phase: Session.Phase.ChoosingOpen })])
+																	Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument) => Action.update([session.set({ ..Session.cancel(state), document_generation: Session.next_generation(state) }), body.set(state.baseline.body)])
+																	_ => Action.none
 																},
 															),
 														),

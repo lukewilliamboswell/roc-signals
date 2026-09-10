@@ -1,3 +1,4 @@
+import Action exposing [Action]
 import Node
 import Signal
 
@@ -234,137 +235,34 @@ Files := [].{
 	choose_save_path_task = |name| file_task(Node.TaskKind.ChooseSavePath, name, decode_choice)
 
 	## Open the platform's single-file chooser.
-	choose_file : Signal.Task(Choice, Error) -> Node.Cmd
-	choose_file = |task| file_start(Node.TaskKind.ChooseFile, task, [])
+	choose_file : Signal.Task(Choice, Error) -> Action(a)
+	choose_file = |task| Action.Action(file_start(Node.TaskKind.ChooseFile, task, []))
 
 	## Open the platform's single-folder chooser.
-	choose_directory : Signal.Task(Choice, Error) -> Node.Cmd
-	choose_directory = |task| file_start(Node.TaskKind.ChooseDirectory, task, [])
+	choose_directory : Signal.Task(Choice, Error) -> Action(a)
+	choose_directory = |task| Action.Action(file_start(Node.TaskKind.ChooseDirectory, task, []))
 
 	## Ask for a save path at the user's home or an absolute initial directory.
 	## Home returns Unavailable if the native environment has no UTF-8 HOME value.
 	## The suggestion is one nonempty file name of at most 255 UTF-8 bytes.
-	choose_save_path : Signal.Task(Choice, Error), { directory : [Home, At(Str)], suggested_name : Str } -> Node.Cmd
+	choose_save_path : Signal.Task(Choice, Error), { directory : [Home, At(Str)], suggested_name : Str } -> Action(a)
 	choose_save_path = |task, options| {
 		location = match options.directory {
 			Home => ["home", ""]
 			At(path) => ["at", path]
 		}
-		file_start(Node.TaskKind.ChooseSavePath, task, location.append(options.suggested_name))
+		Action.Action(file_start(Node.TaskKind.ChooseSavePath, task, location.append(options.suggested_name)))
 	}
 
-	## Create a task for strict UTF-8 files of at most one MiB.
-	read_text_task : Str -> Signal.Task(TextFile, Error)
-	read_text_task = |name| file_task(Node.TaskKind.ReadText, name, decode_text)
-
-	## Read a complete file without publishing partial contents.
-	read_text : Signal.Task(TextFile, Error), Str -> Node.Cmd
-	read_text = |task, path| file_start(Node.TaskKind.ReadText, task, [path])
-
-	## Create a task that writes at most one MiB through a temporary file + rename.
-	write_text_task : Str -> Signal.Task(Written, Error)
-	write_text_task = |name| file_task(Node.TaskKind.WriteText, name, decode_written)
-
-	## Save the submitted immutable text. Cancellation cannot undo a committed rename.
-	## Replacement is atomic; parent-directory power-loss durability is not guaranteed.
-	## Failed temporary cleanup returns Io and may leave the temporary file behind.
-	write_text : Signal.Task(Written, Error), { path : Str, text : Str } -> Node.Cmd
-	write_text = |task, file| file_start(Node.TaskKind.WriteText, task, [file.path, file.text])
-
-	## Create a recursive folder scan: at most 10,000 entries and 64 levels.
-	## Symlinks and other entries are reported; symlinks are never traversed.
-	## Paths including the root are bounded at four MiB; limits refuse the whole scan.
-	scan_task : Str -> Signal.Task(Scan, Error)
-	scan_task = |name| file_task(Node.TaskKind.ScanDirectory, name, decode_scan)
-
-	## Publish one complete metadata result, or a typed error without truncation.
-	## Entries are observed over time; concurrent filesystem changes may fail the scan.
-	scan : Signal.Task(Scan, Error), Str -> Node.Cmd
-	scan = |task, root| file_start(Node.TaskKind.ScanDirectory, task, [root])
-
-	## Create a direct-child listing task, bounded like scan but without recursion.
-	list_directory_task : Str -> Signal.Task(Directory, Error)
-	list_directory_task = |name| file_task(Node.TaskKind.ListDirectory, name, decode_directory)
-
-	## Observe one directory's direct children; refuse the whole result on error.
-	list_directory : Signal.Task(Directory, Error), Str -> Node.Cmd
-	list_directory = |task, path| file_start(Node.TaskKind.ListDirectory, task, [path])
-
-	## Create a task that requests the desktop's associated file application.
-	open_path_task : Str -> Signal.Task(Opened, Error)
-	open_path_task = |name| file_task(Node.TaskKind.OpenPath, name, decode_opened)
-
-	## Success confirms an accepted launch, not the external application's lifetime.
-	## Cancellation cannot undo a completed handoff. The regular file is validated
-	## without following links first; the external app subsequently resolves its path.
-	open_path : Signal.Task(Opened, Error), Str -> Node.Cmd
-	open_path = |task, path| file_start(Node.TaskKind.OpenPath, task, [path])
-
-	## Create a bounded UTF-8 preview task; at most 64 KiB is returned.
-	read_preview_task : Str -> Signal.Task(Preview, Error)
-	read_preview_task = |name| file_task(Node.TaskKind.ReadPreview, name, decode_preview)
-
-	## Read a prefix, reporting truncation. Only a code point cut by the byte bound
-	## is omitted; invalid internal UTF-8 or an incomplete complete file is refused.
-	read_preview : Signal.Task(Preview, Error), Str -> Node.Cmd
-	read_preview = |task, path| file_start(Node.TaskKind.ReadPreview, task, [path])
-
-	## Create a stateless incremental log task. Cursors belong to the application;
-	## no descriptor or registry is retained between completed requests.
-	read_log_task : Str -> Signal.Task(LogChunk, Error)
-	read_log_task = |name| file_task(Node.TaskKind.ReadLog, name, decode_log)
-
-	## Read at most 64 KiB, consuming complete UTF-8 code points. An incomplete
-	## endpoint is left unread and reported as PartialUtf8; invalid bytes are errors.
-	## Chunks may split lines: the application owns bounded partial-line assembly.
-	## Start reads history; End seeds EOF after validating its terminal code point,
-	## refusing an incomplete endpoint. End does not validate skipped history.
-	## Device/inode change restarts at zero as Rotated; size below offset restarts
-	## as Truncated. Same-inode truncate-and-regrow between observations is invisible.
-	read_log : Signal.Task(LogChunk, Error), { path : Str, position : LogPosition } -> Node.Cmd
-	read_log = |task, request| {
-		fields = match request.position {
-			LogPosition.Start => ["start", "0", "0", "0"]
-			LogPosition.End => ["end", "0", "0", "0"]
-			LogPosition.After(cursor) => ["after", cursor.device.to_str(), cursor.inode.to_str(), cursor.offset.to_str()]
-		}
-		file_start(Node.TaskKind.ReadLog, task, [request.path].concat(fields))
-	}
+	## Cancel a chooser that is still open; its task settles as `Canceled`.
+	cancel : Signal.Task(Choice, Error) -> Action(a)
+	cancel = |task| Action.Action(Signal.cancel(task))
 
 	AssetStatus := [Ok, Missing, Mismatch].{
 		is_eq : _
 	}
 	AssetEntry : { name : Str, sha256 : Str }
 	AssetCheck : { name : Str, status : AssetStatus }
-
-	## Create one bounded asset-verification task.
-	verify_assets_task : Str -> Signal.Task(List(AssetCheck), Error)
-	verify_assets_task = |name| file_task(Node.TaskKind.VerifyAssets, name, decode_asset_report)
-
-	## Hash each manifest entry under the host's assets root and report ok,
-	## missing, or mismatch per asset, in manifest order. Names are relative
-	## paths of 1 to 1024 UTF-8 bytes; digests are 64 lowercase hex characters
-	## of SHA-256. Manifests carry 1 to 256 entries; the host refuses symlinked
-	## or traversing paths and bounds each hashed asset at 32 MiB.
-	verify_assets : Signal.Task(List(AssetCheck), Error), List(AssetEntry) -> Node.Cmd
-	verify_assets = |task, entries| {
-		if entries.is_empty() or entries.len() > 256 {
-			crash "Files asset manifests contain 1 to 256 entries"
-		}
-		fields = entries.fold(
-			[entries.len().to_str()],
-			|acc, entry| {
-				if entry.name.is_empty() or entry.name.to_utf8().len() > 1024 {
-					crash "Files asset names contain 1 to 1024 UTF-8 bytes"
-				}
-				if !valid_sha256(entry.sha256) {
-					crash "Files asset digests are 64 lowercase hex characters"
-				}
-				acc.append(entry.name).append(entry.sha256)
-			},
-		)
-		file_start(Node.TaskKind.VerifyAssets, task, fields)
-	}
 
 	## Describe a native failure without losing its typed case.
 	error_text : Error -> Str
