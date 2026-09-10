@@ -3,7 +3,7 @@
 //! The maintained semantic specs run the engine without a presentation layer, so
 //! they cannot see a control that GPUI laid out beyond the window, a dialog that
 //! does not fit, or a native editor that kept the previous document's history.
-//! `--smoke` covered the opposite extreme: one window, one click, one assertion.
+//! `--host-smoke` covered the opposite extreme: one window, one click, one assertion.
 //!
 //! A script sits between them. It names controls the way the application names
 //! them — by `test_id`, or by the label a person would read — and never by pixel

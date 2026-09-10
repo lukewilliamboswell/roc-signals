@@ -118,7 +118,7 @@ Do not attach unguarded host callbacks to arbitrary containers.
 
 Scripted interaction and capture scenarios now exist for all six apps in
 `examples-gui/<app>/regression/*.script`, run by `scripts/gui_regression.py`
-against the real window through the host's `--script` flag. They cover initial,
+against the real window through the host's `--host-script` flag. They cover initial,
 populated, selected, focused, disabled/read-only, modal, error/loading and
 resized states at 1200×820, 800×600, 360×600 and the 360×240 host minimum,
 including equal-text editor replacement (via native undo depth) and the

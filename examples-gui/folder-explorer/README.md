@@ -67,7 +67,7 @@ placeholder, and a placeholder does not require a failed verification. The
 check runs once at mount; restoring a file afterwards is reported by the next
 run, not by the live status line. `regression/assets-problem/` holds a prepared
 assets root exercising all three cases at once. When running the built binary
-directly, pass `--assets-root examples-gui/folder-explorer/assets` (or set
+directly, pass `--host-assets-root examples-gui/folder-explorer/assets` (or set
 `ROC_SIGNALS_ASSETS_ROOT`); image sources are always relative paths inside
 that root.
 

@@ -286,10 +286,10 @@ kinds. Use row and scope counters for structural behaviour and benchmark
 telemetry to track overall command traffic.
 
 For a retained-allocation delta that should not be there, rerun the built native
-app with `--trace-allocations`:
+app with `--host-trace-allocations`:
 
 ```sh
-.test-out/bin/signals-my-example --trace-allocations examples-web/my-example/specs/case.scm
+.test-out/bin/signals-my-example --host-trace-allocations examples-web/my-example/specs/case.scm
 ```
 
 The host writes an allocation checkpoint after mount and after every spec
@@ -337,7 +337,7 @@ out beyond the window or a native editor that kept the previous document's undo
 history. For the GUI examples those states are covered by scripted scenarios in
 `examples-gui/<app>/regression/*.script`, run by
 `python3 scripts/gui_regression.py`. They drive the real window through the
-host's `--script` flag, name controls by test id or visible label rather than by
+host's `--host-script` flag, name controls by test id or visible label rather than by
 pixel coordinates, and record their observations — and on macOS the window
 itself — as artifacts. See [Contributing](@/docs/contributing.md) for the step
 vocabulary, the diagnostic convention, and what is macOS-only.

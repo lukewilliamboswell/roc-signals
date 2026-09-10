@@ -17,11 +17,11 @@ from build_gui import executable_name
 from gui_suite import ROOT, examples
 
 MARKER = "PASS: GPUI mounted, rendered, and checked "
-COUNTER_ARGUMENTS = ("--smoke-click", "Increment", "--smoke-expect", "1")
+COUNTER_ARGUMENTS = ("--host-smoke-click", "Increment", "--host-smoke-expect", "1")
 
 
 def check(executable, arguments=(), environment=None):
-    command = [str(executable.resolve()), "--smoke", *arguments]
+    command = [str(executable.resolve()), "--host-smoke", *arguments]
     print("==> " + " ".join(command), flush=True)
     result = subprocess.run(command, capture_output=True, text=True,
                             encoding="utf-8", errors="replace", timeout=30,

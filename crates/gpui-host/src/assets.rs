@@ -1,7 +1,7 @@
 //! Bounded application asset resolution and integrity verification.
 //!
 //! Every image source is a relative path resolved against one process-wide
-//! assets root: `--assets-root <dir>` if given, else `ROC_SIGNALS_ASSETS_ROOT`,
+//! assets root: `--host-assets-root <dir>` if given, else `ROC_SIGNALS_ASSETS_ROOT`,
 //! else `assets/` beside the executable. Absolute paths, `..` traversal, URI
 //! schemes, and symbolic links never resolve; a source that fails to resolve
 //! renders as a neutral placeholder instead of reaching the filesystem.

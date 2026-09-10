@@ -168,7 +168,7 @@ every other native scalar.
 
 `Gui.image` lowers element tag `img` with its relative source text on field
 13. The source is application data, not a filesystem capability: the host
-resolves it against one process-wide assets root (`--assets-root <dir>`, else
+resolves it against one process-wide assets root (`--host-assets-root <dir>`, else
 `ROC_SIGNALS_ASSETS_ROOT`, else `assets/` beside the executable) and refuses
 absolute paths, `..` traversal, URI schemes, backslashes, and symbolic links
 anywhere below the root. Sources are 1 to 1024 UTF-8 bytes. A source that does
@@ -481,7 +481,7 @@ engine teardown.
 Native periods are executor wake intervals; each wake submits one tick, without
 inventing elapsed-time values or merging queued ticks. Long waits are split into
 day-sized executor waits to avoid overflowing native clock arithmetic. Normal
-smoke checks disable clocks for deterministic assertions; `--smoke-timers`
+smoke checks disable clocks for deterministic assertions; `--host-smoke-timers`
 enables real timer delivery and waits 1.2 seconds after the requested action.
 
 ### Asset verification

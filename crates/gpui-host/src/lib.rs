@@ -977,6 +977,122 @@ fn parse_window_size(value: &str) -> Option<(f32, f32)> {
         .then_some((width, height))
 }
 
+/// Every command-line option this launcher owns or intercepts.
+///
+/// Host controls live in the reserved `--host-` namespace so an application can
+/// use the plain argument namespace without a host quietly capturing one of its
+/// flags (roc-signals#55).
+#[derive(Debug, Default, PartialEq)]
+struct HostArgs {
+    run_spec_json: bool,
+    assets_root: Option<String>,
+    trace_engine: bool,
+    smoke: bool,
+    smoke_timers: bool,
+    click: Option<String>,
+    drop_request: Option<(String, String)>,
+    expected: Option<String>,
+    script: Option<String>,
+    script_report: Option<String>,
+    script_hold: bool,
+    window_size: Option<(f32, f32)>,
+}
+
+/// The host spellings that existed before the `--host-` namespace was reserved.
+///
+/// They are rejected by name rather than ignored: falling through to the
+/// application would silently turn a stale command into a run with the control
+/// switched off, so a smoke or capture harness would report a passing run that
+/// never exercised what it named.
+const RENAMED_HOST_FLAGS: &[(&str, &str)] = &[
+    ("--run-spec-json", "--host-run-spec-json"),
+    ("--assets-root", "--host-assets-root"),
+    ("--smoke", "--host-smoke"),
+    ("--smoke-timers", "--host-smoke-timers"),
+    ("--smoke-click", "--host-smoke-click"),
+    ("--smoke-drop", "--host-smoke-drop"),
+    ("--smoke-expect", "--host-smoke-expect"),
+    ("--script", "--host-script"),
+    ("--script-report", "--host-script-report"),
+    ("--script-hold", "--host-script-hold"),
+    ("--window-size", "--host-window-size"),
+];
+
+/// Reads the host options out of a command line, left to right.
+///
+/// The scan consumes each option's values as values. A single pass is what makes
+/// `--host-smoke-click --host-verbose` name a click target called
+/// `--host-verbose` rather than also switching a second control on: an
+/// independent search per flag cannot tell an option from the argument that
+/// follows one.
+fn parse_host_args(args: &[String]) -> Result<HostArgs, String> {
+    fn value<'a>(
+        args: &'a [String],
+        index: &mut usize,
+        flag: &str,
+        count: usize,
+    ) -> Result<&'a str, String> {
+        *index += 1;
+        args.get(*index).map(String::as_str).ok_or_else(|| {
+            if count == 1 {
+                format!("Error: {flag} requires a value")
+            } else {
+                format!("Error: {flag} requires {count} values")
+            }
+        })
+    }
+
+    let mut parsed = HostArgs::default();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].clone();
+        match arg.as_str() {
+            "--host-run-spec-json" => parsed.run_spec_json = true,
+            "--host-trace-engine" => parsed.trace_engine = true,
+            "--host-smoke" => parsed.smoke = true,
+            "--host-smoke-timers" => parsed.smoke_timers = true,
+            "--host-script-hold" => parsed.script_hold = true,
+            "--host-assets-root" => {
+                parsed.assets_root = Some(value(args, &mut i, &arg, 1)?.to_string());
+            }
+            "--host-smoke-click" => {
+                parsed.click = Some(value(args, &mut i, &arg, 1)?.to_string());
+            }
+            "--host-smoke-expect" => {
+                parsed.expected = Some(value(args, &mut i, &arg, 1)?.to_string());
+            }
+            "--host-script" => {
+                parsed.script = Some(value(args, &mut i, &arg, 1)?.to_string());
+            }
+            "--host-script-report" => {
+                parsed.script_report = Some(value(args, &mut i, &arg, 1)?.to_string());
+            }
+            "--host-smoke-drop" => {
+                let source = value(args, &mut i, &arg, 2)?.to_string();
+                let target = value(args, &mut i, &arg, 2)?.to_string();
+                parsed.drop_request = Some((source, target));
+            }
+            "--host-window-size" => {
+                let raw = value(args, &mut i, &arg, 1)?.to_string();
+                parsed.window_size = Some(parse_window_size(&raw).ok_or_else(|| {
+                    format!("Error: {arg} expects WIDTHxHEIGHT in pixels, got {raw:?}")
+                })?);
+            }
+            other => {
+                if let Some((old, new)) = RENAMED_HOST_FLAGS
+                    .iter()
+                    .find(|(old, _)| *old == other)
+                    .copied()
+                {
+                    return Err(format!("Error: {old} is now {new}"));
+                }
+            }
+        }
+        i += 1;
+    }
+    Ok(parsed)
+}
+
 fn tab_direction(key: &Keystroke) -> Option<bool> {
     (key.key == "tab"
         && !key.modifiers.control
@@ -1164,45 +1280,36 @@ fn perform(
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|arg| arg == "--run-spec-json") {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let host = match parse_host_args(&args) {
+        Ok(host) => host,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    if host.run_spec_json {
         return unsafe { signals_spec_main(argc, argv) };
     }
-    let assets_root = args
-        .windows(2)
-        .find(|pair| pair[0] == "--assets-root")
-        .map(|pair| std::path::PathBuf::from(&pair[1]))
+    let assets_root = host
+        .assets_root
+        .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("ROC_SIGNALS_ASSETS_ROOT").map(std::path::PathBuf::from));
     if let Some(root) = assets_root {
         assets::set_root(root);
     }
-    let trace_engine = args.iter().any(|arg| arg == "--host-trace-engine");
-    let smoke = args.iter().any(|arg| arg == "--smoke");
-    let smoke_timers = args.iter().any(|arg| arg == "--smoke-timers");
-    let click = args
-        .windows(2)
-        .find(|a| a[0] == "--smoke-click")
-        .map(|a| a[1].clone());
-    let drop_request = args
-        .windows(3)
-        .find(|a| a[0] == "--smoke-drop")
-        .map(|a| (a[1].clone(), a[2].clone()));
-    let expected = args
-        .windows(2)
-        .find(|a| a[0] == "--smoke-expect")
-        .map(|a| a[1].clone());
-    let script_path = args
-        .windows(2)
-        .find(|a| a[0] == "--script")
-        .map(|a| std::path::PathBuf::from(&a[1]));
-    let script_report = args
-        .windows(2)
-        .find(|a| a[0] == "--script-report")
-        .map(|a| std::path::PathBuf::from(&a[1]));
+    let trace_engine = host.trace_engine;
+    let smoke = host.smoke;
+    let smoke_timers = host.smoke_timers;
+    let click = host.click;
+    let drop_request = host.drop_request;
+    let expected = host.expected;
+    let script_path = host.script.map(std::path::PathBuf::from);
+    let script_report = host.script_report.map(std::path::PathBuf::from);
     // A held window stays open after the last step so a capture harness can
     // photograph the state the script left behind — including the state a
     // failing assertion stopped at, which is the evidence worth keeping.
-    let script_hold = args.iter().any(|arg| arg == "--script-hold");
+    let script_hold = host.script_hold;
     let script = script_path.as_ref().map(|path| {
         let source = std::fs::read_to_string(path)
             .unwrap_or_else(|error| panic!("cannot read script {}: {error}", path.display()));
@@ -1211,11 +1318,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
         probe::enable();
         (path.clone(), steps)
     });
-    let window_size = args
-        .windows(2)
-        .find(|a| a[0] == "--window-size")
-        .map(|a| parse_window_size(&a[1]).expect("--window-size expects WIDTHxHEIGHT in pixels"))
-        .unwrap_or((1200., 820.));
+    let window_size = host.window_size.unwrap_or((1200., 820.));
     Application::new().run(move |cx| {
         input::bind_keys(cx);
         controls::bind_keys(cx);
@@ -1495,7 +1598,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Engine, Node, Payload, Runtime, bridge, parse_window_size};
+    use super::{Engine, Node, Payload, Runtime, bridge, parse_host_args, parse_window_size};
     use gpui::Focusable;
     use gpui::{AppContext, TestAppContext, point, px, size};
     use std::{cell::Cell, collections::HashMap, rc::Rc};
@@ -1512,6 +1615,99 @@ mod tests {
         assert_eq!(parse_window_size("800x239"), None);
         assert_eq!(parse_window_size("800"), None);
         assert_eq!(parse_window_size("widexhigh"), None);
+    }
+
+    fn host_args(args: &[&str]) -> Result<super::HostArgs, String> {
+        parse_host_args(&args.iter().map(|a| (*a).to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn host_flags_read_their_values() {
+        let parsed = host_args(&[
+            "--host-smoke",
+            "--host-smoke-timers",
+            "--host-smoke-click",
+            "Increment",
+            "--host-smoke-drop",
+            "task-1",
+            "column-Done",
+            "--host-smoke-expect",
+            "Count: 1",
+            "--host-assets-root",
+            "/assets",
+            "--host-script",
+            "s.txt",
+            "--host-script-report",
+            "r.json",
+            "--host-script-hold",
+            "--host-trace-engine",
+            "--host-window-size",
+            "800x600",
+        ])
+        .expect("a complete host command line parses");
+        assert!(parsed.smoke && parsed.smoke_timers && parsed.script_hold && parsed.trace_engine);
+        assert_eq!(parsed.click.as_deref(), Some("Increment"));
+        assert_eq!(
+            parsed.drop_request,
+            Some(("task-1".into(), "column-Done".into()))
+        );
+        assert_eq!(parsed.expected.as_deref(), Some("Count: 1"));
+        assert_eq!(parsed.assets_root.as_deref(), Some("/assets"));
+        assert_eq!(parsed.script.as_deref(), Some("s.txt"));
+        assert_eq!(parsed.script_report.as_deref(), Some("r.json"));
+        assert_eq!(parsed.window_size, Some((800., 600.)));
+    }
+
+    #[test]
+    fn application_arguments_are_left_to_the_application() {
+        let parsed = host_args(&["--theme", "dark", "input.txt"])
+            .expect("arguments the host does not own pass through");
+        assert_eq!(parsed, super::HostArgs::default());
+    }
+
+    #[test]
+    fn a_value_that_looks_like_a_flag_stays_a_value() {
+        // An independent search per flag would see `--host-smoke` inside the
+        // click target and switch smoke mode on; the left-to-right scan must not.
+        let parsed = host_args(&["--host-smoke-click", "--host-smoke"])
+            .expect("a flag-shaped value is still a value");
+        assert_eq!(parsed.click.as_deref(), Some("--host-smoke"));
+        assert!(!parsed.smoke);
+
+        let parsed = host_args(&["--host-smoke-drop", "--host-script-hold", "--host-smoke"])
+            .expect("both drop values are still values");
+        assert_eq!(
+            parsed.drop_request,
+            Some(("--host-script-hold".into(), "--host-smoke".into()))
+        );
+        assert!(!parsed.script_hold && !parsed.smoke);
+    }
+
+    #[test]
+    fn missing_and_invalid_values_are_reported() {
+        assert_eq!(
+            host_args(&["--host-smoke-click"]).unwrap_err(),
+            "Error: --host-smoke-click requires a value"
+        );
+        assert_eq!(
+            host_args(&["--host-smoke-drop", "task-1"]).unwrap_err(),
+            "Error: --host-smoke-drop requires 2 values"
+        );
+        assert_eq!(
+            host_args(&["--host-window-size", "10x10"]).unwrap_err(),
+            "Error: --host-window-size expects WIDTHxHEIGHT in pixels, got \"10x10\""
+        );
+        assert!(host_args(&["--host-window-size"]).is_err());
+    }
+
+    #[test]
+    fn pre_rename_spellings_are_named_rather_than_ignored() {
+        for (old, new) in super::RENAMED_HOST_FLAGS {
+            assert_eq!(
+                host_args(&[old]).unwrap_err(),
+                format!("Error: {old} is now {new}")
+            );
+        }
     }
 
     fn runtime() -> Runtime {

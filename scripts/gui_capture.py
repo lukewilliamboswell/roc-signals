@@ -4,7 +4,7 @@
 Screenshots are review evidence, so this deliberately names a single window
 rather than grabbing a screen region: a region capture would include whatever
 else the reviewer's desktop had in front, which is both unusable as evidence
-and not ours to publish. The window size comes from the host's --window-size
+and not ours to publish. The window size comes from the host's --host-window-size
 flag because resizing another process's window needs desktop automation
 permissions that are not available on every supported system.
 """
@@ -68,7 +68,7 @@ def capture(executable: Path, destination: Path, size: str, settle: float,
     """
     helper = locator()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    command = [str(executable.resolve()), "--window-size", size, *arguments]
+    command = [str(executable.resolve()), "--host-window-size", size, *arguments]
     print("==> " + " ".join(command), flush=True)
     application = subprocess.Popen(command, env=environment,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -86,7 +86,7 @@ def capture(executable: Path, destination: Path, size: str, settle: float,
         if abs(width - requested[0]) > 32 or abs(height - requested[1]) > 64:
             raise SystemExit(
                 f"captured a {width}x{height} window after requesting {size}; "
-                "the application did not honour --window-size")
+                "the application did not honour --host-window-size")
         time.sleep(settle)
         subprocess.run(["screencapture", "-x", "-o", "-t", "png", f"-l{identifier}",
                         str(destination)], check=True)
@@ -111,7 +111,7 @@ def main() -> None:
                         help="Seconds to let the first frame and any startup work finish")
     parser.add_argument("--assets-root", type=Path, help="Asset directory for the example")
     arguments = parser.parse_args()
-    extra = ("--assets-root", str(arguments.assets_root)) if arguments.assets_root else ()
+    extra = ("--host-assets-root", str(arguments.assets_root)) if arguments.assets_root else ()
     capture(arguments.executable, arguments.destination, arguments.size,
             arguments.settle, extra, dict(os.environ))
 

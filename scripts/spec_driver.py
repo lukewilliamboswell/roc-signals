@@ -93,12 +93,12 @@ def run_case(
 ) -> SpecResult:
     command = [
         str(executable),
-        "--run-spec-json",
-        "--entropy-seed",
+        "--host-run-spec-json",
+        "--host-entropy-seed",
         str(NATIVE_SPEC_ENTROPY_SEED),
     ]
     if verbose:
-        command.append("--verbose")
+        command.append("--host-verbose")
     command.extend(worker_args)
     command.append(str(case.path))
     started = time.monotonic_ns()
@@ -186,8 +186,8 @@ def run_case(
     fault = payload.get("fault")
     if fault is not None and not isinstance(fault, dict):
         return synthetic_result(case, "protocol_error", started, "invalid_fault", "worker fault must be an object or null", stdout=completed.stdout, stderr=completed.stderr)
-    if "--fail-on-allocation" in worker_args:
-        expected_allocation = int(worker_args[worker_args.index("--fail-on-allocation") + 1])
+    if "--host-fail-on-allocation" in worker_args:
+        expected_allocation = int(worker_args[worker_args.index("--host-fail-on-allocation") + 1])
         if fault is None or fault.get("allocation") != expected_allocation:
             return synthetic_result(case, "protocol_error", started, "invalid_fault", "worker did not report the selected allocation coordinate", stdout=completed.stdout, stderr=completed.stderr)
         if fault.get("outcome") not in {"continued", "refused_then_retried", "skipped_roc", "skipped_fatal_command"}:
@@ -346,8 +346,8 @@ def run_fault_suite(
     for probe in probes:
         for allocation in range(1, probe.host_allocation_attempts + 1):
             case = SpecCase(f"{probe.id}::allocation@{allocation}", source_cases[probe.id].path)
-            args = ("--fail-on-allocation", str(allocation))
-            replay = f"{executable} --run-spec-json --entropy-seed {NATIVE_SPEC_ENTROPY_SEED} {' '.join(args)} {case.path}"
+            args = ("--host-fail-on-allocation", str(allocation))
+            replay = f"{executable} --host-run-spec-json --host-entropy-seed {NATIVE_SPEC_ENTROPY_SEED} {' '.join(args)} {case.path}"
             jobs_to_run.append((case, args, replay))
     if not jobs_to_run:
         raise ValueError("clean specs reported no host allocation opportunities")

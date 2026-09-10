@@ -625,14 +625,14 @@ def run_benchmarks(roc_bin: str, examples: tuple[Example, ...], *, source_root: 
             run(
                 [
                     exe,
-                    "--bench-app",
-                    "--bench-name",
+                    "--host-bench-app",
+                    "--host-bench-name",
                     f"{example.exe_name}/{case.id}",
-                    "--bench-warmup",
+                    "--host-bench-warmup",
                     str(case.warmup_iterations),
-                    "--bench-iterations",
+                    "--host-bench-iterations",
                     str(case.native_iterations),
-                    "--bench-samples",
+                    "--host-bench-samples",
                     str(case.native_samples),
                     source_root / case.spec,
                 ]

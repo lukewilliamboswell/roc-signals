@@ -131,7 +131,7 @@ class SpecDriverTests(unittest.TestCase):
                     #!/usr/bin/env python3
                     import json
                     import sys
-                    seed_index = sys.argv.index("--entropy-seed")
+                    seed_index = sys.argv.index("--host-entropy-seed")
                     passed = sys.argv[seed_index + 1] == "0"
                     print(json.dumps({{
                         "protocol": {spec_driver.PROTOCOL!r},
@@ -184,7 +184,7 @@ class SpecDriverTests(unittest.TestCase):
                     #!/usr/bin/env python3
                     import json
                     import sys
-                    allocation = int(sys.argv[sys.argv.index("--fail-on-allocation") + 1]) if "--fail-on-allocation" in sys.argv else None
+                    allocation = int(sys.argv[sys.argv.index("--host-fail-on-allocation") + 1]) if "--host-fail-on-allocation" in sys.argv else None
                     print(json.dumps({{
                         "protocol": {spec_driver.PROTOCOL!r},
                         "id": "case.scm",

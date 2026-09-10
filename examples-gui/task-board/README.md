@@ -62,7 +62,7 @@ check runs once at mount; restoring a file afterwards is reported by the next
 run, not by the live status line. `regression/assets-problem/` holds a prepared
 assets root exercising all three cases at once. When running the built binary directly,
 point the host at the app's assets with
-`--assets-root examples-gui/task-board/assets` (or `ROC_SIGNALS_ASSETS_ROOT`);
+`--host-assets-root examples-gui/task-board/assets` (or `ROC_SIGNALS_ASSETS_ROOT`);
 image sources are always relative paths inside that root.
 
 ## Documents and undo
