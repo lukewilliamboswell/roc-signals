@@ -7,7 +7,7 @@ import Node
 import Rows exposing [Rows]
 import Signal exposing [Signal]
 
-state_event_msg : Node.BinderRef, Node.BinderRef, Node.EventExtractionPlan, HostValue.EventReducerHandle -> Node.Msg
+state_event_msg : Node.BinderRef, Node.BinderRef, Node.EventExtractionPlan, HostValue.EventReducerHandle -> Node.Handler
 state_event_msg = |binder, read_binder, event_extraction_plan, payload_reducer| {
 	{
 		event_extraction_plan,
@@ -15,7 +15,7 @@ state_event_msg = |binder, read_binder, event_extraction_plan, payload_reducer| 
 	}
 }
 
-action_event_msg : Signal(a), Node.EventExtractionPlan, Capability(payload), (a, payload -> Node.Cmd) -> Node.Msg
+action_event_msg : Signal(a), Node.EventExtractionPlan, Capability(payload), (a, payload -> Node.Cmd) -> Node.Handler
 action_event_msg = |reads, event_extraction_plan, payload_cap, to_cmd| {
 	read_cap = reads.cap
 	wrapped : HostValue, HostValue -> Node.Cmd
@@ -140,7 +140,7 @@ Ui := [].{
 	}
 
 	## A handle to a state binder, given to the `Ui.state` body. `signal` reads the
-	## current value; event methods build `Node.Msg` reducers for DOM payloads.
+	## current value; event methods build `Node.Handler` reducers for DOM payloads.
 	State(a) := { ref : Node.BinderRef, cap : Capability(a) }.{
 
 		## Read this state as a signal.
@@ -157,7 +157,7 @@ Ui := [].{
 
 		## Build a unit-triggered reducer message: `f` maps the current value to the
 		## next value, ignoring the unit payload.
-		update : State(a), (a -> a) -> Node.Msg
+		update : State(a), (a -> a) -> Node.Handler
 		update = |st, f| {
 			current_cap = st.cap
 
@@ -181,7 +181,7 @@ Ui := [].{
 		}
 
 		## Build a text-input reducer message using the event target value.
-		update_str : State(a), (a, Str -> a) -> Node.Msg
+		update_str : State(a), (a, Str -> a) -> Node.Handler
 		update_str = |st, f| {
 			current_cap = st.cap
 			payload_cap = Capability.new()
@@ -204,7 +204,7 @@ Ui := [].{
 		}
 
 		## Build a checkbox reducer message using the event target checked state.
-		update_bool : State(a), (a, Bool -> a) -> Node.Msg
+		update_bool : State(a), (a, Bool -> a) -> Node.Handler
 		update_bool = |st, f| {
 			current_cap = st.cap
 			payload_cap = Capability.new()
@@ -227,7 +227,7 @@ Ui := [].{
 		}
 
 		## Build a custom-event reducer message using `event.detail` serialized as text.
-		update_detail : State(a), (a, Str -> a) -> Node.Msg
+		update_detail : State(a), (a, Str -> a) -> Node.Handler
 		update_detail = |st, f| {
 			current_cap = st.cap
 			payload_cap = Capability.new()
@@ -250,7 +250,7 @@ Ui := [].{
 		}
 
 		## Build a keyboard reducer message with key text and shift-key state.
-		update_key : State(a), (a, KeyPayload -> a) -> Node.Msg
+		update_key : State(a), (a, KeyPayload -> a) -> Node.Handler
 		update_key = |st, f| {
 			current_cap = st.cap
 			payload_cap = Capability.new()
@@ -274,7 +274,7 @@ Ui := [].{
 
 		## Build a unit-triggered reducer that atomically snapshots `read` while
 		## writing only `st`.
-		update_with : State(a), State(b), (a, b -> a) -> Node.Msg
+		update_with : State(a), State(b), (a, b -> a) -> Node.Handler
 		update_with = |st, other, f| {
 			payload_cap : Capability({})
 			payload_cap = Capability.new()
@@ -288,7 +288,7 @@ Ui := [].{
 		}
 
 		## Build a text reducer that atomically snapshots `read`.
-		update_str_with : State(a), State(b), (a, b, Str -> a) -> Node.Msg
+		update_str_with : State(a), State(b), (a, b, Str -> a) -> Node.Handler
 		update_str_with = |st, other, f| {
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
@@ -303,7 +303,7 @@ Ui := [].{
 		}
 
 		## Build a checkbox reducer that atomically snapshots `read`.
-		update_bool_with : State(a), State(b), (a, b, Bool -> a) -> Node.Msg
+		update_bool_with : State(a), State(b), (a, b, Bool -> a) -> Node.Handler
 		update_bool_with = |st, other, f| {
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
@@ -318,7 +318,7 @@ Ui := [].{
 		}
 
 		## Build a custom-detail reducer that atomically snapshots `read`.
-		update_detail_with : State(a), State(b), (a, b, Str -> a) -> Node.Msg
+		update_detail_with : State(a), State(b), (a, b, Str -> a) -> Node.Handler
 		update_detail_with = |st, other, f| {
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
@@ -333,7 +333,7 @@ Ui := [].{
 		}
 
 		## Build a key reducer that atomically snapshots `read`.
-		update_key_with : State(a), State(b), (a, b, KeyPayload -> a) -> Node.Msg
+		update_key_with : State(a), State(b), (a, b, KeyPayload -> a) -> Node.Handler
 		update_key_with = |st, other, f| {
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
@@ -422,7 +422,7 @@ Ui := [].{
 	## of the declared reads. Equal clicks remain separate occurrences; changing
 	## the reads alone never runs the command. Combine independent reads with a
 	## named record of signals before passing them here.
-	action : Signal(a), (a -> Node.Cmd) -> Node.Msg
+	action : Signal(a), (a -> Node.Cmd) -> Node.Handler
 	action = |reads, to_cmd| {
 		read_cap = reads.cap
 		payload_cap : Capability({})
@@ -445,25 +445,25 @@ Ui := [].{
 
 	## Describe a command for each accepted text-input event. The second
 	## argument is `event.target.value`; declared reads use the settled snapshot.
-	action_str : Signal(a), (a, Str -> Node.Cmd) -> Node.Msg
+	action_str : Signal(a), (a, Str -> Node.Cmd) -> Node.Handler
 	action_str = |reads, to_cmd|
 		action_event_msg(reads, EventExtraction.target_value, Capability.new(), to_cmd)
 
 	## Describe a command for each accepted checked-change event, receiving
 	## `event.target.checked` without storing an occurrence counter in state.
-	action_bool : Signal(a), (a, Bool -> Node.Cmd) -> Node.Msg
+	action_bool : Signal(a), (a, Bool -> Node.Cmd) -> Node.Handler
 	action_bool = |reads, to_cmd|
 		action_event_msg(reads, EventExtraction.target_checked, Capability.new(), to_cmd)
 
 	## Describe a command for each accepted custom event, receiving its detail
 	## serialized as text under the same contract as `State.update_detail`.
-	action_detail : Signal(a), (a, Str -> Node.Cmd) -> Node.Msg
+	action_detail : Signal(a), (a, Str -> Node.Cmd) -> Node.Handler
 	action_detail = |reads, to_cmd|
 		action_event_msg(reads, EventExtraction.detail, Capability.new(), to_cmd)
 
 	## Describe a command for each accepted key event, receiving key text and
 	## shift state. Decoding uses the shared validated keyboard payload format.
-	action_key : Signal(a), (a, KeyPayload -> Node.Cmd) -> Node.Msg
+	action_key : Signal(a), (a, KeyPayload -> Node.Cmd) -> Node.Handler
 	action_key = |reads, to_cmd|
 		action_event_msg(reads, EventExtraction.key_shift, Capability.new(), |value, bytes| to_cmd(value, decode_key_payload(bytes)))
 

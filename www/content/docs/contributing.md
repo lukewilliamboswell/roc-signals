@@ -1169,7 +1169,10 @@ functions are implementation details and must not be made public by hand.
 
 `platform-shared/` owns common signal, scope, descriptor, ownership, and render
 construction modules. `scripts/prepare_platforms.py` copies its Roc files into
-`platform-web/` and `platform-gui/`. These flat generated copies are individually
+`platform-web/` and `platform-gui/`. `Elem.roc` is the exception: each platform owns its
+own copy, because the native platform declares its control constructors inside
+the `Elem` module and Roc allows neither a second module for the same type nor
+an import cycle. Keep the `Elem` tag union identical in both copies. These flat generated copies are individually
 gitignored. The fixed repository layout needs no per-platform source configuration.
 
 Run `python3 scripts/prepare_platforms.py --check` or
@@ -1403,7 +1406,7 @@ roc build .test-out/bundles/examples-gui/notes-editor/main.roc --output=.test-ou
 buttons, labeled inputs, and checkboxes. See the native presentation protocol in
 `docs/native-gui-protocol.md` for field compatibility and limits. Signals, keyed
 rows, scopes, and ownership remain in the shared engine.
-Wide collections use `Gui.virtual_list` to bound child lookup and layout to the
+Wide collections use `Elem.virtual_list` to bound child lookup and layout to the
 visible range; ordinary containers enumerate direct children when rendered.
 See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
 `crates/gpui-host/README.md` for the boundary limits.

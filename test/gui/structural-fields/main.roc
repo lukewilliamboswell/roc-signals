@@ -1,20 +1,19 @@
 app [main] { pf: platform "../../../platform-gui/main.roc" }
 
 import pf.Elem exposing [Elem]
-import pf.Gui
 import pf.Signal
 import pf.Ui
 
 main : () -> Elem
 main = || Ui.state(
 	True,
-	|first| Gui.col(
-		Gui.ColProps.{},
+	|first| Elem.col(
+		Elem.ColProps.{},
 		[
-			Gui.button("Switch branch", first.update(|value| !value)),
+			Elem.button("Switch branch", first.update(|value| !value)),
 			Ui.when(
 				first.signal(),
-				|| Gui.panel(
+				|| Elem.panel(
 					{
 						test_id: "styled-branch",
 						selected: Signal.const(True),
@@ -23,7 +22,7 @@ main = || Ui.state(
 					},
 					["First branch"],
 				),
-				|| Gui.panel(
+				|| Elem.panel(
 					{
 						test_id: "styled-branch",
 						selected: Signal.const(False),

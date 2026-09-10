@@ -5,7 +5,7 @@ text and boolean field tables, the task-kind routes, and the extern node record
 layout - has one authority: `protocol/native-protocol.json`. Running
 `python3 scripts/generate_protocol.py` regenerates the committed artifacts
 (`src/signals/native_protocol_gen.zig`, `crates/gpui-host/src/protocol_gen.rs`,
-the marked section of `platform-gui/Gui.roc`, and the tables below);
+the marked section of `platform-gui/Elem.roc`, and the tables below);
 `scripts/test.py zig` fails when any of them is stale. The prose in this
 document stays hand-written.
 
@@ -112,7 +112,7 @@ checkbox's feedback is its glyph and cursor, and a row-wide highlight would
 misstate its hit area.
 
 The public `Gui.Style` contains typed lengths, colors and overflow tags. Only the
-platform encoder creates records. `Gui.row`/`column`/`panel` choose direction;
+platform encoder creates records. `Elem.row`/`column`/`panel` choose direction;
 each control's props record carries the remaining fields with that control's
 defaults, and a `changes` signal replaces them. Each element publishes one
 style.
@@ -152,7 +152,7 @@ without it shows nothing. Labels never become placeholder text, and
 the host holds no default hint strings. The browser host rejects the field like
 every other native scalar.
 
-`Gui.image` lowers element tag `img` with its relative source text on field
+`Elem.image` lowers element tag `img` with its relative source text on field
 13. The source is application data, not a filesystem capability: the host
 resolves it against one process-wide assets root (`--assets-root <dir>`, else
 `ROC_SIGNALS_ASSETS_ROOT`, else `assets/` beside the executable) and refuses
@@ -202,7 +202,7 @@ Version 7 adds the explicit detail kind; rebuild the host and app together.
 Deferred callbacks validate both node identity and current binding, and cannot
 update disposed or rebound controls.
 
-`Gui.window_lifecycle` declares one `window` element directly beneath the
+`Elem.window_lifecycle` declares one `window` element directly beneath the
 semantic root. Field 11 carries exactly `keep-open`, `await-decision`, or `close`,
 and a native unit `close-requested` binding is mandatory. Preparation rejects
 nested or duplicate registrations, missing bindings, invalid policy text, and
@@ -234,7 +234,7 @@ scope. Duplicate chords are errors, and each element accepts at most 32. The
 browser rejects these filters during descriptor collection and again before wire
 staging. The native publication retains them without inventing browser opcodes.
 
-The public `Gui.KeyChord` record has `key: Str` and four boolean fields:
+The public `Event.KeyChord` record has `key: Str` and four boolean fields:
 `control`, `shift`, `alt`, and `meta`. Keys are lowercase `a`–`z`, digits `0`–`9`,
 or `Enter`, `Escape`, `Tab`, `Space`, `ArrowLeft`, `ArrowRight`, `ArrowUp`,
 `ArrowDown`, `Home`, `End`, `PageUp`, `PageDown`, `Backspace`, `Delete`, and
@@ -271,7 +271,7 @@ is reused in that transaction. Disposed, replaced, rebound, disabled, or foreign
 sources and targets cannot deliver a stale drop. Accepted drops enter ordinary
 engine propagation as string detail. The key is application data, never an
 identity derived from content. External drags are not supported.
-`Gui.dialog` lowers the explicit `dialog` tag, semantic label, native style,
+`Elem.dialog` lowers the explicit `dialog` tag, semantic label, native style,
 and an ordinary Escape shortcut. It needs no additional ABI field. Rust copies
 the existing committed parent ID so modal membership follows engine topology.
 Presentation relocates the dialog view into an occluding overlay without
@@ -315,7 +315,7 @@ names, and test IDs support native specs and GPUI test selectors. They do not
 establish native screen-reader support: this adapter does not publish an
 operating-system accessibility tree.
 
-`Gui.virtual_list({row_height, follow_tail}, attrs, children)` presents direct
+`Elem.virtual_list({row_height, follow_tail}, attrs, children)` presents direct
 children at a fixed logical height. `Ui.each` retains its ordinary key and scope
 semantics; scrolling changes GPUI layout work, not which reactive scopes exist.
 The `native_viewport` field is a separate canonical record
@@ -533,7 +533,7 @@ amount of behavior stays hand-written. To add a native scalar field:
    reads the value directly, add its slot to `raw_node.fields` in the intended
    ABI position.
 2. Run `python3 scripts/generate_protocol.py`. This regenerates the Zig/Rust
-   enums, counts, and `RawNode` layouts, the `Gui.roc` constants, and the
+   enums, counts, and `RawNode` layouts, the `Elem.roc` constants, and the
    tables above. Every derived contract (metadata counts, descriptor-index
    sizes, `signals_node_size`, version asserts) follows automatically.
 3. Write the honest residue - the behavior no table can express. The Zig
@@ -546,7 +546,7 @@ amount of behavior stays hand-written. To add a native scalar field:
    - `crates/gpui-host/src/bridge.rs`: copy the new `RawNode` slot into `Node`
      (a missed slot is unused-field/`E0063`-adjacent, and the size assert plus
      `cargo test` catch drift) and present it in the host.
-   - `platform-gui/Gui.roc`: an `Attribute` variant lowering to the generated
+   - `platform-gui/Elem.roc`: a props field lowering to the generated
      `*_field` constant.
 4. Describe the field's semantics in prose in this document, and rebuild both
    sides together (`python3 scripts/build_gui.py`).

@@ -7,20 +7,20 @@ import pf.Signal
 main : () -> Elem
 main = || Ui.state(False, |enabled| {
 	Ui.state(0.U64, |clicks| {
-		Gui.col({ test_id: "presentation" }, [
-			Gui.heading("Native presentation"),
-			Gui.checkbox({ label: "Enable action", checked: enabled.signal() }, enabled.update_bool(|_, value| value)),
-			Gui.row({
+		Elem.col({ test_id: "presentation" }, [
+			Elem.heading("Native presentation"),
+			Elem.checkbox({ label: "Enable action", checked: enabled.signal() }, enabled.update_bool(|_, value| value)),
+			Elem.row({
 				test_id: "styled-row",
 				selected: enabled.signal(),
 				changes: enabled.read(|value| Gui.Style.{ padding: 12, gap: 16, width: Fill, bg: if value { Rgb(1193046) } else { Rgb(2236962) } }),
 			}, [
-				Gui.action_button({
+				Elem.action_button({
 					caption: Signal.const("Run action"),
 					enabled: enabled.signal(),
 					test_id: "run-action",
 				}, clicks.update(|value| value + 1)),
-				Gui.text_s(clicks.read(|value| "Runs: ${value.to_str()}")),
+				Elem.text_s(clicks.read(|value| "Runs: ${value.to_str()}")),
 			]),
 		])
 	})

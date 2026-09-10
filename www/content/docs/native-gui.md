@@ -68,11 +68,11 @@ all 39 specs, and confirmed rendering for every app.
 
 ## Controls and layout
 
-`Gui.row`, `Gui.col`, and `Gui.panel` take a props record followed by a
-child list. Every control has its own props type, such as `Gui.PanelProps`,
+`Elem.row`, `Elem.col`, and `Elem.panel` take a props record followed by a
+child list. Every control has its own props type, such as `Elem.PanelProps`,
 whose fields all have defaults, so a literal names only what it changes:
-`Gui.col({ test_id: "count", padding: 12, gap: 4 }, ["Count"])`. A string
-literal in a child list is literal text, the same as `Gui.text`. The style
+`Elem.col({ test_id: "count", padding: 12, gap: 4 }, ["Count"])`. A string
+literal in a child list is literal text, the same as `Elem.text`. The style
 fields carry that control's own presentation defaults: a panel keeps its
 padding and border unless the literal sets them. Attributes such as `test_id`,
 `label`, `selected`, `enabled`, `disabled`, `shortcuts`, `drag_source`, and
@@ -82,7 +82,7 @@ padding and border unless the literal sets them. Attributes such as `test_id`,
 through normal signal propagation. A record built inside a `Signal.map`
 transform is constructed explicitly as `Gui.Style.{ ... }` so its omitted
 fields still take their defaults; the same applies to a props record built
-outside the call, for example `Gui.PanelProps.{ padding: 4 }`, because only a
+outside the call, for example `Elem.PanelProps.{ padding: 4 }`, because only a
 literal passed directly to the control absorbs its defaults.
 
 Styles specify logical-pixel dimensions, spacing, padding, colors, borders,
@@ -110,7 +110,7 @@ light-background editor is fully legible.
 The initial window is 1200 × 820 logical pixels and can be moved, resized,
 minimized, and maximized. The host requests client decorations on Wayland and
 supplies a draggable title bar and resize borders when the compositor delegates
-them to the app. The title-bar Close button uses the same `Gui.window_lifecycle` close
+them to the app. The title-bar Close button uses the same `Elem.window_lifecycle` close
 guard as an OS close request. The minimum window size is 360 × 240 logical pixels.
 Apps own their content padding; the frame sits outside that content.
 
@@ -150,16 +150,16 @@ The `enabled` and `disabled` signal fields change availability while preserving
 the control's identity.
 The `placeholder` field shows an explicit empty-field hint inside `text_input`
 and `textarea` while their document is empty, for example
-`Gui.text_input({ label, value, placeholder: "Filter tasks…" }, msg)`.
+`Elem.text_input({ label, value, placeholder: "Filter tasks…" }, msg)`.
 The hint is static text declared by the app; a field without it shows an
 empty field, and labels are never reused as hint text.
 Tab and Shift-Tab traverse enabled controls in native layout order. Focused
 control actions and declared shortcuts run first; modal dialogs own their Tab
 navigation while open.
 
-`Gui.image({ source, label, ... })` renders a picture from a relative path
+`Elem.image({ source, label, ... })` renders a picture from a relative path
 inside the host's assets root, sized and rounded by its style, for example
-`Gui.image({ source: "avatars/maya.png", label: "Maya avatar", width: 24.Px, height: 24.Px, radius: 24 })`.
+`Elem.image({ source: "avatars/maya.png", label: "Maya avatar", width: 24.Px, height: 24.Px, radius: 24 })`.
 Launch the host with `--assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
 choose the root; the default is `assets/` beside the executable. Absolute
 paths, `..` traversal, URIs, and symbolic links never resolve, and a missing or
@@ -181,7 +181,7 @@ once on the app's root element:
 ```roc
 import "../../vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
 
-Gui.col(
+Elem.col(
     { embedded_fonts: [{ family: "Source Code Pro", bytes: source_code_pro }], ... },
     [...],
 )
@@ -200,7 +200,7 @@ the license text in the repository next to the font file.
 
 ## Modal dialogs
 
-Use `Gui.dialog({ label, on_dismiss, ... }, children)` inside `Ui.when` so
+Use `Elem.dialog({ label, on_dismiss, ... }, children)` inside `Ui.when` so
 mounting and disposal explicitly own the modal lifetime. `label` supplies the
 semantic dialog name; `on_dismiss` is a normal unit message bound to Escape.
 Closing the dialog is the application's state transition, never hidden host
@@ -228,7 +228,7 @@ modal behavior or a window-close guard.
 
 ## Wide lists
 
-`Gui.virtual_list({ row_height, follow_tail, ... }, children)` lays out only
+`Elem.virtual_list({ row_height, follow_tail, ... }, children)` lays out only
 the visible child range. Give every direct child the same fixed logical height;
 `row_height` must be between 1 and 16,384. Use `Ui.each` for keyed child rows.
 `follow_tail` is a boolean signal that keeps the final row visible as history
@@ -311,9 +311,9 @@ remains a separate form of validation.
 
 ## Window close decisions
 
-Wrap the app's top-level content in `Gui.window_lifecycle` to protect work before
+Wrap the app's top-level content in `Elem.window_lifecycle` to protect work before
 closing. Its `on_close_requested` message receives a unit event through the
-ordinary graph. Its `decision` is a `Signal(Gui.CloseDecision)`:
+ordinary graph. Its `decision` is a `Signal(Elem.CloseDecision)`:
 `KeepOpen` cancels the request, `AwaitDecision` waits for confirmation or work,
 and `Close` completes the pending request. This lets a save result close the
 window only after the write succeeds. Close without a pending request is inert.

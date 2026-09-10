@@ -1,6 +1,7 @@
 app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc" }
 
 import pf.Elem exposing [Elem]
+import pf.Event
 import pf.Gui exposing [Px]
 import pf.Signal
 import pf.Ui
@@ -15,8 +16,8 @@ import "theme.json" as theme_json : Str
 theme : Theme.Palette
 theme = Theme.from_json("examples-gui/counter/theme.json", theme_json)
 
-accent_button : Str, Gui.Msg -> Elem
-accent_button = |label, message| Gui.action_button(
+accent_button : Str, Event.Handler -> Elem
+accent_button = |label, message| Elem.action_button(
 	{
 		caption: Signal.const(label),
 		padding: theme.control_padding,
@@ -32,15 +33,15 @@ main : () -> Elem
 main = || Ui.state(
 	0.I64,
 	|count| {
-		Gui.col(
+		Elem.col(
 			{ padding: 32, gap: 20 },
 			[
-				Gui.heading("Counter"),
-				Gui.col(
+				Elem.heading("Counter"),
+				Elem.col(
 					{ fg: theme.text_secondary },
 					["A minimal Roc Signals application."],
 				),
-				Gui.panel(
+				Elem.panel(
 					{
 						width: 380.Px,
 						padding: 24,
@@ -51,16 +52,16 @@ main = || Ui.state(
 						bg: theme.surface,
 					},
 					[
-						Gui.col(
+						Elem.col(
 							{ test_id: "count", font_size: 44, fg: theme.text_primary },
-							[Gui.text_s(count.read(|value| value.to_str()))],
+							[Elem.text_s(count.read(|value| value.to_str()))],
 						),
-						Gui.row(
+						Elem.row(
 							{ gap: theme.gap },
 							[
 								accent_button("Increment", count.update(|value| value + 1)),
-								Gui.button("Decrement", count.update(|value| value - 1)),
-								Gui.button("Reset", count.update(|_| 0)),
+								Elem.button("Decrement", count.update(|value| value - 1)),
+								Elem.button("Reset", count.update(|_| 0)),
 							],
 						),
 					],

@@ -39,7 +39,7 @@ Workflow := [].{
 				Signal.TaskStatus.Failed(error) => failed(model, error)
 			},
 		),
-		Ui.when(model.read(|value| value.session.phase == Session.Phase.Waiting), || Ui.on_change(Signal.interval(500), |_| model.update_cmd(|value| { ..value, session: Session.read_next(value.session) })), || Gui.text("")),
+		Ui.when(model.read(|value| value.session.phase == Session.Phase.Waiting), || Ui.on_change(Signal.interval(500), |_| model.update_cmd(|value| { ..value, session: Session.read_next(value.session) })), || Elem.text("")),
 	]
 
 	cancel : Ui.State(Session.Accepted), Tasks, Session.Phase -> Gui.Cmd

@@ -19,7 +19,7 @@ adding a parallel theming channel.
 ## The pattern that works today
 
 The `changes ?: Signal(Style)` field on every control's props record
-([platform-gui/Gui.roc](../platform-gui/Gui.roc)) already delivers
+([platform-gui/Elem.roc](../platform-gui/Elem.roc)) already delivers
 reactive presentation through ordinary typed, equality-pruned signal
 propagation ([docs/native-gui-protocol.md](../docs/native-gui-protocol.md)).
 An application defines a palette record, holds the current palette in state,
@@ -58,9 +58,9 @@ main = || Ui.state(
 				Light => light
 			},
 		)
-		Gui.col(
+		Elem.col(
 			{ changes: theme.map(|t| Gui.Style.{ padding: 32, gap: 20, bg: t.surface, fg: t.content }) },
-			[Gui.panel({ changes: panel_style(theme) }, [Gui.text("Themed content")])],
+			[Elem.panel({ changes: panel_style(theme) }, [Elem.text("Themed content")])],
 		)
 	},
 )
@@ -70,7 +70,7 @@ Because a theme is a plain record in a signal, per-subtree themes, animated
 transitions, and user-selected palettes all reduce to ordinary signal
 composition. Nothing in this pattern requires platform work. The current
 Roc-side control defaults — the panel border `Rgb(4743275)` (0x48606B) at
-[platform-gui/Gui.roc](../platform-gui/Gui.roc) line 250, the dialog palette at
+[platform-gui/Elem.roc](../platform-gui/Elem.roc), the dialog palette at
 line 301, and the action-button background `Rgb(3232873)` (0x315469) at line
 353 — are only defaults: a supplied style replaces the complete record, so they
 do not block the pattern.
@@ -85,8 +85,8 @@ Controls with no styling route at all:
 
 | Control | Gap |
 | --- | --- |
-| `Gui.button` | **Resolved:** `Gui.action_button` takes the full props record with the button's default style; `Gui.button` stays as the caption-and-message shorthand. |
-| `Gui.heading`, `Gui.text`, `Gui.text_s` | No attributes. Foreground and font size inherit from a styled wrapper, so a wrapping `Gui.col` is a workaround, not a gap of the same severity. |
+| `Elem.button` | **Resolved:** `Elem.action_button` takes the full props record with the button's default style; `Elem.button` stays as the caption-and-message shorthand. |
+| `Elem.heading`, `Elem.text`, `Elem.text_s` | No attributes. Foreground and font size inherit from a styled wrapper, so a wrapping `Elem.col` is a workaround, not a gap of the same severity. |
 
 Host chrome that ignores application styles entirely:
 
@@ -144,8 +144,8 @@ table above.
 
 ### 1. Attributes for the remaining controls
 
-**Shipped** as `Gui.action_button : ActionButtonProps, Msg`;
-`Gui.button` keeps its two-argument shape so no call site moved. Leave
+**Shipped** as `Elem.action_button : ActionButtonProps, Msg`;
+`Elem.button` keeps its two-argument shape so no call site moved. Leave
 `heading`, `text`, and `text_s` alone initially; wrapping in a styled
 container already themes them through inheritance, and adding attributes
 there can follow demand.
@@ -184,9 +184,9 @@ editor rows. The textarea caption color remains a host constant for now.
 ### 3. Window-level chrome
 
 Scrollbars on the window, the frame, the dialog scrim, and the drag ghost are
-not per-element. `Gui.window_lifecycle` is already the single app-root wrapper
+not per-element. `Elem.window_lifecycle` is already the single app-root wrapper
 and already carries a style attribute
-([platform-gui/Gui.roc](../platform-gui/Gui.roc) lines 259–289); its resolved
+([platform-gui/Elem.roc](../platform-gui/Elem.roc)); its resolved
 style — including the version-2 `accent`/`muted` fields — is the natural source
 for frame, root scrollbars, scrim, and ghost colors. This keeps window chrome
 app-declared through the existing field machinery rather than a new protocol
@@ -201,7 +201,7 @@ version-2 fields.
    table visible on screen. Documentation: extend
    [www/content/docs/native-gui.md](../www/content/docs/native-gui.md) with the
    pattern (no example there uses `changes` today).
-2. **Button attributes.** `Gui.action_button` carries the button's props;
+2. **Button attributes.** `Elem.action_button` carries the button's props;
    migrate examples and specs together.
 3. **Style version 2.** Roc encoder, Zig validation, extern struct extension,
    Rust application for `hover_bg`, `active_bg`, `accent`,

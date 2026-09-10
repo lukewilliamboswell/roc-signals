@@ -18,7 +18,7 @@ row_view = |row, selected| {
 	Ui.state(
 		"",
 		|draft| {
-			Gui.panel(
+			Elem.panel(
 				{
 					test_id: "row-${key}",
 					selected: Signal.select(selected.signal(), key),
@@ -31,14 +31,14 @@ row_view = |row, selected| {
 					border_color: Rgb(0x4A6272),
 				},
 				[
-					Gui.row(
+					Elem.row(
 						{ gap: 12 },
 						[
-							Gui.button("Select ${key}", selected.update(|_| key)),
-							Gui.col(
+							Elem.button("Select ${key}", selected.update(|_| key)),
+							Elem.col(
 								{ padding: 6, font_size: 13, fg: Rgb(0xA9BFCC) },
 								[
-									Gui.text_s(
+									Elem.text_s(
 										Signal.select(selected.signal(), key).map(
 											|yes| if yes {
 												"Selected"
@@ -51,16 +51,16 @@ row_view = |row, selected| {
 							),
 						],
 					),
-					Gui.text_input({
+					Elem.text_input({
 						label: "Draft ${key}",
 						value: draft.signal(),
 						placeholder: "Type a draft…",
 						width: 240.Px,
 						gap: 4,
 					}, draft.update_str(|_, value| value)),
-					Gui.col(
+					Elem.col(
 						{ font_size: 13, fg: Rgb(0x93A9B6) },
-						[Gui.text_s(draft.read(|text| "Saved draft: ${text}"))],
+						[Elem.text_s(draft.read(|text| "Saved draft: ${text}"))],
 					),
 				],
 			)
@@ -78,18 +78,18 @@ main = || Ui.state(
 				Ui.state(
 					True,
 					|visible| {
-						Gui.col(
+						Elem.col(
 							{ padding: 32, gap: 16, width: Fill },
 							[
-								Gui.heading("Roc Signals + GPUI"),
-								Gui.col(
+								Elem.heading("Roc Signals + GPUI"),
+								Elem.col(
 									{ fg: Rgb(0xA9BFCC) },
 									["Edit a row, then move it. Hide/show creates fresh row scopes."],
 								),
-								Gui.row(
+								Elem.row(
 									{ gap: 8 },
 									[
-										Gui.action_button(
+										Elem.action_button(
 											{
 												caption: Signal.const("Move first to end"),
 												padding: 8,
@@ -98,24 +98,24 @@ main = || Ui.state(
 											},
 											rows.update(move_first),
 										),
-										Gui.button("Hide / show rows", visible.update(|v| !v)),
+										Elem.button("Hide / show rows", visible.update(|v| !v)),
 									],
 								),
 								Ui.when(
 									visible.signal(),
 									|| {
-										Gui.col(
+										Elem.col(
 											{ gap: 12, width: 520.Px },
 											[
-												Gui.col(
+												Elem.col(
 													{ font_size: 13, fg: Rgb(0x93A9B6) },
-													[Gui.text_s(Signal.interval(1000).map(|tick| "Scope clock: ${tick.to_str()}"))],
+													[Elem.text_s(Signal.interval(1000).map(|tick| "Scope clock: ${tick.to_str()}"))],
 												),
 												Ui.each(rows.signal(), |row| row_view(row, selected)),
 											],
 										)
 									},
-									|| Gui.col(
+									|| Elem.col(
 										{ font_size: 13, fg: Rgb(0x93A9B6) },
 										["Rows disposed"],
 									),

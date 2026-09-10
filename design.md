@@ -2580,7 +2580,7 @@ The catalog below records shared reactive APIs and the web rendering/service
 surface. Native applications use the same `Signal`, `Ui`, `Rows`, and opaque
 `Elem` contracts with the `Gui` controls and `Files` tasks described in
 *Native GUI Host and Desktop Boundary*. The exact native public signatures live
-with [Gui](platform-gui/Gui.roc), [Files](platform-gui/Files.roc), and the
+with [Elem](platform-gui/Elem.roc), [Gui](platform-gui/Gui.roc), [Files](platform-gui/Files.roc), and the
 [native task reference](www/content/docs/reference.md#native-files); the
 [native guide](www/content/docs/native-gui.md) supplies composition examples.
 Neither the `Html` nor the browser-service signatures below imply GUI support.

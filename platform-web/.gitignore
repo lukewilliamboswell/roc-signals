@@ -1,7 +1,6 @@
 # Copied from platform-shared by scripts/prepare_platforms.py.
 /Capability.roc
 /EachSink.roc
-/Elem.roc
 /EventExtraction.roc
 /HostValue.roc
 /Html.roc
@@ -9,3 +8,4 @@
 /Rows.roc
 /Signal.roc
 /Ui.roc
+/Event.roc

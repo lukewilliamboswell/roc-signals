@@ -55,10 +55,10 @@ main = || Ui.state(
 			)
 			cancel = Ui.action(phase, |value| Workflow.cancel(session, tasks, value))
 			chord = { key: "s", control: True, shift: False, alt: False, meta: False }
-			Gui.window_lifecycle(
+			Elem.window_lifecycle(
 				{ on_close_requested: session.update_with(body, Session.request_close), decision: session.read(Session.close_decision) },
 				[
-					Gui.col(
+					Elem.col(
 						{
 							test_id: "notes-editor",
 							padding: 24,
@@ -70,17 +70,17 @@ main = || Ui.state(
 							shortcuts: [{ chord: { ..chord, key: "n" }, msg: new }, { chord: { ..chord, key: "o" }, msg: open }, { chord: chord, msg: save }, { chord: { ..chord, shift: True }, msg: save_as }, { chord: { ..chord, key: "Escape", control: False }, msg: cancel }],
 						},
 						[
-							Gui.heading("Notes"),
-							Gui.col(
+							Elem.heading("Notes"),
+							Elem.col(
 								{ fg: theme.text_secondary },
 								["A quiet place to collect your thoughts."],
 							),
-							Gui.row(
+							Elem.row(
 								{ gap: 8 },
 								[
-									Gui.action_button({ caption: Signal.const("New"), enabled: ready }, new),
-									Gui.action_button({ caption: Signal.const("Open…"), enabled: ready }, open),
-									Gui.action_button({
+									Elem.action_button({ caption: Signal.const("New"), enabled: ready }, new),
+									Elem.action_button({ caption: Signal.const("Open…"), enabled: ready }, open),
+									Elem.action_button({
 										caption: Signal.const("Save"),
 										enabled: revert_ready,
 										padding: theme.control_padding,
@@ -89,18 +89,18 @@ main = || Ui.state(
 										hover_bg: theme.accent_hover,
 										active_bg: theme.accent_active,
 									}, save),
-									Gui.action_button({ caption: Signal.const("Save As…"), enabled: ready }, save_as),
-									Gui.action_button({ caption: Signal.const("Revert changes"), enabled: revert_ready }, revert),
+									Elem.action_button({ caption: Signal.const("Save As…"), enabled: ready }, save_as),
+									Elem.action_button({ caption: Signal.const("Revert changes"), enabled: revert_ready }, revert),
 								],
 							),
-							Gui.row(
+							Elem.row(
 								{ gap: 12 },
 								[
-									Gui.col(
+									Elem.col(
 										{ test_id: "document-name", font_size: 18, fg: theme.text_primary },
-										[Gui.text_s(session.read(|state| state.baseline.title))],
+										[Elem.text_s(session.read(|state| state.baseline.title))],
 									),
-									Gui.col(
+									Elem.col(
 										{
 											test_id: "note-status",
 											changes: view.map(
@@ -118,20 +118,20 @@ main = || Ui.state(
 												},
 											),
 										},
-										[Gui.text_s(view.map(Session.status))],
+										[Elem.text_s(view.map(Session.status))],
 									),
 								],
 							),
-							Gui.row(
+							Elem.row(
 								{ width: Fill, height: Fill, grow: True, gap: 0 },
 								[
-									Gui.col({ grow: True }, []),
-									Gui.col(
+									Elem.col({ grow: True }, []),
+									Elem.col(
 										{ width: 740.Px, height: Fill },
 										[
 											Ui.switch(
 												session.read(|state| state.document_generation),
-												|_| Gui.textarea(
+												|_| Elem.textarea(
 													{
 														label: "Note text",
 														value: body.signal(),
@@ -147,31 +147,31 @@ main = || Ui.state(
 											),
 										],
 									),
-									Gui.col({ grow: True }, []),
+									Elem.col({ grow: True }, []),
 								],
 							),
-							Gui.row(
+							Elem.row(
 								{ gap: 24 },
 								[
-									Gui.col(
+									Elem.col(
 										{
 											test_id: "note-summary",
 											font_size: 13,
 											fg: theme.text_secondary,
 										},
-										[Gui.text_s(body.read(|text| Document.counts_text(Document.counts(text))))],
+										[Elem.text_s(body.read(|text| Document.counts_text(Document.counts(text))))],
 									),
 								],
 							),
 							# Conditional problem/dialog rows live in one trailing gap-0
 							# wrapper so their empty states cost no vertical rhythm.
-							Gui.col(
+							Elem.col(
 								{ gap: 0 },
 								[
-									Gui.col(
+									Elem.col(
 										{ test_id: "note-problem", font_size: 13, fg: theme.danger },
 										[
-											Gui.text_s(
+											Elem.text_s(
 												session.read(
 													|state| match state.problem {
 														None => ""
@@ -188,8 +188,8 @@ main = || Ui.state(
 												_ => False
 											},
 										),
-										|| Gui.button("Cancel operation", cancel),
-										|| Gui.text(""),
+										|| Elem.button("Cancel operation", cancel),
+										|| Elem.text(""),
 									),
 									Ui.when(
 										phase.map(
@@ -198,7 +198,7 @@ main = || Ui.state(
 												_ => False
 											},
 										),
-										|| Gui.dialog(
+										|| Elem.dialog(
 											{
 												label: "Discard your changes?",
 												on_dismiss: session.update(Session.cancel),
@@ -209,13 +209,13 @@ main = || Ui.state(
 												radius: theme.radius,
 											},
 											[
-												Gui.heading("Discard your changes?"),
+												Elem.heading("Discard your changes?"),
 												"Your unsaved text will be replaced. Keep editing to return to this draft.",
-												Gui.row(
-													Gui.RowProps.{},
+												Elem.row(
+													Elem.RowProps.{},
 													[
-														Gui.button("Keep editing", session.update(Session.cancel)),
-														Gui.button(
+														Elem.button("Keep editing", session.update(Session.cancel)),
+														Elem.button(
 															"Discard changes",
 															Ui.action(
 																session.signal(),
@@ -231,30 +231,30 @@ main = || Ui.state(
 												),
 											],
 										),
-										|| Gui.text(""),
+										|| Elem.text(""),
 									),
 									Ui.when(
 										session.read(|state| state.close == Session.CloseState.ConfirmClose),
-										|| Gui.dialog(
+										|| Elem.dialog(
 											{
 												label: "Save before closing?",
 												on_dismiss: session.update(Session.cancel),
 												test_id: "close-confirmation",
 											},
 											[
-												Gui.heading("Save before closing?"),
+												Elem.heading("Save before closing?"),
 												"Your note has unsaved changes. Save them, discard them, or keep editing.",
-												Gui.row(
-													Gui.RowProps.{},
+												Elem.row(
+													Elem.RowProps.{},
 													[
-														Gui.button("Keep editing", session.update(Session.cancel)),
-														Gui.button("Discard and close", session.update(|state| { ..state, close: Session.CloseState.AllowClose })),
-														Gui.button("Save and close", session.update_with(body, Session.save_and_close)),
+														Elem.button("Keep editing", session.update(Session.cancel)),
+														Elem.button("Discard and close", session.update(|state| { ..state, close: Session.CloseState.AllowClose })),
+														Elem.button("Save and close", session.update_with(body, Session.save_and_close)),
 													],
 												),
 											],
 										),
-										|| Gui.text(""),
+										|| Elem.text(""),
 									),
 								],
 							),

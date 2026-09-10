@@ -8,7 +8,7 @@ and the Rust GPUI host. This script renders that manifest into:
 
 - `src/signals/native_protocol_gen.zig` (whole file)
 - `crates/gpui-host/src/protocol_gen.rs` (whole file)
-- `platform-gui/Gui.roc` (between GENERATED markers)
+- `platform-gui/Elem.roc` (between GENERATED markers)
 - `docs/native-gui-protocol.md` (between GENERATED markers)
 
 Generated artifacts are committed; regeneration is idempotent. `--check`
@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "protocol" / "native-protocol.json"
 ZIG_OUT = ROOT / "src" / "signals" / "native_protocol_gen.zig"
 RUST_OUT = ROOT / "crates" / "gpui-host" / "src" / "protocol_gen.rs"
-ROC_OUT = ROOT / "platform-gui" / "Gui.roc"
+ROC_OUT = ROOT / "platform-gui" / "Elem.roc"
 DOCS_OUT = ROOT / "docs" / "native-gui-protocol.md"
 
 ROC_BEGIN = "# BEGIN GENERATED PROTOCOL (scripts/generate_protocol.py; edit protocol/native-protocol.json)"

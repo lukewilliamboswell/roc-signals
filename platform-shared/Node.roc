@@ -22,7 +22,7 @@ Node := [].{
 	## An accepted event's extraction plan and declared handler. Reducers replace
 	## a bound source; actions read a settled signal snapshot and produce a
 	## command. The host derives the compact payload descriptor at ingestion.
-	Msg := { event_extraction_plan : EventExtractionPlan, handler : EventHandler }
+	Handler := { event_extraction_plan : EventExtractionPlan, handler : EventHandler }
 
 	## Reducers replace one state value; actions describe commands for each
 	## accepted event. An action's reads are explicit graph data, not a callback
@@ -148,7 +148,7 @@ Node := [].{
 	}
 
 	## Static attribute on a markup element. Dynamic (signal-backed) attrs carry a
-	## `SignalExpr`; event handlers carry a `Msg`.
+	## `SignalExpr`; event handlers carry a `Handler`.
 	Attr := [
 		StaticText({ field : TextField, name : Str, value : Str }),
 		SignalText({ field : TextField, name : Str, signal : Box(SignalExpr), read : HostValue.TextReadHandle }),
@@ -165,5 +165,5 @@ Node := [].{
 	## Event binding descriptor attached to an element. A native key filter owns
 	## one unit keydown route; its event and callable share the element's scope.
 	## Hosts without this capability reject the filter before publication.
-	EventBinding := { kind : FixedEventKind, msg : Msg, policy : EventPolicy, delivery : EventDelivery, name : Str, key_chord : [None, Some(KeyChord)] }
+	EventBinding := { kind : FixedEventKind, msg : Handler, policy : EventPolicy, delivery : EventDelivery, name : Str, key_chord : [None, Some(KeyChord)] }
 }

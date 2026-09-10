@@ -1,6 +1,5 @@
 app [main] { pf: platform "../../../platform-gui/main.roc" }
 import pf.Elem exposing [Elem]
-import pf.Gui
 import pf.Rows
 import pf.Ui
 
@@ -13,11 +12,11 @@ main = || Ui.state(
 			|editing|
 				Ui.state(
 					True,
-					|confirm| Gui.col(
-						Gui.ColProps.{},
+					|confirm| Elem.col(
+						Elem.ColProps.{},
 						[
-							Gui.button("Add", Ui.action(rows.signal(), |current| Ui.update_states([rows.write(Rows.apply(current, [Append(["c"])]) ?? crash "unique"), editing.write(True), confirm.write(True)]))),
-							Gui.button(
+							Elem.button("Add", Ui.action(rows.signal(), |current| Ui.update_states([rows.write(Rows.apply(current, [Append(["c"])]) ?? crash "unique"), editing.write(True), confirm.write(True)]))),
+							Elem.button(
 								"Delete",
 								Ui.action(
 									rows.signal(),
@@ -28,19 +27,19 @@ main = || Ui.state(
 									]),
 								),
 							),
-							Gui.button("Empty list", rows.update(|current| Rows.replace_all(current, []) ?? crash "unique")),
-							Gui.button("Restore list", rows.update(|current| Rows.replace_all(current, ["a", "b"]) ?? crash "unique")),
-							Gui.col({ test_id: "rows" }, [Ui.each(rows.signal(), |row| Gui.text_s(row.signal()))]),
+							Elem.button("Empty list", rows.update(|current| Rows.replace_all(current, []) ?? crash "unique")),
+							Elem.button("Restore list", rows.update(|current| Rows.replace_all(current, ["a", "b"]) ?? crash "unique")),
+							Elem.col({ test_id: "rows" }, [Ui.each(rows.signal(), |row| Elem.text_s(row.signal()))]),
 							Ui.when(
 								editing.signal(),
-								|| Gui.col(
-									Gui.ColProps.{},
+								|| Elem.col(
+									Elem.ColProps.{},
 									[
 										"Detail",
-										Ui.when(confirm.signal(), || Gui.text("Confirm"), || Gui.text("Editing")),
+										Ui.when(confirm.signal(), || Elem.text("Confirm"), || Elem.text("Editing")),
 									],
 								),
-								|| Gui.text("Closed"),
+								|| Elem.text("Closed"),
 							),
 						],
 					),

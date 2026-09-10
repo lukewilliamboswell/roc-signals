@@ -1,5 +1,5 @@
 import Document
-import pf.Gui
+import pf.Elem exposing [Elem]
 
 ## A document operation owns its submitted snapshot until its task settles.
 ## Editing the live body while a write runs never changes what that write saves.
@@ -51,7 +51,7 @@ Session := [].{
 	}
 
 	## Window closure remains an ordinary app transition, including async saving.
-	close_decision : State -> Gui.CloseDecision
+	close_decision : State -> Elem.CloseDecision
 	close_decision = |state| match state.close {
 		NoClose => KeepOpen
 		ConfirmClose | SaveClose => AwaitDecision

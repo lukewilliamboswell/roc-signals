@@ -2,7 +2,7 @@ platform ""
 	requires {
 		main : () -> Elem
 	}
-	exposes [Elem, Signal, Gui, Ui, Rows, Files]
+	exposes [Elem, Event, Signal, Gui, Ui, Rows, Files]
 	packages {
 		roc: "nightly-2026-09-04-c125b82",
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
@@ -39,6 +39,7 @@ import EachSink
 import HostValue
 import Signal
 import Gui
+import Event
 import Files
 import Ui
 import Rows

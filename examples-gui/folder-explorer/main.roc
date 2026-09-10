@@ -22,11 +22,11 @@ asset_entries = Manifest.entries(manifest_json)
 ## missing glyph file renders the host's neutral placeholder box instead.
 kind_glyph : Explorer.Kind -> Elem
 kind_glyph = |kind| {
-	glyph = |source, label| Gui.image({ source, label, width: 16.Px, height: 16.Px, radius: 3 })
+	glyph = |source, label| Elem.image({ source, label, width: 16.Px, height: 16.Px, radius: 3 })
 	match kind {
 		Directory => glyph("glyphs/folder.png", "Folder glyph")
 		File => glyph("glyphs/file.png", "File glyph")
-		_ => Gui.text("")
+		_ => Elem.text("")
 	}
 }
 
@@ -68,7 +68,7 @@ visible_entries = |entries, query, order| {
 entry_row : Ui.Row(Explorer.Entry), Handles, Signal.Signal(Str), Signal.Signal(Bool) -> Elem
 entry_row = |row, handles, selected, ready| {
 	key = row.key()
-	Gui.row(
+	Elem.row(
 		{
 			test_id: "entry:${key}",
 			selected: Signal.select(selected, key),
@@ -78,7 +78,7 @@ entry_row = |row, handles, selected, ready| {
 			radius: 6,
 		},
 		[
-			Gui.action_button(
+			Elem.action_button(
 				{
 					caption: row.map(|entry| Explorer.file_name(entry.path)),
 					enabled: ready,
@@ -91,7 +91,7 @@ entry_row = |row, handles, selected, ready| {
 				},
 				Ui.action(row.signal(), |entry| handles.model.update_cmd(|state| Session.activate(state, entry))),
 			),
-			Gui.row(
+			Elem.row(
 				{
 					width: 90.Px,
 					padding: 4,
@@ -102,10 +102,10 @@ entry_row = |row, handles, selected, ready| {
 				},
 				[
 					Ui.switch(row.map(|entry| entry.kind), kind_glyph),
-					Gui.text_s(row.map(|entry| entry.kind.to_str())),
+					Elem.text_s(row.map(|entry| entry.kind.to_str())),
 				],
 			),
-			Gui.col(
+			Elem.col(
 				{
 					width: 90.Px,
 					padding: 4,
@@ -113,7 +113,7 @@ entry_row = |row, handles, selected, ready| {
 					fg: Rgb(0x93A9B6),
 					overflow_x: Clip,
 				},
-				[Gui.text_s(row.map(Explorer.size_text))],
+				[Elem.text_s(row.map(Explorer.size_text))],
 			),
 		],
 	)
@@ -137,7 +137,7 @@ inspect_view = |handles| {
 			Sample(_) => False
 		},
 	)
-	Gui.panel(
+	Elem.panel(
 		{
 			test_id: "file-details",
 			width: 340.Px,
@@ -147,8 +147,8 @@ inspect_view = |handles| {
 			radius: 8,
 		},
 		[
-			Gui.heading("File details"),
-			Gui.text_s(
+			Elem.heading("File details"),
+			Elem.text_s(
 				selection.map(
 					|value| match value {
 						NoSelection => "Select a file to inspect it. Open a folder to browse its contents."
@@ -156,10 +156,10 @@ inspect_view = |handles| {
 					},
 				),
 			),
-			Gui.col(
+			Elem.col(
 				{ gap: 2, font_size: 13, fg: Rgb(0xA9BFCC) },
 				[
-					Gui.text_s(
+					Elem.text_s(
 						selection.map(
 							|value| match value {
 								NoSelection => ""
@@ -167,7 +167,7 @@ inspect_view = |handles| {
 							},
 						),
 					),
-					Gui.text_s(
+					Elem.text_s(
 						selection.map(
 							|value| match value {
 								NoSelection => ""
@@ -177,23 +177,23 @@ inspect_view = |handles| {
 					),
 				],
 			),
-			Gui.row(
+			Elem.row(
 				{ gap: 8 },
 				[
-					Gui.action_button({
+					Elem.action_button({
 						caption: Signal.const("Preview text"),
 						enabled: can_preview,
 						padding: 8,
 						radius: 6,
 						bg: Rgb(0x2E6FA3),
 					}, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.preview_selected))),
-					Gui.action_button({ caption: Signal.const("Open in app"), enabled: can_open }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.open_selected))),
+					Elem.action_button({ caption: Signal.const("Open in app"), enabled: can_open }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.open_selected))),
 				],
 			),
-			Gui.col(
+			Elem.col(
 				{ font_size: 13, fg: Rgb(0x93A9B6) },
 				[
-					Gui.text_s(
+					Elem.text_s(
 						selection.map(
 							|value| match value {
 								Selected(entry) if entry.kind == SymbolicLink => "Symbolic links are shown but are not followed."
@@ -204,10 +204,10 @@ inspect_view = |handles| {
 					),
 				],
 			),
-			Gui.col(
+			Elem.col(
 				{ font_size: 13, fg: Rgb(0xA9BFCC) },
 				[
-					Gui.text_s(
+					Elem.text_s(
 						model.map(
 							|state| match state.preview {
 								NoPreview => "No preview loaded."
@@ -221,7 +221,7 @@ inspect_view = |handles| {
 					),
 				],
 			),
-			Gui.textarea(
+			Elem.textarea(
 				{
 					label: "Text preview",
 					value: model.map(
@@ -331,7 +331,7 @@ explorer_view = |handles| {
 	up_action = Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.up))
 	cancel_action = Ui.action(phase, |value| cancel(tasks, value))
 	crumbs = source.map(|location| Rows.from_list(Session.breadcrumbs(location), |crumb| crumb.path) ?? crash "Breadcrumb paths must be unique")
-	Gui.col(
+	Elem.col(
 		{
 			test_id: "explorer",
 			gap: 12,
@@ -342,28 +342,28 @@ explorer_view = |handles| {
 			shortcuts: [{ chord: { key: "o", control: True, shift: False, alt: False, meta: False }, msg: choose_action }, { chord: { key: "F5", control: False, shift: False, alt: False, meta: False }, msg: refresh_action }, { chord: { key: "Escape", control: False, shift: False, alt: False, meta: False }, msg: cancel_action }, { chord: { key: "ArrowLeft", control: False, shift: False, alt: True, meta: False }, msg: back_action }, { chord: { key: "ArrowRight", control: False, shift: False, alt: True, meta: False }, msg: forward_action }, { chord: { key: "ArrowUp", control: False, shift: False, alt: True, meta: False }, msg: up_action }],
 		},
 		workflow(handles, tasks).concat([
-			Gui.heading("Folder Explorer"),
-			Gui.col(
+			Elem.heading("Folder Explorer"),
+			Elem.col(
 				{ fg: Rgb(0xA9BFCC) },
 				["Browse a folder on this computer, or explore the built-in sample workspace."],
 			),
-			Gui.row(
+			Elem.row(
 				{ gap: 8 },
 				[
-					Gui.action_button({
+					Elem.action_button({
 						caption: Signal.const("Back"),
 						enabled: model.map(|state| state.phase == Idle and !state.back.is_empty()),
 					}, back_action),
-					Gui.action_button({
+					Elem.action_button({
 						caption: Signal.const("Forward"),
 						enabled: model.map(|state| state.phase == Idle and !state.forward.is_empty()),
 					}, forward_action),
-					Gui.action_button({
+					Elem.action_button({
 						caption: Signal.const("Up"),
 						enabled: model.map(|state| state.phase == Idle and Session.path(state.source) != Explorer.parent_path(Session.path(state.source))),
 					}, up_action),
-					Gui.action_button({ caption: Signal.const("Refresh"), enabled: ready }, refresh_action),
-					Gui.action_button({
+					Elem.action_button({ caption: Signal.const("Refresh"), enabled: ready }, refresh_action),
+					Elem.action_button({
 						caption: Signal.const("Choose folder"),
 						enabled: ready,
 						padding: 8,
@@ -372,30 +372,30 @@ explorer_view = |handles| {
 						hover_bg: Rgb(0x3A80B8),
 						active_bg: Rgb(0x265D89),
 					}, choose_action),
-					Gui.action_button({ caption: Signal.const("Use sample"), enabled: ready }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.load_sample))),
+					Elem.action_button({ caption: Signal.const("Use sample"), enabled: ready }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.load_sample))),
 					# Cancel and Retry are rare-phase controls: they render only in
 					# the phases where they apply instead of resting disabled.
 					Ui.when(
 						ready.map(|value| !value),
-						|| Gui.action_button({ caption: Signal.const("Cancel"), enabled: ready.map(|value| !value) }, cancel_action),
-						|| Gui.text(""),
+						|| Elem.action_button({ caption: Signal.const("Cancel"), enabled: ready.map(|value| !value) }, cancel_action),
+						|| Elem.text(""),
 					),
 					Ui.when(
 						model.map(|state| state.phase == Idle and state.retry != NoRetry),
-						|| Gui.action_button({
+						|| Elem.action_button({
 							caption: Signal.const("Retry"),
 							enabled: model.map(|state| state.phase == Idle and state.retry != NoRetry),
 						}, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.retry_last))),
-						|| Gui.text(""),
+						|| Elem.text(""),
 					),
 				],
 			),
-			Gui.row(
+			Elem.row(
 				{ test_id: "breadcrumbs", gap: 6, width: Fill, overflow_x: Scroll },
 				[
 					Ui.each(
 						crumbs,
-						|row| Gui.action_button(
+						|row| Elem.action_button(
 							{
 								caption: row.map(|crumb| crumb.label),
 								enabled: ready,
@@ -410,13 +410,13 @@ explorer_view = |handles| {
 					),
 				],
 			),
-			Gui.row(
+			Elem.row(
 				{ gap: 16 },
 				[
-					Gui.col(
+					Elem.col(
 						{ test_id: "dataset-source", font_size: 13, fg: Rgb(0xA9BFCC) },
 						[
-							Gui.text_s(
+							Elem.text_s(
 								model.map(
 									|state| match state.source {
 										Sample(path) => if path.is_empty() {
@@ -430,13 +430,13 @@ explorer_view = |handles| {
 							),
 						],
 					),
-					Gui.col({ test_id: "operation-status", font_size: 13, fg: Rgb(0xA9BFCC) }, [Gui.text_s(model.map(|state| state.notice))]),
+					Elem.col({ test_id: "operation-status", font_size: 13, fg: Rgb(0xA9BFCC) }, [Elem.text_s(model.map(|state| state.notice))]),
 				],
 			),
-			Gui.row(
+			Elem.row(
 				{ gap: 8 },
 				[
-					Gui.text_input({
+					Elem.text_input({
 						label: "Filter this folder",
 						value: model.map(|state| state.query),
 						placeholder: "Filter this folder…",
@@ -444,28 +444,28 @@ explorer_view = |handles| {
 						width: 240.Px,
 						gap: 4,
 					}, handles.model.update_str(|state, text| { ..state, query: text })),
-					Gui.action_button({
+					Elem.action_button({
 						caption: Signal.const("Clear filter"),
 						enabled: model.map(|state| state.phase == Idle and !state.query.is_empty()),
 					}, handles.model.update(|state| { ..state, query: "" })),
 				],
 			),
-			Gui.row({ gap: 8 }, Explorer.sorts.map(|order| Gui.action_button({
+			Elem.row({ gap: 8 }, Explorer.sorts.map(|order| Elem.action_button({
 				caption: Signal.const(order.to_str()),
 				enabled: ready,
 				selected: handles.order.read(|current| current == order),
 			}, handles.order.update(|_| order)))),
-			Gui.row(
+			Elem.row(
 				{ gap: 16 },
 				[
-					Gui.col({ test_id: "dataset-summary", font_size: 13, fg: Rgb(0x93A9B6) }, [Gui.text_s(total.map(|summary| "${summary.files.to_str()} files · ${summary.folders.to_str()} folders · ${summary.links.to_str()} links · ${summary.other.to_str()} other · ${summary.bytes.to_str()} B"))]),
-					Gui.col({ test_id: "results-summary", font_size: 13, fg: Rgb(0x93A9B6) }, [Gui.text_s(visible.map(|entries| "${Rows.len(entries).to_str()} matching entries"))]),
+					Elem.col({ test_id: "dataset-summary", font_size: 13, fg: Rgb(0x93A9B6) }, [Elem.text_s(total.map(|summary| "${summary.files.to_str()} files · ${summary.folders.to_str()} folders · ${summary.links.to_str()} links · ${summary.other.to_str()} other · ${summary.bytes.to_str()} B"))]),
+					Elem.col({ test_id: "results-summary", font_size: 13, fg: Rgb(0x93A9B6) }, [Elem.text_s(visible.map(|entries| "${Rows.len(entries).to_str()} matching entries"))]),
 				],
 			),
-			Gui.row(
+			Elem.row(
 				{ gap: 16, width: Fill, grow: True },
 				[
-					Gui.col(
+					Elem.col(
 						{
 							test_id: "file-list",
 							grow: True,
@@ -478,13 +478,13 @@ explorer_view = |handles| {
 						[
 							Ui.when(
 								visible.map(|entries| Rows.len(entries) == 0),
-								|| Gui.col(
+								|| Elem.col(
 									{ font_size: 13, fg: Rgb(0x93A9B6) },
 									["No matching entries. Clear the filter or choose another folder."],
 								),
-								|| Gui.text(""),
+								|| Elem.text(""),
 							),
-							Gui.virtual_list({
+							Elem.virtual_list({
 								row_height: 44,
 								follow_tail: Signal.const(False),
 								test_id: "file-viewport",
@@ -497,15 +497,15 @@ explorer_view = |handles| {
 					inspect_view(handles),
 				],
 			),
-			Gui.col(
+			Elem.col(
 				{ font_size: 13, fg: Rgb(0x93A9B6) },
 				["Alt+Left / Right: history · Alt+Up: parent · F5: refresh · Ctrl+O: choose folder · Esc: cancel"],
 			),
 			# Trailing problem line: empty on healthy runs, so it pays no gap
 			# rhythm between the always-visible bands above.
-			Gui.col(
+			Elem.col(
 				{ test_id: "asset-status", font_size: 13, fg: Rgb(0xF09A93) },
-				[Gui.text_s(handles.asset_problem.signal())],
+				[Elem.text_s(handles.asset_problem.signal())],
 			),
 		]),
 	)
