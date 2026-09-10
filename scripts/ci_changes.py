@@ -31,8 +31,9 @@ def classify(paths):
     for path in paths:
         if path.startswith(("platform-shared/", "src/signals/")):
             # The dedicated GUI-host producer rebuilds and validates its exact
-            # candidate for shared engine changes. Ordinary GUI CI uses the
-            # reviewed host release and therefore cannot admit changed sources.
+            # candidate for shared engine changes. Ordinary GUI CI prefers the
+            # reviewed host release, and builds the host from source when the
+            # lock does not describe the checkout.
             selected.update(SHARED)
         elif path.startswith(("platform-gui/", "crates/gpui-host/")):
             # Host source and platform packaging are covered by gui-hosts.yml.

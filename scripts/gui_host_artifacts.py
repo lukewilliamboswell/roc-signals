@@ -77,6 +77,25 @@ def validate_publication_notices(tree, source_tree=None, root=ROOT):
     validate_sources(source_tree, manifest, data, host, (root / "Cargo.lock").read_bytes())
 
 
+def lock_matches_sources(lock_path, root=ROOT):
+    """Whether a host lock describes the host inputs in this checkout.
+
+    A reviewed host release can only be published from `main`, so a change to
+    the host sources cannot have a matching release until it has landed. Asking
+    this question separately lets ordinary GUI CI build the host it is actually
+    testing in that case, instead of refusing the checkout outright and leaving
+    the change unmergeable. It reads the lock only; nothing is downloaded.
+    """
+    try:
+        fingerprint = source_fingerprint(root)
+    except ValueError:
+        # Uncommitted host sources have no fingerprint at all, so no published
+        # release can describe them. That is an answer, not a failure.
+        return False
+    return all(entry.get("input_fingerprint") == fingerprint
+               for entry in read_lock(lock_path)["artifacts"].values())
+
+
 @contextmanager
 def verified_hosts(lock_path, cache, root=ROOT, targets=None):
     """Verify provenance and compatibility before exposing any prebuilt host."""

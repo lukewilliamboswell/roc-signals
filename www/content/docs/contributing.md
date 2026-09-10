@@ -1484,6 +1484,14 @@ ordinary Roc checks, builds, and semantic specs without rebuilding Cargo or Zig
 host code. Cargo host tests and fresh host-output construction remain part of the
 dedicated producer workflow when actual host inputs or producer machinery change.
 
+A reviewed host release can only be published from `main`, so a branch that
+changes the host sources has no matching release yet. When the lock does not
+describe the checkout's host inputs, the driver says so and builds and tests the
+host from source for that run instead of refusing to start — otherwise a host
+change could never reach `main` to be released from. Asking for the verified
+host itself still refuses a mismatched lock: the fallback is the test driver's
+decision, never something a release or a bundle can inherit.
+
 These archives contain host code and licenses, not external system libraries or
 SDK stubs. Every included target must also have its external link inputs supplied;
 the bundler rejects incomplete targets. Windows ADVAPI32 imports and all declared
@@ -1521,7 +1529,8 @@ The web archive contains its native spec hosts and Wasm browser host.
 
 Packaging changes do not rebuild either host. `web-host.lock.json` and
 `gui-host.lock.json` select immutable host releases whose narrow source
-fingerprints must match the checkout. `dependencies.lock.json` independently
+fingerprints must match the checkout; packaging and publication refuse a lock
+that does not, and only the GUI test driver falls back to a source build. `dependencies.lock.json` independently
 selects the external linker inputs, including the catalog-derived macOS TBDs.
 Ordinary admission uses the recorded byte counts and SHA-256 hashes without an
 attestation service. The publishing job additionally attests the exact two bundles,
