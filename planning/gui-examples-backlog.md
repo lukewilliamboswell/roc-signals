@@ -27,7 +27,6 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 | GUI-04 | P1 | Keep confirmation dialogs inside the allowed viewport | Screenshot | GUI dialog layout + Notes |
 | GUI-05 | P2 | Support Windows paths without inventing a slash convention | Failing specs + source | Files boundary + Notes/Explorer + fixtures |
 | GUI-06 | P2 | Account for all payload retained by board history | Source | Board history |
-| GUI-07 | P2 | Replace duplicated handwritten theme JSON grammar with builtin codecs | Pinned compiler probes + source | Theme examples |
 | GUI-08 | P2 | Defaulted nominal `Gui.Style` records | Pinned compiler probes | Public Roc GUI API |
 | GUI-09 | P2 | Make asset-verification warnings match rendered behavior | Source | Board/Explorer asset views |
 | GUI-10 | P2 | Explorer: fit list, inspector, and preview at smaller heights | Screenshots + wheel attempts | Explorer layout |
@@ -186,52 +185,6 @@ budgets cover history versus live drafts, saved baselines, and pending saves.
 
 ## Roc and public API ergonomics
 
-### GUI-07 — Builtin JSON codecs for themes
-
-[Counter Theme.roc](../examples-gui/counter/Theme.roc) and
-[Notes Theme.roc](../examples-gui/notes-editor/Theme.roc) are identical 255-line
-modules containing their own object/string/number JSON parser. This obscures
-the tiny Counter example and deliberately rejects valid JSON escape forms.
-The handwritten number parser also accepts leading-zero numbers and has an
-overly restrictive U32 cutoff; layout bounds deserve semantic validation
-instead of a bespoke numeric grammar.
-
-The sibling Roc language reference documents derived `parser_for` and
-`encoder_for`: structural records derive automatically, nominal types opt in.
-Pinned-compiler [probes](gui-examples-review/2026-09-10/probes/CodecProbe.roc)
-confirm `Json.parse`/`Json.to_str`, nominal opt-in, existing snake_case field
-names, and leading-zero rejection. Example shape:
-
-```roc
-ThemeWire := { background : Str, gap : U32 }.{
-    parser_for : _
-    encoder_for : _
-}
-```
-
-This is **not** a blanket finding that every example hand-rolls JSON:
-[Board Codec.roc](../examples-gui/task-board/Codec.roc) and both manifest
-modules already use `Json.parser_camel()`; board encoding uses `Json.to_str`.
-Those are builtin-codec users, not parser replacements to queue.
-
-Compatibility gate: the probe shows `Json.parse("{\"gap\":8,\"gap\":9}")`
-accepts the duplicate and keeps `9`. The current theme contract rejects
-duplicates. A direct derived-record replacement therefore changes meaning.
-Resolve duplicate detection through supported codec hooks/validation before
-removing the old parser; post-decode field inspection cannot recover discarded
-duplicates. If the pinned builtin cannot express the contract, record the
-precise limitation and keep the necessary workaround narrow and identifiable.
-Do not silently weaken rejection or copy a second JSON grammar elsewhere.
-
-Acceptance: builtin syntax parsing plus small domain validation for `#RRGGBB`,
-layout bounds, required/unknown/duplicate keys, and useful filename/key errors.
-Preserve compile-time theme loading and current JSON field names. Cover malformed
-JSON, escapes/Unicode, numeric boundaries, missing/wrong fields, and duplicates.
-Share the schema/validation where appropriate without introducing a platform
-theme engine. Keep the board's existing version-1/priority-string wire contract.
-The documented wasm32 camel-field bug is not evidence against native themes;
-retest it separately if code becomes shared with browser examples.
-
 ### GUI-08 — Defaulted nominal styles (Richard Feldman's suggestion)
 
 Currently `Gui.Style` aliases the complete structural `Presentation` record,
@@ -366,7 +319,7 @@ also overflows a 360-pixel window:
 Acceptance: define the intended coverage of the theme example and make it true;
 use the declared palette for root and controls, or narrow the promise explicitly.
 Verify default and high-contrast screenshots including interaction states.
-Keep Counter minimal and readable after GUI-07/08. Apply the same bounded-width
+Keep Counter minimal and readable after GUI-08. Apply the same bounded-width
 lesson to Keyed Rows' fixed 520-pixel body and long teaching text
 ([narrow](gui-examples-review/2026-09-10/keyed-rows-360x600.png)).
 
@@ -477,8 +430,8 @@ its invariant failures “spike” errors.
 Acceptance: extract cohesive History/Document/Workflow/view helpers while
 keeping sources granular and ownership obvious. Do not collapse independent
 state into a coarse model merely to reduce nesting. Make the first example
-about Signals, with JSON grammar removed by GUI-07 and record noise reduced by
-GUI-08. Prefer existing language facilities and clear numeric literals such as
+about Signals, with record noise reduced by GUI-08 now that GUI-07 has removed
+the handwritten JSON grammar. Prefer existing language facilities and clear numeric literals such as
 `16.U32`; keep type annotations where they communicate record/nominal contracts.
 
 ### GUI-22 — Truthful maintained documentation
@@ -533,8 +486,8 @@ mandatory spacing/color dogma is approved by this backlog.
    GUI-03/04 core reachability in parallel with their presentation tests.
 2. Close GUI-05/06 boundary and accounting defects. Add GUI-16/17 regressions
    alongside each fix, not only at the end.
-3. Resolve GUI-07's codec compatibility gate and migrate GUI-08. These simplify
-   later example edits without needing new rendering semantics.
+3. Migrate GUI-08. This simplifies later example edits without needing new
+   rendering semantics.
 4. Apply current-API layout/readability fixes (GUI-09–14, GUI-18); use evidence
    from them to scope GUI-19/20/23. Window titles (GUI-15) are a distinct boundary
    change, not a styling workaround.
