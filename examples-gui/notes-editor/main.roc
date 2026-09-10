@@ -24,8 +24,8 @@ main = || Ui.state(
 		|body| {
 			tasks = Workflow.create_tasks()
 			view = { state: session.signal(), body: body.signal() }.Signal
-			ready = session.signal().map(Session.can_start)
-			phase = session.signal().map(|state| state.phase)
+			ready = session.read(Session.can_start)
+			phase = session.read(|state| state.phase)
 			revert_ready = view.map(|value| Session.can_start(value.state) and Document.is_dirty({ draft: Session.draft(value.state, value.body), baseline: value.state.baseline }))
 			save = session.update_with(body, |state, text| Session.begin_save({ state, draft: Session.draft(state, text), save_as: False }))
 			save_as = session.update_with(body, |state, text| Session.begin_save({ state, draft: Session.draft(state, text), save_as: True }))
@@ -56,7 +56,7 @@ main = || Ui.state(
 			cancel = Ui.action(phase, |value| Workflow.cancel(session, tasks, value))
 			chord = { key: "s", control: True, shift: False, alt: False, meta: False }
 			Gui.window_lifecycle(
-				{ on_close_requested: session.update_with(body, Session.request_close), decision: session.signal().map(Session.close_decision) },
+				{ on_close_requested: session.update_with(body, Session.request_close), decision: session.read(Session.close_decision) },
 				[
 					Gui.col(
 						{
@@ -98,7 +98,7 @@ main = || Ui.state(
 								[
 									Gui.col(
 										{ test_id: "document-name", font_size: 18, fg: theme.text_primary },
-										[Gui.text_s(session.signal().map(|state| state.baseline.title))],
+										[Gui.text_s(session.read(|state| state.baseline.title))],
 									),
 									Gui.col(
 										{
@@ -130,13 +130,13 @@ main = || Ui.state(
 										{ width: 740.Px, height: Fill },
 										[
 											Ui.switch(
-												session.signal().map(|state| state.document_generation),
+												session.read(|state| state.document_generation),
 												|_| Gui.textarea(
 													{
 														label: "Note text",
 														value: body.signal(),
 														placeholder: "Start writing…",
-														disabled: session.signal().map(|state| !Session.can_edit(state.phase) or state.close != Session.CloseState.NoClose),
+														disabled: session.read(|state| !Session.can_edit(state.phase) or state.close != Session.CloseState.NoClose),
 														width: Fill,
 														height: Fill,
 														grow: True,
@@ -159,7 +159,7 @@ main = || Ui.state(
 											font_size: 13,
 											fg: theme.text_secondary,
 										},
-										[Gui.text_s(body.signal().map(|text| Document.counts_text(Document.counts(text))))],
+										[Gui.text_s(body.read(|text| Document.counts_text(Document.counts(text))))],
 									),
 								],
 							),
@@ -172,7 +172,7 @@ main = || Ui.state(
 										{ test_id: "note-problem", font_size: 13, fg: theme.danger },
 										[
 											Gui.text_s(
-												session.signal().map(
+												session.read(
 													|state| match state.problem {
 														None => ""
 														Some(problem) => problem
@@ -234,7 +234,7 @@ main = || Ui.state(
 										|| Gui.text(""),
 									),
 									Ui.when(
-										session.signal().map(|state| state.close == Session.CloseState.ConfirmClose),
+										session.read(|state| state.close == Session.CloseState.ConfirmClose),
 										|| Gui.dialog(
 											{
 												label: "Save before closing?",

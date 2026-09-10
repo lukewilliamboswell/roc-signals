@@ -60,7 +60,7 @@ row_view = |row, selected| {
 					}, draft.update_str(|_, value| value)),
 					Gui.col(
 						{ font_size: 13, fg: Rgb(0x93A9B6) },
-						[Gui.text_s(draft.signal().map(|text| "Saved draft: ${text}"))],
+						[Gui.text_s(draft.read(|text| "Saved draft: ${text}"))],
 					),
 				],
 			)

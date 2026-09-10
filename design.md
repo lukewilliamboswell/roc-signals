@@ -2754,6 +2754,7 @@ Browser.remove_session_storage : Str -> Cmd
 Ui.state : a, (State(a) -> Elem) -> Elem
     where [a.is_eq : a, a -> Bool]
 State.signal : State(a) -> Signal(a)
+State.read : State(a), (a -> b) -> Signal(b)   # signal().map(f)
 State.update : State(a), (a -> a) -> Msg
 State.update_cmd : State(a), (a -> a) -> Cmd
 State.update_str : State(a), (a, Str -> a) -> Msg

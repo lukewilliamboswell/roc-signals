@@ -32,7 +32,7 @@ entry_view = |row, selected| {
 			Gui.button("Inspect ${key}", selected.update(|_| key)),
 			Gui.col(
 				{
-					changes: row.signal().map(
+					changes: row.map(
 						|entry| Gui.Style.{
 							width: 70.Px,
 							height: Fill,
@@ -47,7 +47,7 @@ entry_view = |row, selected| {
 						},
 					),
 				},
-				[Gui.text_s(row.signal().map(|entry| entry.severity.to_str()))],
+				[Gui.text_s(row.map(|entry| entry.severity.to_str()))],
 			),
 			Gui.col(
 				{
@@ -58,9 +58,9 @@ entry_view = |row, selected| {
 					font_size: 13,
 					fg: Rgb(0xA9BFCC),
 				},
-				[Gui.text_s(row.signal().map(|entry| entry.component))],
+				[Gui.text_s(row.map(|entry| entry.component))],
 			),
-			Gui.col({ grow: True, height: Fill, overflow_x: Clip, overflow_y: Clip }, [Gui.text_s(row.signal().map(|entry| entry.message))]),
+			Gui.col({ grow: True, height: Fill, overflow_x: Clip, overflow_y: Clip }, [Gui.text_s(row.map(|entry| entry.message))]),
 		],
 	)
 }
@@ -76,8 +76,8 @@ main = || Ui.state(
 view : Ui.State(Session.Accepted), Ui.State(Bool), Ui.State(Str), Ui.State(Bool), Ui.State(Str), Ui.State(Bool) -> Elem
 view = |model, running, query, errors_only, selected, follow_tail| {
 	tasks = Workflow.create()
-	history = model.signal().map(|value| value.history)
-	session = model.signal().map(|value| value.session)
+	history = model.read(|value| value.history)
+	session = model.read(|value| value.session)
 	replay = session.map(|state| state.source == Session.Source.Replay)
 	busy : Signal.Signal(Bool)
 	busy = session.map(
@@ -183,7 +183,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 					[
 						Gui.action_button(
 							{
-								caption: running.signal().map(
+								caption: running.read(
 									|active| if active {
 										"Pause replay"
 									} else {

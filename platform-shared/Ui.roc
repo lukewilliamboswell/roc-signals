@@ -147,6 +147,14 @@ Ui := [].{
 		signal : State(a) -> Signal(a)
 		signal = |st| Signal.from_expr(Node.SignalExpr.Ref(st.ref), st.cap)
 
+		## Derive a signal from this state: `count.read(|n| n.to_str())` is
+		## `count.signal().map(|n| n.to_str())`.
+		read : State(a), (a -> b) -> Signal(b)
+			where [
+				b.is_eq : b, b -> Bool,
+			]
+		read = |st, f| st.signal().map(f)
+
 		## Build a unit-triggered reducer message: `f` maps the current value to the
 		## next value, ignoring the unit payload.
 		update : State(a), (a -> a) -> Node.Msg
@@ -267,76 +275,76 @@ Ui := [].{
 		## Build a unit-triggered reducer that atomically snapshots `read` while
 		## writing only `st`.
 		update_with : State(a), State(b), (a, b -> a) -> Node.Msg
-		update_with = |st, read, f| {
+		update_with = |st, other, f| {
 			payload_cap : Capability({})
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
 			wrapped = |current_hv, read_hv, _payload_hv| {
 				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, read.cap))
+				read_value = Box.unbox(Capability.get(read_hv, other.cap))
 				Capability.store(Box.box(f(current, read_value)), st.cap)
 			}
-			state_event_msg(st.ref, read.ref, EventExtraction.unit, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(read.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.unit, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
 		}
 
 		## Build a text reducer that atomically snapshots `read`.
 		update_str_with : State(a), State(b), (a, b, Str -> a) -> Node.Msg
-		update_str_with = |st, read, f| {
+		update_str_with = |st, other, f| {
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
 			wrapped = |current_hv, read_hv, payload_hv| {
 				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, read.cap))
+				read_value = Box.unbox(Capability.get(read_hv, other.cap))
 				payload : Str
 				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
 				Capability.store(Box.box(f(current, read_value, payload)), st.cap)
 			}
-			state_event_msg(st.ref, read.ref, EventExtraction.target_value, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(read.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.target_value, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
 		}
 
 		## Build a checkbox reducer that atomically snapshots `read`.
 		update_bool_with : State(a), State(b), (a, b, Bool -> a) -> Node.Msg
-		update_bool_with = |st, read, f| {
+		update_bool_with = |st, other, f| {
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
 			wrapped = |current_hv, read_hv, payload_hv| {
 				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, read.cap))
+				read_value = Box.unbox(Capability.get(read_hv, other.cap))
 				payload : Bool
 				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
 				Capability.store(Box.box(f(current, read_value, payload)), st.cap)
 			}
-			state_event_msg(st.ref, read.ref, EventExtraction.target_checked, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(read.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.target_checked, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
 		}
 
 		## Build a custom-detail reducer that atomically snapshots `read`.
 		update_detail_with : State(a), State(b), (a, b, Str -> a) -> Node.Msg
-		update_detail_with = |st, read, f| {
+		update_detail_with = |st, other, f| {
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
 			wrapped = |current_hv, read_hv, payload_hv| {
 				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, read.cap))
+				read_value = Box.unbox(Capability.get(read_hv, other.cap))
 				payload : Str
 				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
 				Capability.store(Box.box(f(current, read_value, payload)), st.cap)
 			}
-			state_event_msg(st.ref, read.ref, EventExtraction.detail, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(read.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.detail, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
 		}
 
 		## Build a key reducer that atomically snapshots `read`.
 		update_key_with : State(a), State(b), (a, b, KeyPayload -> a) -> Node.Msg
-		update_key_with = |st, read, f| {
+		update_key_with = |st, other, f| {
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
 			wrapped = |current_hv, read_hv, payload_hv| {
 				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, read.cap))
+				read_value = Box.unbox(Capability.get(read_hv, other.cap))
 				payload_bytes : List(U8)
 				payload_bytes = Box.unbox(Capability.get(payload_hv, payload_cap))
 				Capability.store(Box.box(f(current, read_value, decode_key_payload(payload_bytes))), st.cap)
 			}
-			state_event_msg(st.ref, read.ref, EventExtraction.key_shift, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(read.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.key_shift, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
 		}
 
 		## Build a command that replaces this state. Unlike event messages, state

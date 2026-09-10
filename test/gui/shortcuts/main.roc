@@ -30,7 +30,7 @@ main = || Ui.state(
 											"Control+S adds one; Control+Shift+S adds ten.",
 											Gui.textarea({ label: "Draft", value: draft.signal() }, draft.update_str(|_, value| value)),
 											Gui.button("Add one", count.update(|value| value + 1)),
-											Gui.panel({ test_id: "shortcut-count" }, [Gui.text_s(count.signal().map(|value| "Count: ${value.to_str()}"))]),
+											Gui.panel({ test_id: "shortcut-count" }, [Gui.text_s(count.read(|value| "Count: ${value.to_str()}"))]),
 										],
 									)
 								},

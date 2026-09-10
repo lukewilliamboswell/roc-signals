@@ -28,6 +28,7 @@ Ui.state(
 The handle gives you:
 
 - **`model.signal()`** — the current value, as a signal you can derive from.
+- **`model.read(f)`** — shorthand for `model.signal().map(f)`.
 - **reducers** — `update`, `update_str`, `update_bool`, `update_key`, `update_detail` — which
   build event handlers.
 - **`model.set_cmd(next)`** — a replacement command for an action or lifecycle

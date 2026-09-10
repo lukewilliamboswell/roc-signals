@@ -16,7 +16,7 @@ main = || Ui.state(
 				[
 					Gui.heading("Window close contract"),
 					Gui.text_s(
-						decision.signal().map(
+						decision.read(
 							|value| match value {
 								KeepOpen => "Open"
 								AwaitDecision => "Deciding"

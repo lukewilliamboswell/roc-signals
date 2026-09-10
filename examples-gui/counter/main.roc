@@ -53,7 +53,7 @@ main = || Ui.state(
 					[
 						Gui.col(
 							{ test_id: "count", font_size: 44, fg: theme.text_primary },
-							[Gui.text_s(count.signal().map(|value| value.to_str()))],
+							[Gui.text_s(count.read(|value| value.to_str()))],
 						),
 						Gui.row(
 							{ gap: theme.gap },

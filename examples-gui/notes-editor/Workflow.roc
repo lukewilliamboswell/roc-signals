@@ -27,7 +27,7 @@ Workflow := [].{
 	bindings : Ui.State(Session.State), Ui.State(Str), Tasks -> List(Elem)
 	bindings = |session, body, tasks| [
 		Ui.on_change(
-			session.signal().map(|state| state.phase),
+			session.read(|state| state.phase),
 			|phase| match phase {
 				Session.Phase.ChoosingOpen => Files.choose_file(tasks.choose_open)
 				Session.Phase.Reading(path) => Files.read_text(tasks.read, path)

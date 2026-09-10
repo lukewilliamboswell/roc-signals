@@ -319,7 +319,7 @@ edit_field = |field, handles, column, label, update, read| {
 	reads = handles.context
 	field(
 		label,
-		handles.editor.signal().map(|editor| read(editor.task)),
+		handles.editor.read(|editor| read(editor.task)),
 		handles.edit_disabled,
 		Ui.action_str(
 			reads,
@@ -443,13 +443,13 @@ detail_view = |handles|
 				handles.editing.signal(),
 				|| {
 					Ui.switch(
-						handles.editor.signal().map(|editor| editor.column),
+						handles.editor.read(|editor| editor.column),
 						|column| Gui.col(
 							Gui.ColProps.{},
 							[
 								Gui.col(
 									{ test_id: "task-column", font_size: 13, fg: Rgb(0xA9BFCC) },
-									[Gui.text_s(handles.editor.signal().map(|editor| editor.column.to_str()))],
+									[Gui.text_s(handles.editor.read(|editor| editor.column.to_str()))],
 								),
 								Gui.col(
 									{ gap: 4, font_size: 13, fg: Rgb(0xA9BFCC) },
@@ -462,16 +462,16 @@ detail_view = |handles|
 										Gui.row(
 											{ gap: 8 },
 											[
-												Ui.switch(handles.editor.signal().map(|editor| editor.task.assignee), |assignee| avatar(assignee, 32)),
+												Ui.switch(handles.editor.read(|editor| editor.task.assignee), |assignee| avatar(assignee, 32)),
 												edit_field(|label, value, disabled, msg| Gui.text_input({ label, value, disabled, width: Fill, grow: True }, msg), handles, column, "Assignee", |task, assignee| { ..task, assignee }, |task| task.assignee),
 											],
 										),
 									],
 								),
 								edit_field(|label, value, disabled, msg| Gui.textarea({ label, value, disabled, height: 150.Px }, msg), handles, column, "Task notes", |task, notes| { ..task, notes }, |task| task.notes),
-								Gui.text_s(handles.editor.signal().map(|editor| "Priority: ${editor.task.priority.to_str()}")),
+								Gui.text_s(handles.editor.read(|editor| "Priority: ${editor.task.priority.to_str()}")),
 								{
-									priority_key = handles.editor.signal().map(|editor| editor.task.priority.to_str())
+									priority_key = handles.editor.read(|editor| editor.task.priority.to_str())
 									Gui.row({ gap: 8 }, Board.priorities.map(|priority| priority_button(handles, column, priority_key, priority)))
 								},
 								Gui.col(
@@ -568,7 +568,7 @@ board_view = |handles| {
 					},
 				),
 			),
-			decision: handles.close.signal().map(
+			decision: handles.close.read(
 				|intent| match intent {
 					Close.KeepEditing => KeepOpen
 					Close.Confirm | Close.Saving => AwaitDecision
@@ -669,7 +669,7 @@ main = || Ui.state(
 																								|close| Ui.state(
 																									"",
 																									|asset_problem| {
-																										editable = document.signal().map(|doc| can_edit(doc.phase))
+																										editable = document.read(|doc| can_edit(doc.phase))
 																										edit_disabled = editable.map(|value| !value)
 																										board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete, movement, context, history, bytes, document, asset_problem, tasks, close, editable, edit_disabled })
 																									},
@@ -808,7 +808,7 @@ DocumentActions : { open : Gui.Msg, save : Gui.Msg, save_as : Gui.Msg, cancel : 
 
 document_toolbar : Handles, DocumentActions -> Elem
 document_toolbar = |handles, actions| {
-	ready = handles.document.signal().map(|doc| doc.phase == Phase.Idle)
+	ready = handles.document.read(|doc| doc.phase == Phase.Idle)
 
 	# gap 0: everything below the button row is a conditional problem line or
 	# dialog, so the toolbar's empty states pay no vertical rhythm.
@@ -835,7 +835,7 @@ document_toolbar = |handles, actions| {
 						{ test_id: "board-path", padding: 8, fg: Rgb(0xF2F5F6) },
 						[
 							Gui.text_s(
-								handles.document.signal().map(
+								handles.document.read(
 									|doc| match doc.path {
 										None => "Untitled board"
 										Some(path) => path
@@ -885,10 +885,10 @@ document_toolbar = |handles, actions| {
 			),
 			Gui.col(
 				{ test_id: "board-problem", font_size: 13, fg: Rgb(0xF09A93) },
-				[Gui.text_s(handles.document.signal().map(|doc| doc.problem))],
+				[Gui.text_s(handles.document.read(|doc| doc.problem))],
 			),
 			Ui.when(
-				handles.document.signal().map(|doc| doc.phase == Phase.ConfirmOpen),
+				handles.document.read(|doc| doc.phase == Phase.ConfirmOpen),
 				|| Gui.dialog(
 					{
 						label: "Replace unsaved board?",
@@ -904,7 +904,7 @@ document_toolbar = |handles, actions| {
 				),
 				|| Gui.text(""),
 			),
-			Ui.when(handles.document.signal().map(|doc| doc.phase != Phase.Idle and doc.phase != Phase.ConfirmOpen), || Gui.button("Cancel operation", actions.cancel), || Gui.text("")),
+			Ui.when(handles.document.read(|doc| doc.phase != Phase.Idle and doc.phase != Phase.ConfirmOpen), || Gui.button("Cancel operation", actions.cancel), || Gui.text("")),
 			Gui.col(
 				{ test_id: "asset-status", font_size: 13, fg: Rgb(0xF09A93) },
 				[Gui.text_s(handles.asset_problem.signal())],
@@ -992,7 +992,7 @@ document_bindings = |handles| [
 		},
 	),
 	Ui.on_change(
-		handles.document.signal().map(|doc| doc.phase),
+		handles.document.read(|doc| doc.phase),
 		|phase| match phase {
 			Phase.ChoosingOpen => Files.choose_file(handles.tasks.open)
 			Phase.Reading(path) => Files.read_text(handles.tasks.read, path)
@@ -1110,7 +1110,7 @@ close_dialog : Handles -> Elem
 close_dialog = |handles| {
 	keep = handles.close.update(|_| Close.KeepEditing)
 	Ui.when(
-		handles.close.signal().map(|intent| intent == Close.Confirm),
+		handles.close.read(|intent| intent == Close.Confirm),
 		|| Gui.dialog(
 			{
 				label: "Close this board?",
@@ -1120,7 +1120,7 @@ close_dialog = |handles| {
 			[
 				Gui.heading("Save your board before closing?"),
 				"Keep editing to return to your project, or save a board document before closing.",
-				Gui.text_s(handles.document.signal().map(|doc| doc.problem)),
+				Gui.text_s(handles.document.read(|doc| doc.problem)),
 				Gui.row(
 					Gui.RowProps.{},
 					[
@@ -1128,14 +1128,14 @@ close_dialog = |handles| {
 						Gui.button("Close without saving", handles.close.update(|_| Close.Closing)),
 						Gui.action_button({
 							caption: Signal.const("Save and close"),
-							enabled: handles.document.signal().map(|doc| doc.phase == Phase.Idle),
+							enabled: handles.document.read(|doc| doc.phase == Phase.Idle),
 						}, Ui.action({ context: handles.context, next: handles.next_id.signal() }.Signal, |{ context, next }| save_document(handles, context, next, { save_as: False, close_after: True }))),
 					],
 				),
 			],
 		),
 		|| Ui.when(
-			handles.close.signal().map(|intent| intent == Close.Saving),
+			handles.close.read(|intent| intent == Close.Saving),
 			|| Gui.dialog(
 				{
 					label: "Saving before closing",

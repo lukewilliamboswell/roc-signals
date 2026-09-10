@@ -13,14 +13,14 @@ main = || Ui.state(False, |enabled| {
 			Gui.row({
 				test_id: "styled-row",
 				selected: enabled.signal(),
-				changes: enabled.signal().map(|value| Gui.Style.{ padding: 12, gap: 16, width: Fill, bg: if value { Rgb(1193046) } else { Rgb(2236962) } }),
+				changes: enabled.read(|value| Gui.Style.{ padding: 12, gap: 16, width: Fill, bg: if value { Rgb(1193046) } else { Rgb(2236962) } }),
 			}, [
 				Gui.action_button({
 					caption: Signal.const("Run action"),
 					enabled: enabled.signal(),
 					test_id: "run-action",
 				}, clicks.update(|value| value + 1)),
-				Gui.text_s(clicks.signal().map(|value| "Runs: ${value.to_str()}")),
+				Gui.text_s(clicks.read(|value| "Runs: ${value.to_str()}")),
 			]),
 		])
 	})

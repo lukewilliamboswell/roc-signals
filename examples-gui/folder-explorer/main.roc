@@ -264,7 +264,7 @@ workflow = |handles, tasks| [
 		},
 	),
 	Ui.on_change(
-		handles.model.signal().map(|state| state.phase),
+		handles.model.read(|state| state.phase),
 		|phase| match phase {
 			Idle => Signal.noop
 			Choosing => Files.choose_directory(tasks.chooser)
@@ -453,7 +453,7 @@ explorer_view = |handles| {
 			Gui.row({ gap: 8 }, Explorer.sorts.map(|order| Gui.action_button({
 				caption: Signal.const(order.to_str()),
 				enabled: ready,
-				selected: handles.order.signal().map(|current| current == order),
+				selected: handles.order.read(|current| current == order),
 			}, handles.order.update(|_| order)))),
 			Gui.row(
 				{ gap: 16 },

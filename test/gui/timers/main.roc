@@ -13,9 +13,9 @@ main = || Ui.state(
 			Gui.ColProps.{},
 			[
 				Gui.heading("Scoped timer lifetime"),
-				Gui.text_s(count.signal().map(|value| "Ticks: ${value.to_str()}")),
+				Gui.text_s(count.read(|value| "Ticks: ${value.to_str()}")),
 				Ui.when(
-					count.signal().map(|value| value < 2),
+					count.read(|value| value < 2),
 					|| {
 						Ui.on_change(Signal.interval(100), |value| count.update_cmd(|_| value))
 					},
