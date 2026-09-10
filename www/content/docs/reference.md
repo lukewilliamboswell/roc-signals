@@ -112,7 +112,19 @@ Commands start or supersede work for that declared task.
 `Home` or `At(absolute_path)`. `Home` resolves the native user's home directory;
 a missing or non-UTF-8 environment value returns `Unavailable`. Scan entries
 have `{ path, kind, bytes }`; kinds are `File`, `Directory`, `SymbolicLink`, and
-`Other`. Paths are absolute UTF-8. Byte counts describe regular files.
+`Other`. Paths are absolute UTF-8 in the operating system's own spelling, so a
+Windows worker returns drive-rooted or UNC paths written with backslashes. Byte
+counts describe regular files.
+
+`Files.parse_path(text)` recognizes one path by shape and returns a `Files.Path`
+carrying that spelling: drive designators (`C:`) and UNC prefixes (`\\`) are
+Windows, everything else is POSIX, where only `/` separates and a backslash is an
+ordinary file-name byte. The exact bytes are preserved; nothing is rewritten.
+`to_str` returns them, and `root`, `is_root`, `name`, `parent`, `trimmed`,
+`components`, and `join(component)` answer parent, name, root, and breadcrumb
+questions lexically, without consulting the filesystem or resolving `.`/`..`.
+Derive these through `Files.Path` rather than by splitting a path string, which
+is wrong on whichever operating system the application was not written for.
 
 `list_directory` returns only direct children, with the scan entry and aggregate
 path bounds. `read_preview` returns at most 64 KiB of UTF-8 and reports omitted
