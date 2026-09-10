@@ -38,7 +38,8 @@ def read_lock(path):
     for identity, entry in lock["artifacts"].items():
         fields = {"name", "target", "repository", "release", "asset", "sha256", "size",
                   "source_sha", "source_ref", "signer_workflow"}
-        if not IDENTIFIER.fullmatch(identity) or set(entry) != fields:
+        optional = {"input_fingerprint"}
+        if not IDENTIFIER.fullmatch(identity) or not fields <= set(entry) <= fields | optional:
             raise ValueError("invalid dependency lock entry")
         for field in ("name", "target", "release", "asset"):
             if not isinstance(entry[field], str) or not IDENTIFIER.fullmatch(entry[field]):
@@ -47,6 +48,8 @@ def read_lock(path):
             raise ValueError("invalid dependency repository")
         if not HEX256.fullmatch(entry["sha256"]) or not HEX160.fullmatch(entry["source_sha"]):
             raise ValueError("invalid dependency digest")
+        if "input_fingerprint" in entry and not HEX256.fullmatch(entry["input_fingerprint"]):
+            raise ValueError("invalid dependency input fingerprint")
         if type(entry["size"]) is not int or not 0 < entry["size"] <= MAX_ARCHIVE_BYTES:
             raise ValueError("invalid dependency archive size")
         if entry["source_ref"] != "refs/heads/main":

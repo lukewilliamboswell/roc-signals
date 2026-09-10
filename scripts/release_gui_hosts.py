@@ -46,6 +46,8 @@ def prepare(directory, tag, environment, targets=None):
     if {path.name for path in directory.glob("*.tar")} != expected:
         raise ValueError(policy["inventory_error"])
     artifacts = {}
+    from gui_host_artifacts import source_fingerprint
+    input_fingerprint = source_fingerprint()
     with tempfile.TemporaryDirectory(prefix="signals-release-dependencies-") as temporary:
         for target in selected:
             archive = directory / f"{kind}-{target}.tar"
@@ -55,6 +57,7 @@ def prepare(directory, tag, environment, targets=None):
                 "sha256": sha256(archive), "size": archive.stat().st_size,
                 "source_sha": source, "source_ref": "refs/heads/main",
                 "signer_workflow": REPOSITORY + "/.github/workflows/" + policy["workflow"],
+                "input_fingerprint": input_fingerprint,
             }
             verify_archive(archive, entry)
             manifest = unpack_verified(archive, entry, Path(temporary) / target)
@@ -63,8 +66,8 @@ def prepare(directory, tag, environment, targets=None):
             required.update(f"licenses/{kind}/{name}" for name in policy["licenses"])
             if set(manifest["files"]) != required:
                 raise ValueError(f"{kind} release has an incomplete or unexpected file set")
-            from gui_host_artifacts import source_fingerprint, validate_host, validate_publication_notices
-            validate_host(Path(temporary) / target, target, source_fingerprint())
+            from gui_host_artifacts import validate_host, validate_publication_notices
+            validate_host(Path(temporary) / target, target, input_fingerprint)
             source_archive = directory / f"gui-host-sources-{target}.tar"
             source_entry = dict(entry, name="gui-host-sources", asset=source_archive.name,
                                 sha256=sha256(source_archive), size=source_archive.stat().st_size)

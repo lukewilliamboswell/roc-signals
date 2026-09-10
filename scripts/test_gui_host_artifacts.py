@@ -133,13 +133,13 @@ class HostArtifactTests(unittest.TestCase):
                     del files["licenses/gui-host/LICENSE-GPUI"]
                 write_archive(root / f"gui-host-{target}.tar", {
                     "schema_version": 1, "name": "gui-host", "target": target,
-                    "source_fingerprint": "expected"}, files)
+                    "source_fingerprint": "1" * 64}, files)
                 if failure == "missing-source":
                     source.unlink()
                 # Composition/admission tests validate actual notice contents. Here the
                 # seam is exact candidate pairing and independent signature admission.
                 with patch.object(release_dependencies.subprocess, "check_output", return_value="a" * 40), \
-                        patch.object(gui_host_artifacts, "source_fingerprint", return_value="expected"), \
+                        patch.object(gui_host_artifacts, "source_fingerprint", return_value="1" * 64), \
                         patch.object(gui_host_artifacts, "validate_host"), \
                         patch.object(gui_host_artifacts, "validate_publication_notices") as admit, \
                         patch.object(release_dependencies, "verify_archive") as verifier:
@@ -161,6 +161,7 @@ class HostArtifactTests(unittest.TestCase):
                         for entry in lock["artifacts"].values():
                             self.assertEqual(entry["signer_workflow"], gui_host_artifacts.WORKFLOW)
                             self.assertEqual(entry["source_sha"], "a" * 40)
+                            self.assertEqual(entry["input_fingerprint"], "1" * 64)
         for targets in (["unknown"], ["x64glibc", "x64glibc"], []):
             with self.assertRaisesRegex(ValueError, "eligible"):
                 release_dependencies.prepare(Path("unused"), "deps-gui-host-1", environment, targets)

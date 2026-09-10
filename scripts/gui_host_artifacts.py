@@ -89,6 +89,9 @@ def verified_hosts(lock_path, cache, root=ROOT, targets=None):
     hosts = {identity: entry for identity, entry in lock["artifacts"].items() if entry["name"] == "gui-host"}
     if not hosts or set(lock["artifacts"]) != set(hosts) | {SOURCE_KIND + "-" + e["target"] for e in hosts.values()}:
         raise ValueError("host lock must include exactly one source companion per host")
+    current_fingerprint = source_fingerprint(root)
+    if any(entry.get("input_fingerprint") != current_fingerprint for entry in lock["artifacts"].values()):
+        raise ValueError("GUI host lock does not match this checkout's host inputs")
     selected = hosts
     if targets is not None:
         targets = frozenset(targets)
@@ -99,7 +102,8 @@ def verified_hosts(lock_path, cache, root=ROOT, targets=None):
         destination = Path(temporary) / "inputs"
         materialize(lock_path, tuple(selected), cache, destination)
         for identity, entry in selected.items():
-            validate_host(destination / identity, entry["target"], None, root, entry["source_sha"])
+            manifest = json.loads((destination / identity / "dependency.json").read_text())
+            validate_host(destination / identity, entry["target"], manifest.get("source_fingerprint"), root)
             notice = json.loads((destination / identity / "licenses/gui-host/NOTICE.json").read_text())
             companion = lock["artifacts"][SOURCE_KIND + "-" + entry["target"]]
             if (any(companion[k] != notice["source_companion"][k] for k in ("name", "target", "asset", "sha256", "size"))
