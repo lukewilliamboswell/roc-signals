@@ -8,6 +8,7 @@ import sys
 
 AREAS = frozenset({"source", "gui", "published", "archive", "site"})
 WEB = frozenset({"source", "published", "archive", "site"})
+SHARED = WEB
 
 
 def verify_results(results):
@@ -29,8 +30,14 @@ def classify(paths):
     selected = set()
     for path in paths:
         if path.startswith(("platform-shared/", "src/signals/")):
-            selected.update(AREAS)
-        elif path.startswith(("platform-gui/", "crates/gpui-host/", "examples-gui/", "test/gui/")):
+            # The dedicated GUI-host producer rebuilds and validates its exact
+            # candidate for shared engine changes. Ordinary GUI CI uses the
+            # reviewed host release and therefore cannot admit changed sources.
+            selected.update(SHARED)
+        elif path.startswith(("platform-gui/", "crates/gpui-host/")):
+            # Host source and platform packaging are covered by gui-hosts.yml.
+            continue
+        elif path.startswith(("examples-gui/", "test/gui/")):
             selected.add("gui")
         elif path.startswith(("platform-web/", "examples-web/", "src/wasm", "src/native_host")):
             selected.update(WEB)

@@ -57,6 +57,21 @@ def script_inputs(jobs):
 
 
 class DependencyWorkflowFilterTests(unittest.TestCase):
+    def test_gui_host_fingerprint_inputs_trigger_the_producer(self):
+        from host_build_identity import SOURCE_PATHS
+
+        text = (ROOT / ".github/workflows/gui-hosts.yml").read_text()
+        section = text.split("    paths:\n", 1)[1].split("  workflow_dispatch:", 1)[0]
+        paths = {line.removeprefix("      - ") for line in section.splitlines() if line.strip()}
+
+        def covered(path):
+            return path in paths or any(entry.endswith("/**") and path.startswith(entry[:-3])
+                                        for entry in paths)
+
+        for path in SOURCE_PATHS:
+            with self.subTest(path=path):
+                self.assertTrue(covered(path), f"GUI host fingerprint input does not trigger producer: {path}")
+
     def test_all_executed_scripts_and_transitive_imports_trigger_their_workflow(self):
         for name in WORKFLOWS:
             with self.subTest(producer=name):

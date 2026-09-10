@@ -74,7 +74,7 @@ def validate_publication_notices(tree, source_tree=None, root=ROOT):
 
 
 @contextmanager
-def verified_hosts(lock_path, cache, root=ROOT):
+def verified_hosts(lock_path, cache, root=ROOT, targets=None):
     """Verify provenance and compatibility before exposing any prebuilt host."""
     lock = read_lock(lock_path)
     for identity, entry in lock["artifacts"].items():
@@ -86,10 +86,16 @@ def verified_hosts(lock_path, cache, root=ROOT):
     hosts = {identity: entry for identity, entry in lock["artifacts"].items() if entry["name"] == "gui-host"}
     if not hosts or set(lock["artifacts"]) != set(hosts) | {SOURCE_KIND + "-" + e["target"] for e in hosts.values()}:
         raise ValueError("host lock must include exactly one source companion per host")
+    selected = hosts
+    if targets is not None:
+        targets = frozenset(targets)
+        selected = {identity: entry for identity, entry in hosts.items() if entry["target"] in targets}
+        if {entry["target"] for entry in selected.values()} != targets:
+            raise ValueError("host lock does not contain every selected target")
     with tempfile.TemporaryDirectory(prefix="signals-verified-hosts-") as temporary:
         destination = Path(temporary) / "inputs"
-        materialize(lock_path, tuple(hosts), cache, destination)
-        for identity, entry in hosts.items():
+        materialize(lock_path, tuple(selected), cache, destination)
+        for identity, entry in selected.items():
             validate_host(destination / identity, entry["target"], expected, root)
             notice = json.loads((destination / identity / "licenses/gui-host/NOTICE.json").read_text())
             companion = lock["artifacts"][SOURCE_KIND + "-" + entry["target"]]
@@ -126,7 +132,7 @@ def stage_candidate_dependencies(target, destination, root=ROOT):
 def check_candidate(archive, target, roc, root=ROOT, source_companion=None):
     """Run native app specs using the exact extracted host archive candidate."""
     from build_gui import executable_name, host_target
-    from gui_suite import examples
+    from gui_suite import examples, fixtures
     from prepare_platforms import prepare_platform
     import spec_driver
     import toolchain
@@ -160,8 +166,9 @@ def check_candidate(archive, target, roc, root=ROOT, source_companion=None):
             from build_macos_stubs import generate
             generate(platform / "targets" / target, platform / "targets/macos-sysroot")
         shutil.copytree(root / "examples-gui", stage / "examples-gui")
+        shutil.copytree(root / "test/gui", stage / "test/gui")
         shutil.copytree(root / "vendor", stage / "vendor")
-        for app in examples(stage):
+        for app in examples(stage) + fixtures(stage):
             executable = stage / executable_name(app.name)
             subprocess.run([roc, "build", "--no-cache", f"--target={target}",
                             f"--output={executable}", str(app / "main.roc")],
