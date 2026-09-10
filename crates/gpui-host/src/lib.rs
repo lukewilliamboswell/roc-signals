@@ -801,6 +801,7 @@ impl Runtime {
                         input.set_placeholder(&node.placeholder, cx);
                         input.set_style_foreground(editor_style_foreground(node.style), cx);
                         input.set_disabled(node.disabled, cx);
+                        input.set_read_only(node.read_only, cx);
                         input.set_fill_height(
                             node.kind == ControlKind::Textarea
                                 && node.style.is_some_and(|style| style.height_kind != 0),

@@ -91,6 +91,7 @@ pub const ScalarNode = struct {
     disabled: ?bool = null,
     selected: ?bool = null,
     native_drop_target: ?bool = null,
+    native_read_only: ?bool = null,
 
     fn deinit(self: *ScalarNode, allocator: std.mem.Allocator) void {
         inline for (comptime std.meta.tags(TextField)) |field| {

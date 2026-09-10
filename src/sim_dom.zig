@@ -46,6 +46,7 @@ pub const Element = struct {
     disabled: bool,
     selected: bool,
     native_drop_target: bool,
+    native_read_only: bool,
     parent_id: ?u64,
     children: std.ArrayListUnmanaged(u64),
     event_bindings: FixedEventBindings,
@@ -83,6 +84,7 @@ pub const Element = struct {
             .disabled = false,
             .selected = false,
             .native_drop_target = false,
+            .native_read_only = false,
             .parent_id = null,
             .children = .empty,
             .event_bindings = .{},
@@ -127,6 +129,7 @@ pub const Element = struct {
         cloned.disabled = self.disabled;
         cloned.selected = self.selected;
         cloned.native_drop_target = self.native_drop_target;
+        cloned.native_read_only = self.native_read_only;
         cloned.parent_id = self.parent_id;
         cloned.event_bindings = self.event_bindings;
         cloned.text_update_count = self.text_update_count;

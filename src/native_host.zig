@@ -417,6 +417,7 @@ const NativeRenderPublication = struct {
                 },
                 .selected => node.selected = entry.next orelse false,
                 .native_drop_target => node.native_drop_target = entry.next orelse false,
+                .native_read_only => node.native_read_only = entry.next orelse false,
                 .disabled => {
                     node.disabled = entry.next orelse false;
                     node.disabled_update_count += 1;
@@ -12833,6 +12834,7 @@ const Gpui = struct {
             .checked = @intFromBool(elem.checked),
             .disabled = @intFromBool(elem.disabled),
             .selected = @intFromBool(elem.selected),
+            .read_only = @intFromBool(elem.native_read_only),
             .style_present = @intFromBool(elem.native_style != null),
             .style = if (elem.native_style) |bytes| native_style.decode(bytes) catch unreachable else .{},
             .viewport = if (elem.native_viewport) |bytes| native_style.decodeViewport(bytes) catch unreachable else .{},

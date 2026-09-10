@@ -37,6 +37,7 @@ Attribute := [
 	TestId(Str),
 	Selected(Signal(Bool)),
 	Enabled(Signal(Bool)),
+	ReadOnly(Signal(Bool)),
 	Shortcut(Node.KeyChord, Node.Msg),
 	DragSource(Str),
 	DropTarget(Node.Msg),
@@ -76,6 +77,9 @@ selected_field = { id: 4 }
 # Marks an internal drop target that must bind a string-detail drop event.
 native_drop_target_field : Node.BoolField
 native_drop_target_field = { id: 5 }
+# Refuses user edits and edit history while the control stays available at full contrast and in tab order.
+native_read_only_field : Node.BoolField
+native_read_only_field = { id: 6 }
 # END GENERATED PROTOCOL
 
 dimension : Length -> { kind : U32, value : U32 }
@@ -227,6 +231,10 @@ lower_attrs = |direction, defaults, attrs| {
 					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: disabled_field })
 					_ => crash "expected a signal bool descriptor"
 				}
+				Attribute.ReadOnly(value) => match Html.bool_attr_s("", value) {
+					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: native_read_only_field })
+					_ => crash "expected a signal bool descriptor"
+				}
 				Attribute.DragSource(key) => Node.Attr.StaticText({ field: native_drag_key_field, name: "", value: key })
 				Attribute.DropTarget(msg) => Node.Attr.On({
 					kind: { id: 0 },
@@ -359,6 +367,15 @@ Gui := [].{
 	## Disable an input or control while retaining its native identity.
 	disabled_s : Signal(Bool) -> Attr
 	disabled_s = |value| Attribute.Enabled(value.map(|disabled| !disabled))
+
+	## Refuse user edits to an input while it stays available: full contrast,
+	## still in the tab order, still selectable, copyable and scrollable, and
+	## still refreshed by its authoritative value. This is not `disabled_s`,
+	## which says a control is unavailable and dims it out of the tab order.
+	## Edits and native edit history are refused, so the displayed document
+	## cannot diverge from the value the application published.
+	read_only_s : Signal(Bool) -> Attr
+	read_only_s = |value| Attribute.ReadOnly(value)
 
 	## Lay out children horizontally with the supplied native presentation.
 	row : List(Attr), List(Elem) -> Elem

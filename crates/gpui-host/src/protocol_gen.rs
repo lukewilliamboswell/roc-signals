@@ -7,7 +7,7 @@
 use crate::bridge::{Slice, Style};
 
 /// Version of the statically linked native GUI presentation boundary.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// Version of the separate native effects (task transport) boundary.
 pub const EFFECT_VERSION: u32 = 2;
@@ -91,6 +91,8 @@ pub struct RawNode {
     pub disabled: u64,
     /// Selected presentation word (bool field 4).
     pub selected: u64,
+    /// Read-only state word (bool field 6).
+    pub read_only: u64,
     /// Nonzero when the style record is populated (text field 8).
     pub style_present: u64,
     /// Validated native presentation record (text field 8).

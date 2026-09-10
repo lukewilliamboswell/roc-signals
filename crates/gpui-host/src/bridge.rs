@@ -95,6 +95,8 @@ pub struct Node {
     pub checked: bool,
     pub selected: bool,
     pub disabled: bool,
+    /// Refuses edits while the control stays available (bool field 6).
+    pub read_only: bool,
     pub shortcuts: Vec<Shortcut>,
 }
 /// Validated native presentation v2, copied from the committed C boundary.
@@ -282,6 +284,7 @@ impl Engine {
                         checked: r.checked != 0,
                         selected: r.selected != 0,
                         disabled: r.disabled != 0,
+                        read_only: r.read_only != 0,
                         shortcuts: shortcuts[..shortcut_count].to_vec(),
                     }
                 })

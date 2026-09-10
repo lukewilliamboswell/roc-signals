@@ -5,7 +5,7 @@
 //! that this committed artifact matches the manifest.
 
 /// Version of the statically linked native GUI presentation boundary.
-pub const protocol_version: u32 = 11;
+pub const protocol_version: u32 = 12;
 
 /// Version of the separate native effects (task transport) boundary.
 pub const effect_version: u32 = 2;
@@ -83,11 +83,13 @@ pub const BoolField = enum(u64) {
     selected = 4,
     /// Marks an internal drop target that must bind a string-detail drop event.
     native_drop_target = 5,
+    /// Refuses user edits and edit history while the control stays available at full contrast and in tab order.
+    native_read_only = 6,
 
     /// Identifies fields consumed only by the native presentation adapter.
     pub fn isNative(self: BoolField) bool {
         return switch (self) {
-            .selected, .native_drop_target => true,
+            .selected, .native_drop_target, .native_read_only => true,
             else => false,
         };
     }
@@ -98,7 +100,7 @@ pub const BoolField = enum(u64) {
         return switch (self) {
             .checked => "set_checked",
             .disabled => "set_disabled",
-            .selected, .native_drop_target => null,
+            .selected, .native_drop_target, .native_read_only => null,
         };
     }
 };
@@ -107,13 +109,13 @@ pub const BoolField = enum(u64) {
 pub const text_field_count: usize = 14;
 
 /// Total declared scalar boolean fields.
-pub const bool_field_count: usize = 4;
+pub const bool_field_count: usize = 5;
 
 /// Scalar text fields consumed only by the native presentation adapter.
 pub const native_text_field_count: usize = 8;
 
 /// Scalar boolean fields consumed only by the native presentation adapter.
-pub const native_bool_field_count: usize = 2;
+pub const native_bool_field_count: usize = 3;
 
 /// Closed task service routes. Names remain diagnostics; native hosts dispatch
 /// only this value, and browser hosts reject native service requests.
@@ -191,6 +193,8 @@ pub fn RawNode(comptime Slice: type, comptime Style: type, comptime Viewport: ty
         disabled: u64,
         /// Selected presentation word (bool field 4).
         selected: u64,
+        /// Read-only state word (bool field 6).
+        read_only: u64,
         /// Nonzero when the style record is populated (text field 8).
         style_present: u64,
         /// Validated native presentation record (text field 8).

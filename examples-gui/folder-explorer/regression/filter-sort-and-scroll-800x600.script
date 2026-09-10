@@ -1,0 +1,30 @@
+# size: 800x600
+# Filtering, ordering and list scrolling at the smaller size. The list is a
+# virtual viewport, so its rows are inside a scrolling region the bounds probe
+# does not record: reachability is asserted by selecting the row that starts
+# below the fold rather than by `expect-onscreen`. Both summaries and the
+# footer must stay laid out inside the window throughout.
+expect-count entry: 6
+expect-text 6 matching entries
+expect-onscreen #results-summary
+expect-onscreen #shortcut-hints
+# The last entry starts below the fold at this height; selecting it proves the
+# list scrolls to reach it rather than laying it out past the window.
+click release-notes.md
+wait 700
+expect-selected #entry:release-notes.md
+snapshot scrolled-to-last
+click "Largest files"
+wait 300
+expect-selected #entry:release-notes.md
+expect-onscreen #dataset-summary
+type "Filter this folder" md
+wait 500
+expect-text 2 matching entries
+expect-onscreen #file-list
+expect-onscreen #file-details
+expect-onscreen #shortcut-hints
+snapshot filtered-and-sorted
+click "Clear filter"
+wait 500
+expect-text 6 matching entries

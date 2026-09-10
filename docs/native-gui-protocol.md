@@ -11,12 +11,13 @@ document stays hand-written.
 
 <!-- BEGIN GENERATED PROTOCOL TABLES (scripts/generate_protocol.py; edit protocol/native-protocol.json) -->
 
-The statically linked GUI boundary uses protocol version **11**;
+The statically linked GUI boundary uses protocol version **12**;
 the separate native effects boundary is version **2** and the
 separate timer boundary is version **1**.
 
 | Version | Change |
 | --- | --- |
+| 12 | Adds the `native_read_only` boolean field and its node word: a control that refuses edits while staying readable and keyboard reachable, distinct from disabled. |
 | 11 | Adds `signals_document_title`, the host read of the window identity decided by the shared engine's `SetDocumentTitle` command. |
 | 10 | Extends the presentation record to style version 2 with hover and active background slots (18 u32 style record); style version 1 records are no longer accepted. |
 | 9 | Adds the explicit image-source text slot together with the font-family and embedded-font declaration slots to the node layout. |
@@ -52,6 +53,7 @@ Scalar boolean fields:
 | 2 | `disabled` | browser (`set_disabled`) | Disables input while retaining native identity. |
 | 4 | `selected` | native | Native selected presentation, independent of checkbox state. |
 | 5 | `native_drop_target` | native | Marks an internal drop target that must bind a string-detail drop event. |
+| 6 | `native_read_only` | native | Refuses user edits and edit history while the control stays available at full contrast and in tab order. |
 | 3 | - | shared | Reserved marker for named custom boolean attributes. |
 
 `Node.TaskKind` is an explicit closed route:

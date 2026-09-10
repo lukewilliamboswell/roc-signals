@@ -114,9 +114,11 @@ inspect_view = |handles| {
 		},
 	)
 	Gui.panel(
-		# A fixed-width column beside a Fill list: it keeps its width, bounds
-		# itself to the content row, and scrolls a long path or error itself.
-		[Gui.test_id("file-details"), Gui.style({ ..Gui.style_default, width: Px(340), height: Fill, gap: 12, padding: 16, background: Rgb(0x283A47), radius: 8, overflow_y: Scroll })],
+		# The inspector shares the content row's width with the list rather than
+		# claiming a fixed 340 pixels: at the declared 360-pixel minimum a fixed
+		# panel is laid out past the right edge, where nothing can reach it. It
+		# bounds itself to the row's height and scrolls a long path or error.
+		[Gui.test_id("file-details"), Gui.style({ ..Gui.style_default, width: Fill, height: Fill, gap: 12, padding: 16, background: Rgb(0x283A47), radius: 8, overflow_y: Scroll })],
 		[
 			Gui.heading("File details"),
 			Gui.text_s(
@@ -196,7 +198,10 @@ inspect_view = |handles| {
 						},
 					),
 				},
-				[Gui.test_id("text-preview"), Gui.placeholder("Preview a file to read it here."), Gui.disabled_s(Signal.const(True)), Gui.style({ ..Gui.style_default, width: Fill, height: Px(220) })],
+				# The preview is a document to read, not an unavailable control: it
+				# stays legible and keyboard reachable, and read-only refuses every
+				# edit so the shown text cannot diverge from the loaded preview.
+				[Gui.test_id("text-preview"), Gui.placeholder("Preview a file to read it here."), Gui.read_only_s(Signal.const(True)), Gui.style({ ..Gui.style_default, width: Fill, height: Px(220) })],
 				handles.model.on_str(|state, _| state),
 			),
 		],
@@ -438,7 +443,7 @@ explorer_view = |handles| {
 				[Gui.style({ ..Gui.style_default, gap: 2, width: Fill, overflow_x: Clip })],
 				[
 					Gui.column(
-						[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
+						[Gui.test_id("shortcut-hints"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
 						[Gui.text("Alt+Left / Right: history · Alt+Up: parent · F5: refresh · Ctrl+O: choose folder · Esc: cancel")],
 					),
 					Gui.column(
