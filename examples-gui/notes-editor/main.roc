@@ -207,7 +207,11 @@ main = || Ui.state(
 											Gui.row(
 												[],
 												[
-													Gui.button("Keep editing", session.on_unit(Session.cancel)),
+													Gui.action_button(
+														{ label: Signal.const("Keep editing"), enabled: Signal.const(True) },
+														[Gui.test_id("keep-editing")],
+														session.on_unit(Session.cancel),
+													),
 													Gui.button(
 														"Discard changes",
 														Ui.action(

@@ -22,7 +22,6 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 | ID | Priority | Work item | Evidence | Primary owner |
 | --- | --- | --- | --- | --- |
 | GUI-03 | P1 | Board: make the complete board and detail actions reachable | Screenshots + wheel attempts | Board layout; GPUI verification |
-| GUI-04 | P1 | Keep confirmation dialogs inside the allowed viewport | Screenshot | GUI dialog layout + Notes |
 | GUI-08 | P2 | Defaulted nominal `Gui.Style` records | Pinned compiler probes | Public Roc GUI API |
 | GUI-09 | P2 | Make asset-verification warnings match rendered behavior | Source | Board/Explorer asset views |
 | GUI-10 | P2 | Explorer: fit list, inspector, and preview at smaller heights | Screenshots + wheel attempts | Explorer layout |
@@ -66,26 +65,6 @@ do not repair this with host tree scans or application-state layout inference.
 Test large boards, long titles/notes, filtering, focus visibility, and resize.
 If a new minimum size is chosen, make it an explicit public/window contract,
 not a silent replacement for usable overflow.
-
-### GUI-04 — Viewport-bounded dialogs
-
-Notes' normal discard dialog is readable at 1200×820, but at 360×600 its
-heading and safe action extend off the left edge and the explanation is cut
-off on the right:
-[wide](gui-examples-review/2026-09-10/notes-editor-discard-dialog.png),
-[narrow](gui-examples-review/2026-09-10/notes-editor-dialog-360x600.png).
-The host currently permits a 360×240 minimum window. Notes supplies a complete
-style without a width constraint; the centered dialog can keep its intrinsic
-content width. The fixed default dialog width must be audited too.
-
-Acceptance: dialog bounds, wrapping, internal scrolling, and action layout
-work within every allowed viewport. Verify safe initial focus, visible focused
-controls, Tab/Shift+Tab, Escape, resize while open, and long copy. Cover board
-delete/replace/close dialogs too; those were not desktop-captured in this pass.
-Preserve modal admission and engine-owned lifecycle semantics.
-
-
-## Roc and public API ergonomics
 
 ### GUI-08 — Defaulted nominal styles (Richard Feldman's suggestion)
 
@@ -234,7 +213,7 @@ started and never grab a screen region.
 
 Five scenarios are landed as stated diagnostics because the defects they
 reproduce are open: GUI-02 (board editor ownership), GUI-03 at both sizes,
-GUI-04 (dialog at 360×600), GUI-10 (explorer inspector at 800×600), and a
+GUI-10 (explorer inspector at 800×600), and a
 counter reading laid out past the edges of the 360×240 minimum window, which
 was not previously recorded here. A diagnostic that starts passing fails the
 run.
@@ -365,14 +344,12 @@ mandatory spacing/color dogma is approved by this backlog.
 
 ## Delivery sequence
 
-1. Address GUI-03/04 core reachability in parallel with their presentation
-   tests.
-2. Add GUI-16/17 regressions alongside each fix, not only at the end.
-3. Migrate GUI-08. This simplifies later example edits without needing new
+1. Add GUI-16/17 regressions alongside each fix, not only at the end.
+2. Migrate GUI-08. This simplifies later example edits without needing new
    rendering semantics.
-4. Apply current-API layout/readability fixes (GUI-09–11, GUI-13/14, GUI-18); use evidence
+3. Apply current-API layout/readability fixes (GUI-09–11, GUI-13/14, GUI-18); use evidence
    from them to scope GUI-19/20/23.
-5. Finish structure/docs and optional polish (GUI-21/22/24), then recapture the
+4. Finish structure/docs and optional polish (GUI-21/22/24), then recapture the
    same states. Remove resolved work from this queue; do not treat a fresh
    screenshot alone as proof of lifecycle, performance, or cross-OS correctness.
 
