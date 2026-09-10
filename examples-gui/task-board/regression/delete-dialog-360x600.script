@@ -1,0 +1,11 @@
+# size: 360x600
+# The board's own confirmations were never checked at a small size. The dialog
+# must stay inside the window and must still be able to refuse.
+click #edit-task-6
+wait 400
+click "Delete task"
+wait 500
+expect-onscreen #delete-confirmation
+click "Cancel deletion"
+wait 500
+expect-count task- 8

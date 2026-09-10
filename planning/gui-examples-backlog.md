@@ -21,7 +21,6 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 
 | ID | Priority | Work item | Evidence | Primary owner |
 | --- | --- | --- | --- | --- |
-| GUI-04 | P1 | Keep confirmation dialogs inside the allowed viewport | Screenshot | GUI dialog layout + Notes |
 | GUI-08 | P2 | Defaulted nominal `Gui.Style` records | Pinned compiler probes | Public Roc GUI API |
 | GUI-09 | P2 | Make asset-verification warnings match rendered behavior | Source | Board/Explorer asset views |
 | GUI-10 | P2 | Explorer: fit list, inspector, and preview at smaller heights | Screenshots + wheel attempts | Explorer layout |
@@ -37,24 +36,6 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 | GUI-24 | P3 | Optional visual refinements, after operability | Design | Examples + narrowly justified API work |
 
 ## Correctness and operability
-
-### GUI-04 — Viewport-bounded dialogs
-
-Notes' normal discard dialog is readable at 1200×820, but at 360×600 its
-heading and safe action extend off the left edge and the explanation is cut
-off on the right:
-[wide](gui-examples-review/2026-09-10/notes-editor-discard-dialog.png),
-[narrow](gui-examples-review/2026-09-10/notes-editor-dialog-360x600.png).
-The host currently permits a 360×240 minimum window. Notes supplies a complete
-style without a width constraint; the centered dialog can keep its intrinsic
-content width. The fixed default dialog width must be audited too.
-
-Acceptance: dialog bounds, wrapping, internal scrolling, and action layout
-work within every allowed viewport. Verify safe initial focus, visible focused
-controls, Tab/Shift+Tab, Escape, resize while open, and long copy. Cover board
-delete/replace/close dialogs too; those were not desktop-captured in this pass.
-Preserve modal admission and engine-owned lifecycle semantics.
-
 
 ## Roc and public API ergonomics
 
@@ -178,12 +159,11 @@ semantic assertions stay in `specs/` and presentation assertions in
 kept for failures; captures name the window by the process id the driver
 started and never grab a screen region.
 
-Scenarios whose defect is still open are landed as stated diagnostics: GUI-04
-(dialog at 360×600), GUI-10 (explorer inspector at 800×600), and the counter
-reading laid out past the edges of the 360×240 minimum window, recorded under
-GUI-14. A diagnostic that starts passing fails the run, so each fix has had to
-promote its own scenario to an ordinary check — that is how the board editor
-ownership and detail reachability fixes were confirmed.
+The one scenario whose defect is still open is landed as a stated diagnostic:
+GUI-10, the explorer inspector at 800×600. A diagnostic that starts passing
+fails the run, so each fix has had to promote its own scenario to an ordinary
+check — that is how the board editor ownership, board detail reachability,
+dialog bounds and counter sizing fixes were each confirmed.
 
 Remaining: the driver has only been executed on Apple Silicon macOS. Window
 captures are macOS-only; the scripts themselves need running under the Linux
@@ -311,13 +291,12 @@ mandatory spacing/color dogma is approved by this backlog.
 
 ## Delivery sequence
 
-1. Address GUI-04 dialog reachability alongside its presentation tests.
-2. Add GUI-16/17 regressions alongside each fix, not only at the end.
-3. Migrate GUI-08. This simplifies later example edits without needing new
+1. Add GUI-16/17 regressions alongside each fix, not only at the end.
+2. Migrate GUI-08. This simplifies later example edits without needing new
    rendering semantics.
-4. Apply current-API layout/readability fixes (GUI-09–11, GUI-13/14, GUI-18); use evidence
+3. Apply current-API layout/readability fixes (GUI-09-11, GUI-13, GUI-18); use evidence
    from them to scope GUI-19/20/23.
-5. Finish structure/docs and optional polish (GUI-21/22/24), then recapture the
+4. Finish structure/docs and optional polish (GUI-21/22/24), then recapture the
    same states. Remove resolved work from this queue; do not treat a fresh
    screenshot alone as proof of lifecycle, performance, or cross-OS correctness.
 

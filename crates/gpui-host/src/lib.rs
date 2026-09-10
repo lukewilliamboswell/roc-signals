@@ -939,7 +939,23 @@ impl Render for Runtime {
                             }
                         },
                     ))
-                    .child(self.nodes[&id].clone()),
+                    .p_4()
+                    // A dialog declares the width its content wants, but the
+                    // window it opens in can be as small as 360x240. Bounding
+                    // it here keeps every dialog — the platform default and
+                    // any style an application supplies — inside the viewport
+                    // it is centred in, instead of laying its heading and its
+                    // safe action out past the edges where nothing can reach
+                    // them. The application still owns the dialog's colours,
+                    // padding and intrinsic size.
+                    .child(
+                        div()
+                            .id(("dialog-bounds", id))
+                            .max_w_full()
+                            .max_h_full()
+                            .overflow_y_scroll()
+                            .child(self.nodes[&id].clone()),
+                    ),
             );
         }
         self.window_frame(root, window.window_decorations(), window, cx)

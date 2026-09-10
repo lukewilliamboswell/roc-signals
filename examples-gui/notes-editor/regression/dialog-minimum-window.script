@@ -1,9 +1,15 @@
 # size: 360x600
-# diagnostic: GUI-04. The discard dialog keeps its intrinsic content width, so
-# at the narrowest window the host permits its heading and safe action are laid
-# out past the left edge and its explanation past the right.
+# The discard dialog stays inside the narrowest window the host permits. This
+# guards the fix for the defect where it kept its intrinsic content width and
+# laid its heading and safe action out past the left edge, with its explanation
+# past the right.
 type "Note text" hi
 wait 400
 click New
 wait 400
 expect-onscreen #discard-confirmation
+expect-onscreen #discard-confirmation
+expect-focused #keep-editing
+key escape
+wait 400
+expect-missing "Discard your changes?"
