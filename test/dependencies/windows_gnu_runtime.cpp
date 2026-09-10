@@ -1,11 +1,32 @@
 #include <atomic>
 #include <climits>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <malloc.h>
 #include <thread>
 
 extern "C" int check_rust_unwind(void);
 extern "C" int checked_add(int, int);
+
+extern "C" void *roc_alloc(size_t length, size_t alignment) {
+    return _aligned_malloc(length == 0 ? 1 : length, alignment);
+}
+extern "C" void roc_dealloc(void *ptr, size_t) { _aligned_free(ptr); }
+extern "C" void *roc_realloc(void *ptr, size_t new_length, size_t alignment) {
+    return _aligned_realloc(ptr, new_length == 0 ? 1 : new_length, alignment);
+}
+static void roc_message(const unsigned char *bytes, size_t len) {
+    std::fwrite(bytes, 1, len, stderr);
+    std::fputc('\n', stderr);
+}
+extern "C" void roc_dbg(const unsigned char *bytes, size_t len) { roc_message(bytes, len); }
+extern "C" void roc_expect_failed(const unsigned char *bytes, size_t len) { roc_message(bytes, len); }
+extern "C" void roc_crashed(const unsigned char *bytes, size_t len) {
+    roc_message(bytes, len);
+    std::abort();
+}
+
 static std::atomic<int> thread_drops{0};
 static int exception_drops;
 static int exit_callback;

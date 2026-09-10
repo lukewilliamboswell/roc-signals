@@ -196,7 +196,7 @@ def check_candidate(archive, target, roc, root=ROOT, source_companion=None):
         shutil.copytree(root / "vendor", stage / "vendor")
         for app in examples(stage) + fixtures(stage):
             executable = stage / executable_name(app.name)
-            subprocess.run([roc, "build", "--no-cache", f"--target={target}",
+            subprocess.run([roc, "build", "--no-cache", f"--target={target}", "--opt=dev",
                             f"--output={executable}", str(app / "main.roc")],
                            cwd=stage, check=True, timeout=180)
             results = spec_driver.run_suite(executable, app / "specs", jobs=1)

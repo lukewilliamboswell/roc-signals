@@ -41,7 +41,7 @@ def check_apps(platform_path, roc, *, root=ROOT, url=None):
                 raise ValueError('example compiler differs from platform compiler')
             source.write_text(toolchain.replace_platform(source.read_text(), url or str(platform_path / 'main.roc')))
             executable = stage / app.name
-            subprocess.run([roc, 'build', '--no-cache', '--target=arm64mac',
+            subprocess.run([roc, 'build', '--no-cache', '--target=arm64mac', '--opt=dev',
                             f'--output={executable}', str(source)], cwd=stage, env=environment, check=True, timeout=180)
             results = spec_driver.run_suite(executable, app / 'specs', jobs=1)
             spec_driver.print_summary(results)
