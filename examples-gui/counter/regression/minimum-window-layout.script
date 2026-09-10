@@ -3,6 +3,10 @@
 # permits, without relying on the window-scroll fallback to reveal it. This
 # guards the fix for the fixed 380-pixel panel and the oversized paddings that
 # put the reading past the bottom and right edges.
+# diagnostic: GUI-35. Where the compositor delegates decorations to the host,
+# the host's own title bar and insets take 48 of the window's 240 pixels, and
+# the button row is laid out below the window.
+# diagnostic-on: linux
 expect-onscreen #count
 expect-onscreen #Increment
 expect-onscreen #Decrement

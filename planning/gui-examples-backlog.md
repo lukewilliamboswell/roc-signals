@@ -34,7 +34,7 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 | --- | --- | --- | --- | --- |
 | GUI-10 | P2 | Explorer: fit the inspector beside the list at the 360-pixel minimum width | Regression bounds at 360x600 | Explorer layout; GUI style protocol |
 | GUI-13 | P2 | Give cards and event rows coherent activation and selection | Screenshots + source | Examples + GUI interaction API |
-| GUI-16 | P2 | Extend desktop regression coverage to Linux and richer environments | Executed on macOS only | GUI tests/tooling |
+| GUI-16 | P2 | Extend desktop regression coverage to Windows and richer environments | Executed on macOS and Linux | GUI tests/tooling |
 | GUI-18 | P2 | Make toolbars, inspectors, and tabular content easier to scan | Screenshots; design | Board/Explorer/Activity views |
 | GUI-19 | P2 | Review minimal typography/alignment/truncation capabilities | Source; design | Public GUI style protocol |
 | GUI-20 | P2 | Make shortcut and keyboard behavior discoverable and platform-appropriate | Source; cross-OS validation needed | Examples + native keyboard tests |
@@ -52,6 +52,7 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 | GUI-32 | P1 | Explorer: Preview text and Open in app are inert for real Windows folders | Windows reproduction; works on Linux | Explorer + host hit-testing/effects |
 | GUI-33 | P2 | Windows file-service edge cases: UNC, reparse points, sharing violations | Source; unverified | Windows file worker |
 | GUI-34 | P1 | Re-verify on Windows the items closed on macOS | Windows evidence predates the fixes | Windows validation |
+| GUI-35 | P2 | Linux: the host's own frame takes 48 pixels of the 360×240 minimum, so Counter's buttons are laid out below the window | Linux regression bounds at 360x240 | GPUI host window frame; window minimum |
 
 ## Correctness and operability
 
@@ -127,11 +128,19 @@ arranges the private display each system needs, reusing the smoke checks' Weston
 compositor on Linux, and Linux CI runs it after `gui-smoke` and keeps the JSON
 reports on failure. Only the window captures remain macOS-only.
 
-Remaining: the scenarios have not yet been executed on Linux or Windows by
-anyone — CI wiring is not the same as a green run. Window
-captures are macOS-only; the scripts themselves need running under the Linux
-Xvfb/Weston environment `gui_smoke.py --wayland` provides, and wiring into CI
-alongside it. Representative scaling and font environments are not covered:
+Linux, 2026-09-11: all 29 scenarios ran on a Linux desktop Wayland session with
+the debug host and the 2026-09-04 nightly compiler. Twenty-eight pass; the one
+failure is the counter's minimum-window layout, which is a genuine Linux
+finding (GUI-35) rather than a script defect, and now runs as a diagnostic
+scoped to Linux with `# diagnostic-on:`. Two scenarios added that day open a
+real file and a real folder through the workers by way of `# choose:` and leave
+through the window's own close request (see GUI-29 and GUI-32). The run was
+on the desktop compositor, not under the Weston-on-Xvfb arrangement
+`scripts/minici gui-scenarios` uses in CI; that path is still unexecuted here.
+
+Remaining: the scenarios have not been executed on Windows by anyone, and the
+Linux CI arrangement has not been run locally. Window captures are macOS-only.
+Representative scaling and font environments are not covered:
 scenarios run at the default scale factor with the host's own font selection.
 Real OS keyboard, pointer, IME and window-manager behaviour is still not
 exercised — the scripts dispatch through GPUI's key dispatch inside the
@@ -495,6 +504,27 @@ distinguish symbolic links from other reparse points (cloud placeholders,
 junctions, mount points) with the reparse tag; give sharing violations their
 own error text and a Retry hint in Activity; normalize separators at the
 boundary. Cover each with a fixture that a Windows CI job actually runs.
+
+### GUI-35 — The Linux frame consumes the window minimum
+
+Where the compositor delegates decorations, the host draws its own frame: a
+36-pixel title bar and a 6-pixel inset on every edge
+([window_frame.rs](../crates/gpui-host/src/window_frame.rs)). GPUI adds the
+inset to the requested bounds, so a `--host-window-size 360x240` window is
+372×252 on Wayland and the application is laid out in 360×204. At that height
+the Counter's button row is recorded at y 228–276, below the window, while the
+same scenario passes on macOS, whose title bar sits outside the content bounds.
+`window_min_size` is fixed at open time and GPUI 0.2.2 offers no way to raise
+it once the decoration mode is known, so the declared 360×240 minimum means
+different content areas on different systems.
+
+Acceptance: make the minimum mean the same content area everywhere. Either
+add the frame's chrome to the minimum and the requested size where the host
+will draw it (the decoration mode is negotiated after open, so this may need a
+resize once it is known), or shrink the frame. Then promote
+`counter/minimum-window-layout` back to an ordinary check on Linux. Keep
+window policy in the host; the Counter's own layout is already as small as its
+content allows.
 
 ### GUI-34 — Re-verify the closed items on Windows
 

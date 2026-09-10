@@ -103,6 +103,31 @@ class ScenarioTests(unittest.TestCase):
             self.assertIn("signal 11", detail)
             self.assertIn("PASS: follow", detail)
 
+    def test_a_diagnostic_scoped_to_other_systems_is_an_ordinary_check_here(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = write(root, "counter", "minimum", "# size: 360x240\n"
+                         "# diagnostic: GUI-35. The Linux frame takes 48 pixels.\n"
+                         "# diagnostic-on: linux\nexpect-onscreen #Increment\n")
+            on_linux = gui_regression.Scenario(root / "counter", path, system="Linux")
+            self.assertEqual(on_linux.diagnostic, "GUI-35. The Linux frame takes 48 pixels.")
+            on_mac = gui_regression.Scenario(root / "counter", path, system="Darwin")
+            self.assertIsNone(on_mac.diagnostic)
+            on_windows = gui_regression.Scenario(root / "counter", path, system="Windows")
+            self.assertIsNone(on_windows.diagnostic)
+
+    def test_a_diagnostic_scope_must_name_known_systems_and_a_diagnostic(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = write(root, "counter", "minimum",
+                         "# diagnostic: GUI-35.\n# diagnostic-on: beos\nexpect-text 0\n")
+            with self.assertRaises(SystemExit):
+                gui_regression.Scenario(root / "counter", path, system="Linux")
+            path = write(root, "counter", "unscoped",
+                         "# diagnostic-on: linux\nexpect-text 0\n")
+            with self.assertRaises(SystemExit):
+                gui_regression.Scenario(root / "counter", path, system="Linux")
+
     def test_comments_inside_a_script_body_do_not_extend_the_diagnostic(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

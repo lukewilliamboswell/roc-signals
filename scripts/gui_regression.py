@@ -30,12 +30,21 @@ from build_gui import executable_name
 from gui_suite import ROOT, examples
 
 DEFAULT_SIZE = "1200x820"
+SYSTEMS = {"linux": "Linux", "macos": "Darwin", "windows": "Windows"}
+
+
+def current_system(system: str | None = None) -> str:
+    """The `# diagnostic-on:` name of this system, or of the platform name given."""
+    import platform
+
+    name = system or platform.system()
+    return next((key for key, value in SYSTEMS.items() if value == name), name.lower())
 
 
 class Scenario:
     """One script, its window size, assets root, and any open defect it documents."""
 
-    def __init__(self, app: Path, path: Path):
+    def __init__(self, app: Path, path: Path, system: str | None = None):
         self.app = app
         self.path = path
         self.name = path.stem
@@ -49,6 +58,10 @@ class Scenario:
         # path to the next chooser in order instead of prompting.
         self.choices = []
         self.diagnostic = None
+        # A defect the host's chrome causes on one system is not a defect
+        # elsewhere, and a diagnostic that passes fails the run; naming the
+        # systems keeps the scenario an ordinary check everywhere else.
+        systems = None
         note = []
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.startswith("#"):
@@ -65,11 +78,20 @@ class Scenario:
                 if not choice.exists():
                     raise SystemExit(f"{path}: '# choose:' names nothing on disk: {choice}")
                 self.choices.append(choice)
+            elif comment.startswith("diagnostic-on:"):
+                systems = {word.strip().lower()
+                           for word in comment[len("diagnostic-on:"):].split(",") if word.strip()}
+                unknown = systems - set(SYSTEMS)
+                if not systems or unknown:
+                    raise SystemExit(f"{path}: '# diagnostic-on:' expects some of "
+                                     f"{', '.join(SYSTEMS)}, got {sorted(unknown) or 'nothing'}")
             elif comment.startswith("diagnostic:"):
                 note = [comment[len("diagnostic:"):].strip()]
             elif note:
                 note.append(comment)
-        if note:
+        if systems is not None and not note:
+            raise SystemExit(f"{path}: '# diagnostic-on:' needs a '# diagnostic:' to scope")
+        if note and (systems is None or current_system(system) in systems):
             self.diagnostic = " ".join(word for word in note if word)
         if "x" not in self.size.lower():
             raise SystemExit(f"{path}: '# size:' expects WIDTHxHEIGHT")
