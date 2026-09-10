@@ -12,8 +12,8 @@ main = || Ui.state(
 			Gui.ColumnProps.{},
 			[
 				Gui.heading("Internal drag and drop"),
-				Gui.panel({ test_id: "drag-source", drag_source: "task-λ" }, [Gui.text("Drag this task")]),
-				Gui.panel({ test_id: "drop-target", on_drop: last.on_detail(|_, key| key) }, [Gui.text("Drop here")]),
+				Gui.panel({ test_id: "drag-source", drag_source: "task-λ" }, ["Drag this task"]),
+				Gui.panel({ test_id: "drop-target", on_drop: last.on_detail(|_, key| key) }, ["Drop here"]),
 				Gui.text_s(last.signal().map(|key| "Dropped: ${key}")),
 			],
 		)

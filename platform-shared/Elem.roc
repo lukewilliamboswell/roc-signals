@@ -54,4 +54,9 @@ Elem := [
 			},
 		},
 	),
-]
+].{
+	## A string literal in an element position is literal text, so a child list
+	## can hold `"Hello"` directly instead of `Html.text("Hello")`.
+	from_quote : Str -> Try(Elem, [BadQuotedBytes(Str)])
+	from_quote = |value| Ok(Text(value))
+}

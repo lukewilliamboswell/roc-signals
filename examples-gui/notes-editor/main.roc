@@ -73,7 +73,7 @@ main = || Ui.state(
 							Gui.heading("Notes"),
 							Gui.column(
 								{ foreground: Rgb(theme.text_secondary) },
-								[Gui.text("A quiet place to collect your thoughts.")],
+								["A quiet place to collect your thoughts."],
 							),
 							Gui.row(
 								{ gap: 8 },
@@ -210,7 +210,7 @@ main = || Ui.state(
 											},
 											[
 												Gui.heading("Discard your changes?"),
-												Gui.text("Your unsaved text will be replaced. Keep editing to return to this draft."),
+												"Your unsaved text will be replaced. Keep editing to return to this draft.",
 												Gui.row(
 													Gui.RowProps.{},
 													[
@@ -243,7 +243,7 @@ main = || Ui.state(
 											},
 											[
 												Gui.heading("Save before closing?"),
-												Gui.text("Your note has unsaved changes. Save them, discard them, or keep editing."),
+												"Your note has unsaved changes. Save them, discard them, or keep editing.",
 												Gui.row(
 													Gui.RowProps.{},
 													[

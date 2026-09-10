@@ -104,7 +104,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 			Gui.heading("Activity Monitor"),
 			Gui.column(
 				{ foreground: Rgb(0xA9BFCC) },
-				[Gui.text("Follow a live log file, or replay a deterministic sample feed.")],
+				["Follow a live log file, or replay a deterministic sample feed."],
 			),
 			Gui.panel(
 				{
@@ -200,7 +200,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							|| Gui.text(""),
 							|| Gui.column(
 								{ padding: 8, font_size: 13, foreground: Rgb(0xE8C27A) },
-								[Gui.text("Replay paused")],
+								["Replay paused"],
 							),
 						),
 					],
@@ -275,7 +275,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 								visible.map(|rows| rows.len() == 0),
 								|| Gui.column(
 									{ font_size: 13, foreground: Rgb(0x93A9B6) },
-									[Gui.text("No matching events. Start the replay, open a log, or adjust the filter.")],
+									["No matching events. Start the replay, open a log, or adjust the filter."],
 								),
 								|| Gui.text(""),
 							),

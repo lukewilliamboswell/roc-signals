@@ -71,7 +71,8 @@ all 39 specs, and confirmed rendering for every app.
 `Gui.row`, `Gui.column`, and `Gui.panel` take a props record followed by a
 child list. Every control has its own props type, such as `Gui.PanelProps`,
 whose fields all have defaults, so a literal names only what it changes:
-`Gui.column({ test_id: "count", padding: 12, gap: 4 }, children)`. The style
+`Gui.column({ test_id: "count", padding: 12, gap: 4 }, ["Count"])`. A string
+literal in a child list is literal text, the same as `Gui.text`. The style
 fields carry that control's own presentation defaults: a panel keeps its
 padding and border unless the literal sets them. Attributes such as `test_id`,
 `label`, `selected`, `enabled`, `disabled`, `shortcuts`, `drag_source`, and
@@ -119,7 +120,7 @@ do not dispatch application events.
 
 | Control | Inputs |
 | --- | --- |
-| `heading`, `text` | literal string |
+| `heading`, `text` | literal string; a child list also accepts a bare `"string"` as text |
 | `text_s` | string signal |
 | `button` | label and unit message |
 | `action_button` | `{ caption, enabled, ... }` props with signal caption, unit message |

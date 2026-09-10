@@ -345,7 +345,7 @@ explorer_view = |handles| {
 			Gui.heading("Folder Explorer"),
 			Gui.column(
 				{ foreground: Rgb(0xA9BFCC) },
-				[Gui.text("Browse a folder on this computer, or explore the built-in sample workspace.")],
+				["Browse a folder on this computer, or explore the built-in sample workspace."],
 			),
 			Gui.row(
 				{ gap: 8 },
@@ -480,7 +480,7 @@ explorer_view = |handles| {
 								visible.map(|entries| Rows.len(entries) == 0),
 								|| Gui.column(
 									{ font_size: 13, foreground: Rgb(0x93A9B6) },
-									[Gui.text("No matching entries. Clear the filter or choose another folder.")],
+									["No matching entries. Clear the filter or choose another folder."],
 								),
 								|| Gui.text(""),
 							),
@@ -499,7 +499,7 @@ explorer_view = |handles| {
 			),
 			Gui.column(
 				{ font_size: 13, foreground: Rgb(0x93A9B6) },
-				[Gui.text("Alt+Left / Right: history · Alt+Up: parent · F5: refresh · Ctrl+O: choose folder · Esc: cancel")],
+				["Alt+Left / Right: history · Alt+Up: parent · F5: refresh · Ctrl+O: choose folder · Esc: cancel"],
 			),
 			# Trailing problem line: empty on healthy runs, so it pays no gap
 			# rhythm between the always-visible bands above.

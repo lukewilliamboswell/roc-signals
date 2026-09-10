@@ -303,7 +303,7 @@ column_view = |handles, column, selected| {
 				visible.map(|items| Rows.len(items) == 0),
 				|| Gui.column(
 					{ font_size: 13, foreground: Rgb(0x93A9B6) },
-					[Gui.text("No matching tasks")],
+					["No matching tasks"],
 				),
 				|| Gui.text(""),
 			),
@@ -402,7 +402,7 @@ delete_confirmation = |handles, column| {
 				test_id: "delete-confirmation",
 			},
 			[
-				Gui.text("Delete this task? This removes it from the board."),
+				"Delete this task? This removes it from the board.",
 				Gui.row(
 					Gui.RowProps.{},
 					[
@@ -453,12 +453,12 @@ detail_view = |handles|
 								),
 								Gui.column(
 									{ gap: 4, font_size: 13, foreground: Rgb(0xA9BFCC) },
-									[Gui.text("Task title"), edit_field(|label, value, disabled, msg| Gui.text_input({ label, value, disabled, width: Fill }, msg), handles, column, "Task title", |task, title| { ..task, title }, |task| task.title)],
+									["Task title", edit_field(|label, value, disabled, msg| Gui.text_input({ label, value, disabled, width: Fill }, msg), handles, column, "Task title", |task, title| { ..task, title }, |task| task.title)],
 								),
 								Gui.column(
 									{ gap: 4, font_size: 13, foreground: Rgb(0xA9BFCC) },
 									[
-										Gui.text("Assignee"),
+										"Assignee",
 										Gui.row(
 											{ gap: 8 },
 											[
@@ -476,7 +476,7 @@ detail_view = |handles|
 								},
 								Gui.column(
 									{ font_size: 13, foreground: Rgb(0x93A9B6) },
-									[Gui.text("Changes appear on the board immediately.")],
+									["Changes appear on the board immediately."],
 								),
 								reorder_buttons(handles, column),
 								Gui.column(Gui.ColumnProps.{}, Board.columns.keep_if(|other| other != column).map(|other| move_button(handles, other))),
@@ -589,7 +589,7 @@ board_view = |handles| {
 					Gui.heading("Launch Board"),
 					Gui.column(
 						{ foreground: Rgb(0xA9BFCC) },
-						[Gui.text("A small team's workspace for the next release.")],
+						["A small team's workspace for the next release."],
 					),
 					document_toolbar(handles, actions),
 					Gui.row(
@@ -608,8 +608,8 @@ board_view = |handles| {
 					Gui.column(
 						{ gap: 2, font_size: 13, foreground: Rgb(0x93A9B6) },
 						[
-							Gui.text("Drag onto a card to place a task before it, or into a column to move it to the end."),
-							Gui.text("Undo keeps up to 50 changes within 4 MiB; older changes are retired."),
+							"Drag onto a card to place a task before it, or into a column to move it to the end.",
+							"Undo keeps up to 50 changes within 4 MiB; older changes are retired.",
 						],
 					),
 					Gui.row(
@@ -897,7 +897,7 @@ document_toolbar = |handles, actions| {
 					},
 					[
 						Gui.heading("Replace unsaved board?"),
-						Gui.text("Save your board first to keep these changes. Opening succeeds only after the new file is completely validated."),
+						"Save your board first to keep these changes. Opening succeeds only after the new file is completely validated.",
 						Gui.button("Keep editing", actions.cancel),
 						Gui.button("Discard and open", handles.document.on_unit(|doc| { ..doc, phase: Phase.ChoosingOpen })),
 					],
@@ -1119,7 +1119,7 @@ close_dialog = |handles| {
 			},
 			[
 				Gui.heading("Save your board before closing?"),
-				Gui.text("Keep editing to return to your project, or save a board document before closing."),
+				"Keep editing to return to your project, or save a board document before closing.",
 				Gui.text_s(handles.document.signal().map(|doc| doc.problem)),
 				Gui.row(
 					Gui.RowProps.{},
@@ -1144,7 +1144,7 @@ close_dialog = |handles| {
 				},
 				[
 					Gui.heading("Saving your board…"),
-					Gui.text("The window stays open until the submitted board is saved."),
+					"The window stays open until the submitted board is saved.",
 					Gui.button("Keep window open", keep),
 					Ui.on_change(
 						handles.context,

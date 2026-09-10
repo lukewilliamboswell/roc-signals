@@ -84,7 +84,7 @@ main = || Ui.state(
 								Gui.heading("Roc Signals + GPUI"),
 								Gui.column(
 									{ foreground: Rgb(0xA9BFCC) },
-									[Gui.text("Edit a row, then move it. Hide/show creates fresh row scopes.")],
+									["Edit a row, then move it. Hide/show creates fresh row scopes."],
 								),
 								Gui.row(
 									{ gap: 8 },
@@ -117,7 +117,7 @@ main = || Ui.state(
 									},
 									|| Gui.column(
 										{ font_size: 13, foreground: Rgb(0x93A9B6) },
-										[Gui.text("Rows disposed")],
+										["Rows disposed"],
 									),
 								),
 							],

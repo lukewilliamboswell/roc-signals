@@ -21,7 +21,7 @@ main = || Ui.state(
 						padding: 12,
 						background: Rgb(0x24323E),
 					},
-					[Gui.text("First branch")],
+					["First branch"],
 				),
 				|| Gui.panel(
 					{
@@ -30,7 +30,7 @@ main = || Ui.state(
 						padding: 20,
 						background: Rgb(0x354452),
 					},
-					[Gui.text("Second branch")],
+					["Second branch"],
 				),
 			),
 		],

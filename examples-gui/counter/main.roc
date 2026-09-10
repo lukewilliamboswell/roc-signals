@@ -38,7 +38,7 @@ main = || Ui.state(
 				Gui.heading("Counter"),
 				Gui.column(
 					{ foreground: Rgb(theme.text_secondary) },
-					[Gui.text("A minimal Roc Signals application.")],
+					["A minimal Roc Signals application."],
 				),
 				Gui.panel(
 					{

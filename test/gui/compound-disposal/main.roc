@@ -36,7 +36,7 @@ main = || Ui.state(
 								|| Gui.column(
 									Gui.ColumnProps.{},
 									[
-										Gui.text("Detail"),
+										"Detail",
 										Ui.when(confirm.signal(), || Gui.text("Confirm"), || Gui.text("Editing")),
 									],
 								),
