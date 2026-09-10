@@ -715,3 +715,20 @@ mod tests {
         assert!(report.contains(r#""window":[360,240]"#), "{report}");
     }
 }
+
+impl Action {
+    /// Whether performing this step can change what the next step observes.
+    ///
+    /// Recorded bounds are invalidated after a step so a reachability assertion
+    /// is never answered by a layout that no longer exists. Only a step that can
+    /// actually change the layout needs that: invalidating after an assertion
+    /// too would leave the following assertion with nothing to read until a
+    /// frame happened to arrive, so two `expect-onscreen` lines in a row could
+    /// never both be answered.
+    pub(crate) fn changes_layout(&self) -> bool {
+        matches!(
+            self,
+            Action::Click(_) | Action::Focus(_) | Action::Type(..) | Action::Key(_)
+        )
+    }
+}

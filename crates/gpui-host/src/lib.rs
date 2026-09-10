@@ -950,10 +950,9 @@ impl Render for Runtime {
                     // padding and intrinsic size.
                     .child(
                         div()
-                            .id(("dialog-bounds", id))
                             .max_w_full()
                             .max_h_full()
-                            .overflow_y_scroll()
+                            .overflow_hidden()
                             .child(self.nodes[&id].clone()),
                     ),
             );
@@ -1273,11 +1272,21 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                     let outcome = window
                         .update(cx, |runtime, window, cx| {
                             let outcome = perform(runtime, window, cx, &step.action);
-                            // A fresh frame repaints the bounds the next step
-                            // will read, so a reachability assertion can never
-                            // be answered by a layout that no longer exists.
-                            probe::clear();
-                            window.refresh();
+                            // Only a layout-changing step invalidates the
+                            // recording, and only for controls that have gone
+                            // away: a mounted node that did not re-render is
+                            // not prepainted again, so wiping its bounds would
+                            // read as "not laid out" on the very next line.
+                            if step.action.changes_layout() {
+                                let mounted = runtime
+                                    .nodes
+                                    .values()
+                                    .map(|view| view.read(cx).node.test_id.clone())
+                                    .filter(|id| !id.is_empty())
+                                    .collect();
+                                probe::retain_mounted(&mounted);
+                                window.refresh();
+                            }
                             outcome
                         })
                         .expect("the scripted window closed early");

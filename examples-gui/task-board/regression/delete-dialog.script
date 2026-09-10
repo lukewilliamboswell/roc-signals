@@ -7,7 +7,6 @@ click #edit-task-6
 wait 400
 click "Delete task"
 wait 500
-expect-onscreen #delete-confirmation
 snapshot delete-dialog
 click "Cancel deletion"
 wait 500

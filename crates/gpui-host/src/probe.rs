@@ -81,12 +81,15 @@ pub(crate) fn viewport() -> Option<Rect> {
     VIEWPORT.with(|viewport| *viewport.borrow())
 }
 
-/// Drops every recorded rectangle so a step observes only the current frame.
+/// Drops the rectangles of controls that are no longer mounted.
 ///
-/// A control that has been unmounted keeps its last rectangle otherwise, which
-/// would let a reachability assertion pass on stale evidence.
-pub(crate) fn clear() {
-    RECORDED.with(|recorded| recorded.borrow_mut().clear());
+/// A control that has been unmounted would otherwise keep its last rectangle,
+/// and a reachability assertion could pass on evidence for something no longer
+/// on screen. Dropping *every* rectangle instead does not work: a node that
+/// stays mounted and does not re-render is not prepainted again, so its bounds
+/// would never come back and the next assertion would read it as missing.
+pub(crate) fn retain_mounted(mounted: &std::collections::HashSet<String>) {
+    RECORDED.with(|recorded| recorded.borrow_mut().retain(|id, _| mounted.contains(id)));
 }
 
 impl Rect {

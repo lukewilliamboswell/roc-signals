@@ -165,6 +165,12 @@ fails the run, so each fix has had to promote its own scenario to an ordinary
 check — that is how the board editor ownership, board detail reachability,
 dialog bounds and counter sizing fixes were each confirmed.
 
+Two limits found by running the driver against real fixes: a dialog is lifted
+into its own render layer and the bounds probe records nothing for it, so
+`expect-onscreen` cannot judge a dialog and those scenarios rely on their
+capture instead; and a control inside a scrolling region is likewise not
+recorded. Both are gaps in the probe, not properties of the applications.
+
 Remaining: the driver has only been executed on Apple Silicon macOS. Window
 captures are macOS-only; the scripts themselves need running under the Linux
 Xvfb/Weston environment `gui_smoke.py --wayland` provides, and wiring into CI

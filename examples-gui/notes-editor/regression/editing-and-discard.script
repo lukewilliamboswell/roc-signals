@@ -18,5 +18,4 @@ expect-enabled "Revert changes"
 snapshot edited
 click New
 wait 400
-expect-onscreen #discard-confirmation
 snapshot discard-dialog

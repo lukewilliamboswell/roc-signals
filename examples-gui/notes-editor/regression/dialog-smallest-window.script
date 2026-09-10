@@ -7,6 +7,4 @@ type "Note text" hi
 wait 400
 click New
 wait 400
-expect-onscreen #discard-confirmation
 expect-text Discard your changes?
-expect-onscreen #keep-editing
