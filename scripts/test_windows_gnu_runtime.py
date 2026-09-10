@@ -13,10 +13,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_windows_gnu_runtime import corresponding_source, RECIPE
 from release_windows_gnu_runtime import prepare
+from test_windows_gnu_runtime_artifact import ROC_PROBE_OPT
 from windows_runtime_validation import ucrt_inventory
 
 
 class RuntimeValidationTests(unittest.TestCase):
+    def test_roc_final_link_probe_uses_the_dev_backend(self):
+        self.assertEqual(ROC_PROBE_OPT, '--opt=dev')
+
     def test_implementation_code_cannot_be_admitted_as_a_ucrt_alias(self):
         header = struct.pack('<HHIIIHH', 0x8664, 1, 0, 61, 0, 0, 0)
         section = struct.pack('<8sIIIIIIHHI', b'.text', 0, 0, 1, 60, 0, 0, 0, 0, 0x60000020)

@@ -144,7 +144,7 @@ def extract_examples(path: Path, destination: Path) -> None:
 
 
 def read_manifest(directory: Path) -> dict:
-    manifest = json.loads((directory / MANIFEST).read_text())
+    manifest = json.loads((directory / MANIFEST).read_text(encoding="utf-8"))
     if (manifest.get("schema_version") != 2 or not VERSION.fullmatch(manifest.get("version", ""))
             or not re.fullmatch(r"[0-9a-f]{40}", manifest.get("source_sha", ""))):
         raise ValueError("unsupported combined platform release manifest")
@@ -206,21 +206,29 @@ def require_headers(root: Path, manifest: dict) -> None:
     pin = manifest["compiler_pin"]
     for example in web_examples():
         source = root / example.source
-        if read_pin(source) != pin or platform_url(source.read_text()) != manifest["assets"]["web"]["url"]:
+        if (read_pin(source) != pin
+                or platform_url(source.read_text(encoding="utf-8")) != manifest["assets"]["web"]["url"]):
             raise ValueError(f"web example header differs from the release: {example.source}")
     for app in gui_examples():
         source = root / app.relative_to(ROOT) / "main.roc"
-        if read_pin(source) != pin or platform_url(source.read_text()) != manifest["assets"]["gui"]["url"]:
+        if (read_pin(source) != pin
+                or platform_url(source.read_text(encoding="utf-8")) != manifest["assets"]["gui"]["url"]):
             raise ValueError(f"GUI example header differs from the release: {source.relative_to(root)}")
 
 
 def bind_local_headers(root: Path, manifest: dict, origin: str) -> None:
     for example in web_examples():
         source = root / example.source
-        source.write_text(replace_platform(source.read_text(), origin + "/" + manifest["assets"]["web"]["name"]))
+        source.write_text(
+            replace_platform(source.read_text(encoding="utf-8"), origin + "/" + manifest["assets"]["web"]["name"]),
+            encoding="utf-8",
+        )
     for app in gui_examples():
         source = root / app.relative_to(ROOT) / "main.roc"
-        source.write_text(replace_platform(source.read_text(), origin + "/" + manifest["assets"]["gui"]["name"]))
+        source.write_text(
+            replace_platform(source.read_text(encoding="utf-8"), origin + "/" + manifest["assets"]["gui"]["name"]),
+            encoding="utf-8",
+        )
 
 
 def check_web(roc: str, root: Path, output: Path) -> None:
@@ -228,9 +236,11 @@ def check_web(roc: str, root: Path, output: Path) -> None:
     for example in web_examples():
         source = root / example.source
         roc_run(roc, "check", source)
-        roc_run(roc, "test", source)
+        roc_run(roc, "test", source, "--opt=dev")
         wasm = output / "wasm" / (example.slug + ".wasm")
         wasm.parent.mkdir(parents=True, exist_ok=True)
+        # TODO(upstream compiler bug 10): switch this routine smoke build to
+        # --opt=dev once unit-state capability callbacks produce valid Wasm.
         roc_run(roc, "build", source, "--target=wasm32", "--opt=size", "--no-cache", f"--output={wasm}")
         driver.run(["node", ROOT / "scripts/browser/mount_wasm_example.mjs", wasm,
                     example.slug, "--runtime-dir", root / "browser"])
@@ -257,7 +267,7 @@ def check_gui(roc: str, root: Path, output: Path) -> None:
         released = root / app.relative_to(ROOT)
         source = released / "main.roc"
         roc_run(roc, "check", source, env=environment)
-        roc_run(roc, "test", source, env=environment)
+        roc_run(roc, "test", source, "--opt=dev", env=environment)
         executable = binaries / executable_name(app.name)
         roc_run(roc, "build", source, f"--target={target}", "--opt=dev", "--no-cache",
                 f"--output={executable}", env=environment)
@@ -280,7 +290,7 @@ def prepare(version: str, directory: Path, roc: str, web_host_lock: Path, gui_ho
     pin = validate_roots()
     verify_compiler(roc, pin)
     notes = ROOT / f"releases/{version}.md"
-    if not notes.is_file() or not notes.read_text().strip():
+    if not notes.is_file() or not notes.read_text(encoding="utf-8").strip():
         raise ValueError(f"finalize {notes} before preparing a release")
     locks = {
         "web_hosts": read_lock(web_host_lock),
@@ -297,7 +307,7 @@ def prepare(version: str, directory: Path, roc: str, web_host_lock: Path, gui_ho
             "--prebuilt-host-lock", os.fspath(gui_host_lock),
             "--output-dir", os.fspath(bundles),
         ], cwd=ROOT, env=environment, check=True)
-        bundle_manifest = json.loads((bundles / "bundles.json").read_text())
+        bundle_manifest = json.loads((bundles / "bundles.json").read_text(encoding="utf-8"))
         if set(bundle_manifest) != {"web", "gui"}:
             raise ValueError("bundler did not produce exactly web and GUI packages")
         paths = {}
@@ -328,14 +338,15 @@ def prepare(version: str, directory: Path, roc: str, web_host_lock: Path, gui_ho
             "source_ref": "refs/heads/main",
         },
     }
-    (directory / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n")
+    (directory / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     assets = "\n".join(
         f"- {kind}: {item['url']} — SHA-256 `{item['sha256']}`"
         for kind, item in manifest["assets"].items()
     )
     (directory / "release-notes.md").write_text(
-        notes.read_text().rstrip() + "\n\n## Tested assets\n\n" + assets + "\n\n"
-        f"Example builds use `--max-transitive-mb={MAX_TRANSITIVE_MB}` for this fat RC.\n"
+        notes.read_text(encoding="utf-8").rstrip() + "\n\n## Tested assets\n\n" + assets + "\n\n"
+        + f"Example builds use `--max-transitive-mb={MAX_TRANSITIVE_MB}` for this fat RC.\n",
+        encoding="utf-8",
     )
     read_manifest(directory)
     if clean_source_sha() != source_sha:
