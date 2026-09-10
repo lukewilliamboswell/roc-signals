@@ -715,13 +715,14 @@ and `gui/` directories. `BUNDLE_OUT_DIR` or `--output-dir` changes that root.
 `--package web` and `--package gui` select one platform and put its archive
 directly in the output directory. `--no-build` reuses prepared hosts;
 `--debug-gui` selects a faster development Rust build. Use the default optimized
-GUI build for distributable archives. Both development and optimized GUI archives
-can exceed the pinned compiler's 100 MiB expanded transitive package budget;
+GUI build for distributable archives. A fat GUI archive containing every native
+target exceeds the compiler's default 100 MiB expanded transitive package budget;
 local-file platform builds passing does not establish that a URL-bound bundle
-can be consumed. The size-limit diagnostic suggests `--max-transitive-bytes`,
-but that option is not implemented by the pinned compiler. See
-`UPSTREAM_COMPILER_BUGS.md` for the reproducible limitation. Existing web test, site,
-and release commands explicitly select the web package.
+can be consumed. Release-candidate checks therefore pass the implemented
+`--max-transitive-mb=512` option explicitly. The older diagnostic's suggested
+`--max-transitive-bytes` spelling is incorrect. See `UPSTREAM_COMPILER_BUGS.md`
+for the reproduction and keep the override visible until host-size work makes it
+unnecessary.
 
 For the separate browser JavaScript artifact, run `python3 scripts/bundle_browser.py`.
 
@@ -812,41 +813,36 @@ when work on the next release begins. Published notes describe that upgrade;
 do not rewrite them to follow later APIs. The site guides document the supported
 API and link to releases rather than duplicating version-specific instructions.
 
-Dispatch `Release` on `main` with `release_tag` and `nightly_validation: false`.
+Dispatch `Combined platform release candidate` on `main` with `release_tag` and
+`validate_only: false`.
 The release guard explicitly permits exact-nightly bootstrap; it does not claim
-a stable Roc compiler exists. Preparation records the final source SHA and builds
-ReleaseSmall hosts, the platform archive, `signals-browser.zip`, and complete
-`signals-starters.zip`. Tests run those exact artifacts before publication. The
-release body combines the committed versioned notes with compiler/source identity,
-named URLs, and SHA-256 digests in `signals-release.json`.
+a stable Roc compiler exists. Preparation records the final source SHA, downloads
+and content-hash verifies the immutable web hosts, GUI hosts, and external linker
+inputs, then runs `roc bundle` exactly twice. It builds no Zig or Rust code. The
+result is one web platform archive, one fat GUI platform archive, and
+`signals-examples.zip`; the latter contains two distinct app roots whose headers
+name their corresponding final asset URLs. `signals-release.json` records those
+URLs, SHA-256 digests, sizes, input locks, compiler pin, and the explicit fat-package
+budget.
 
 To exercise preparation locally:
 
 ```sh
-python3 scripts/release.py prepare --version 0.2.0-rc1
+python3 scripts/release.py prepare --version 0.2.0-rc3
 python3 scripts/release.py check
 python3 scripts/release.py verify
 ```
 
 Preparation requires a clean committed checkout so its source SHA identifies the
 actual inputs. Output defaults to ignored `.release-out/` and must be empty;
-retain an existing candidate when investigating or recovering a release. Published
-checks use isolated caches and committed URLs without rebinding. They do not build
-hosts or borrow the checkout's browser executor. Candidate checks rewrite only
-temporary starter copies to a loopback URL for the exact proposed archive.
-
-After upload, the workflow verifies actual downloads, deploys `signals-site.zip`,
-and opens a verified signed follow-up PR updating public URLs and
-`releases/current.json`. It explicitly dispatches and reports required checks on
-that PR's head; the release follow-up is manually merged. Compiler pins are
-preserved. A moved base or occupied follow-up branch is refused rather than
-overwritten. Nightly validation performs none of these writes.
-
-The site archive retains earlier `/versions/<version>/` pages and platform
-downloads, and serves the supported release at the existing landing URLs. The
-initial migration restores platform downloads from the actually deployed site's
-Actions artifact and refuses to proceed if it cannot recover that evidence.
-Rendered documentation stays in artifacts, not Git.
+retain an existing candidate when investigating or recovering a release. Linux
+x64, Apple Silicon macOS, and Windows x64 runners each download the same candidate,
+serve both exact platform archives over loopback, verify every extracted app header,
+and run web and GUI smoke paths. Web apps build for Wasm on every runner and use the
+native spec host where available. Every GUI app builds for the runner's native
+target, runs semantic specs, and must report successful rendering. Only those
+already-tested bytes reach the single publishing job. `validate_only: true` runs
+the complete flow without creating a tag or release.
 
 Ordinary publication rejects any existing tag or release. After partial
 publication, inspect the tag SHA and every existing asset against the retained
@@ -1442,65 +1438,28 @@ visible range; ordinary containers enumerate direct children when rendered.
 See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
 `crates/gpui-host/README.md` for the boundary limits.
 
-### GUI release candidates
+### Combined platform release candidates
 
-`GUI release candidate` (`gui-release.yml`) packages an already published
-host for the selected `x64glibc`, `arm64mac`, or `x64mingw` target. Linux includes the independently
-verified FreeType, glibc, LLVM unwinder, and xkbcommon releases. Apple Silicon uses
-the independently released, reviewed macOS interface catalog as final Roc linker
-inputs; macOS supplies the system implementations. It runs no Cargo or Zig host build. Use a fresh checkout with
-no `platform-gui/targets` directory and an immutable `deps-gui-host-<version>`
-release whose source fingerprint matches that checkout.
+The single release workflow publishes the web and GUI platforms together without
+conflating their APIs. Web applications and GUI applications remain separate app
+roots and may share ordinary Roc modules, but each header names its own platform
+archive. The GUI archive is deliberately fat: it contains the admitted
+`x64glibc`, `arm64mac`, and `x64mingw` hosts and their target-confined linker inputs.
+The web archive contains its native spec hosts and Wasm browser host.
 
-Dispatch the workflow with a new `gui-X.Y.Z-rc.N` tag, the host release tag,
-`target: x64glibc`, `target: arm64mac`, or `target: x64mingw`, and `validate_only: true` for candidate validation. The job packages the existing
-verified inputs, serves the exact Roc archive over HTTP, builds all six maintained
-GUI applications with their pinned compiler, runs every semantic spec, and opens
-the same executables on its native runner. Linux uses Weston/Xvfb with Mesa
-software Vulkan; Apple Silicon and Windows use their native rendering backends. Rendering must
-report explicit success; the counter also verifies its increment interaction.
-The archive inventory check rejects missing dependency notices and receipts,
-unselected target files, and expanded payloads over Roc's 100 MiB limit.
+Packaging changes do not rebuild either host. `web-host.lock.json` and
+`gui-host.lock.json` select immutable host releases whose narrow source
+fingerprints must match the checkout. `dependencies.lock.json` independently
+selects the external linker inputs, including the catalog-derived macOS TBDs.
+Ordinary admission uses the recorded byte counts and SHA-256 hashes without an
+attestation service. The publishing job additionally attests the exact two bundles,
+example archive, and release manifest for users who want external provenance.
 
-Mac archive admission verifies the independently released dependency manifest,
-reviewed lock digest, exact TBD bytes, catalog, and provenance without regenerating
-anything. Additional files under `targets/macos-sysroot` are rejected. The bundler
-runs the native link/spec validator before bundle creation without modifying those
-bytes; the RC gate then repeats builds/specs and rendering over fresh HTTP.
-Windows preparation requires both independently released dependency locks and
-the exact complete production header input order. The native Windows runner
-verifies the archive decoder, downloads the pinned Roc compiler, then uses the
-released GNU runtime and complete DLL import libraries without building Rust or
-Zig host inputs. A compatible signed host release and its source companion are
-still mandatory; candidate CI artifacts cannot substitute for those releases.
-All six Windows executables use `--target=x64mingw` and are checked locally over
-fresh HTTP and again from untouched public URLs after publication.
-
-A publishing dispatch must run on `main` with `validate_only: false`. It attests
-the exact tested platform archive, starter ZIP, original host lock, and
-`signals-gui-release.json`, then creates a new immutable prerelease. Repository
-[release immutability](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/establish-provenance-and-integrity/prevent-release-changes)
-must already be enabled. Existing tags or releases are never overwritten; a
-partial publication requires inspecting and recovering those original bytes.
-The workflow verifies the published release and every asset, then rebuilds and
-runs all six applications from their unchanged public release URLs with a fresh
-Roc cache. A post-publication failure does not replace or silently repair assets.
-
-The starter ZIP contains all app sources/specs, the six-app registry, and the
-pinned Unicode source dependency. Compiler pins are preserved and platform URLs
-name the immutable GUI release. Host notices remain inside the platform; the
-original source companion remains at its independently attested host release,
-with its exact digest, size, and URL retained in the GUI manifest and embedded
-dependency lock. Candidate and published checks verify that source is available.
-Each dispatch deliberately produces one native-target GUI package. Repeat the
-validated flow with a distinct tag for another target; this is independent of
-the web platform package and its browser/native-test-host release.
-
-The CI-only GUI release helper and its tests live under `.github/scripts`, outside
-the host build fingerprint, because packaging verified archives does not alter
-host bytes. Packaging-only changes therefore reuse a compatible host release;
-changes to actual host inputs still invalidate that compatibility check. The
-`Web release candidate` workflow and supported web release are independent.
+Mac admission final-links maintained applications against the reviewed TBD catalog;
+Windows retains the complete GNU runtime and system import order; Linux retains
+the reviewed glibc, FreeType, xkbcommon, and unwinder inputs. Missing final-link
+symbols are feedback to the relevant external linker-input catalog and do not make
+those interfaces host-build dependencies.
 
 ### Validate generated macOS bundles
 

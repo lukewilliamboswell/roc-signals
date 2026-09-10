@@ -30,10 +30,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def stage_web_inputs(source, stage, host_lock=None):
-    """Bundle current host outputs with freshly verified dependency releases.
+    """Stage explicit local hosts or a content-hash-verified immutable host set.
 
-    An explicit host inventory prevents ignored files left by other builds from
-    entering a release. Mutable development libc copies are never bundled.
+    All external linker inputs are independently verified before staging starts.
+    An explicit inventory prevents ignored build files from entering a bundle.
     """
     hosts = tuple(f"{target}/{name}" for target, name in WEB_HOST_OUTPUTS.items())
     with ExitStack() as resources:
@@ -313,11 +313,15 @@ def main():
         for app in gui_examples():
             destination = output / 'examples-gui' / app.name
             for source in sorted(app.rglob('*')):
-                if source.is_file() and source.suffix in {'.roc', '.scm'}:
+                if source.is_file() and not source.is_symlink():
                     dest = destination / source.relative_to(app)
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    content = source.read_text(encoding='utf-8').replace('../../platform-gui/main.roc', origin + '/' + manifest['gui'])
-                    dest.write_text(content, encoding='utf-8')
+                    if source.suffix == '.roc':
+                        content = source.read_text(encoding='utf-8').replace(
+                            '../../platform-gui/main.roc', origin + '/' + manifest['gui'])
+                        dest.write_text(content, encoding='utf-8')
+                    else:
+                        shutil.copyfile(source, dest)
             links += f'\n<li><a href="examples-gui/{app.name}/">{app.name} sources and specs</a></li>'
     (output / 'index.html').write_text('<!doctype html><title>Roc Signals platforms</title><h1>Roc Signals platforms</h1><ul>' + links + '</ul>\n', encoding='utf-8')
     for name, path in manifest.items():

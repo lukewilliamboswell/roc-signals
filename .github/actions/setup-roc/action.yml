@@ -1,0 +1,19 @@
+name: Install pinned Roc compiler
+description: Validate platform roots and install only their exact Roc compiler.
+runs:
+  using: composite
+  steps:
+    - id: pin
+      shell: bash
+      run: |
+        roc_pin=$(python3 scripts/toolchain.py --check)
+        echo "version=$roc_pin" >> "$GITHUB_OUTPUT"
+    - uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
+      with:
+        version: nightly-new-compiler
+        nightly-tag: ${{ steps.pin.outputs.version }}
+    - name: Keep downloaded compiler outside release source
+      shell: bash
+      run: python3 scripts/toolchain.py --relocate-for-ci
+    - shell: bash
+      run: python3 scripts/toolchain.py --check --roc-bin roc
