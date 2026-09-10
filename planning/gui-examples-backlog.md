@@ -289,9 +289,19 @@ updates correctly. GUI-09 worked around it in both examples by starting the asse
 status line at "Checking assets…" instead of "", but the board's document
 `problem` line and any other initially empty status text have the same defect.
 
-Acceptance: find why the host keeps the collapsed layout and fix it there, then
-drop the workaround from at least one example and cover the transition with a
-scenario asserting `expect-onscreen` after the text arrives.
+Confirm the defect against a rendered frame before treating it as a host bug.
+The observation is `expect-onscreen` reporting no area, and the bounds probe is
+known to keep the rectangle recorded for a node that stays mounted without
+re-rendering — a status column whose only change is its text child is exactly
+that shape, so a stale zero-area rectangle would look identical. An attempt to
+photograph the case in Explorer was inconclusive because the warning sits in the
+footer that GUI-10 still clips out of the window.
+
+Acceptance: establish from a capture, or from the host's own layout, whether the
+line is really unpainted. If it is, fix the host, drop the workaround from at
+least one example, and cover the transition with a scenario. If it is not, this
+is a third blind spot in the bounds probe and belongs with the other two under
+GUI-16.
 
 ## Delivery sequence
 
