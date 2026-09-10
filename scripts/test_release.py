@@ -82,6 +82,8 @@ class ReleaseTests(unittest.TestCase):
                 'app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc" }'
             )
             (gui / "theme.json").write_bytes(b"{\"theme\":true}")
+            (gui / "assets").mkdir()
+            (gui / "assets/font.ttf").write_bytes(b"example-owned-font")
             (vendor / "Unicode.roc").write_text("module []")
             web_example = SimpleNamespace(source=Path("examples-web/demo/main.roc"))
             archive = root / release.EXAMPLES
@@ -102,6 +104,9 @@ class ReleaseTests(unittest.TestCase):
                 self.assertIn('platform "https://release/Gui.tar.zst"',
                               packed.read("examples-gui/demo/main.roc").decode())
                 self.assertEqual(packed.read("examples-gui/demo/theme.json"), b"{\"theme\":true}")
+                self.assertEqual(
+                    packed.read("examples-gui/demo/assets/font.ttf"), b"example-owned-font"
+                )
 
     def test_archive_escape_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

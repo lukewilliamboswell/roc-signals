@@ -39,10 +39,10 @@ event is cleared or evicted, the inspector explains that it is gone.
 The event feed rows and inspector detail render in Source Code Pro, an
 OFL-licensed monospace face embedded into the binary at compile time with
 `import "….ttf" as source_code_pro : List(U8)`, registered at startup through
-`Gui.embedded_fonts`, and applied with `Gui.font_family`. The canonical font
-file, its SIL Open Font License 1.1 text, and provenance notes live in
-`vendor/fonts/source-code-pro/`; the import references that vendored copy
-directly, so the repository carries exactly one copy of the font.
+`Gui.embedded_fonts`, and applied with `Gui.font_family`. The font, its SIL Open
+Font License 1.1 text, and provenance notes live beside the app in `assets/`.
+The release example archive therefore carries everything needed to compile the
+example without making the font a platform asset.
 
 Run `scripts/test.py gui` with the pinned Roc compiler, as described in the
 contributor guide. The semantic journeys exercise replay, chunk assembly,

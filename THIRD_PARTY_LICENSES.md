@@ -35,15 +35,16 @@ The local copy explicitly decodes header files as UTF-8 on every operating syste
 
 ## Source Code Pro
 
-Files: `vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf`
+Files: `examples-gui/activity-monitor/assets/SourceCodePro-Regular.ttf` and the
+test-only copy at `vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf`
 
 Source Code Pro is copyright 2010 - 2020 Adobe Systems Incorporated, with
 Reserved Font Name 'Source', and is licensed under the SIL Open Font
 License, Version 1.1. The `examples-gui/activity-monitor` app embeds this
 font at compile time. See
-[`vendor/fonts/source-code-pro/OFL.txt`](vendor/fonts/source-code-pro/OFL.txt)
+[`examples-gui/activity-monitor/assets/OFL.txt`](examples-gui/activity-monitor/assets/OFL.txt)
 for the full license text and
-[`vendor/fonts/source-code-pro/PROVENANCE.md`](vendor/fonts/source-code-pro/PROVENANCE.md)
+[`examples-gui/activity-monitor/assets/PROVENANCE.md`](examples-gui/activity-monitor/assets/PROVENANCE.md)
 for provenance.
 
 Source: https://github.com/adobe-fonts/source-code-pro
