@@ -203,6 +203,12 @@ also overflows a 360-pixel window:
 [wide](gui-examples-review/2026-09-10/counter-wide.png),
 [narrow](gui-examples-review/2026-09-10/counter-360x600.png).
 
+The scripted regression run added by GUI-16 found the same class of defect at
+the smallest window the host permits: `counter/minimum-window-layout` records
+the counter reading laid out past the bottom and right edges of a 360×240
+window, so the example's own headline value is readable only through the host's
+window-scroll fallback. It stays a stated diagnostic until this item closes.
+
 Acceptance: define the intended coverage of the theme example and make it true;
 use the declared palette for root and controls, or narrow the promise explicitly.
 Verify default and high-contrast screenshots including interaction states.

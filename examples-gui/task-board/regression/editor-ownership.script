@@ -1,9 +1,9 @@
 # size: 1200x820
-# diagnostic: GUI-02. The detail editors switch only on the task's column, so
-# two tasks in one column share the native input lifetimes. Once two tasks in
-# one column hold equal notes, selecting the second one retains the first
-# task's editor — and with it the first task's undo history, which an ordinary
-# Ctrl+Z then pastes into the wrong task. Native history depth is the
+# The detail editors switch on the edited task's own lifetime, so two tasks in
+# one column never share native input lifetimes. This scenario guards the fix
+# for the defect where selecting a second equal-valued task in the same column
+# retained the first task's editor, and with it an undo history an ordinary
+# Ctrl+Z then pasted into the wrong task. Native history depth is the
 # observation neither the semantic specs nor a first-frame screenshot can make.
 click #edit-task-2
 wait 400
