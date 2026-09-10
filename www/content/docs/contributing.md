@@ -795,9 +795,12 @@ host and public apps production build without starting a server:
 python3 scripts/serve.py --no-server --app-opt size
 ```
 
+Routine Roc tests and native smoke builds use `--opt=dev` to keep feedback fast.
 The pinned compiler's dev backend currently emits invalid Wasm for unit-valued
-capability callbacks (see `UPSTREAM_COMPILER_BUGS.md`, case 10). The optional
-`--app-opt dev` build is a compiler diagnostic, not a passing release gate or a
+capability callbacks (see `UPSTREAM_COMPILER_BUGS.md`, case 10), so ordinary
+Wasm smoke builds use `--opt=size` as a narrow workaround. TODO: switch those
+builds to `--opt=dev` once the upstream bug is fixed. The optional `--app-opt
+dev` site build remains a compiler diagnostic, not a passing release gate or a
 deployable alternative. Keep artifact validation enabled. After checking dev
 output, rebuild with `--app-opt size`; both modes write `dist/`.
 

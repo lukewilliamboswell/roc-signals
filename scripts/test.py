@@ -354,7 +354,7 @@ def run_roc_tests(
         allow_release_platform_url=allow_release_platform_url,
     )
     for example in examples:
-        run([roc_bin, "test", source_root / example.source])
+        run([roc_bin, "test", "--opt=dev", source_root / example.source])
 
 
 def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_failures.Ledger) -> None:
@@ -379,6 +379,8 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
                 continue
             output = wasm_dir / f"{example.slug}.wasm"
             try:
+                # TODO(upstream compiler bug 10): use --opt=dev once unit-state
+                # capability callbacks produce valid Wasm with that backend.
                 run(
                     [
                         roc_bin,

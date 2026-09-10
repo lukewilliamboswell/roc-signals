@@ -20,7 +20,7 @@ export ROC_BIN=/path/to/pinned-roc/roc
 | 2 | flight-search double-frees its task payload on wasm32 | [#10958](https://github.com/roc-lang/roc/issues/10958) | — | yes |
 | 3 | markdown-editor traps with `unreachable` in the browser | [#10959](https://github.com/roc-lang/roc/issues/10959) | — | yes |
 | 11 | Native GPUI sample cannot link as Shared or PIE | not filed | `examples-gui/keyed-rows/` | normal Roc executable linkage |
-| 10 | Unit-state capability callbacks produce invalid dev Wasm | not filed | `repro/unit-state-wasm-dev/` | no; size backend validates |
+| 10 | Unit-state capability callbacks produce invalid dev Wasm | not filed | `repro/unit-state-wasm-dev/` | Wasm smoke builds use size; TODO: restore dev after upstream fix |
 | 14 | `roc bundle --output-dir` fails across filesystems | not filed | commands below | stage on the output filesystem |
 
 For #1, camelCase field names longer than ten bytes are corrupted on wasm32 at
@@ -39,9 +39,11 @@ Boolean state without an event handler and a string input validate; adding a
 unit event handler also reproduces the failure. The size backend validates
 the same unit-state app. The exact compiler cause remains unisolated.
 
-See `repro/unit-state-wasm-dev/README.md` for commands and controls. Site builds
-now validate the generated Wasm instead of treating compiler exit status as
-proof of a usable artifact. No platform semantic workaround has been applied.
+See `repro/unit-state-wasm-dev/README.md` for commands and controls. Routine
+Wasm smoke builds use `--opt=size`; their call sites carry TODOs to restore
+`--opt=dev` after the upstream fix. Site builds validate generated Wasm instead
+of treating compiler exit status as proof of a usable artifact. No platform
+semantic workaround has been applied.
 
 ## 11. Native sample requires archive linkage and a non-PIE executable
 
