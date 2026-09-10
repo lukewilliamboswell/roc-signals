@@ -92,14 +92,27 @@ entry_row = |row, handles, selected, ready| {
 				Ui.action(row.signal(), |entry| handles.model.update_cmd(|state| Session.activate(state, entry))),
 			),
 			Gui.row(
-				{ width: Px(90), padding: 4, gap: 6, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip },
+				{
+					width: Px(90),
+					padding: 4,
+					gap: 6,
+					font_size: 13,
+					foreground: Rgb(0x93A9B6),
+					overflow_x: Clip,
+				},
 				[
 					Ui.switch(row.map(|entry| entry.kind), kind_glyph),
 					Gui.text_s(row.map(|entry| entry.kind.to_str())),
 				],
 			),
 			Gui.column(
-				{ width: Px(90), padding: 4, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip },
+				{
+					width: Px(90),
+					padding: 4,
+					font_size: 13,
+					foreground: Rgb(0x93A9B6),
+					overflow_x: Clip,
+				},
 				[Gui.text_s(row.map(Explorer.size_text))],
 			),
 		],
@@ -125,7 +138,14 @@ inspect_view = |handles| {
 		},
 	)
 	Gui.panel(
-		{ test_id: "file-details", width: Px(340), gap: 12, padding: 16, background: Rgb(0x283A47), radius: 8 },
+		{
+			test_id: "file-details",
+			width: Px(340),
+			gap: 12,
+			padding: 16,
+			background: Rgb(0x283A47),
+			radius: 8,
+		},
 		[
 			Gui.heading("File details"),
 			Gui.text_s(
@@ -160,7 +180,13 @@ inspect_view = |handles| {
 			Gui.row(
 				{ gap: 8 },
 				[
-					Gui.action_button({ caption: Signal.const("Preview text"), enabled: can_preview, padding: 8, radius: 6, background: Rgb(0x2E6FA3) }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.preview_selected))),
+					Gui.action_button({
+						caption: Signal.const("Preview text"),
+						enabled: can_preview,
+						padding: 8,
+						radius: 6,
+						background: Rgb(0x2E6FA3),
+					}, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.preview_selected))),
 					Gui.action_button({ caption: Signal.const("Open in app"), enabled: can_open }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.open_selected))),
 				],
 			),
@@ -324,11 +350,28 @@ explorer_view = |handles| {
 			Gui.row(
 				{ gap: 8 },
 				[
-					Gui.action_button({ caption: Signal.const("Back"), enabled: model.map(|state| state.phase == Idle and !state.back.is_empty()) }, back_action),
-					Gui.action_button({ caption: Signal.const("Forward"), enabled: model.map(|state| state.phase == Idle and !state.forward.is_empty()) }, forward_action),
-					Gui.action_button({ caption: Signal.const("Up"), enabled: model.map(|state| state.phase == Idle and Session.path(state.source) != Explorer.parent_path(Session.path(state.source))) }, up_action),
+					Gui.action_button({
+						caption: Signal.const("Back"),
+						enabled: model.map(|state| state.phase == Idle and !state.back.is_empty()),
+					}, back_action),
+					Gui.action_button({
+						caption: Signal.const("Forward"),
+						enabled: model.map(|state| state.phase == Idle and !state.forward.is_empty()),
+					}, forward_action),
+					Gui.action_button({
+						caption: Signal.const("Up"),
+						enabled: model.map(|state| state.phase == Idle and Session.path(state.source) != Explorer.parent_path(Session.path(state.source))),
+					}, up_action),
 					Gui.action_button({ caption: Signal.const("Refresh"), enabled: ready }, refresh_action),
-					Gui.action_button({ caption: Signal.const("Choose folder"), enabled: ready, padding: 8, radius: 6, background: Rgb(0x2E6FA3), hover_background: Rgb(0x3A80B8), active_background: Rgb(0x265D89) }, choose_action),
+					Gui.action_button({
+						caption: Signal.const("Choose folder"),
+						enabled: ready,
+						padding: 8,
+						radius: 6,
+						background: Rgb(0x2E6FA3),
+						hover_background: Rgb(0x3A80B8),
+						active_background: Rgb(0x265D89),
+					}, choose_action),
 					Gui.action_button({ caption: Signal.const("Use sample"), enabled: ready }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.load_sample))),
 					# Cancel and Retry are rare-phase controls: they render only in
 					# the phases where they apply instead of resting disabled.
@@ -339,7 +382,10 @@ explorer_view = |handles| {
 					),
 					Ui.when(
 						model.map(|state| state.phase == Idle and state.retry != NoRetry),
-						|| Gui.action_button({ caption: Signal.const("Retry"), enabled: model.map(|state| state.phase == Idle and state.retry != NoRetry) }, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.retry_last))),
+						|| Gui.action_button({
+							caption: Signal.const("Retry"),
+							enabled: model.map(|state| state.phase == Idle and state.retry != NoRetry),
+						}, Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.retry_last))),
 						|| Gui.text(""),
 					),
 				],
@@ -390,11 +436,25 @@ explorer_view = |handles| {
 			Gui.row(
 				{ gap: 8 },
 				[
-					Gui.text_input({ label: "Filter this folder", value: model.map(|state| state.query), placeholder: "Filter this folder…", disabled: ready.map(|value| !value), width: Px(240), gap: 4 }, handles.model.on_str(|state, text| { ..state, query: text })),
-					Gui.action_button({ caption: Signal.const("Clear filter"), enabled: model.map(|state| state.phase == Idle and !state.query.is_empty()) }, handles.model.on_unit(|state| { ..state, query: "" })),
+					Gui.text_input({
+						label: "Filter this folder",
+						value: model.map(|state| state.query),
+						placeholder: "Filter this folder…",
+						disabled: ready.map(|value| !value),
+						width: Px(240),
+						gap: 4,
+					}, handles.model.on_str(|state, text| { ..state, query: text })),
+					Gui.action_button({
+						caption: Signal.const("Clear filter"),
+						enabled: model.map(|state| state.phase == Idle and !state.query.is_empty()),
+					}, handles.model.on_unit(|state| { ..state, query: "" })),
 				],
 			),
-			Gui.row({ gap: 8 }, Explorer.sorts.map(|order| Gui.action_button({ caption: Signal.const(order.to_str()), enabled: ready, selected: handles.order.signal().map(|current| current == order) }, handles.order.on_unit(|_| order)))),
+			Gui.row({ gap: 8 }, Explorer.sorts.map(|order| Gui.action_button({
+				caption: Signal.const(order.to_str()),
+				enabled: ready,
+				selected: handles.order.signal().map(|current| current == order),
+			}, handles.order.on_unit(|_| order)))),
 			Gui.row(
 				{ gap: 16 },
 				[
@@ -406,7 +466,15 @@ explorer_view = |handles| {
 				{ gap: 16, width: Fill, grow: True },
 				[
 					Gui.column(
-						{ test_id: "file-list", grow: True, gap: 0, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip },
+						{
+							test_id: "file-list",
+							grow: True,
+							gap: 0,
+							padding: 12,
+							radius: 10,
+							background: Rgb(0x1B2A33),
+							overflow_y: Clip,
+						},
 						[
 							Ui.when(
 								visible.map(|entries| Rows.len(entries) == 0),
@@ -416,7 +484,14 @@ explorer_view = |handles| {
 								),
 								|| Gui.text(""),
 							),
-							Gui.virtual_list({ row_height: 44, follow_tail: Signal.const(False), test_id: "file-viewport", height: Fill, width: Fill, grow: True }, [Ui.each(visible, |row| entry_row(row, handles, selected, ready))]),
+							Gui.virtual_list({
+								row_height: 44,
+								follow_tail: Signal.const(False),
+								test_id: "file-viewport",
+								height: Fill,
+								width: Fill,
+								grow: True,
+							}, [Ui.each(visible, |row| entry_row(row, handles, selected, ready))]),
 						],
 					),
 					inspect_view(handles),

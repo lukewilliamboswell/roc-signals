@@ -19,7 +19,15 @@ entry_view : Ui.Row(Feed.Entry), Ui.State(Str) -> Elem
 entry_view = |row, selected| {
 	key = row.key()
 	Gui.row(
-		{ font_family: feed_font, test_id: "event-${key}", selected: Signal.select(selected.signal(), key), height: Px(44), gap: 10, overflow_x: Clip, overflow_y: Clip },
+		{
+			font_family: feed_font,
+			test_id: "event-${key}",
+			selected: Signal.select(selected.signal(), key),
+			height: Px(44),
+			gap: 10,
+			overflow_x: Clip,
+			overflow_y: Clip,
+		},
 		[
 			Gui.button("Inspect ${key}", selected.on_unit(|_| key)),
 			Gui.column(
@@ -42,7 +50,14 @@ entry_view = |row, selected| {
 				[Gui.text_s(row.signal().map(|entry| entry.severity.to_str()))],
 			),
 			Gui.column(
-				{ width: Px(110), height: Fill, overflow_x: Clip, overflow_y: Clip, font_size: 13, foreground: Rgb(0xA9BFCC) },
+				{
+					width: Px(110),
+					height: Fill,
+					overflow_x: Clip,
+					overflow_y: Clip,
+					font_size: 13,
+					foreground: Rgb(0xA9BFCC),
+				},
 				[Gui.text_s(row.signal().map(|entry| entry.component))],
 			),
 			Gui.column({ grow: True, height: Fill, overflow_x: Clip, overflow_y: Clip }, [Gui.text_s(row.signal().map(|entry| entry.message))]),
@@ -77,7 +92,14 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 	visible = projection.map(|value| Feed.visible(value.history, value.query, value.errors))
 	inspection = { history, selected: selected.signal() }.Signal
 	Gui.column(
-		{ embedded_fonts: [{ family: feed_font, bytes: source_code_pro }], padding: 24, gap: 12, width: Fill, height: Fill, overflow_y: Clip },
+		{
+			embedded_fonts: [{ family: feed_font, bytes: source_code_pro }],
+			padding: 24,
+			gap: 12,
+			width: Fill,
+			height: Fill,
+			overflow_y: Clip,
+		},
 		[
 			Gui.heading("Activity Monitor"),
 			Gui.column(
@@ -146,7 +168,10 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							]),
 						),
 					),
-					Gui.action_button({ caption: Signal.const("Retry read"), enabled: session.map(|state| state.phase == Session.Phase.Paused and state.retry != None) }, model.on_unit(|value| { ..value, session: Session.retry_read(value.session) })),
+					Gui.action_button({
+						caption: Signal.const("Retry read"),
+						enabled: session.map(|state| state.phase == Session.Phase.Paused and state.retry != None),
+					}, model.on_unit(|value| { ..value, session: Session.retry_read(value.session) })),
 					Gui.action_button({ caption: Signal.const("Cancel operation"), enabled: busy }, Ui.action(session, |state| Workflow.cancel(model, tasks, state.phase))),
 				],
 			),
@@ -222,7 +247,13 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 			Gui.row(
 				{ gap: 16 },
 				[
-					Gui.text_input({ label: "Filter activity", value: query.signal(), placeholder: "Filter activity…", width: Px(240), gap: 4 }, query.on_str(|_, value| value)),
+					Gui.text_input({
+						label: "Filter activity",
+						value: query.signal(),
+						placeholder: "Filter activity…",
+						width: Px(240),
+						gap: 4,
+					}, query.on_str(|_, value| value)),
 					Gui.checkbox({ label: "Errors only", checked: errors_only.signal(), enabled: replay }, errors_only.on_bool(|_, value| value)),
 					Gui.checkbox({ label: "Follow latest", checked: follow_tail.signal() }, follow_tail.on_bool(|_, value| value)),
 				],
@@ -231,7 +262,14 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 				{ gap: 16, grow: True, width: Fill, height: Fill },
 				[
 					Gui.column(
-						{ grow: True, gap: 0, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip },
+						{
+							grow: True,
+							gap: 0,
+							padding: 12,
+							radius: 10,
+							background: Rgb(0x1B2A33),
+							overflow_y: Clip,
+						},
 						[
 							Ui.when(
 								visible.map(|rows| rows.len() == 0),
@@ -241,11 +279,26 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 								),
 								|| Gui.text(""),
 							),
-							Gui.virtual_list({ row_height: 44, follow_tail: follow_tail.signal(), test_id: "activity-list", width: Fill, height: Fill, grow: True }, [Ui.each(visible, |row| entry_view(row, selected))]),
+							Gui.virtual_list({
+								row_height: 44,
+								follow_tail: follow_tail.signal(),
+								test_id: "activity-list",
+								width: Fill,
+								height: Fill,
+								grow: True,
+							}, [Ui.each(visible, |row| entry_view(row, selected))]),
 						],
 					),
 					Gui.panel(
-						{ width: Px(340), padding: 16, gap: 12, radius: 8, background: Rgb(0x283A47), overflow_x: Scroll, overflow_y: Scroll },
+						{
+							width: Px(340),
+							padding: 16,
+							gap: 12,
+							radius: 8,
+							background: Rgb(0x283A47),
+							overflow_x: Scroll,
+							overflow_y: Scroll,
+						},
 						[
 							Gui.heading("Event inspector"),
 							Gui.column(

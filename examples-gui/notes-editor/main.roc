@@ -80,7 +80,15 @@ main = || Ui.state(
 								[
 									Gui.action_button({ caption: Signal.const("New"), enabled: ready }, new),
 									Gui.action_button({ caption: Signal.const("Open…"), enabled: ready }, open),
-									Gui.action_button({ caption: Signal.const("Save"), enabled: revert_ready, padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent), hover_background: Rgb(theme.accent_hover), active_background: Rgb(theme.accent_active) }, save),
+									Gui.action_button({
+										caption: Signal.const("Save"),
+										enabled: revert_ready,
+										padding: theme.control_padding,
+										radius: theme.radius,
+										background: Rgb(theme.accent),
+										hover_background: Rgb(theme.accent_hover),
+										active_background: Rgb(theme.accent_active),
+									}, save),
 									Gui.action_button({ caption: Signal.const("Save As…"), enabled: ready }, save_as),
 									Gui.action_button({ caption: Signal.const("Revert changes"), enabled: revert_ready }, revert),
 								],
@@ -146,7 +154,11 @@ main = || Ui.state(
 								{ gap: 24 },
 								[
 									Gui.column(
-										{ test_id: "note-summary", font_size: 13, foreground: Rgb(theme.text_secondary) },
+										{
+											test_id: "note-summary",
+											font_size: 13,
+											foreground: Rgb(theme.text_secondary),
+										},
 										[Gui.text_s(body.signal().map(|text| Document.counts_text(Document.counts(text))))],
 									),
 								],

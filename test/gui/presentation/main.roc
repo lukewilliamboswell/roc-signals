@@ -15,7 +15,11 @@ main = || Ui.state(False, |enabled| {
 				selected: enabled.signal(),
 				overrides: enabled.signal().map(|value| Gui.Style.{ padding: 12, gap: 16, width: Fill, background: if value { Rgb(1193046) } else { Rgb(2236962) } }),
 			}, [
-				Gui.action_button({ caption: Signal.const("Run action"), enabled: enabled.signal(), test_id: "run-action" }, clicks.on_unit(|value| value + 1)),
+				Gui.action_button({
+					caption: Signal.const("Run action"),
+					enabled: enabled.signal(),
+					test_id: "run-action",
+				}, clicks.on_unit(|value| value + 1)),
 				Gui.text_s(clicks.signal().map(|value| "Runs: ${value.to_str()}")),
 			]),
 		])

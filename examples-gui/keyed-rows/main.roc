@@ -19,7 +19,17 @@ row_view = |row, selected| {
 		"",
 		|draft| {
 			Gui.panel(
-				{ test_id: "row-${key}", selected: Signal.select(selected.signal(), key), width: Fill, padding: 12, gap: 8, border_width: 1, radius: 8, background: Rgb(0x283A47), border_color: Rgb(0x4A6272) },
+				{
+					test_id: "row-${key}",
+					selected: Signal.select(selected.signal(), key),
+					width: Fill,
+					padding: 12,
+					gap: 8,
+					border_width: 1,
+					radius: 8,
+					background: Rgb(0x283A47),
+					border_color: Rgb(0x4A6272),
+				},
 				[
 					Gui.row(
 						{ gap: 12 },
@@ -41,7 +51,13 @@ row_view = |row, selected| {
 							),
 						],
 					),
-					Gui.text_input({ label: "Draft ${key}", value: draft.signal(), placeholder: "Type a draft…", width: Px(240), gap: 4 }, draft.on_str(|_, value| value)),
+					Gui.text_input({
+						label: "Draft ${key}",
+						value: draft.signal(),
+						placeholder: "Type a draft…",
+						width: Px(240),
+						gap: 4,
+					}, draft.on_str(|_, value| value)),
 					Gui.column(
 						{ font_size: 13, foreground: Rgb(0x93A9B6) },
 						[Gui.text_s(draft.signal().map(|text| "Saved draft: ${text}"))],

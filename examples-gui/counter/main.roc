@@ -41,7 +41,15 @@ main = || Ui.state(
 					[Gui.text("A minimal Roc Signals application.")],
 				),
 				Gui.panel(
-					{ width: Px(380), padding: 24, gap: 20, border_width: 1, radius: 10, border_color: Rgb(theme.border), background: Rgb(theme.surface) },
+					{
+						width: Px(380),
+						padding: 24,
+						gap: 20,
+						border_width: 1,
+						radius: 10,
+						border_color: Rgb(theme.border),
+						background: Rgb(theme.surface),
+					},
 					[
 						Gui.column(
 							{ test_id: "count", font_size: 44, foreground: Rgb(theme.text_primary) },

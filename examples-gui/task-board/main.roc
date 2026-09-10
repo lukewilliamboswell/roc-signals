@@ -20,7 +20,13 @@ asset_entries = Manifest.entries(manifest_json)
 ## assignee without a generated avatar simply shows no picture.
 avatar : Str, U32 -> Elem
 avatar = |assignee, size| match Board.avatar_source(assignee) {
-	Some(source) => Gui.image({ source, label: "${assignee} avatar", width: Px(size), height: Px(size), radius: size })
+	Some(source) => Gui.image({
+		source,
+		label: "${assignee} avatar",
+		width: Px(size),
+		height: Px(size),
+		radius: size,
+	})
 	None => Gui.text("")
 }
 
@@ -274,7 +280,16 @@ column_view = |handles, column, selected| {
 	rows = column_state(handles, column).signal()
 	visible = Signal.map2(rows, handles.filter.signal(), visible_rows)
 	Gui.column(
-		{ disabled: handles.edit_disabled, test_id: "column-${column.to_str()}", on_drop: drop_message(handles, column, End), grow: True, gap: 12, padding: 12, radius: 10, background: Rgb(0x1B2A33) },
+		{
+			disabled: handles.edit_disabled,
+			test_id: "column-${column.to_str()}",
+			on_drop: drop_message(handles, column, End),
+			grow: True,
+			gap: 12,
+			padding: 12,
+			radius: 10,
+			background: Rgb(0x1B2A33),
+		},
 		[
 			Gui.heading(column.to_str()),
 			Gui.column(
@@ -414,7 +429,14 @@ delete_confirmation = |handles, column| {
 detail_view : Handles -> Elem
 detail_view = |handles|
 	Gui.panel(
-		{ test_id: "task-detail", width: Px(320), padding: 16, gap: 12, background: Rgb(0x283A47), radius: 8 },
+		{
+			test_id: "task-detail",
+			width: Px(320),
+			padding: 16,
+			gap: 12,
+			background: Rgb(0x283A47),
+			radius: 8,
+		},
 		[
 			Gui.heading("Task details"),
 			Ui.when(
@@ -474,7 +496,14 @@ new_task_form = |handles| {
 	Gui.row(
 		{ gap: 12 },
 		[
-			Gui.text_input({ label: "New task title", value: handles.draft.signal(), placeholder: "New task title…", disabled: handles.edit_disabled, width: Px(260), gap: 4 }, handles.draft.on_str(|_, value| value)),
+			Gui.text_input({
+				label: "New task title",
+				value: handles.draft.signal(),
+				placeholder: "New task title…",
+				disabled: handles.edit_disabled,
+				width: Px(260),
+				gap: 4,
+			}, handles.draft.on_str(|_, value| value)),
 			Gui.action_button(
 				{
 					caption: Signal.const("Add task"),
@@ -549,7 +578,13 @@ board_view = |handles| {
 		},
 		[
 			Gui.column(
-				{ test_id: "launch-board", padding: 24, gap: 12, width: Fill, shortcuts: [{ chord: chord, msg: actions.save }, { chord: { ..chord, shift: True }, msg: actions.save_as }, { chord: { ..chord, key: "o" }, msg: actions.open }, { chord: { ..chord, key: "z" }, msg: history_message(handles, False) }, { chord: { ..chord, key: "z", shift: True }, msg: history_message(handles, True) }] },
+				{
+					test_id: "launch-board",
+					padding: 24,
+					gap: 12,
+					width: Fill,
+					shortcuts: [{ chord: chord, msg: actions.save }, { chord: { ..chord, shift: True }, msg: actions.save_as }, { chord: { ..chord, key: "o" }, msg: actions.open }, { chord: { ..chord, key: "z" }, msg: history_message(handles, False) }, { chord: { ..chord, key: "z", shift: True }, msg: history_message(handles, True) }],
+				},
 				[
 					Gui.heading("Launch Board"),
 					Gui.column(
@@ -561,7 +596,13 @@ board_view = |handles| {
 						{ gap: 16 },
 						[
 							new_task_form(handles),
-							Gui.text_input({ label: "Filter tasks", value: handles.filter.signal(), placeholder: "Filter tasks…", width: Px(240), gap: 4 }, handles.filter.on_str(|_, text| text)),
+							Gui.text_input({
+								label: "Filter tasks",
+								value: handles.filter.signal(),
+								placeholder: "Filter tasks…",
+								width: Px(240),
+								gap: 4,
+							}, handles.filter.on_str(|_, text| text)),
 						],
 					),
 					Gui.column(
@@ -778,7 +819,15 @@ document_toolbar = |handles, actions| {
 				{ gap: 8 },
 				[
 					Gui.action_button({ caption: Signal.const("Open…"), enabled: ready }, actions.open),
-					Gui.action_button({ caption: Signal.const("Save"), enabled: ready, padding: 8, radius: 6, background: Rgb(0x2E6FA3), hover_background: Rgb(0x3A80B8), active_background: Rgb(0x265D89) }, actions.save),
+					Gui.action_button({
+						caption: Signal.const("Save"),
+						enabled: ready,
+						padding: 8,
+						radius: 6,
+						background: Rgb(0x2E6FA3),
+						hover_background: Rgb(0x3A80B8),
+						active_background: Rgb(0x265D89),
+					}, actions.save),
 					Gui.action_button({ caption: Signal.const("Save As…"), enabled: ready }, actions.save_as),
 					history_button(handles, False),
 					history_button(handles, True),
@@ -1077,7 +1126,10 @@ close_dialog = |handles| {
 					[
 						Gui.button("Keep editing", keep),
 						Gui.button("Close without saving", handles.close.on_unit(|_| Close.Closing)),
-						Gui.action_button({ caption: Signal.const("Save and close"), enabled: handles.document.signal().map(|doc| doc.phase == Phase.Idle) }, Ui.action({ context: handles.context, next: handles.next_id.signal() }.Signal, |{ context, next }| save_document(handles, context, next, { save_as: False, close_after: True }))),
+						Gui.action_button({
+							caption: Signal.const("Save and close"),
+							enabled: handles.document.signal().map(|doc| doc.phase == Phase.Idle),
+						}, Ui.action({ context: handles.context, next: handles.next_id.signal() }.Signal, |{ context, next }| save_document(handles, context, next, { save_as: False, close_after: True }))),
 					],
 				),
 			],
