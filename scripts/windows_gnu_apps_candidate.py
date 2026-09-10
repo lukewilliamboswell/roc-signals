@@ -77,7 +77,7 @@ def check_apps(stage, output, roc, url=None):
         source = app / 'main.roc'
         source.write_text(toolchain.replace_platform(source.read_text(), url or (stage / 'main.roc').as_posix()))
         executable = apps_root / (app.name + '.exe')
-        subprocess.run([roc, 'build', '--no-cache', '--target=x64mingw', str(source), f'--output={executable}'],
+        subprocess.run([roc, 'build', '--no-cache', '--target=x64mingw', '--opt=dev', str(source), f'--output={executable}'],
                        cwd=apps_root, env=env, check=True, timeout=180)
         specs = spec_driver.run_suite(executable, app / 'specs', jobs=1)
         spec_driver.print_summary(specs)

@@ -1,5 +1,6 @@
 """The combined release publishes and tests exact immutable platform bytes."""
 
+import ast
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,19 @@ import release
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_controller_text_io_is_explicitly_utf8(self):
+        tree = ast.parse(Path(release.__file__).read_text(encoding="utf-8"))
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute)
+                 and node.func.attr in {"read_text", "write_text"}]
+        self.assertTrue(calls)
+        for call in calls:
+            with self.subTest(line=call.lineno):
+                encoding = next((keyword.value for keyword in call.keywords
+                                 if keyword.arg == "encoding"), None)
+                self.assertIsInstance(encoding, ast.Constant)
+                self.assertEqual(encoding.value, "utf-8")
+
     def manifest_fixture(self, root):
         assets = {}
         for kind, name in (("web", "WebHash.tar.zst"), ("gui", "GuiHash.tar.zst"),

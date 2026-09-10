@@ -14,6 +14,7 @@ from dependency_artifacts import unpack_verified
 from windows_runtime_validation import ucrt_inventory
 
 ROOT = Path(__file__).resolve().parents[1]
+ROC_PROBE_OPT = '--opt=dev'
 
 
 def check(candidate, require_native=False, zig='zig', evidence=None, roc='roc'):
@@ -130,7 +131,8 @@ def check(candidate, require_native=False, zig='zig', evidence=None, roc='roc'):
         app = work / 'runtime-app.roc'
         app.write_text('app [main] { pf: platform "runtime-platform.roc" }\nmain : U64\nmain = 42\n')
         roc_executable = work / 'roc-probe.exe'
-        roc_link = subprocess.run([roc, 'build', str(app), '--target=x64mingw', '--output=' + str(roc_executable)],
+        roc_link = subprocess.run([roc, 'build', str(app), '--target=x64mingw', ROC_PROBE_OPT,
+                                   '--output=' + str(roc_executable)],
                                   cwd=work, env=environment, capture_output=True, text=True, timeout=180)
         if evidence is not None:
             (evidence / 'roc-link.txt').write_text(roc_link.stdout + roc_link.stderr)
