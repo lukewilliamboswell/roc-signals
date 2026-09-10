@@ -295,11 +295,15 @@ pub fn onlineSnapshotFromSpecText(text: []const u8) ParseError!boundary.OnlineSn
     return ParseError.InvalidFormat;
 }
 
+// Locator values are quoted with the same escapes `writeLegacyQuoted` emits, so
+// they are unescaped here rather than taken literally. Without this a locator
+// could not name an element whose text contains a backslash, quote, or newline
+// -- for instance a Windows path shown in a breadcrumb.
 fn parseQuotedValue(allocator: std.mem.Allocator, prefix: []const u8, input: []const u8) ParseError!?[]const u8 {
     if (!std.mem.startsWith(u8, input, prefix)) return null;
     const rest = std.mem.trim(u8, input[prefix.len..], " \t");
     if (rest.len < 2 or rest[0] != '"' or rest[rest.len - 1] != '"') return ParseError.InvalidFormat;
-    return allocator.dupe(u8, rest[1 .. rest.len - 1]) catch ParseError.OutOfMemory;
+    return try dupeUnescapedQuoted(allocator, rest[1 .. rest.len - 1]);
 }
 
 fn parseLocator(allocator: std.mem.Allocator, input: []const u8) ParseError!Locator {
@@ -892,6 +896,22 @@ test "S-expression spec parser decodes setup locators actions and assertions" {
     try std.testing.expectEqual(SpecCommandType.real_click, spec.commands[4].cmd_type);
     try std.testing.expectEqual(LocatorKind.role_name, spec.commands[4].locator.kind);
     try std.testing.expectEqual(SpecCommandType.expect_metric_delta, spec.commands[6].cmd_type);
+}
+
+test "S-expression locators name text containing separators and quotes" {
+    const content =
+        \\(test "windows breadcrumb"
+        \\  (steps
+        \\    (click (label "Go to C:\\Users"))
+        \\    (expect-text (role button :name "say \"hi\"") "ok")))
+    ;
+    const spec = try parseSExprTestSpec(std.testing.allocator, content);
+    defer spec.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(LocatorKind.label, spec.commands[0].locator.kind);
+    try std.testing.expectEqualStrings("Go to C:\\Users", spec.commands[0].locator.label.?);
+    try std.testing.expectEqual(LocatorKind.role_name, spec.commands[1].locator.kind);
+    try std.testing.expectEqualStrings("say \"hi\"", spec.commands[1].locator.name.?);
 }
 
 test "S-expression spec parser rejects executable setup and empty steps" {
