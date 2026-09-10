@@ -881,6 +881,21 @@ impl Render for Runtime {
     }
 }
 
+/// Reads a `WIDTHxHEIGHT` content size for the review and regression captures.
+///
+/// Screenshot evidence has to be reproducible at each supported window size, so
+/// the capture harness asks for the size instead of resizing the window through
+/// a desktop automation API that is unavailable on some supported systems. The
+/// value is rejected rather than clamped: a size below the window minimum would
+/// silently produce a capture that does not match the size it claims to show.
+fn parse_window_size(value: &str) -> Option<(f32, f32)> {
+    let (width, height) = value.split_once(['x', 'X'])?;
+    let width: f32 = width.trim().parse().ok()?;
+    let height: f32 = height.trim().parse().ok()?;
+    (width >= 360. && height >= 240. && width.is_finite() && height.is_finite())
+        .then_some((width, height))
+}
+
 fn tab_direction(key: &Keystroke) -> Option<bool> {
     (key.key == "tab"
         && !key.modifiers.control
@@ -926,6 +941,11 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
         .windows(2)
         .find(|a| a[0] == "--smoke-expect")
         .map(|a| a[1].clone());
+    let window_size = args
+        .windows(2)
+        .find(|a| a[0] == "--window-size")
+        .map(|a| parse_window_size(&a[1]).expect("--window-size expects WIDTHxHEIGHT in pixels"))
+        .unwrap_or((1200., 820.));
     Application::new().run(move |cx| {
         input::bind_keys(cx);
         controls::bind_keys(cx);
@@ -935,7 +955,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
             }
         })
         .detach();
-        let bounds = Bounds::centered(None, size(px(1200.), px(820.)), cx);
+        let bounds = Bounds::centered(None, size(px(window_size.0), px(window_size.1)), cx);
         let window = cx
             .open_window(
                 WindowOptions {
@@ -1090,10 +1110,24 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Engine, Node, Payload, Runtime, bridge};
+    use super::{Engine, Node, Payload, Runtime, bridge, parse_window_size};
     use gpui::Focusable;
     use gpui::{AppContext, TestAppContext, point, px, size};
     use std::{cell::Cell, collections::HashMap, rc::Rc};
+
+    #[test]
+    fn window_size_accepts_supported_capture_sizes() {
+        assert_eq!(parse_window_size("1200x820"), Some((1200., 820.)));
+        assert_eq!(parse_window_size("360X240"), Some((360., 240.)));
+    }
+
+    #[test]
+    fn window_size_rejects_sizes_the_window_cannot_honour() {
+        assert_eq!(parse_window_size("359x600"), None);
+        assert_eq!(parse_window_size("800x239"), None);
+        assert_eq!(parse_window_size("800"), None);
+        assert_eq!(parse_window_size("widexhigh"), None);
+    }
 
     fn runtime() -> Runtime {
         Runtime {
