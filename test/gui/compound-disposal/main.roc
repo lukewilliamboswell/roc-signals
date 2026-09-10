@@ -13,8 +13,8 @@ main = || Ui.state(
 			|editing|
 				Ui.state(
 					True,
-					|confirm| Gui.column(
-						Gui.ColumnProps.{},
+					|confirm| Gui.col(
+						Gui.ColProps.{},
 						[
 							Gui.button("Add", Ui.action(rows.signal(), |current| Ui.update_states([rows.write(Rows.apply(current, [Append(["c"])]) ?? crash "unique"), editing.write(True), confirm.write(True)]))),
 							Gui.button(
@@ -30,11 +30,11 @@ main = || Ui.state(
 							),
 							Gui.button("Empty list", rows.on_unit(|current| Rows.replace_all(current, []) ?? crash "unique")),
 							Gui.button("Restore list", rows.on_unit(|current| Rows.replace_all(current, ["a", "b"]) ?? crash "unique")),
-							Gui.column({ test_id: "rows" }, [Ui.each(rows.signal(), |row| Gui.text_s(row.signal()))]),
+							Gui.col({ test_id: "rows" }, [Ui.each(rows.signal(), |row| Gui.text_s(row.signal()))]),
 							Ui.when(
 								editing.signal(),
-								|| Gui.column(
-									Gui.ColumnProps.{},
+								|| Gui.col(
+									Gui.ColProps.{},
 									[
 										"Detail",
 										Ui.when(confirm.signal(), || Gui.text("Confirm"), || Gui.text("Editing")),

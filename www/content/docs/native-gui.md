@@ -68,10 +68,10 @@ all 39 specs, and confirmed rendering for every app.
 
 ## Controls and layout
 
-`Gui.row`, `Gui.column`, and `Gui.panel` take a props record followed by a
+`Gui.row`, `Gui.col`, and `Gui.panel` take a props record followed by a
 child list. Every control has its own props type, such as `Gui.PanelProps`,
 whose fields all have defaults, so a literal names only what it changes:
-`Gui.column({ test_id: "count", padding: 12, gap: 4 }, ["Count"])`. A string
+`Gui.col({ test_id: "count", padding: 12, gap: 4 }, ["Count"])`. A string
 literal in a child list is literal text, the same as `Gui.text`. The style
 fields carry that control's own presentation defaults: a panel keeps its
 padding and border unless the literal sets them. Attributes such as `test_id`,
@@ -97,12 +97,12 @@ when its content can exceed it. These are native presentation properties.
 Semantic labels, test IDs, selected state, and enabled state are separate
 attributes.
 
-`hover_background` and `active_background` color an enabled button while the
+`hover_bg` and `active_bg` color an enabled button while the
 pointer rests on or presses it. Default state colors keep the host's standard
 feedback on default-background buttons and leave explicitly colored buttons
-unchanged, so declare them alongside an explicit `background` - typically as
+unchanged, so declare them alongside an explicit `bg` - typically as
 theme knobs next to the accent color. Text inputs and textareas render their
-inner field from the same style record: explicit `background`, `foreground`,
+inner field from the same style record: explicit `bg`, `fg`,
 `border_color`, `radius`, and `font_size` replace the host's dark field
 defaults, the placeholder derives from the foreground at reduced alpha, and
 an explicit foreground also tints the cursor and selection, so a
@@ -181,7 +181,7 @@ once on the app's root element:
 ```roc
 import "../../vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
 
-Gui.column(
+Gui.col(
     { embedded_fonts: [{ family: "Source Code Pro", bytes: source_code_pro }], ... },
     [...],
 )

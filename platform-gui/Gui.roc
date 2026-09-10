@@ -79,7 +79,7 @@ encode_style = |direction, style| {
 	} else {
 		0.U32
 	}
-	"2,${direction.to_str()},${style.gap.to_str()},${style.padding.to_str()},${width.kind.to_str()},${width.value.to_str()},${height.kind.to_str()},${height.value.to_str()},${grow.to_str()},${color_number(style.background).to_str()},${color_number(style.hover_background).to_str()},${color_number(style.active_background).to_str()},${color_number(style.foreground).to_str()},${color_number(style.border_color).to_str()},${style.border_width.to_str()},${style.radius.to_str()},${style.font_size.to_str()},${overflow_number(style.overflow_x).to_str()},${overflow_number(style.overflow_y).to_str()}"
+	"2,${direction.to_str()},${style.gap.to_str()},${style.padding.to_str()},${width.kind.to_str()},${width.value.to_str()},${height.kind.to_str()},${height.value.to_str()},${grow.to_str()},${color_number(style.bg).to_str()},${color_number(style.hover_bg).to_str()},${color_number(style.active_bg).to_str()},${color_number(style.fg).to_str()},${color_number(style.border_color).to_str()},${style.border_width.to_str()},${style.radius.to_str()},${style.font_size.to_str()},${overflow_number(style.overflow_x).to_str()},${overflow_number(style.overflow_y).to_str()}"
 }
 
 base64_table : List(U8)
@@ -259,7 +259,7 @@ lower_common = |direction, common| {
 ## Styles are typed native properties, independent of CSS and semantic locators.
 ##
 ## Every control takes one props record whose fields all have defaults, so a
-## literal names only what it changes: `Gui.column({ test_id: "count", gap: 4 }, children)`.
+## literal names only what it changes: `Gui.col({ test_id: "count", gap: 4 }, children)`.
 ## The style fields carry that control's own presentation defaults. Optional
 ## attributes such as `test_id`, `selected`, or `on_drop` cost nothing when
 ## omitted. A `changes` signal supplies the whole style reactively; each value
@@ -278,10 +278,10 @@ Gui := [].{
 		width : Length ?? Auto,
 		height : Length ?? Auto,
 		grow : Bool ?? False,
-		background : Color ?? Default,
-		hover_background : Color ?? Default,
-		active_background : Color ?? Default,
-		foreground : Color ?? Default,
+		bg : Color ?? Default,
+		hover_bg : Color ?? Default,
+		active_bg : Color ?? Default,
+		fg : Color ?? Default,
 		border_color : Color ?? Default,
 		border_width : U32 ?? 0,
 		radius : U32 ?? 0,
@@ -314,7 +314,7 @@ Gui := [].{
 	Cmd : Node.Cmd
 	KeyChord : Node.KeyChord
 
-	## Props for `column`. Neutral presentation.
+	## Props for `col`. Neutral presentation.
 	## The style fields are the same as `Style`; their defaults are this control's
 	## own presentation, so a literal names only what it changes.
 	## `test_id` is a stable semantic locator. `label` is a semantic name independent
@@ -328,17 +328,17 @@ Gui := [].{
 	## keystroke, and duplicates or more than 32 on one element are errors.
 	## `drag_source` offers a bounded key for an internal drag, and `on_drop`
 	## accepts a live drag through `Ui.action_detail` or `State.on_detail`.
-	ColumnProps := {
+	ColProps := {
 		label ?: Str,
 		gap : U32 ?? 8,
 		padding : U32 ?? 0,
 		width : Length ?? Auto,
 		height : Length ?? Auto,
 		grow : Bool ?? False,
-		background : Color ?? Default,
-		hover_background : Color ?? Default,
-		active_background : Color ?? Default,
-		foreground : Color ?? Default,
+		bg : Color ?? Default,
+		hover_bg : Color ?? Default,
+		active_bg : Color ?? Default,
+		fg : Color ?? Default,
 		border_color : Color ?? Default,
 		border_width : U32 ?? 0,
 		radius : U32 ?? 0,
@@ -357,7 +357,7 @@ Gui := [].{
 		on_drop ?: Node.Msg,
 	}
 
-	## Props for `row`. Neutral presentation; see `ColumnProps` for the attributes.
+	## Props for `row`. Neutral presentation; see `ColProps` for the attributes.
 	RowProps := {
 		label ?: Str,
 		gap : U32 ?? 8,
@@ -365,10 +365,10 @@ Gui := [].{
 		width : Length ?? Auto,
 		height : Length ?? Auto,
 		grow : Bool ?? False,
-		background : Color ?? Default,
-		hover_background : Color ?? Default,
-		active_background : Color ?? Default,
-		foreground : Color ?? Default,
+		bg : Color ?? Default,
+		hover_bg : Color ?? Default,
+		active_bg : Color ?? Default,
+		fg : Color ?? Default,
 		border_color : Color ?? Default,
 		border_width : U32 ?? 0,
 		radius : U32 ?? 0,
@@ -388,7 +388,7 @@ Gui := [].{
 	}
 
 	## Props for `panel`: padded, bordered, and rounded by default. See
-	## `ColumnProps` for the attributes.
+	## `ColProps` for the attributes.
 	PanelProps := {
 		label ?: Str,
 		gap : U32 ?? 8,
@@ -396,10 +396,10 @@ Gui := [].{
 		width : Length ?? Auto,
 		height : Length ?? Auto,
 		grow : Bool ?? False,
-		background : Color ?? Default,
-		hover_background : Color ?? Default,
-		active_background : Color ?? Default,
-		foreground : Color ?? Default,
+		bg : Color ?? Default,
+		hover_bg : Color ?? Default,
+		active_bg : Color ?? Default,
+		fg : Color ?? Default,
 		border_color : Color ?? Rgb(4743275),
 		border_width : U32 ?? 1,
 		radius : U32 ?? 8,
@@ -419,7 +419,7 @@ Gui := [].{
 	}
 
 	## Props for `dialog`. `label` names the dialog and `on_dismiss` receives the
-	## Escape shortcut. See `ColumnProps` for the other attributes.
+	## Escape shortcut. See `ColProps` for the other attributes.
 	DialogProps := {
 		label : Str,
 		on_dismiss : Node.Msg,
@@ -428,10 +428,10 @@ Gui := [].{
 		width : Length ?? Px(520),
 		height : Length ?? Auto,
 		grow : Bool ?? False,
-		background : Color ?? Rgb(2174263),
-		hover_background : Color ?? Default,
-		active_background : Color ?? Default,
-		foreground : Color ?? Rgb(15658730),
+		bg : Color ?? Rgb(2174263),
+		hover_bg : Color ?? Default,
+		active_bg : Color ?? Default,
+		fg : Color ?? Rgb(15658730),
 		border_color : Color ?? Rgb(4743275),
 		border_width : U32 ?? 1,
 		radius : U32 ?? 8,
@@ -452,7 +452,7 @@ Gui := [].{
 
 	## Props for `virtual_list`. `row_height` is the fixed logical row height,
 	## and `follow_tail` keeps the final row in view as history grows. See
-	## `ColumnProps` for the other attributes.
+	## `ColProps` for the other attributes.
 	VirtualListProps := {
 		row_height : U32,
 		follow_tail : Signal(Bool),
@@ -462,10 +462,10 @@ Gui := [].{
 		width : Length ?? Fill,
 		height : Length ?? Px(480),
 		grow : Bool ?? True,
-		background : Color ?? Default,
-		hover_background : Color ?? Default,
-		active_background : Color ?? Default,
-		foreground : Color ?? Default,
+		bg : Color ?? Default,
+		hover_bg : Color ?? Default,
+		active_bg : Color ?? Default,
+		fg : Color ?? Default,
 		border_color : Color ?? Default,
 		border_width : U32 ?? 0,
 		radius : U32 ?? 0,
@@ -485,7 +485,7 @@ Gui := [].{
 	}
 
 	## Props for `image`. `source` is a relative path inside the host's assets
-	## root and `label` is the picture's semantic name. See `ColumnProps` for the
+	## root and `label` is the picture's semantic name. See `ColProps` for the
 	## other attributes.
 	ImageProps := {
 		source : Str,
@@ -495,10 +495,10 @@ Gui := [].{
 		width : Length ?? Auto,
 		height : Length ?? Auto,
 		grow : Bool ?? False,
-		background : Color ?? Default,
-		hover_background : Color ?? Default,
-		active_background : Color ?? Default,
-		foreground : Color ?? Default,
+		bg : Color ?? Default,
+		hover_bg : Color ?? Default,
+		active_bg : Color ?? Default,
+		fg : Color ?? Default,
 		border_color : Color ?? Default,
 		border_width : U32 ?? 0,
 		radius : U32 ?? 0,
@@ -520,7 +520,7 @@ Gui := [].{
 	## Props for `action_button`. `caption` is the live button text, `label` an
 	## optional semantic name that replaces the caption for locators, and
 	## `enabled` defaults to always enabled. The style defaults are the button's
-	## own colors. See `ColumnProps` for the other attributes.
+	## own colors. See `ColProps` for the other attributes.
 	ActionButtonProps := {
 		caption : Signal(Str),
 		label ?: Str,
@@ -529,10 +529,10 @@ Gui := [].{
 		width : Length ?? Auto,
 		height : Length ?? Auto,
 		grow : Bool ?? False,
-		background : Color ?? Rgb(3232873),
-		hover_background : Color ?? Rgb(0x3F6175),
-		active_background : Color ?? Rgb(0x2B4452),
-		foreground : Color ?? Default,
+		bg : Color ?? Rgb(3232873),
+		hover_bg : Color ?? Rgb(0x3F6175),
+		active_bg : Color ?? Rgb(0x2B4452),
+		fg : Color ?? Default,
 		border_color : Color ?? Default,
 		border_width : U32 ?? 0,
 		radius : U32 ?? 6,
@@ -553,7 +553,7 @@ Gui := [].{
 
 	## Props for `text_input`. `label` is the field's semantic name, `value` its
 	## controlled text, and `placeholder` an explicit empty-field hint. See
-	## `ColumnProps` for the other attributes.
+	## `ColProps` for the other attributes.
 	TextInputProps := {
 		label : Str,
 		value : Signal(Str),
@@ -563,10 +563,10 @@ Gui := [].{
 		width : Length ?? Auto,
 		height : Length ?? Auto,
 		grow : Bool ?? False,
-		background : Color ?? Default,
-		hover_background : Color ?? Default,
-		active_background : Color ?? Default,
-		foreground : Color ?? Default,
+		bg : Color ?? Default,
+		hover_bg : Color ?? Default,
+		active_bg : Color ?? Default,
+		fg : Color ?? Default,
 		border_color : Color ?? Default,
 		border_width : U32 ?? 0,
 		radius : U32 ?? 0,
@@ -595,10 +595,10 @@ Gui := [].{
 		width : Length ?? Auto,
 		height : Length ?? Auto,
 		grow : Bool ?? False,
-		background : Color ?? Default,
-		hover_background : Color ?? Default,
-		active_background : Color ?? Default,
-		foreground : Color ?? Default,
+		bg : Color ?? Default,
+		hover_bg : Color ?? Default,
+		active_bg : Color ?? Default,
+		fg : Color ?? Default,
 		border_color : Color ?? Default,
 		border_width : U32 ?? 0,
 		radius : U32 ?? 0,
@@ -618,7 +618,7 @@ Gui := [].{
 	}
 
 	## Props for `checkbox`. `label` is the semantic name and `checked` the
-	## controlled state. See `ColumnProps` for the other attributes.
+	## controlled state. See `ColProps` for the other attributes.
 	CheckboxProps := {
 		label : Str,
 		checked : Signal(Bool),
@@ -627,10 +627,10 @@ Gui := [].{
 		width : Length ?? Auto,
 		height : Length ?? Auto,
 		grow : Bool ?? False,
-		background : Color ?? Default,
-		hover_background : Color ?? Default,
-		active_background : Color ?? Default,
-		foreground : Color ?? Default,
+		bg : Color ?? Default,
+		hover_bg : Color ?? Default,
+		active_bg : Color ?? Default,
+		fg : Color ?? Default,
 		border_color : Color ?? Default,
 		border_width : U32 ?? 0,
 		radius : U32 ?? 0,
@@ -651,15 +651,15 @@ Gui := [].{
 
 	## Lay out children horizontally.
 	row : RowProps, List(Elem) -> Elem
-	row = |p, children| Html.div(lower_common(0, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
+	row = |p, children| Html.div(lower_common(0, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, bg: p.bg, hover_bg: p.hover_bg, active_bg: p.active_bg, fg: p.fg, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
 
 	## Lay out children vertically.
-	column : ColumnProps, List(Elem) -> Elem
-	column = |p, children| Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
+	col : ColProps, List(Elem) -> Elem
+	col = |p, children| Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, bg: p.bg, hover_bg: p.hover_bg, active_bg: p.active_bg, fg: p.fg, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
 
 	## Group content in a padded, bordered vertical panel.
 	panel : PanelProps, List(Elem) -> Elem
-	panel = |p, children| Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
+	panel = |p, children| Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, bg: p.bg, hover_bg: p.hover_bg, active_bg: p.active_bg, fg: p.fg, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
 
 	## A native close request enters the ordinary event graph. KeepOpen cancels
 	## it, AwaitDecision retains one pending request, and Close completes that
@@ -703,7 +703,7 @@ Gui := [].{
 	dialog : DialogProps, List(Elem) -> Elem
 	dialog = |p, children| {
 		escape = { chord: { key: "Escape", control: False, shift: False, alt: False, meta: False }, msg: p.on_dismiss }
-		common = { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: Some(p.label), placeholder: None }
+		common = { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, bg: p.bg, hover_bg: p.hover_bg, active_bg: p.active_bg, fg: p.fg, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: Some(p.label), placeholder: None }
 		Elem.Element({
 			namespace: Html,
 			tag: "dialog",
@@ -729,7 +729,7 @@ Gui := [].{
 				}
 			}",
 		)
-		Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }).append(signal_text(native_viewport_field, encoded)), children)
+		Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, bg: p.bg, hover_bg: p.hover_bg, active_bg: p.active_bg, fg: p.fg, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }).append(signal_text(native_viewport_field, encoded)), children)
 	}
 
 	## Render an image from a relative path inside the host's assets root.
@@ -744,7 +744,7 @@ Gui := [].{
 		Elem.Element({
 			namespace: Html,
 			tag: "img",
-			attrs: lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: Some(p.label), placeholder: None }).append(Node.Attr.StaticText({ field: native_image_source_field, name: "", value: p.source })),
+			attrs: lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, bg: p.bg, hover_bg: p.hover_bg, active_bg: p.active_bg, fg: p.fg, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: Some(p.label), placeholder: None }).append(Node.Attr.StaticText({ field: native_image_source_field, name: "", value: p.source })),
 			children: [],
 		})
 	}
@@ -770,32 +770,32 @@ Gui := [].{
 	## Create a button whose caption and availability change independently.
 	action_button : ActionButtonProps, Msg -> Elem
 	action_button = |p, message|
-		Html.action_button_attrs(p.caption, p.enabled.map(|is_enabled| !is_enabled), lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: None, disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), message)
+		Html.action_button_attrs(p.caption, p.enabled.map(|is_enabled| !is_enabled), lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, bg: p.bg, hover_bg: p.hover_bg, active_bg: p.active_bg, fg: p.fg, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: None, disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), message)
 
 	## Edit one controlled line; the label is a semantic name, not placeholder text.
 	text_input : TextInputProps, Msg -> Elem
 	text_input = |p, message|
-		Html.text_input_attrs(p.label, p.value, lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: opt(p.?placeholder) }), message)
+		Html.text_input_attrs(p.label, p.value, lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, bg: p.bg, hover_bg: p.hover_bg, active_bg: p.active_bg, fg: p.fg, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: opt(p.?placeholder) }), message)
 
 	## Edit controlled text with hard line breaks and a retained selection.
 	## An explicit height includes caption and padding; the editor fills the rest.
 	## Auto height retains a 320-pixel editing viewport.
 	textarea : TextareaProps, Msg -> Elem
 	textarea = |p, message|
-		Html.textarea_attrs(p.label, p.value, lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: opt(p.?placeholder) }), message)
+		Html.textarea_attrs(p.label, p.value, lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, bg: p.bg, hover_bg: p.hover_bg, active_bg: p.active_bg, fg: p.fg, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: opt(p.?placeholder) }), message)
 
 	## Toggle a controlled boolean using the ordinary checked-value event route.
 	checkbox : CheckboxProps, Msg -> Elem
 	checkbox = |p, message|
-		Html.checkbox_attrs(p.label, p.checked, lower_common(0, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: None }), message)
+		Html.checkbox_attrs(p.label, p.checked, lower_common(0, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, bg: p.bg, hover_bg: p.hover_bg, active_bg: p.active_bg, fg: p.fg, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: None }), message)
 }
 
 ## The native default encoding is a canonical v2 record shared with the Zig decoder.
 expect encode_style(1, Gui.Style.{}) == "2,1,8,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0"
 
-## A column props literal keeps the neutral style and lowers only present attributes.
+## A col props literal keeps the neutral style and lowers only present attributes.
 expect {
-	attrs = Gui.column({ test_id: "root", padding: 4 }, [])
+	attrs = Gui.col({ test_id: "root", padding: 4 }, [])
 	match attrs {
 		Elem.Element(element) => element.attrs.len() == 2
 		_ => False

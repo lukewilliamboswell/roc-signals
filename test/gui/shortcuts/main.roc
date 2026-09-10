@@ -8,8 +8,8 @@ main : () -> Elem
 main = || Ui.state(
 	True,
 	|visible| {
-		Gui.column(
-			Gui.ColumnProps.{},
+		Gui.col(
+			Gui.ColProps.{},
 			[
 				Gui.heading("Scoped shortcuts"),
 				Gui.button("Toggle editor", visible.on_unit(|value| !value)),
@@ -21,7 +21,7 @@ main = || Ui.state(
 							Ui.state(
 								"",
 								|draft| {
-									Gui.column(
+									Gui.col(
 										{
 											test_id: "keyboard-region",
 											shortcuts: [{ chord: { key: "s", control: True, shift: False, alt: False, meta: False }, msg: count.on_unit(|value| value + 1) }, { chord: { key: "s", control: True, shift: True, alt: False, meta: False }, msg: count.on_unit(|value| value + 10) }],

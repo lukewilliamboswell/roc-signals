@@ -8,8 +8,8 @@ main : () -> Elem
 main = || Ui.state(
 	"none",
 	|last| {
-		Gui.column(
-			Gui.ColumnProps.{},
+		Gui.col(
+			Gui.ColProps.{},
 			[
 				Gui.heading("Internal drag and drop"),
 				Gui.panel({ test_id: "drag-source", drag_source: "task-λ" }, ["Drag this task"]),

@@ -211,12 +211,12 @@ task_card = |row, column, handles, selected| {
 				gap: 8,
 				border_width: 1,
 				radius: 8,
-				background: Rgb(0x283A47),
+				bg: Rgb(0x283A47),
 				border_color: Rgb(0x4A6272),
 			},
 			[
-				Gui.column(
-					{ test_id: "title-${key}", font_size: 15, foreground: Rgb(0xF2F5F6) },
+				Gui.col(
+					{ test_id: "title-${key}", font_size: 15, fg: Rgb(0xF2F5F6) },
 					[Gui.text_s(row.map(|task| task.title))],
 				),
 				Gui.row(
@@ -228,12 +228,12 @@ task_card = |row, column, handles, selected| {
 						Gui.row(
 							{ test_id: "meta-${key}", gap: 0 },
 							[
-								Gui.column(
+								Gui.col(
 									{
 										changes: row.map(
 											|task| Gui.Style.{
 												font_size: 13,
-												foreground: match task.priority {
+												fg: match task.priority {
 													High => Rgb(0xF09A93)
 													Low => Rgb(0x8FD4A8)
 													_ => Rgb(0xA9BFCC)
@@ -243,8 +243,8 @@ task_card = |row, column, handles, selected| {
 									},
 									[Gui.text_s(row.map(|task| "${task.priority.to_str()} priority"))],
 								),
-								Gui.column(
-									{ font_size: 13, foreground: Rgb(0xA9BFCC) },
+								Gui.col(
+									{ font_size: 13, fg: Rgb(0xA9BFCC) },
 									[Gui.text_s(row.map(|task| " · ${task.assignee}"))],
 								),
 							],
@@ -279,7 +279,7 @@ column_view : Handles, Board.Column, Signal.Signal(Str) -> Elem
 column_view = |handles, column, selected| {
 	rows = column_state(handles, column).signal()
 	visible = Signal.map2(rows, handles.filter.signal(), visible_rows)
-	Gui.column(
+	Gui.col(
 		{
 			disabled: handles.edit_disabled,
 			test_id: "column-${column.to_str()}",
@@ -288,12 +288,12 @@ column_view = |handles, column, selected| {
 			gap: 12,
 			padding: 12,
 			radius: 10,
-			background: Rgb(0x1B2A33),
+			bg: Rgb(0x1B2A33),
 		},
 		[
 			Gui.heading(column.to_str()),
-			Gui.column(
-				{ font_size: 13, foreground: Rgb(0xA9BFCC) },
+			Gui.col(
+				{ font_size: 13, fg: Rgb(0xA9BFCC) },
 				[Gui.text_s(rows.map(|items| "${Rows.len(items).to_str()} tasks"))],
 			),
 			Ui.each(visible, |row| task_card(row, column, handles, selected)),
@@ -301,8 +301,8 @@ column_view = |handles, column, selected| {
 			# between the count line and the first card.
 			Ui.when(
 				visible.map(|items| Rows.len(items) == 0),
-				|| Gui.column(
-					{ font_size: 13, foreground: Rgb(0x93A9B6) },
+				|| Gui.col(
+					{ font_size: 13, fg: Rgb(0x93A9B6) },
 					["No matching tasks"],
 				),
 				|| Gui.text(""),
@@ -434,7 +434,7 @@ detail_view = |handles|
 			width: 320.Px,
 			padding: 16,
 			gap: 12,
-			background: Rgb(0x283A47),
+			bg: Rgb(0x283A47),
 			radius: 8,
 		},
 		[
@@ -444,19 +444,19 @@ detail_view = |handles|
 				|| {
 					Ui.switch(
 						handles.editor.signal().map(|editor| editor.column),
-						|column| Gui.column(
-							Gui.ColumnProps.{},
+						|column| Gui.col(
+							Gui.ColProps.{},
 							[
-								Gui.column(
-									{ test_id: "task-column", font_size: 13, foreground: Rgb(0xA9BFCC) },
+								Gui.col(
+									{ test_id: "task-column", font_size: 13, fg: Rgb(0xA9BFCC) },
 									[Gui.text_s(handles.editor.signal().map(|editor| editor.column.to_str()))],
 								),
-								Gui.column(
-									{ gap: 4, font_size: 13, foreground: Rgb(0xA9BFCC) },
+								Gui.col(
+									{ gap: 4, font_size: 13, fg: Rgb(0xA9BFCC) },
 									["Task title", edit_field(|label, value, disabled, msg| Gui.text_input({ label, value, disabled, width: Fill }, msg), handles, column, "Task title", |task, title| { ..task, title }, |task| task.title)],
 								),
-								Gui.column(
-									{ gap: 4, font_size: 13, foreground: Rgb(0xA9BFCC) },
+								Gui.col(
+									{ gap: 4, font_size: 13, fg: Rgb(0xA9BFCC) },
 									[
 										"Assignee",
 										Gui.row(
@@ -474,12 +474,12 @@ detail_view = |handles|
 									priority_key = handles.editor.signal().map(|editor| editor.task.priority.to_str())
 									Gui.row({ gap: 8 }, Board.priorities.map(|priority| priority_button(handles, column, priority_key, priority)))
 								},
-								Gui.column(
-									{ font_size: 13, foreground: Rgb(0x93A9B6) },
+								Gui.col(
+									{ font_size: 13, fg: Rgb(0x93A9B6) },
 									["Changes appear on the board immediately."],
 								),
 								reorder_buttons(handles, column),
-								Gui.column(Gui.ColumnProps.{}, Board.columns.keep_if(|other| other != column).map(|other| move_button(handles, other))),
+								Gui.col(Gui.ColProps.{}, Board.columns.keep_if(|other| other != column).map(|other| move_button(handles, other))),
 								delete_confirmation(handles, column),
 							],
 						),
@@ -577,7 +577,7 @@ board_view = |handles| {
 			),
 		},
 		[
-			Gui.column(
+			Gui.col(
 				{
 					test_id: "launch-board",
 					padding: 24,
@@ -587,8 +587,8 @@ board_view = |handles| {
 				},
 				[
 					Gui.heading("Launch Board"),
-					Gui.column(
-						{ foreground: Rgb(0xA9BFCC) },
+					Gui.col(
+						{ fg: Rgb(0xA9BFCC) },
 						["A small team's workspace for the next release."],
 					),
 					document_toolbar(handles, actions),
@@ -605,8 +605,8 @@ board_view = |handles| {
 							}, handles.filter.on_str(|_, text| text)),
 						],
 					),
-					Gui.column(
-						{ gap: 2, font_size: 13, foreground: Rgb(0x93A9B6) },
+					Gui.col(
+						{ gap: 2, font_size: 13, fg: Rgb(0x93A9B6) },
 						[
 							"Drag onto a card to place a task before it, or into a column to move it to the end.",
 							"Undo keeps up to 50 changes within 4 MiB; older changes are retired.",
@@ -812,7 +812,7 @@ document_toolbar = |handles, actions| {
 
 	# gap 0: everything below the button row is a conditional problem line or
 	# dialog, so the toolbar's empty states pay no vertical rhythm.
-	Gui.column(
+	Gui.col(
 		{ test_id: "board-document", gap: 0 },
 		[
 			Gui.row(
@@ -824,15 +824,15 @@ document_toolbar = |handles, actions| {
 						enabled: ready,
 						padding: 8,
 						radius: 6,
-						background: Rgb(0x2E6FA3),
-						hover_background: Rgb(0x3A80B8),
-						active_background: Rgb(0x265D89),
+						bg: Rgb(0x2E6FA3),
+						hover_bg: Rgb(0x3A80B8),
+						active_bg: Rgb(0x265D89),
 					}, actions.save),
 					Gui.action_button({ caption: Signal.const("Save As…"), enabled: ready }, actions.save_as),
 					history_button(handles, False),
 					history_button(handles, True),
-					Gui.column(
-						{ test_id: "board-path", padding: 8, foreground: Rgb(0xF2F5F6) },
+					Gui.col(
+						{ test_id: "board-path", padding: 8, fg: Rgb(0xF2F5F6) },
 						[
 							Gui.text_s(
 								handles.document.signal().map(
@@ -844,14 +844,14 @@ document_toolbar = |handles, actions| {
 							),
 						],
 					),
-					Gui.column(
+					Gui.col(
 						{
 							test_id: "board-status",
 							changes: handles.context.map(
 								|context| Gui.Style.{
 									padding: 8,
 									font_size: 13,
-									foreground: match context.document.phase {
+									fg: match context.document.phase {
 										Phase.Idle => if dirty(context) {
 											Rgb(0xE8C27A)
 										} else {
@@ -883,8 +883,8 @@ document_toolbar = |handles, actions| {
 					),
 				],
 			),
-			Gui.column(
-				{ test_id: "board-problem", font_size: 13, foreground: Rgb(0xF09A93) },
+			Gui.col(
+				{ test_id: "board-problem", font_size: 13, fg: Rgb(0xF09A93) },
 				[Gui.text_s(handles.document.signal().map(|doc| doc.problem))],
 			),
 			Ui.when(
@@ -905,8 +905,8 @@ document_toolbar = |handles, actions| {
 				|| Gui.text(""),
 			),
 			Ui.when(handles.document.signal().map(|doc| doc.phase != Phase.Idle and doc.phase != Phase.ConfirmOpen), || Gui.button("Cancel operation", actions.cancel), || Gui.text("")),
-			Gui.column(
-				{ test_id: "asset-status", font_size: 13, foreground: Rgb(0xF09A93) },
+			Gui.col(
+				{ test_id: "asset-status", font_size: 13, fg: Rgb(0xF09A93) },
 				[Gui.text_s(handles.asset_problem.signal())],
 			),
 			close_dialog(handles),

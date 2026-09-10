@@ -46,7 +46,7 @@ light : Theme
 light = { surface: Rgb(0xF4F6F7), panel: Rgb(0xFFFFFF), content: Rgb(0x1B2D36), muted: Rgb(0x51646F), accent: Rgb(0x2B6A92), border: Rgb(0xC3CED4) }
 
 panel_style : Signal(Theme) -> Signal(Gui.Style)
-panel_style = |theme| theme.map(|t| Gui.Style.{ padding: 24, gap: 16, border_width: 1, radius: 10, background: t.panel, border_color: t.border, foreground: t.content })
+panel_style = |theme| theme.map(|t| Gui.Style.{ padding: 24, gap: 16, border_width: 1, radius: 10, bg: t.panel, border_color: t.border, fg: t.content })
 
 main : () -> Elem
 main = || Ui.state(
@@ -58,8 +58,8 @@ main = || Ui.state(
 				Light => light
 			},
 		)
-		Gui.column(
-			{ changes: theme.map(|t| Gui.Style.{ padding: 32, gap: 20, background: t.surface, foreground: t.content }) },
+		Gui.col(
+			{ changes: theme.map(|t| Gui.Style.{ padding: 32, gap: 20, bg: t.surface, fg: t.content }) },
 			[Gui.panel({ changes: panel_style(theme) }, [Gui.text("Themed content")])],
 		)
 	},
@@ -86,14 +86,14 @@ Controls with no styling route at all:
 | Control | Gap |
 | --- | --- |
 | `Gui.button` | **Resolved:** `Gui.action_button` takes the full props record with the button's default style; `Gui.button` stays as the caption-and-message shorthand. |
-| `Gui.heading`, `Gui.text`, `Gui.text_s` | No attributes. Foreground and font size inherit from a styled wrapper, so a wrapping `Gui.column` is a workaround, not a gap of the same severity. |
+| `Gui.heading`, `Gui.text`, `Gui.text_s` | No attributes. Foreground and font size inherit from a styled wrapper, so a wrapping `Gui.col` is a workaround, not a gap of the same severity. |
 
 Host chrome that ignores application styles entirely:
 
 | Chrome | Location | Constant |
 | --- | --- | --- |
 | Button default background, padding, radius | crates/gpui-host/src/lib.rs:140 | `rgb(0x315469)`, `px_3 py_1 rounded_md` |
-| Button hover / active backgrounds | **Resolved:** style-v2 `hover_background`/`active_background` | host constants remain the default-background fallback |
+| Button hover / active backgrounds | **Resolved:** style-v2 `hover_bg`/`active_bg` | host constants remain the default-background fallback |
 | Checkbox glyphs | crates/gpui-host/src/lib.rs:171 | `"☑"` / `"☐"` literals |
 | Selected ring | crates/gpui-host/src/lib.rs:197 | `border_2`, `rgb(0x70c5e8)` |
 | Disabled treatment | crates/gpui-host/src/lib.rs:200 | `opacity(0.45)` |
@@ -114,8 +114,8 @@ Host chrome that ignores application styles entirely:
 
 Two of these interacted badly with the working pattern; both are resolved:
 
-- **Resolved:** style version 2 adds `hover_background` and
-  `active_background`. An explicit state color always wins on enabled
+- **Resolved:** style version 2 adds `hover_bg` and
+  `active_bg`. An explicit state color always wins on enabled
   buttons; the sentinels preserve the old behavior (host feedback for
   default-background buttons, none for explicitly colored ones), so themed
   buttons declare their own state colors - see the accent buttons across
@@ -159,7 +159,7 @@ fields is the anticipated evolution, not a format break. Propose a version 2
 with a small set of state and role colors, each defaulting to the inherit
 sentinel so an omitted `Gui.Style` field continues to mean "host behavior":
 
-- `hover_background`, `active_background` — **shipped** in style v2 (protocol
+- `hover_bg`, `active_bg` — **shipped** in style v2 (protocol
   10) for buttons; an explicit value always wins, sentinels preserve the old
   behavior exactly, and checkboxes deliberately ignore the state slots. The
   drop-target highlight still uses its constant.
@@ -176,7 +176,7 @@ default hover over an explicit background should derive a shade or do nothing
 is an open question below.
 
 Editor chrome stops being special — **shipped**: the inner field uses the
-element's `background`, `foreground`, `border_color`, `radius`, and
+element's `bg`, `fg`, `border_color`, `radius`, and
 `font_size` when supplied; the foreground drives placeholder, cursor, and
 selection tint, so no dedicated `accent`/`muted` fields were needed for the
 editor rows. The textarea caption color remains a host constant for now.
@@ -204,7 +204,7 @@ version-2 fields.
 2. **Button attributes.** `Gui.action_button` carries the button's props;
    migrate examples and specs together.
 3. **Style version 2.** Roc encoder, Zig validation, extern struct extension,
-   Rust application for `hover_background`, `active_background`, `accent`,
+   Rust application for `hover_bg`, `active_bg`, `accent`,
    `muted`; buttons, drop targets, selected ring, and scrollable elements
    consume them. The Zig display-free host validates and stores the longer
    record exactly as it stores version 1; native specs need only tolerate the

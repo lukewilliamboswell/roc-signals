@@ -7,8 +7,8 @@ import pf.Ui
 main : () -> Elem
 main = || Ui.state(
 	False,
-	|visible| Gui.column(
-		Gui.ColumnProps.{},
+	|visible| Gui.col(
+		Gui.ColProps.{},
 		[
 			Gui.heading("Scoped dialog"),
 			Gui.button("Open dialog", visible.on_unit(|_| True)),

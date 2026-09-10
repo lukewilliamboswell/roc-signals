@@ -9,8 +9,8 @@ main : () -> Elem
 main = || Ui.state(
 	0.U64,
 	|count| {
-		Gui.column(
-			Gui.ColumnProps.{},
+		Gui.col(
+			Gui.ColProps.{},
 			[
 				Gui.heading("Scoped timer lifetime"),
 				Gui.text_s(count.signal().map(|value| "Ticks: ${value.to_str()}")),

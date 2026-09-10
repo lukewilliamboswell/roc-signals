@@ -30,7 +30,7 @@ entry_view = |row, selected| {
 		},
 		[
 			Gui.button("Inspect ${key}", selected.on_unit(|_| key)),
-			Gui.column(
+			Gui.col(
 				{
 					changes: row.signal().map(
 						|entry| Gui.Style.{
@@ -39,7 +39,7 @@ entry_view = |row, selected| {
 							overflow_x: Clip,
 							overflow_y: Clip,
 							font_size: 13,
-							foreground: match entry.severity {
+							fg: match entry.severity {
 								Feed.Severity.Error => Rgb(0xF09A93)
 								Feed.Severity.Warning => Rgb(0xE8C27A)
 								_ => Rgb(0xA9BFCC)
@@ -49,18 +49,18 @@ entry_view = |row, selected| {
 				},
 				[Gui.text_s(row.signal().map(|entry| entry.severity.to_str()))],
 			),
-			Gui.column(
+			Gui.col(
 				{
 					width: 110.Px,
 					height: Fill,
 					overflow_x: Clip,
 					overflow_y: Clip,
 					font_size: 13,
-					foreground: Rgb(0xA9BFCC),
+					fg: Rgb(0xA9BFCC),
 				},
 				[Gui.text_s(row.signal().map(|entry| entry.component))],
 			),
-			Gui.column({ grow: True, height: Fill, overflow_x: Clip, overflow_y: Clip }, [Gui.text_s(row.signal().map(|entry| entry.message))]),
+			Gui.col({ grow: True, height: Fill, overflow_x: Clip, overflow_y: Clip }, [Gui.text_s(row.signal().map(|entry| entry.message))]),
 		],
 	)
 }
@@ -91,7 +91,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 	projection = { history, query: query.signal(), errors: errors_only.signal() }.Signal
 	visible = projection.map(|value| Feed.visible(value.history, value.query, value.errors))
 	inspection = { history, selected: selected.signal() }.Signal
-	Gui.column(
+	Gui.col(
 		{
 			embedded_fonts: [{ family: feed_font, bytes: source_code_pro }],
 			padding: 24,
@@ -102,8 +102,8 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 		},
 		[
 			Gui.heading("Activity Monitor"),
-			Gui.column(
-				{ foreground: Rgb(0xA9BFCC) },
+			Gui.col(
+				{ fg: Rgb(0xA9BFCC) },
 				["Follow a live log file, or replay a deterministic sample feed."],
 			),
 			Gui.panel(
@@ -112,9 +112,9 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 						|state| Gui.Style.{
 							padding: 8,
 							radius: 6,
-							background: Rgb(0x1B2A33),
+							bg: Rgb(0x1B2A33),
 							font_size: 13,
-							foreground: match state.source {
+							fg: match state.source {
 								Session.Source.Replay => Rgb(0xE8C27A)
 								Session.Source.Log(_) => Rgb(0x7FC9E8)
 							},
@@ -141,9 +141,9 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							enabled: busy.map(|value| !value),
 							padding: 8,
 							radius: 6,
-							background: Rgb(0x2E6FA3),
-							hover_background: Rgb(0x3A80B8),
-							active_background: Rgb(0x265D89),
+							bg: Rgb(0x2E6FA3),
+							hover_bg: Rgb(0x3A80B8),
+							active_bg: Rgb(0x265D89),
 						},
 						Ui.action(
 							model.signal(),
@@ -175,7 +175,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 					Gui.action_button({ caption: Signal.const("Cancel operation"), enabled: busy }, Ui.action(session, |state| Workflow.cancel(model, tasks, state.phase))),
 				],
 			),
-			Gui.column({ test_id: "activity-status", font_size: 13, foreground: Rgb(0xA9BFCC) }, [Gui.text_s(session.map(|state| state.notice))]),
+			Gui.col({ test_id: "activity-status", font_size: 13, fg: Rgb(0xA9BFCC) }, [Gui.text_s(session.map(|state| state.notice))]),
 			Ui.when(
 				replay,
 				|| Gui.row(
@@ -198,8 +198,8 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 						Ui.when(
 							running.signal(),
 							|| Gui.text(""),
-							|| Gui.column(
-								{ padding: 8, font_size: 13, foreground: Rgb(0xE8C27A) },
+							|| Gui.col(
+								{ padding: 8, font_size: 13, fg: Rgb(0xE8C27A) },
 								["Replay paused"],
 							),
 						),
@@ -234,12 +234,12 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 				{ gap: 12 },
 				[
 					Gui.button("Clear history", model.on_unit(|value| { ..value, history: Feed.clear(value.history) })),
-					Gui.column(
-						{ padding: 8, font_size: 13, foreground: Rgb(0xA9BFCC) },
+					Gui.col(
+						{ padding: 8, font_size: 13, fg: Rgb(0xA9BFCC) },
 						[Gui.text_s(history.map(|value| "Retained: ${value.rows.len().to_str()} / 1000"))],
 					),
-					Gui.column(
-						{ padding: 8, font_size: 13, foreground: Rgb(0x93A9B6) },
+					Gui.col(
+						{ padding: 8, font_size: 13, fg: Rgb(0x93A9B6) },
 						[Gui.text_s(history.map(|value| "Text: ${value.bytes.to_str()} / 4194304 bytes · Evicted: ${value.discarded.to_str()}"))],
 					),
 				],
@@ -261,20 +261,20 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 			Gui.row(
 				{ gap: 16, grow: True, width: Fill, height: Fill },
 				[
-					Gui.column(
+					Gui.col(
 						{
 							grow: True,
 							gap: 0,
 							padding: 12,
 							radius: 10,
-							background: Rgb(0x1B2A33),
+							bg: Rgb(0x1B2A33),
 							overflow_y: Clip,
 						},
 						[
 							Ui.when(
 								visible.map(|rows| rows.len() == 0),
-								|| Gui.column(
-									{ font_size: 13, foreground: Rgb(0x93A9B6) },
+								|| Gui.col(
+									{ font_size: 13, fg: Rgb(0x93A9B6) },
 									["No matching events. Start the replay, open a log, or adjust the filter."],
 								),
 								|| Gui.text(""),
@@ -295,13 +295,13 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							padding: 16,
 							gap: 12,
 							radius: 8,
-							background: Rgb(0x283A47),
+							bg: Rgb(0x283A47),
 							overflow_x: Scroll,
 							overflow_y: Scroll,
 						},
 						[
 							Gui.heading("Event inspector"),
-							Gui.column(
+							Gui.col(
 								{ font_family: feed_font, test_id: "inspector-detail" },
 								[
 									Gui.text_s(
@@ -320,14 +320,14 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							),
 							Ui.when(
 								session.map(|state| !state.lines.partial.is_empty()),
-								|| Gui.column(
+								|| Gui.col(
 									{ gap: 4, height: 100.Px, overflow_x: Scroll, overflow_y: Scroll },
 									[
-										Gui.column(
-											{ font_size: 13, foreground: Rgb(0xA9BFCC) },
+										Gui.col(
+											{ font_size: 13, fg: Rgb(0xA9BFCC) },
 											[Gui.heading("Unterminated line")],
 										),
-										Gui.column({ font_family: feed_font }, [Gui.text_s(session.map(|state| state.lines.partial))]),
+										Gui.col({ font_family: feed_font }, [Gui.text_s(session.map(|state| state.lines.partial))]),
 									],
 								),
 								|| Gui.text(""),

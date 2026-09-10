@@ -103,7 +103,7 @@ Retired version-1 records (17 fields, without the state backgrounds) are
 refused like any other invalid record: platform and host are statically linked
 and ship together, so no compatibility window exists.
 
-`hover_background` and `active_background` color enabled buttons while the
+`hover_bg` and `active_bg` color enabled buttons while the
 pointer rests on or presses them. An explicit state color always wins; with
 both at the inherit sentinel, a default-background button keeps the host's
 standard hover/active feedback, and an explicitly colored button shows no state
@@ -136,7 +136,7 @@ cross axis Fill is a percentage of the parent's content box. The committed
 parent's direction decides which axis is which.
 
 Text inputs and textareas resolve their inner field from the same record:
-explicit `background`, `foreground`, and `border_color` replace the host's
+explicit `bg`, `fg`, and `border_color` replace the host's
 dark field defaults, a nonzero `radius` replaces the standard rounding, and a
 nonzero `font_size` sizes the editor text with a proportional line height.
 The placeholder derives from the effective foreground at reduced alpha, and

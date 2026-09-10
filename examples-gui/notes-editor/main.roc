@@ -58,21 +58,21 @@ main = || Ui.state(
 			Gui.window_lifecycle(
 				{ on_close_requested: session.on_unit_with(body, Session.request_close), decision: session.signal().map(Session.close_decision) },
 				[
-					Gui.column(
+					Gui.col(
 						{
 							test_id: "notes-editor",
 							padding: 24,
 							gap: 12,
 							width: Fill,
 							height: Fill,
-							background: theme.background,
-							foreground: theme.text_primary,
+							bg: theme.background,
+							fg: theme.text_primary,
 							shortcuts: [{ chord: { ..chord, key: "n" }, msg: new }, { chord: { ..chord, key: "o" }, msg: open }, { chord: chord, msg: save }, { chord: { ..chord, shift: True }, msg: save_as }, { chord: { ..chord, key: "Escape", control: False }, msg: cancel }],
 						},
 						[
 							Gui.heading("Notes"),
-							Gui.column(
-								{ foreground: theme.text_secondary },
+							Gui.col(
+								{ fg: theme.text_secondary },
 								["A quiet place to collect your thoughts."],
 							),
 							Gui.row(
@@ -85,9 +85,9 @@ main = || Ui.state(
 										enabled: revert_ready,
 										padding: theme.control_padding,
 										radius: theme.radius,
-										background: theme.accent,
-										hover_background: theme.accent_hover,
-										active_background: theme.accent_active,
+										bg: theme.accent,
+										hover_bg: theme.accent_hover,
+										active_bg: theme.accent_active,
 									}, save),
 									Gui.action_button({ caption: Signal.const("Save As…"), enabled: ready }, save_as),
 									Gui.action_button({ caption: Signal.const("Revert changes"), enabled: revert_ready }, revert),
@@ -96,11 +96,11 @@ main = || Ui.state(
 							Gui.row(
 								{ gap: 12 },
 								[
-									Gui.column(
-										{ test_id: "document-name", font_size: 18, foreground: theme.text_primary },
+									Gui.col(
+										{ test_id: "document-name", font_size: 18, fg: theme.text_primary },
 										[Gui.text_s(session.signal().map(|state| state.baseline.title))],
 									),
-									Gui.column(
+									Gui.col(
 										{
 											test_id: "note-status",
 											changes: view.map(
@@ -109,7 +109,7 @@ main = || Ui.state(
 													Gui.Style.{
 														padding: 4,
 														font_size: 13,
-														foreground: if dirty {
+														fg: if dirty {
 															theme.warning
 														} else {
 															theme.text_secondary
@@ -125,8 +125,8 @@ main = || Ui.state(
 							Gui.row(
 								{ width: Fill, height: Fill, grow: True, gap: 0 },
 								[
-									Gui.column({ grow: True }, []),
-									Gui.column(
+									Gui.col({ grow: True }, []),
+									Gui.col(
 										{ width: 740.Px, height: Fill },
 										[
 											Ui.switch(
@@ -147,17 +147,17 @@ main = || Ui.state(
 											),
 										],
 									),
-									Gui.column({ grow: True }, []),
+									Gui.col({ grow: True }, []),
 								],
 							),
 							Gui.row(
 								{ gap: 24 },
 								[
-									Gui.column(
+									Gui.col(
 										{
 											test_id: "note-summary",
 											font_size: 13,
-											foreground: theme.text_secondary,
+											fg: theme.text_secondary,
 										},
 										[Gui.text_s(body.signal().map(|text| Document.counts_text(Document.counts(text))))],
 									),
@@ -165,11 +165,11 @@ main = || Ui.state(
 							),
 							# Conditional problem/dialog rows live in one trailing gap-0
 							# wrapper so their empty states cost no vertical rhythm.
-							Gui.column(
+							Gui.col(
 								{ gap: 0 },
 								[
-									Gui.column(
-										{ test_id: "note-problem", font_size: 13, foreground: theme.danger },
+									Gui.col(
+										{ test_id: "note-problem", font_size: 13, fg: theme.danger },
 										[
 											Gui.text_s(
 												session.signal().map(
@@ -205,7 +205,7 @@ main = || Ui.state(
 												test_id: "discard-confirmation",
 												padding: 16,
 												gap: theme.gap,
-												background: theme.card,
+												bg: theme.card,
 												radius: theme.radius,
 											},
 											[

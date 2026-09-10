@@ -15,7 +15,7 @@ main = || {
 	log = Files.read_log_task("fixture-log")
 	opened = Files.open_path_task("fixture-open")
 	status = Signal.fold_task(task, "Loading", |file| "Loaded ${file.text.to_utf8().len().to_str()} bytes", Files.error_text)
-	Gui.column(
+	Gui.col(
 		{ test_id: "files-fixture" },
 		[
 			Gui.heading("Native Files fixture"),

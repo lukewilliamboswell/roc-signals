@@ -27,7 +27,7 @@ row_view = |row, selected| {
 					gap: 8,
 					border_width: 1,
 					radius: 8,
-					background: Rgb(0x283A47),
+					bg: Rgb(0x283A47),
 					border_color: Rgb(0x4A6272),
 				},
 				[
@@ -35,8 +35,8 @@ row_view = |row, selected| {
 						{ gap: 12 },
 						[
 							Gui.button("Select ${key}", selected.on_unit(|_| key)),
-							Gui.column(
-								{ padding: 6, font_size: 13, foreground: Rgb(0xA9BFCC) },
+							Gui.col(
+								{ padding: 6, font_size: 13, fg: Rgb(0xA9BFCC) },
 								[
 									Gui.text_s(
 										Signal.select(selected.signal(), key).map(
@@ -58,8 +58,8 @@ row_view = |row, selected| {
 						width: 240.Px,
 						gap: 4,
 					}, draft.on_str(|_, value| value)),
-					Gui.column(
-						{ font_size: 13, foreground: Rgb(0x93A9B6) },
+					Gui.col(
+						{ font_size: 13, fg: Rgb(0x93A9B6) },
 						[Gui.text_s(draft.signal().map(|text| "Saved draft: ${text}"))],
 					),
 				],
@@ -78,12 +78,12 @@ main = || Ui.state(
 				Ui.state(
 					True,
 					|visible| {
-						Gui.column(
+						Gui.col(
 							{ padding: 32, gap: 16, width: Fill },
 							[
 								Gui.heading("Roc Signals + GPUI"),
-								Gui.column(
-									{ foreground: Rgb(0xA9BFCC) },
+								Gui.col(
+									{ fg: Rgb(0xA9BFCC) },
 									["Edit a row, then move it. Hide/show creates fresh row scopes."],
 								),
 								Gui.row(
@@ -94,7 +94,7 @@ main = || Ui.state(
 												caption: Signal.const("Move first to end"),
 												padding: 8,
 												radius: 6,
-												background: Rgb(0x2E6FA3),
+												bg: Rgb(0x2E6FA3),
 											},
 											rows.on_unit(move_first),
 										),
@@ -104,19 +104,19 @@ main = || Ui.state(
 								Ui.when(
 									visible.signal(),
 									|| {
-										Gui.column(
+										Gui.col(
 											{ gap: 12, width: 520.Px },
 											[
-												Gui.column(
-													{ font_size: 13, foreground: Rgb(0x93A9B6) },
+												Gui.col(
+													{ font_size: 13, fg: Rgb(0x93A9B6) },
 													[Gui.text_s(Signal.interval(1000).map(|tick| "Scope clock: ${tick.to_str()}"))],
 												),
 												Ui.each(rows.signal(), |row| row_view(row, selected)),
 											],
 										)
 									},
-									|| Gui.column(
-										{ font_size: 13, foreground: Rgb(0x93A9B6) },
+									|| Gui.col(
+										{ font_size: 13, fg: Rgb(0x93A9B6) },
 										["Rows disposed"],
 									),
 								),

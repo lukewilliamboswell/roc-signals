@@ -11,8 +11,8 @@ main = || Ui.state(
 	|decision| Gui.window_lifecycle(
 		{ on_close_requested: decision.on_unit(|_| AwaitDecision), decision: decision.signal() },
 		[
-			Gui.column(
-				Gui.ColumnProps.{},
+			Gui.col(
+				Gui.ColProps.{},
 				[
 					Gui.heading("Window close contract"),
 					Gui.text_s(

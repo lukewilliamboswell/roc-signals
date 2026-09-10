@@ -8,8 +8,8 @@ import pf.Ui
 main : () -> Elem
 main = || Ui.state(
 	True,
-	|first| Gui.column(
-		Gui.ColumnProps.{},
+	|first| Gui.col(
+		Gui.ColProps.{},
 		[
 			Gui.button("Switch branch", first.on_unit(|value| !value)),
 			Ui.when(
@@ -19,7 +19,7 @@ main = || Ui.state(
 						test_id: "styled-branch",
 						selected: Signal.const(True),
 						padding: 12,
-						background: Rgb(0x24323E),
+						bg: Rgb(0x24323E),
 					},
 					["First branch"],
 				),
@@ -28,7 +28,7 @@ main = || Ui.state(
 						test_id: "styled-branch",
 						selected: Signal.const(False),
 						padding: 20,
-						background: Rgb(0x354452),
+						bg: Rgb(0x354452),
 					},
 					["Second branch"],
 				),

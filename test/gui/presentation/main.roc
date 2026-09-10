@@ -7,13 +7,13 @@ import pf.Signal
 main : () -> Elem
 main = || Ui.state(False, |enabled| {
 	Ui.state(0.U64, |clicks| {
-		Gui.column({ test_id: "presentation" }, [
+		Gui.col({ test_id: "presentation" }, [
 			Gui.heading("Native presentation"),
 			Gui.checkbox({ label: "Enable action", checked: enabled.signal() }, enabled.on_bool(|_, value| value)),
 			Gui.row({
 				test_id: "styled-row",
 				selected: enabled.signal(),
-				changes: enabled.signal().map(|value| Gui.Style.{ padding: 12, gap: 16, width: Fill, background: if value { Rgb(1193046) } else { Rgb(2236962) } }),
+				changes: enabled.signal().map(|value| Gui.Style.{ padding: 12, gap: 16, width: Fill, bg: if value { Rgb(1193046) } else { Rgb(2236962) } }),
 			}, [
 				Gui.action_button({
 					caption: Signal.const("Run action"),
