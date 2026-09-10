@@ -1379,24 +1379,26 @@ the reviewed lock directly to the bundler:
 
 ```sh
 gh release download "$HOST_RELEASE" --pattern dependencies.lock.json --dir /tmp/hosts
-gh release verify-asset "$HOST_RELEASE" /tmp/hosts/dependencies.lock.json
 scripts/bundle.sh --package gui --no-build --prebuilt-host-lock /tmp/hosts/dependencies.lock.json
 ```
 
 The bundler downloads and verifies every selected archive, including cached
-copies, against the locked digest, source commit, main ref, and this repository's
-host-producing workflow. It extracts into private staging and checks host source
-compatibility before copying any host outputs. Host-related source must be clean
-and committed; documentation-only commits do not invalidate host compatibility.
-Overlapping local and prebuilt hosts for one target are errors.
+copies, against the reviewed size and SHA-256. The lock also records its producer
+repository, source commit, main ref, and workflow for optional provenance
+inspection. It extracts into private staging and checks whether the actual Rust
+host, Zig engine, Cargo manifest, lock, or build configuration changed since the
+host release. Platform Roc APIs, applications, semantic specs, documentation,
+packaging, and external linker inputs do not invalidate a compatible host.
+Host-related source must be clean and committed. Overlapping local and prebuilt
+hosts for one target are errors.
 
 The GUI test driver accepts the same reviewed lock through
 `python3 scripts/test.py gui --gui-host-lock /path/to/dependencies.lock.json` or
 `GUI_HOST_LOCK`. It downloads only the host for the current operating system,
 stages that target's independently released system link inputs, and runs the
 ordinary Roc checks, builds, and semantic specs without rebuilding Cargo or Zig
-host code. Cargo host tests and fresh link-input construction remain part of the
-dedicated producer workflow when host sources or packaging change.
+host code. Cargo host tests and fresh host-output construction remain part of the
+dedicated producer workflow when actual host inputs or producer machinery change.
 
 These archives contain host code and licenses, not external system libraries or
 SDK stubs. Every included target must also have its external link inputs supplied;
