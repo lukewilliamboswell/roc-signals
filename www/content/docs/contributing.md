@@ -218,6 +218,23 @@ Roc app executables built during tests are written under `.test-out/` by
 
 ## Dependency artifact releases
 
+### Web host inputs
+
+The `Web host inputs` workflow builds the four native web spec hosts and the
+Wasm browser host only when their actual Zig sources or build recipe change. It
+tests native and Wasm application paths, then packages five target-confined
+archives under one immutable `deps-web-hosts-<version>` release. Each archive
+and its reviewed lock entry records both its exact SHA-256 and the shared narrow
+host-input fingerprint. Application modules, examples, platform API files,
+documentation, and release packaging do not change that fingerprint.
+
+Ordinary CI and combined platform releases consume `web-host.lock.json`; they
+do not compile these hosts. GitHub attestations remain available for external
+provenance inspection, while ordinary admission uses the reviewed content
+hashes without calling an attestation service. The independently released musl
+startup objects and libc archives remain final linker inputs rather than web
+host outputs.
+
 ### macOS linker interfaces
 
 To inventory the compiled Rust host's external references without reading SDK
