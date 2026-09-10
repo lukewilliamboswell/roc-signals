@@ -71,7 +71,7 @@ main = || Ui.state(
 				Gui.column(
 					[
 						Gui.test_id("notes-editor"),
-						Gui.style({ ..Gui.style_default, padding: 24, gap: 12, width: Fill, height: Fill, background: Rgb(theme.background), foreground: Rgb(theme.text_primary) }),
+						Gui.style({ padding: 24, gap: 12, width: Fill, height: Fill, background: Rgb(theme.background), foreground: Rgb(theme.text_primary) }),
 						Gui.on_shortcut({ ..chord, key: "n" }, new),
 						Gui.on_shortcut({ ..chord, key: "o" }, open),
 						Gui.on_shortcut(chord, save),
@@ -82,24 +82,24 @@ main = || Ui.state(
 						Ui.on_change_initial(window_title, Gui.set_title),
 						Gui.heading("Notes"),
 						Gui.column(
-							[Gui.style({ ..Gui.style_default, foreground: Rgb(theme.text_secondary) })],
+							[Gui.style({ foreground: Rgb(theme.text_secondary) })],
 							[Gui.text("A quiet place to collect your thoughts.")],
 						),
 						Gui.row(
-							[Gui.style({ ..Gui.style_default, gap: 8 })],
+							[Gui.style({ gap: 8 })],
 							[
 								Gui.action_button({ label: Signal.const("New"), enabled: ready }, [], new),
 								Gui.action_button({ label: Signal.const("Open…"), enabled: ready }, [], open),
-								Gui.action_button({ label: Signal.const("Save"), enabled: revert_ready }, [Gui.style({ ..Gui.style_default, padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent), hover_background: Rgb(theme.accent_hover), active_background: Rgb(theme.accent_active) })], save),
+								Gui.action_button({ label: Signal.const("Save"), enabled: revert_ready }, [Gui.style({ padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent), hover_background: Rgb(theme.accent_hover), active_background: Rgb(theme.accent_active) })], save),
 								Gui.action_button({ label: Signal.const("Save As…"), enabled: ready }, [], save_as),
 								Gui.action_button({ label: Signal.const("Revert changes"), enabled: revert_ready }, [], revert),
 							],
 						),
 						Gui.row(
-							[Gui.style({ ..Gui.style_default, gap: 12 })],
+							[Gui.style({ gap: 12 })],
 							[
 								Gui.column(
-									[Gui.test_id("document-name"), Gui.style({ ..Gui.style_default, font_size: 18, foreground: Rgb(theme.text_primary) })],
+									[Gui.test_id("document-name"), Gui.style({ font_size: 18, foreground: Rgb(theme.text_primary) })],
 									[Gui.text_s(state.map(|value| value.baseline.title))],
 								),
 								Gui.column(
@@ -107,8 +107,7 @@ main = || Ui.state(
 										Gui.test_id("note-status"),
 										Gui.style_s(
 											dirty.map(
-												|changed| {
-													..Gui.style_default,
+												|changed| Gui.Style.{
 													padding: 4,
 													font_size: 13,
 													foreground: if changed {
@@ -125,11 +124,11 @@ main = || Ui.state(
 							],
 						),
 						Gui.row(
-							[Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True, gap: 0 })],
+							[Gui.style({ width: Fill, height: Fill, grow: True, gap: 0 })],
 							[
-								Gui.column([Gui.style({ ..Gui.style_default, grow: True })], []),
+								Gui.column([Gui.style({ grow: True })], []),
 								Gui.column(
-									[Gui.style({ ..Gui.style_default, width: Px(740), height: Fill })],
+									[Gui.style({ width: Px(740), height: Fill })],
 									[
 										# The editor's identity is this document's lifetime. Typing, saving,
 										# and the temporary disabled state never change it; every accepted
@@ -141,21 +140,21 @@ main = || Ui.state(
 												[
 													Gui.placeholder("Start writing…"),
 													Gui.disabled_s(state.map(|value| !Session.can_edit(value.phase) or value.close != Session.CloseState.NoClose)),
-													Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True, gap: 4 }),
+													Gui.style({ width: Fill, height: Fill, grow: True, gap: 4 }),
 												],
 												session.on_str(Session.edit),
 											),
 										),
 									],
 								),
-								Gui.column([Gui.style({ ..Gui.style_default, grow: True })], []),
+								Gui.column([Gui.style({ grow: True })], []),
 							],
 						),
 						Gui.row(
-							[Gui.style({ ..Gui.style_default, gap: 24 })],
+							[Gui.style({ gap: 24 })],
 							[
 								Gui.column(
-									[Gui.test_id("note-summary"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(theme.text_secondary) })],
+									[Gui.test_id("note-summary"), Gui.style({ font_size: 13, foreground: Rgb(theme.text_secondary) })],
 									[Gui.text_s(body.map(|text| Document.counts_text(Document.counts(text))))],
 								),
 							],
@@ -163,10 +162,10 @@ main = || Ui.state(
 						# Conditional problem/dialog rows live in one trailing gap-0
 						# wrapper so their empty states cost no vertical rhythm.
 						Gui.column(
-							[Gui.style({ ..Gui.style_default, gap: 0 })],
+							[Gui.style({ gap: 0 })],
 							[
 								Gui.column(
-									[Gui.test_id("note-problem"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(theme.danger) })],
+									[Gui.test_id("note-problem"), Gui.style({ font_size: 13, foreground: Rgb(theme.danger) })],
 									[
 										Gui.text_s(
 											state.map(
@@ -199,7 +198,7 @@ main = || Ui.state(
 										{ label: "Discard your changes?", on_dismiss: session.on_unit(Session.cancel) },
 										[
 											Gui.test_id("discard-confirmation"),
-											Gui.style({ ..Gui.style_default, padding: 16, gap: theme.gap, background: Rgb(theme.card), radius: theme.radius }),
+											Gui.style({ padding: 16, gap: theme.gap, background: Rgb(theme.card), radius: theme.radius }),
 										],
 										[
 											Gui.heading("Discard your changes?"),

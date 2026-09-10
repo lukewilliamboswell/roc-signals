@@ -1,7 +1,7 @@
 # Evidence for the open GUI examples backlog
 
-[Current backlog](../../gui-examples-backlog.md). These captures and probes
-support its open items; they are not a screenshot approval baseline or a claim
+[Current backlog](../../gui-examples-backlog.md). These captures support its
+open items; they are not a screenshot approval baseline or a claim
 that every GUI state has been reviewed. Retire planning evidence when the
 relevant regression coverage and fixes land.
 
@@ -30,11 +30,10 @@ libengine.a             88d2f2717f60c9751b21c00dfde518d2985ee2e85c7162cd449cb447
 
 The imported-test counts overlap; do not sum them as distinct tests.
 All 42 maintained semantic specs passed at the reviewed commit. Four additional
-diagnostics failed at their intended assertions. The two editor-lifetime
-diagnostics have since been fixed; maintained specs in
-`examples-gui/notes-editor/specs/` and `examples-gui/task-board/specs/` now
-cover that behavior, so only the two Windows-path diagnostics remain below. The codec probe passes five tests and the
-cross-module style probe passes six. `zig build run-check-tidy` passed.
+diagnostics failed at their intended assertions. All four have since been fixed and their cases live in the maintained suites.
+Both pinned-compiler probes have been retired too: the behaviour the codec probe
+characterised is asserted by the theme tests, and the style probe's by the
+platform's own nominal style tests. `zig build run-check-tidy` passed.
 
 For setup and staging, use the maintained
 [contributor workflow](../../../www/content/docs/contributing.md).
@@ -114,46 +113,3 @@ maintained suites under `examples-gui/notes-editor/specs/`,
 Their scope counts prove editor *replacement*, not native undo isolation; that
 distinction is still real and is why GUI-16 asks for native interaction
 coverage.
-
-## Pinned Roc probes: GUI-08
-
-```sh
-"$ROC_BIN" test --no-cache planning/gui-examples-review/2026-09-10/probes/StyleProbe.roc
-```
-
-The GUI-07 codec probe has been retired. Everything it characterized — builtin
-JSON syntax, snake_case field names, leading-zero rejection, numeric bounds, and
-duplicate-key handling — is now asserted by the maintained tests in
-`examples-gui/counter/Theme.roc`.
-
-[StyleApi.roc](probes/StyleApi.roc) and [StyleProbe.roc](probes/StyleProbe.roc)
-verify cross-module transparent nominal defaults, explicit zero, record update,
-shorthand with a comma, and equality. They model the type/call-boundary idea,
-not the complete platform `style_s`/ABI migration.
-
-Additional rejected call forms during investigation:
-
-```roc
-StyleApi.style({})             # {} does not coerce to StyleApi.Style on this pin.
-padding = 16.U32
-StyleApi.style({ padding })    # This is a block returning U32, not a record.
-```
-
-`StyleApi.style(StyleApi.Style.{})` and
-`StyleApi.style({ padding, })` pass. The one-field block/record distinction is
-documented language syntax, not a compiler defect to work around in the GUI API.
-
-Local primary references inspected in the sibling `roc` checkout at
-`53863b31f951daa8307ccd22f343bf7e39870046`:
-
-- `docs/langref/static-dispatch.md`: derived `parser_for`, `encoder_for`, and
-  nominal opt-in; structural derivation.
-- `docs/langref/types.md`: transparent nominal record literal construction.
-- `docs/langref/expressions.md`: `{ x }` is a block, unlike a record literal.
-- `test/cli/BoxyOptionalRecordFields.roc`: nominal fields with `??` defaults.
-- `test/cli/JsonOptionalFieldKinds.roc`: defaulted JSON fields and nominal hooks.
-
-The dedicated `records.md` default-field and `parsers.md` reference sections
-are still placeholders in that checkout; executable probes on the actual pin
-are the evidence for readiness. No compiler or application fixes were made as
-part of this triage.

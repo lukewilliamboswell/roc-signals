@@ -69,10 +69,25 @@ all 39 specs, and confirmed rendering for every app.
 ## Controls and layout
 
 `Gui.row`, `Gui.column`, and `Gui.panel` take an attribute list followed by a
-child list. `Gui.style` accepts a complete record based on `Gui.style_default`;
-`Gui.style_s` changes that record through normal signal propagation. Each element
-accepts one style. A supplied style replaces the control's defaults, so include
-padding or borders explicitly when you want them.
+child list. `Gui.style` accepts a complete presentation record; `Gui.style_s`
+changes that record through normal signal propagation. Each element accepts one
+style. A supplied style replaces the control's defaults, so include padding or
+borders explicitly when you want them.
+
+`Gui.Style` is a nominal record whose every field has its neutral default, so a
+style literal names only the fields it sets and the value is still complete:
+`Gui.style({ padding: 16, width: Fill })`. Omitting a field is not "unset" - it
+selects the default, and an explicit `gap: 0` overrides the default `8`.
+Omitting the style attribute altogether still selects the control helper's own
+defaults; there is no partial merging between a supplied style and those.
+`Gui.style_default` remains the complete neutral value, useful when you want it
+by name, and `{ ..some_style, gap: 4 }` updates an existing style.
+
+Two spellings are worth knowing. A single-field style needs the trailing comma,
+because `{ padding }` is a block expression and `{ padding, }` is a record. And
+where the expected type is not already known - inside the closure passed to
+`Signal.map`, for instance - construct the type by name:
+`Gui.style_s(state.map(|value| Gui.Style.{ padding: 12, }))`.
 
 Styles specify logical-pixel dimensions, spacing, padding, colors, borders,
 radius, font size, and overflow. Lengths are `Auto`, `Fill`, or `Px(value)`;
@@ -148,7 +163,7 @@ navigation while open.
 `Gui.image({ source, label }, attrs)` renders a picture from a relative path
 inside the host's assets root, sized and rounded by its style, for example
 `Gui.image({ source: "avatars/maya.png", label: "Maya avatar" },
-[Gui.style({ ..Gui.style_default, width: Px(24), height: Px(24), radius: 24 })])`.
+[Gui.style({ width: Px(24), height: Px(24), radius: 24 })])`.
 Launch the host with `--assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
 choose the root; the default is `assets/` beside the executable. Absolute
 paths, `..` traversal, URIs, and symbolic links never resolve, and a missing or

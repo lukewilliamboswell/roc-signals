@@ -21,7 +21,6 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 
 | ID | Priority | Work item | Evidence | Primary owner |
 | --- | --- | --- | --- | --- |
-| GUI-08 | P2 | Defaulted nominal `Gui.Style` records | Pinned compiler probes | Public Roc GUI API |
 | GUI-10 | P2 | Explorer: fit the inspector beside the list at the 360-pixel minimum width | Regression bounds at 360x600 | Explorer layout; GUI style protocol |
 | GUI-13 | P2 | Give cards and event rows coherent activation and selection | Screenshots + source | Examples + GUI interaction API |
 | GUI-16 | P2 | Extend desktop regression coverage to Linux and richer environments | Executed on macOS only | GUI tests/tooling |
@@ -34,44 +33,6 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 | GUI-24 | P3 | Optional visual refinements, after operability | Design | Examples + narrowly justified API work |
 
 ## Correctness and operability
-
-## Roc and public API ergonomics
-
-### GUI-08 — Defaulted nominal styles (Richard Feldman's suggestion)
-
-Currently `Gui.Style` aliases the complete structural `Presentation` record,
-so callers repeatedly spread `Gui.style_default`
-([Gui.roc](../platform-gui/Gui.roc), `Presentation`, `Style`, `style_default`).
-A transparent nominal record with `??` field defaults removes this noise while
-still materializing a complete presentation value.
-
-The cross-module [six-test probe](gui-examples-review/2026-09-10/probes/StyleProbe.roc)
-passes on the pin: omitted defaults, explicit zero, record update, nominal
-equality, and a single-field shorthand with a trailing comma. Use numeric
-literal suffixes such as `16.U32` when constraining a numeric value.
-
-```roc
-# Proposed call forms, after migrating the public Style type:
-Gui.style({ padding: 16.U32 })
-padding = 16.U32
-Gui.style({ padding, })
-```
-
-Syntax qualification: `{ padding }` is a **block expression**, not a record,
-in the current language reference and pinned compiler. `{ padding, }` works.
-Bare `style({})` also failed in the probe; explicit nominal construction
-(`StyleApi.Style.{}` in the probe) works. Do not promise the exact empty/shorthand
-spelling without testing it. These results do not certify a full GUI migration.
-
-Acceptance: default every presentation field to the existing neutral value;
-derive `is_eq` for the nominal style; test `style_s` and mapped/state-backed
-styles on the real platform, including equal-value pruning and typed records
-constructed outside a call. Update public docs and all affected examples.
-Audit source compatibility and give a clear migration for pretyped structural
-records. Omitted style must still select the control helper's defaults;
-supplying a style must still replace the **complete** record. No implicit
-partial merging or special “unset” semantics. Preserve the encoded v2 fields
-and validation; a nominal type change alone should not change the wire format.
 
 ## Visual and interaction backlog
 
@@ -214,7 +175,7 @@ its invariant failures “spike” errors.
 Acceptance: extract cohesive History/Document/Workflow/view helpers while
 keeping sources granular and ownership obvious. Do not collapse independent
 state into a coarse model merely to reduce nesting. Make the first example
-about Signals, with record noise reduced by GUI-08 now that GUI-07 has removed
+about Signals, now that GUI-07 has removed
 the handwritten JSON grammar. Prefer existing language facilities and clear numeric literals such as
 `16.U32`; keep type annotations where they communicate record/nominal contracts.
 
@@ -266,11 +227,9 @@ mandatory spacing/color dogma is approved by this backlog.
 ## Delivery sequence
 
 1. Add GUI-16/17 regressions alongside each fix, not only at the end.
-2. Migrate GUI-08. This simplifies later example edits without needing new
-   rendering semantics.
-3. Apply current-API layout/readability fixes (GUI-10/11, GUI-13, GUI-18); use evidence
+2. Apply current-API layout/readability fixes (GUI-10/11, GUI-13, GUI-18); use evidence
    from them to scope GUI-19/20/23.
-4. Finish structure/docs and optional polish (GUI-21/22/24), then recapture the
+3. Finish structure/docs and optional polish (GUI-21/22/24), then recapture the
    same states. Remove resolved work from this queue; do not treat a fresh
    screenshot alone as proof of lifecycle, performance, or cross-OS correctness.
 
