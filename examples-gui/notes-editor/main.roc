@@ -1,7 +1,7 @@
 app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc", unicode: "../../vendor/unicode/main.roc" }
 
 import pf.Elem exposing [Elem]
-import pf.Gui
+import pf.Gui exposing [Px]
 import pf.Signal
 import pf.Ui
 import Document
@@ -127,7 +127,7 @@ main = || Ui.state(
 								[
 									Gui.column({ grow: True }, []),
 									Gui.column(
-										{ width: Px(740), height: Fill },
+										{ width: 740.Px, height: Fill },
 										[
 											Ui.switch(
 												session.signal().map(|state| state.document_generation),

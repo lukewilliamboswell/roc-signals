@@ -6,7 +6,7 @@ import Session
 import pf.Files
 import "assets/manifest.json" as manifest_json : Str
 import pf.Elem exposing [Elem]
-import pf.Gui
+import pf.Gui exposing [Px]
 import pf.Rows
 import pf.Signal
 import pf.Ui
@@ -22,7 +22,7 @@ asset_entries = Manifest.entries(manifest_json)
 ## missing glyph file renders the host's neutral placeholder box instead.
 kind_glyph : Explorer.Kind -> Elem
 kind_glyph = |kind| {
-	glyph = |source, label| Gui.image({ source, label, width: Px(16), height: Px(16), radius: 3 })
+	glyph = |source, label| Gui.image({ source, label, width: 16.Px, height: 16.Px, radius: 3 })
 	match kind {
 		Directory => glyph("glyphs/folder.png", "Folder glyph")
 		File => glyph("glyphs/file.png", "File glyph")
@@ -93,7 +93,7 @@ entry_row = |row, handles, selected, ready| {
 			),
 			Gui.row(
 				{
-					width: Px(90),
+					width: 90.Px,
 					padding: 4,
 					gap: 6,
 					font_size: 13,
@@ -107,7 +107,7 @@ entry_row = |row, handles, selected, ready| {
 			),
 			Gui.column(
 				{
-					width: Px(90),
+					width: 90.Px,
 					padding: 4,
 					font_size: 13,
 					foreground: Rgb(0x93A9B6),
@@ -140,7 +140,7 @@ inspect_view = |handles| {
 	Gui.panel(
 		{
 			test_id: "file-details",
-			width: Px(340),
+			width: 340.Px,
 			gap: 12,
 			padding: 16,
 			background: Rgb(0x283A47),
@@ -441,7 +441,7 @@ explorer_view = |handles| {
 						value: model.map(|state| state.query),
 						placeholder: "Filter this folder…",
 						disabled: ready.map(|value| !value),
-						width: Px(240),
+						width: 240.Px,
 						gap: 4,
 					}, handles.model.on_str(|state, text| { ..state, query: text })),
 					Gui.action_button({

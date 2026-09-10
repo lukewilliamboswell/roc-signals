@@ -1,7 +1,7 @@
 app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc" }
 
 import pf.Elem exposing [Elem]
-import pf.Gui
+import pf.Gui exposing [Px]
 import pf.Signal
 import pf.Ui
 import Feed
@@ -23,7 +23,7 @@ entry_view = |row, selected| {
 			font_family: feed_font,
 			test_id: "event-${key}",
 			selected: Signal.select(selected.signal(), key),
-			height: Px(44),
+			height: 44.Px,
 			gap: 10,
 			overflow_x: Clip,
 			overflow_y: Clip,
@@ -34,7 +34,7 @@ entry_view = |row, selected| {
 				{
 					changes: row.signal().map(
 						|entry| Gui.Style.{
-							width: Px(70),
+							width: 70.Px,
 							height: Fill,
 							overflow_x: Clip,
 							overflow_y: Clip,
@@ -51,7 +51,7 @@ entry_view = |row, selected| {
 			),
 			Gui.column(
 				{
-					width: Px(110),
+					width: 110.Px,
 					height: Fill,
 					overflow_x: Clip,
 					overflow_y: Clip,
@@ -251,7 +251,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 						label: "Filter activity",
 						value: query.signal(),
 						placeholder: "Filter activity…",
-						width: Px(240),
+						width: 240.Px,
 						gap: 4,
 					}, query.on_str(|_, value| value)),
 					Gui.checkbox({ label: "Errors only", checked: errors_only.signal(), enabled: replay }, errors_only.on_bool(|_, value| value)),
@@ -291,7 +291,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 					),
 					Gui.panel(
 						{
-							width: Px(340),
+							width: 340.Px,
 							padding: 16,
 							gap: 12,
 							radius: 8,
@@ -321,7 +321,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							Ui.when(
 								session.map(|state| !state.lines.partial.is_empty()),
 								|| Gui.column(
-									{ gap: 4, height: Px(100), overflow_x: Scroll, overflow_y: Scroll },
+									{ gap: 4, height: 100.Px, overflow_x: Scroll, overflow_y: Scroll },
 									[
 										Gui.column(
 											{ font_size: 13, foreground: Rgb(0xA9BFCC) },

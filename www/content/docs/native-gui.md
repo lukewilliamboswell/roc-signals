@@ -86,7 +86,9 @@ outside the call, for example `Gui.PanelProps.{ padding: 4 }`, because only a
 literal passed directly to the control absorbs its defaults.
 
 Styles specify logical-pixel dimensions, spacing, padding, colors, borders,
-radius, font size, and overflow. Lengths are `Auto`, `Fill`, or `Px(value)`;
+radius, font size, and overflow. Lengths are `Auto`, `Fill`, or pixels written
+as a typed number literal, `380.Px`, with `Px` imported from `Gui`
+(`import pf.Gui exposing [Px]`); `Px(value)` is the same value for a computed number.
 colors are `Default` or `Rgb(value)`. Zero font size and default colors inherit.
 `Fill` means the parent's content box: a Fill child stays inside the parent's
 padding and shares the remaining space with its siblings, and its own content
@@ -157,7 +159,7 @@ navigation while open.
 
 `Gui.image({ source, label, ... })` renders a picture from a relative path
 inside the host's assets root, sized and rounded by its style, for example
-`Gui.image({ source: "avatars/maya.png", label: "Maya avatar", width: Px(24), height: Px(24), radius: 24 })`.
+`Gui.image({ source: "avatars/maya.png", label: "Maya avatar", width: 24.Px, height: 24.Px, radius: 24 })`.
 Launch the host with `--assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
 choose the root; the default is `assets/` beside the executable. Absolute
 paths, `..` traversal, URIs, and symbolic links never resolve, and a missing or

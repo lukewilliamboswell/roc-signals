@@ -6,7 +6,7 @@ import Manifest
 import pf.Files
 import "assets/manifest.json" as manifest_json : Str
 import pf.Elem exposing [Elem]
-import pf.Gui
+import pf.Gui exposing [Px]
 import pf.Rows
 import pf.Signal
 import pf.Ui
@@ -431,7 +431,7 @@ detail_view = |handles|
 	Gui.panel(
 		{
 			test_id: "task-detail",
-			width: Px(320),
+			width: 320.Px,
 			padding: 16,
 			gap: 12,
 			background: Rgb(0x283A47),
@@ -468,7 +468,7 @@ detail_view = |handles|
 										),
 									],
 								),
-								edit_field(|label, value, disabled, msg| Gui.textarea({ label, value, disabled, height: Px(150) }, msg), handles, column, "Task notes", |task, notes| { ..task, notes }, |task| task.notes),
+								edit_field(|label, value, disabled, msg| Gui.textarea({ label, value, disabled, height: 150.Px }, msg), handles, column, "Task notes", |task, notes| { ..task, notes }, |task| task.notes),
 								Gui.text_s(handles.editor.signal().map(|editor| "Priority: ${editor.task.priority.to_str()}")),
 								{
 									priority_key = handles.editor.signal().map(|editor| editor.task.priority.to_str())
@@ -501,7 +501,7 @@ new_task_form = |handles| {
 				value: handles.draft.signal(),
 				placeholder: "New task title…",
 				disabled: handles.edit_disabled,
-				width: Px(260),
+				width: 260.Px,
 				gap: 4,
 			}, handles.draft.on_str(|_, value| value)),
 			Gui.action_button(
@@ -600,7 +600,7 @@ board_view = |handles| {
 								label: "Filter tasks",
 								value: handles.filter.signal(),
 								placeholder: "Filter tasks…",
-								width: Px(240),
+								width: 240.Px,
 								gap: 4,
 							}, handles.filter.on_str(|_, text| text)),
 						],

@@ -1,7 +1,7 @@
 app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc" }
 
 import pf.Elem exposing [Elem]
-import pf.Gui
+import pf.Gui exposing [Px]
 import pf.Signal
 import pf.Ui
 import Theme
@@ -42,7 +42,7 @@ main = || Ui.state(
 				),
 				Gui.panel(
 					{
-						width: Px(380),
+						width: 380.Px,
 						padding: 24,
 						gap: 20,
 						border_width: 1,

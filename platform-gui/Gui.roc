@@ -3,7 +3,6 @@ import Html
 import Node
 import Signal exposing [Signal]
 
-Length : [Auto, Fill, Px(U32)]
 
 Color : [Default, Rgb(U32)]
 
@@ -45,7 +44,7 @@ native_drop_target_field : Node.BoolField
 native_drop_target_field = { id: 5 }
 # END GENERATED PROTOCOL
 
-dimension : Length -> { kind : U32, value : U32 }
+dimension : Gui.Length -> { kind : U32, value : U32 }
 dimension = |length| match length {
 	Auto => { kind: 0, value: 0 }
 	Fill => { kind: 1, value: 0 }
@@ -292,7 +291,23 @@ Gui := [].{
 	}.{
 		is_eq : _
 	}
-	Length : Length
+	## A logical-pixel dimension. A number literal in a `Length` position is
+	## pixels, written explicitly as `380.Px`; `Px(380)` is the same value.
+	Length := [Auto, Fill, Px(U32)].{
+		is_eq : _
+
+		from_numeral : Numeral -> Try(Length, [InvalidNumeral(Str)])
+		from_numeral = |numeral| {
+			Pixels : U32
+			match Pixels.from_numeral(numeral) {
+				Ok(value) => Ok(Px(value))
+				Err(err) => Err(err)
+			}
+		}
+	}
+
+	## Types a number literal as pixels: `width: 380.Px`.
+	Px : Length
 	Color : Color
 	Overflow : Overflow
 	Msg : Node.Msg

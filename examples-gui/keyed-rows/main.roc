@@ -1,7 +1,7 @@
 app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc" }
 
 import pf.Elem exposing [Elem]
-import pf.Gui
+import pf.Gui exposing [Px]
 import pf.Rows
 import pf.Signal
 import pf.Ui
@@ -55,7 +55,7 @@ row_view = |row, selected| {
 						label: "Draft ${key}",
 						value: draft.signal(),
 						placeholder: "Type a draft…",
-						width: Px(240),
+						width: 240.Px,
 						gap: 4,
 					}, draft.on_str(|_, value| value)),
 					Gui.column(
@@ -105,7 +105,7 @@ main = || Ui.state(
 									visible.signal(),
 									|| {
 										Gui.column(
-											{ gap: 12, width: Px(520) },
+											{ gap: 12, width: 520.Px },
 											[
 												Gui.column(
 													{ font_size: 13, foreground: Rgb(0x93A9B6) },
