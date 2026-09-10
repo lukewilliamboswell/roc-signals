@@ -6,7 +6,7 @@ Let a native application switch its complete visual style at runtime — for
 example between a light and a dark palette — using ordinary application state
 and the existing styling surface. A theme is app data: a record of colors held
 in a signal, from which every element derives its `Gui.Style` through the
-`overrides` props field. No host theme protocol, no new theme record at the boundary, and
+`changes` props field. No host theme protocol, no new theme record at the boundary, and
 no host-owned palette registry. The host stays a renderer of explicit,
 per-element presentation, as [design.md](../design.md) already frames it.
 
@@ -18,7 +18,7 @@ adding a parallel theming channel.
 
 ## The pattern that works today
 
-The `overrides ?: Signal(Style)` field on every control's props record
+The `changes ?: Signal(Style)` field on every control's props record
 ([platform-gui/Gui.roc](../platform-gui/Gui.roc)) already delivers
 reactive presentation through ordinary typed, equality-pruned signal
 propagation ([docs/native-gui-protocol.md](../docs/native-gui-protocol.md)).
@@ -59,8 +59,8 @@ main = || Ui.state(
 			},
 		)
 		Gui.column(
-			{ overrides: theme.map(|t| Gui.Style.{ padding: 32, gap: 20, background: t.surface, foreground: t.content }) },
-			[Gui.panel({ overrides: panel_style(theme) }, [Gui.text("Themed content")])],
+			{ changes: theme.map(|t| Gui.Style.{ padding: 32, gap: 20, background: t.surface, foreground: t.content }) },
+			[Gui.panel({ changes: panel_style(theme) }, [Gui.text("Themed content")])],
 		)
 	},
 )
@@ -200,7 +200,7 @@ version-2 fields.
    the sketch above. It demonstrates the pattern and makes every gap in the
    table visible on screen. Documentation: extend
    [www/content/docs/native-gui.md](../www/content/docs/native-gui.md) with the
-   pattern (no example there uses `overrides` today).
+   pattern (no example there uses `changes` today).
 2. **Button attributes.** `Gui.action_button` carries the button's props;
    migrate examples and specs together.
 3. **Style version 2.** Roc encoder, Zig validation, extern struct extension,

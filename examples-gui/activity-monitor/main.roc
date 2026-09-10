@@ -32,7 +32,7 @@ entry_view = |row, selected| {
 			Gui.button("Inspect ${key}", selected.on_unit(|_| key)),
 			Gui.column(
 				{
-					overrides: row.signal().map(
+					changes: row.signal().map(
 						|entry| Gui.Style.{
 							width: Px(70),
 							height: Fill,
@@ -108,7 +108,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 			),
 			Gui.panel(
 				{
-					overrides: session.map(
+					changes: session.map(
 						|state| Gui.Style.{
 							padding: 8,
 							radius: 6,

@@ -103,7 +103,7 @@ main = || Ui.state(
 									Gui.column(
 										{
 											test_id: "note-status",
-											overrides: view.map(
+											changes: view.map(
 												|value| {
 													dirty = Document.is_dirty({ draft: Session.draft(value.state, value.body), baseline: value.state.baseline })
 													Gui.Style.{

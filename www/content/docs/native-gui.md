@@ -77,7 +77,7 @@ padding and border unless the literal sets them. Attributes such as `test_id`,
 `label`, `selected`, `enabled`, `disabled`, `shortcuts`, `drag_source`, and
 `on_drop` live in the same record and cost nothing when omitted.
 
-`overrides` takes a `Signal(Gui.Style)` and replaces the static style fields
+`changes` takes a `Signal(Gui.Style)` and replaces the static style fields
 through normal signal propagation. A record built inside a `Signal.map`
 transform is constructed explicitly as `Gui.Style.{ ... }` so its omitted
 fields still take their defaults; the same applies to a props record built

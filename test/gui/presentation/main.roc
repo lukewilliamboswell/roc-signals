@@ -13,7 +13,7 @@ main = || Ui.state(False, |enabled| {
 			Gui.row({
 				test_id: "styled-row",
 				selected: enabled.signal(),
-				overrides: enabled.signal().map(|value| Gui.Style.{ padding: 12, gap: 16, width: Fill, background: if value { Rgb(1193046) } else { Rgb(2236962) } }),
+				changes: enabled.signal().map(|value| Gui.Style.{ padding: 12, gap: 16, width: Fill, background: if value { Rgb(1193046) } else { Rgb(2236962) } }),
 			}, [
 				Gui.action_button({
 					caption: Signal.const("Run action"),

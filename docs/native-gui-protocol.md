@@ -114,7 +114,7 @@ misstate its hit area.
 The public `Gui.Style` contains typed lengths, colors and overflow tags. Only the
 platform encoder creates records. `Gui.row`/`column`/`panel` choose direction;
 each control's props record carries the remaining fields with that control's
-defaults, and an `overrides` signal replaces them. Each element publishes one
+defaults, and a `changes` signal replaces them. Each element publishes one
 style.
 The style signal is an ordinary typed, equality-pruned signal; there is no
 native styling observer graph.

@@ -141,7 +141,7 @@ encode_fonts = |fonts| {
 ## One control's fully resolved attributes, ready for native lowering.
 Common : {
 	style : Gui.Style,
-	overrides : [None, Some(Signal(Gui.Style))],
+	changes : [None, Some(Signal(Gui.Style))],
 	test_id : [None, Some(Str)],
 	label : [None, Some(Str)],
 	placeholder : [None, Some(Str)],
@@ -188,11 +188,11 @@ native_event = |name, msg, key_chord| Node.Attr.On({
 	key_chord,
 })
 
-## Lower resolved attributes to native descriptors. An `overrides` signal
+## Lower resolved attributes to native descriptors. A `changes` signal
 ## replaces the static style; every other attribute lowers only when present.
 lower_common : U32, Common -> List(Node.Attr)
 lower_common = |direction, common| {
-	style = match common.overrides {
+	style = match common.changes {
 		Some(value) => signal_text(native_style_field, value.map(|record| encode_style(direction, record)))
 		None => style_attr(direction, common.style)
 	}
@@ -263,14 +263,14 @@ lower_common = |direction, common| {
 ## literal names only what it changes: `Gui.column({ test_id: "count", gap: 4 }, children)`.
 ## The style fields carry that control's own presentation defaults. Optional
 ## attributes such as `test_id`, `selected`, or `on_drop` cost nothing when
-## omitted. An `overrides` signal supplies the whole style reactively and
-## replaces the static style fields.
+## omitted. A `changes` signal supplies the whole style reactively; each value
+## it publishes replaces the static style fields wholesale.
 ## A props record built outside the call, or inside a `Signal.map` transform,
 ## needs an explicit type, such as `Gui.PanelProps.{ ... }`, because only a
 ## literal passed directly to the control absorbs the defaults.
 Gui := [].{
 	## Native presentation record with defaults for every field. Use it for
-	## `overrides` signals: `signal.map(|value| Gui.Style.{ padding: 12 })`.
+	## `changes` signals: `signal.map(|value| Gui.Style.{ padding: 12 })`.
 	## Zero font size and Default colors inherit from the host. Dimensions,
 	## spacing and font size are logical pixels, bounded at 16384.
 	Style := {
@@ -330,7 +330,7 @@ Gui := [].{
 		font_size : U32 ?? 0,
 		overflow_x : Overflow ?? Visible,
 		overflow_y : Overflow ?? Visible,
-		overrides ?: Signal(Style),
+		changes ?: Signal(Style),
 		test_id ?: Str,
 		font_family ?: Str,
 		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
@@ -360,7 +360,7 @@ Gui := [].{
 		font_size : U32 ?? 0,
 		overflow_x : Overflow ?? Visible,
 		overflow_y : Overflow ?? Visible,
-		overrides ?: Signal(Style),
+		changes ?: Signal(Style),
 		test_id ?: Str,
 		font_family ?: Str,
 		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
@@ -391,7 +391,7 @@ Gui := [].{
 		font_size : U32 ?? 0,
 		overflow_x : Overflow ?? Visible,
 		overflow_y : Overflow ?? Visible,
-		overrides ?: Signal(Style),
+		changes ?: Signal(Style),
 		test_id ?: Str,
 		font_family ?: Str,
 		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
@@ -423,7 +423,7 @@ Gui := [].{
 		font_size : U32 ?? 0,
 		overflow_x : Overflow ?? Visible,
 		overflow_y : Overflow ?? Visible,
-		overrides ?: Signal(Style),
+		changes ?: Signal(Style),
 		test_id ?: Str,
 		font_family ?: Str,
 		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
@@ -457,7 +457,7 @@ Gui := [].{
 		font_size : U32 ?? 0,
 		overflow_x : Overflow ?? Visible,
 		overflow_y : Overflow ?? Visible,
-		overrides ?: Signal(Style),
+		changes ?: Signal(Style),
 		test_id ?: Str,
 		font_family ?: Str,
 		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
@@ -490,7 +490,7 @@ Gui := [].{
 		font_size : U32 ?? 0,
 		overflow_x : Overflow ?? Visible,
 		overflow_y : Overflow ?? Visible,
-		overrides ?: Signal(Style),
+		changes ?: Signal(Style),
 		test_id ?: Str,
 		font_family ?: Str,
 		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
@@ -524,7 +524,7 @@ Gui := [].{
 		font_size : U32 ?? 0,
 		overflow_x : Overflow ?? Visible,
 		overflow_y : Overflow ?? Visible,
-		overrides ?: Signal(Style),
+		changes ?: Signal(Style),
 		test_id ?: Str,
 		font_family ?: Str,
 		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
@@ -558,7 +558,7 @@ Gui := [].{
 		font_size : U32 ?? 0,
 		overflow_x : Overflow ?? Visible,
 		overflow_y : Overflow ?? Visible,
-		overrides ?: Signal(Style),
+		changes ?: Signal(Style),
 		test_id ?: Str,
 		font_family ?: Str,
 		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
@@ -590,7 +590,7 @@ Gui := [].{
 		font_size : U32 ?? 0,
 		overflow_x : Overflow ?? Visible,
 		overflow_y : Overflow ?? Visible,
-		overrides ?: Signal(Style),
+		changes ?: Signal(Style),
 		test_id ?: Str,
 		font_family ?: Str,
 		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
@@ -622,7 +622,7 @@ Gui := [].{
 		font_size : U32 ?? 0,
 		overflow_x : Overflow ?? Visible,
 		overflow_y : Overflow ?? Visible,
-		overrides ?: Signal(Style),
+		changes ?: Signal(Style),
 		test_id ?: Str,
 		font_family ?: Str,
 		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
@@ -636,15 +636,15 @@ Gui := [].{
 
 	## Lay out children horizontally.
 	row : RowProps, List(Elem) -> Elem
-	row = |p, children| Html.div(lower_common(0, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
+	row = |p, children| Html.div(lower_common(0, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
 
 	## Lay out children vertically.
 	column : ColumnProps, List(Elem) -> Elem
-	column = |p, children| Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
+	column = |p, children| Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
 
 	## Group content in a padded, bordered vertical panel.
 	panel : PanelProps, List(Elem) -> Elem
-	panel = |p, children| Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
+	panel = |p, children| Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
 
 	## A native close request enters the ordinary event graph. KeepOpen cancels
 	## it, AwaitDecision retains one pending request, and Close completes that
@@ -688,7 +688,7 @@ Gui := [].{
 	dialog : DialogProps, List(Elem) -> Elem
 	dialog = |p, children| {
 		escape = { chord: { key: "Escape", control: False, shift: False, alt: False, meta: False }, msg: p.on_dismiss }
-		common = { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: Some(p.label), placeholder: None }
+		common = { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: Some(p.label), placeholder: None }
 		Elem.Element({
 			namespace: Html,
 			tag: "dialog",
@@ -714,7 +714,7 @@ Gui := [].{
 				}
 			}",
 		)
-		Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }).append(signal_text(native_viewport_field, encoded)), children)
+		Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }).append(signal_text(native_viewport_field, encoded)), children)
 	}
 
 	## Render an image from a relative path inside the host's assets root.
@@ -729,7 +729,7 @@ Gui := [].{
 		Elem.Element({
 			namespace: Html,
 			tag: "img",
-			attrs: lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: Some(p.label), placeholder: None }).append(Node.Attr.StaticText({ field: native_image_source_field, name: "", value: p.source })),
+			attrs: lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: Some(p.label), placeholder: None }).append(Node.Attr.StaticText({ field: native_image_source_field, name: "", value: p.source })),
 			children: [],
 		})
 	}
@@ -755,24 +755,24 @@ Gui := [].{
 	## Create a button whose caption and availability change independently.
 	action_button : ActionButtonProps, Msg -> Elem
 	action_button = |p, message|
-		Html.action_button_attrs(p.caption, p.enabled.map(|is_enabled| !is_enabled), lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: None, disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), message)
+		Html.action_button_attrs(p.caption, p.enabled.map(|is_enabled| !is_enabled), lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: None, disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), message)
 
 	## Edit one controlled line; the label is a semantic name, not placeholder text.
 	text_input : TextInputProps, Msg -> Elem
 	text_input = |p, message|
-		Html.text_input_attrs(p.label, p.value, lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: opt(p.?placeholder) }), message)
+		Html.text_input_attrs(p.label, p.value, lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: opt(p.?placeholder) }), message)
 
 	## Edit controlled text with hard line breaks and a retained selection.
 	## An explicit height includes caption and padding; the editor fills the rest.
 	## Auto height retains a 320-pixel editing viewport.
 	textarea : TextareaProps, Msg -> Elem
 	textarea = |p, message|
-		Html.textarea_attrs(p.label, p.value, lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: opt(p.?placeholder) }), message)
+		Html.textarea_attrs(p.label, p.value, lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: opt(p.?placeholder) }), message)
 
 	## Toggle a controlled boolean using the ordinary checked-value event route.
 	checkbox : CheckboxProps, Msg -> Elem
 	checkbox = |p, message|
-		Html.checkbox_attrs(p.label, p.checked, lower_common(0, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: None }), message)
+		Html.checkbox_attrs(p.label, p.checked, lower_common(0, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: None }), message)
 }
 
 ## The native default encoding is a canonical v2 record shared with the Zig decoder.

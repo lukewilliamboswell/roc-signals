@@ -230,7 +230,7 @@ task_card = |row, column, handles, selected| {
 							[
 								Gui.column(
 									{
-										overrides: row.map(
+										changes: row.map(
 											|task| Gui.Style.{
 												font_size: 13,
 												foreground: match task.priority {
@@ -847,7 +847,7 @@ document_toolbar = |handles, actions| {
 					Gui.column(
 						{
 							test_id: "board-status",
-							overrides: handles.context.map(
+							changes: handles.context.map(
 								|context| Gui.Style.{
 									padding: 8,
 									font_size: 13,
