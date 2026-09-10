@@ -1,0 +1,5 @@
+# size: 800x600
+# diagnostic: GUI-10. At the smaller supported size the list, inspector and
+# preview do not fit: the file inspector is laid out past the bottom of the
+# window, so a person browsing at that size cannot see what they selected.
+expect-onscreen #file-details

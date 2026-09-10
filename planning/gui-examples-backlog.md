@@ -13,6 +13,7 @@ the supported window sizes.
 
 P1 = data integrity or core workflow obstruction; P2 = substantive correctness,
 usability, or maintainability; P3 = refinement. **All items below are open.**
+GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 “Reproduced” means executed here; “source” means a traced code path;
 “design” means a recommendation, not a demonstrated functional defect.
 
@@ -29,8 +30,7 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 | GUI-13 | P2 | Give cards and event rows coherent activation and selection | Screenshots + source | Examples + GUI interaction API |
 | GUI-14 | P2 | Complete the Counter theme demonstration | Source + baseline screenshot | Counter theme/view |
 | GUI-15 | P2 | Give windows application/document identity | Source | GUI title boundary + examples |
-| GUI-16 | P2 | Add interaction/resize evidence to the GUI verification workflow | Coverage gap | GUI tests/tooling |
-| GUI-17 | P2 | Strengthen example lifecycle and changed-set work assertions | Source/coverage gap | Native semantic specs |
+| GUI-16 | P2 | Extend desktop regression coverage to Linux and richer environments | Executed on macOS only | GUI tests/tooling |
 | GUI-18 | P2 | Make toolbars, inspectors, and tabular content easier to scan | Screenshots; design | Board/Explorer/Activity views |
 | GUI-19 | P2 | Review minimal typography/alignment/truncation capabilities | Source; design | Public GUI style protocol |
 | GUI-20 | P2 | Make shortcut and keyboard behavior discoverable and platform-appropriate | Source; cross-OS validation needed | Examples + native keyboard tests |
@@ -226,40 +226,34 @@ route. Verify close/reopen/lifetime behavior and all native OS integrations.
 
 ### GUI-16 — Desktop regression coverage
 
-`gui_smoke.py` checks that each app mounted/rendered, with one Counter action.
-The maintained semantic specs cannot observe visual clipping or native input
-history ownership. Both missed the board's cross-task undo contamination, and
-initial screenshots alone missed it until a multi-task interaction was
-performed; the semantic specs that now cover the board and Notes editor
-lifetimes assert scope replacement, not native history itself.
+Scripted interaction and capture scenarios now exist for all six apps in
+`examples-gui/<app>/regression/*.script`, run by `scripts/gui_regression.py`
+against the real window through the host's `--script` flag. They cover initial,
+populated, selected, focused, disabled/read-only, modal, error/loading and
+resized states at 1200×820, 800×600, 360×600 and the 360×240 host minimum,
+including equal-text editor replacement (via native undo depth) and the
+reachability of off-screen actions (via recorded layout bounds). Controls are
+named by `test_id` or visible label, never by pixel coordinates; native
+semantic assertions stay in `specs/` and presentation assertions in
+`regression/`. Reports and macOS window captures are written per scenario and
+kept for failures; captures name the window by the process id the driver
+started and never grab a screen region.
 
-Acceptance: deterministic private-display captures/interaction checks for all
-six apps; initial, populated, selected, focused, disabled/read-only, modal,
-error/loading, and resized states chosen by risk. Include equal-text editor
-replacement and reachability of off-screen actions. Test normal framed windows,
-minimum dimensions, representative scaling/font environments, and supported OS
-behavior. Keep native semantic/work assertions separate from GPUI presentation
-checks; use semantic locators or host tests where possible rather than making
-pixel coordinates the long-term interaction contract. Preserve artifacts on
-failure and avoid capturing the user's desktop.
+Five scenarios are landed as stated diagnostics because the defects they
+reproduce are open: GUI-02 (board editor ownership), GUI-03 at both sizes,
+GUI-04 (dialog at 360×600), GUI-10 (explorer inspector at 800×600), and a
+counter reading laid out past the edges of the 360×240 minimum window, which
+was not previously recorded here. A diagnostic that starts passing fails the
+run.
 
-### GUI-17 — Lifecycle/work budgets in the example specs
-
-[Keyed Rows' lifecycle spec](../examples-gui/keyed-rows/specs/lifecycle.scm)
-checks draft values but not exact move/rebuild work or timer disposal/recreation.
-The app's scope clock is an opportunity to teach and test the lifecycle contract.
-Folder selection has some structural assertions; add bounded incidental work
-and larger-dataset comparisons where the example promises changed-set behavior.
-Activity's replay spec already asserts one appended row and no moves/removals:
-retain that coverage and extend it to pruning/filter/follow-tail boundaries.
-
-Acceptance: exact structural counts for moves, disposal and replacement;
-bounded unrelated recomputation on selection; equality no-ops; timer/task
-cancellation and late-result refusal. Separate explicitly whole-dataset work
-(filter/sort/import) from changed-set paths. Use optimized scaling measurements
-only if making performance claims. Add sequence/fuzz oracles for history and
-lifetime boundaries when fixes expose a sequence-dependent class; validate an
-oracle against a deliberately broken implementation as required by AGENTS.md.
+Remaining: the driver has only been executed on Apple Silicon macOS. Window
+captures are macOS-only; the scripts themselves need running under the Linux
+Xvfb/Weston environment `gui_smoke.py --wayland` provides, and wiring into CI
+alongside it. Representative scaling and font environments are not covered:
+scenarios run at the default scale factor with the host's own font selection.
+Real OS keyboard, pointer, IME and window-manager behaviour is still not
+exercised — the scripts dispatch through GPUI's key dispatch inside the
+process, which is not the same as the platform delivering the event.
 
 ### GUI-18 — Hierarchy, density, and information layout
 

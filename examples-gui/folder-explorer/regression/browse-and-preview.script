@@ -1,0 +1,29 @@
+# size: 1200x820
+# Initial, populated, selected, loading and read-only states. The preview field
+# is the example's read-only control, and navigation is what makes Back, Up and
+# the breadcrumbs meaningful; all three are enable/disable rules a screenshot
+# of the first frame cannot check.
+expect-disabled Back
+expect-disabled Up
+expect-disabled "Preview text"
+expect-disabled #text-preview
+expect-count entry: 6
+snapshot initial
+click docs
+wait 700
+expect-enabled Back
+expect-enabled Up
+snapshot inside-docs
+click Back
+wait 700
+expect-disabled Back
+expect-count entry: 6
+click README.md
+wait 700
+expect-selected #entry:README.md
+expect-enabled "Preview text"
+snapshot file-selected
+click "Preview text"
+wait 900
+expect-disabled #text-preview
+snapshot previewed

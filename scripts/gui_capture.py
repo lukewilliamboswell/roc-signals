@@ -58,8 +58,14 @@ def window(helper: Path, pid: int, deadline: float) -> tuple[str, int, int]:
 
 
 def capture(executable: Path, destination: Path, size: str, settle: float,
-            arguments=(), environment=None, timeout: float = 30.0) -> Path:
-    """Runs one application, captures its window, and stops it again."""
+            arguments=(), environment=None, timeout: float = 30.0, ready=None) -> Path:
+    """Runs one application, captures its window, and stops it again.
+
+    ``ready`` lets a caller photograph a state the application reaches after
+    startup: the capture waits for it to return true before settling. A driven
+    application is normally still running when it becomes ready, so the wait is
+    bounded by the same deadline as the window itself.
+    """
     helper = locator()
     destination.parent.mkdir(parents=True, exist_ok=True)
     command = [str(executable.resolve()), "--window-size", size, *arguments]
@@ -67,7 +73,12 @@ def capture(executable: Path, destination: Path, size: str, settle: float,
     application = subprocess.Popen(command, env=environment,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        identifier, width, height = window(helper, application.pid, time.monotonic() + timeout)
+        deadline = time.monotonic() + timeout
+        identifier, width, height = window(helper, application.pid, deadline)
+        while ready is not None and not ready():
+            if time.monotonic() >= deadline:
+                raise SystemExit(f"{executable.name} never reached the state to capture")
+            time.sleep(0.2)
         requested = tuple(int(part) for part in size.lower().split("x"))
         # The recorded window frame includes the titlebar and can differ from the
         # requested content size by a few points of client decoration, but a

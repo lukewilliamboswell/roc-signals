@@ -1,0 +1,33 @@
+# size: 1200x820
+# Initial, loading, populated, selected and filtered states for the streaming
+# example. Replay is the deterministic source, so the event count after a fixed
+# number of steps is a fact the harness can assert rather than a screenshot.
+expect-text Activity Monitor
+expect-disabled "Retry read"
+expect-disabled "Cancel operation"
+expect-count event- 0
+snapshot initial
+click "Step replay"
+wait 400
+click "Step replay"
+wait 400
+click "Step replay"
+wait 400
+expect-count event- 3
+snapshot replayed
+click "Clear history"
+wait 500
+expect-count event- 0
+click "Step replay"
+wait 400
+click "Step replay"
+wait 400
+expect-count event- 2
+type "Filter activity" zzz
+wait 700
+expect-count event- 0
+snapshot filtered-empty
+key ctrl-a
+key backspace
+wait 700
+expect-count event- 2

@@ -1,0 +1,18 @@
+# size: 1200x820
+# Initial and populated state for the smallest example: the count a person can
+# read must follow the actions they took, not only the engine's own signal.
+expect-text 0
+expect-text Counter
+click Increment
+wait 150
+click Increment
+wait 150
+expect-text 2
+snapshot incremented
+click Decrement
+wait 150
+expect-text 1
+click Reset
+wait 150
+expect-text 0
+expect-onscreen #count

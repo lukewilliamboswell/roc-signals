@@ -7,6 +7,8 @@ mod drag;
 mod effects;
 mod file_io;
 mod input;
+mod probe;
+mod script;
 mod scrollbars;
 mod shortcut;
 mod fonts;
@@ -64,7 +66,23 @@ impl NodeView {
 impl Render for NodeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders.set(self.renders.get() + 1);
-        let mut element = div()
+        // Bounds recording is opt-in so that an ordinary run installs no
+        // listener at all. The identities are filled in below, once the child
+        // views for this frame are known; prepaint runs after render returns.
+        let probed = probe::enabled().then(|| Rc::new(std::cell::RefCell::new(Vec::new())));
+        let mut base = div();
+        if let Some(probed) = &probed {
+            let probed: Rc<std::cell::RefCell<Vec<String>>> = probed.clone();
+            base = base.on_children_prepainted(move |bounds, window, _| {
+                probe::record_viewport(window.viewport_size());
+                let identities = probed.borrow();
+                let start = bounds.len().saturating_sub(identities.len());
+                for (identity, bounds) in identities.iter().zip(&bounds[start..]) {
+                    probe::record(identity, *bounds);
+                }
+            });
+        }
+        let mut element = base
             .id(("node", self.node.id))
             .flex()
             .flex_col()
@@ -326,6 +344,16 @@ impl Render for NodeView {
                 (child.read(cx).node.kind != ControlKind::Dialog).then(|| AnyView::from(child.clone()))
             })
             .collect::<Vec<_>>();
+        if let Some(probed) = &probed {
+            *probed.borrow_mut() = (0..self.node.child_count)
+                .filter_map(|rank| {
+                    let id = runtime.engine.child_at(parent, rank);
+                    let child = runtime.nodes.get(&id)?.read(cx);
+                    (child.node.kind != ControlKind::Dialog)
+                        .then(|| child.node.test_id.clone())
+                })
+                .collect();
+        }
         let element = element.children(children);
         if self
             .node
@@ -855,8 +883,19 @@ impl Render for Runtime {
             ));
         for dialog in &self.dialogs.active {
             let id = dialog.id;
+            let probed = probe::enabled()
+                .then(|| self.nodes[&id].read(cx).node.test_id.clone())
+                .filter(|test_id| !test_id.is_empty());
             root = root.child(
                 div()
+                    .when_some(probed, |element, test_id| {
+                        element.on_children_prepainted(move |bounds, window, _| {
+                            probe::record_viewport(window.viewport_size());
+                            if let Some(bounds) = bounds.last() {
+                                probe::record(&test_id, *bounds);
+                            }
+                        })
+                    })
                     .id(("dialog-layer", id))
                     .absolute()
                     .inset_0()
@@ -909,6 +948,175 @@ unsafe extern "C" {
     fn signals_spec_main(argc: i32, argv: *const *const i8) -> i32;
 }
 
+/// Snapshots every rendered control the scripted checks can name.
+///
+/// Iteration is ordered by engine node id so that two runs of the same script
+/// produce byte-identical evidence: a report that reshuffles itself between runs
+/// cannot be diffed, which is most of what makes it useful after a failure.
+#[cfg(not(test))]
+fn control_frame(runtime: &Runtime, window: &mut Window, cx: &App) -> Vec<script::Control> {
+    let mut ids: Vec<u64> = runtime.nodes.keys().copied().collect();
+    ids.sort_unstable();
+    ids.iter()
+        .map(|id| {
+            let view = runtime.nodes[id].read(cx);
+            let node = &view.node;
+            let child_text = (0..node.child_count)
+                .filter_map(|rank| {
+                    let child = runtime.engine.child_at(node.id, rank);
+                    runtime.nodes.get(&child).map(|c| c.read(cx).node.text.clone())
+                })
+                .filter(|text| !text.is_empty())
+                .collect();
+            script::Control {
+                id: node.id,
+                test_id: node.test_id.clone(),
+                kind: format!("{:?}", node.kind),
+                text: node.text.clone(),
+                label: node.label.clone(),
+                value: match &view.input {
+                    Some(input) => input.read(cx).draft().to_string(),
+                    None => node.value.clone(),
+                },
+                child_text,
+                disabled: node.disabled,
+                selected: node.selected,
+                focused: view
+                    .focus_target(cx)
+                    .is_some_and(|focus| focus.contains_focused(window, cx)),
+                activatable: node.kind == ControlKind::Button
+                    || node.role == Role::Checkbox
+                    || node.click != 0,
+                history: view.input.as_ref().map(|input| input.read(cx).undo_depth()),
+            }
+        })
+        .collect()
+}
+
+/// The keystroke a single typed character produces.
+///
+/// Typing goes through GPUI's real key dispatch rather than the editor's
+/// value setter, because the behaviour under test — grouping, selection, and
+/// which document owns the resulting undo entry — only exists on that path.
+#[cfg(not(test))]
+fn typed_keystroke(character: char) -> Keystroke {
+    let key = match character {
+        ' ' => "space".to_string(),
+        other => other.to_lowercase().to_string(),
+    };
+    Keystroke {
+        modifiers: Modifiers {
+            shift: character.is_uppercase(),
+            ..Modifiers::default()
+        },
+        key,
+        key_char: Some(character.to_string()),
+    }
+}
+
+/// Runs one script step against the live window.
+///
+/// Every action resolves its control from the frame that was just observed, so
+/// an action and the assertion after it describe the same application state.
+/// Refusals are returned rather than panicked: a script that clicks a control
+/// the engine has disabled should report that, not abort the process without
+/// writing its evidence.
+#[cfg(not(test))]
+#[derive(Default)]
+struct Deferred {
+    /// A control to focus before any keystrokes are dispatched.
+    focus: Option<FocusHandle>,
+    /// Keystrokes to dispatch once the runtime lease has been released.
+    keystrokes: Vec<Keystroke>,
+    /// Evidence the step produced.
+    snapshot: Option<(String, String)>,
+}
+
+#[cfg(not(test))]
+fn perform(
+    runtime: &mut Runtime,
+    window: &mut Window,
+    cx: &mut Context<Runtime>,
+    action: &script::Action,
+) -> Result<Deferred, String> {
+    let frame = control_frame(runtime, window, cx);
+    match action {
+        script::Action::Wait(_) => Ok(Deferred::default()),
+        script::Action::Snapshot(name) => Ok(Deferred {
+            snapshot: Some((name.clone(), script::frame_json(&frame))),
+            ..Deferred::default()
+        }),
+        script::Action::Click(locator) => {
+            let control = script::resolve_activatable(&frame, locator)?;
+            let view = runtime
+                .nodes
+                .get(&control.id)
+                .ok_or("the control disappeared before it could be clicked")?;
+            let view_id = view.entity_id();
+            let node = view.read(cx).node.clone();
+            let binding = if node.role == Role::Checkbox {
+                node.check
+            } else {
+                node.click
+            };
+            runtime
+                .activate_if_live(node.id, view_id, node.lifetime, binding, cx)
+                .then(Deferred::default)
+                .ok_or_else(|| {
+                    format!(
+                        "the host refused to activate {}; it is disabled, retired, \
+                         or covered by a modal dialog",
+                        locator.describe()
+                    )
+                })
+        }
+        script::Action::Focus(locator) => {
+            let control = script::resolve_preferring(&frame, locator, |control| {
+                control.activatable || control.history.is_some()
+            })?;
+            let view = runtime
+                .nodes
+                .get(&control.id)
+                .ok_or("the control disappeared before it could be focused")?;
+            let focus = view
+                .read(cx)
+                .focus_target(cx)
+                .ok_or_else(|| format!("{} cannot take focus", locator.describe()))?;
+            Ok(Deferred {
+                focus: Some(focus),
+                ..Deferred::default()
+            })
+        }
+        script::Action::Type(locator, text) => {
+            let control =
+                script::resolve_preferring(&frame, locator, |control| control.history.is_some())?;
+            let view = runtime
+                .nodes
+                .get(&control.id)
+                .ok_or("the editor disappeared before it could be typed into")?;
+            let input = view
+                .read(cx)
+                .input
+                .clone()
+                .ok_or_else(|| format!("{} is not an editor", locator.describe()))?;
+            Ok(Deferred {
+                focus: Some(input.focus_handle(cx)),
+                keystrokes: text.chars().map(typed_keystroke).collect(),
+                ..Deferred::default()
+            })
+        }
+        script::Action::Key(keystroke) => {
+            let parsed = Keystroke::parse(keystroke)
+                .map_err(|error| format!("{keystroke:?} is not a keystroke: {error:?}"))?;
+            Ok(Deferred {
+                keystrokes: vec![parsed],
+                ..Deferred::default()
+            })
+        }
+        assertion => script::check(&frame, assertion).map(|()| Deferred::default()),
+    }
+}
+
 /// Starts the GUI, or runs the shared native semantic-spec host without a display.
 /// The process entry owns the runtime until all windows have closed.
 #[cfg(not(test))]
@@ -941,6 +1149,26 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
         .windows(2)
         .find(|a| a[0] == "--smoke-expect")
         .map(|a| a[1].clone());
+    let script_path = args
+        .windows(2)
+        .find(|a| a[0] == "--script")
+        .map(|a| std::path::PathBuf::from(&a[1]));
+    let script_report = args
+        .windows(2)
+        .find(|a| a[0] == "--script-report")
+        .map(|a| std::path::PathBuf::from(&a[1]));
+    // A held window stays open after the last step so a capture harness can
+    // photograph the state the script left behind — including the state a
+    // failing assertion stopped at, which is the evidence worth keeping.
+    let script_hold = args.iter().any(|arg| arg == "--script-hold");
+    let script = script_path.as_ref().map(|path| {
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("cannot read script {}: {error}", path.display()));
+        let steps = script::parse(&source)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        probe::enable();
+        (path.clone(), steps)
+    });
     let window_size = args
         .windows(2)
         .find(|a| a[0] == "--window-size")
@@ -980,6 +1208,111 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
             )
             .unwrap();
         cx.activate(true);
+        if let Some((path, steps)) = script {
+            let name = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            cx.spawn(async move |cx| {
+                // The first frame, any startup task, and the initial timer tick
+                // all have to land before the opening assertions mean anything.
+                cx.background_executor()
+                    .timer(Duration::from_millis(900))
+                    .await;
+                let mut snapshots: Vec<(String, String)> = Vec::new();
+                let mut failure: Option<String> = None;
+                for step in &steps {
+                    if let script::Action::Wait(milliseconds) = step.action {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(milliseconds))
+                            .await;
+                        continue;
+                    }
+                    let outcome = window
+                        .update(cx, |runtime, window, cx| {
+                            let outcome = perform(runtime, window, cx, &step.action);
+                            // A fresh frame repaints the bounds the next step
+                            // will read, so a reachability assertion can never
+                            // be answered by a layout that no longer exists.
+                            probe::clear();
+                            window.refresh();
+                            outcome
+                        })
+                        .expect("the scripted window closed early");
+                    let deferred = match outcome {
+                        Ok(deferred) => deferred,
+                        Err(error) => {
+                            failure = Some(format!("line {}: {error}", step.line));
+                            break;
+                        }
+                    };
+                    if let Some(snapshot) = deferred.snapshot {
+                        snapshots.push(snapshot);
+                    }
+                    // Focus changes and keystrokes reach the window without the
+                    // runtime lease held: they run the application's own
+                    // listeners, which update the runtime themselves.
+                    let handle: AnyWindowHandle = window.into();
+                    if let Some(focus) = deferred.focus {
+                        handle
+                            .update(cx, |_, window, _| focus.focus(window))
+                            .expect("the scripted window closed early");
+                    }
+                    // One keystroke per turn. The editor submits each committed
+                    // edit as its own ordered engine turn and refuses a second
+                    // before the first has been applied, exactly as a person
+                    // typing cannot outrun the frame they are typing into.
+                    for keystroke in deferred.keystrokes {
+                        handle
+                            .update(cx, |_, window, cx| {
+                                window.dispatch_keystroke(keystroke, cx)
+                            })
+                            .expect("the scripted window closed early");
+                        cx.background_executor()
+                            .timer(Duration::from_millis(20))
+                            .await;
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(150))
+                        .await;
+                }
+                let final_frame = window
+                    .update(cx, |runtime, window, cx| {
+                        script::frame_json(&control_frame(runtime, window, cx))
+                    })
+                    .expect("the scripted window closed early");
+                snapshots.push(("final".into(), final_frame));
+                if let Some(report) = &script_report {
+                    // The harness owns the artifact directory: creating it here
+                    // would add a directory-creation syscall to the macOS link
+                    // surface for a path only the harness ever uses.
+                    std::fs::write(
+                        report,
+                        script::report_json(&name, window_size, &snapshots, failure.as_deref()),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("cannot write {}: {error}", report.display())
+                    });
+                }
+                match &failure {
+                    Some(error) => eprintln!("FAIL: {name}: {error}"),
+                    None => eprintln!(
+                        "PASS: {name} completed {} scripted steps at {}x{}",
+                        steps.len(),
+                        window_size.0 as u32,
+                        window_size.1 as u32
+                    ),
+                }
+                if script_hold {
+                    return;
+                }
+                cx.update(|cx| cx.quit()).unwrap();
+                if failure.is_some() {
+                    std::process::exit(1);
+                }
+            })
+            .detach();
+        }
         if smoke {
             cx.spawn(async move |cx| {
                 cx.background_executor().timer(Duration::from_secs(2)).await;

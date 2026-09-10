@@ -1,0 +1,8 @@
+# size: 360x240
+# The smallest window the host permits. The board must still mount, keep its
+# seeded tasks, and accept a selection there; the layout at that size is a
+# separate diagnostic.
+expect-count task- 8
+click #edit-task-3
+wait 500
+expect-selected #task-3

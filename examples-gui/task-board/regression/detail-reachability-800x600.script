@@ -1,0 +1,4 @@
+# size: 800x600
+# diagnostic: GUI-03. At the smaller supported size the detail panel is laid
+# out almost entirely past the right edge as well as below the bottom.
+expect-onscreen #task-detail
