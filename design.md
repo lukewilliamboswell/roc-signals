@@ -282,12 +282,14 @@ already satisfies them.
 ### Native build and final-link artifact boundaries
 
 Signals-owned host outputs and operating-system linker inputs have independent
-identities and release cycles. `libengine.a`, the Rust GPUI host archive, and
-the Windows application resource are app-independent host outputs. A change to
-the Zig engine, Rust host, their ABI, or an actual host-build input invalidates
-those outputs; an application, example, semantic spec, documentation, or
-final-link input change does not. Compatible host outputs are reused through an
-immutable attested host release selected by a reviewed host lock.
+identities and release cycles. The web package's native `libhost.a` archives and
+`host.wasm`, plus the GUI package's `libengine.a`, Rust GPUI host archive, and
+Windows application resource, are app-independent host outputs. A change to the
+Zig engine, the relevant host, their ABI, or an actual host-build input
+invalidates the affected outputs; an application, example, semantic spec,
+documentation, platform API, or final-link input change does not. Compatible
+host outputs are reused through immutable attested host releases selected by
+reviewed host locks.
 
 External linker inputs are never folded into that host identity merely because
 Roc CLI will place them on the same final link line. glibc startup and link

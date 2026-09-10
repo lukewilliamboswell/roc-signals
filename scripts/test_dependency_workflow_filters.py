@@ -76,6 +76,19 @@ class DependencyWorkflowFilterTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(covered(path), f"GUI host fingerprint input does not trigger producer: {path}")
 
+    def test_web_host_fingerprint_inputs_trigger_only_the_web_host_producer(self):
+        from web_host_artifacts import SOURCE_PATHS
+
+        text = (ROOT / ".github/workflows/web-hosts.yml").read_text()
+        section = text.split("    paths:\n", 1)[1].split("  workflow_dispatch:", 1)[0]
+        paths = {line.removeprefix("      - ") for line in section.splitlines() if line.strip()}
+        for path in SOURCE_PATHS:
+            covered = path in paths or any(entry.endswith("/**") and path.startswith(entry[:-3]) for entry in paths)
+            with self.subTest(path=path):
+                self.assertTrue(covered, f"web host input does not trigger its producer: {path}")
+        for unrelated in ("platform-web/main.roc", "examples-web/counter/main.roc", "design.md"):
+            self.assertFalse(unrelated in paths)
+
     def test_all_executed_scripts_and_transitive_imports_trigger_their_workflow(self):
         for name in WORKFLOWS:
             with self.subTest(producer=name):
