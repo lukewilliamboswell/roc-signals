@@ -51,6 +51,14 @@ def build(debug=False, jobs=2, cargo_evidence=None):
     if cargo_evidence is not None:
         from host_build_identity import source_fingerprint
         fingerprint = source_fingerprint(ROOT)
+    if target == 'arm64mac':
+        # The macOS analogue of the Linux link inputs staged below. A prebuilt
+        # host brings the interface stubs with it, so a source build was the one
+        # path that left them missing and failed the final application link.
+        sysroot = ROOT / 'platform-gui/targets/macos-sysroot'
+        if not sysroot.exists():
+            from prepare_dependencies import install_macos_interfaces
+            install_macos_interfaces(sysroot)
     linux_dependencies = (install_freetype(ROOT / 'platform-gui/targets/x64glibc')
                           if target == 'x64glibc' else None)
     if target == 'x64glibc':

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gui_regression
+from build_gui import executable_name
 
 
 def write(directory: Path, app: str, name: str, text: str) -> Path:
@@ -73,7 +74,10 @@ class RunTests(unittest.TestCase):
         write(self.root, "counter", "known", "# diagnostic: GUI-03.\nexpect-text 1\n")
         binaries = self.root / "built"
         binaries.mkdir()
-        (binaries / "counter").write_text("", encoding="utf-8")
+        # Name the stand-in the way the driver will look for it: on Windows that
+        # is counter.exe, and a test that hardcodes the Unix spelling fails there
+        # for a reason that has nothing to do with what it is checking.
+        (binaries / executable_name("counter")).write_text("", encoding="utf-8")
         self.binaries = binaries
 
     def outcome(self, results):
