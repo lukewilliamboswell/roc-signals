@@ -147,6 +147,18 @@ Explicit textarea heights constrain the complete field; the retained editor
 fills the space after caption and padding. Auto presentation retains a
 320-pixel editor.
 
+`Gui.read_only_s` lowers boolean field 6. Read-only is not disabled, and the
+two are separate fields because they make different claims. Disabled says a
+control is unavailable: the host dims it and removes its tab stop. Read-only
+says the document belongs to the application: the control keeps its ordinary
+contrast and its place in the tab order, still takes focus, selects, copies
+and scrolls, and still accepts an authoritative value — but every user edit
+route and the native undo and redo history are refused. Nothing a person does
+can move the shown text away from the published value, so a read-only editor
+cannot diverge from its source the way an enabled one with ignored change
+events would. A control may carry both fields; disabled's presentation and
+tab-stop effects apply on top, and either flag alone refuses edits.
+
 `Gui.placeholder` lowers static empty-field hint text through field 12. The
 hint is app-declared configuration, not host behavior: the host shows exactly
 the supplied text while a controlled field's document is empty, and a field
