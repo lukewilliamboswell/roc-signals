@@ -1490,7 +1490,15 @@ describe the checkout's host inputs, the driver says so and builds and tests the
 host from source for that run instead of refusing to start — otherwise a host
 change could never reach `main` to be released from. Asking for the verified
 host itself still refuses a mismatched lock: the fallback is the test driver's
-decision, never something a release or a bundle can inherit.
+decision, never something a release or a bundle can inherit. The macOS bundle
+step is skipped in that case for the same reason — there is no released archive
+for it to validate.
+
+Because that job may build the host, its runner needs the host's build inputs:
+the FreeType and xkbcommon development packages on Linux, and the
+`x86_64-pc-windows-gnullvm` Rust target on Windows. Generating the macOS
+interface catalog remains outside ordinary CI; that has its own producer and
+review.
 
 These archives contain host code and licenses, not external system libraries or
 SDK stubs. Every included target must also have its external link inputs supplied;
