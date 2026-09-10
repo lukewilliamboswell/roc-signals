@@ -279,6 +279,63 @@ ownership, atomic publication, disposal, and O(changed) obligations as the web
 boundary; these are requirements, not claims that every implementation path
 already satisfies them.
 
+### Native build and final-link artifact boundaries
+
+Signals-owned host outputs and operating-system linker inputs have independent
+identities and release cycles. `libengine.a`, the Rust GPUI host archive, and
+the Windows application resource are app-independent host outputs. A change to
+the Zig engine, Rust host, their ABI, or an actual host-build input invalidates
+those outputs; an application, example, semantic spec, documentation, or
+final-link input change does not. Compatible host outputs are reused through an
+immutable attested host release selected by a reviewed host lock.
+
+External linker inputs are never folded into that host identity merely because
+Roc CLI will place them on the same final link line. glibc startup and link
+stubs, FreeType, xkbcommon, LLVM unwind, Windows imports/runtime archives, and
+the project-authored macOS `.tbd` files are immutable attested dependency
+releases selected by `dependencies.lock.json`. Each dependency family rebuilds
+only when its reviewed recipe, source/toolchain pin, or required interface set
+changes. The final platform package combines independently verified host and
+dependency artifacts; neither release is permission to relabel or rebuild the
+other.
+
+macOS interface discovery is downstream of the completed host and dependency
+artifacts. Roc CLI's final application link is the authoritative compatibility
+check. If it requires an interface absent from the selected `.tbd` release, the
+failure starts a separate review: establish the exact symbol and owning
+framework or library, update the reviewed interface catalog, generate the
+minimal `.tbd` files, validate final links and native GUI specs, then publish
+and attest a new dependency release. Ordinary CI and platform bundling consume
+those exact locked bytes; they do not regenerate interfaces. The `.tbd` files
+are not inputs to compiling either host archive.
+
+```mermaid
+flowchart TD
+    Change[Repository change] --> Kind{Changed artifact domain}
+    Kind -->|Zig engine, Rust host, ABI, or host-build input| BuildHost[Build affected host outputs]
+    Kind -->|External dependency recipe, pin, or required interface set| BuildDependency[Build affected dependency family]
+    Kind -->|App, example, or semantic spec only| Reuse[Reuse compatible locked releases]
+
+    BuildHost --> HostValidate[Validate host archive and ownership contracts]
+    HostValidate --> HostRelease[Immutable attested host release]
+    HostRelease --> HostLock[Reviewed host lock]
+
+    BuildDependency --> DependencyValidate[Reproducibility and target-specific probes]
+    DependencyValidate --> DependencyRelease[Immutable attested dependency release]
+    DependencyRelease --> DependencyLock[dependencies.lock.json]
+
+    HostLock --> Assemble[Assemble the final Roc platform package]
+    DependencyLock --> Assemble
+    Reuse --> Assemble
+    Assemble --> FinalLink[Roc CLI final application link and native specs]
+    FinalLink --> Missing{Missing macOS interface?}
+    Missing -->|yes| Review[Review symbol and owning library]
+    Review --> Catalog[Update the macOS interface catalog]
+    Catalog --> Generate[Generate minimal .tbd files]
+    Generate --> MacValidate[Validate final links and native GUI specs]
+    MacValidate --> DependencyRelease
+```
+
 The same web Roc apps compile against the native spec and Wasm hosts. The native spec runner asserts
 semantics and work budgets; the browser runs the apps for real. The JS runtime
 is a thin executor of the engine's already-computed command stream — it never

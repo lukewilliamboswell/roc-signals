@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "artifacts": {
+    "gui-host-sources-x64glibc": {
+      "name": "gui-host-sources",
+      "target": "x64glibc",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-gui-host-20260910.1",
+      "asset": "gui-host-sources-x64glibc.tar",
+      "sha256": "f77cbbc14ce79ab33a818d129a6df7ff955701abda5a331f80843f02e8cb357a",
+      "size": 85534720,
+      "source_sha": "2ab48cf2f3ffdb22176cda7c4200a1b81c04329f",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/gui-hosts.yml"
+    },
+    "gui-host-x64glibc": {
+      "name": "gui-host",
+      "target": "x64glibc",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-gui-host-20260910.1",
+      "asset": "gui-host-x64glibc.tar",
+      "sha256": "a9ee6d89ceba4cf1473f5e837e389d2a94f6217811520c6e41333580a49fb5f5",
+      "size": 94167040,
+      "source_sha": "2ab48cf2f3ffdb22176cda7c4200a1b81c04329f",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/gui-hosts.yml"
+    },
+    "gui-host-sources-x64mingw": {
+      "name": "gui-host-sources",
+      "target": "x64mingw",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-gui-host-20260910.1",
+      "asset": "gui-host-sources-x64mingw.tar",
+      "sha256": "02b4d147f73278c05317b29816444879007a1e2b56e713591247a698e3ec0f9f",
+      "size": 86579200,
+      "source_sha": "2ab48cf2f3ffdb22176cda7c4200a1b81c04329f",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/gui-hosts.yml"
+    },
+    "gui-host-x64mingw": {
+      "name": "gui-host",
+      "target": "x64mingw",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-gui-host-20260910.1",
+      "asset": "gui-host-x64mingw.tar",
+      "sha256": "2b7d14f7b46ffd18ac8c9d5da539f3baf1f740262b5fc5b09ba4a50372cee62f",
+      "size": 67532800,
+      "source_sha": "2ab48cf2f3ffdb22176cda7c4200a1b81c04329f",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/gui-hosts.yml"
+    },
+    "gui-host-sources-arm64mac": {
+      "name": "gui-host-sources",
+      "target": "arm64mac",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-gui-host-20260910.1",
+      "asset": "gui-host-sources-arm64mac.tar",
+      "sha256": "667d6c388626144fc605c93cf0b5b52502b4ec913f9651b18ee1deab300fe4de",
+      "size": 74352640,
+      "source_sha": "2ab48cf2f3ffdb22176cda7c4200a1b81c04329f",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/gui-hosts.yml"
+    },
+    "gui-host-arm64mac": {
+      "name": "gui-host",
+      "target": "arm64mac",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-gui-host-20260910.1",
+      "asset": "gui-host-arm64mac.tar",
+      "sha256": "eace2b202a468b41b61a423684d725c90eccb1db929e8c56aa52eba301ecd948",
+      "size": 41410560,
+      "source_sha": "2ab48cf2f3ffdb22176cda7c4200a1b81c04329f",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/gui-hosts.yml"
+    }
+  }
+}

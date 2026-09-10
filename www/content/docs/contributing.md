@@ -261,6 +261,18 @@ catalog, provenance statement, archive identities, and generated-file hashes.
 After changing the catalog or host, validate final application links, native
 specs, desktop smoke tests, and consumption through a bundled platform URL.
 
+The `macOS interface dependency releases` workflow generates the catalog-only
+`.tbd` archive twice, compares the exact bytes, and then performs final Roc
+application links and native GUI specs against the attested host selected by
+`gui-host.lock.json`. An explicit dispatch on `main` with a fresh
+`deps-macos-interfaces-<version>` tag publishes the tested archive and its
+consumer lock with GitHub build provenance. Generation reads neither host nor
+SDK bytes; the host is an independently released validation input, not part of
+the generated artifact's identity. Review and adopt the emitted lock entry
+separately. Until that adoption lands, existing bundle code continues to
+generate interfaces locally and must not be described as consuming the new
+release.
+
 ### musl
 
 The `Dependency releases` workflow builds musl from `dependencies/musl.json`,
