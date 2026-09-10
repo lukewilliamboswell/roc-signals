@@ -294,7 +294,7 @@ expect {
 	docs = Session.navigate(root, "docs")
 	back = Session.backward(docs)
 	again = Session.forward(back)
-	docs.source == Sample("docs") and Rows.len(docs.rows) == 3 and back.source == root.source and Rows.len(back.rows) == 6 and again.source == docs.source and Session.up(docs).source == Sample("")
+	docs.source == Sample("docs") and Rows.len(docs.rows) == 4 and back.source == root.source and Rows.len(back.rows) == 6 and again.source == docs.source and Session.up(docs).source == Sample("")
 }
 
 ## Failed or canceled Back retains both histories and accepted content; retry

@@ -1,12 +1,14 @@
 # size: 1200x820
 # Initial, populated, selected, loading and read-only states. The preview field
-# is the example's read-only control, and navigation is what makes Back, Up and
-# the breadcrumbs meaningful; all three are enable/disable rules a screenshot
-# of the first frame cannot check.
+# is the example's read-only control — available and keyboard reachable, but
+# refusing edits — and navigation is what makes Back, Up and the breadcrumbs
+# meaningful; all of these are rules a screenshot of the first frame cannot
+# check. Read-only is asserted apart from disabled: an empty preview is still
+# a control a person can tab into.
 expect-disabled Back
 expect-disabled Up
 expect-disabled "Preview text"
-expect-disabled #text-preview
+expect-enabled #text-preview
 expect-count entry: 6
 snapshot initial
 click docs
@@ -25,5 +27,6 @@ expect-enabled "Preview text"
 snapshot file-selected
 click "Preview text"
 wait 900
-expect-disabled #text-preview
+expect-enabled #text-preview
+expect-history #text-preview 0
 snapshot previewed

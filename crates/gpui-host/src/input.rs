@@ -145,6 +145,7 @@ pub struct TextInput {
     multiline: bool,
     fill_height: bool,
     disabled: bool,
+    read_only: bool,
     style_foreground: Option<u32>,
     last_layout: Option<TextLayout>,
     last_bounds: Option<Bounds<Pixels>>,
@@ -179,6 +180,7 @@ impl TextInput {
             multiline: false,
             fill_height: false,
             disabled: false,
+            read_only: false,
             style_foreground: None,
             last_layout: None,
             last_bounds: None,
@@ -289,6 +291,26 @@ impl TextInput {
         }
     }
 
+    /// Refuses user edits while the editor stays available.
+    ///
+    /// Read-only is not disabled. A disabled control is unavailable: it dims
+    /// and leaves the tab order. A read-only one is a document a person is
+    /// meant to read — full contrast, keyboard reachable, selectable and
+    /// copyable — whose text belongs to the application. Every edit route and
+    /// the native edit history are refused, so the shown document cannot
+    /// diverge from the authoritative value.
+    pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
+        if self.read_only != read_only {
+            self.read_only = read_only;
+            cx.notify();
+        }
+    }
+
+    /// Whether a user edit or an edit-history action must be refused here.
+    fn refuses_edits(&self) -> bool {
+        self.disabled || self.read_only
+    }
+
     /// Applies an authoritative engine value. Repeated snapshots and equal
     /// echoes preserve selection and composition; a changed engine value
     /// replaces the draft and ends preedit.
@@ -347,7 +369,7 @@ impl TextInput {
     }
 
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
-        if self.disabled || self.marked_range.is_some() {
+        if self.refuses_edits() || self.marked_range.is_some() {
             return;
         }
         let current = self.snapshot();
@@ -357,7 +379,7 @@ impl TextInput {
     }
 
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
-        if self.disabled || self.marked_range.is_some() {
+        if self.refuses_edits() || self.marked_range.is_some() {
             return;
         }
         let current = self.snapshot();
@@ -455,7 +477,7 @@ impl TextInput {
     }
 
     fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
-        if self.disabled {
+        if self.refuses_edits() {
             return;
         }
         self.replace_text_in_range(None, "\n", window, cx);
@@ -505,7 +527,7 @@ impl TextInput {
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.disabled {
+        if self.refuses_edits() {
             return;
         }
         if self.selected_range.is_empty() {
@@ -515,7 +537,7 @@ impl TextInput {
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-        if self.disabled {
+        if self.refuses_edits() {
             return;
         }
         if self.selected_range.is_empty() {
@@ -560,7 +582,7 @@ impl TextInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        if self.disabled {
+        if self.refuses_edits() {
             return;
         }
         self.history.break_group();
@@ -582,7 +604,7 @@ impl TextInput {
         }
     }
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if self.disabled {
+        if self.refuses_edits() {
             return;
         }
         if !self.selected_range.is_empty() {
@@ -749,7 +771,7 @@ impl EntityInputHandler for TextInput {
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.disabled {
+        if self.refuses_edits() {
             return;
         }
         // Wayland resets composition with unmark_text before mouse dispatch.
@@ -770,7 +792,7 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.disabled {
+        if self.refuses_edits() {
             return;
         }
         let range = range_utf16
@@ -824,7 +846,7 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.disabled {
+        if self.refuses_edits() {
             return;
         }
         let range = range_utf16
@@ -1771,6 +1793,61 @@ mod tests {
         assert!(edits.borrow().is_empty());
         cx.simulate_keystrokes("ctrl-v");
         cx.update(|_, cx| assert_eq!(input.read(cx).content.as_ref(), "Keep this"));
+    }
+
+    /// Read-only is the presentation contract a preview needs: the editor is
+    /// still a tab stop with its ordinary appearance, still selects, copies
+    /// and scrolls, and still accepts an authoritative value — but no user
+    /// edit and no undo or redo can move the document away from that value.
+    #[gpui::test]
+    fn read_only_editor_keeps_focus_and_selection_while_refusing_edits_and_history(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(bind_keys);
+        let edits = Rc::new(RefCell::new(Vec::new()));
+        let captured = edits.clone();
+        let (input, cx) = cx.add_window_view(|window, cx| {
+            let input = TextInput::new_multiline(
+                "Preview text".into(),
+                Rc::new(move |text, _| captured.borrow_mut().push(text)),
+                cx,
+            );
+            input.focus_handle.focus(window);
+            input
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_read_only(true, cx);
+                input.move_to(0, cx);
+                input.select_to(7, cx);
+                // A read-only editor is not dimmed and does not leave the tab
+                // order: those belong to disabled, which is a different claim.
+                assert!(!input.disabled);
+                assert!(input.focus_handle.is_focused(window));
+            })
+        });
+        cx.simulate_keystrokes("backspace delete enter ctrl-x ctrl-v ctrl-z ctrl-shift-z");
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "changed", window, cx);
+                input.replace_and_mark_text_in_range(None, "preedit", None, window, cx);
+                assert_eq!(input.content.as_ref(), "Preview text");
+                assert_eq!(input.selected_range, 0..7);
+                assert!(input.marked_range.is_none());
+                // Copying out of the document stays available.
+                input.copy(&Copy, window, cx);
+                // An authoritative value still replaces the document.
+                input.set_value("Second preview", cx);
+                assert_eq!(input.content.as_ref(), "Second preview");
+            })
+        });
+        assert!(edits.borrow().is_empty());
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| {
+                input.set_read_only(false, cx);
+                assert!(!input.refuses_edits());
+            })
+        });
     }
 
     #[gpui::test]

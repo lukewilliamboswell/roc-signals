@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "comment": "Single authority for the native GUI protocol tables. Edit this file, then run `python3 scripts/generate_protocol.py` to regenerate the committed Zig, Rust, Roc, and docs artifacts. `docs/native-gui-protocol.md` documents the add-a-field procedure.",
-  "protocol_version": 11,
+  "protocol_version": 12,
   "effect_version": 2,
   "timer_version": 1,
   "custom_text_field_id": 7,
@@ -26,7 +26,8 @@
     { "id": 1, "name": "checked", "native": false, "browser_op": "set_checked", "doc": "Checkbox checked state." },
     { "id": 2, "name": "disabled", "native": false, "browser_op": "set_disabled", "roc_const": "disabled_field", "doc": "Disables input while retaining native identity." },
     { "id": 4, "name": "selected", "native": true, "roc_const": "selected_field", "doc": "Native selected presentation, independent of checkbox state." },
-    { "id": 5, "name": "native_drop_target", "native": true, "roc_const": "native_drop_target_field", "doc": "Marks an internal drop target that must bind a string-detail drop event." }
+    { "id": 5, "name": "native_drop_target", "native": true, "roc_const": "native_drop_target_field", "doc": "Marks an internal drop target that must bind a string-detail drop event." },
+    { "id": 6, "name": "native_read_only", "native": true, "roc_const": "native_read_only_field", "doc": "Refuses user edits and edit history while the control stays available at full contrast and in tab order." }
   ],
   "task_kinds": [
     { "id": 0, "name": "external", "doc": "App-declared external task; the only route the browser host accepts." },
@@ -66,6 +67,7 @@
       { "name": "checked", "type": "u64", "doc": "Checked state word (bool field 1)." },
       { "name": "disabled", "type": "u64", "doc": "Disabled state word (bool field 2)." },
       { "name": "selected", "type": "u64", "doc": "Selected presentation word (bool field 4)." },
+      { "name": "read_only", "type": "u64", "doc": "Read-only state word (bool field 6)." },
       { "name": "style_present", "type": "u64", "doc": "Nonzero when the style record is populated (text field 8)." },
       { "name": "style", "type": "style", "doc": "Validated native presentation record (text field 8)." },
       { "name": "viewport", "type": "viewport", "doc": "Validated virtual-list record (text field 9), zeroed when absent." },
@@ -77,6 +79,7 @@
     ]
   },
   "version_history": [
+    { "version": 12, "summary": "Adds the `native_read_only` boolean field and its node word: a control that refuses edits while staying readable and keyboard reachable, distinct from disabled." },
     { "version": 11, "summary": "Adds `signals_document_title`, the host read of the window identity decided by the shared engine's `SetDocumentTitle` command." },
     { "version": 10, "summary": "Extends the presentation record to style version 2 with hover and active background slots (18 u32 style record); style version 1 records are no longer accepted." },
     { "version": 9, "summary": "Adds the explicit image-source text slot together with the font-family and embedded-font declaration slots to the node layout." },

@@ -25,7 +25,7 @@
     (click (role button :name "docs"))
     (expect-value (label "Filter this folder") "")
     (expect-visible (text "Sample workspace / docs"))
-    (expect-visible (text "3 matching entries"))
+    (expect-visible (text "4 matching entries"))
     (expect-visible (test-id "entry:docs/日本語.md"))
     (expect-absent (test-id "entry:src"))
   ))

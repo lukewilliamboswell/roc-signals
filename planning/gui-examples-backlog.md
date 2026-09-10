@@ -22,8 +22,7 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 | ID | Priority | Work item | Evidence | Primary owner |
 | --- | --- | --- | --- | --- |
 | GUI-08 | P2 | Defaulted nominal `Gui.Style` records | Pinned compiler probes | Public Roc GUI API |
-| GUI-10 | P2 | Explorer: fit list, inspector, and preview at smaller heights | Screenshots + wheel attempts | Explorer layout |
-| GUI-11 | P2 | Explorer: present successful previews as readable content | Screenshot + source | Explorer; possibly public read-only control |
+| GUI-10 | P2 | Explorer: fit the inspector beside the list at the 360-pixel minimum width | Regression bounds at 360x600 | Explorer layout; GUI style protocol |
 | GUI-13 | P2 | Give cards and event rows coherent activation and selection | Screenshots + source | Examples + GUI interaction API |
 | GUI-16 | P2 | Extend desktop regression coverage to Linux and richer environments | Executed on macOS only | GUI tests/tooling |
 | GUI-18 | P2 | Make toolbars, inspectors, and tabular content easier to scan | Screenshots; design | Board/Explorer/Activity views |
@@ -33,7 +32,6 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 | GUI-22 | P3 | Correct maintained docs and small presentation-copy defects | Source + screenshots | Example/reference docs |
 | GUI-23 | P3 | Finish the remaining application-controlled chrome/theming surface | Source; design | GUI/GPUI boundary |
 | GUI-24 | P3 | Optional visual refinements, after operability | Design | Examples + narrowly justified API work |
-| GUI-25 | P2 | Lay out status text that first appears after mount | Live `expect-onscreen` probes | GPUI host layout |
 
 ## Correctness and operability
 
@@ -79,37 +77,26 @@ and validation; a nominal type change alone should not change the wire format.
 
 ### GUI-10 — Explorer height/overflow
 
-At 800×600 the list and inspector run below the viewport; the preview and
-footer disappear. Wheel attempts over the inspector leave the same clipped
-result. At 1200×820, a selected file's preview is still pushed to the bottom:
-[small](gui-examples-review/2026-09-10/folder-explorer-800x600.png),
-[after wheel](gui-examples-review/2026-09-10/folder-explorer-800x600-after-scroll.png),
-[preview](gui-examples-review/2026-09-10/folder-explorer-preview.png).
-See [main.roc](../examples-gui/folder-explorer/main.roc), root `overflow_y: Clip`,
-the growing content row, fixed-width details, and preview `height: Fill`.
+The height defect is closed. At 800×600 the list, inspector, preview, shortcut
+hint and asset-status line are all laid out inside the window; the root bounds
+itself, the content row takes the free height, and the list's virtual viewport
+and the inspector each own their scrolling. `inspector-800x600` is an ordinary
+check again, joined by `filter-sort-and-scroll-800x600`,
+`long-path-360x600` and `preview-is-readable-1200x820`.
 
-Acceptance: bounded list and inspector regions with usable explicit overflow;
-compact or reflow header controls as needed. Retain a useful preview area and
-access to status/errors. Test resizing with a selected file and preview, long
-paths, long errors, filter/sort, and list scrolling. Keep virtual row height and
-selection/focus decoration within the declared 44-pixel contract.
+What remains is width, and only at the declared 360-pixel minimum. The content
+row is wider than that window because neither child will shrink below the
+minimum width of what it holds — the inspector's heading and button row, the
+footer hint's single unbreakable line — so the inspector is laid out past the
+right edge, where nothing can reach it. `long-path-360x600` records this by
+asserting the list and the selection rather than the inspector's bounds, and
+says so in its front matter.
 
-### GUI-11 — Preview is not a disabled operation
-
-Explorer permanently sets `Gui.disabled_s(True)` on the preview textarea. A
-successful preview is consequently dimmed to 45% opacity and removed from Tab
-navigation ([main.roc](../examples-gui/folder-explorer/main.roc), `details`;
-[input.rs](../crates/gpui-host/src/input.rs), `set_disabled`).
-[The loaded-preview screenshot](gui-examples-review/2026-09-10/folder-explorer-preview.png)
-looks unavailable even though content was successfully loaded.
-
-This is not a claim that copy is wholly impossible: native disabled inputs
-deliberately retain pointer selection and copying. The issue is presentation
-and keyboard reachability. Acceptance: normal readable contrast, keyboard
-focus/selection/copy/scroll, and no edits or edit-history actions. Evaluate a
-proper read-only presentation contract or a selectable text view; do not merely
-enable the textarea and ignore its change events, leaving native text divergent
-from the authoritative source.
+Acceptance: the inspector is reachable at 360×600. The style vocabulary has no
+responsive branch and no maximum length, so this is likely protocol work
+(a minimum-width or wrap capability, or a way to express "beside, else below")
+rather than another edit to the example. Whatever is chosen, keep the height
+behaviour and the 44-pixel row contract that now hold.
 
 ### GUI-13 — Row/card affordances and focus
 
@@ -142,11 +129,10 @@ semantic assertions stay in `specs/` and presentation assertions in
 kept for failures; captures name the window by the process id the driver
 started and never grab a screen region.
 
-The one scenario whose defect is still open is landed as a stated diagnostic:
-GUI-10, the explorer inspector at 800×600. A diagnostic that starts passing
-fails the run, so each fix has had to promote its own scenario to an ordinary
-check — that is how the board editor ownership, board detail reachability,
-dialog bounds and counter sizing fixes were each confirmed.
+No stated diagnostic is open. A diagnostic that starts passing fails the run,
+so each fix has had to promote its own scenario to an ordinary check — that is
+how the board editor ownership, board detail reachability, dialog bounds,
+counter sizing and explorer inspector fixes were each confirmed.
 
 Two limits found by running the driver against real fixes: a dialog is lifted
 into its own render layer and the bounds probe records nothing for it, so
@@ -276,32 +262,6 @@ Acceptance: demonstrate the need in an example before adding public APIs;
 keep help available to keyboard users, avoid relying on color alone for danger,
 and consider reduced motion if animation is introduced. No fixed API shape or
 mandatory spacing/color dogma is approved by this backlog.
-
-### GUI-25 — Status text that appears after mount is never laid out
-
-A status line rendered empty at mount keeps zero area forever: writing text into
-it later updates the semantic tree, and both the specs and `expect-text` see the
-new text, but `expect-onscreen` reports "no area" and the window never paints it.
-It is not a repaint-timing artifact — the zero area survives later interactions,
-a `Ui.when` that mounts the element fresh, and a static (non-signal) text child;
-the same element laid out with text already present has ordinary area and then
-updates correctly. GUI-09 worked around it in both examples by starting the asset
-status line at "Checking assets…" instead of "", but the board's document
-`problem` line and any other initially empty status text have the same defect.
-
-Confirm the defect against a rendered frame before treating it as a host bug.
-The observation is `expect-onscreen` reporting no area, and the bounds probe is
-known to keep the rectangle recorded for a node that stays mounted without
-re-rendering — a status column whose only change is its text child is exactly
-that shape, so a stale zero-area rectangle would look identical. An attempt to
-photograph the case in Explorer was inconclusive because the warning sits in the
-footer that GUI-10 still clips out of the window.
-
-Acceptance: establish from a capture, or from the host's own layout, whether the
-line is really unpainted. If it is, fix the host, drop the workaround from at
-least one example, and cover the transition with a scenario. If it is not, this
-is a third blind spot in the bounds probe and belongs with the other two under
-GUI-16.
 
 ## Delivery sequence
 
