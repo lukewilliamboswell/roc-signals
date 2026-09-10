@@ -1,24 +1,26 @@
 ## Compile-time theming. A flat `theme.json` next to `main.roc` is imported as
 ## a string and parsed by this module while the compiler evaluates top-level
 ## definitions, so a malformed theme fails `roc build` with a message naming
-## the file and the offending key. Colors are `"#RRGGBB"` strings and layout
-## knobs are unsigned integers; nesting, escapes, and other JSON forms are
+## the file and the offending key. Colors are `"#RRGGBB"` strings that parse
+## straight to `Gui.Color` values, and layout knobs are unsigned integers; nesting, escapes, and other JSON forms are
 ## rejected because a theme never needs them.
+import pf.Gui
+
 Theme := [].{
 	Palette : {
-		background : U32,
-		surface : U32,
-		card : U32,
-		border : U32,
-		text_primary : U32,
-		text_secondary : U32,
-		text_tertiary : U32,
-		accent : U32,
-		accent_hover : U32,
-		accent_active : U32,
-		danger : U32,
-		warning : U32,
-		success : U32,
+		background : Gui.Color,
+		surface : Gui.Color,
+		card : Gui.Color,
+		border : Gui.Color,
+		text_primary : Gui.Color,
+		text_secondary : Gui.Color,
+		text_tertiary : Gui.Color,
+		accent : Gui.Color,
+		accent_hover : Gui.Color,
+		accent_active : Gui.Color,
+		danger : Gui.Color,
+		warning : Gui.Color,
+		success : Gui.Color,
 		radius : U32,
 		control_padding : U32,
 		gap : U32,
@@ -55,10 +57,10 @@ Theme := [].{
 		}
 	}
 
-	color : List(Entry), Str, Str -> U32
+	color : List(Entry), Str, Str -> Gui.Color
 	color = |entries, file, key|
 		match lookup(entries, key) {
-			Ok(Value.Color(value)) => value
+			Ok(Value.Color(value)) => Rgb(value)
 			Ok(Value.Number(_)) => crash "${file}: key \"${key}\" must be a \"#RRGGBB\" color string, not a number"
 			Err(Missing) => crash "${file}: missing key \"${key}\""
 		}
@@ -225,11 +227,11 @@ Theme := [].{
 expect {
 	json = "{\n\t\"background\": \"#16252C\",\n\t\"surface\": \"#1B2A33\",\n\t\"card\": \"#283A47\",\n\t\"border\": \"#3A4F5C\",\n\t\"text_primary\": \"#F2F5F6\",\n\t\"text_secondary\": \"#A9BFCC\",\n\t\"text_tertiary\": \"#93A9B6\",\n\t\"accent\": \"#2E6FA3\",\n\t\"accent_hover\": \"#3A80B8\",\n\t\"accent_active\": \"#265D89\",\n\t\"danger\": \"#F09A93\",\n\t\"warning\": \"#E8C27A\",\n\t\"success\": \"#8FD4A8\",\n\t\"radius\": 6,\n\t\"control_padding\": 10,\n\t\"gap\": 8\n}\n"
 	theme = Theme.from_json("test/theme.json", json)
-	theme.background == 0x16252C
-	and theme.accent == 0x2E6FA3
-	and theme.accent_hover == 0x3A80B8
-	and theme.accent_active == 0x265D89
-	and theme.success == 0x8FD4A8
+	theme.background == Rgb(0x16252C)
+	and theme.accent == Rgb(0x2E6FA3)
+	and theme.accent_hover == Rgb(0x3A80B8)
+	and theme.accent_active == Rgb(0x265D89)
+	and theme.success == Rgb(0x8FD4A8)
 	and theme.radius == 6
 	and theme.control_padding == 10
 	and theme.gap == 8
@@ -238,7 +240,7 @@ expect {
 ## Lowercase hex digits and compact whitespace both parse.
 expect {
 	entries = Theme.parse_object("test/theme.json", "{\"accent\":\"#2e6fa3\",\"gap\":12}")
-	Theme.color(entries, "test/theme.json", "accent") == 0x2E6FA3
+	Theme.color(entries, "test/theme.json", "accent") == Rgb(0x2E6FA3)
 	and Theme.number(entries, "test/theme.json", "gap") == 12
 }
 

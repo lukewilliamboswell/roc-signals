@@ -65,14 +65,14 @@ main = || Ui.state(
 							gap: 12,
 							width: Fill,
 							height: Fill,
-							background: Rgb(theme.background),
-							foreground: Rgb(theme.text_primary),
+							background: theme.background,
+							foreground: theme.text_primary,
 							shortcuts: [{ chord: { ..chord, key: "n" }, msg: new }, { chord: { ..chord, key: "o" }, msg: open }, { chord: chord, msg: save }, { chord: { ..chord, shift: True }, msg: save_as }, { chord: { ..chord, key: "Escape", control: False }, msg: cancel }],
 						},
 						[
 							Gui.heading("Notes"),
 							Gui.column(
-								{ foreground: Rgb(theme.text_secondary) },
+								{ foreground: theme.text_secondary },
 								["A quiet place to collect your thoughts."],
 							),
 							Gui.row(
@@ -85,9 +85,9 @@ main = || Ui.state(
 										enabled: revert_ready,
 										padding: theme.control_padding,
 										radius: theme.radius,
-										background: Rgb(theme.accent),
-										hover_background: Rgb(theme.accent_hover),
-										active_background: Rgb(theme.accent_active),
+										background: theme.accent,
+										hover_background: theme.accent_hover,
+										active_background: theme.accent_active,
 									}, save),
 									Gui.action_button({ caption: Signal.const("Save As…"), enabled: ready }, save_as),
 									Gui.action_button({ caption: Signal.const("Revert changes"), enabled: revert_ready }, revert),
@@ -97,7 +97,7 @@ main = || Ui.state(
 								{ gap: 12 },
 								[
 									Gui.column(
-										{ test_id: "document-name", font_size: 18, foreground: Rgb(theme.text_primary) },
+										{ test_id: "document-name", font_size: 18, foreground: theme.text_primary },
 										[Gui.text_s(session.signal().map(|state| state.baseline.title))],
 									),
 									Gui.column(
@@ -110,9 +110,9 @@ main = || Ui.state(
 														padding: 4,
 														font_size: 13,
 														foreground: if dirty {
-															Rgb(theme.warning)
+															theme.warning
 														} else {
-															Rgb(theme.text_secondary)
+															theme.text_secondary
 														},
 													}
 												},
@@ -157,7 +157,7 @@ main = || Ui.state(
 										{
 											test_id: "note-summary",
 											font_size: 13,
-											foreground: Rgb(theme.text_secondary),
+											foreground: theme.text_secondary,
 										},
 										[Gui.text_s(body.signal().map(|text| Document.counts_text(Document.counts(text))))],
 									),
@@ -169,7 +169,7 @@ main = || Ui.state(
 								{ gap: 0 },
 								[
 									Gui.column(
-										{ test_id: "note-problem", font_size: 13, foreground: Rgb(theme.danger) },
+										{ test_id: "note-problem", font_size: 13, foreground: theme.danger },
 										[
 											Gui.text_s(
 												session.signal().map(
@@ -205,7 +205,7 @@ main = || Ui.state(
 												test_id: "discard-confirmation",
 												padding: 16,
 												gap: theme.gap,
-												background: Rgb(theme.card),
+												background: theme.card,
 												radius: theme.radius,
 											},
 											[

@@ -21,9 +21,9 @@ accent_button = |label, message| Gui.action_button(
 		caption: Signal.const(label),
 		padding: theme.control_padding,
 		radius: theme.radius,
-		background: Rgb(theme.accent),
-		hover_background: Rgb(theme.accent_hover),
-		active_background: Rgb(theme.accent_active),
+		background: theme.accent,
+		hover_background: theme.accent_hover,
+		active_background: theme.accent_active,
 	},
 	message,
 )
@@ -37,7 +37,7 @@ main = || Ui.state(
 			[
 				Gui.heading("Counter"),
 				Gui.column(
-					{ foreground: Rgb(theme.text_secondary) },
+					{ foreground: theme.text_secondary },
 					["A minimal Roc Signals application."],
 				),
 				Gui.panel(
@@ -47,12 +47,12 @@ main = || Ui.state(
 						gap: 20,
 						border_width: 1,
 						radius: 10,
-						border_color: Rgb(theme.border),
-						background: Rgb(theme.surface),
+						border_color: theme.border,
+						background: theme.surface,
 					},
 					[
 						Gui.column(
-							{ test_id: "count", font_size: 44, foreground: Rgb(theme.text_primary) },
+							{ test_id: "count", font_size: 44, foreground: theme.text_primary },
 							[Gui.text_s(count.signal().map(|value| value.to_str()))],
 						),
 						Gui.row(
