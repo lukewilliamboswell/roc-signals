@@ -22,7 +22,7 @@ from urllib.request import urlopen
 import zipfile
 
 import bundle_browser
-from dependency_artifacts import read_lock
+from dependency_artifacts import read_lock, run_attestation_verify
 from compiler_pins import read_pin, replace_pin
 import known_failures
 import test as driver
@@ -89,10 +89,12 @@ def verify_release_provenance(directory: Path, manifest: dict) -> None:
     if "site" in manifest:
         paths.append(directory / manifest["site"]["name"])
     for path in paths:
-        subprocess.run(["gh", "attestation", "verify", str(path), "--repo", REPOSITORY,
-                        "--signer-workflow", policy["signer_workflow"],
-                        "--source-digest", manifest["source_sha"],
-                        "--source-ref", policy["source_ref"], "--deny-self-hosted-runners"], check=True)
+        run_attestation_verify([
+            "gh", "attestation", "verify", str(path), "--repo", REPOSITORY,
+            "--signer-workflow", policy["signer_workflow"],
+            "--source-digest", manifest["source_sha"],
+            "--source-ref", policy["source_ref"], "--deny-self-hosted-runners",
+        ])
 
 
 def extract(archive: Path, directory: Path) -> None:

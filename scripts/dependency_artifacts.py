@@ -62,15 +62,8 @@ def read_lock(path):
     return lock
 
 
-def verify_archive(path, entry):
-    if path.is_symlink() or path.stat().st_size != entry["size"] or sha256(path) != entry["sha256"]:
-        raise ValueError("dependency archive differs from its locked digest or size")
-    command = [
-        "gh", "attestation", "verify", str(path), "--repo", entry["repository"],
-        "--signer-workflow", entry["signer_workflow"],
-        "--source-digest", entry["source_sha"], "--source-ref", entry["source_ref"],
-        "--deny-self-hosted-runners",
-    ]
+def run_attestation_verify(command):
+    """Run one fail-closed verifier with bounded retries for GitHub 5xx outages."""
     for attempt in range(ATTESTATION_ATTEMPTS):
         try:
             result = subprocess.run(command, check=True, capture_output=True, text=True)
@@ -90,6 +83,17 @@ def verify_archive(path, entry):
             print(f"GitHub attestation service unavailable; retrying in {delay}s "
                   f"({attempt + 2}/{ATTESTATION_ATTEMPTS})", file=sys.stderr)
             time.sleep(delay)
+
+
+def verify_archive(path, entry):
+    if path.is_symlink() or path.stat().st_size != entry["size"] or sha256(path) != entry["sha256"]:
+        raise ValueError("dependency archive differs from its locked digest or size")
+    run_attestation_verify([
+        "gh", "attestation", "verify", str(path), "--repo", entry["repository"],
+        "--signer-workflow", entry["signer_workflow"],
+        "--source-digest", entry["source_sha"], "--source-ref", entry["source_ref"],
+        "--deny-self-hosted-runners",
+    ])
 
 
 def fetch(entry, cache):
