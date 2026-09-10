@@ -1,4 +1,5 @@
 # size: 800x600
-# diagnostic: GUI-03. At the smaller supported size the detail panel is laid
-# out almost entirely past the right edge as well as below the bottom.
+# The columns region yields its width to the fixed detail panel rather than
+# taking its intrinsic width, so the panel stays on screen at the smaller
+# supported size and the columns scroll horizontally instead.
 expect-onscreen #task-detail

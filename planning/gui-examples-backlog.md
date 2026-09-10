@@ -21,7 +21,6 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 
 | ID | Priority | Work item | Evidence | Primary owner |
 | --- | --- | --- | --- | --- |
-| GUI-03 | P1 | Board: make the complete board and detail actions reachable | Screenshots + wheel attempts | Board layout; GPUI verification |
 | GUI-04 | P1 | Keep confirmation dialogs inside the allowed viewport | Screenshot | GUI dialog layout + Notes |
 | GUI-08 | P2 | Defaulted nominal `Gui.Style` records | Pinned compiler probes | Public Roc GUI API |
 | GUI-09 | P2 | Make asset-verification warnings match rendered behavior | Source | Board/Explorer asset views |
@@ -39,33 +38,6 @@ GUI-17 is closed; GUI-16 is narrowed to what has not been executed here.
 | GUI-24 | P3 | Optional visual refinements, after operability | Design | Examples + narrowly justified API work |
 
 ## Correctness and operability
-
-### GUI-03 — Board scrolling and detail reachability
-
-At 1200×820, the default detail panel ends at the priority controls: movement
-and deletion controls below them are off-screen. Added cards also fall below
-the viewport. At 800×600 the detail panel is almost entirely off the right
-edge. Wheel-down attempts over the detail editor and the outer left margin
-did not reveal the missing controls:
-[initial](gui-examples-review/2026-09-10/task-board-wide.png),
-[detail wheel](gui-examples-review/2026-09-10/task-board-wide-after-scroll.png),
-[outer wheel](gui-examples-review/2026-09-10/task-board-root-scroll.png),
-[800×600](gui-examples-review/2026-09-10/task-board-800x600.png).
-
-The board region clips both axes; the inner column group declares horizontal
-scrolling, but the detail panel has no vertical scroll region
-([main.roc](../examples-gui/task-board/main.roc), `board_view`, `column_view`,
-`detail_view`). The host has a window scrolling fallback; its existence is
-not evidence that clipped descendant controls are reachable. These wheel
-checks do not exhaust keyboard or scrollbar paths.
-
-Acceptance: explicitly size and scroll board columns and the detail region;
-all seeded and newly appended cards and all detail actions must be reachable
-by pointer and keyboard at the supported sizes. Keep scroll ownership clear;
-do not repair this with host tree scans or application-state layout inference.
-Test large boards, long titles/notes, filtering, focus visibility, and resize.
-If a new minimum size is chosen, make it an explicit public/window contract,
-not a silent replacement for usable overflow.
 
 ### GUI-04 — Viewport-bounded dialogs
 
@@ -232,12 +204,12 @@ semantic assertions stay in `specs/` and presentation assertions in
 kept for failures; captures name the window by the process id the driver
 started and never grab a screen region.
 
-Five scenarios are landed as stated diagnostics because the defects they
-reproduce are open: GUI-02 (board editor ownership), GUI-03 at both sizes,
-GUI-04 (dialog at 360×600), GUI-10 (explorer inspector at 800×600), and a
-counter reading laid out past the edges of the 360×240 minimum window, which
-was not previously recorded here. A diagnostic that starts passing fails the
-run.
+Scenarios whose defect is still open are landed as stated diagnostics: GUI-04
+(dialog at 360×600), GUI-10 (explorer inspector at 800×600), and the counter
+reading laid out past the edges of the 360×240 minimum window, recorded under
+GUI-14. A diagnostic that starts passing fails the run, so each fix has had to
+promote its own scenario to an ordinary check — that is how the board editor
+ownership and detail reachability fixes were confirmed.
 
 Remaining: the driver has only been executed on Apple Silicon macOS. Window
 captures are macOS-only; the scripts themselves need running under the Linux
@@ -365,8 +337,7 @@ mandatory spacing/color dogma is approved by this backlog.
 
 ## Delivery sequence
 
-1. Address GUI-03/04 core reachability in parallel with their presentation
-   tests.
+1. Address GUI-04 dialog reachability alongside its presentation tests.
 2. Add GUI-16/17 regressions alongside each fix, not only at the end.
 3. Migrate GUI-08. This simplifies later example edits without needing new
    rendering semantics.
