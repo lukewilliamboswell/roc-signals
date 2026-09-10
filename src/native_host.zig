@@ -2460,6 +2460,24 @@ fn hostEnvVar(name: abi.RocStr) callconv(.c) abi.EnvVarResult {
     return result;
 }
 
+/// The Rust host's synchronous filesystem runner and the release for the
+/// packet buffer it hands back. Both link from the GPUI host crate.
+extern fn signals_files_run(kind: u32, request_ptr: [*]const u8, request_len: usize, out_ptr: *[*]u8, out_len: *usize) callconv(.c) u32;
+extern fn signals_files_release(ptr: [*]u8, len: usize) callconv(.c) void;
+
+/// Hosted `Files.run!`: performs one filesystem request on the calling thread
+/// through the Rust host and returns its `files1` packet. Roc transfers the
+/// request string here; the packet text is one owned reference handed back.
+fn hostFilesRun(kind: u32, request: abi.RocStr) callconv(.c) abi.FilesRun {
+    const roc_host = currentRocHost();
+    defer request.decref(roc_host);
+    var out_ptr: [*]u8 = undefined;
+    var out_len: usize = 0;
+    const failed = signals_files_run(kind, request.asSlice().ptr, request.asSlice().len, &out_ptr, &out_len);
+    defer signals_files_release(out_ptr, out_len);
+    return .{ .text = abi.RocStr.fromSlice(out_ptr[0..out_len], roc_host), .failed = failed == 1 };
+}
+
 fn hostDbg(bytes: [*]const u8, len: usize) callconv(.c) void {
     rocDbgFn(currentRocHost(), bytes, len);
 }
@@ -3897,6 +3915,7 @@ comptime {
         @export(&hostRealloc, .{ .name = "roc_realloc", .visibility = .hidden });
         @export(&hostDbg, .{ .name = "roc_dbg", .visibility = .hidden });
         @export(&hostEnvVar, .{ .name = "roc_env_var", .visibility = .hidden });
+        @export(&hostFilesRun, .{ .name = "roc_files_run", .visibility = .hidden });
         @export(&hostExpectFailed, .{ .name = "roc_expect_failed", .visibility = .hidden });
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });
         @export(&eachBoolSinkPush, .{ .name = "roc_each_bool_sink_push", .visibility = .hidden });

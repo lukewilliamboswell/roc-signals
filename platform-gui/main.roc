@@ -19,6 +19,7 @@ platform ""
 		"roc_rows_snapshot_description_sink_push": EachSink.push_snapshot_description!,
 		"roc_rows_snapshot_sink_push": EachSink.push_snapshot!,
 		"roc_env_var": Env.var!,
+		"roc_files_run": Files.run!,
 		"roc_host_value_clone": HostValue.clone!,
 		"roc_host_value_get_with_capability": HostValue.get_with_capability!,
 		"roc_host_value_get_with_split": HostValue.get_with_split!,

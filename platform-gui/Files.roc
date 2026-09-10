@@ -127,6 +127,100 @@ Files := [].{
 	}
 	LogChunk : { path : Str, text : Str, cursor : LogCursor, change : LogChange, state : LogState }
 
+	## Hosted: run one filesystem request to completion and return its result
+	## packet; `failed` selects the error decoder. Callable only from an effect.
+	run! : U32, Str => { failed : Bool, text : Str }
+
+	## Read a complete UTF-8 file of at most one MiB.
+	read_text! : Str => Try(TextFile, Error)
+	read_text! = |path| call!(Node.TaskKind.ReadText, [path], decode_text)
+
+	## Write the text through a temporary file and an atomic rename; at most one
+	## MiB. Replacement is atomic, but parent-directory durability across power
+	## loss is not guaranteed.
+	write_text! : { path : Str, text : Str } => Try(Written, Error)
+	write_text! = |file| call!(Node.TaskKind.WriteText, [file.path, file.text], decode_written)
+
+	## Scan a folder recursively: at most 10,000 entries and 64 levels, symlinks
+	## reported but never traversed, four MiB of paths including the root.
+	scan! : Str => Try(Scan, Error)
+	scan! = |root| call!(Node.TaskKind.ScanDirectory, [root], decode_scan)
+
+	## List a folder's direct children.
+	list_directory! : Str => Try(Directory, Error)
+	list_directory! = |path| call!(Node.TaskKind.ListDirectory, [path], decode_directory)
+
+	## Hand a regular file to its associated application.
+	open_path! : Str => Try(Opened, Error)
+	open_path! = |path| call!(Node.TaskKind.OpenPath, [path], decode_opened)
+
+	## Read a bounded text preview; the result reports truncation.
+	read_preview! : Str => Try(Preview, Error)
+	read_preview! = |path| call!(Node.TaskKind.ReadPreview, [path], decode_preview)
+
+	## Read the next chunk of a log from a cursor, observing rotation and
+	## truncation; the cursor is app-owned data.
+	read_log! : { path : Str, position : LogPosition } => Try(LogChunk, Error)
+	read_log! = |request| {
+		fields = match request.position {
+			LogPosition.Start => ["start", "0", "0", "0"]
+			LogPosition.End => ["end", "0", "0", "0"]
+			LogPosition.After(cursor) => ["after", cursor.device.to_str(), cursor.inode.to_str(), cursor.offset.to_str()]
+		}
+		call!(Node.TaskKind.ReadLog, [request.path].concat(fields), decode_log)
+	}
+
+	## Verify a manifest of 1 to 256 assets against the host's assets root.
+	verify_assets! : List(AssetEntry) => Try(List(AssetCheck), Error)
+	verify_assets! = |entries| call!(Node.TaskKind.VerifyAssets, asset_fields(entries), decode_asset_report)
+
+	call! : Node.TaskKind, List(Str), (Str -> a) => Try(a, Error)
+	call! = |kind, fields, decode| {
+		result = Files.run!(kind_id(kind), packet(fields))
+		if result.failed {
+			Err(decode_error(result.text))
+		} else {
+			Ok(decode(result.text))
+		}
+	}
+
+	# Protocol ids from protocol/native-protocol.json; the host's decoder
+	# selects the request shape by this number.
+	kind_id : Node.TaskKind -> U32
+	kind_id = |kind| match kind {
+		External => 0
+		ChooseFile => 1
+		ChooseDirectory => 2
+		ChooseSavePath => 3
+		ReadText => 4
+		WriteText => 5
+		ScanDirectory => 6
+		ListDirectory => 7
+		OpenPath => 8
+		ReadPreview => 9
+		ReadLog => 10
+		VerifyAssets => 11
+	}
+
+	asset_fields : List(AssetEntry) -> List(Str)
+	asset_fields = |entries| {
+		if entries.is_empty() or entries.len() > 256 {
+			crash "Files asset manifests contain 1 to 256 entries"
+		}
+		entries.fold(
+			[entries.len().to_str()],
+			|acc, entry| {
+				if entry.name.is_empty() or entry.name.to_utf8().len() > 1024 {
+					crash "Files asset names contain 1 to 1024 UTF-8 bytes"
+				}
+				if !valid_sha256(entry.sha256) {
+					crash "Files asset digests are 64 lowercase hex characters"
+				}
+				acc.append(entry.name).append(entry.sha256)
+			},
+		)
+	}
+
 	## Create one file-choice task. The label is diagnostic and never routes work.
 	choose_file_task : Str -> Signal.Task(Choice, Error)
 	choose_file_task = |name| file_task(Node.TaskKind.ChooseFile, name, decode_choice)

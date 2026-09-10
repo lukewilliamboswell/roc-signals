@@ -107,45 +107,7 @@ impl Manager {
                     request => {
                         let worker_cancel = cancel.clone();
                         let worker = cx.background_executor().spawn(async move {
-                            match request {
-                                Request::ReadText(path) => {
-                                    file_io::read_text(&path, &worker_cancel)
-                                        .map(|file| packet(&[&file.path, &file.text]))
-                                }
-                                Request::WriteText { path, text } => {
-                                    file_io::write_text(&path, &text, &worker_cancel, id)
-                                        .map(|file| packet(&[&file.path, &file.bytes.to_string()]))
-                                }
-                                Request::Scan(path) => {
-                                    file_io::scan(&path, &worker_cancel).map(scan_packet)
-                                }
-                                Request::ListDirectory(path) => {
-                                    file_io::list_directory(&path, &worker_cancel).map(|listing| {
-                                        entries_packet(&listing.path, listing.entries)
-                                    })
-                                }
-                                Request::OpenPath(path) => {
-                                    file_io::open_path(&path, &worker_cancel)
-                                        .map(|opened| packet(&[&opened.path]))
-                                }
-                                Request::ReadPreview(path) => {
-                                    file_io::read_preview(&path, &worker_cancel).map(|preview| {
-                                        packet(&[
-                                            &preview.path,
-                                            &preview.text,
-                                            if preview.truncated { "true" } else { "false" },
-                                        ])
-                                    })
-                                }
-                                Request::ReadLog { path, position } => {
-                                    file_io::read_log(&path, position, &worker_cancel)
-                                        .map(log_packet)
-                                }
-                                Request::VerifyAssets(entries) => {
-                                    assets::verify(&entries, &worker_cancel).map(assets_packet)
-                                }
-                                _ => unreachable!(),
-                            }
+                            run_request(request, &worker_cancel, id)
                         });
                         cx.spawn(async move |runtime, cx| {
                             // A successful save may already have committed its rename.
@@ -461,6 +423,100 @@ fn choice(path: Option<PathBuf>) -> Result<String, FileError> {
             Ok(packet(&["chosen", path]))
         }
     }
+}
+
+/// Performs one filesystem request to completion on the calling thread and
+/// returns its result packet. Choosers need the windowing event loop and are
+/// refused here; the worker path and the synchronous `Files` primitives share
+/// everything else.
+fn run_request(request: Request, cancel: &AtomicBool, id: u64) -> Result<String, FileError> {
+        match request {
+            Request::ReadText(path) => {
+                file_io::read_text(&path, cancel)
+                    .map(|file| packet(&[&file.path, &file.text]))
+            }
+            Request::WriteText { path, text } => {
+                file_io::write_text(&path, &text, cancel, id)
+                    .map(|file| packet(&[&file.path, &file.bytes.to_string()]))
+            }
+            Request::Scan(path) => {
+                file_io::scan(&path, cancel).map(scan_packet)
+            }
+            Request::ListDirectory(path) => {
+                file_io::list_directory(&path, cancel).map(|listing| {
+                    entries_packet(&listing.path, listing.entries)
+                })
+            }
+            Request::OpenPath(path) => {
+                file_io::open_path(&path, cancel)
+                    .map(|opened| packet(&[&opened.path]))
+            }
+            Request::ReadPreview(path) => {
+                file_io::read_preview(&path, cancel).map(|preview| {
+                    packet(&[
+                        &preview.path,
+                        &preview.text,
+                        if preview.truncated { "true" } else { "false" },
+                    ])
+                })
+            }
+            Request::ReadLog { path, position } => {
+                file_io::read_log(&path, position, cancel)
+                    .map(log_packet)
+            }
+            Request::VerifyAssets(entries) => {
+                assets::verify(&entries, cancel).map(assets_packet)
+            }
+            Request::ChooseFile | Request::ChooseDirectory | Request::ChooseSavePath { .. } => Err(FileError::Unavailable(
+            "file choosers need a task; they cannot run synchronously".into(),
+        )),
+        }
+}
+
+/// Identities for synchronous requests, disjoint from engine task request ids
+/// so temporary-file names never collide with a worker's.
+fn next_sync_request_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 62);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Runs one filesystem request synchronously for the Zig host's hosted `Files`
+/// functions. The result packet is written to a buffer the caller must return
+/// through `signals_files_release`; the return value is 1 when the packet is
+/// an error packet.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_run(
+    kind: u32,
+    request_ptr: *const u8,
+    request_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> u32 {
+    let request_bytes = unsafe { std::slice::from_raw_parts(request_ptr, request_len) };
+    let result = match std::str::from_utf8(request_bytes) {
+        Ok(text) => match Request::decode(kind, text) {
+            Ok(request) => run_request(request, &AtomicBool::new(false), next_sync_request_id()),
+            Err(reason) => Err(FileError::InvalidPath(format!("malformed Files request: {reason}"))),
+        },
+        Err(_) => Err(FileError::InvalidUtf8("Files request is not UTF-8".into())),
+    };
+    let (failed, payload) = encode_result(result);
+    let mut bytes = payload.into_bytes().into_boxed_slice();
+    unsafe {
+        *out_len = bytes.len();
+        *out_ptr = bytes.as_mut_ptr();
+    }
+    std::mem::forget(bytes);
+    u32::from(failed)
+}
+
+/// Frees a packet buffer returned by `signals_files_run`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_release(ptr: *mut u8, len: usize) {
+    if len == 0 {
+        return;
+    }
+    drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) });
 }
 
 fn settle(result: Result<String, FileError>, cancel: &AtomicBool) -> (bool, String) {
