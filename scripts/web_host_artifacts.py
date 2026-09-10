@@ -33,6 +33,9 @@ def source_fingerprint(root=ROOT):
     ], cwd=root)
     if not tree:
         raise ValueError("web host source inventory is empty")
+    for record in tree.split(b"\0"):
+        if record and not record.startswith((b"100644 blob ", b"100755 blob ")):
+            raise ValueError("web host source inventory must contain regular files")
     return hashlib.sha256(tree).hexdigest()
 
 
@@ -67,7 +70,8 @@ def verified_hosts(lock_path, cache, root=ROOT):
     if set(lock["artifacts"]) != set(IDENTITIES):
         raise ValueError("web host lock must select the complete five-target host set")
     fingerprint = source_fingerprint(root)
-    for identity, target in zip(IDENTITIES, OUTPUTS):
+    for target in OUTPUTS:
+        identity = "web-host-" + target
         entry = lock["artifacts"][identity]
         if (entry["name"] != "web-host" or entry["target"] != target
                 or entry["repository"] != REPOSITORY or entry["signer_workflow"] != WORKFLOW
@@ -76,7 +80,8 @@ def verified_hosts(lock_path, cache, root=ROOT):
     with tempfile.TemporaryDirectory(prefix="signals-verified-web-hosts-") as temporary:
         destination = Path(temporary) / "inputs"
         materialize(lock_path, IDENTITIES, cache, destination)
-        for identity, target in zip(IDENTITIES, OUTPUTS):
+        for target in OUTPUTS:
+            identity = "web-host-" + target
             validate(destination / identity, target, fingerprint)
         yield destination
 
@@ -86,5 +91,6 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=Path, default=ROOT / "platform-web")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    for identity, target in zip(IDENTITIES, OUTPUTS):
+    for target in OUTPUTS:
+        identity = "web-host-" + target
         pack(target, args.source, args.output / (identity + ".tar"))

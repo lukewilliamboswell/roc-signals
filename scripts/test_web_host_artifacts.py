@@ -45,6 +45,20 @@ class WebHostArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "clean committed"):
                 hosts.source_fingerprint(root)
 
+    def test_fingerprint_rejects_non_regular_git_entries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.fixture(root)
+            source = root / "src/wasm_host.zig"
+            source.unlink()
+            source.symlink_to("native_host.zig")
+            subprocess.run(["git", "-C", root, "add", "src/wasm_host.zig"], check=True)
+            subprocess.run([
+                "git", "-C", root, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "symlink",
+            ], check=True)
+            with self.assertRaisesRegex(ValueError, "regular files"):
+                hosts.source_fingerprint(root)
+
     def test_release_lock_records_archive_and_input_hashes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

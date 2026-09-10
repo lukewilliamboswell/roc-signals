@@ -30,7 +30,8 @@ def prepare(directory, tag, environment):
     fingerprint = source_fingerprint()
     artifacts = {}
     with tempfile.TemporaryDirectory(prefix="signals-release-web-hosts-") as temporary:
-        for identity, target in zip(IDENTITIES, OUTPUTS):
+        for target in OUTPUTS:
+            identity = "web-host-" + target
             archive = directory / (identity + ".tar")
             entry = {"name": "web-host", "target": target, "repository": REPOSITORY,
                      "release": tag, "asset": archive.name, "sha256": sha256(archive),
