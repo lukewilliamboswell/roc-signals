@@ -1425,12 +1425,13 @@ visible range; ordinary containers enumerate direct children when rendered.
 See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
 `crates/gpui-host/README.md` for the boundary limits.
 
-### Linux GUI release candidates
+### GUI release candidates
 
 `GUI release candidate` (`gui-release.yml`) packages an already published
 host for the selected `x64glibc`, `arm64mac`, or `x64mingw` target. Linux includes the independently
 verified FreeType, glibc, LLVM unwinder, and xkbcommon releases. Apple Silicon uses
-the host-owned project interface catalog; macOS supplies system implementations. It runs no Cargo or Zig host build. Use a fresh checkout with
+the independently released, reviewed macOS interface catalog as final Roc linker
+inputs; macOS supplies the system implementations. It runs no Cargo or Zig host build. Use a fresh checkout with
 no `platform-gui/targets` directory and an immutable `deps-gui-host-<version>`
 release whose source fingerprint matches that checkout.
 
@@ -1474,14 +1475,15 @@ name the immutable GUI release. Host notices remain inside the platform; the
 original source companion remains at its independently attested host release,
 with its exact digest, size, and URL retained in the GUI manifest and embedded
 dependency lock. Candidate and published checks verify that source is available.
-Windows and macOS are outside this Linux RC and retain their separate release
-completion work.
+Each dispatch deliberately produces one native-target GUI package. Repeat the
+validated flow with a distinct tag for another target; this is independent of
+the web platform package and its browser/native-test-host release.
 
 The CI-only GUI release helper and its tests live under `.github/scripts`, outside
 the host build fingerprint, because packaging verified archives does not alter
 host bytes. Packaging-only changes therefore reuse a compatible host release;
 changes to actual host inputs still invalidate that compatibility check. The
-existing web release workflow and supported web release are independent.
+`Web release candidate` workflow and supported web release are independent.
 
 ### Validate generated macOS bundles
 
