@@ -46,7 +46,7 @@ light : Theme
 light = { surface: Rgb(0xF4F6F7), panel: Rgb(0xFFFFFF), content: Rgb(0x1B2D36), muted: Rgb(0x51646F), accent: Rgb(0x2B6A92), border: Rgb(0xC3CED4) }
 
 panel_style : Signal(Theme) -> Gui.Attr
-panel_style = |theme| Gui.style_s(theme.map(|t| { ..Gui.style_default, padding: 24, gap: 16, border_width: 1, radius: 10, background: t.panel, border_color: t.border, foreground: t.content }))
+panel_style = |theme| Gui.style_s(theme.map(|t| Gui.Style.{ padding: 24, gap: 16, border_width: 1, radius: 10, background: t.panel, border_color: t.border, foreground: t.content }))
 
 main : () -> Elem
 main = || Ui.state(
@@ -59,7 +59,7 @@ main = || Ui.state(
 			},
 		)
 		Gui.column(
-			[Gui.style_s(theme.map(|t| { ..Gui.style_default, padding: 32, gap: 20, background: t.surface, foreground: t.content }))],
+			[Gui.style_s(theme.map(|t| Gui.Style.{ padding: 32, gap: 20, background: t.surface, foreground: t.content }))],
 			[Gui.panel([panel_style(theme)], [Gui.text("Themed content")])],
 		)
 	},
@@ -157,7 +157,7 @@ version number and the Zig validator rejects unknown shapes
 ([docs/native-gui-protocol.md](../docs/native-gui-protocol.md)) — so adding
 fields is the anticipated evolution, not a format break. Propose a version 2
 with a small set of state and role colors, each defaulting to the inherit
-sentinel so `..Gui.style_default` continues to mean "host behavior":
+sentinel so an omitted `Gui.Style` field continues to mean "host behavior":
 
 - `hover_background`, `active_background` — **shipped** in style v2 (protocol
   10) for buttons; an explicit value always wins, sentinels preserve the old

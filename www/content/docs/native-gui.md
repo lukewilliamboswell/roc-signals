@@ -69,10 +69,13 @@ all 39 specs, and confirmed rendering for every app.
 ## Controls and layout
 
 `Gui.row`, `Gui.column`, and `Gui.panel` take an attribute list followed by a
-child list. `Gui.style` accepts a complete record based on `Gui.style_default`;
-`Gui.style_s` changes that record through normal signal propagation. Each element
-accepts one style. A supplied style replaces the control's defaults, so include
-padding or borders explicitly when you want them.
+child list. `Gui.style` accepts a `Gui.Style` record in which every field has a
+default, so a literal names only the fields it changes:
+`Gui.style({ padding: 12, gap: 4 })`. `Gui.style_s` changes that record through
+normal signal propagation; a record built inside a `Signal.map` transform is
+constructed explicitly as `Gui.Style.{ ... }` so its omitted fields still take
+their defaults. Each element accepts one style. A supplied style replaces the
+control's defaults, so include padding or borders explicitly when you want them.
 
 Styles specify logical-pixel dimensions, spacing, padding, colors, borders,
 radius, font size, and overflow. Lengths are `Auto`, `Fill`, or `Px(value)`;
@@ -148,7 +151,7 @@ navigation while open.
 `Gui.image({ source, label }, attrs)` renders a picture from a relative path
 inside the host's assets root, sized and rounded by its style, for example
 `Gui.image({ source: "avatars/maya.png", label: "Maya avatar" },
-[Gui.style({ ..Gui.style_default, width: Px(24), height: Px(24), radius: 24 })])`.
+[Gui.style({ width: Px(24), height: Px(24), radius: 24 })])`.
 Launch the host with `--assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
 choose the root; the default is `assets/` beside the executable. Absolute
 paths, `..` traversal, URIs, and symbolic links never resolve, and a missing or

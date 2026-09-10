@@ -19,15 +19,14 @@ entry_view : Ui.Row(Feed.Entry), Ui.State(Str) -> Elem
 entry_view = |row, selected| {
 	key = row.key()
 	Gui.row(
-		[Gui.style({ ..Gui.style_default, height: Px(44), gap: 10, overflow_x: Clip, overflow_y: Clip }), Gui.font_family(feed_font), Gui.test_id("event-${key}"), Gui.selected_s(Signal.select(selected.signal(), key))],
+		[Gui.style({ height: Px(44), gap: 10, overflow_x: Clip, overflow_y: Clip }), Gui.font_family(feed_font), Gui.test_id("event-${key}"), Gui.selected_s(Signal.select(selected.signal(), key))],
 		[
 			Gui.button("Inspect ${key}", selected.on_unit(|_| key)),
 			Gui.column(
 				[
 					Gui.style_s(
 						row.signal().map(
-							|entry| {
-								..Gui.style_default,
+							|entry| Gui.Style.{
 								width: Px(70),
 								height: Fill,
 								overflow_x: Clip,
@@ -45,10 +44,10 @@ entry_view = |row, selected| {
 				[Gui.text_s(row.signal().map(|entry| entry.severity.to_str()))],
 			),
 			Gui.column(
-				[Gui.style({ ..Gui.style_default, width: Px(110), height: Fill, overflow_x: Clip, overflow_y: Clip, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+				[Gui.style({ width: Px(110), height: Fill, overflow_x: Clip, overflow_y: Clip, font_size: 13, foreground: Rgb(0xA9BFCC) })],
 				[Gui.text_s(row.signal().map(|entry| entry.component))],
 			),
-			Gui.column([Gui.style({ ..Gui.style_default, grow: True, height: Fill, overflow_x: Clip, overflow_y: Clip })], [Gui.text_s(row.signal().map(|entry| entry.message))]),
+			Gui.column([Gui.style({ grow: True, height: Fill, overflow_x: Clip, overflow_y: Clip })], [Gui.text_s(row.signal().map(|entry| entry.message))]),
 		],
 	)
 }
@@ -80,19 +79,18 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 	visible = projection.map(|value| Feed.visible(value.history, value.query, value.errors))
 	inspection = { history, selected: selected.signal() }.Signal
 	Gui.column(
-		[Gui.style({ ..Gui.style_default, padding: 24, gap: 12, width: Fill, height: Fill, overflow_y: Clip }), Gui.embedded_fonts([{ family: feed_font, bytes: source_code_pro }])],
+		[Gui.style({ padding: 24, gap: 12, width: Fill, height: Fill, overflow_y: Clip }), Gui.embedded_fonts([{ family: feed_font, bytes: source_code_pro }])],
 		[
 			Gui.heading("Activity Monitor"),
 			Gui.column(
-				[Gui.style({ ..Gui.style_default, foreground: Rgb(0xA9BFCC) })],
+				[Gui.style({ foreground: Rgb(0xA9BFCC) })],
 				[Gui.text("Follow a live log file, or replay a deterministic sample feed.")],
 			),
 			Gui.panel(
 				[
 					Gui.style_s(
 						session.map(
-							|state| {
-								..Gui.style_default,
+							|state| Gui.Style.{
 								padding: 8,
 								radius: 6,
 								background: Rgb(0x1B2A33),
@@ -117,11 +115,11 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 				],
 			),
 			Gui.row(
-				[Gui.style({ ..Gui.style_default, gap: 8 })],
+				[Gui.style({ gap: 8 })],
 				[
 					Gui.action_button(
 						{ label: Signal.const("Open log…"), enabled: busy.map(|value| !value) },
-						[Gui.style({ ..Gui.style_default, padding: 8, radius: 6, background: Rgb(0x2E6FA3), hover_background: Rgb(0x3A80B8), active_background: Rgb(0x265D89) })],
+						[Gui.style({ padding: 8, radius: 6, background: Rgb(0x2E6FA3), hover_background: Rgb(0x3A80B8), active_background: Rgb(0x265D89) })],
 						Ui.action(
 							model.signal(),
 							|value| Ui.update_states([
@@ -147,11 +145,11 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 					Gui.action_button({ label: Signal.const("Cancel operation"), enabled: busy }, [], Ui.action(session, |state| Workflow.cancel(model, tasks, state.phase))),
 				],
 			),
-			Gui.column([Gui.test_id("activity-status"), Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC) })], [Gui.text_s(session.map(|state| state.notice))]),
+			Gui.column([Gui.test_id("activity-status"), Gui.style({ font_size: 13, foreground: Rgb(0xA9BFCC) })], [Gui.text_s(session.map(|state| state.notice))]),
 			Ui.when(
 				replay,
 				|| Gui.row(
-					[Gui.style({ ..Gui.style_default, gap: 8 })],
+					[Gui.style({ gap: 8 })],
 					[
 						Gui.action_button(
 							{
@@ -172,14 +170,14 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							running.signal(),
 							|| Gui.text(""),
 							|| Gui.column(
-								[Gui.style({ ..Gui.style_default, padding: 8, font_size: 13, foreground: Rgb(0xE8C27A) })],
+								[Gui.style({ padding: 8, font_size: 13, foreground: Rgb(0xE8C27A) })],
 								[Gui.text("Replay paused")],
 							),
 						),
 					],
 				),
 				|| Gui.row(
-					[Gui.style({ ..Gui.style_default, gap: 8 })],
+					[Gui.style({ gap: 8 })],
 					[
 						Gui.action_button(
 							{
@@ -206,46 +204,46 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 				),
 			),
 			Gui.row(
-				[Gui.style({ ..Gui.style_default, gap: 12 })],
+				[Gui.style({ gap: 12 })],
 				[
 					Gui.button("Clear history", model.on_unit(|value| { ..value, history: Feed.clear(value.history) })),
 					Gui.column(
-						[Gui.style({ ..Gui.style_default, padding: 8, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+						[Gui.style({ padding: 8, font_size: 13, foreground: Rgb(0xA9BFCC) })],
 						[Gui.text_s(history.map(|value| "Retained: ${value.rows.len().to_str()} / 1000"))],
 					),
 					Gui.column(
-						[Gui.style({ ..Gui.style_default, padding: 8, font_size: 13, foreground: Rgb(0x93A9B6) })],
+						[Gui.style({ padding: 8, font_size: 13, foreground: Rgb(0x93A9B6) })],
 						[Gui.text_s(history.map(|value| "Text: ${value.bytes.to_str()} / 4194304 bytes · Evicted: ${value.discarded.to_str()}"))],
 					),
 				],
 			),
 			Gui.row(
-				[Gui.style({ ..Gui.style_default, gap: 16 })],
+				[Gui.style({ gap: 16 })],
 				[
-					Gui.text_input({ label: "Filter activity", value: query.signal() }, [Gui.placeholder("Filter activity…"), Gui.style({ ..Gui.style_default, width: Px(240), gap: 4 })], query.on_str(|_, value| value)),
+					Gui.text_input({ label: "Filter activity", value: query.signal() }, [Gui.placeholder("Filter activity…"), Gui.style({ width: Px(240), gap: 4 })], query.on_str(|_, value| value)),
 					Gui.checkbox({ label: "Errors only", checked: errors_only.signal() }, [Gui.enabled_s(replay)], errors_only.on_bool(|_, value| value)),
 					Gui.checkbox({ label: "Follow latest", checked: follow_tail.signal() }, [], follow_tail.on_bool(|_, value| value)),
 				],
 			),
 			Gui.row(
-				[Gui.style({ ..Gui.style_default, gap: 16, grow: True, width: Fill, height: Fill })],
+				[Gui.style({ gap: 16, grow: True, width: Fill, height: Fill })],
 				[
 					Gui.column(
-						[Gui.style({ ..Gui.style_default, grow: True, gap: 0, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip })],
+						[Gui.style({ grow: True, gap: 0, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip })],
 						[
 							Ui.when(
 								visible.map(|rows| rows.len() == 0),
 								|| Gui.column(
-									[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
+									[Gui.style({ font_size: 13, foreground: Rgb(0x93A9B6) })],
 									[Gui.text("No matching events. Start the replay, open a log, or adjust the filter.")],
 								),
 								|| Gui.text(""),
 							),
-							Gui.virtual_list({ row_height: 44, follow_tail: follow_tail.signal() }, [Gui.test_id("activity-list"), Gui.style({ ..Gui.style_default, width: Fill, height: Fill, grow: True })], [Ui.each(visible, |row| entry_view(row, selected))]),
+							Gui.virtual_list({ row_height: 44, follow_tail: follow_tail.signal() }, [Gui.test_id("activity-list"), Gui.style({ width: Fill, height: Fill, grow: True })], [Ui.each(visible, |row| entry_view(row, selected))]),
 						],
 					),
 					Gui.panel(
-						[Gui.style({ ..Gui.style_default, width: Px(340), padding: 16, gap: 12, radius: 8, background: Rgb(0x283A47), overflow_x: Scroll, overflow_y: Scroll })],
+						[Gui.style({ width: Px(340), padding: 16, gap: 12, radius: 8, background: Rgb(0x283A47), overflow_x: Scroll, overflow_y: Scroll })],
 						[
 							Gui.heading("Event inspector"),
 							Gui.column(
@@ -268,10 +266,10 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							Ui.when(
 								session.map(|state| !state.lines.partial.is_empty()),
 								|| Gui.column(
-									[Gui.style({ ..Gui.style_default, gap: 4, height: Px(100), overflow_x: Scroll, overflow_y: Scroll })],
+									[Gui.style({ gap: 4, height: Px(100), overflow_x: Scroll, overflow_y: Scroll })],
 									[
 										Gui.column(
-											[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+											[Gui.style({ font_size: 13, foreground: Rgb(0xA9BFCC) })],
 											[Gui.heading("Unterminated line")],
 										),
 										Gui.column([Gui.font_family(feed_font)], [Gui.text_s(session.map(|state| state.lines.partial))]),
