@@ -284,9 +284,6 @@ def main():
                     stage_dependency_inputs(inputs, (XKBCOMMON,), stage)
             if package == 'gui':
                 validate_gui_link_inputs(stage / 'targets')
-                if macos_targets:
-                    from check_macos_interfaces import validate_platform
-                    validate_platform(stage, roc, root=ROOT)
             for name in ['LICENSE', 'THIRD_PARTY_LICENSES.md']:
                 if (ROOT / name).is_file():
                     shutil.copyfile(ROOT / name, stage / name)

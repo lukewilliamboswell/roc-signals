@@ -126,7 +126,7 @@ def run(roc: str, args, output: Path) -> None:
         try:
             for command in (
                 [roc, "check", source],
-                [roc, "test", source],
+                [roc, "test", "--opt=dev", source],
                 [roc, "build", f"--target={target}", "--opt=dev", "--no-cache", f"--output={executable}", source],
             ):
                 print("\n==> " + " ".join(map(str, command)), flush=True)

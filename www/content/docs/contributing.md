@@ -795,9 +795,12 @@ host and public apps production build without starting a server:
 python3 scripts/serve.py --no-server --app-opt size
 ```
 
+Routine Roc tests and native smoke builds use `--opt=dev` to keep feedback fast.
 The pinned compiler's dev backend currently emits invalid Wasm for unit-valued
-capability callbacks (see `UPSTREAM_COMPILER_BUGS.md`, case 10). The optional
-`--app-opt dev` build is a compiler diagnostic, not a passing release gate or a
+capability callbacks (see `UPSTREAM_COMPILER_BUGS.md`, case 10), so ordinary
+Wasm smoke builds use `--opt=size` as a narrow workaround. TODO: switch those
+builds to `--opt=dev` once the upstream bug is fixed. The optional `--app-opt
+dev` site build remains a compiler diagnostic, not a passing release gate or a
 deployable alternative. Keep artifact validation enabled. After checking dev
 output, rebuild with `--app-opt size`; both modes write `dist/`.
 
@@ -1552,13 +1555,13 @@ those interfaces host-build dependencies.
 
 ### Validate generated macOS bundles
 
-Local macOS bundles, including `--no-build`, require native Apple Silicon.
-Before creating the bundle, admission links every maintained GUI example with
-the selected released host archives and interface inputs, then runs its native
-specs without modifying either artifact. Mac CI consumes the immutable host and
-interface locks and then exercises the resulting archive over HTTP with an empty
-Roc cache; it does not install Rust, build Cargo, build the Zig engine, download
-the Metal toolchain, or regenerate TBDs:
+Creating a bundle from the reviewed locks is platform-independent. Native Apple
+Silicon validation happens after bundling: the macOS runner downloads the same
+candidate as the other smoke runners, serves it over HTTP with an empty Roc
+cache, final-links every maintained GUI example against the selected released
+host archives and interface inputs, and runs its native specs. It does not
+install Rust, build Cargo, build the Zig engine, download the Metal toolchain,
+or regenerate TBDs:
 
 ```sh
 GUI_HOST_LOCK=gui-host.lock.json python3 scripts/minici gui
