@@ -387,19 +387,12 @@ def check(directory, roc, published=False):
         (gui_smoke.wayland if target == 'x64glibc' else gui_smoke.run)(binaries)
 
 
-def verify_attestations(directory, manifest):
-    for path in [directory / MANIFEST, *(directory / a['name'] for a in manifest['assets'].values())]:
-        run(['gh', 'attestation', 'verify', path, '--repo', REPOSITORY, '--signer-workflow', WORKFLOW,
-             '--source-digest', manifest['source_sha'], '--source-ref', 'refs/heads/main', '--deny-self-hosted-runners'])
-
-
 def publish(directory):
     manifest = read_manifest(directory)
     if (os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch' or os.environ.get('GITHUB_REF') != 'refs/heads/main'
             or os.environ.get('GITHUB_REPOSITORY') != REPOSITORY or os.environ.get('GITHUB_SHA') != manifest['source_sha']
             or clean_sha() != manifest['source_sha']):
         raise ValueError('GUI publication requires the tested main dispatch in the producer repository')
-    verify_attestations(directory, manifest)
     tag = manifest['tag']
     tags = api(f'repos/{REPOSITORY}/git/matching-refs/tags/{tag}')
     if any(item['ref'] == 'refs/tags/' + tag for item in tags):
@@ -432,9 +425,6 @@ def downloads(directory, roc):
         for item in expected['assets'].values():
             download(item['url'], stage / item['name'], item['size'])
         read_manifest(stage)
-        verify_attestations(stage, expected)
-        for path in [stage / MANIFEST, *(stage / a['name'] for a in expected['assets'].values())]:
-            run(['gh', 'release', 'verify-asset', expected['tag'], path, '--repo', REPOSITORY])
         dependencies.fetch(expected['dependencies']['artifacts']['gui-host-sources-' + selected_target(expected)], Path(temporary) / 'source-cache')
         check(stage, roc, published=True)
 

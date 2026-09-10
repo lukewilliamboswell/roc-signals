@@ -349,7 +349,6 @@ class GuiReleaseTests(unittest.TestCase):
         environment = {'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_REF': 'refs/heads/main',
                        'GITHUB_REPOSITORY': release.REPOSITORY, 'GITHUB_SHA': self.sha}
         with patch.dict(release.os.environ, environment, clear=True), patch.object(release, 'clean_sha', return_value=self.sha), \
-                patch.object(release, 'verify_attestations'), \
                 patch.object(release, 'api', return_value=[{'ref': 'refs/tags/' + self.tag}]), patch.object(release, 'run') as run:
             with self.assertRaisesRegex(ValueError, 'already exists'):
                 release.publish(self.output)
@@ -360,7 +359,7 @@ class GuiReleaseTests(unittest.TestCase):
                        'GITHUB_REPOSITORY': release.REPOSITORY, 'GITHUB_SHA': self.sha}
         for immutable in (True, False):
             with self.subTest(immutable=immutable), patch.dict(release.os.environ, environment, clear=True), \
-                    patch.object(release, 'clean_sha', return_value=self.sha), patch.object(release, 'verify_attestations'), \
+                    patch.object(release, 'clean_sha', return_value=self.sha), \
                     patch.object(release, 'api', side_effect=[[], {'immutable': immutable}, {'object': {'sha': self.sha}}]), \
                     patch.object(release, 'run') as run:
                 if immutable:

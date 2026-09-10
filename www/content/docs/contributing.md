@@ -17,7 +17,8 @@ Install:
 
 - Zig 0.16.0,
 - Python 3,
-- GitHub CLI (`gh`), authenticated for dependency attestation verification,
+- GitHub CLI (`gh`), authenticated for release operations and optional
+  attestation inspection,
 - Node.js,
 - Zola,
 - the Tailwind CSS 3.4.17 standalone CLI (the site uses the v3 configuration),
@@ -196,8 +197,11 @@ zig build run-test-zig -Dtest-filter="signals host"
 
 `zig build build-test-hosts` builds our host and installs independently released
 musl inputs from `dependencies.lock.json` into Roc's platform target layout.
-It verifies cached or downloaded dependency archives with `gh attestation verify`;
-it never rebuilds musl or accepts existing local libraries as a fallback:
+It verifies cached or downloaded dependency archives against the reviewed size
+and SHA-256 pins in `dependencies.lock.json`; it never rebuilds musl or accepts
+existing local libraries as a fallback. Published attestations remain available
+for external provenance inspection, but ordinary builds do not require GitHub's
+attestation service:
 
 - `platform-web/targets/x64mac/libhost.a`
 - `platform-web/targets/arm64mac/libhost.a`
@@ -291,16 +295,16 @@ python3 -m unittest scripts/test_dependency_artifacts.py
 ```
 
 Use a fresh output directory for each build. Local candidate testing establishes
-link behavior; release consumption additionally requires CI-signed provenance.
-Review the published `dependencies.lock.json` before adopting it. Fetch and verify
-a selected locked artifact with the GitHub CLI installed:
+link behavior; producer attestations provide optional external provenance evidence.
+Review the published `dependencies.lock.json` before adopting its exact size and
+SHA-256 pins. Fetch and verify a selected locked artifact with Python alone:
 
 ```sh
 python3 scripts/dependency_artifacts.py --lock dependencies.lock.json --artifact musl-x64musl --output /tmp/verified-musl
 ```
 
 The default download cache is `~/.cache/roc-signals/dependencies`; `--cache` selects
-another directory. Digest and provenance verification also run on cached bytes.
+another directory. Digest verification also runs on cached bytes.
 The output retains the selected lock and a directory for each artifact, containing
 its manifest, target files, and license notices. Existing output directories are
 rejected. There is no unsigned fallback or automatic dependency upgrade.

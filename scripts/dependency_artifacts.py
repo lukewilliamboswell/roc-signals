@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Fetch locked dependency releases and verify provenance before extraction.
+"""Fetch locked dependency releases and verify reviewed content before extraction.
 
 A cache is transport storage, never a trust authority: every use checks the
-locked digest and verifies the expected signing workflow and source identity.
+locked size and digest. Published attestations provide optional provenance
+evidence, but consuming a reviewed lock does not depend on an online service.
 """
 
 import argparse
@@ -12,11 +13,8 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
-import subprocess
-import sys
 import tarfile
 import tempfile
-import time
 from urllib.request import urlopen
 
 MAX_ARCHIVE_BYTES = 2 * 1024 ** 3
@@ -24,8 +22,6 @@ MAX_FILES = 4096
 HEX256 = re.compile(r"[0-9a-f]{64}")
 HEX160 = re.compile(r"[0-9a-f]{40}")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-ATTESTATION_ATTEMPTS = 5
-ATTESTATION_RETRY_SECONDS = (5, 10, 20, 40)
 
 
 def sha256(path):
@@ -62,38 +58,9 @@ def read_lock(path):
     return lock
 
 
-def run_attestation_verify(command):
-    """Run one fail-closed verifier with bounded retries for GitHub 5xx outages."""
-    for attempt in range(ATTESTATION_ATTEMPTS):
-        try:
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
-            if isinstance(result.stdout, str):
-                sys.stdout.write(result.stdout)
-            if isinstance(result.stderr, str):
-                sys.stderr.write(result.stderr)
-            return
-        except subprocess.CalledProcessError as error:
-            output = (error.stdout or "") + (error.stderr or "")
-            transient = re.search(r"HTTP 5\d\d|service unavailable|Server Error", output,
-                                  flags=re.IGNORECASE)
-            if transient is None or attempt == ATTESTATION_ATTEMPTS - 1:
-                sys.stderr.write(output)
-                raise
-            delay = ATTESTATION_RETRY_SECONDS[attempt]
-            print(f"GitHub attestation service unavailable; retrying in {delay}s "
-                  f"({attempt + 2}/{ATTESTATION_ATTEMPTS})", file=sys.stderr)
-            time.sleep(delay)
-
-
 def verify_archive(path, entry):
     if path.is_symlink() or path.stat().st_size != entry["size"] or sha256(path) != entry["sha256"]:
         raise ValueError("dependency archive differs from its locked digest or size")
-    run_attestation_verify([
-        "gh", "attestation", "verify", str(path), "--repo", entry["repository"],
-        "--signer-workflow", entry["signer_workflow"],
-        "--source-digest", entry["source_sha"], "--source-ref", entry["source_ref"],
-        "--deny-self-hosted-runners",
-    ])
 
 
 def fetch(entry, cache):

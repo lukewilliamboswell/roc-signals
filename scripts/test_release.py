@@ -107,23 +107,18 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "URL disagrees"):
                 release.read_manifest(root)
 
-    def test_final_release_verifies_each_asset_and_metadata_at_the_tested_source(self):
+    def test_final_release_accepts_the_supported_provenance_policy_without_network(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             manifest = self.manifest_fixture(root)
             manifest["provenance"] = {"signer_workflow": release.REPOSITORY + "/.github/workflows/release.yml",
                                       "source_ref": "refs/heads/main"}
-            with patch.object(release.subprocess, "run") as verify:
+            with patch.object(release.subprocess, "run") as network:
                 release.verify_release_provenance(root, manifest)
-            self.assertEqual(verify.call_count, 4)
-            for call in verify.call_args_list:
-                command = call.args[0]
-                self.assertEqual(command[command.index("--source-digest") + 1], manifest["source_sha"])
-                self.assertEqual(command[command.index("--signer-workflow") + 1], manifest["provenance"]["signer_workflow"])
-                self.assertTrue(call.kwargs["check"])
-            with patch.object(release.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "gh")):
-                with self.assertRaises(subprocess.CalledProcessError):
-                    release.verify_release_provenance(root, manifest)
+            network.assert_not_called()
+            manifest["provenance"]["source_ref"] = "refs/heads/unreviewed"
+            with self.assertRaisesRegex(ValueError, "unsupported platform release provenance"):
+                release.verify_release_provenance(root, manifest)
 
     def test_published_metadata_cannot_remove_the_reviewed_provenance_policy(self):
         with tempfile.TemporaryDirectory() as temporary:

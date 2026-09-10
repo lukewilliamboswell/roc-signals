@@ -54,8 +54,8 @@ the exact Zig-selected link with Rust 1.95's bundled LLD and check archive provi
 the native tests execute the original Zig-linked executables. Negative links
 using the original Zig command must fail when the candidate unwinder, UBSan or
 compiler runtime is omitted, proving those inputs are required. Publication requires
-both native success and main-workflow provenance verification. Adopting the runtime
-in a platform bundle requires a separate verified release lock and consumer change.
+both native success and main-workflow provenance generation. Adopting the runtime
+in a platform bundle requires a separate reviewed content-hash lock and consumer change.
 
 `freetype.json` pins the upstream FreeType source archive and explicitly requires
 zlib, bzip2, PNG, HarfBuzz, and Brotli support. Its Linux producer uses the Ubuntu
@@ -106,13 +106,13 @@ their producer builds each maintained GUI app against the extracted candidate
 and runs its native specs. Host publication currently does not require a second
 build comparison.
 
-The consumer verifies signed GitHub build provenance against the locked repository,
-workflow, main ref, and exact source commit before extraction. It performs these
-checks on cache hits too. A cache miss downloads the same locked release; it never
-silently compiles a substitute. Archive links, duplicate paths, undeclared files,
-foreign targets, hash mismatches, and incomplete downloads are errors. Extraction
-and materialization publish only complete directories, leaving a failed destination
-absent so the caller can retry safely.
+The consumer verifies the archive size and SHA-256 recorded in the reviewed lock
+before extraction, including on cache hits. A cache miss downloads the same locked
+release; it never silently compiles a substitute. This makes routine consumption
+independent of GitHub's online attestation service. Archive links, duplicate paths,
+undeclared files, foreign targets, hash mismatches, and incomplete downloads are
+errors. Extraction and materialization publish only complete directories, leaving
+a failed destination absent so the caller can retry safely.
 
 Normal host changes do not change the dependency recipe or lock. Update a dependency
 through its own tested release and a reviewed lock update. Compiler updates must
@@ -261,7 +261,9 @@ produce a new dependency release before consumers adopt it.
 An attestation identifies who produced particular bytes and from which workflow
 and source revision. The pinned upstream inputs, recipe review, candidate tests,
 and immutable release are separate controls; an attestation alone does not prove
-that an ambient system library was built from reviewed source.
+that an ambient system library was built from reviewed source. Producer workflows
+publish attestations for users who want that provenance evidence; the repository's
+reviewed content hashes are the trust anchor used by ordinary consumers.
 
 ## Producer CI selection
 

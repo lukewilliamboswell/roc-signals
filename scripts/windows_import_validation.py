@@ -53,7 +53,7 @@ def validate_import_library(data, definition):
     Only named x64 short imports and the three standard descriptor helpers are
     accepted. Hints (including explicit ordinals in the current definition) are
     checked too. This producer check supplements hashing and native link tests;
-    it does not replace consumers' provenance verification.
+    consumers still verify the reviewed archive and member hashes.
     """
     dll, expected = definition_exports(definition)
     found = {}
