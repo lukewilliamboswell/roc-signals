@@ -105,28 +105,15 @@ For the dialog reproduction, type `draft` into a fresh Notes editor, click New,
 then resize the open discard confirmation from 1200×820 to 360×600.
 For the Explorer preview, select the sample `README.md` and click Preview text.
 
-## Failing diagnostic specs
+## Retired diagnostic specs
 
-These are deliberately outside the maintained suite while their backlog items
-are open. They document observed failures, not new permanent metric contracts.
-Choose the final lifetime assertions alongside the fix and add real native
-editor tests; a scope count alone cannot prove history isolation.
-
-| Diagnostic | Executable | Observed failure |
-| --- | --- | --- |
-| [notes-windows-name.scm](repros/notes-windows-name.scm) | Notes | Expected `Ideas.txt`; actual `C:\Users\Lee\Ideas.txt` |
-| [explorer-windows-breadcrumbs.scm](repros/explorer-windows-breadcrumbs.scm) | Explorer | `Go to C:\Users` locator absent |
-
-Example command from the repository root:
-
-```sh
-"$review_output/notes-editor" --run-spec-json planning/gui-examples-review/2026-09-10/repros/notes-windows-name.scm
-```
-
-The two Windows cases use current raw `files1` task frames because typed file
-fixtures reject non-`/`-prefixed paths. They are boundary diagnostics, not
-examples of application-facing Files usage or a proposed private-wire API.
-Replace them with typed fixtures when GUI-05 makes those values expressible.
+The four diagnostics this review shipped — the Notes and Board editor-lifetime
+cases and the two Windows-path cases — have been fixed and now live in the
+maintained suites under `examples-gui/notes-editor/specs/`,
+`examples-gui/task-board/specs/` and `examples-gui/folder-explorer/specs/`.
+Their scope counts prove editor *replacement*, not native undo isolation; that
+distinction is still real and is why GUI-16 asks for native interaction
+coverage.
 
 ## Pinned Roc probes: GUI-08
 

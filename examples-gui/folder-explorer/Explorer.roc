@@ -1,3 +1,5 @@
+import pf.Files
+
 ## Pure presentation and dataset operations for the folder explorer. The native
 ## file service supplies metadata; filtering and ordering remain ordinary Roc.
 Explorer :: [].{
@@ -59,24 +61,14 @@ Explorer :: [].{
 		{ path: "release-notes.md", kind: File, bytes: 0 },
 	]
 
-	## A path's lexical parent; sample root is empty and filesystem root is "/".
+	## A path's lexical parent. The typed `Files.Path` boundary supplies the
+	## parent, so the sample tree's relative root stays empty, a Unix root stays
+	## "/", and a Windows path keeps its own drive or UNC root.
 	parent_path : Str -> Str
-	parent_path = |path| {
-		var $path = path
-		while $path != "/" and $path.ends_with("/") {
-			$path = $path.drop_suffix("/")
-		}
-		parts = $path.split_on("/")
-		parent = Str.join_with(parts.take_first(parts.len() - 1), "/")
-		if parent.is_empty() and $path.starts_with("/") {
-			"/"
-		} else {
-			parent
-		}
-	}
+	parent_path = |path| Files.parse_path(path).parent().to_str()
 
 	file_name : Str -> Str
-	file_name = |path| path.split_on("/").fold(path, |_, part| part)
+	file_name = |path| Files.parse_path(path).name()
 
 	## The sample tree uses the same direct-child navigation as real directories.
 	sample_children : Str -> List(Entry)
@@ -99,14 +91,11 @@ Explorer :: [].{
 		if root.is_empty() {
 			path
 		} else {
-			var $root = root
-			while $root != "/" and $root.ends_with("/") {
-				$root = $root.drop_suffix("/")
-			}
-			prefix = if $root == "/" {
-				"/"
+			location = Files.parse_path(root)
+			prefix = if location.is_root() {
+				location.root().to_str()
 			} else {
-				"${$root}/"
+				location.trimmed().join("").to_str()
 			}
 			path.drop_prefix(prefix)
 		}
@@ -281,3 +270,13 @@ expect {
 expect Explorer.sample_children("").map(|entry| entry.path) == ["assets", "docs", "src", "test", "README.md", "release-notes.md"]
 expect Explorer.sample_children("docs").map(|entry| entry.path) == ["docs/launch-checklist.md", "docs/research-notes.md", "docs/日本語.md"]
 expect Explorer.parent_path("/tmp/project/") == "/tmp" and Explorer.parent_path("/tmp") == "/" and Explorer.parent_path("/") == "/" and Explorer.parent_path("docs/file.txt") == "docs"
+
+## Windows locations keep their own drive root and separators, and a backslash
+## inside a Unix file name stays part of that name.
+expect {
+	Explorer.parent_path("C:\\Users\\Lee") == "C:\\Users" and
+	Explorer.parent_path("C:\\") == "C:\\" and
+	Explorer.file_name("C:\\Users\\Lee\\Ideas.txt") == "Ideas.txt" and
+	Explorer.relative_path("C:\\Users\\Lee", "C:\\Users\\Lee\\notes\\日本語.md") == "notes\\日本語.md" and
+	Explorer.file_name("/tmp/a\\b.txt") == "a\\b.txt"
+}

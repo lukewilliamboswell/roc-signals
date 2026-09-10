@@ -34,7 +34,7 @@ Workflow := [].{
 				Session.Phase.ChoosingSave(choice) => {
 					directory = match choice.previous_path {
 						None => Home
-						Some(path) => At(parent_path(path))
+						Some(path) => save_directory(path)
 					}
 					suggested_name = match choice.previous_path {
 						None => "Untitled note.txt"
@@ -79,14 +79,17 @@ Workflow := [].{
 		Session.Phase.Idle => Signal.noop
 	}
 
-	parent_path : Str -> Str
-	parent_path = |path| {
-		segments = path.split_on("/")
-		parent = Str.join_with(segments.take_first(segments.len() - 1), "/")
-		if parent == "" {
-			"/"
+	## Reopen the save dialog beside the document's current file. The parent is
+	## taken through the typed `Files.Path` boundary, so a Windows path keeps its
+	## own root and separators; a path with no parent falls back to the home
+	## directory rather than naming a root the operating system may not have.
+	save_directory : Str -> [Home, At(Str)]
+	save_directory = |path| {
+		parent = Files.parse_path(path).parent().to_str()
+		if parent.is_empty() {
+			Home
 		} else {
-			parent
+			At(parent)
 		}
 	}
 
@@ -103,4 +106,12 @@ Workflow := [].{
 		Files.Error.Canceled => session.update_cmd(Session.cancel)
 		_ => session.update_cmd(|state| Session.failed(state, Files.error_text(error)))
 	}
+}
+
+## Save As reopens beside the current file and suggests its real name on either
+## operating system; a Windows path must not suggest a name full of separators.
+expect {
+	Workflow.save_directory("C:\\Users\\Lee\\Ideas.txt") == At("C:\\Users\\Lee") and
+	Workflow.save_directory("/home/lee/ideas.txt") == At("/home/lee") and
+	Session.file_name("C:\\Users\\Lee\\Ideas.txt") == "Ideas.txt"
 }

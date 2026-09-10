@@ -1016,8 +1016,11 @@ fixtures each require their corresponding declared service.
 Fields may appear in any order; each documented field is required exactly once. Choice tags
 are `chosen` and `canceled`. Error kinds are `canceled`, `not-found`,
 `permission-denied`, `invalid-utf8`, `invalid-path`, `resource-limit`, `io`, and
-`unavailable`; canceled errors require empty detail. Paths must be absolute,
-valid UTF-8, and at most 4096 bytes. Read text and write byte counts have the
+`unavailable`; canceled errors require empty detail. Paths must be valid UTF-8,
+at most 4096 bytes, and absolute in one of the spellings a native worker returns:
+POSIX-rooted (`/tmp/note.txt`), drive-rooted (`C:\Users\Lee` or `C:/Users/Lee`),
+or a UNC prefix (`\\server\share\docs`). A typed fixture can therefore express a
+Windows result directly instead of hand-writing a raw task frame. Read text and write byte counts have the
 native one-MiB bound, and error detail is bounded to 4096 UTF-8 bytes. Unknown
 fields, duplicate fields, invalid types, and oversized values reject the spec.
 

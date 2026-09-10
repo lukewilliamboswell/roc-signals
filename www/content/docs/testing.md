@@ -55,6 +55,10 @@ is not an accessibility audit.
 | Exact visible text | `(text "Submit status: idle")` |
 | Test id | `(test-id "traffic-chart")` |
 
+Locator strings use the same escapes as any other spec string: `\\` is one
+backslash, `\"` one quote, and `\n` a newline. A locator can therefore name an
+element whose text contains a separator, such as a Windows path in a breadcrumb.
+
 A locator must resolve to exactly one element. Matching several is an error
 (*locator matched 2 elements*). Repeated controls may legitimately share a name;
 use a unique test id when the role and name cannot distinguish the target.
