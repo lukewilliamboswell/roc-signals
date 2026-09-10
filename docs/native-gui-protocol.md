@@ -508,9 +508,12 @@ recursive scan. It observes only direct children, under the same 10,000-entry,
 four-MiB aggregate-path, UTF-8 and no-follow rules. It refuses the complete result
 on overflow or observation failure. Existing recursive scan semantics are unchanged.
 
-`OpenPath` returns `path` once `gio open` accepts the launch. The worker validates
-one regular file through no-follow handles, then passes the absolute pathname as
-an argument, without a shell. The associated application subsequently resolves
+`OpenPath` returns `path` once the launcher accepts the handoff: `gio open` in the
+Unix worker, which macOS builds also use, and `rundll32.exe
+url.dll,FileProtocolHandler` in the Windows worker, where an unassociated
+extension still counts as accepted. The worker validates one regular file
+through no-follow handles, then passes the absolute pathname as an argument,
+without a shell. The associated application subsequently resolves
 that path under its own access policy; the host does not promise a stable file
 snapshot across that external handoff. Launcher output is discarded and the
 launcher is killed and reaped on cancellation or a 30-second deadline. Launch

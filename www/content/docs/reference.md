@@ -130,9 +130,11 @@ is wrong on whichever operating system the application was not written for.
 `list_directory` returns only direct children, with the scan entry and aggregate
 path bounds. `read_preview` returns at most 64 KiB of UTF-8 and reports omitted
 bytes with `truncated`. Invalid internal text is refused; a code point cut by the
-prefix bound is excluded. `open_path` requests the desktop's associated application
-through `gio open`; success confirms the launch, not the external application's
-lifetime. Cancellation cannot undo a handoff. The external application owns its
+prefix bound is excluded. `open_path` requests the desktop's associated application:
+the Unix file service, which macOS builds also use, hands the path to `gio open`,
+and the Windows service hands it to `rundll32.exe url.dll,FileProtocolHandler`.
+Success confirms the launch, not the external application's lifetime, and an
+unassociated extension on Windows still counts as a launch. Cancellation cannot undo a handoff. The external application owns its
 subsequent pathname access policy.
 
 `LogPosition` is `Start`, `End`, or `After({ device, inode, offset })` (all `U64`).

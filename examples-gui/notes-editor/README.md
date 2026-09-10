@@ -15,6 +15,9 @@ python3 scripts/spec_driver.py .test-out/Notes examples-gui/notes-editor/specs
 roc test examples-gui/notes-editor/main.roc
 ```
 
+On Windows use `python` rather than `python3`, which is usually the Store
+shortcut there.
+
 Control+N creates a document, Control+O opens one, Control+S saves, and
 Control+Shift+S chooses a new destination. Escape cancels an operation or closes
 the discard confirmation. Native editor selection, movement, and clipboard

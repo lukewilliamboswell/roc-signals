@@ -52,19 +52,26 @@ platform.
 Linux requires glibc, a Wayland desktop and a working graphics driver. The
 operating system supplies runtime libraries, including FreeType and xkbcommon.
 CI validated Ubuntu 24.04 using software Vulkan, built every downloaded app,
-ran all 39 example specs, and checked rendering for all six apps.
+ran every maintained example spec, and opened every app for two seconds under the smoke
+check, which counts rendered frames. The scripted scenarios have also been run
+on a Linux desktop; see the contributing guide for what they cover.
 
 The Mac download targets Apple Silicon, not Intel Macs. macOS supplies its
 system frameworks and runtime libraries. Native CI rebuilt all six apps from
-their unchanged published URLs with a fresh Roc cache, passed all 39 specs, and
-confirmed rendering for every app.
+their unchanged published URLs with a fresh Roc cache, passed every maintained spec, and
+opened every app under the two-second smoke check. The scripted scenarios and
+their window captures have been run on Apple Silicon.
 
 The Windows download targets x86_64 and requires a native Windows desktop with
 working graphics support. It bundles GNU runtime link inputs and complete DLL
 import libraries; Windows supplies the system DLL implementations. Building the
 starters does not require a Windows SDK or a C/C++ compiler. Native CI rebuilt
 all six apps from their unchanged published URLs with a fresh Roc cache, passed
-all 39 specs, and confirmed rendering for every app.
+every maintained spec, and opened every app under the two-second smoke check. That check
+counts rendered frames; it exercises no Windows file dialog, file operation or
+window chrome, and the scripted scenarios have not yet been run on Windows. The
+specs inject POSIX paths, so Windows path handling is covered by the dedicated
+Windows-path specs rather than by the whole suite.
 
 ## Controls and layout
 
