@@ -1,7 +1,7 @@
 (test "Custom events"
   (steps
     ; Custom DOM event coverage. Preserved from the retired service-ops-center
-    ; example, which was the only place Html.on_custom and State.on_detail were
+    ; example, which was the only place Html.on_custom and State.update_detail were
     ; exercised.
 
     (expect-visible (role region :name "Custom Events"))

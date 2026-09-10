@@ -151,8 +151,8 @@ main = ||
 					"Selector row ${key}",
 					[Html.test_id(key)],
 					[
-						Html.checkbox("Selected ${key}", is_selected, selected.on_bool(|current, _| current)),
-						Html.button("Select ${key}", selected.on_unit(|_| key)),
+						Html.checkbox("Selected ${key}", is_selected, selected.update_bool(|current, _| current)),
+						Html.button("Select ${key}", selected.update(|_| key)),
 					],
 				)
 			}
@@ -164,8 +164,8 @@ main = ||
 						[],
 						[
 							Html.heading("Signal select 128"),
-							Html.button("Show one row", show_all.on_unit(|_| False)),
-							Html.button("Show all rows", show_all.on_unit(|_| True)),
+							Html.button("Show one row", show_all.update(|_| False)),
+							Html.button("Show all rows", show_all.update(|_| True)),
 							Ui.each(Signal.map(items, |rows_items| Rows.from_list(rows_items, |key| key) ?? crash "duplicate row key"), |each_row| render_row(each_row.key(), each_row.signal())),
 						],
 					)

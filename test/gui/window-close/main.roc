@@ -9,7 +9,7 @@ main : () -> Elem
 main = || Ui.state(
 	KeepOpen,
 	|decision| Gui.window_lifecycle(
-		{ on_close_requested: decision.on_unit(|_| AwaitDecision), decision: decision.signal() },
+		{ on_close_requested: decision.update(|_| AwaitDecision), decision: decision.signal() },
 		[
 			Gui.col(
 				Gui.ColProps.{},
@@ -24,8 +24,8 @@ main = || Ui.state(
 							},
 						),
 					),
-					Gui.button("Keep open", decision.on_unit(|_| KeepOpen)),
-					Gui.button("Approve close", decision.on_unit(|_| Close)),
+					Gui.button("Keep open", decision.update(|_| KeepOpen)),
+					Gui.button("Approve close", decision.update(|_| Close)),
 				],
 			),
 		],

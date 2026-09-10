@@ -31,9 +31,9 @@ main = || {
 							Html.paragraph_c("A tiny retained-state counter for browser runtime checks.", "max-w-3xl text-sm text-zinc-700"),
 						],
 					),
-					Html.button("Decrement", count.on_unit(|value| value - 1)),
+					Html.button("Decrement", count.update(|value| value - 1)),
 					Html.text_s(label),
-					Html.button_c("Increment", primary_button_class, count.on_unit(|value| value + 1)),
+					Html.button_c("Increment", primary_button_class, count.update(|value| value + 1)),
 				],
 			)
 		},

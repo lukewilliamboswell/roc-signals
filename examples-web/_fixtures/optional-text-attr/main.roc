@@ -64,7 +64,7 @@ main = || {
 							Html.attr("id", "assignee-input"),
 							Html.aria_activedescendant_s(active_descendant_signal),
 						],
-						model.on_str(set_query),
+						model.update_str(set_query),
 					),
 					Html.div(
 						[
@@ -73,7 +73,7 @@ main = || {
 						],
 						[Html.text("Alpha teammate")],
 					),
-					Html.button_s(button_label, model.on_unit(toggle_active)),
+					Html.button_s(button_label, model.update(toggle_active)),
 				],
 			)
 		},

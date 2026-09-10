@@ -28,8 +28,8 @@ main = ||
 				[
 					Html.heading("Recursive switch"),
 					Ui.switch(depth.signal(), recursive_tree),
-					Html.button("Grow", depth.on_unit(|current| current + 1)),
-					Html.button("Reset", depth.on_unit(|_| 1)),
+					Html.button("Grow", depth.update(|current| current + 1)),
+					Html.button("Reset", depth.update(|_| 1)),
 				],
 			),
 	)

@@ -102,10 +102,10 @@ render_row = |model, row| {
 		[Html.test_id("row-${key}")],
 		[
 			Html.text_s(row.map(|value| value.label)),
-			Html.button("Rename ${key}", model.on_unit(|value| rename_key(value, key))),
-			Html.button("Front ${key}", model.on_unit(|value| move_key_to_front(value, key))),
-			Html.button("End ${key}", model.on_unit(|value| move_key_to_end(value, key))),
-			Html.button("Remove ${key}", model.on_unit(|value| remove_key(value, key))),
+			Html.button("Rename ${key}", model.update(|value| rename_key(value, key))),
+			Html.button("Front ${key}", model.update(|value| move_key_to_front(value, key))),
+			Html.button("End ${key}", model.update(|value| move_key_to_end(value, key))),
+			Html.button("Remove ${key}", model.update(|value| remove_key(value, key))),
 		],
 	)
 }
@@ -122,14 +122,14 @@ main = || {
 				[
 					Html.heading("Keyed row edits"),
 					Html.paragraph_s_attrs(model.signal().map(count_label), [Html.test_id("count")]),
-					Html.button("Append", model.on_unit(append)),
-					Html.button("Insert first", model.on_unit(insert_first)),
-					Html.button("Insert before last", model.on_unit(insert_before_last)),
-					Html.button("Remove first", model.on_unit(remove_first)),
-					Html.button("Move first to end", model.on_unit(move_first_to_end)),
-					Html.button("Rename first", model.on_unit(rename_first)),
-					Html.button("Replace all", model.on_unit(replace_all)),
-					Html.button("Clear", model.on_unit(clear)),
+					Html.button("Append", model.update(append)),
+					Html.button("Insert first", model.update(insert_first)),
+					Html.button("Insert before last", model.update(insert_before_last)),
+					Html.button("Remove first", model.update(remove_first)),
+					Html.button("Move first to end", model.update(move_first_to_end)),
+					Html.button("Rename first", model.update(rename_first)),
+					Html.button("Replace all", model.update(replace_all)),
+					Html.button("Clear", model.update(clear)),
 					Html.div([Html.test_id("rows")], [Ui.each(rows, |row| render_row(model, row))]),
 				],
 			)

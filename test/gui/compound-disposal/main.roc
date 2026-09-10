@@ -28,8 +28,8 @@ main = || Ui.state(
 									]),
 								),
 							),
-							Gui.button("Empty list", rows.on_unit(|current| Rows.replace_all(current, []) ?? crash "unique")),
-							Gui.button("Restore list", rows.on_unit(|current| Rows.replace_all(current, ["a", "b"]) ?? crash "unique")),
+							Gui.button("Empty list", rows.update(|current| Rows.replace_all(current, []) ?? crash "unique")),
+							Gui.button("Restore list", rows.update(|current| Rows.replace_all(current, ["a", "b"]) ?? crash "unique")),
 							Gui.col({ test_id: "rows" }, [Ui.each(rows.signal(), |row| Gui.text_s(row.signal()))]),
 							Ui.when(
 								editing.signal(),

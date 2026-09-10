@@ -29,7 +29,7 @@ entry_view = |row, selected| {
 			overflow_y: Clip,
 		},
 		[
-			Gui.button("Inspect ${key}", selected.on_unit(|_| key)),
+			Gui.button("Inspect ${key}", selected.update(|_| key)),
 			Gui.col(
 				{
 					changes: row.signal().map(
@@ -171,7 +171,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 					Gui.action_button({
 						caption: Signal.const("Retry read"),
 						enabled: session.map(|state| state.phase == Session.Phase.Paused and state.retry != None),
-					}, model.on_unit(|value| { ..value, session: Session.retry_read(value.session) })),
+					}, model.update(|value| { ..value, session: Session.retry_read(value.session) })),
 					Gui.action_button({ caption: Signal.const("Cancel operation"), enabled: busy }, Ui.action(session, |state| Workflow.cancel(model, tasks, state.phase))),
 				],
 			),
@@ -192,7 +192,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 								),
 								enabled: busy.map(|value| !value),
 							},
-							running.on_unit(|active| !active),
+							running.update(|active| !active),
 						),
 						Gui.action_button({ caption: Signal.const("Step replay"), enabled: busy.map(|value| !value) }, Ui.action(Signal.const({}), |_| append)),
 						Ui.when(
@@ -233,7 +233,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 			Gui.row(
 				{ gap: 12 },
 				[
-					Gui.button("Clear history", model.on_unit(|value| { ..value, history: Feed.clear(value.history) })),
+					Gui.button("Clear history", model.update(|value| { ..value, history: Feed.clear(value.history) })),
 					Gui.col(
 						{ padding: 8, font_size: 13, fg: Rgb(0xA9BFCC) },
 						[Gui.text_s(history.map(|value| "Retained: ${value.rows.len().to_str()} / 1000"))],
@@ -253,9 +253,9 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 						placeholder: "Filter activity…",
 						width: 240.Px,
 						gap: 4,
-					}, query.on_str(|_, value| value)),
-					Gui.checkbox({ label: "Errors only", checked: errors_only.signal(), enabled: replay }, errors_only.on_bool(|_, value| value)),
-					Gui.checkbox({ label: "Follow latest", checked: follow_tail.signal() }, follow_tail.on_bool(|_, value| value)),
+					}, query.update_str(|_, value| value)),
+					Gui.checkbox({ label: "Errors only", checked: errors_only.signal(), enabled: replay }, errors_only.update_bool(|_, value| value)),
+					Gui.checkbox({ label: "Follow latest", checked: follow_tail.signal() }, follow_tail.update_bool(|_, value| value)),
 				],
 			),
 			Gui.row(

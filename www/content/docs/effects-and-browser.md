@@ -431,7 +431,7 @@ Return cleanup that releases listeners, subscriptions, and resources created
 by `attach`. The runtime calls it when the element is removed or the mount is
 torn down. Send values back through a declared custom event: dispatch a
 `CustomEvent` with text detail and bind it with `Html.on_custom` and
-`State.on_detail`.
+`State.update_detail`.
 
 The typed widget and subscription vocabulary in `design.md` describes the target
 architecture. It is not an additional implemented API to import today.

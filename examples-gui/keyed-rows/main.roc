@@ -34,7 +34,7 @@ row_view = |row, selected| {
 					Gui.row(
 						{ gap: 12 },
 						[
-							Gui.button("Select ${key}", selected.on_unit(|_| key)),
+							Gui.button("Select ${key}", selected.update(|_| key)),
 							Gui.col(
 								{ padding: 6, font_size: 13, fg: Rgb(0xA9BFCC) },
 								[
@@ -57,7 +57,7 @@ row_view = |row, selected| {
 						placeholder: "Type a draft…",
 						width: 240.Px,
 						gap: 4,
-					}, draft.on_str(|_, value| value)),
+					}, draft.update_str(|_, value| value)),
 					Gui.col(
 						{ font_size: 13, fg: Rgb(0x93A9B6) },
 						[Gui.text_s(draft.signal().map(|text| "Saved draft: ${text}"))],
@@ -96,9 +96,9 @@ main = || Ui.state(
 												radius: 6,
 												bg: Rgb(0x2E6FA3),
 											},
-											rows.on_unit(move_first),
+											rows.update(move_first),
 										),
-										Gui.button("Hide / show rows", visible.on_unit(|v| !v)),
+										Gui.button("Hide / show rows", visible.update(|v| !v)),
 									],
 								),
 								Ui.when(

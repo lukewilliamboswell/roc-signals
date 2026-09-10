@@ -39,7 +39,7 @@ main = || {
 					Html.heading("Metrics"),
 					Html.paragraph_s_attrs(d.map(show), [Html.test_id("chain")]),
 					Html.paragraph_s_attrs(source.map(constant), [Html.test_id("constant")]),
-					Html.button("Bump", count.on_unit(|n| n + 1)),
+					Html.button("Bump", count.update(|n| n + 1)),
 				],
 			)
 		},

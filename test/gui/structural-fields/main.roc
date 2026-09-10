@@ -11,7 +11,7 @@ main = || Ui.state(
 	|first| Gui.col(
 		Gui.ColProps.{},
 		[
-			Gui.button("Switch branch", first.on_unit(|value| !value)),
+			Gui.button("Switch branch", first.update(|value| !value)),
 			Ui.when(
 				first.signal(),
 				|| Gui.panel(

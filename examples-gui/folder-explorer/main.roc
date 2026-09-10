@@ -237,7 +237,7 @@ inspect_view = |handles| {
 					height: Fill,
 					grow: True,
 				},
-				handles.model.on_str(|state, _| state),
+				handles.model.update_str(|state, _| state),
 			),
 		],
 	)
@@ -443,18 +443,18 @@ explorer_view = |handles| {
 						disabled: ready.map(|value| !value),
 						width: 240.Px,
 						gap: 4,
-					}, handles.model.on_str(|state, text| { ..state, query: text })),
+					}, handles.model.update_str(|state, text| { ..state, query: text })),
 					Gui.action_button({
 						caption: Signal.const("Clear filter"),
 						enabled: model.map(|state| state.phase == Idle and !state.query.is_empty()),
-					}, handles.model.on_unit(|state| { ..state, query: "" })),
+					}, handles.model.update(|state| { ..state, query: "" })),
 				],
 			),
 			Gui.row({ gap: 8 }, Explorer.sorts.map(|order| Gui.action_button({
 				caption: Signal.const(order.to_str()),
 				enabled: ready,
 				selected: handles.order.signal().map(|current| current == order),
-			}, handles.order.on_unit(|_| order)))),
+			}, handles.order.update(|_| order)))),
 			Gui.row(
 				{ gap: 16 },
 				[

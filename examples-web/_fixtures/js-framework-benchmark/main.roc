@@ -101,7 +101,7 @@ render_row = |model, selected, key, row| {
 				"td",
 				[Html.class_attr("col-md-4")],
 				[
-					element("a", [Html.on_event("click", Html.event_policy_none, model.on_unit(|value| { ..value, selected: key })), Html.aria_label("Select row ${key}")], [Html.text_s(label)]),
+					element("a", [Html.on_event("click", Html.event_policy_none, model.update(|value| { ..value, selected: key })), Html.aria_label("Select row ${key}")], [Html.text_s(label)]),
 				],
 			),
 			element(
@@ -110,7 +110,7 @@ render_row = |model, selected, key, row| {
 				[
 					element(
 						"a",
-						[Html.on_event("click", Html.event_policy_none, model.on_unit(|value| remove_row(value, key))), Html.aria_label("Remove row ${key}")],
+						[Html.on_event("click", Html.event_policy_none, model.update(|value| remove_row(value, key))), Html.aria_label("Remove row ${key}")],
 						[element("span", [Html.class_attr("glyphicon glyphicon-remove"), Html.attr("aria-hidden", "true")], [])],
 					),
 				],
@@ -151,12 +151,12 @@ main = || {
 												"div",
 												[Html.class_attr("row")],
 												[
-													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Create 1,000 rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "run")], model.on_unit(|value| replace_with(value, 1000)))]),
-													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Create 10,000 rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "runlots")], model.on_unit(|value| replace_with(value, 10000)))]),
-													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Append 1,000 rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "add")], model.on_unit(|value| append_rows(value, 1000)))]),
-													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Update every 10th row", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "update")], model.on_unit(update_every_tenth))]),
-													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Clear", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "clear")], model.on_unit(|value| { ..value, rows: Rows.apply(value.rows, [Clear]) ?? value.rows, selected: "" }))]),
-													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Swap Rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "swaprows")], model.on_unit(swap_rows))]),
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Create 1,000 rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "run")], model.update(|value| replace_with(value, 1000)))]),
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Create 10,000 rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "runlots")], model.update(|value| replace_with(value, 10000)))]),
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Append 1,000 rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "add")], model.update(|value| append_rows(value, 1000)))]),
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Update every 10th row", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "update")], model.update(update_every_tenth))]),
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Clear", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "clear")], model.update(|value| { ..value, rows: Rows.apply(value.rows, [Clear]) ?? value.rows, selected: "" }))]),
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Swap Rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "swaprows")], model.update(swap_rows))]),
 												],
 											),
 										],

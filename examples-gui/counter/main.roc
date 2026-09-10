@@ -58,9 +58,9 @@ main = || Ui.state(
 						Gui.row(
 							{ gap: theme.gap },
 							[
-								accent_button("Increment", count.on_unit(|value| value + 1)),
-								Gui.button("Decrement", count.on_unit(|value| value - 1)),
-								Gui.button("Reset", count.on_unit(|_| 0)),
+								accent_button("Increment", count.update(|value| value + 1)),
+								Gui.button("Decrement", count.update(|value| value - 1)),
+								Gui.button("Reset", count.update(|_| 0)),
 							],
 						),
 					],

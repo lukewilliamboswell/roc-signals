@@ -38,8 +38,8 @@ main = ||
 \t\t\t\t\t"Selector row ${{key}}",
 \t\t\t\t\t[Html.test_id(key)],
 \t\t\t\t\t[
-\t\t\t\t\t\tHtml.checkbox("Selected ${{key}}", is_selected, selected.on_bool(|current, _| current)),
-\t\t\t\t\t\tHtml.button("Select ${{key}}", selected.on_unit(|_| key)),
+\t\t\t\t\t\tHtml.checkbox("Selected ${{key}}", is_selected, selected.update_bool(|current, _| current)),
+\t\t\t\t\t\tHtml.button("Select ${{key}}", selected.update(|_| key)),
 \t\t\t\t\t],
 \t\t\t\t)
 \t\t\t}}
@@ -51,8 +51,8 @@ main = ||
 \t\t\t\t\t\t[],
 \t\t\t\t\t\t[
 \t\t\t\t\t\t\tHtml.heading("Signal select {row_count}"),
-\t\t\t\t\t\t\tHtml.button("Show one row", show_all.on_unit(|_| False)),
-\t\t\t\t\t\t\tHtml.button("Show all rows", show_all.on_unit(|_| True)),
+\t\t\t\t\t\t\tHtml.button("Show one row", show_all.update(|_| False)),
+\t\t\t\t\t\t\tHtml.button("Show all rows", show_all.update(|_| True)),
 \t\t\t\t\t\t\tUi.each(items, |key| key, render_row),
 \t\t\t\t\t\t],
 \t\t\t\t\t)

@@ -11,7 +11,7 @@ main = || Ui.state(
 		Gui.ColProps.{},
 		[
 			Gui.heading("Scoped dialog"),
-			Gui.button("Open dialog", visible.on_unit(|_| True)),
+			Gui.button("Open dialog", visible.update(|_| True)),
 			Ui.when(
 				visible.signal(),
 				|| Ui.state(
@@ -19,13 +19,13 @@ main = || Ui.state(
 					|draft| Gui.dialog(
 						{
 							label: "Confirm changes",
-							on_dismiss: visible.on_unit(|_| False),
+							on_dismiss: visible.update(|_| False),
 							test_id: "confirmation",
 						},
 						[
 							Gui.heading("Confirm changes"),
-							Gui.textarea({ label: "Reason", value: draft.signal() }, draft.on_str(|_, value| value)),
-							Gui.button("Keep editing", visible.on_unit(|_| False)),
+							Gui.textarea({ label: "Reason", value: draft.signal() }, draft.update_str(|_, value| value)),
+							Gui.button("Keep editing", visible.update(|_| False)),
 						],
 					),
 				),

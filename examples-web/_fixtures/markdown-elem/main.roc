@@ -491,7 +491,7 @@ main = || {
 				[
 					Html.heading("Markdown Elem Fixture"),
 					static_markdown_view(initial_markdown),
-					Html.textarea_c("Markdown input", markdown, "min-h-32 w-full font-mono", model.on_str(update_markdown)),
+					Html.textarea_c("Markdown input", markdown, "min-h-32 w-full font-mono", model.update_str(update_markdown)),
 					markdown_view(markdown),
 				],
 			)

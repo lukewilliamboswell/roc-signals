@@ -73,8 +73,8 @@ render_task = |model, row| {
 		[Html.test_id("task-${key}")],
 		[
 			Html.text_s(row.map(task_label)),
-			Html.button("Toggle ${key}", model.on_unit(|value| toggle_task(value, key))),
-			Html.button("Remove ${key}", model.on_unit(|value| remove_task(value, key))),
+			Html.button("Toggle ${key}", model.update(|value| toggle_task(value, key))),
+			Html.button("Remove ${key}", model.update(|value| remove_task(value, key))),
 		],
 	)
 }
@@ -86,7 +86,7 @@ render_tag = |model, row| {
 		[Html.test_id("tag-${key}")],
 		[
 			Html.text_s(row.map(tag_label)),
-			Html.button("Bump ${key}", model.on_unit(|value| bump_tag(value, key))),
+			Html.button("Bump ${key}", model.update(|value| bump_tag(value, key))),
 		],
 	)
 }
@@ -103,9 +103,9 @@ main = || {
 				"grid gap-6",
 				[
 					Html.heading("Two row types"),
-					Html.button("Add task", model.on_unit(add_task)),
-					Html.button("Add tag", model.on_unit(add_tag)),
-					Html.button("Clear tags", model.on_unit(clear_tags)),
+					Html.button("Add task", model.update(add_task)),
+					Html.button("Add tag", model.update(add_tag)),
+					Html.button("Clear tags", model.update(clear_tags)),
 					Html.div([Html.test_id("tasks")], [Ui.each(tasks, |row| render_task(model, row))]),
 					Html.div([Html.test_id("tags")], [Ui.each(tags, |row| render_tag(model, row))]),
 				],

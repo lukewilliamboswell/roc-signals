@@ -257,7 +257,7 @@ See `test/gui/shortcuts` for a complete app and scoped routing spec.
 ## Internal drag and drop
 
 Set `drag_source: key` on a card and `on_drop: message` on a destination. Keys are nonempty strings of at most 256 UTF-8 bytes. Create the
-message with `Ui.action_detail` or `Ui.State.on_detail` to receive that key and
+message with `Ui.action_detail` or `Ui.State.update_detail` to receive that key and
 return the same commands used by keyboard or button alternatives. The key is
 payload data; keyed row identity remains explicit in `Ui.each`.
 

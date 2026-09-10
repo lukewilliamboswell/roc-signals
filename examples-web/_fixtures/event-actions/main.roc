@@ -25,7 +25,7 @@ main = ||
 								"",
 								[
 									Html.heading("Event actions"),
-									Html.text_input("Source", source.signal(), source.on_str(|_, text| text)),
+									Html.text_input("Source", source.signal(), source.update_str(|_, text| text)),
 									Html.paragraph_s_attrs(result.signal(), [Html.test_id("result")]),
 									Html.text_input_attrs(
 										"Action text",
@@ -43,7 +43,7 @@ main = ||
 										"Action key",
 										Signal.const(""),
 										[Html.test_id("action-key"), Html.on_key_down(Ui.action_key(action_reads, |reads, key| result.set_cmd("${reads.result}|key:${key.key}:${Str.inspect(key.shift_key)}")))],
-										source.on_str(|current, _text| current),
+										source.update_str(|current, _text| current),
 									),
 									Html.div(
 										[
@@ -60,7 +60,7 @@ main = ||
 										|| Html.button("Dispose on loading", Ui.action(source.signal(), |value| Signal.start_str(dispose_task, value))),
 										|| Html.text("Disposal action hidden"),
 									),
-									Html.button("Toggle actions", visible.on_unit(|value| !value)),
+									Html.button("Toggle actions", visible.update(|value| !value)),
 									Ui.when(
 										visible.signal(),
 										|| Html.div_c(

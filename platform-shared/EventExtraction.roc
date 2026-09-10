@@ -1,7 +1,7 @@
 import Node
 
 ## Shared DOM extraction descriptor bytes. Keep these as module values so the
-## larger key-shift descriptor is not allocated directly inside `State.on_key` on
+## larger key-shift descriptor is not allocated directly inside `State.update_key` on
 ## wasm. This module is internal to the platform; `main.roc` does not expose it.
 EventExtraction := [].{
 

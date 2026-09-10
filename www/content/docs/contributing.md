@@ -1060,7 +1060,7 @@ click-only. Reset buttons dispatch app-managed prevent-default `reset` bindings.
 Checkbox controls use the checked-change default path even without a click
 handler. `submit` is for app-managed forms and requires a unit submit binding
 from `Html.on_submit_prevent_default`. `custom-event` sends its detail argument
-as `event.detail`, which reducers built with `State.on_detail` receive as text.
+as `event.detail`, which reducers built with `State.update_detail` receive as text.
 
 Common metric names include `dirty_source_roots`, `rows_reused`,
 `rows_created`, `rows_removed`, `scopes_created`, `scopes_disposed`,

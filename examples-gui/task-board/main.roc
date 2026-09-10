@@ -398,7 +398,7 @@ delete_confirmation = |handles, column| {
 		|| Gui.dialog(
 			{
 				label: "Delete task",
-				on_dismiss: handles.confirm_delete.on_unit(|_| False),
+				on_dismiss: handles.confirm_delete.update(|_| False),
 				test_id: "delete-confirmation",
 			},
 			[
@@ -406,7 +406,7 @@ delete_confirmation = |handles, column| {
 				Gui.row(
 					Gui.RowProps.{},
 					[
-						Gui.button("Cancel deletion", handles.confirm_delete.on_unit(|_| False)),
+						Gui.button("Cancel deletion", handles.confirm_delete.update(|_| False)),
 						Gui.button(
 							"Confirm delete",
 							Ui.action(
@@ -422,7 +422,7 @@ delete_confirmation = |handles, column| {
 				),
 			],
 		),
-		|| Gui.action_button({ caption: Signal.const("Delete task"), enabled: handles.editable }, handles.confirm_delete.on_unit(|_| True)),
+		|| Gui.action_button({ caption: Signal.const("Delete task"), enabled: handles.editable }, handles.confirm_delete.update(|_| True)),
 	)
 }
 
@@ -503,7 +503,7 @@ new_task_form = |handles| {
 				disabled: handles.edit_disabled,
 				width: 260.Px,
 				gap: 4,
-			}, handles.draft.on_str(|_, value| value)),
+			}, handles.draft.update_str(|_, value| value)),
 			Gui.action_button(
 				{
 					caption: Signal.const("Add task"),
@@ -602,7 +602,7 @@ board_view = |handles| {
 								placeholder: "Filter tasks…",
 								width: 240.Px,
 								gap: 4,
-							}, handles.filter.on_str(|_, text| text)),
+							}, handles.filter.update_str(|_, text| text)),
 						],
 					),
 					Gui.col(
@@ -899,7 +899,7 @@ document_toolbar = |handles, actions| {
 						Gui.heading("Replace unsaved board?"),
 						"Save your board first to keep these changes. Opening succeeds only after the new file is completely validated.",
 						Gui.button("Keep editing", actions.cancel),
-						Gui.button("Discard and open", handles.document.on_unit(|doc| { ..doc, phase: Phase.ChoosingOpen })),
+						Gui.button("Discard and open", handles.document.update(|doc| { ..doc, phase: Phase.ChoosingOpen })),
 					],
 				),
 				|| Gui.text(""),
@@ -1108,7 +1108,7 @@ save_document = |handles, context, next, options| {
 
 close_dialog : Handles -> Elem
 close_dialog = |handles| {
-	keep = handles.close.on_unit(|_| Close.KeepEditing)
+	keep = handles.close.update(|_| Close.KeepEditing)
 	Ui.when(
 		handles.close.signal().map(|intent| intent == Close.Confirm),
 		|| Gui.dialog(
@@ -1125,7 +1125,7 @@ close_dialog = |handles| {
 					Gui.RowProps.{},
 					[
 						Gui.button("Keep editing", keep),
-						Gui.button("Close without saving", handles.close.on_unit(|_| Close.Closing)),
+						Gui.button("Close without saving", handles.close.update(|_| Close.Closing)),
 						Gui.action_button({
 							caption: Signal.const("Save and close"),
 							enabled: handles.document.signal().map(|doc| doc.phase == Phase.Idle),

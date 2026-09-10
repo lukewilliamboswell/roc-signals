@@ -27,9 +27,9 @@ main = || Ui.state(
 			ready = session.signal().map(Session.can_start)
 			phase = session.signal().map(|state| state.phase)
 			revert_ready = view.map(|value| Session.can_start(value.state) and Document.is_dirty({ draft: Session.draft(value.state, value.body), baseline: value.state.baseline }))
-			save = session.on_unit_with(body, |state, text| Session.begin_save({ state, draft: Session.draft(state, text), save_as: False }))
-			save_as = session.on_unit_with(body, |state, text| Session.begin_save({ state, draft: Session.draft(state, text), save_as: True }))
-			open = session.on_unit_with(body, |state, text| Session.begin_open({ state, draft: Session.draft(state, text) }))
+			save = session.update_with(body, |state, text| Session.begin_save({ state, draft: Session.draft(state, text), save_as: False }))
+			save_as = session.update_with(body, |state, text| Session.begin_save({ state, draft: Session.draft(state, text), save_as: True }))
+			open = session.update_with(body, |state, text| Session.begin_open({ state, draft: Session.draft(state, text) }))
 			new = Ui.action(
 				view,
 				|{ state, body: text }| {
@@ -56,7 +56,7 @@ main = || Ui.state(
 			cancel = Ui.action(phase, |value| Workflow.cancel(session, tasks, value))
 			chord = { key: "s", control: True, shift: False, alt: False, meta: False }
 			Gui.window_lifecycle(
-				{ on_close_requested: session.on_unit_with(body, Session.request_close), decision: session.signal().map(Session.close_decision) },
+				{ on_close_requested: session.update_with(body, Session.request_close), decision: session.signal().map(Session.close_decision) },
 				[
 					Gui.col(
 						{
@@ -142,7 +142,7 @@ main = || Ui.state(
 														grow: True,
 														gap: 4,
 													},
-													body.on_str(|_, value| value),
+													body.update_str(|_, value| value),
 												),
 											),
 										],
@@ -201,7 +201,7 @@ main = || Ui.state(
 										|| Gui.dialog(
 											{
 												label: "Discard your changes?",
-												on_dismiss: session.on_unit(Session.cancel),
+												on_dismiss: session.update(Session.cancel),
 												test_id: "discard-confirmation",
 												padding: 16,
 												gap: theme.gap,
@@ -214,7 +214,7 @@ main = || Ui.state(
 												Gui.row(
 													Gui.RowProps.{},
 													[
-														Gui.button("Keep editing", session.on_unit(Session.cancel)),
+														Gui.button("Keep editing", session.update(Session.cancel)),
 														Gui.button(
 															"Discard changes",
 															Ui.action(
@@ -238,7 +238,7 @@ main = || Ui.state(
 										|| Gui.dialog(
 											{
 												label: "Save before closing?",
-												on_dismiss: session.on_unit(Session.cancel),
+												on_dismiss: session.update(Session.cancel),
 												test_id: "close-confirmation",
 											},
 											[
@@ -247,9 +247,9 @@ main = || Ui.state(
 												Gui.row(
 													Gui.RowProps.{},
 													[
-														Gui.button("Keep editing", session.on_unit(Session.cancel)),
-														Gui.button("Discard and close", session.on_unit(|state| { ..state, close: Session.CloseState.AllowClose })),
-														Gui.button("Save and close", session.on_unit_with(body, Session.save_and_close)),
+														Gui.button("Keep editing", session.update(Session.cancel)),
+														Gui.button("Discard and close", session.update(|state| { ..state, close: Session.CloseState.AllowClose })),
+														Gui.button("Save and close", session.update_with(body, Session.save_and_close)),
 													],
 												),
 											],

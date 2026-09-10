@@ -327,7 +327,7 @@ Gui := [].{
 	## nearest matching ancestor receives one unit event and consumes the
 	## keystroke, and duplicates or more than 32 on one element are errors.
 	## `drag_source` offers a bounded key for an internal drag, and `on_drop`
-	## accepts a live drag through `Ui.action_detail` or `State.on_detail`.
+	## accepts a live drag through `Ui.action_detail` or `State.update_detail`.
 	ColProps := {
 		label ?: Str,
 		gap : U32 ?? 8,

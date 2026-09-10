@@ -955,7 +955,7 @@ public functions only, and no public signal ids, descriptor inspection, or
 host-owned construction helpers exist.
 
 `Msg` here is the unit of host-to-Roc dispatch: a bound reducer plus an optional
-payload. `Html.text_input("Name", name_signal, name_state.on_str(update_name))`
+payload. `Html.text_input("Name", name_signal, name_state.update_str(update_name))`
 means "when this input fires, route the target-value payload through
 `update_name` and apply the bound reducer." The app never names an event id; the
 host mints and routes them.
@@ -984,7 +984,7 @@ bytes after scalar nodes: source (`event`, `target`, `currentTarget`) and leaf
 (`key`, `value`, `checked`, `shiftKey`, `detail`). Records are non-empty, flat,
 UTF-8-named records of scalar leaves with no duplicate field names. Scalar
 payloads dispatch as unit/text/bool containers; record payloads dispatch as
-bytes, and app-compiled Roc decoders such as `State.on_key` construct the typed
+bytes, and app-compiled Roc decoders such as `State.update_key` construct the typed
 record. Hosts never decode Roc records or infer a payload from DOM shape.
 
 `EventExtractionPlan` is a compact Roc-side byte value naming one supported
@@ -1108,8 +1108,8 @@ counter : Elem
 counter =
     Ui.state(0i64, |count_state| {
         count = count_state.signal()
-        dec = count_state.on_unit(|n| n - 1)
-        inc = count_state.on_unit(|n| n + 1)
+        dec = count_state.update(|n| n - 1)
+        inc = count_state.update(|n| n + 1)
 
         Html.div(
             [],
@@ -1142,7 +1142,7 @@ name_field =
         Html.text_input(
             "Name",
             text,
-            text_state.on_str(|_current, value| value),
+            text_state.update_str(|_current, value| value),
         )
     })
 ```
@@ -1168,7 +1168,7 @@ todo_list = |todos|
                             [],
                             [
                                 Html.text_s(row.map(|t| t.title)),
-                                Html.button("Toggle edit", editing_state.on_unit(|e| !e)),
+                                Html.button("Toggle edit", editing_state.update(|e| !e)),
                                 Html.text_s(Signal.map(editing, |e| if e { "done" } else { "edit" })),
                             ],
                         )
@@ -1193,7 +1193,7 @@ panel = |title, on_close, children|
         Ui.state(Bool.true, |open_state| {
             open = open_state.signal()
             Html.section("panel", [], [
-                Html.action_button(title, Signal.const(Bool.true), open_state.on_unit(|o| !o)),
+                Html.action_button(title, Signal.const(Bool.true), open_state.update(|o| !o)),
                 Html.button("Close", on_close),
                 Ui.when(open, || Html.div([], children), || Html.text("")),
             ])
@@ -2754,13 +2754,13 @@ Browser.remove_session_storage : Str -> Cmd
 Ui.state : a, (State(a) -> Elem) -> Elem
     where [a.is_eq : a, a -> Bool]
 State.signal : State(a) -> Signal(a)
-State.on_unit : State(a), (a -> a) -> Msg
+State.update : State(a), (a -> a) -> Msg
 State.update_cmd : State(a), (a -> a) -> Cmd
-State.on_str : State(a), (a, Str -> a) -> Msg
-State.on_bool : State(a), (a, Bool -> a) -> Msg
-State.on_detail : State(a), (a, Str -> a) -> Msg
+State.update_str : State(a), (a, Str -> a) -> Msg
+State.update_bool : State(a), (a, Bool -> a) -> Msg
+State.update_detail : State(a), (a, Str -> a) -> Msg
 Ui.KeyPayload : { key : Str, shift_key : Bool }
-State.on_key : State(a), (a, Ui.KeyPayload -> a) -> Msg
+State.update_key : State(a), (a, Ui.KeyPayload -> a) -> Msg
 Ui.when : Signal(Bool), (() -> Elem), (() -> Elem) -> Elem   # builders retained, run when selected
 Ui.switch : Signal(case), (case -> Elem) -> Elem            # one scope per live case value
     where [case.is_eq : case, case -> Bool]
@@ -2971,7 +2971,7 @@ u8 shift_key   # 0 or 1
 ```
 
 The host receives those bytes as a `List(U8)` `HostValue`, and the app-facing
-`State.on_key` decoder constructs the typed Roc record. JS never decodes Roc
+`State.update_key` decoder constructs the typed Roc record. JS never decodes Roc
 records, tag unions, list headers, or string layouts. Unsupported payload kinds,
 malformed descriptors, invalid source/leaf pairs, duplicate record fields,
 trailing bytes, and invalid listener option bits are host/runtime contract

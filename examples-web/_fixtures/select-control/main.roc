@@ -57,15 +57,15 @@ main = || {
 						plan_signal,
 						[
 							Html.attr("id", "plan-select"),
-							Html.on_focus(model.on_unit(record_focus)),
-							Html.on_blur(model.on_unit(record_blur)),
+							Html.on_focus(model.update(record_focus)),
+							Html.on_blur(model.update(record_blur)),
 						],
 						[
 							Html.option("starter", "Starter"),
 							Html.option("growth", "Growth"),
 							Html.option("enterprise", "Enterprise"),
 						],
-						model.on_str(set_plan),
+						model.update_str(set_plan),
 					),
 					Html.paragraph_s(selected_text),
 					Html.paragraph_s(focus_text),

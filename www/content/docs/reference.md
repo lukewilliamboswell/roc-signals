@@ -196,16 +196,16 @@ are retained once by the keyed construction site.
 | Method | Type | Fires on |
 | --- | --- | --- |
 | `signal` | `State(a) -> Signal(a)` | — |
-| `on_unit` | `State(a), (a -> a) -> Msg` | click, submit, blur |
-| `on_str` | `State(a), (a, Str -> a) -> Msg` | input / change value |
-| `on_bool` | `State(a), (a, Bool -> a) -> Msg` | checkbox change |
-| `on_key` | `State(a), (a, KeyPayload -> a) -> Msg` | keydown |
-| `on_detail` | `State(a), (a, Str -> a) -> Msg` | custom event detail |
-| `on_unit_with` | `State(a), State(b), (a, b -> a) -> Msg` | snapshot a second state while reducing the first |
-| `on_str_with` | `State(a), State(b), (a, b, Str -> a) -> Msg` | text input plus a second state |
-| `on_bool_with` | `State(a), State(b), (a, b, Bool -> a) -> Msg` | checkbox plus a second state |
-| `on_key_with` | `State(a), State(b), (a, b, KeyPayload -> a) -> Msg` | keyboard plus a second state |
-| `on_detail_with` | `State(a), State(b), (a, b, Str -> a) -> Msg` | custom event plus a second state |
+| `update` | `State(a), (a -> a) -> Msg` | click, submit, blur |
+| `update_str` | `State(a), (a, Str -> a) -> Msg` | input / change value |
+| `update_bool` | `State(a), (a, Bool -> a) -> Msg` | checkbox change |
+| `update_key` | `State(a), (a, KeyPayload -> a) -> Msg` | keydown |
+| `update_detail` | `State(a), (a, Str -> a) -> Msg` | custom event detail |
+| `update_with` | `State(a), State(b), (a, b -> a) -> Msg` | snapshot a second state while reducing the first |
+| `update_str_with` | `State(a), State(b), (a, b, Str -> a) -> Msg` | text input plus a second state |
+| `update_bool_with` | `State(a), State(b), (a, b, Bool -> a) -> Msg` | checkbox plus a second state |
+| `update_key_with` | `State(a), State(b), (a, b, KeyPayload -> a) -> Msg` | keyboard plus a second state |
+| `update_detail_with` | `State(a), State(b), (a, b, Str -> a) -> Msg` | custom event plus a second state |
 | `set_cmd` | `State(a), a -> Cmd` | describe a replacement from a command-producing hook |
 | `update_cmd` | `State(a), (a -> a) -> Cmd` | transform the destination's settled value when the command executes |
 | `write` | `State(a), a -> Ui.StateWrite` | describe one destination of a coordinated write set |

@@ -9,7 +9,7 @@ main = || Ui.state(False, |enabled| {
 	Ui.state(0.U64, |clicks| {
 		Gui.col({ test_id: "presentation" }, [
 			Gui.heading("Native presentation"),
-			Gui.checkbox({ label: "Enable action", checked: enabled.signal() }, enabled.on_bool(|_, value| value)),
+			Gui.checkbox({ label: "Enable action", checked: enabled.signal() }, enabled.update_bool(|_, value| value)),
 			Gui.row({
 				test_id: "styled-row",
 				selected: enabled.signal(),
@@ -19,7 +19,7 @@ main = || Ui.state(False, |enabled| {
 					caption: Signal.const("Run action"),
 					enabled: enabled.signal(),
 					test_id: "run-action",
-				}, clicks.on_unit(|value| value + 1)),
+				}, clicks.update(|value| value + 1)),
 				Gui.text_s(clicks.signal().map(|value| "Runs: ${value.to_str()}")),
 			]),
 		])

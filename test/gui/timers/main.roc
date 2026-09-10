@@ -21,7 +21,7 @@ main = || Ui.state(
 					},
 					|| Gui.text("Paused after 2 ticks"),
 				),
-				Gui.button("Restart", count.on_unit(|_| 0)),
+				Gui.button("Restart", count.update(|_| 0)),
 			],
 		)
 	},

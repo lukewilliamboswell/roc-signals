@@ -76,13 +76,13 @@ main = || {
 											Html.text_input(
 												"Note for ${each_row.key()}",
 												each_row.map(label_of),
-												suffix.on_str(keep),
+												suffix.update_str(keep),
 											),
 										],
 									)),
 								|| Html.paragraph_s_attrs(Signal.const("No rows"), [Html.test_id("empty")]),
 							),
-							Html.button("Toggle", full.on_unit(toggle)),
+							Html.button("Toggle", full.update(toggle)),
 						],
 					)
 				},
