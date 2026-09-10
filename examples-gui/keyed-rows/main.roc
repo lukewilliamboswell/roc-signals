@@ -65,6 +65,7 @@ main = || Ui.state(
 						Gui.column(
 							[Gui.style({ ..Gui.style_default, padding: 32, gap: 16, width: Fill })],
 							[
+								Ui.on_change_initial(Signal.const("Keyed Rows - Roc Signals"), Gui.set_title),
 								Gui.heading("Roc Signals + GPUI"),
 								Gui.column(
 									[Gui.style({ ..Gui.style_default, foreground: Rgb(0xA9BFCC) })],

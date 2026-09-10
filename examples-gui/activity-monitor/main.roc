@@ -82,6 +82,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 	Gui.column(
 		[Gui.style({ ..Gui.style_default, padding: 24, gap: 12, width: Fill, height: Fill, overflow_y: Clip }), Gui.embedded_fonts([{ family: feed_font, bytes: source_code_pro }])],
 		[
+			Ui.on_change_initial(Signal.const("Activity Monitor - Roc Signals"), Gui.set_title),
 			Gui.heading("Activity Monitor"),
 			Gui.column(
 				[Gui.style({ ..Gui.style_default, foreground: Rgb(0xA9BFCC) })],

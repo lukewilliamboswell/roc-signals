@@ -177,6 +177,10 @@ pub struct Engine {
     child_at: unsafe extern "C" fn(u64, usize) -> u64,
     next_effect: unsafe extern "C" fn(*mut RawEffect) -> u32,
     task_result: unsafe extern "C" fn(u64, u32, *const u8, usize),
+    document_title: unsafe extern "C" fn(*mut Slice) -> u64,
+    /// Revision of the last window identity handed to the platform window, so a
+    /// repeated title never re-enters the native windowing system.
+    applied_title: std::cell::Cell<u64>,
     _main_thread: PhantomData<Rc<()>>,
 }
 impl Engine {
@@ -194,6 +198,8 @@ impl Engine {
                 child_at: signals_child_at,
                 next_effect: signals_effect_next,
                 task_result: signals_task_result,
+                document_title: signals_document_title,
+                applied_title: std::cell::Cell::new(0),
                 _main_thread: PhantomData,
             };
             assert_eq!(
@@ -338,6 +344,24 @@ impl Engine {
         unsafe { (self.task_result)(id, u32::from(failed), payload.as_ptr(), payload.len()) };
         self.changes()
     }
+    /// Reports the window identity the graph decided, but only when it actually
+    /// changed since the last report. The engine owns the returned storage until
+    /// the next engine call, so the text is copied before returning. A `None`
+    /// answer means the host should leave the current window title alone.
+    pub fn changed_document_title(&self) -> Option<String> {
+        let mut slice = Slice {
+            ptr: std::ptr::null(),
+            len: 0,
+        };
+        let revision = unsafe { (self.document_title)(&mut slice) };
+        if revision == self.applied_title.get() {
+            return None;
+        }
+        assert!(slice.len <= 4096, "native window title exceeded its bound");
+        let title = unsafe { slice.copy() };
+        self.applied_title.set(revision);
+        Some(title)
+    }
     pub fn metrics(&self) -> [u64; 3] {
         let mut result = [0; 3];
         unsafe { (self.metrics)(result.as_mut_ptr()) };
@@ -369,12 +393,14 @@ unsafe extern "C" {
     fn signals_effect_size() -> usize;
     fn signals_effect_next(out: *mut RawEffect) -> u32;
     fn signals_task_result(id: u64, failed: u32, ptr: *const u8, len: usize);
+    fn signals_document_title(out: *mut Slice) -> u64;
 }
 
 #[cfg(test)]
 thread_local! {
     static TEST_CHILDREN: std::cell::RefCell<std::collections::HashMap<u64, Vec<u64>>> = std::cell::RefCell::new(std::collections::HashMap::new());
     static TEST_EVENT: std::cell::RefCell<Option<(u64, u32, String, u32)>> = const { std::cell::RefCell::new(None) };
+    static TEST_TITLE: std::cell::RefCell<(u64, String)> = const { std::cell::RefCell::new((0, String::new())) };
 }
 
 #[cfg(test)]
@@ -398,6 +424,20 @@ impl Engine {
         }
         unsafe extern "C" fn task_result(_: u64, _: u32, _: *const u8, _: usize) {
             panic!("unexpected test task result")
+        }
+        unsafe extern "C" fn document_title(out: *mut Slice) -> u64 {
+            TEST_TITLE.with(|slot| {
+                let slot = slot.borrow();
+                // Mirrors the engine contract: the slice borrows storage the
+                // engine owns until its next call, and the caller copies it.
+                unsafe {
+                    *out = Slice {
+                        ptr: slot.1.as_ptr(),
+                        len: slot.1.len(),
+                    }
+                };
+                slot.0
+            })
         }
         unsafe extern "C" fn read(_: usize, _: *mut RawNode) {
             panic!("unexpected test node read")
@@ -423,6 +463,8 @@ impl Engine {
         TEST_EVENT.with(|slot| *slot.borrow_mut() = None);
         Self {
             unmount: noop,
+            document_title,
+            applied_title: std::cell::Cell::new(0),
             dispatch,
             count,
             read,
@@ -435,6 +477,12 @@ impl Engine {
             task_result,
             _main_thread: PhantomData,
         }
+    }
+
+    /// Scripts the window identity the fake boundary reports, standing in for a
+    /// `SetDocumentTitle` command the engine committed at that revision.
+    pub fn set_test_document_title(revision: u64, title: &str) {
+        TEST_TITLE.with(|slot| *slot.borrow_mut() = (revision, title.to_owned()));
     }
 
     pub fn set_test_children(parent: u64, children: Vec<u64>) {

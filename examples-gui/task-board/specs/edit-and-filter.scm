@@ -16,7 +16,9 @@
     ; card and detail avatar selectors derived from the task's assignee.
     ; The card meta line is two text nodes (tinted priority word, muted
     ; assignee), so each row change re-derives one extra text signal: +1.
-    (expect-metric-delta-at-most derived_calls_into_roc 38)
+    ; The window title is derived from the same document context, so an edit
+    ; that dirties the board re-derives the title string once more: +1.
+    (expect-metric-delta-at-most derived_calls_into_roc 39)
     (fill (label "Filter tasks") "KEYBOARD")
     (expect-absent (test-id "task-1"))
     (expect-visible (test-id "task-3"))

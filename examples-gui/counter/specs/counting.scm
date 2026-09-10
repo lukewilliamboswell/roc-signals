@@ -1,5 +1,6 @@
 (test "Counter propagates events through the shared engine"
   (steps
+    (expect-document-title "Counter - Roc Signals")
     (expect-text (test-id "count") "0")
     (click (role button :name "Increment"))
     (expect-text (test-id "count") "1")

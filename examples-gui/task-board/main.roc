@@ -513,6 +513,18 @@ board_view = |handles| {
 			""
 		},
 	)
+	# The window identity names the open board file and marks unsaved work, so
+	# the desktop switcher agrees with the toolbar about what is on screen.
+	window_title = handles.context.map(
+		|context| {
+			mark = if dirty(context) { "* " } else { "" }
+			name = match context.document.path {
+				None => "Untitled board"
+				Some(value) => value
+			}
+			"${mark}${name} - Launch Board"
+		},
+	)
 	Gui.window_lifecycle(
 		{
 			on_close_requested: Ui.action(
@@ -537,6 +549,7 @@ board_view = |handles| {
 			Gui.column(
 				[Gui.style({ ..Gui.style_default, padding: 24, gap: 12, width: Fill }), Gui.test_id("launch-board"), Gui.on_shortcut(chord, actions.save), Gui.on_shortcut({ ..chord, shift: True }, actions.save_as), Gui.on_shortcut({ ..chord, key: "o" }, actions.open), Gui.on_shortcut({ ..chord, key: "z" }, history_message(handles, False)), Gui.on_shortcut({ ..chord, key: "z", shift: True }, history_message(handles, True))],
 				[
+					Ui.on_change_initial(window_title, Gui.set_title),
 					Gui.heading("Launch Board"),
 					Gui.column(
 						[Gui.style({ ..Gui.style_default, foreground: Rgb(0xA9BFCC) })],

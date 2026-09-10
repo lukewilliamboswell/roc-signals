@@ -301,6 +301,17 @@ explorer_view = |handles| {
 			Gui.on_shortcut({ key: "ArrowUp", control: False, shift: False, alt: True, meta: False }, up_action),
 		],
 		workflow(handles, tasks).concat([
+			# The browsed folder is this window's document, so the switcher names it.
+			Ui.on_change_initial(
+				source.map(
+					|value| {
+						location = Session.path(value)
+						place = if location.is_empty() { "Sample workspace" } else { location }
+						"${place} - Folder Explorer"
+					},
+				),
+				Gui.set_title,
+			),
 			Gui.heading("Folder Explorer"),
 			Gui.column(
 				[Gui.style({ ..Gui.style_default, foreground: Rgb(0xA9BFCC) })],

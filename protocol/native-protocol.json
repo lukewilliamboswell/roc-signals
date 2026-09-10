@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "comment": "Single authority for the native GUI protocol tables. Edit this file, then run `python3 scripts/generate_protocol.py` to regenerate the committed Zig, Rust, Roc, and docs artifacts. `docs/native-gui-protocol.md` documents the add-a-field procedure.",
-  "protocol_version": 10,
+  "protocol_version": 11,
   "effect_version": 2,
   "timer_version": 1,
   "custom_text_field_id": 7,
@@ -77,6 +77,7 @@
     ]
   },
   "version_history": [
+    { "version": 11, "summary": "Adds `signals_document_title`, the host read of the window identity decided by the shared engine's `SetDocumentTitle` command." },
     { "version": 10, "summary": "Extends the presentation record to style version 2 with hover and active background slots (18 u32 style record); style version 1 records are no longer accepted." },
     { "version": 9, "summary": "Adds the explicit image-source text slot together with the font-family and embedded-font declaration slots to the node layout." },
     { "version": 8, "summary": "Adds the placeholder text slot to the node layout." },

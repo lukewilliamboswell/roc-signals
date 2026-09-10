@@ -11,12 +11,13 @@ document stays hand-written.
 
 <!-- BEGIN GENERATED PROTOCOL TABLES (scripts/generate_protocol.py; edit protocol/native-protocol.json) -->
 
-The statically linked GUI boundary uses protocol version **10**;
+The statically linked GUI boundary uses protocol version **11**;
 the separate native effects boundary is version **2** and the
 separate timer boundary is version **1**.
 
 | Version | Change |
 | --- | --- |
+| 11 | Adds `signals_document_title`, the host read of the window identity decided by the shared engine's `SetDocumentTitle` command. |
 | 10 | Extends the presentation record to style version 2 with hover and active background slots (18 u32 style record); style version 1 records are no longer accepted. |
 | 9 | Adds the explicit image-source text slot together with the font-family and embedded-font declaration slots to the node layout. |
 | 8 | Adds the placeholder text slot to the node layout. |
@@ -343,6 +344,14 @@ when they render. Fixed-height row caches preserve retained subtree identity.
 Follow-tail positions the final matching row at the bottom when the list is
 updated while enabled. Turning it off leaves scrolling under user control.
 This is presentation policy, not a second timer, observer, or reactive graph.
+
+`signals_document_title(out)` reports the window identity the graph decided and
+returns a revision that changes only when the applied title text changes. The
+slice borrows engine-owned storage that stays valid until the next engine call,
+so the host copies it before dispatching again. It is an observation of the
+shared engine's `SetDocumentTitle` command, exposed by `Gui.set_title`, and not
+a second route into the window: the host applies a title on the next frame and
+skips a revision it has already applied.
 
 ## Native Files and task transport
 
