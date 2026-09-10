@@ -2,10 +2,10 @@
   (steps
     (expect-text (text "Idle") "Idle")
     (click (role button :name "Succeed"))
-    (expect-text (text "Done: hello from an effect") "Done: hello from an effect")
+    (expect-text (text "Done: HOME is set") "Done: HOME is set")
     (click (role button :name "Fail"))
     (expect-text (text "Failed: boom") "Failed: boom")
     (click (role button :name "Succeed"))
-    (expect-text (text "Done: hello from an effect") "Done: hello from an effect")
+    (expect-text (text "Done: HOME is set") "Done: HOME is set")
   )
 )

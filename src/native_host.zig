@@ -2473,6 +2473,38 @@ fn hostRealloc(ptr: *anyopaque, new_length: usize, alignment: usize) callconv(.c
     return rocReallocAt(currentRocHost(), ptr, new_length, alignment, @returnAddress());
 }
 
+/// The running process's environment as the standard library's handle. Windows
+/// reads the live block; POSIX targets view libc's `environ` in place.
+fn processEnviron() std.process.Environ {
+    if (comptime std.process.Environ.Block == std.process.Environ.GlobalBlock) return .{ .block = .global };
+    const c_environ = std.c.environ;
+    var count: usize = 0;
+    while (c_environ[count] != null) : (count += 1) {}
+    return .{ .block = .{ .slice = c_environ[0..count :null] } };
+}
+
+/// Hosted `Env.var!`: reads one process environment variable. Roc transfers
+/// the name to the host, so it is released here; the result string is one
+/// owned reference handed back to Roc. Any lookup failure is `Missing`.
+fn hostEnvVar(name: abi.RocStr) callconv(.c) abi.EnvVarResult {
+    const roc_host = currentRocHost();
+    defer name.decref(roc_host);
+    const allocator = currentHost().hostAllocator();
+    const value = std.process.Environ.getAlloc(processEnviron(), allocator, name.asSlice()) catch {
+        return .{ .payload = undefined, .tag = .Err };
+    };
+    defer allocator.free(value);
+    var result: abi.EnvVarResult = .{ .payload = undefined, .tag = .Ok };
+    const text = abi.RocStr.fromSlice(value, roc_host);
+    if (comptime @sizeOf(usize) == 8) {
+        result.payload = .{ .ok = text };
+    } else {
+        const slot: *abi.RocStr = @ptrCast(@alignCast(&result.payload));
+        slot.* = text;
+    }
+    return result;
+}
+
 fn hostDbg(bytes: [*]const u8, len: usize) callconv(.c) void {
     rocDbgFn(currentRocHost(), bytes, len);
 }
@@ -3895,6 +3927,7 @@ comptime {
         @export(&hostDealloc, .{ .name = "roc_dealloc", .visibility = .hidden });
         @export(&hostRealloc, .{ .name = "roc_realloc", .visibility = .hidden });
         @export(&hostDbg, .{ .name = "roc_dbg", .visibility = .hidden });
+        @export(&hostEnvVar, .{ .name = "roc_env_var", .visibility = .hidden });
         @export(&hostExpectFailed, .{ .name = "roc_expect_failed", .visibility = .hidden });
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });
         @export(&eachBoolSinkPush, .{ .name = "roc_each_bool_sink_push", .visibility = .hidden });

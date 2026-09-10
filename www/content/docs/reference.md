@@ -164,6 +164,9 @@ supersession, and scope disposal follow the task rules above. The closure runs
 on the UI thread after the starting transaction commits, so the platform's
 `roc_run_effect` entry point is the one effectful export of the platform.
 
+`Env.var!(name)` is a hosted effectful function returning `Try(Str, [Missing])`;
+it can only be called from inside an effect closure.
+
 ## Ui
 
 | Function | Type | Purpose |

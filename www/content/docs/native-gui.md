@@ -290,13 +290,16 @@ command from a handler, and read the outcome from the task's status signal, the
 same way native file tasks work:
 
 ```roc
-fetch = Effect.task("fetch-article", |text| text, |err| err)
+home = Effect.task("read-home", |text| text, |err| err)
 
-Elem.button("Load", Ui.action(id.signal(), |article_id|
-    Effect.run(fetch, || some_package.fetch_article!(article_id))
+Elem.button("Read HOME", Ui.action(Signal.const({}), |_|
+    Effect.run(home, || match Env.var!("HOME") {
+        Ok(path) => Ok(path)
+        Err(Missing) => Err("HOME is not set")
+    })
 ))
 
-Elem.text_s(Signal.fold_task(fetch, "Loading…", |article| article, |err| "Failed: ${err}"))
+Elem.text_s(Signal.fold_task(home, "Idle", |path| "HOME is ${path}", |err| "Failed: ${err}"))
 ```
 
 The closure has type `() => Try(Str, Str)`: `Ok` text reaches the task's
@@ -308,9 +311,11 @@ older request; a closure that has begun cannot be interrupted, and its result
 is discarded if a newer request superseded it. Because the closure blocks the
 UI thread, keep it short or move long work behind a dedicated native task.
 
-Effect closures can call `!` functions from packages and any effectful
-primitives the platform hosts. The browser platform does not run effect tasks;
-a start there resolves to the task's declared refusal value.
+Effect closures can call `!` functions from packages and the effectful
+primitives the platform hosts. Today that is `Env.var!`, which reads one
+process environment variable; more primitives follow the same shape, a `!`
+function implemented by the native host. The browser platform does not run
+effect tasks; a start there resolves to the task's declared refusal value.
 
 ## Example coverage
 

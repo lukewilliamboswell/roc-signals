@@ -845,7 +845,7 @@ pub const __AnonStruct_180edd8bcea11b3f = if (@sizeOf(usize) == 4) extern struct
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefBoxWith(@ptrCast(value.child), @alignOf(Elem), true, &decrefBoxPayloadType39, roc_host);
+        decrefBoxWith(@ptrCast(value.child), @alignOf(Elem), true, &decrefBoxPayloadType43, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -858,7 +858,7 @@ pub const __AnonStruct_180edd8bcea11b3f = if (@sizeOf(usize) == 4) extern struct
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefBoxWith(@ptrCast(value.child), @alignOf(Elem), true, &decrefBoxPayloadType39, roc_host);
+        decrefBoxWith(@ptrCast(value.child), @alignOf(Elem), true, &decrefBoxPayloadType43, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -887,7 +887,7 @@ pub const __AnonStruct_2fc5076a97aa9b29 = if (@sizeOf(usize) == 4) extern struct
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.ops.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.rows), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+        decrefBoxWith(@ptrCast(value.rows), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -903,7 +903,7 @@ pub const __AnonStruct_2fc5076a97aa9b29 = if (@sizeOf(usize) == 4) extern struct
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.ops.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.rows), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+        decrefBoxWith(@ptrCast(value.rows), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -1568,7 +1568,7 @@ pub const __AnonStruct_1208acb69630e8 = if (@sizeOf(usize) == 4) extern struct {
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.payload_cap.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType124, roc_host);
+        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType128, roc_host);
         decrefErasedCallable(value.to_cmd, roc_host);
     }
 
@@ -1587,7 +1587,7 @@ pub const __AnonStruct_1208acb69630e8 = if (@sizeOf(usize) == 4) extern struct {
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.payload_cap.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType124, roc_host);
+        decrefBoxWith(@ptrCast(value.reads), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType128, roc_host);
         decrefErasedCallable(value.to_cmd, roc_host);
     }
 
@@ -2255,7 +2255,7 @@ pub const __AnonStruct_c4502953588f5545 = if (@sizeOf(usize) == 4) extern struct
         value.field.decref(roc_host);
         value.name.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType179, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType183, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2277,7 +2277,7 @@ pub const __AnonStruct_c4502953588f5545 = if (@sizeOf(usize) == 4) extern struct
         value.field.decref(roc_host);
         value.name.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType179, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType183, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2403,7 +2403,7 @@ pub const __AnonStruct_3919d24a90aa1c30 = if (@sizeOf(usize) == 4) extern struct
         value.field.decref(roc_host);
         value.name.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType179, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType183, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2425,7 +2425,7 @@ pub const __AnonStruct_3919d24a90aa1c30 = if (@sizeOf(usize) == 4) extern struct
         value.field.decref(roc_host);
         value.name.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType179, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType183, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2607,7 +2607,7 @@ pub const __AnonStruct_dce81af82680946c = if (@sizeOf(usize) == 4) extern struct
         value.name.decref(roc_host);
         value.present.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType179, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType183, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2632,7 +2632,7 @@ pub const __AnonStruct_dce81af82680946c = if (@sizeOf(usize) == 4) extern struct
         value.name.decref(roc_host);
         value.present.decref(roc_host);
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType179, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType183, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2664,7 +2664,7 @@ pub const __AnonStruct_e273a265345e3f00 = if (@sizeOf(usize) == 4) extern struct
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
         decrefErasedCallable(value.to_cmd, roc_host);
     }
 
@@ -2680,7 +2680,7 @@ pub const __AnonStruct_e273a265345e3f00 = if (@sizeOf(usize) == 4) extern struct
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
         decrefErasedCallable(value.to_cmd, roc_host);
     }
 
@@ -2754,7 +2754,7 @@ pub const __AnonStruct_31ce7c44d4d70f76 = if (@sizeOf(usize) == 4) extern struct
         const value = self;
         decrefErasedCallable(value.binder, roc_host);
         value.cap.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.child), @alignOf(Elem), true, &decrefBoxPayloadType39, roc_host);
+        decrefBoxWith(@ptrCast(value.child), @alignOf(Elem), true, &decrefBoxPayloadType43, roc_host);
         decrefErasedCallable(value.initial, roc_host);
     }
 
@@ -2776,7 +2776,7 @@ pub const __AnonStruct_31ce7c44d4d70f76 = if (@sizeOf(usize) == 4) extern struct
         const value = self;
         decrefErasedCallable(value.binder, roc_host);
         value.cap.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.child), @alignOf(Elem), true, &decrefBoxPayloadType39, roc_host);
+        decrefBoxWith(@ptrCast(value.child), @alignOf(Elem), true, &decrefBoxPayloadType43, roc_host);
         decrefErasedCallable(value.initial, roc_host);
     }
 
@@ -2809,7 +2809,7 @@ pub const __AnonStruct_e8f8b3c0e45c6fd1 = if (@sizeOf(usize) == 4) extern struct
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2825,7 +2825,7 @@ pub const __AnonStruct_e8f8b3c0e45c6fd1 = if (@sizeOf(usize) == 4) extern struct
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+        decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -2854,7 +2854,7 @@ pub const __AnonStruct_355e5277e4150238 = if (@sizeOf(usize) == 4) extern struct
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefBoxWith(@ptrCast(value.condition), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+        decrefBoxWith(@ptrCast(value.condition), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
         value.ops.decref(roc_host);
     }
 
@@ -2870,7 +2870,7 @@ pub const __AnonStruct_355e5277e4150238 = if (@sizeOf(usize) == 4) extern struct
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefBoxWith(@ptrCast(value.condition), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+        decrefBoxWith(@ptrCast(value.condition), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
         value.ops.decref(roc_host);
     }
 
@@ -2978,6 +2978,65 @@ comptime {
     if (@sizeOf(usize) == 4) {
         if (@sizeOf(__AnonStruct_687b4c9bc544096f) != 16) @compileError("__AnonStruct_687b4c9bc544096f size mismatch");
         if (@alignOf(__AnonStruct_687b4c9bc544096f) != 4) @compileError("__AnonStruct_687b4c9bc544096f alignment mismatch");
+    }
+}
+
+/// Tag discriminant for Try.
+pub const EnvVarResultTag = enum(u8) {
+    Err = 0,
+    Ok = 1,
+};
+
+/// Payload union for Try.
+pub const EnvVarResultPayload = extern union {
+    err: [0]u8,
+    ok: RocStr,
+};
+
+/// Tag union: Try
+pub const EnvVarResult = if (@sizeOf(usize) == 4) extern struct {
+    payload: [12]u8 align(4),
+    tag: EnvVarResultTag,
+    pub fn payload_ok(self: *const @This()) RocStr {
+        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefEnvVarResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfEnvVarResult(self, amount);
+    }
+} else extern struct {
+    payload: EnvVarResultPayload,
+    tag: EnvVarResultTag,
+    pub fn payload_ok(self: *const @This()) RocStr {
+        return self.payload.ok;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefEnvVarResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfEnvVarResult(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(EnvVarResult) != 32) @compileError("EnvVarResult size mismatch");
+        if (@alignOf(EnvVarResult) != 8) @compileError("EnvVarResult alignment mismatch");
+        if (@offsetOf(EnvVarResult, "tag") != 24) @compileError("EnvVarResult tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(EnvVarResult) != 16) @compileError("EnvVarResult size mismatch");
+        if (@alignOf(EnvVarResult) != 4) @compileError("EnvVarResult alignment mismatch");
+        if (@offsetOf(EnvVarResult, "tag") != 12) @compileError("EnvVarResult tag offset mismatch");
     }
 }
 
@@ -4052,21 +4111,21 @@ comptime {
 }
 
 /// Tag discriminant for Try.
-pub const TryTag = enum(u8) {
+pub const TryType216Tag = enum(u8) {
     Err = 0,
     Ok = 1,
 };
 
 /// Payload union for Try.
-pub const TryPayload = extern union {
+pub const TryType216Payload = extern union {
     err: RocStr,
     ok: RocStr,
 };
 
 /// Tag union: Try
-pub const Try = if (@sizeOf(usize) == 4) extern struct {
+pub const TryType216 = if (@sizeOf(usize) == 4) extern struct {
     payload: [12]u8 align(4),
-    tag: TryTag,
+    tag: TryType216Tag,
     pub fn payload_err(self: *const @This()) RocStr {
         const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
@@ -4077,16 +4136,16 @@ pub const Try = if (@sizeOf(usize) == 4) extern struct {
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
-        decrefTry(self, roc_host);
+        decrefTryType216(self, roc_host);
     }
 
     /// Increment Roc-owned payloads.
     pub fn incref(self: @This(), amount: isize) void {
-        increfTry(self, amount);
+        increfTryType216(self, amount);
     }
 } else extern struct {
-    payload: TryPayload,
-    tag: TryTag,
+    payload: TryType216Payload,
+    tag: TryType216Tag,
     pub fn payload_err(self: *const @This()) RocStr {
         return self.payload.err;
     }
@@ -4095,25 +4154,25 @@ pub const Try = if (@sizeOf(usize) == 4) extern struct {
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
-        decrefTry(self, roc_host);
+        decrefTryType216(self, roc_host);
     }
 
     /// Increment Roc-owned payloads.
     pub fn incref(self: @This(), amount: isize) void {
-        increfTry(self, amount);
+        increfTryType216(self, amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(Try) != 32) @compileError("Try size mismatch");
-        if (@alignOf(Try) != 8) @compileError("Try alignment mismatch");
-        if (@offsetOf(Try, "tag") != 24) @compileError("Try tag offset mismatch");
+        if (@sizeOf(TryType216) != 32) @compileError("TryType216 size mismatch");
+        if (@alignOf(TryType216) != 8) @compileError("TryType216 alignment mismatch");
+        if (@offsetOf(TryType216, "tag") != 24) @compileError("TryType216 tag offset mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(Try) != 16) @compileError("Try size mismatch");
-        if (@alignOf(Try) != 4) @compileError("Try alignment mismatch");
-        if (@offsetOf(Try, "tag") != 12) @compileError("Try tag offset mismatch");
+        if (@sizeOf(TryType216) != 16) @compileError("TryType216 size mismatch");
+        if (@alignOf(TryType216) != 4) @compileError("TryType216 alignment mismatch");
+        if (@offsetOf(TryType216, "tag") != 12) @compileError("TryType216 tag offset mismatch");
     }
 }
 
@@ -4208,6 +4267,13 @@ pub const EachSinkPush_snapshotArgs = extern struct {
     arg1: u64,
     arg2: u64,
     arg3: RocStr,
+};
+
+/// Arguments for Env.var!
+/// Roc signature: Str => Try(Str, [Missing])
+/// Refcounted fields are owned by the hosted function.
+pub const EnvVarArgs = extern struct {
+    arg0: RocStr,
 };
 
 /// Arguments for HostValue.clone!
@@ -4919,6 +4985,30 @@ pub const Run_effect = __AnonStruct_687b4c9bc544096f;
 
 // Generated Refcount Helpers
 
+fn decrefEnvVarResult(value: EnvVarResult, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .Err => {},
+        .Ok => {
+            value.payload_ok().decref(roc_host);
+        },
+    }
+}
+
+fn increfEnvVarResult(value: EnvVarResult, amount: isize) void {
+    switch (value.tag) {
+        .Err => {},
+        .Ok => {
+            value.payload_ok().incref(amount);
+        },
+    }
+}
+
+pub const EnvVarResultRelease = struct {
+    pub fn release(value: EnvVarResult, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
 pub const HostValueCapabilityHandleRelease = struct {
     pub fn release(value: HostValueCapabilityHandle, roc_host: *RocHost) void {
         value.decref(roc_host);
@@ -5065,7 +5155,7 @@ fn decrefNodeSignalExpr(value: NodeSignalExpr, roc_host: *RocHost) void {
         .KeyedSelect => {
             const payload = value.payload_keyed_select();
             decrefErasedCallable(payload._1, roc_host);
-            decrefBoxWith(@ptrCast(payload._2), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+            decrefBoxWith(@ptrCast(payload._2), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
             payload._3.decref(roc_host);
             payload._4.decref(roc_host);
             decrefErasedCallable(payload._5, roc_host);
@@ -5082,15 +5172,15 @@ fn decrefNodeSignalExpr(value: NodeSignalExpr, roc_host: *RocHost) void {
         .Map => {
             const payload = value.payload_map();
             decrefErasedCallable(payload._0, roc_host);
-            decrefBoxWith(@ptrCast(payload._1), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+            decrefBoxWith(@ptrCast(payload._1), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
             decrefErasedCallable(payload._2, roc_host);
             payload._3.decref(roc_host);
         },
         .Map2 => {
             const payload = value.payload_map2();
             decrefErasedCallable(payload._0, roc_host);
-            decrefBoxWith(@ptrCast(payload._1), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
-            decrefBoxWith(@ptrCast(payload._2), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+            decrefBoxWith(@ptrCast(payload._1), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
+            decrefBoxWith(@ptrCast(payload._2), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
             decrefErasedCallable(payload._3, roc_host);
             payload._4.decref(roc_host);
         },
@@ -5113,7 +5203,7 @@ fn decrefNodeSignalExpr(value: NodeSignalExpr, roc_host: *RocHost) void {
         .Select => {
             const payload = value.payload_select();
             decrefErasedCallable(payload._0, roc_host);
-            decrefBoxWith(@ptrCast(payload._1), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType71, roc_host);
+            decrefBoxWith(@ptrCast(payload._1), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType75, roc_host);
             payload._2.decref(roc_host);
             payload._3.decref(roc_host);
             decrefErasedCallable(payload._4, roc_host);
@@ -5661,7 +5751,7 @@ pub const __AnonStruct_307321b22282236aRelease = struct {
     }
 };
 
-fn decrefTry(value: Try, roc_host: *RocHost) void {
+fn decrefTryType216(value: TryType216, roc_host: *RocHost) void {
     switch (value.tag) {
         .Err => {
             value.payload_err().decref(roc_host);
@@ -5672,7 +5762,7 @@ fn decrefTry(value: Try, roc_host: *RocHost) void {
     }
 }
 
-fn increfTry(value: Try, amount: isize) void {
+fn increfTryType216(value: TryType216, amount: isize) void {
     switch (value.tag) {
         .Err => {
             value.payload_err().incref(amount);
@@ -5683,8 +5773,8 @@ fn increfTry(value: Try, amount: isize) void {
     }
 }
 
-pub const TryRelease = struct {
-    pub fn release(value: Try, roc_host: *RocHost) void {
+pub const TryType216Release = struct {
+    pub fn release(value: TryType216, roc_host: *RocHost) void {
         value.decref(roc_host);
     }
 };
@@ -5727,22 +5817,22 @@ pub fn decrefListOfElem(value: RocList(Elem), roc_host: *RocHost) void {
     value.deinitWith(ElemRelease, roc_host);
 }
 
-fn decrefBoxPayloadType39(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
+fn decrefBoxPayloadType43(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
     const payload: *Elem = @ptrCast(@alignCast(data_ptr orelse return));
     payload.*.decref(roc_host);
 }
 
-fn decrefBoxPayloadType71(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
+fn decrefBoxPayloadType75(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
     const payload: *NodeSignalExpr = @ptrCast(@alignCast(data_ptr orelse return));
     payload.*.decref(roc_host);
 }
 
-fn decrefBoxPayloadType124(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
+fn decrefBoxPayloadType128(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
     const payload: *NodeSignalExpr = @ptrCast(@alignCast(data_ptr orelse return));
     payload.*.decref(roc_host);
 }
 
-fn decrefBoxPayloadType179(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
+fn decrefBoxPayloadType183(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.c) void {
     const payload: *NodeSignalExpr = @ptrCast(@alignCast(data_ptr orelse return));
     payload.*.decref(roc_host);
 }
@@ -5750,6 +5840,7 @@ fn decrefBoxPayloadType179(data_ptr: ?*anyopaque, roc_host: *RocHost) callconv(.
 fn rocReleasePolicy(comptime T: type) type {
     if (T == RocStr) return RocStrRelease;
     if (T == RocErasedCallable) return RocErasedCallableRelease;
+    if (T == EnvVarResult) return EnvVarResultRelease;
     if (T == HostValueCapabilityHandle) return HostValueCapabilityHandleRelease;
     if (T == Elem) return ElemRelease;
     if (T == __AnonStruct_e3ba6f75038959ff) return __AnonStruct_e3ba6f75038959ffRelease;
@@ -5802,7 +5893,7 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == __AnonStruct_e8f8b3c0e45c6fd1) return __AnonStruct_e8f8b3c0e45c6fd1Release;
     if (T == __AnonStruct_355e5277e4150238) return __AnonStruct_355e5277e4150238Release;
     if (T == __AnonStruct_307321b22282236a) return __AnonStruct_307321b22282236aRelease;
-    if (T == Try) return TryRelease;
+    if (T == TryType216) return TryType216Release;
     if (T == __AnonStruct_687b4c9bc544096f) return __AnonStruct_687b4c9bc544096fRelease;
     @compileError("generated glue has no recursive release policy for " ++ @typeName(T));
 }
@@ -5874,6 +5965,14 @@ pub extern fn roc_rows_snapshot_description_sink_push(arg0: u64, arg1: RocErased
 /// moved into storage or into the result:
 ///     arg3.decref(roc_host);
 pub extern fn roc_rows_snapshot_sink_push(arg0: u64, arg1: u64, arg2: u64, arg3: RocStr) callconv(.c) u64;
+
+/// Hosted symbol for Env.var!
+/// Roc signature: Str => Try(Str, [Missing])
+/// Owned arguments. Release each exactly once before returning, unless it is
+/// moved into storage or into the result:
+///     arg0.decref(roc_host);
+/// The result is owned by Roc: return exactly one owned reference.
+pub extern fn roc_env_var(arg0: RocStr) callconv(.c) EnvVarResult;
 
 /// Hosted symbol for HostValue.clone!
 /// Roc signature: HostValue -> HostValue

@@ -2,7 +2,7 @@ platform ""
 	requires {
 		main : () -> Elem
 	}
-	exposes [Elem, Event, Effect, Signal, Gui, Ui, Rows, Files]
+	exposes [Elem, Event, Effect, Env, Signal, Gui, Ui, Rows, Files]
 	packages {
 		roc: "nightly-2026-09-04-c125b82",
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
@@ -18,6 +18,7 @@ platform ""
 		"roc_rows_delta_update_sink_push": EachSink.push_delta_update!,
 		"roc_rows_snapshot_description_sink_push": EachSink.push_snapshot_description!,
 		"roc_rows_snapshot_sink_push": EachSink.push_snapshot!,
+		"roc_env_var": Env.var!,
 		"roc_host_value_clone": HostValue.clone!,
 		"roc_host_value_get_with_capability": HostValue.get_with_capability!,
 		"roc_host_value_get_with_split": HostValue.get_with_split!,
@@ -41,6 +42,7 @@ import Signal
 import Gui
 import Event
 import Effect
+import Env
 import Files
 import Ui
 import Rows
