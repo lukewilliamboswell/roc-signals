@@ -7,17 +7,15 @@ use crate::{
     bridge::Effect,
     file_io::{self, FileError, Kind, LogChange, LogCursor, LogPosition, LogState},
 };
+use crate::workers;
 use gpui::{Context, PathPromptOptions};
 use std::{
-    collections::{HashMap, VecDeque},
-    future::Future,
+    collections::HashMap,
     path::{Path, PathBuf},
-    pin::Pin,
     sync::{
-        Arc, Mutex, mpsc,
+        Arc, mpsc,
         atomic::{AtomicBool, Ordering},
     },
-    task::{Context as TaskContext, Poll, Waker},
 };
 
 const MAX_REQUESTS: usize = 16;
@@ -103,35 +101,9 @@ impl Manager {
         );
     }
 
-    /// Starts the UI-thread listener that shows choosers for effects waiting
-    /// on the worker. One runtime listens at a time; a dropped runtime frees
-    /// the slot for the next.
-    pub(crate) fn listen(cx: &mut Context<Runtime>) {
-        {
-            let mut queue = CHOOSERS.lock().unwrap();
-            if queue.listening {
-                return;
-            }
-            queue.listening = true;
-        }
-        cx.spawn(async move |runtime, cx| {
-            loop {
-                let request = NextChooser.await;
-                if runtime
-                    .update(cx, |runtime, cx| runtime.effects.prompt(request, cx))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            CHOOSERS.lock().unwrap().listening = false;
-        })
-        .detach();
-    }
-
     /// Shows the dialog a worker asked for and answers it when the dialog
     /// closes. The worker is blocked on `reply` in `signals_files_run`.
-    fn prompt(&mut self, waiting: ChooserRequest, cx: &mut Context<Runtime>) {
+    pub(crate) fn prompt(&mut self, waiting: ChooserRequest, cx: &mut Context<Runtime>) {
         let ChooserRequest { request, reply } = waiting;
         match request {
             Request::ChooseFile | Request::ChooseDirectory => {
@@ -205,55 +177,19 @@ impl Drop for Manager {
 
 /// A chooser a worker effect is waiting on. The worker blocks on the other
 /// end of `reply` until the dialog closes.
-struct ChooserRequest {
+pub(crate) struct ChooserRequest {
     request: Request,
     reply: mpsc::Sender<Result<String, FileError>>,
-}
-
-struct ChooserQueue {
-    requests: VecDeque<ChooserRequest>,
-    waker: Option<Waker>,
-    listening: bool,
-}
-
-static CHOOSERS: Mutex<ChooserQueue> = Mutex::new(ChooserQueue {
-    requests: VecDeque::new(),
-    waker: None,
-    listening: false,
-});
-
-/// Resolves with the next chooser request; the worker's push wakes it on the
-/// UI thread's executor.
-struct NextChooser;
-
-impl Future for NextChooser {
-    type Output = ChooserRequest;
-    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<ChooserRequest> {
-        let mut queue = CHOOSERS.lock().unwrap();
-        if let Some(request) = queue.requests.pop_front() {
-            return Poll::Ready(request);
-        }
-        queue.waker = Some(cx.waker().clone());
-        Poll::Pending
-    }
 }
 
 /// Asks the UI thread to show a chooser and blocks the calling worker until
 /// the user answers. Without a listening window there is nobody to show it.
 fn wait_for_chooser(request: Request) -> Result<String, FileError> {
     let (reply, receiver) = mpsc::channel();
-    let waker = {
-        let mut queue = CHOOSERS.lock().unwrap();
-        if !queue.listening {
-            return Err(FileError::Unavailable(
-                "no window is open to show a file chooser".into(),
-            ));
-        }
-        queue.requests.push_back(ChooserRequest { request, reply });
-        queue.waker.take()
-    };
-    if let Some(waker) = waker {
-        waker.wake();
+    if !workers::post(workers::Message::Chooser(ChooserRequest { request, reply })) {
+        return Err(FileError::Unavailable(
+            "no window is open to show a file chooser".into(),
+        ));
     }
     receiver.recv().map_err(|_| {
         FileError::Unavailable("the window closed before the file chooser answered".into())

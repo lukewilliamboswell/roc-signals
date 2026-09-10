@@ -3231,11 +3231,12 @@ fn runEffectJob(job: *EffectJob) void {
 
 /// Prepares the effects queued by the turns that just committed, oldest
 /// first, on the UI thread: each effect's closure receives a fresh snapshot of
-/// its origin's declared reads and returns the thunk the worker runs. The live
-/// host hands the thunks to its worker one at a time; the spec host runs each
-/// on a worker thread it joins at once, so specs stay deterministic while
-/// still exercising the cross-thread path. An effect that queues further
-/// effects extends the same drain.
+/// its origin's declared reads and returns the thunk a worker runs. The live
+/// host runs every thunk on its own worker, so effects overlap and their
+/// results apply as they complete; the spec host runs each on a worker thread
+/// it joins at once, so specs stay deterministic while still exercising the
+/// cross-thread path. An effect that queues further effects extends the same
+/// drain.
 fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
     while (host.engine.takeNextPendingEffect()) |taken| {
         var effect = taken;
@@ -12877,10 +12878,10 @@ const Gpui = struct {
     var live = false;
     var tasks: NativeTaskQueue = .{};
     var timers: native_timers.Registry = .{};
-    // Prepared effects wait here until the worker is free; the live host runs
-    // one at a time so their results apply in the order they were queued.
+    // Prepared effects wait here until the Rust host collects them; each runs
+    // on its own worker and its result applies whenever it completes.
     var effect_jobs: std.ArrayListUnmanaged(*EffectJob) = .empty;
-    var effect_in_flight: ?*EffectJob = null;
+    var effects_running: std.ArrayListUnmanaged(*EffectJob) = .empty;
     var child_order: signals.native_child_order.Tree = undefined;
     var lifetimes: [limit]u64 = @splat(0);
     var changed: [limit]u64 = undefined;
@@ -12928,13 +12929,15 @@ const Gpui = struct {
         }
         effect_jobs.deinit(host.hostAllocator());
         effect_jobs = .empty;
+        const effects_still_running = effects_running.items.len != 0;
+        effects_running.deinit(host.hostAllocator());
+        effects_running = .empty;
         host.deinit();
         tasks.deinit(host.hostAllocator());
         timers.deinit(host.hostAllocator());
-        // A thunk still running on the worker owns its job until it returns,
-        // so shutting down mid-effect cannot account for that one allocation.
-        if (host.gpa.deinit() == .leak and effect_in_flight == null) failHost("GPUI spike leaked host allocations");
-        effect_in_flight = null;
+        // A thunk still running on a worker owns its job until it returns,
+        // so shutting down mid-effect cannot account for those allocations.
+        if (host.gpa.deinit() == .leak and !effects_still_running) failHost("GPUI spike leaked host allocations");
         current_host = null;
         current_roc_host = null;
         live = false;
@@ -13072,18 +13075,18 @@ const Gpui = struct {
     fn queueEffectJob(job: *EffectJob) void {
         effect_jobs.append(host.hostAllocator(), job) catch @panic("out of memory");
     }
-    // Hands the Rust host the next prepared effect once the worker is free.
-    // The job pointer is opaque to Rust; it comes back through `runRocEffect`
-    // on a worker thread and `completeRocEffect` on the UI thread.
+    // Hands the Rust host the next prepared effect. The job pointer is opaque
+    // to Rust; it comes back through `runRocEffect` on a worker thread and
+    // `completeRocEffect` on the UI thread.
     fn nextRocEffect(out: *u64) callconv(.c) u32 {
         if (!live) failHost("effect read before mount");
-        if (effect_in_flight != null or effect_jobs.items.len == 0) return 0;
+        if (effect_jobs.items.len == 0) return 0;
         const job = effect_jobs.orderedRemove(0);
-        effect_in_flight = job;
+        effects_running.append(host.hostAllocator(), job) catch @panic("out of memory");
         out.* = @intFromPtr(job);
         return 1;
     }
-    // Runs on the Rust host's worker thread: only the job and Roc code.
+    // Runs on a Rust host worker thread: only the job and Roc code.
     fn runRocEffect(job_raw: u64) callconv(.c) void {
         const job: *EffectJob = @ptrFromInt(job_raw);
         runEffectJob(job);
@@ -13091,8 +13094,8 @@ const Gpui = struct {
     fn completeRocEffect(job_raw: u64) callconv(.c) void {
         if (!live) failHost("effect completion before mount");
         const job: *EffectJob = @ptrFromInt(job_raw);
-        if (effect_in_flight != job) failHost("effect completion does not match the running effect");
-        effect_in_flight = null;
+        const index = std.mem.indexOfScalar(*EffectJob, effects_running.items, job) orelse failHost("effect completion does not match a running effect");
+        _ = effects_running.orderedRemove(index);
         clear();
         completeEffectJob(&host, &roc_host, job);
         drainEffects(&host, &roc_host);

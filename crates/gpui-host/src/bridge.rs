@@ -344,9 +344,9 @@ impl Engine {
         unsafe { (self.task_result)(id, u32::from(failed), payload.as_ptr(), payload.len()) };
         self.changes()
     }
-    /// The next prepared Roc effect, once the engine's worker slot is free.
-    /// The job is an opaque engine pointer that must come back through
-    /// `roc_effect_runner` on a worker thread and then `roc_effect_done` here.
+    /// The next prepared Roc effect. The job is an opaque engine pointer that
+    /// must come back through `roc_effect_runner` on a worker thread and then
+    /// `roc_effect_done` here.
     pub fn next_roc_effect(&mut self) -> Option<u64> {
         let mut job = 0u64;
         match unsafe { (self.next_roc_effect)(&mut job) } {

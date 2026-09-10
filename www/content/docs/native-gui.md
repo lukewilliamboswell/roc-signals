@@ -280,8 +280,8 @@ asset verification as effectful functions (`Files.choose_file!`,
 `Files.read_text!`, `Files.write_text!`, ...) that return `Try(value, Error)`.
 Call them from an action's effect. A chooser shows its dialog on the UI thread
 and blocks the effect until the user answers, so the code after the call can
-use the choice directly; the window keeps rendering meanwhile, and other
-effects wait in the queue until the dialog closes. A dismissed chooser returns
+use the choice directly; the window keeps rendering and other effects keep
+running meanwhile. A dismissed chooser returns
 `Choice.Canceled`. See the [Files reference](@/docs/reference.md#native-files)
 for signatures, errors, and bounds. Keep the submitted write snapshot separate
 from the editable draft so a completed save cannot incorrectly mark later
@@ -321,10 +321,15 @@ The effect is where `!` functions are called: hosted primitives such as
 thread after the event's transaction commits, so `Saving` is on screen before
 the write starts, the window keeps rendering and handling input while the
 write runs, and the result enters the graph only as the next action, applied
-on the UI thread. Effects run one at a time in the order they were queued, so
-a slow effect delays the ones behind it but never reorders them. An effect
-whose owning scope is disposed before it runs is dropped, and one whose scope
-is disposed while it runs has its result discarded. Prefer a named top-level
+on the UI thread. Every effect runs on its own worker thread, so a slow one
+never delays another, and results apply in the order effects complete rather
+than the order they started. An effect whose owning scope is disposed before
+it runs is dropped, and one whose scope is disposed while it runs has its
+result discarded. When the same handler can fire again before its earlier
+effect finishes, decide in state which result wins: either do not start a
+second operation while one is running, as the phase machines in the examples
+do, or carry a request counter in the reads and have the result's reducer
+ignore a stale one. Prefer a named top-level
 function for the effect and pass it the state handles it writes, so it
 captures nothing. `Action.on_change`, `Action.on_change_initial`,
 `Action.on_mount`, and `Action.every` bind actions to signal changes, mount,

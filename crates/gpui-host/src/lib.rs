@@ -5,6 +5,7 @@ mod controls;
 mod dialog;
 mod drag;
 mod effects;
+mod workers;
 mod file_io;
 mod input;
 mod scrollbars;
@@ -567,7 +568,7 @@ impl Runtime {
             fonts: fonts::Registry::default(),
         };
         runtime.apply(initial, cx);
-        crate::effects::Manager::listen(cx);
+        crate::workers::listen(cx);
         runtime.drain_effects(cx);
         runtime
     }
@@ -664,23 +665,11 @@ impl Runtime {
         while let Some(message) = self.engine.next_effect() {
             self.effects.accept(message, cx);
         }
-        if let Some(job) = self.engine.next_roc_effect() {
-            self.start_roc_effect(job, cx);
+        // Every prepared effect gets its own worker; the listener started in
+        // `new` applies each result on the UI thread as it completes.
+        while let Some(job) = self.engine.next_roc_effect() {
+            crate::workers::run(self.engine.roc_effect_runner(), job);
         }
-    }
-    /// Runs one prepared Roc effect on the background executor and applies
-    /// its result on the UI thread. The engine hands out one job at a time,
-    /// so effects finish in the order they were queued.
-    fn start_roc_effect(&mut self, job: u64, cx: &mut Context<Self>) {
-        let run = self.engine.roc_effect_runner();
-        let worker = cx
-            .background_executor()
-            .spawn(async move { unsafe { run(job) } });
-        cx.spawn(async move |runtime, cx| {
-            worker.await;
-            let _ = runtime.update(cx, |runtime, cx| runtime.complete_roc_effect(job, cx));
-        })
-        .detach();
     }
     fn complete_roc_effect(&mut self, job: u64, cx: &mut Context<Self>) {
         let changes = self.engine.roc_effect_done(job);

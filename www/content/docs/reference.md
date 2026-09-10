@@ -109,8 +109,7 @@ function that runs inside an action's effect and returns `Try(value, Error)`:
 | `verify_assets!(entries)` | `List(AssetCheck)` |
 
 The choosers show their dialog on the UI thread and block the calling effect
-until the user answers; effects queued behind them wait for the dialog to
-close.
+until the user answers; other effects keep running.
 
 `Choice` is `[Chosen(Str), Canceled]`. The save chooser's `directory` is
 `Home` or `At(absolute_path)`. `Home` resolves the native user's home directory;
@@ -164,7 +163,8 @@ guaranteed. Failed temporary cleanup returns `Io` and may leave the file behind.
 declared reads. `Action.update(changes)` commits a batch; `Action.then(changes,
 effect)` commits the batch, runs `effect : a => Action(a)` on a worker thread
 after that commit with a fresh snapshot of the reads, and continues with its
-result on the UI thread. Effects run serially in queue order. `Action.run`, `run_str`, `run_bool`, `run_detail`, and `run_key` bind an
+result on the UI thread. Each effect runs on its own worker thread; results
+apply in completion order. `Action.run`, `run_str`, `run_bool`, `run_detail`, and `run_key` bind an
 action to an event; `Action.on_change`, `on_change_initial`, `on_mount`, and
 `every` bind one to a signal, mount, or interval. `Action.none` changes
 nothing. `state.write(f)` is a reducer applied at commit; `state.set(v)`
