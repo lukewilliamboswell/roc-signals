@@ -69,7 +69,6 @@ Scalar boolean fields:
 | 9 | `read_preview` | Bounded UTF-8 prefix read with an explicit truncation marker. |
 | 10 | `read_log` | Cursor-driven bounded log chunk read with rotation detection. |
 | 11 | `verify_assets` | Hash a bounded manifest of relative assets against expected SHA-256 digests. |
-| 12 | `effect` | App-supplied Roc effect closure run by the platform's roc_run_effect entry point on the UI thread; the request carries no bytes. |
 
 <!-- END GENERATED PROTOCOL TABLES -->
 

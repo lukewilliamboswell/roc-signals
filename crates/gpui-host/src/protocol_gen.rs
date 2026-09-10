@@ -42,8 +42,6 @@ pub mod task_kind {
     pub const READ_LOG: u32 = 10;
     /// Hash a bounded manifest of relative assets against expected SHA-256 digests.
     pub const VERIFY_ASSETS: u32 = 11;
-    /// App-supplied Roc effect closure run by the platform's roc_run_effect entry point on the UI thread; the request carries no bytes.
-    pub const EFFECT: u32 = 12;
 }
 
 /// The extern node record read through `signals_read_changed`. Zig and Rust

@@ -154,18 +154,21 @@ Replacement is atomic, but parent-directory power-loss durability is not
 guaranteed. Failed temporary cleanup returns `Io` and may leave the file behind.
 
 
-## Native Effects
+## Native Actions
 
-`Effect.task(name, to_done, to_failed)` declares a task whose work is a Roc
-closure, and `Effect.run(task, closure)` returns the command that runs it. The
-closure is `() => Try(Str, Str)`; the text it returns is decoded by `to_done`
-or `to_failed` exactly like a native task result. Results, cancellation,
-supersession, and scope disposal follow the task rules above. The closure runs
-on the UI thread after the starting transaction commits, so the platform's
-`roc_run_effect` entry point is the one effectful export of the platform.
+`Action(a)` is what a handler returns, where `a` is the type of the handler's
+declared reads. `Action.update(changes)` commits a batch; `Action.then(changes,
+effect)` commits the batch, runs `effect : a => Action(a)` on the UI thread
+after that commit with a fresh snapshot of the reads, and continues with its
+result. `Action.run`, `run_str`, `run_bool`, `run_detail`, and `run_key` bind an
+action to an event; `Action.on_change`, `on_change_initial`, `on_mount`, and
+`every` bind one to a signal, mount, or interval. `Action.none` changes
+nothing. `state.write(f)` is a reducer applied at commit; `state.set(v)`
+replaces the value. The platform's `roc_run_effect` entry point is the one
+effectful export of the platform.
 
 `Env.var!(name)` is a hosted effectful function returning `Try(Str, [Missing])`;
-it can only be called from inside an effect closure.
+it can only be called from inside an effect.
 
 ## Ui
 

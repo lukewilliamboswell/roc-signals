@@ -197,11 +197,6 @@
       "id": 11,
       "name": "verify_assets",
       "doc": "Hash a bounded manifest of relative assets against expected SHA-256 digests."
-    },
-    {
-      "id": 12,
-      "name": "effect",
-      "doc": "App-supplied Roc effect closure run by the platform's roc_run_effect entry point on the UI thread; the request carries no bytes."
     }
   ],
   "raw_node": {

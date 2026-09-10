@@ -282,40 +282,45 @@ bounds. A dismissed chooser returns `Choice.Canceled`; explicit task cancellatio
 returns `Error.Canceled`. Keep the submitted write snapshot separate from the
 editable draft so a completed save cannot incorrectly mark later edits as saved.
 
-## Effects
+## Actions
 
-`main` and every handler are pure, so the only place effectful Roc code can run
-is inside the closure given to `Effect.run`. Declare an effect task, return the
-command from a handler, and read the outcome from the task's status signal, the
-same way native file tasks work:
+Every handler is pure, so `main` and the code it builds never call `!`
+functions. What a handler returns is an `Action`: data the engine interprets.
+`Action.run(reads, |snapshot| ...)` binds an action to an event; the declared
+reads are snapshotted when the event fires. There are two kinds of action:
+
+- `Action.update(changes)` applies a batch of state changes atomically.
+- `Action.then(changes, effect)` applies the batch, then runs `effect` after
+  that commit with a *fresh* snapshot of the declared reads, then continues
+  with the action the effect returns.
+
+A state change is `state.write(f)`, a reducer applied to the value the state
+holds when the batch commits, or `state.set(value)` for a value that does not
+depend on the old one. Because reducers run at commit, a chain that waited on
+an effect never writes a value captured before the effect ran.
 
 ```roc
-home = Effect.task("read-home", |text| text, |err| err)
+save! : Ui.State(Status), Str => Action(Str)
+save! = |status, text| match Files.write_text!("/tmp/notes.txt", text) {
+    Ok(_) => Action.update([status.set(Saved)])
+    Err(err) => Action.update([status.set(Failed(Files.error_text(err)))])
+}
 
-Elem.button("Read HOME", Ui.action(Signal.const({}), |_|
-    Effect.run(home, || match Env.var!("HOME") {
-        Ok(path) => Ok(path)
-        Err(Missing) => Err("HOME is not set")
-    })
+Elem.button("Save", Action.run(draft.signal(), |_|
+    Action.then([status.set(Saving)], |text| save!(status, text))
 ))
-
-Elem.text_s(Signal.fold_task(home, "Idle", |path| "HOME is ${path}", |err| "Failed: ${err}"))
 ```
 
-The closure has type `() => Try(Str, Str)`: `Ok` text reaches the task's
-`Done` decoder and `Err` text its `Failed` decoder. The host runs the closure
-on the UI thread after the event's transaction commits and delivers the result
-through ordinary task propagation, so a closure never observes or mutates the
-engine directly. Starting a task whose closure is still queued cancels the
-older request; a closure that has begun cannot be interrupted, and its result
-is discarded if a newer request superseded it. Because the closure blocks the
-UI thread, keep it short or move long work behind a dedicated native task.
-
-Effect closures can call `!` functions from packages and the effectful
-primitives the platform hosts. Today that is `Env.var!`, which reads one
-process environment variable; more primitives follow the same shape, a `!`
-function implemented by the native host. The browser platform does not run
-effect tasks; a start there resolves to the task's declared refusal value.
+The effect is where `!` functions are called: hosted primitives such as
+`Env.var!`, and any effectful function a package exposes. It runs on the UI
+thread after the event's transaction commits, so `Saving` is on screen before
+the write starts, and its result enters the graph only as the next action.
+Keep effects short; a long one blocks rendering until it returns. An effect
+whose owning scope is disposed before it runs is dropped. Prefer a named
+top-level function for the effect and pass it the state handles it writes, so
+it captures nothing. `Action.on_change`, `Action.on_change_initial`,
+`Action.on_mount`, and `Action.every` bind actions to signal changes, mount,
+and scoped intervals. The browser platform does not run `then` effects.
 
 ## Example coverage
 

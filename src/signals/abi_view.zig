@@ -298,7 +298,6 @@ pub const SignalExpr = union(enum) {
                         .scan_directory => .scan_directory,
                         .list_directory => .list_directory,
                         .open_path => .open_path,
-                        .effect => .effect,
                         .read_preview => .read_preview,
                         .read_log => .read_log,
                         .verify_assets => .verify_assets,

@@ -148,9 +148,9 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 						Ui.action(
 							model.signal(),
 							|value| Ui.update_states([
-								model.write({ ..value, session: Session.choose(value.session) }),
-								running.write(False),
-								errors_only.write(False),
+								model.set({ ..value, session: Session.choose(value.session) }),
+								running.set(False),
+								errors_only.set(False),
 							]),
 						),
 					),
@@ -162,9 +162,9 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 						Ui.action(
 							history,
 							|current| Ui.update_states([
-								model.write({ session: Session.initial, history: Feed.clear(current) }),
-								running.write(False),
-								errors_only.write(False),
+								model.set({ session: Session.initial, history: Feed.clear(current) }),
+								running.set(False),
+								errors_only.set(False),
 							]),
 						),
 					),

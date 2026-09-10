@@ -2033,19 +2033,21 @@ external application or a stable file snapshot. Failures and unsupported native
 services remain typed results, never fabricated success. OS-specific mechanisms
 belong to the native adapter and its documented capability contract.
 
-An `Effect` task kind lets application code run Roc effectful closures without
-a second effect mechanism. `Effect.run` is an ordinary task start whose request
-value is the closure; the engine takes an independently owned reference and
-retains it with the pending task instead of request bytes. After the starting
-turn commits, the native host runs the closure on the UI thread through the
-platform's `roc_run_effect` entry point and resolves the pending task with the
-returned text through the same decoder, supersession, cancellation, and
-scope-disposal rules as every other task. The closure therefore never observes
-the engine mid-transaction and its outcome enters propagation only as a task
-status. The browser host refuses the kind through the declared refusal value.
-Running on the UI thread is a deliberate first step: a worker-thread executor
-needs the closure and its captures handed off under the atomic reference
-counts the compiler already provides, and can be added behind the same command.
+A `Then` command lets application code run Roc effectful closures without a
+second effect mechanism. It carries an atomic batch of state changes and one
+boxed effectful closure. The changes commit in the current transaction. The
+engine then queues the closure with an independently retained reference to the
+declared reads of the handler, change sink, or earlier effect whose command
+this is, and after the turn settles the native host runs it on the UI thread
+through the platform's `roc_run_effect` entry point, passing a fresh snapshot
+of those reads and the capability that validates it. The command the closure
+returns is applied like any other, with the same reads as origin, so a chain
+keeps snapshotting the same signals; every state change is a reducer applied
+at its own commit, so no step writes a value captured before an effect. Effects
+whose owning scope is disposed before they run are released. The browser host
+rejects the kind. Running on the UI thread is a deliberate first step: a
+worker-thread executor needs only the closure and its captures handed off under
+the atomic reference counts the compiler already provides.
 
 Native intervals use exact engine-issued tokens, owning scopes, and the common
 propagation scheduler. At most 256 intervals are committed or reserved, with a

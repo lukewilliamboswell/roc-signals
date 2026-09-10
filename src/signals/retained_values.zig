@@ -160,11 +160,11 @@ pub fn assertHostValueCapabilitiesMatch(actual: HostValueCapability, expected: H
     if (!hv.hostValueCapabilitiesMatch(actual, expected)) @panic(message);
 }
 
-fn pushCapabilities(comptime Ctx: type, ctx: Ctx.Handle, caps: []const HostValueCapability) void {
+pub fn pushCapabilities(comptime Ctx: type, ctx: Ctx.Handle, caps: []const HostValueCapability) void {
     Ctx.pushHostValueCapabilities(ctx, caps);
 }
 
-fn popCapabilities(comptime Ctx: type, ctx: Ctx.Handle) void {
+pub fn popCapabilities(comptime Ctx: type, ctx: Ctx.Handle) void {
     Ctx.popHostValueCapabilities(ctx);
 }
 

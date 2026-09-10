@@ -163,7 +163,7 @@ move_task = |handles, context, key, destination_column, before| {
 				if next == column_rows(current, found.column) {
 					Signal.noop
 				} else {
-					remember(handles, context, [source.write(next)])
+					remember(handles, context, [source.set(next)])
 				}
 			} else {
 				remaining = Rows.apply(column_rows(current, found.column), [RemoveKey(key)]) ?? crash "The moved task must exist"
@@ -172,9 +172,9 @@ move_task = |handles, context, key, destination_column, before| {
 					Key(target) => InsertBefore({ before: target, items: [found.task] })
 				}
 				moved = Rows.apply(column_rows(current, destination_column), [insertion]) ?? crash "Task keys must be unique across columns"
-				writes = [source.write(remaining), destination.write(moved)]
+				writes = [source.set(remaining), destination.set(moved)]
 				if current.editor.task.key == key {
-					remember(handles, context, writes.append(handles.editor.write({ column: destination_column, task: found.task })))
+					remember(handles, context, writes.append(handles.editor.set({ column: destination_column, task: found.task })))
 				} else {
 					remember(handles, context, writes)
 				}
@@ -263,9 +263,9 @@ task_card = |row, column, handles, selected| {
 							Ui.action(
 								row.signal(),
 								|task| Ui.update_states([
-									handles.editor.write({ column, task }),
-									handles.editing.write(True),
-									handles.confirm_delete.write(False),
+									handles.editor.set({ column, task }),
+									handles.editing.set(True),
+									handles.confirm_delete.set(False),
 								]),
 							),
 						),
@@ -331,7 +331,7 @@ edit_field = |field, handles, column, label, update, read| {
 					return Signal.noop
 				}
 				rows = Rows.apply(column_rows(current, column), [SetKey({ key: task.key, item: task })]) ?? crash "The active editor must name a live task"
-				remember(handles, context, [owner.write(rows), handles.editor.write({ column, task }), handles.bytes.write(current.bytes - task_bytes(current.editor.task) + task_bytes(task))])
+				remember(handles, context, [owner.set(rows), handles.editor.set({ column, task }), handles.bytes.set(current.bytes - task_bytes(current.editor.task) + task_bytes(task))])
 			},
 		),
 	)
@@ -357,7 +357,7 @@ priority_button = |handles, column, priority_key, priority| {
 					return Signal.noop
 				}
 				rows = Rows.apply(column_rows(current, column), [SetKey({ key: task.key, item: task })]) ?? crash "The active editor must name a live task"
-				remember(handles, context, [owner.write(rows), handles.editor.write({ column, task })])
+				remember(handles, context, [owner.set(rows), handles.editor.set({ column, task })])
 			},
 		),
 	)
@@ -415,7 +415,7 @@ delete_confirmation = |handles, column| {
 								|context| {
 									current = context.board
 									remaining = Rows.apply(column_rows(current, column), [RemoveKey(current.editor.task.key)]) ?? crash "The task selected for deletion must exist"
-									remember(handles, context, [owner.write(remaining), handles.editing.write(False), handles.confirm_delete.write(False), handles.bytes.write(current.bytes - task_bytes(current.editor.task))])
+									remember(handles, context, [owner.set(remaining), handles.editing.set(False), handles.confirm_delete.set(False), handles.bytes.set(current.bytes - task_bytes(current.editor.task))])
 								},
 							),
 						),
@@ -528,13 +528,13 @@ new_task_form = |handles| {
 							handles,
 							current.context,
 							[
-								handles.bytes.write(current.context.board.bytes + task_bytes(task)),
-								handles.planned.write(rows),
-								handles.next_id.write(current.next_id + 1),
-								handles.draft.write(""),
-								handles.editor.write({ column: Planned, task }),
-								handles.editing.write(True),
-								handles.confirm_delete.write(False),
+								handles.bytes.set(current.context.board.bytes + task_bytes(task)),
+								handles.planned.set(rows),
+								handles.next_id.set(current.next_id + 1),
+								handles.draft.set(""),
+								handles.editor.set({ column: Planned, task }),
+								handles.editing.set(True),
+								handles.confirm_delete.set(False),
 							],
 						)
 					},
@@ -728,7 +728,7 @@ trim_history = |items| {
 
 remember : Handles, Context, List(Ui.StateWrite) -> Gui.Cmd
 remember = |handles, context, writes| if can_edit(context.document.phase) {
-	Ui.update_states(writes.append(handles.history.write({ past: trim_history([context.board].concat(context.history.past)), future: [] })))
+	Ui.update_states(writes.append(handles.history.set({ past: trim_history([context.board].concat(context.history.past)), future: [] })))
 } else {
 	Signal.noop
 }
@@ -779,14 +779,14 @@ history_message = |handles, redo| Ui.action(
 					{ past: stack.drop_first(1), future: trim_history([context.board].concat(context.history.future)) }
 				}
 				Ui.update_states([
-					handles.planned.write(previous.planned),
-					handles.progress.write(previous.progress),
-					handles.complete.write(previous.complete),
-					handles.editor.write(previous.editor),
-					handles.editing.write(previous.editing),
-					handles.bytes.write(previous.bytes),
-					handles.confirm_delete.write(False),
-					handles.history.write(bound_history(history, redo)),
+					handles.planned.set(previous.planned),
+					handles.progress.set(previous.progress),
+					handles.complete.set(previous.complete),
+					handles.editor.set(previous.editor),
+					handles.editing.set(previous.editing),
+					handles.bytes.set(previous.bytes),
+					handles.confirm_delete.set(False),
+					handles.history.set(bound_history(history, redo)),
 				])
 			}
 		}
@@ -965,18 +965,18 @@ load_document = |handles, file| match Codec.decode(file.text) {
 		editing = Rows.len(planned) + Rows.len(progress) + Rows.len(complete) > 0
 		snapshot = { planned, progress, complete, editor, editing, bytes }
 		Ui.update_states([
-			handles.planned.write(planned),
-			handles.progress.write(progress),
-			handles.complete.write(complete),
-			handles.editor.write(editor),
-			handles.editing.write(editing),
-			handles.bytes.write(bytes),
-			handles.next_id.write(decoded.next),
-			handles.history.write({ past: [], future: [] }),
-			handles.filter.write(""),
-			handles.draft.write(""),
-			handles.confirm_delete.write(False),
-			handles.document.write({ path: Some(file.path), baseline: Some(snapshot), phase: Phase.Idle, problem: "" }),
+			handles.planned.set(planned),
+			handles.progress.set(progress),
+			handles.complete.set(complete),
+			handles.editor.set(editor),
+			handles.editing.set(editing),
+			handles.bytes.set(bytes),
+			handles.next_id.set(decoded.next),
+			handles.history.set({ past: [], future: [] }),
+			handles.filter.set(""),
+			handles.draft.set(""),
+			handles.confirm_delete.set(False),
+			handles.document.set({ path: Some(file.path), baseline: Some(snapshot), phase: Phase.Idle, problem: "" }),
 		])
 	}
 }
@@ -1097,10 +1097,10 @@ save_document = |handles, context, next, options| {
 		Some(path) if !options.save_as => Phase.Writing({ path, save })
 		_ => Phase.ChoosingSave(save)
 	}
-	writes = [handles.document.write({ ..context.document, phase, problem: "" })]
+	writes = [handles.document.set({ ..context.document, phase, problem: "" })]
 	Ui.update_states(
 		if options.close_after {
-			writes.append(handles.close.write(Close.Saving))
+			writes.append(handles.close.set(Close.Saving))
 		} else {
 			writes
 		},

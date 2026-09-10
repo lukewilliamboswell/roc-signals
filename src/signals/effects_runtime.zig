@@ -21,9 +21,6 @@ pub const PendingTask = struct {
     task_name: []const u8,
     request: []const u8,
     kind: boundary.TaskKind = .external,
-    /// Owned app closure of an `.effect` task until the host takes it to run;
-    /// every other kind leaves it null.
-    effect_closure: abi.RocErasedCallable = null,
 };
 
 pub const ActiveInterval = struct {
@@ -188,7 +185,6 @@ pub const PreparedPendingTask = struct {
         task_name: []const u8,
         request: []const u8,
         kind: boundary.TaskKind,
-        effect_closure: abi.RocErasedCallable,
     ) std.mem.Allocator.Error!PreparedPendingTask {
         if (next_task_request_id == std.math.maxInt(u64)) @panic("host task request id overflowed");
         const task_name_copy = try allocator.dupe(u8, task_name);
@@ -203,7 +199,6 @@ pub const PreparedPendingTask = struct {
             .task_name = task_name_copy,
             .request = request_copy,
             .kind = kind,
-            .effect_closure = effect_closure,
         } };
     }
 
@@ -250,7 +245,7 @@ pub fn appendPendingTask(
     task_name: []const u8,
     request: []const u8,
 ) u64 {
-    var prepared = PreparedPendingTask.prepare(allocator, tasks, next_task_request_id.*, owner_scope_id, task_token, task_name, request, .external, null) catch @panic("out of memory");
+    var prepared = PreparedPendingTask.prepare(allocator, tasks, next_task_request_id.*, owner_scope_id, task_token, task_name, request, .external) catch @panic("out of memory");
     defer prepared.deinit(allocator, roc_host);
     return prepared.commit(tasks, next_task_request_id).raw();
 }
@@ -276,7 +271,6 @@ pub fn appendAndStartPendingTask(
 /// Releases pending task and all host registrations or retained values it owns.
 pub fn deinitPendingTask(allocator: std.mem.Allocator, roc_host: *abi.RocHost, task: *PendingTask) void {
     retained_values.releaseHostSignalToken(task.task_token, roc_host);
-    abi.decrefErasedCallable(task.effect_closure, roc_host);
     allocator.free(task.task_name);
     allocator.free(task.request);
     task.* = undefined;
@@ -797,13 +791,13 @@ test "pending task preparation refusal preserves membership and request ids" {
         defer for (tasks.items) |*task| deinitPendingTask(allocator, &roc_host, task);
         var next_request_id: u64 = 100;
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload", .external, null));
+        try std.testing.expectError(error.OutOfMemory, PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload", .external));
         try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
         try std.testing.expectEqual(@as(usize, 0), tasks.items.len);
         try std.testing.expectEqual(@as(u64, 100), next_request_id);
 
         fault.configure(null);
-        var aborted = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload", .external, null);
+        var aborted = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload", .external);
         fault.configure(1);
         aborted.deinit(allocator, &roc_host);
         try std.testing.expectEqual(@as(usize, 0), fault.attempts);
@@ -811,7 +805,7 @@ test "pending task preparation refusal preserves membership and request ids" {
         try std.testing.expectEqual(@as(u64, 100), next_request_id);
 
         fault.configure(null);
-        var retry = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload", .external, null);
+        var retry = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "payload", .external);
         fault.configure(1);
         try std.testing.expectEqual(ids.TaskRequestId.fromRaw(100), retry.commit(&tasks, &next_request_id));
         retry.deinit(allocator, &roc_host);
@@ -832,7 +826,7 @@ test "aborting a replacement task leaves the old request live" {
     var next_request_id: u64 = 100;
     _ = appendPendingTask(allocator, &tasks, &next_request_id, &roc_host, ids.ScopeId.fromRaw(10), token, "load", "old");
     defer deinitPendingTask(allocator, &roc_host, &tasks.items[0]);
-    var replacement = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "new", .external, null);
+    var replacement = try PreparedPendingTask.prepare(allocator, &tasks, next_request_id, ids.ScopeId.fromRaw(10), token, "load", "new", .external);
     try std.testing.expectEqual(@as(usize, 1), tasks.items.len);
     try std.testing.expectEqualStrings("old", tasks.items[0].request);
     replacement.deinit(allocator, &roc_host);

@@ -40,7 +40,7 @@ Node := [].{
 	## results enter the same signal graph.
 	## Closed host service route. External tasks retain their explicitly installed
 	## host adapter; native file helpers select a fixed service without label routing.
-	TaskKind := [External, ChooseFile, ChooseDirectory, ChooseSavePath, ReadText, WriteText, ScanDirectory, ListDirectory, OpenPath, ReadPreview, ReadLog, VerifyAssets, Effect].{ is_eq : _ }
+	TaskKind := [External, ChooseFile, ChooseDirectory, ChooseSavePath, ReadText, WriteText, ScanDirectory, ListDirectory, OpenPath, ReadPreview, ReadLog, VerifyAssets].{ is_eq : _ }
 
 	TaskSource : {
 		token : Box((() -> HostValue)),
@@ -93,6 +93,13 @@ Node := [].{
 		transform : Box((HostValue -> HostValue)),
 	}
 
+	## One state change in an atomic batch: replace the value outright, or
+	## reduce whatever the state holds when the batch commits.
+	StateChange := [
+		Set(StateWrite),
+		Transform(StateTransform),
+	]
+
 	## Host command emitted by event actions, lifecycle hooks, or signal changes.
 	Cmd := [
 		Noop,
@@ -113,6 +120,13 @@ Node := [].{
 		UpdateState(StateWrite),
 		UpdateStates(List(StateWrite)),
 		UpdateTransform(StateTransform),
+		UpdateChanges(List(StateChange)),
+		Then(
+			{
+				changes : List(StateChange),
+				effect : Box((HostValue, HostValue.CapabilityHandle => Cmd)),
+			},
+		),
 	]
 
 	## Cleanup descriptor run when a scope is disposed.

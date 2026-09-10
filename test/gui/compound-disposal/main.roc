@@ -15,15 +15,15 @@ main = || Ui.state(
 					|confirm| Elem.col(
 						Elem.ColProps.{},
 						[
-							Elem.button("Add", Ui.action(rows.signal(), |current| Ui.update_states([rows.write(Rows.apply(current, [Append(["c"])]) ?? crash "unique"), editing.write(True), confirm.write(True)]))),
+							Elem.button("Add", Ui.action(rows.signal(), |current| Ui.update_states([rows.set(Rows.apply(current, [Append(["c"])]) ?? crash "unique"), editing.set(True), confirm.set(True)]))),
 							Elem.button(
 								"Delete",
 								Ui.action(
 									rows.signal(),
 									|current| Ui.update_states([
-										rows.write(Rows.apply(current, [RemoveKey("c")]) ?? crash "exists"),
-										editing.write(False),
-										confirm.write(False),
+										rows.set(Rows.apply(current, [RemoveKey("c")]) ?? crash "exists"),
+										editing.set(False),
+										confirm.set(False),
 									]),
 								),
 							),

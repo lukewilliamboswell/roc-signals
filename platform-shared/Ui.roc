@@ -113,7 +113,7 @@ Ui := [].{
 
 	## An opaque destination-and-value recipe created by `State.write`.
 	## Collect these proposals with `Ui.update_states`; do not inspect them.
-	StateWrite : Node.StateWrite
+	StateWrite : Node.StateChange
 
 	## Stable keyed-row handle. A captured row remains valid for the lifetime of
 	## its row scope, including when a delayed structural builder first reads it.
@@ -351,7 +351,7 @@ Ui := [].{
 		## commands can be returned from `Ui.on_change`, `Ui.on_mount`, and other
 		## command-producing hooks.
 		set_cmd : State(a), a -> Node.Cmd
-		set_cmd = |st, next| Node.Cmd.UpdateState(st.write(next))
+		set_cmd = |st, next| Node.Cmd.UpdateChanges([st.set(next)])
 
 		## Describe a pure update of this state's settled value when the command
 		## executes. Useful for appending a task result or timer event to retained
@@ -369,17 +369,31 @@ Ui := [].{
 			Node.Cmd.UpdateTransform({ binder: st.ref, capability: Capability.handle(cap), transform: Box.box(transform) })
 		}
 
-		## Describe a replacement for `Ui.update_states`. The proposal captures
-		## a typed value and can be reused; it does not mutate the source itself.
-		write : State(a), a -> StateWrite
-		write = |st, next| {
+		## Describe replacing this state with `next` when a batch commits. Prefer
+		## `write` when the new value depends on the old one, so a batch that runs
+		## after an effect never applies a value captured before it.
+		set : State(a), a -> StateWrite
+		set = |st, next| {
 			cap = st.cap
 			initial : () -> HostValue
 			initial = || Capability.store(Box.box(next), cap)
-			{
+			Node.StateChange.Set({
 				binder: st.ref,
 				update: { capability: Capability.handle(cap), initial: Box.box(initial) },
+			})
+		}
+
+		## Describe reducing this state with `f` when a batch commits. `f` receives
+		## the value the state holds at that moment, never a stale capture.
+		write : State(a), (a -> a) -> StateWrite
+		write = |st, f| {
+			cap = st.cap
+			transform : HostValue -> HostValue
+			transform = |current| {
+				value = Box.unbox(Capability.get(current, cap))
+				Capability.store(Box.box(f(value)), cap)
 			}
+			Node.StateChange.Transform({ binder: st.ref, capability: Capability.handle(cap), transform: Box.box(transform) })
 		}
 	}
 
@@ -410,7 +424,7 @@ Ui := [].{
 	## destination must appear at most once, including unchanged proposals.
 	## Derived values and observers see only the complete settled result.
 	update_states : List(StateWrite) -> Node.Cmd
-	update_states = |writes| Node.Cmd.UpdateStates(writes)
+	update_states = |changes| Node.Cmd.UpdateChanges(changes)
 
 	## Introduce a reusable local scope. State/when/each ordinals inside the body
 	## are local to this component instance instead of consuming the caller's

@@ -2,7 +2,7 @@ platform ""
 	requires {
 		main : () -> Elem
 	}
-	exposes [Elem, Event, Effect, Env, Signal, Gui, Ui, Rows, Files]
+	exposes [Elem, Event, Action, Env, Signal, Gui, Ui, Rows, Files]
 	packages {
 		roc: "nightly-2026-09-04-c125b82",
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
@@ -37,11 +37,12 @@ platform ""
 
 import Elem exposing [Elem]
 import EachSink
-import HostValue
+import HostValue exposing [HostValue]
+import Node
 import Signal
 import Gui
 import Event
-import Effect
+import Action
 import Env
 import Files
 import Ui
@@ -52,6 +53,11 @@ ui_init = || {
 	Box.box(main())
 }
 
-## Runs one app effect closure for the host; see `Effect.run`.
-run_effect! : Box((() => Try(Str, Str))) => { failed : Bool, text : Str }
-run_effect! = |closure_box| Effect.run_boxed!(closure_box)
+## Runs the effect of one `Action.then` for the host: `effect` is the boxed
+## effectful closure the action carries, `snapshot` the fresh reads value, and
+## `capability` the authority that validates it. Returns the next command.
+run_effect! : Box((HostValue, HostValue.CapabilityHandle => Node.Cmd)), HostValue, HostValue.CapabilityHandle => Node.Cmd
+run_effect! = |effect_box, snapshot, capability| {
+	effect! = Box.unbox(effect_box)
+	effect!(snapshot, capability)
+}

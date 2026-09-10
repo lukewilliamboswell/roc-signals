@@ -89,20 +89,12 @@ const NativeTaskPublication = struct {
     record: ?NativeTaskRecord = null,
     native: ?NativeTaskQueue.Prepared = null,
     request_id: ids.TaskRequestId,
-    /// An effect task is queued for the UI thread instead of the native transport.
-    effect: bool = false,
 
     fn prepare(host: *HostEnv, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8, cancellation_count: usize) error{ OutOfMemory, ResourceLimit }!NativeTaskPublication {
         const allocator = host.hostAllocator();
-        if (kind == .effect) {
-            try host.pending_effects.ensureUnusedCapacity(allocator, 1);
-            try host.effect_requests.ensureUnusedCapacity(allocator, 1);
-            return .{ .host = host, .request_id = request_id, .effect = true };
-        }
         if (Gpui.live) {
             const arguments: usize = switch (kind) {
                 .external => failHost("external tasks require an external task executor"),
-                .effect => unreachable,
                 .choose_file, .choose_directory => 0,
                 .read_text, .scan_directory, .list_directory, .open_path, .read_preview => 1,
                 .write_text => 2,
@@ -135,12 +127,6 @@ const NativeTaskPublication = struct {
     /// to the spec runner without allocation. Each receiver owns its copy until
     /// resolution, cancellation before dispatch, or teardown.
     pub fn commit(self: *NativeTaskPublication) void {
-        if (self.effect) {
-            self.host.effect_requests.putAssumeCapacity(self.request_id.raw(), {});
-            self.host.pending_effects.appendAssumeCapacity(self.request_id);
-            self.effect = false;
-            return;
-        }
         if (self.native) |*native| {
             native.commit();
             self.native = null;
@@ -539,6 +525,8 @@ const NativeCtx = struct {
     /// Native-only scalar fields publish through the typed prepared DOM view.
     pub const native_presentation = true;
     pub const Handle = *HostEnv;
+    /// The native host runs `Then` effects on the UI thread after each turn.
+    pub const runsEffects = true;
     pub const RegistryOps = hv.RegistryOps();
     pub const Metrics = RuntimeMetrics;
     pub const Sink = render_sink.DomSink(HostEnv);
@@ -555,17 +543,9 @@ const NativeCtx = struct {
     /// Applies the fixed native transport bound before the engine publishes a
     /// start. The source's declared refusal initializer owns the terminal value.
     pub fn canAdmitTask(_: Handle, kind: boundary.TaskKind, payload_length: usize) bool {
-        if (!Gpui.live or kind == .effect) return true;
+        if (!Gpui.live) return true;
         if (kind == .external) failHost("external tasks require an external task executor");
         return Gpui.tasks.canAdmit(payload_length);
-    }
-
-    /// Takes an independently owned reference to an effect task's closure from
-    /// the request value the app stored under `capability`. The engine keeps it
-    /// with the pending task until the host runs it on the UI thread.
-    pub fn takeEffectClosure(ctx: Handle, value: HostValue, capability: HostValueCapability) abi.RocErasedCallable {
-        const retained = signals.retained_values.retainHostValueCapability(capability, &ctx.engine.pending_roc_metrics);
-        return @ptrCast(ctx.getHostValueWithCapability(value, retained));
     }
 
     /// Marks an infallible command call for the recoverable-only native sweep.
@@ -1060,12 +1040,6 @@ const HostEnv = struct {
     spec_window_closed: bool = false,
     started_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
-    /// Effect tasks accepted by the last committed turn, in start order, waiting
-    /// for the UI thread to run their closures once the turn has settled.
-    pending_effects: std.ArrayListUnmanaged(ids.TaskRequestId) = .empty,
-    /// Every live effect request id, so completion and cancellation bypass the
-    /// native transport queue that never saw them.
-    effect_requests: std.AutoHashMapUnmanaged(u64, void) = .empty,
     location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
     location_index: usize = 0,
     entropy_seed: u32 = default_native_entropy_seed,
@@ -1158,20 +1132,6 @@ const HostEnv = struct {
         }
         self.canceled_tasks.deinit(allocator);
         self.canceled_tasks = .empty;
-        self.pending_effects.deinit(allocator);
-        self.pending_effects = .empty;
-        self.effect_requests.deinit(allocator);
-        self.effect_requests = .empty;
-    }
-
-    /// Forgets a queued effect whose request was canceled before it ran.
-    fn dropPendingEffect(self: *HostEnv, request_id: ids.TaskRequestId) void {
-        for (self.pending_effects.items, 0..) |queued, index| {
-            if (queued == request_id) {
-                _ = self.pending_effects.orderedRemove(index);
-                return;
-            }
-        }
     }
 
     fn recordStartedTask(self: *HostEnv, request_id: ids.TaskRequestId, task_name: []const u8) void {
@@ -1194,7 +1154,6 @@ const HostEnv = struct {
     }
 
     fn noteTaskResolved(self: *HostEnv, request_id: ids.TaskRequestId) void {
-        if (self.effect_requests.remove(request_id.raw())) return;
         if (Gpui.live) {
             Gpui.tasks.complete(self.hostAllocator(), request_id.raw());
             return;
@@ -1205,10 +1164,6 @@ const HostEnv = struct {
     }
 
     fn recordCanceledTask(self: *HostEnv, request_id: ids.TaskRequestId) void {
-        if (self.effect_requests.remove(request_id.raw())) {
-            self.dropPendingEffect(request_id);
-            return;
-        }
         if (Gpui.live) {
             Gpui.tasks.cancel(self.hostAllocator(), request_id.raw());
             return;
@@ -3141,28 +3096,38 @@ fn acceptInitElem(host: *HostEnv, roc_host: *abi.RocHost, root_box: ElemBox) voi
     acceptInitElemWithStats(host, roc_host, root_box, null, null);
 }
 
-/// Runs the effect closures queued by the turns that just committed, on the UI
-/// thread, resolving each outcome through the same path as a native task
-/// result. A closure that starts further effects extends the same drain.
-fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
-    while (host.pending_effects.items.len > 0) {
-        const request_id = host.pending_effects.orderedRemove(0);
-        const index = host.engine.pendingTaskIndexByRequestId(request_id) orelse continue;
-        const closure = host.engine.takeEffectClosure(request_id) orelse continue;
-        const outcome = runEffectClosure(closure);
-        defer outcome.decref(roc_host);
-        _ = tryResolvePendingTaskAt(host, roc_host, index, outcome.text.asSlice(), outcome.failed) catch |err| failPreparedStateDispatch(err);
-        finishHostMetrics(host);
-    }
-}
-
 /// Calls the platform's `roc_run_effect` entry point, which consumes the
-/// closure. Host fixtures link no Roc application, so they cannot run one.
-fn runEffectClosure(closure: abi.RocErasedCallable) abi.Run_effect {
+/// closure and returns the next command. Host fixtures link no Roc
+/// application, so they cannot run one.
+fn runEffectClosure(effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) erased_calls.Cmd {
     if (comptime host_fixtures) {
         failHost("effect closures cannot run in host fixtures");
     } else {
-        return abi.roc_run_effect(closure);
+        return abi.roc_run_effect(effect, snapshot.toRaw(), cap);
+    }
+}
+
+/// Runs the effects queued by the turns that just committed, on the UI
+/// thread, oldest first. Each effect receives a fresh snapshot of its origin's
+/// declared reads, and the command it returns is applied with those same reads
+/// as the origin, so a chain of `Then`s keeps snapshotting the same signals.
+/// An effect that queues further effects extends the same drain.
+fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
+    while (host.engine.takeNextPendingEffect()) |taken| {
+        var effect = taken;
+        const cap = host.engine.hostSignalBindingCapability(host, &effect.reads);
+        const snapshot = host.engine.evalHostSignalBinding(host, roc_host, &effect.reads);
+        const caps = [_]HostValueCapability{cap};
+        signals.retained_values.pushCapabilities(NativeCtx, host, &caps);
+        const cmd = runEffectClosure(effect.effect, snapshot, cap);
+        signals.retained_values.popCapabilities(NativeCtx, host);
+        callHostValueToUnitWithCapability(host, roc_host, cap, hv.hostValueCapabilityDrop(cap), snapshot);
+        host.engine.effect_origin = &effect.reads;
+        _ = host.engine.tryRunCommand(host, roc_host, effect.owner_scope_id, cmd) catch |err| failPreparedStateDispatch(err);
+        host.engine.effect_origin = null;
+        cmd.decref(roc_host);
+        host.engine.releaseRanEffect(host, &effect);
+        finishHostMetrics(host);
     }
 }
 
@@ -3200,6 +3165,10 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: i
         defer cmd.decref(roc_host);
         if (stats) |s| s.dispatch_roc_ns += benchmark.nowNs() - start_ns;
         const apply_start_ns = benchmark.nowNs();
+        // The handler's declared reads are what a `Then` in its command snapshots.
+        var action_desc = desc;
+        host.engine.effect_origin = &action_desc.handler.action.reads;
+        defer host.engine.effect_origin = null;
         const counts = host.engine.tryRunCommand(host, roc_host, desc.handler.action.scope_id, cmd) catch |err| retry: {
             if (err != error.OutOfMemory or !host.recoverSelectedOutOfMemory()) failPreparedStateDispatch(err);
             break :retry host.engine.tryRunCommand(host, roc_host, desc.handler.action.scope_id, cmd) catch |retry_err| failPreparedStateDispatch(retry_err);

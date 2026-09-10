@@ -39,7 +39,7 @@ main = || Ui.state(
 						else if Document.is_dirty({ draft: Session.draft(state, text), baseline: state.baseline }) {
 							session.set_cmd({ ..state, phase: Session.Phase.ConfirmDiscard(Session.Destination.NewDocument), problem: None })
 						} else {
-							Ui.update_states([session.write(Session.new_document(state)), body.write("")])
+							Ui.update_states([session.set(Session.new_document(state)), body.set("")])
 						}
 				},
 			)
@@ -220,9 +220,9 @@ main = || Ui.state(
 															Ui.action(
 																session.signal(),
 																|state| match state.phase {
-																	Session.Phase.ConfirmDiscard(Session.Destination.NewDocument) => Ui.update_states([session.write(Session.new_document(state)), body.write("")])
+																	Session.Phase.ConfirmDiscard(Session.Destination.NewDocument) => Ui.update_states([session.set(Session.new_document(state)), body.set("")])
 																	Session.Phase.ConfirmDiscard(Session.Destination.OpenDocument) => session.set_cmd({ ..state, phase: Session.Phase.ChoosingOpen })
-																	Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument) => Ui.update_states([session.write({ ..Session.cancel(state), document_generation: Session.next_generation(state) }), body.write(state.baseline.body)])
+																	Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument) => Ui.update_states([session.set({ ..Session.cancel(state), document_generation: Session.next_generation(state) }), body.set(state.baseline.body)])
 																	_ => Signal.noop
 																},
 															),

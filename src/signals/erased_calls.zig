@@ -18,6 +18,7 @@ pub const Cmd = abi.NodeCmd;
 pub const StartTaskCmd = @FieldType(abi.NodeCmdPayload, "start_task");
 pub const CancelTaskCmd = @FieldType(abi.NodeCmdPayload, "cancel_task");
 pub const UpdateStateCmd = @FieldType(abi.NodeCmdPayload, "update_state");
+pub const ThenCmd = @FieldType(abi.NodeCmdPayload, "then");
 pub const RocBoxPair = extern struct {
     keep: abi.RocBox,
     out: abi.RocBox,

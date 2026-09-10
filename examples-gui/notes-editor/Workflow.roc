@@ -53,8 +53,8 @@ Workflow := [].{
 			|status| match status {
 				Signal.TaskStatus.Loading => Signal.noop
 				Signal.TaskStatus.Done(file) => Ui.update_states([
-					body.write(file.text),
-					session.write(Session.from_file(file)),
+					body.set(file.text),
+					session.set(Session.from_file(file)),
 				])
 				Signal.TaskStatus.Failed(error) => failed(session, error)
 			},
