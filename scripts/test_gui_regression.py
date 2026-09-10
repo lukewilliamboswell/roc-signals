@@ -108,5 +108,31 @@ class RunTests(unittest.TestCase):
         self.assertIn("build the GUI examples first", str(raised.exception))
 
 
+class WaylandDispatch(unittest.TestCase):
+    """The Linux path has to reuse one private compositor, not start its own."""
+
+    def test_wayland_runs_the_scenarios_inside_the_shared_compositor(self):
+        import gui_smoke
+
+        captured = {}
+
+        def fake_wayland(directory, action=None):
+            captured["directory"] = directory
+            action(directory, {"WAYLAND_DISPLAY": "signals-smoke"})
+
+        def fake_run(directory, artifacts, patterns, capture, environment):
+            captured["environment"] = environment
+            captured["capture"] = capture
+
+        argv = ["gui_regression.py", "--wayland", "--directory", "/tmp/apps", "--no-capture"]
+        with patch.object(gui_smoke, "wayland", fake_wayland), \
+                patch.object(gui_regression, "run", fake_run), \
+                patch.object(sys, "argv", argv):
+            gui_regression.main()
+        self.assertEqual(captured["directory"], Path("/tmp/apps"))
+        self.assertEqual(captured["environment"]["WAYLAND_DISPLAY"], "signals-smoke")
+        self.assertFalse(captured["capture"])
+
+
 if __name__ == "__main__":
     unittest.main()

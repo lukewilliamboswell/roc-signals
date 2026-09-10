@@ -74,6 +74,15 @@ jobs:
         run: |
           sudo apt-get install -y weston xvfb xauth mesa-vulkan-drivers
           python3 scripts/minici gui-smoke
+      - name: Drive the scripted GUI scenarios
+        run: python3 scripts/minici gui-scenarios
+      - name: Keep the scenario reports on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: gui-scenario-reports
+          path: .test-out/gui-regression
+          if-no-files-found: ignore
 
   gui-windows:
     needs: changes

@@ -67,7 +67,7 @@ campaigns. Platform-specific linking and archive checks still run on their
 corresponding CI runners.
 
 During investigation, pass one or more target names, such as
-`python3 scripts/minici gui gui-smoke`, but run the complete command before
+`python3 scripts/minici gui gui-smoke gui-scenarios`, but run the complete command before
 pushing.
 
 ## Test Driver
@@ -1348,6 +1348,15 @@ they find the window by the process id the driver started and refuse a window
 whose size does not match the request; no region of your desktop is captured.
 Pass `--no-capture` to run the scripts alone, `--scenario SUBSTRING` to select
 some of them, and `--artifacts PATH` to write elsewhere.
+
+The scenarios themselves are platform-neutral, because the interpreter lives in
+the host rather than in the driver: the same checks run on every system the GUI
+supports. Only the captures are macOS-only, and the driver says which half it
+ran rather than reporting a pass for evidence it never gathered. On Linux the
+scenarios need the same private display as the smoke checks, which
+`python3 scripts/minici gui-scenarios` arranges — under Weston on an Xvfb
+display there, and directly on macOS and Windows. CI runs that target after
+`gui-smoke` and keeps the JSON reports when it fails.
 
 A scenario runs against its example's own `assets/` directory. A script whose
 front matter carries `# assets: <path relative to the example>` runs against a

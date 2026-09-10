@@ -101,7 +101,13 @@ into its own render layer and the bounds probe records nothing for it, so
 capture instead; and a control inside a scrolling region is likewise not
 recorded. Both are gaps in the probe, not properties of the applications.
 
-Remaining: the driver has only been executed on Apple Silicon macOS. Window
+The driver now runs everywhere the GUI does: `scripts/minici gui-scenarios`
+arranges the private display each system needs, reusing the smoke checks' Weston
+compositor on Linux, and Linux CI runs it after `gui-smoke` and keeps the JSON
+reports on failure. Only the window captures remain macOS-only.
+
+Remaining: the scenarios have not yet been executed on Linux or Windows by
+anyone — CI wiring is not the same as a green run. Window
 captures are macOS-only; the scripts themselves need running under the Linux
 Xvfb/Weston environment `gui_smoke.py --wayland` provides, and wiring into CI
 alongside it. Representative scaling and font environments are not covered:
