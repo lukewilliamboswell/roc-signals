@@ -336,15 +336,28 @@ flowchart TD
     MacValidate --> DependencyRelease
 ```
 
-The same web Roc apps compile against the native spec and Wasm hosts. The native spec runner asserts
-semantics and work budgets; the browser runs the apps for real. The JS runtime
-is a thin executor of the engine's already-computed command stream — it never
-reconstructs meaning, holds reactive state, or re-decides patches.
+The project publishes two distinct Roc platform packages. A web app root names
+the `platform-web` package and can compile against that package's native spec
+host or its Wasm/browser host. A GUI app root separately names the
+`platform-gui` package and compiles against its native GUI vocabulary and hosts.
+The roots do not compile interchangeably: their platform APIs and package URLs
+are different. An application may place ordinary Roc modules shared by both
+roots above that boundary, while keeping each root's platform-specific wiring
+explicit.
+
+Within the web package, the native spec host simulates the browser-facing
+semantics and asserts work budgets; the Wasm host and JavaScript runtime run the
+web app in a real browser. The JS runtime is a thin executor of the engine's
+already-computed command stream — it never reconstructs meaning, holds reactive
+state, or re-decides patches. The GUI package has its own semantic and live
+native execution paths over the same engine, without acquiring the web API.
 
 ```mermaid
 flowchart LR
-    App["Roc application"] --> WebPlatform["platform-web<br/>Html · Ui"]
-    App --> GuiPlatform["platform-gui<br/>Gui"]
+    SharedModules["optional shared Roc modules"] -.-> WebApp["web app root<br/>web platform URL"]
+    SharedModules -.-> GuiApp["GUI app root<br/>GUI platform URL"]
+    WebApp --> WebPlatform["platform-web package<br/>Html · Ui"]
+    GuiApp --> GuiPlatform["platform-gui package<br/>Gui"]
     WebPlatform --> Platform["shared descriptor tree<br/>signals · scopes · typed retained closures"]
     GuiPlatform --> Platform
     Platform -->|"roc_ui_init once;<br/>direct closure calls thereafter"| Engine["shared Engine(Ctx)<br/>reactivity · structure · ownership · rendering decisions"]
@@ -916,9 +929,12 @@ host ids, host-private key hashes, `NodeValue`, or lifecycle tokens. The API is
 shared for signals, actions, and scope ownership. Rendering and services are
 platform-specific: `platform-web` exposes `Html` and browser services;
 `platform-gui` exposes `Gui` and `Files`, with shared `Ui`, `Signal`, and `Rows`
-semantics. A web app runs under the native semantic runner and in the browser;
-a GUI app runs under the native semantic runner and GPUI. This does not promise
-that a browser rendering API or service is supported by the GUI executor.
+semantics. A web app root targets the web package URL and runs under that
+package's native semantic runner or Wasm/browser host. A distinct GUI app root
+targets the GUI package URL and runs under its native semantic runner or GPUI
+host. The two roots may import shared ordinary Roc modules, but their platform
+imports and platform-specific wiring are not source-compatible. A browser
+rendering API or service is not thereby supported by the GUI executor.
 Everything that crosses to JavaScript — `Cmd` out, `Sub(a)` in, and widget
 attachments — is one declared boundary (see *One door to JavaScript*). There
 is no second payload format, no public id route table, and no browser-only
@@ -2502,12 +2518,14 @@ property regresses.
    of behaviour to drift from, and the same engine instantiates under native
    semantic, GPUI, and `wasm32` hosts.
 
-2. **Same app semantics under specs and live execution.** Web apps run under
-   the native spec runner and in the browser; GUI apps run under that runner
-   and GPUI. *We know this holds when:* every maintained app builds and runs
-   with its declared platform vocabulary in both semantic and live environments.
-   Host-specific rendering and services remain explicit; this is not a claim
-   of source compatibility between `Html` and `Gui`.
+2. **Each platform's app semantics agree under specs and live execution.** A
+   web root runs under the web package's native spec host and Wasm/browser host;
+   a distinct GUI root runs under the GUI package's semantic and GPUI hosts.
+   *We know this holds when:* every maintained root builds and runs with its
+   declared platform vocabulary in both semantic and live environments.
+   Applications may share ordinary Roc modules between roots, but the web and
+   GUI roots name different platform packages and are not source-compatible at
+   their platform boundary.
 
 3. **Evidence at the appropriate layer.** Native specs assert shared semantics
    and work budgets. Focused browser and GPUI tests assert their boundary
