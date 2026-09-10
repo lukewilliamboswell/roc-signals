@@ -33,13 +33,17 @@ DEFAULT_SIZE = "1200x820"
 
 
 class Scenario:
-    """One script, its window size, and whether it documents an open defect."""
+    """One script, its window size, assets root, and any open defect it documents."""
 
     def __init__(self, app: Path, path: Path):
         self.app = app
         self.path = path
         self.name = path.stem
         self.size = DEFAULT_SIZE
+        # Most scenarios run against the example's shipped assets. A scenario
+        # about damaged assets names a prepared root instead, because a script
+        # cannot damage the working tree and put it back.
+        self.assets = app / "assets"
         self.diagnostic = None
         note = []
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -48,6 +52,10 @@ class Scenario:
             comment = line[1:].strip()
             if comment.startswith("size:"):
                 self.size = comment[len("size:"):].strip()
+            elif comment.startswith("assets:"):
+                self.assets = app / comment[len("assets:"):].strip()
+                if not self.assets.is_dir():
+                    raise SystemExit(f"{path}: '# assets:' names no directory: {self.assets}")
             elif comment.startswith("diagnostic:"):
                 note = [comment[len("diagnostic:"):].strip()]
             elif note:
@@ -83,14 +91,13 @@ def scenarios(apps, patterns=()) -> list[Scenario]:
 
 
 def arguments_for(scenario: Scenario, report: Path) -> list[str]:
-    """The host flags one scenario needs, including its example's assets."""
+    """The host flags one scenario needs, including the assets root it chose."""
     # The window size is the capture harness's argument to give, so it is not
     # repeated here; a script run without a capture supplies it separately.
     arguments = ["--script", str(scenario.path.resolve()),
                  "--script-report", str(report.resolve())]
-    assets = scenario.app / "assets"
-    if assets.is_dir():
-        arguments += ["--assets-root", str(assets.resolve())]
+    if scenario.assets.is_dir():
+        arguments += ["--assets-root", str(scenario.assets.resolve())]
     return arguments
 
 
