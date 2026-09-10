@@ -24,8 +24,8 @@ Workflow := [].{
 
 	## Phase is the only request dependency. Editing during Writing never
 	## restarts or supersedes the immutable snapshot already being saved.
-	bindings : Ui.State(Session.State), Ui.State(Str), Tasks -> List(Elem)
-	bindings = |session, body, tasks| [
+	bindings : Ui.State(Session.State), Tasks -> List(Elem)
+	bindings = |session, tasks| [
 		Ui.on_change(
 			session.signal().map(|state| state.phase),
 			|phase| match phase {
@@ -52,10 +52,9 @@ Workflow := [].{
 			Signal.from_task(tasks.read),
 			|status| match status {
 				Signal.TaskStatus.Loading => Signal.noop
-				Signal.TaskStatus.Done(file) => Ui.update_states([
-					body.write(file.text),
-					session.write(Session.from_file(file)),
-				])
+				# One settled state carries the new lifetime and its text, so the
+				# editor keyed by that lifetime can never mount with older text.
+				Signal.TaskStatus.Done(file) => session.update_cmd(|state| Session.loaded(state, file))
 				Signal.TaskStatus.Failed(error) => failed(session, error)
 			},
 		),
