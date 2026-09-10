@@ -266,8 +266,8 @@ class GuiReleaseTests(unittest.TestCase):
         root = self.root / 'repository'
         root.mkdir()
         subprocess.run(['git', 'init', '--quiet', root], check=True)
-        (root / 'src').mkdir()
-        (root / 'src/engine.zig').write_text('host input')
+        (root / 'src/signals').mkdir(parents=True)
+        (root / 'src/signals/engine.zig').write_text('host input')
         def commit():
             subprocess.run(['git', 'add', '.'], cwd=root, check=True)
             subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
@@ -281,7 +281,7 @@ class GuiReleaseTests(unittest.TestCase):
             path.write_text('packaging only')
         commit()
         self.assertEqual(release.source_fingerprint(root), original)
-        (root / 'src/engine.zig').write_text('changed host input')
+        (root / 'src/signals/engine.zig').write_text('changed host input')
         with self.assertRaisesRegex(ValueError, 'clean committed'):
             release.source_fingerprint(root)
         commit()
