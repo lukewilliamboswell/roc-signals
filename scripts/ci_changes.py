@@ -6,8 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
-AREAS = frozenset({"source", "gui", "published", "archive", "site"})
-WEB = frozenset({"source", "published", "archive", "site"})
+AREAS = frozenset({"source", "gui", "site"})
+WEB = frozenset({"source", "site"})
 SHARED = WEB
 
 
@@ -15,7 +15,7 @@ def verify_results(results):
     if results["changes"]["result"] != "success":
         raise ValueError("CI selection did not succeed")
     selection = results["changes"]["outputs"]
-    for job in ("source", "gui", "gui-windows", "gui-macos", "published", "archive", "site"):
+    for job in ("source", "gui", "gui-windows", "gui-macos", "site"):
         area = "gui" if job.startswith("gui") else job
         enabled = selection[area]
         if enabled not in ("true", "false"):
@@ -47,8 +47,6 @@ def classify(paths):
               or path in {"README.md", "AGENTS.md", "design.md", "style.md", "THIRD_PARTY_LICENSES.md",
                           "UPSTREAM_COMPILER_BUGS.md"}):
             selected.add("site")
-            if path.startswith("releases/"):
-                selected.add("archive")
         else:
             selected.update(AREAS)
     return {area: area in selected for area in sorted(AREAS)}

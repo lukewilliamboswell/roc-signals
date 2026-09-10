@@ -28,8 +28,6 @@ jobs:
     outputs:
       source: ${{ steps.select.outputs.source }}
       gui: ${{ steps.select.outputs.gui }}
-      published: ${{ steps.select.outputs.published }}
-      archive: ${{ steps.select.outputs.archive }}
       site: ${{ steps.select.outputs.site }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -136,7 +134,7 @@ jobs:
 
   platform-source:
     name: Platform source
-    needs: [changes, source, gui, gui-windows, gui-macos, published, archive, site]
+    needs: [changes, source, gui, gui-windows, gui-macos, site]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -147,32 +145,6 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: python3 scripts/ci_changes.py --verify-results
-
-  published:
-    needs: changes
-    if: needs.changes.outputs.published == 'true'
-    name: Published examples
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-toolchain
-      - run: python3 scripts/minici published
-
-  archive:
-    needs: changes
-    if: needs.changes.outputs.archive == 'true'
-    name: Release archive
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-toolchain
-      - run: python3 scripts/minici archive
 
   site:
     name: Documentation and site

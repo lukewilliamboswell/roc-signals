@@ -128,7 +128,7 @@ def load_examples() -> tuple[Example, ...]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     suites = (
-        "all", "published", "zig", "fuzz", "browser", "roc-check", "roc-test",
+        "all", "zig", "fuzz", "browser", "roc-check", "roc-test",
         "wasm", "wasm-fault", "wasm-bench", "native", "gui", "fault",
         "bundle", "bench", "size",
     )
@@ -973,12 +973,6 @@ def main() -> int:
 
     validate_args_before_build(args, suites)
     roc_bin = command_path(args.roc_bin)
-    if "published" in suites:
-        if suites != {"published"}:
-            raise SystemExit("published runs independently of development suites")
-        from release import check_published
-        check_published(roc_bin)
-        return 0
     ensure_clean_output(args.keep_output)
 
     if suites != {"gui"}:

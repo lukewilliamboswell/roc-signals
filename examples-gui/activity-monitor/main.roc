@@ -1,4 +1,4 @@
-app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc" }
+app [main] { pf: platform "../../platform-gui/main.roc", roc: "nightly-2026-09-04-c125b82" }
 
 import pf.Elem exposing [Elem]
 import pf.Gui
@@ -9,8 +9,8 @@ import Session
 import Workflow
 
 # Embedded at compile time; registered with the native text system at startup.
-# Licensed under the SIL Open Font License 1.1 — see vendor/fonts/source-code-pro/OFL.txt.
-import "../../vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
+# Licensed under the SIL Open Font License 1.1 — see assets/OFL.txt.
+import "assets/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
 
 feed_font : Str
 feed_font = "Source Code Pro"

@@ -167,7 +167,7 @@ system at startup. Embed the bytes with a compile-time import and declare them
 once on the app's root element:
 
 ```roc
-import "../../vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
+import "assets/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
 
 Gui.column(
     [Gui.embedded_fonts([{ family: "Source Code Pro", bytes: source_code_pro }]), ...],

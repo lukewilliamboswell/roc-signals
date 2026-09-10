@@ -10,12 +10,12 @@ own the compiler pins, including internal web fixtures. `.github/roc-nightly.jso
 workflows; it contains no duplicate version authority. The selected pins agree.
 The bot changes only their compiler literals, preserving all package/platform URLs.
 
-The required checks are `Published examples`, `Platform source`, and
-`Release archive`. Published tests use committed URLs and fresh caches;
-development tests rebind temporary copies to current source. A failed released
-dependency may require a platform patch, a new immutable release, and a reviewed
-example-URL update before retrying the nightly. Local success never substitutes
-for a passing download.
+The required pull-request check is `Platform source`. Development tests bind
+temporary copies to current source. Exact combined bundles and their rewritten
+example archive are tested from fresh caches by the explicitly dispatched
+release workflow rather than rebuilt by ordinary pull-request CI. A failed
+released dependency may require a platform patch and a new immutable release
+before retrying the nightly.
 
 The caller pins shared automation to `13b98f8428993bf0dcca9fbaa3b7762ec3e25d34`.
 Dependabot proposes reviewed reference updates. See the shared
