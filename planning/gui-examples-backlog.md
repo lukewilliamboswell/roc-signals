@@ -6,11 +6,10 @@ and the tests and documentation that teach their behavior. This is a triaged
 backlog, not an implementation change or a replacement for `design.md`.
 
 [Evidence, screenshots, commands, and reproductions](gui-examples-review/2026-09-10/README.md).
-All six apps checked, built, and passed their Roc tests; all 42 maintained
-semantic specs passed. Four additional diagnostic specs fail. A real GPUI
-desktop interaction also reproduced cross-task native undo contamination.
-The passing suite therefore does not establish that the examples are correct
-or usable at the supported window sizes.
+All six apps checked, built, and passed their Roc tests; all maintained
+semantic specs passed. Two additional diagnostic specs still fail. The passing
+suite therefore does not establish that the examples are correct or usable at
+the supported window sizes.
 
 P1 = data integrity or core workflow obstruction; P2 = substantive correctness,
 usability, or maintainability; P3 = refinement. **All items below are open.**
@@ -21,12 +20,9 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 
 | ID | Priority | Work item | Evidence | Primary owner |
 | --- | --- | --- | --- | --- |
-| GUI-01 | P1 | Notes: isolate every accepted document's native editor lifetime | Failing spec + source | Notes workflow |
-| GUI-02 | P1 | Board: isolate native edit history between tasks/documents | Desktop reproduction + failing spec | Board view/lifecycle |
 | GUI-03 | P1 | Board: make the complete board and detail actions reachable | Screenshots + wheel attempts | Board layout; GPUI verification |
 | GUI-04 | P1 | Keep confirmation dialogs inside the allowed viewport | Screenshot | GUI dialog layout + Notes |
 | GUI-05 | P2 | Support Windows paths without inventing a slash convention | Failing specs + source | Files boundary + Notes/Explorer + fixtures |
-| GUI-06 | P2 | Account for all payload retained by board history | Source | Board history |
 | GUI-08 | P2 | Defaulted nominal `Gui.Style` records | Pinned compiler probes | Public Roc GUI API |
 | GUI-09 | P2 | Make asset-verification warnings match rendered behavior | Source | Board/Explorer asset views |
 | GUI-10 | P2 | Explorer: fit list, inspector, and preview at smaller heights | Screenshots + wheel attempts | Explorer layout |
@@ -45,53 +41,6 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 | GUI-24 | P3 | Optional visual refinements, after operability | Design | Examples + narrowly justified API work |
 
 ## Correctness and operability
-
-### GUI-01 — Notes document lifetime
-
-`Workflow.bindings` installs reads with `Session.from_file(file)`
-([Workflow.roc](../examples-gui/notes-editor/Workflow.roc), lines 55–58).
-That constructor resets `document_generation` to zero; `Session.loaded`
-already advances it, but is not used by this path
-([Session.roc](../examples-gui/notes-editor/Session.roc), `from_file`, `loaded`).
-The editor's `Ui.switch` is keyed by that generation. Opening a file whose text
-equals the current body can therefore retain the previous document's editor.
-This matters because equal controlled-value echoes intentionally preserve
-native selection/history; clearing them on every equal echo would violate the
-editing contract, not fix the application.
-
-Reproduction: [notes-open-lifetime.scm](gui-examples-review/2026-09-10/repros/notes-open-lifetime.scm)
-expects one new input binding on an equal-text open; observed zero.
-The document-lifetime failure is reproduced; its undo consequence in Notes is
-source-traced, not a desktop file-chooser test.
-
-Acceptance: every successful document replacement gets a fresh identity even
-for equal text; ordinary typing, saves, and temporary availability changes do
-not remount the editor. Cover repeated opens, New, Revert, cancellation, failed
-reads, equal text, and generation exhaustion. Add native control undo/selection
-coverage as well as application semantic assertions.
-
-### GUI-02 — Board editor ownership
-
-`detail_view` switches only on `editor.column`
-([main.roc](../examples-gui/task-board/main.roc), lines 411–413). Different tasks
-in the same column share the input lifetimes. If a field's value is equal,
-GPUI correctly retains that input's existing native history, which now belongs
-to a different task. Replacing an entire document needs the same identity audit.
-
-Desktop reproduction: add `duplicate`; type `private` into its notes; select
-all and delete; add `second`; focus its empty notes and press Ctrl+Z.
-`private` appears in `second`:
-[before](gui-examples-review/2026-09-10/task-board-second-before-undo.png),
-[after](gui-examples-review/2026-09-10/task-board-second-after-undo.png).
-[A separate semantic diagnostic](gui-examples-review/2026-09-10/repros/board-editor-lifetime.scm)
-also observes zero new scopes when selecting another equal-valued task.
-
-Acceptance: explicitly identify the edited document/task lifetime; keep the
-draft owned above card/filter scopes, but prevent native history and selection
-from crossing task/document boundaries. Test same-column selection, equal
-fields, replacement documents with reused keys, transfers, filtering, domain
-undo/redo, and disposal. Do not make the host infer identity from text or keys
-hidden in labels. Preserve ordinary input-echo history.
 
 ### GUI-03 — Board scrolling and detail reachability
 
@@ -161,26 +110,6 @@ separators, and backslashes that are valid Unix filename characters. Do not
 globally replace backslashes or smuggle a new path convention through strings.
 Update fixtures so normal typed specs can express these cases, then verify
 Open/Save As and Explorer navigation on Windows as well as Linux/macOS.
-
-### GUI-06 — Board history payload accounting
-
-Deletion subtracts the task from `bytes` and sets `editing = False`, but leaves
-the full deleted value in `editor.task` ([main.roc](../examples-gui/task-board/main.roc),
-`delete_confirmation`). `BoardSnapshot` retains that editor alongside the rows;
-subsequent history snapshots can retain text no longer included in the charged
-row payload. `trim_history` trusts `item.bytes`. Large editable drafts make
-this material, even though file decoding enforces smaller field limits.
-
-The accounting omission is source-confirmed. No allocator-measured peak or
-specific four-MiB overrun was measured here; the 50-entry count bound still
-exists, so this is not a claim of unbounded history.
-
-Acceptance: clear inactive editor payload or charge every independently
-retained payload under an explicit conservative rule. Test delete → subsequent
-changes → undo/redo with large unique text, inactive editors, saved baselines,
-and branch retirement. Derive accounting checks from actual retained values,
-not only synthetic snapshots with a manually set `bytes` field. Clarify which
-budgets cover history versus live drafts, saved baselines, and pending saves.
 
 ## Roc and public API ergonomics
 
@@ -324,8 +253,10 @@ route. Verify close/reopen/lifetime behavior and all native OS integrations.
 
 `gui_smoke.py` checks that each app mounted/rendered, with one Counter action.
 The maintained semantic specs cannot observe visual clipping or native input
-history ownership. Both missed GUI-02, and initial screenshots alone missed
-the same bug until a multi-task interaction was performed.
+history ownership. Both missed the board's cross-task undo contamination, and
+initial screenshots alone missed it until a multi-task interaction was
+performed; the semantic specs that now cover the board and Notes editor
+lifetimes assert scope replacement, not native history itself.
 
 Acceptance: deterministic private-display captures/interaction checks for all
 six apps; initial, populated, selected, focused, disabled/read-only, modal,
@@ -472,10 +403,10 @@ mandatory spacing/color dogma is approved by this backlog.
 
 ## Delivery sequence
 
-1. Reproduce and fix GUI-01/02 with native input history coverage; address
-   GUI-03/04 core reachability in parallel with their presentation tests.
-2. Close GUI-05/06 boundary and accounting defects. Add GUI-16/17 regressions
-   alongside each fix, not only at the end.
+1. Address GUI-03/04 core reachability in parallel with their presentation
+   tests.
+2. Close the GUI-05 boundary defect. Add GUI-16/17 regressions alongside each
+   fix, not only at the end.
 3. Migrate GUI-08. This simplifies later example edits without needing new
    rendering semantics.
 4. Apply current-API layout/readability fixes (GUI-09–11, GUI-13/14, GUI-18); use evidence

@@ -54,9 +54,15 @@ The scans use ranges and iterators rather than per-character lists; counting
 still visits the complete changed document. GPUI retains responsibility for
 native shaping, caret interaction, and IME behavior.
 
-`Session.roc` holds the pure document operation state machine. `Workflow.roc`
-observes only its phase to start tasks, and task results enter ordinary shared
-engine propagation. The native semantic specs supply typed task outcomes to
+`Session.roc` holds the pure document operation state machine, including the
+editable body and the `document_generation` that identifies the editor's
+lifetime. Keeping them in one state is deliberate: a document replacement
+advances the lifetime and installs its text as a single settled value, so the
+editor can never mount against another document's text. Typing, saving, and the
+temporary unavailability during a chooser leave the lifetime alone, which is
+what preserves native selection and undo history while a document is edited.
+`Workflow.roc` observes only its phase to start tasks, and task results enter
+ordinary shared engine propagation. The native semantic specs supply typed task outcomes to
 check cancellation, failures, stale results, repeat saves, and snapshot ownership
 deterministically. Filesystem worker tests and actual GPUI interaction tests
 cover the native boundaries separately.
