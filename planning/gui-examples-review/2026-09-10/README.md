@@ -133,8 +133,6 @@ editor tests; a scope count alone cannot prove history isolation.
 | --- | --- | --- |
 | [notes-open-lifetime.scm](repros/notes-open-lifetime.scm) | Notes | `bind_event` delta expected 1, actual 0 |
 | [board-editor-lifetime.scm](repros/board-editor-lifetime.scm) | Board | `scopes_created` delta expected 1, actual 0 |
-| [notes-windows-name.scm](repros/notes-windows-name.scm) | Notes | Expected `Ideas.txt`; actual `C:\Users\Lee\Ideas.txt` |
-| [explorer-windows-breadcrumbs.scm](repros/explorer-windows-breadcrumbs.scm) | Explorer | `Go to C:\Users` locator absent |
 
 Example command from the repository root:
 

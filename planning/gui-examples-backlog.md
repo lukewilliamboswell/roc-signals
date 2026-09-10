@@ -25,7 +25,6 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 | GUI-02 | P1 | Board: isolate native edit history between tasks/documents | Desktop reproduction + failing spec | Board view/lifecycle |
 | GUI-03 | P1 | Board: make the complete board and detail actions reachable | Screenshots + wheel attempts | Board layout; GPUI verification |
 | GUI-04 | P1 | Keep confirmation dialogs inside the allowed viewport | Screenshot | GUI dialog layout + Notes |
-| GUI-05 | P2 | Support Windows paths without inventing a slash convention | Failing specs + source | Files boundary + Notes/Explorer + fixtures |
 | GUI-06 | P2 | Account for all payload retained by board history | Source | Board history |
 | GUI-07 | P2 | Replace duplicated handwritten theme JSON grammar with builtin codecs | Pinned compiler probes + source | Theme examples |
 | GUI-08 | P2 | Defaulted nominal `Gui.Style` records | Pinned compiler probes | Public Roc GUI API |
@@ -138,31 +137,6 @@ work within every allowed viewport. Verify safe initial focus, visible focused
 controls, Tab/Shift+Tab, Escape, resize while open, and long copy. Cover board
 delete/replace/close dialogs too; those were not desktop-captured in this pass.
 Preserve modal admission and engine-owned lifecycle semantics.
-
-### GUI-05 — Windows paths and fixture expressiveness
-
-Notes' `file_name` and `Workflow.parent_path` split only `/`. A real Windows
-path displays as the entire filename, and Save As derives `/` plus a suggested
-name containing backslashes. Native save-dialog validation rejects that name.
-Explorer's `Explorer.parent`, name extraction, and `Session.breadcrumbs` make
-the same slash assumption, producing incorrect parents/breadcrumbs. Native
-workers return OS paths, including backslashes on Windows.
-
-Reproduced application failures:
-[Notes filename](gui-examples-review/2026-09-10/repros/notes-windows-name.scm),
-[Explorer breadcrumbs](gui-examples-review/2026-09-10/repros/explorer-windows-breadcrumbs.scm).
-These inject Windows-shaped results on Linux; native Windows dialogs were not
-run. The typed fixture parser in
-[file_fixtures.zig](../src/spec/file_fixtures.zig), `absolutePath`, rejects a
-path unless its first byte is `/`, so the diagnostics currently use raw task
-frames. That is a test-boundary gap, not a recommended application technique.
-
-Acceptance: define platform-correct parent/name/root handling at a documented
-typed boundary; cover drive roots, UNC paths, Unix root, Unicode, trailing
-separators, and backslashes that are valid Unix filename characters. Do not
-globally replace backslashes or smuggle a new path convention through strings.
-Update fixtures so normal typed specs can express these cases, then verify
-Open/Save As and Explorer navigation on Windows as well as Linux/macOS.
 
 ### GUI-06 — Board history payload accounting
 
@@ -491,7 +465,7 @@ needs GUI-14.
 
 Acceptance: synchronize examples, public references, platform modules, specs,
 and contributor commands when fixing each item. Clearly distinguish supported
-behavior from tested OS coverage and known limitations such as GUI-05.
+behavior from tested OS coverage and known limitations.
 Keep this backlog in planning as requested; move stable contracts to their
 authoritative docs and reproducible compiler limitations to
 `UPSTREAM_COMPILER_BUGS.md`, not into AGENTS.md.
@@ -531,7 +505,7 @@ mandatory spacing/color dogma is approved by this backlog.
 
 1. Reproduce and fix GUI-01/02 with native input history coverage; address
    GUI-03/04 core reachability in parallel with their presentation tests.
-2. Close GUI-05/06 boundary and accounting defects. Add GUI-16/17 regressions
+2. Close the GUI-06 accounting defect. Add GUI-16/17 regressions
    alongside each fix, not only at the end.
 3. Resolve GUI-07's codec compatibility gate and migrate GUI-08. These simplify
    later example edits without needing new rendering semantics.
