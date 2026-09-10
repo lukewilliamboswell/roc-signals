@@ -1,5 +1,9 @@
 # size: 360x240
-# diagnostic: The counter reading is laid out past the bottom and right edges of
-# the smallest window the host permits, so it is readable only by scrolling the
-# window fallback. Not on the backlog: reported alongside GUI-16.
+# The counter's own headline value fits inside the smallest window the host
+# permits, without relying on the window-scroll fallback to reveal it. This
+# guards the fix for the fixed 380-pixel panel and the oversized paddings that
+# put the reading past the bottom and right edges.
 expect-onscreen #count
+expect-onscreen #Increment
+expect-onscreen #Decrement
+expect-onscreen #Reset

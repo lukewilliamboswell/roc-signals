@@ -63,7 +63,7 @@ main = || Ui.state(
 					True,
 					|visible| {
 						Gui.column(
-							[Gui.style({ ..Gui.style_default, padding: 32, gap: 16, width: Fill })],
+							[Gui.style({ ..Gui.style_default, padding: 16, gap: 12, width: Fill })],
 							[
 								Ui.on_change_initial(Signal.const("Keyed Rows - Roc Signals"), Gui.set_title),
 								Gui.heading("Roc Signals + GPUI"),
@@ -86,7 +86,9 @@ main = || Ui.state(
 									visible.signal(),
 									|| {
 										Gui.column(
-											[Gui.style({ ..Gui.style_default, gap: 12, width: Px(520) })],
+											# Grow into the available width instead of pinning 520 pixels, which is
+											# wider than the smallest window the host allows.
+											[Gui.style({ ..Gui.style_default, gap: 12, width: Fill })],
 											[
 												Gui.column(
 													[Gui.style({ ..Gui.style_default, font_size: 13, foreground: Rgb(0x93A9B6) })],
