@@ -5,8 +5,8 @@
 Let a native application switch its complete visual style at runtime — for
 example between a light and a dark palette — using ordinary application state
 and the existing styling surface. A theme is app data: a record of colors held
-in a signal, from which every element derives its `Gui.Style` through
-`Gui.style_s`. No host theme protocol, no new theme record at the boundary, and
+in a signal, from which every element derives its `Gui.Style` through the
+`overrides` props field. No host theme protocol, no new theme record at the boundary, and
 no host-owned palette registry. The host stays a renderer of explicit,
 per-element presentation, as [design.md](../design.md) already frames it.
 
@@ -18,8 +18,8 @@ adding a parallel theming channel.
 
 ## The pattern that works today
 
-`Gui.style_s : Signal(Style) -> Attr`
-([platform-gui/Gui.roc](../platform-gui/Gui.roc) line 217) already delivers
+The `overrides ?: Signal(Style)` field on every control's props record
+([platform-gui/Gui.roc](../platform-gui/Gui.roc)) already delivers
 reactive presentation through ordinary typed, equality-pruned signal
 propagation ([docs/native-gui-protocol.md](../docs/native-gui-protocol.md)).
 An application defines a palette record, holds the current palette in state,
@@ -45,8 +45,8 @@ dark = { surface: Rgb(0x16252C), panel: Rgb(0x1B2D36), content: Rgb(0xE6EBEE), m
 light : Theme
 light = { surface: Rgb(0xF4F6F7), panel: Rgb(0xFFFFFF), content: Rgb(0x1B2D36), muted: Rgb(0x51646F), accent: Rgb(0x2B6A92), border: Rgb(0xC3CED4) }
 
-panel_style : Signal(Theme) -> Gui.Attr
-panel_style = |theme| Gui.style_s(theme.map(|t| Gui.Style.{ padding: 24, gap: 16, border_width: 1, radius: 10, background: t.panel, border_color: t.border, foreground: t.content }))
+panel_style : Signal(Theme) -> Signal(Gui.Style)
+panel_style = |theme| theme.map(|t| Gui.Style.{ padding: 24, gap: 16, border_width: 1, radius: 10, background: t.panel, border_color: t.border, foreground: t.content })
 
 main : () -> Elem
 main = || Ui.state(
@@ -59,8 +59,8 @@ main = || Ui.state(
 			},
 		)
 		Gui.column(
-			[Gui.style_s(theme.map(|t| Gui.Style.{ padding: 32, gap: 20, background: t.surface, foreground: t.content }))],
-			[Gui.panel([panel_style(theme)], [Gui.text("Themed content")])],
+			{ overrides: theme.map(|t| Gui.Style.{ padding: 32, gap: 20, background: t.surface, foreground: t.content }) },
+			[Gui.panel({ overrides: panel_style(theme) }, [Gui.text("Themed content")])],
 		)
 	},
 )
@@ -85,7 +85,7 @@ Controls with no styling route at all:
 
 | Control | Gap |
 | --- | --- |
-| `Gui.button` | **Resolved:** `Gui.button_attrs` takes the full native attribute list with `action_button`'s default record; `Gui.button` stays as the zero-attribute shorthand. |
+| `Gui.button` | **Resolved:** `Gui.action_button` takes the full props record with the button's default style; `Gui.button` stays as the caption-and-message shorthand. |
 | `Gui.heading`, `Gui.text`, `Gui.text_s` | No attributes. Foreground and font size inherit from a styled wrapper, so a wrapping `Gui.column` is a workaround, not a gap of the same severity. |
 
 Host chrome that ignores application styles entirely:
@@ -144,7 +144,7 @@ table above.
 
 ### 1. Attributes for the remaining controls
 
-**Shipped** as the non-breaking `Gui.button_attrs : Str, List(Attr), Msg`;
+**Shipped** as `Gui.action_button : ActionButtonProps, Msg`;
 `Gui.button` keeps its two-argument shape so no call site moved. Leave
 `heading`, `text`, and `text_s` alone initially; wrapping in a styled
 container already themes them through inheritance, and adding attributes
@@ -200,9 +200,9 @@ version-2 fields.
    the sketch above. It demonstrates the pattern and makes every gap in the
    table visible on screen. Documentation: extend
    [www/content/docs/native-gui.md](../www/content/docs/native-gui.md) with the
-   pattern (no example there uses `style_s` today).
-2. **Button attributes.** `Gui.button` gains an attribute list; migrate
-   examples and specs together.
+   pattern (no example there uses `overrides` today).
+2. **Button attributes.** `Gui.action_button` carries the button's props;
+   migrate examples and specs together.
 3. **Style version 2.** Roc encoder, Zig validation, extern struct extension,
    Rust application for `hover_background`, `active_background`, `accent`,
    `muted`; buttons, drop targets, selected ring, and scrollable elements

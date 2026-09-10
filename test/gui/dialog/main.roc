@@ -8,7 +8,7 @@ main : () -> Elem
 main = || Ui.state(
 	False,
 	|visible| Gui.column(
-		[],
+		Gui.ColumnProps.{},
 		[
 			Gui.heading("Scoped dialog"),
 			Gui.button("Open dialog", visible.on_unit(|_| True)),
@@ -17,11 +17,14 @@ main = || Ui.state(
 				|| Ui.state(
 					"",
 					|draft| Gui.dialog(
-						{ label: "Confirm changes", on_dismiss: visible.on_unit(|_| False) },
-						[Gui.test_id("confirmation")],
+						{
+							label: "Confirm changes",
+							on_dismiss: visible.on_unit(|_| False),
+							test_id: "confirmation",
+						},
 						[
 							Gui.heading("Confirm changes"),
-							Gui.textarea({ label: "Reason", value: draft.signal() }, [], draft.on_str(|_, value| value)),
+							Gui.textarea({ label: "Reason", value: draft.signal() }, draft.on_str(|_, value| value)),
 							Gui.button("Keep editing", visible.on_unit(|_| False)),
 						],
 					),

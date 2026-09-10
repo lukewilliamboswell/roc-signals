@@ -9,21 +9,6 @@ Color : [Default, Rgb(U32)]
 
 Overflow : [Visible, Clip, Scroll]
 
-Attribute := [
-	Presentation(Gui.Style),
-	PresentationSignal(Signal(Gui.Style)),
-	Label(Str),
-	Placeholder(Str),
-	FontFamily(Str),
-	EmbeddedFonts(List({ family : Str, bytes : List(U8) })),
-	TestId(Str),
-	Selected(Signal(Bool)),
-	Enabled(Signal(Bool)),
-	Shortcut(Node.KeyChord, Node.Msg),
-	DragSource(Str),
-	DropTarget(Node.Msg),
-]
-
 # BEGIN GENERATED PROTOCOL (scripts/generate_protocol.py; edit protocol/native-protocol.json)
 # Versioned native presentation record; never encoded on the browser wire.
 native_style_field : Node.TextField
@@ -153,95 +138,141 @@ encode_fonts = |fonts| {
 	Str.join_with(lines, "\n")
 }
 
+## One control's fully resolved attributes, ready for native lowering.
+Common : {
+	style : Gui.Style,
+	overrides : [None, Some(Signal(Gui.Style))],
+	test_id : [None, Some(Str)],
+	label : [None, Some(Str)],
+	placeholder : [None, Some(Str)],
+	font_family : [None, Some(Str)],
+	embedded_fonts : List({ family : Str, bytes : List(U8) }),
+	selected : [None, Some(Signal(Bool))],
+	enabled : [None, Some(Signal(Bool))],
+	disabled : [None, Some(Signal(Bool))],
+	shortcuts : List({ chord : Node.KeyChord, msg : Node.Msg }),
+	drag_source : [None, Some(Str)],
+	on_drop : [None, Some(Node.Msg)],
+}
+
+## Read an optional props field as a plain option.
+opt : Try(a, err) -> [None, Some(a)]
+opt = |field| match field {
+	Ok(value) => Some(value)
+	Err(_) => None
+}
+
 style_attr : U32, Gui.Style -> Node.Attr
 style_attr = |direction, style| Node.Attr.StaticText({ field: native_style_field, name: "", value: encode_style(direction, style) })
 
-lower_attrs : U32, Gui.Style, List(Attribute) -> List(Node.Attr)
-lower_attrs = |direction, defaults, attrs| {
-	styles = attrs.keep_if(
-		|attr| match attr {
-			Attribute.Presentation(_) => True
-			Attribute.PresentationSignal(_) => True
-			_ => False
-		},
-	)
-	if styles.len() > 1 {
-		crash "Gui element accepts one style attribute"
+signal_text : Node.TextField, Signal(Str) -> Node.Attr
+signal_text = |field, value| match Html.attr_s("", value) {
+	# Html provides the same capability-owned text sink construction.
+	Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field })
+	_ => crash "expected a signal text descriptor"
+}
+
+signal_bool : Node.BoolField, Signal(Bool) -> Node.Attr
+signal_bool = |field, value| match Html.bool_attr_s("", value) {
+	Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field })
+	_ => crash "expected a signal bool descriptor"
+}
+
+native_event : Str, Node.Msg, [None, Some(Node.KeyChord)] -> Node.Attr
+native_event = |name, msg, key_chord| Node.Attr.On({
+	kind: { id: 0 },
+	name,
+	msg,
+	policy: { ..Html.event_policy_none, prevent_default: True, stop_propagation: True },
+	delivery: Html.event_delivery_native,
+	key_chord,
+})
+
+## Lower resolved attributes to native descriptors. An `overrides` signal
+## replaces the static style; every other attribute lowers only when present.
+lower_common : U32, Common -> List(Node.Attr)
+lower_common = |direction, common| {
+	style = match common.overrides {
+		Some(value) => signal_text(native_style_field, value.map(|record| encode_style(direction, record)))
+		None => style_attr(direction, common.style)
 	}
-	initial = if styles.is_empty() {
-		[style_attr(direction, defaults)]
-	} else {
+	drag_source = match common.drag_source {
+		Some(key) => {
+			if key.is_empty() or key.to_utf8().len() > 256 {
+				crash "Gui drag key must contain 1 to 256 UTF-8 bytes"
+			}
+			[Node.Attr.StaticText({ field: native_drag_key_field, name: "", value: key })]
+		}
+		None => []
+	}
+	on_drop = match common.on_drop {
+		Some(msg) => [
+			Node.Attr.StaticBool({ field: native_drop_target_field, name: "", value: True }),
+			native_event("drop", msg, None),
+		]
+		None => []
+	}
+	text = |field, value| match value {
+		Some(text_value) => [Node.Attr.StaticText({ field, name: "", value: text_value })]
+		None => []
+	}
+	label = match common.label {
+		Some(value) => [Html.aria_label(value)]
+		None => []
+	}
+	test_id = match common.test_id {
+		Some(value) => [Html.test_id(value)]
+		None => []
+	}
+	fonts = if common.embedded_fonts.is_empty() {
 		[]
-	}
-	drop_targets = attrs.keep_if(
-		|attr| match attr {
-			Attribute.DropTarget(_) => True
-			_ => False
-		},
-	)
-	with_drop = if drop_targets.is_empty() {
-		initial
 	} else {
-		initial.append(Node.Attr.StaticBool({ field: native_drop_target_field, name: "", value: True }))
+		[Node.Attr.StaticText({ field: native_fonts_field, name: "", value: encode_fonts(common.embedded_fonts) })]
 	}
-	with_drop.concat(
-		attrs.map(
-			|attr| match attr {
-				Attribute.Presentation(value) => style_attr(direction, value)
-				Attribute.PresentationSignal(value) => {
-					text = value.map(|style| encode_style(direction, style))
-					# Html provides the same capability-owned text sink construction.
-					match Html.attr_s("", text) {
-						Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: native_style_field })
-						_ => crash "expected a signal text descriptor"
-					}
-				}
-				Attribute.Label(value) => Html.aria_label(value)
-				Attribute.Placeholder(value) => Node.Attr.StaticText({ field: native_placeholder_field, name: "", value })
-				Attribute.FontFamily(value) => Node.Attr.StaticText({ field: native_font_family_field, name: "", value })
-				Attribute.EmbeddedFonts(fonts) => Node.Attr.StaticText({ field: native_fonts_field, name: "", value: encode_fonts(fonts) })
-				Attribute.TestId(value) => Html.test_id(value)
-				Attribute.Selected(value) => match Html.bool_attr_s("", value) {
-					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: selected_field })
-					_ => crash "expected a signal bool descriptor"
-				}
-				Attribute.Enabled(value) => match Html.bool_attr_s("", value.map(|enabled| !enabled)) {
-					Node.Attr.SignalBool(payload) => Node.Attr.SignalBool({ ..payload, field: disabled_field })
-					_ => crash "expected a signal bool descriptor"
-				}
-				Attribute.DragSource(key) => Node.Attr.StaticText({ field: native_drag_key_field, name: "", value: key })
-				Attribute.DropTarget(msg) => Node.Attr.On({
-					kind: { id: 0 },
-					name: "drop",
-					msg,
-					policy: { ..Html.event_policy_none, prevent_default: True, stop_propagation: True },
-					delivery: Html.event_delivery_native,
-					key_chord: None,
-				})
-				Attribute.Shortcut(chord, msg) => Node.Attr.On({
-					kind: { id: 0 },
-					name: "keydown",
-					msg,
-					policy: { ..Html.event_policy_none, prevent_default: True, stop_propagation: True },
-					delivery: Html.event_delivery_native,
-					key_chord: Some(chord),
-				})
-			},
-		),
-	)
+	selected = match common.selected {
+		Some(value) => [signal_bool(selected_field, value)]
+		None => []
+	}
+	enabled = match common.enabled {
+		Some(value) => [signal_bool(disabled_field, value.map(|is_enabled| !is_enabled))]
+		None => []
+	}
+	disabled = match common.disabled {
+		Some(value) => [signal_bool(disabled_field, value)]
+		None => []
+	}
+	shortcuts = common.shortcuts.map(|shortcut| native_event("keydown", shortcut.msg, Some(shortcut.chord)))
+	[style]
+		.concat(on_drop)
+		.concat(label)
+		.concat(text(native_placeholder_field, common.placeholder))
+		.concat(text(native_font_family_field, common.font_family))
+		.concat(fonts)
+		.concat(test_id)
+		.concat(selected)
+		.concat(enabled)
+		.concat(disabled)
+		.concat(drag_source)
+		.concat(shortcuts)
 }
 
 ## Native controls and presentation over the shared Signals engine.
 ## Styles are typed native properties, independent of CSS and semantic locators.
+##
+## Every control takes one props record whose fields all have defaults, so a
+## literal names only what it changes: `Gui.column({ test_id: "count", gap: 4 }, children)`.
+## The style fields carry that control's own presentation defaults. Optional
+## attributes such as `test_id`, `selected`, or `on_drop` cost nothing when
+## omitted. An `overrides` signal supplies the whole style reactively and
+## replaces the static style fields.
+## A props record built outside the call, or inside a `Signal.map` transform,
+## needs an explicit type, such as `Gui.PanelProps.{ ... }`, because only a
+## literal passed directly to the control absorbs the defaults.
 Gui := [].{
-	Attr : Attribute
-
-	## Native presentation record. Every field has a default, so a style literal
-	## names only the fields it changes: `Gui.style({ padding: 12, gap: 4 })`.
+	## Native presentation record with defaults for every field. Use it for
+	## `overrides` signals: `signal.map(|value| Gui.Style.{ padding: 12 })`.
 	## Zero font size and Default colors inherit from the host. Dimensions,
-	## spacing and font size are logical pixels, bounded at 16384. Where a
-	## literal is not passed directly to a `Style` parameter, such as inside a
-	## `Signal.map` transform, construct it explicitly with `Gui.Style.{ ... }`.
+	## spacing and font size are logical pixels, bounded at 16384.
 	Style := {
 		gap : U32 ?? 8,
 		padding : U32 ?? 0,
@@ -268,89 +299,352 @@ Gui := [].{
 	Cmd : Node.Cmd
 	KeyChord : Node.KeyChord
 
-	## Offer a bounded application key for an internal drag. The native adapter
-	## separately validates source lifetime; this key never creates UI identity.
-	drag_source : Str -> Attr
-	drag_source = |key| {
-		if key.is_empty() or key.to_utf8().len() > 256 {
-			crash "Gui drag key must contain 1 to 256 UTF-8 bytes"
-		}
-		Attribute.DragSource(key)
+	## Props for `column`. Neutral presentation.
+	## The style fields are the same as `Style`; their defaults are this control's
+	## own presentation, so a literal names only what it changes.
+	## `test_id` is a stable semantic locator. `label` is a semantic name independent
+	## of styling. `font_family` names an installed or embedded family that
+	## descendants inherit. `embedded_fonts` registers compile-time font bytes once,
+	## on the app's root element only; the host rejects more than 8 fonts or fonts
+	## over 8 MiB. `selected` marks selection independently of checkbox state.
+	## `enabled` and `disabled` toggle input from a signal while retaining native
+	## identity. `shortcuts` bind exact chords within this focused region; the
+	## nearest matching ancestor receives one unit event and consumes the
+	## keystroke, and duplicates or more than 32 on one element are errors.
+	## `drag_source` offers a bounded key for an internal drag, and `on_drop`
+	## accepts a live drag through `Ui.action_detail` or `State.on_detail`.
+	ColumnProps := {
+		label ?: Str,
+		gap : U32 ?? 8,
+		padding : U32 ?? 0,
+		width : Length ?? Auto,
+		height : Length ?? Auto,
+		grow : Bool ?? False,
+		background : Color ?? Default,
+		hover_background : Color ?? Default,
+		active_background : Color ?? Default,
+		foreground : Color ?? Default,
+		border_color : Color ?? Default,
+		border_width : U32 ?? 0,
+		radius : U32 ?? 0,
+		font_size : U32 ?? 0,
+		overflow_x : Overflow ?? Visible,
+		overflow_y : Overflow ?? Visible,
+		overrides ?: Signal(Style),
+		test_id ?: Str,
+		font_family ?: Str,
+		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
+		selected ?: Signal(Bool),
+		enabled ?: Signal(Bool),
+		disabled ?: Signal(Bool),
+		shortcuts : List({ chord : Node.KeyChord, msg : Node.Msg }) ?? [],
+		drag_source ?: Str,
+		on_drop ?: Node.Msg,
 	}
 
-	## Accept a live internal drag through Ui.action_detail or State.on_detail.
-	## The message receives the source key. Keep explicit move controls available.
-	drop_target : Msg -> Attr
-	drop_target = |message| Attribute.DropTarget(message)
+	## Props for `row`. Neutral presentation; see `ColumnProps` for the attributes.
+	RowProps := {
+		label ?: Str,
+		gap : U32 ?? 8,
+		padding : U32 ?? 0,
+		width : Length ?? Auto,
+		height : Length ?? Auto,
+		grow : Bool ?? False,
+		background : Color ?? Default,
+		hover_background : Color ?? Default,
+		active_background : Color ?? Default,
+		foreground : Color ?? Default,
+		border_color : Color ?? Default,
+		border_width : U32 ?? 0,
+		radius : U32 ?? 0,
+		font_size : U32 ?? 0,
+		overflow_x : Overflow ?? Visible,
+		overflow_y : Overflow ?? Visible,
+		overrides ?: Signal(Style),
+		test_id ?: Str,
+		font_family ?: Str,
+		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
+		selected ?: Signal(Bool),
+		enabled ?: Signal(Bool),
+		disabled ?: Signal(Bool),
+		shortcuts : List({ chord : Node.KeyChord, msg : Node.Msg }) ?? [],
+		drag_source ?: Str,
+		on_drop ?: Node.Msg,
+	}
 
-	## Bind an exact key and all modifiers within this focused region. The nearest
-	## matching ancestor receives one unit event and consumes the keystroke.
-	## Letters are lowercase a-z; digits and the documented named keys are valid.
-	## Duplicate chords and more than 32 shortcuts on one element are errors.
-	on_shortcut : KeyChord, Msg -> Attr
-	on_shortcut = |chord, message| Attribute.Shortcut(chord, message)
+	## Props for `panel`: padded, bordered, and rounded by default. See
+	## `ColumnProps` for the attributes.
+	PanelProps := {
+		label ?: Str,
+		gap : U32 ?? 8,
+		padding : U32 ?? 16,
+		width : Length ?? Auto,
+		height : Length ?? Auto,
+		grow : Bool ?? False,
+		background : Color ?? Default,
+		hover_background : Color ?? Default,
+		active_background : Color ?? Default,
+		foreground : Color ?? Default,
+		border_color : Color ?? Rgb(4743275),
+		border_width : U32 ?? 1,
+		radius : U32 ?? 8,
+		font_size : U32 ?? 0,
+		overflow_x : Overflow ?? Visible,
+		overflow_y : Overflow ?? Visible,
+		overrides ?: Signal(Style),
+		test_id ?: Str,
+		font_family ?: Str,
+		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
+		selected ?: Signal(Bool),
+		enabled ?: Signal(Bool),
+		disabled ?: Signal(Bool),
+		shortcuts : List({ chord : Node.KeyChord, msg : Node.Msg }) ?? [],
+		drag_source ?: Str,
+		on_drop ?: Node.Msg,
+	}
 
-	## Apply a presentation record; omitted fields take their defaults. Each
-	## element accepts one style, and a supplied style replaces the control's
-	## own defaults rather than merging with them.
-	style : Style -> Attr
-	style = |value| Attribute.Presentation(value)
+	## Props for `dialog`. `label` names the dialog and `on_dismiss` receives the
+	## Escape shortcut. See `ColumnProps` for the other attributes.
+	DialogProps := {
+		label : Str,
+		on_dismiss : Node.Msg,
+		gap : U32 ?? 16,
+		padding : U32 ?? 24,
+		width : Length ?? Px(520),
+		height : Length ?? Auto,
+		grow : Bool ?? False,
+		background : Color ?? Rgb(2174263),
+		hover_background : Color ?? Default,
+		active_background : Color ?? Default,
+		foreground : Color ?? Rgb(15658730),
+		border_color : Color ?? Rgb(4743275),
+		border_width : U32 ?? 1,
+		radius : U32 ?? 8,
+		font_size : U32 ?? 0,
+		overflow_x : Overflow ?? Visible,
+		overflow_y : Overflow ?? Visible,
+		overrides ?: Signal(Style),
+		test_id ?: Str,
+		font_family ?: Str,
+		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
+		selected ?: Signal(Bool),
+		enabled ?: Signal(Bool),
+		disabled ?: Signal(Bool),
+		shortcuts : List({ chord : Node.KeyChord, msg : Node.Msg }) ?? [],
+		drag_source ?: Str,
+		on_drop ?: Node.Msg,
+	}
 
-	## Update presentation through ordinary equality-pruned signal propagation.
-	style_s : Signal(Style) -> Attr
-	style_s = |value| Attribute.PresentationSignal(value)
+	## Props for `virtual_list`. `row_height` is the fixed logical row height,
+	## and `follow_tail` keeps the final row in view as history grows. See
+	## `ColumnProps` for the other attributes.
+	VirtualListProps := {
+		row_height : U32,
+		follow_tail : Signal(Bool),
+		label ?: Str,
+		gap : U32 ?? 8,
+		padding : U32 ?? 0,
+		width : Length ?? Fill,
+		height : Length ?? Px(480),
+		grow : Bool ?? True,
+		background : Color ?? Default,
+		hover_background : Color ?? Default,
+		active_background : Color ?? Default,
+		foreground : Color ?? Default,
+		border_color : Color ?? Default,
+		border_width : U32 ?? 0,
+		radius : U32 ?? 0,
+		font_size : U32 ?? 0,
+		overflow_x : Overflow ?? Visible,
+		overflow_y : Overflow ?? Visible,
+		overrides ?: Signal(Style),
+		test_id ?: Str,
+		font_family ?: Str,
+		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
+		selected ?: Signal(Bool),
+		enabled ?: Signal(Bool),
+		disabled ?: Signal(Bool),
+		shortcuts : List({ chord : Node.KeyChord, msg : Node.Msg }) ?? [],
+		drag_source ?: Str,
+		on_drop ?: Node.Msg,
+	}
 
-	## Give a control or region a stable semantic test locator.
-	test_id : Str -> Attr
-	test_id = |value| Attribute.TestId(value)
+	## Props for `image`. `source` is a relative path inside the host's assets
+	## root and `label` is the picture's semantic name. See `ColumnProps` for the
+	## other attributes.
+	ImageProps := {
+		source : Str,
+		label : Str,
+		gap : U32 ?? 8,
+		padding : U32 ?? 0,
+		width : Length ?? Auto,
+		height : Length ?? Auto,
+		grow : Bool ?? False,
+		background : Color ?? Default,
+		hover_background : Color ?? Default,
+		active_background : Color ?? Default,
+		foreground : Color ?? Default,
+		border_color : Color ?? Default,
+		border_width : U32 ?? 0,
+		radius : U32 ?? 0,
+		font_size : U32 ?? 0,
+		overflow_x : Overflow ?? Visible,
+		overflow_y : Overflow ?? Visible,
+		overrides ?: Signal(Style),
+		test_id ?: Str,
+		font_family ?: Str,
+		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
+		selected ?: Signal(Bool),
+		enabled ?: Signal(Bool),
+		disabled ?: Signal(Bool),
+		shortcuts : List({ chord : Node.KeyChord, msg : Node.Msg }) ?? [],
+		drag_source ?: Str,
+		on_drop ?: Node.Msg,
+	}
 
-	## Give a control or region a semantic name, independent of its styling.
-	label : Str -> Attr
-	label = |value| Attribute.Label(value)
+	## Props for `action_button`. `caption` is the live button text, `label` an
+	## optional semantic name that replaces the caption for locators, and
+	## `enabled` defaults to always enabled. The style defaults are the button's
+	## own colors. See `ColumnProps` for the other attributes.
+	ActionButtonProps := {
+		caption : Signal(Str),
+		label ?: Str,
+		gap : U32 ?? 8,
+		padding : U32 ?? 8,
+		width : Length ?? Auto,
+		height : Length ?? Auto,
+		grow : Bool ?? False,
+		background : Color ?? Rgb(3232873),
+		hover_background : Color ?? Rgb(0x3F6175),
+		active_background : Color ?? Rgb(0x2B4452),
+		foreground : Color ?? Default,
+		border_color : Color ?? Default,
+		border_width : U32 ?? 0,
+		radius : U32 ?? 6,
+		font_size : U32 ?? 0,
+		overflow_x : Overflow ?? Visible,
+		overflow_y : Overflow ?? Visible,
+		overrides ?: Signal(Style),
+		test_id ?: Str,
+		font_family ?: Str,
+		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
+		selected ?: Signal(Bool),
+		enabled : Signal(Bool) ?? Signal.const(True),
+		disabled ?: Signal(Bool),
+		shortcuts : List({ chord : Node.KeyChord, msg : Node.Msg }) ?? [],
+		drag_source ?: Str,
+		on_drop ?: Node.Msg,
+	}
 
-	## Show an empty-field hint inside a text control. The hint is explicit
-	## static text; the host never derives one from a label or a default.
-	placeholder : Str -> Attr
-	placeholder = |value| Attribute.Placeholder(value)
+	## Props for `text_input`. `label` is the field's semantic name, `value` its
+	## controlled text, and `placeholder` an explicit empty-field hint. See
+	## `ColumnProps` for the other attributes.
+	TextInputProps := {
+		label : Str,
+		value : Signal(Str),
+		placeholder ?: Str,
+		gap : U32 ?? 8,
+		padding : U32 ?? 0,
+		width : Length ?? Auto,
+		height : Length ?? Auto,
+		grow : Bool ?? False,
+		background : Color ?? Default,
+		hover_background : Color ?? Default,
+		active_background : Color ?? Default,
+		foreground : Color ?? Default,
+		border_color : Color ?? Default,
+		border_width : U32 ?? 0,
+		radius : U32 ?? 0,
+		font_size : U32 ?? 0,
+		overflow_x : Overflow ?? Visible,
+		overflow_y : Overflow ?? Visible,
+		overrides ?: Signal(Style),
+		test_id ?: Str,
+		font_family ?: Str,
+		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
+		selected ?: Signal(Bool),
+		enabled ?: Signal(Bool),
+		disabled ?: Signal(Bool),
+		shortcuts : List({ chord : Node.KeyChord, msg : Node.Msg }) ?? [],
+		drag_source ?: Str,
+		on_drop ?: Node.Msg,
+	}
 
-	## Render this element and its descendants with a named font family. The
-	## family must be available to the native text system: either installed on
-	## the machine or registered at startup through `embedded_fonts`. Text
-	## styles inherit, so descendants without their own family use this one.
-	font_family : Str -> Attr
-	font_family = |value| Attribute.FontFamily(value)
+	## Props for `textarea`; the fields match `TextInputProps`.
+	TextareaProps := {
+		label : Str,
+		value : Signal(Str),
+		placeholder ?: Str,
+		gap : U32 ?? 8,
+		padding : U32 ?? 0,
+		width : Length ?? Auto,
+		height : Length ?? Auto,
+		grow : Bool ?? False,
+		background : Color ?? Default,
+		hover_background : Color ?? Default,
+		active_background : Color ?? Default,
+		foreground : Color ?? Default,
+		border_color : Color ?? Default,
+		border_width : U32 ?? 0,
+		radius : U32 ?? 0,
+		font_size : U32 ?? 0,
+		overflow_x : Overflow ?? Visible,
+		overflow_y : Overflow ?? Visible,
+		overrides ?: Signal(Style),
+		test_id ?: Str,
+		font_family ?: Str,
+		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
+		selected ?: Signal(Bool),
+		enabled ?: Signal(Bool),
+		disabled ?: Signal(Bool),
+		shortcuts : List({ chord : Node.KeyChord, msg : Node.Msg }) ?? [],
+		drag_source ?: Str,
+		on_drop ?: Node.Msg,
+	}
 
-	## Register embedded fonts with the native text system at startup. Declare
-	## exactly one list on the app's root element; the bytes come from a
-	## compile-time `import "font.ttf" as name : List(U8)`. The host registers
-	## each family once and rejects more than 8 fonts or fonts over 8 MiB with
-	## a visible host error. Re-publishing identical data never re-registers.
-	embedded_fonts : List({ family : Str, bytes : List(U8) }) -> Attr
-	embedded_fonts = |fonts| Attribute.EmbeddedFonts(fonts)
+	## Props for `checkbox`. `label` is the semantic name and `checked` the
+	## controlled state. See `ColumnProps` for the other attributes.
+	CheckboxProps := {
+		label : Str,
+		checked : Signal(Bool),
+		gap : U32 ?? 8,
+		padding : U32 ?? 0,
+		width : Length ?? Auto,
+		height : Length ?? Auto,
+		grow : Bool ?? False,
+		background : Color ?? Default,
+		hover_background : Color ?? Default,
+		active_background : Color ?? Default,
+		foreground : Color ?? Default,
+		border_color : Color ?? Default,
+		border_width : U32 ?? 0,
+		radius : U32 ?? 0,
+		font_size : U32 ?? 0,
+		overflow_x : Overflow ?? Visible,
+		overflow_y : Overflow ?? Visible,
+		overrides ?: Signal(Style),
+		test_id ?: Str,
+		font_family ?: Str,
+		embedded_fonts : List({ family : Str, bytes : List(U8) }) ?? [],
+		selected ?: Signal(Bool),
+		enabled ?: Signal(Bool),
+		disabled ?: Signal(Bool),
+		shortcuts : List({ chord : Node.KeyChord, msg : Node.Msg }) ?? [],
+		drag_source ?: Str,
+		on_drop ?: Node.Msg,
+	}
 
-	## Mark selection independently of checkbox state or application identity.
-	selected_s : Signal(Bool) -> Attr
-	selected_s = |value| Attribute.Selected(value)
+	## Lay out children horizontally.
+	row : RowProps, List(Elem) -> Elem
+	row = |p, children| Html.div(lower_common(0, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
 
-	## Enable or disable an input or control from a signal.
-	enabled_s : Signal(Bool) -> Attr
-	enabled_s = |value| Attribute.Enabled(value)
+	## Lay out children vertically.
+	column : ColumnProps, List(Elem) -> Elem
+	column = |p, children| Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
 
-	## Disable an input or control while retaining its native identity.
-	disabled_s : Signal(Bool) -> Attr
-	disabled_s = |value| Attribute.Enabled(value.map(|disabled| !disabled))
-
-	## Lay out children horizontally with the supplied native presentation.
-	row : List(Attr), List(Elem) -> Elem
-	row = |attrs, children| Html.div(lower_attrs(0, Style.{}, attrs), children)
-
-	## Lay out children vertically with the supplied native presentation.
-	column : List(Attr), List(Elem) -> Elem
-	column = |attrs, children| Html.div(lower_attrs(1, Style.{}, attrs), children)
-
-	## Group content in a padded, bordered vertical panel. A style replaces defaults.
-	panel : List(Attr), List(Elem) -> Elem
-	panel = |attrs, children| Html.div(lower_attrs(1, { padding: 16, border_width: 1, radius: 8, border_color: Rgb(4743275) }, attrs), children)
+	## Group content in a padded, bordered vertical panel.
+	panel : PanelProps, List(Elem) -> Elem
+	panel = |p, children| Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), children)
 
 	## A native close request enters the ordinary event graph. KeepOpen cancels
 	## it, AwaitDecision retains one pending request, and Close completes that
@@ -368,16 +662,12 @@ Gui := [].{
 				Close => "close"
 			},
 		)
-		policy_attr = match Html.attr_s("", policy) {
-			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: native_window_close_field })
-			_ => crash "expected a signal text descriptor"
-		}
 		Elem.Element({
 			namespace: Html,
 			tag: "window",
 			attrs: [
-				style_attr(1, { width: Fill, height: Fill }),
-				policy_attr,
+				style_attr(1, Style.{ width: Fill, height: Fill }),
+				signal_text(native_window_close_field, policy),
 				Node.Attr.On({
 					kind: { id: 0 },
 					name: "close-requested",
@@ -395,31 +685,28 @@ Gui := [].{
 	## moves focus inside, traps Tab, routes Escape to on_dismiss, and restores
 	## a still-live enabled control after disposal. Concurrent dialogs form one
 	## chain of at most eight, each bounded to 1024 nodes and 256 enabled controls.
-	dialog : { label : Str, on_dismiss : Msg }, List(Attr), List(Elem) -> Elem
-	dialog = |props, attrs, children| Elem.Element({
-		namespace: Html,
-		tag: "dialog",
-		attrs: lower_attrs(
-			1,
-			{ padding: 24, gap: 16, width: Px(520), background: Rgb(2174263), foreground: Rgb(15658730), border_width: 1, border_color: Rgb(4743275), radius: 8 },
-			[
-				Attribute.Label(props.label),
-				Attribute.Shortcut({ key: "Escape", control: False, shift: False, alt: False, meta: False }, props.on_dismiss),
-			].concat(attrs),
-		),
-		children,
-	})
+	dialog : DialogProps, List(Elem) -> Elem
+	dialog = |p, children| {
+		escape = { chord: { key: "Escape", control: False, shift: False, alt: False, meta: False }, msg: p.on_dismiss }
+		common = { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: Some(p.label), placeholder: None }
+		Elem.Element({
+			namespace: Html,
+			tag: "dialog",
+			attrs: lower_common(1, { ..common, shortcuts: [escape].concat(p.shortcuts) }),
+			children,
+		})
+	}
 
 	## Presents direct child rows at a fixed logical height, creating GPUI layout
 	## only for the visible range. Child scopes remain owned by ordinary Ui.each.
 	## With follow_tail enabled, new history keeps the final row in view.
-	virtual_list : { row_height : U32, follow_tail : Signal(Bool) }, List(Attr), List(Elem) -> Elem
-	virtual_list = |props, attrs, children| {
-		if props.row_height == 0 or props.row_height > 16384 {
+	virtual_list : VirtualListProps, List(Elem) -> Elem
+	virtual_list = |p, children| {
+		if p.row_height == 0 or p.row_height > 16384 {
 			crash "Gui virtual row height must be between 1 and 16384"
 		}
-		encoded = props.follow_tail.map(
-			|follow| "1,${props.row_height.to_str()},${
+		encoded = p.follow_tail.map(
+			|follow| "1,${p.row_height.to_str()},${
 				if follow {
 					"1"
 				} else {
@@ -427,26 +714,22 @@ Gui := [].{
 				}
 			}",
 		)
-		viewport = match Html.attr_s("", encoded) {
-			Node.Attr.SignalText(payload) => Node.Attr.SignalText({ ..payload, field: native_viewport_field })
-			_ => crash "expected a signal text descriptor"
-		}
-		Html.div(lower_attrs(1, { width: Fill, height: Px(480), grow: True }, attrs).append(viewport), children)
+		Html.div(lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }).append(signal_text(native_viewport_field, encoded)), children)
 	}
 
 	## Render an image from a relative path inside the host's assets root.
 	## Absolute paths, `..` traversal, and URIs never resolve; a missing or
 	## undecodable source renders a neutral placeholder box of the styled size.
 	## The label is a semantic name for the picture, never derived by the host.
-	image : { source : Str, label : Str }, List(Attr) -> Elem
-	image = |props, attrs| {
-		if props.source.is_empty() or props.source.to_utf8().len() > 1024 {
+	image : ImageProps -> Elem
+	image = |p| {
+		if p.source.is_empty() or p.source.to_utf8().len() > 1024 {
 			crash "Gui image sources contain 1 to 1024 UTF-8 bytes"
 		}
 		Elem.Element({
 			namespace: Html,
 			tag: "img",
-			attrs: lower_attrs(1, Style.{}, [Attribute.Label(props.label)].concat(attrs)).append(Node.Attr.StaticText({ field: native_image_source_field, name: "", value: props.source })),
+			attrs: lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: Some(p.label), placeholder: None }).append(Node.Attr.StaticText({ field: native_image_source_field, name: "", value: p.source })),
 			children: [],
 		})
 	}
@@ -463,43 +746,46 @@ Gui := [].{
 	text_s : Signal(Str) -> Elem
 	text_s = |value| Html.text_s(value)
 
-	## Create an enabled button for a unit action.
+	## Create an enabled button with a static label for a unit action. Use
+	## `action_button` for a styled button or one whose caption or availability
+	## changes.
 	button : Str, Msg -> Elem
 	button = |value, message| Html.button(value, message)
 
-	## Create a static-label button that accepts native attributes: a style,
-	## test id, label, selected and enabled signals, and shortcuts, like every
-	## other control. A supplied style replaces the button's complete default
-	## record, including its hover and active backgrounds.
-	button_attrs : Str, List(Attr), Msg -> Elem
-	button_attrs = |value, attrs, message|
-		Html.button_attrs(value, lower_attrs(1, { padding: 8, radius: 6, background: Rgb(3232873), hover_background: Rgb(0x3F6175), active_background: Rgb(0x2B4452) }, attrs), message)
-
-	## Create a button whose label and availability change independently.
-	action_button : { label : Signal(Str), enabled : Signal(Bool) }, List(Attr), Msg -> Elem
-	action_button = |props, attrs, message|
-		Html.action_button_attrs(props.label, props.enabled.map(|enabled| !enabled), lower_attrs(1, { padding: 8, radius: 6, background: Rgb(3232873), hover_background: Rgb(0x3F6175), active_background: Rgb(0x2B4452) }, attrs), message)
+	## Create a button whose caption and availability change independently.
+	action_button : ActionButtonProps, Msg -> Elem
+	action_button = |p, message|
+		Html.action_button_attrs(p.caption, p.enabled.map(|is_enabled| !is_enabled), lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: None, disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: opt(p.?label), placeholder: None }), message)
 
 	## Edit one controlled line; the label is a semantic name, not placeholder text.
-	text_input : { label : Str, value : Signal(Str) }, List(Attr), Msg -> Elem
-	text_input = |props, attrs, message|
-		Html.text_input_attrs(props.label, props.value, lower_attrs(1, Style.{}, attrs), message)
+	text_input : TextInputProps, Msg -> Elem
+	text_input = |p, message|
+		Html.text_input_attrs(p.label, p.value, lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: opt(p.?placeholder) }), message)
 
 	## Edit controlled text with hard line breaks and a retained selection.
 	## An explicit height includes caption and padding; the editor fills the rest.
 	## Auto height retains a 320-pixel editing viewport.
-	textarea : { label : Str, value : Signal(Str) }, List(Attr), Msg -> Elem
-	textarea = |props, attrs, message|
-		Html.textarea_attrs(props.label, props.value, lower_attrs(1, Style.{}, attrs), message)
+	textarea : TextareaProps, Msg -> Elem
+	textarea = |p, message|
+		Html.textarea_attrs(p.label, p.value, lower_common(1, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: opt(p.?placeholder) }), message)
 
 	## Toggle a controlled boolean using the ordinary checked-value event route.
-	checkbox : { label : Str, checked : Signal(Bool) }, List(Attr), Msg -> Elem
-	checkbox = |props, attrs, message|
-		Html.checkbox_attrs(props.label, props.checked, lower_attrs(0, Style.{}, attrs), message)
+	checkbox : CheckboxProps, Msg -> Elem
+	checkbox = |p, message|
+		Html.checkbox_attrs(p.label, p.checked, lower_common(0, { style: Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, background: p.background, hover_background: p.hover_background, active_background: p.active_background, foreground: p.foreground, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, overrides: opt(p.?overrides), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: None }), message)
 }
 
 ## The native default encoding is a canonical v2 record shared with the Zig decoder.
 expect encode_style(1, Gui.Style.{}) == "2,1,8,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0"
+
+## A column props literal keeps the neutral style and lowers only present attributes.
+expect {
+	attrs = Gui.column({ test_id: "root", padding: 4 }, [])
+	match attrs {
+		Elem.Element(element) => element.attrs.len() == 2
+		_ => False
+	}
+}
 
 ## Base64 matches the canonical RFC 4648 vectors at every padding length.
 expect encode_base64("foo".to_utf8()) == "Zm9v"

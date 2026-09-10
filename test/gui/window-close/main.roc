@@ -12,7 +12,7 @@ main = || Ui.state(
 		{ on_close_requested: decision.on_unit(|_| AwaitDecision), decision: decision.signal() },
 		[
 			Gui.column(
-				[],
+				Gui.ColumnProps.{},
 				[
 					Gui.heading("Window close contract"),
 					Gui.text_s(

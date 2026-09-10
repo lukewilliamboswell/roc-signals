@@ -16,7 +16,7 @@ main = || {
 	opened = Files.open_path_task("fixture-open")
 	status = Signal.fold_task(task, "Loading", |file| "Loaded ${file.text.to_utf8().len().to_str()} bytes", Files.error_text)
 	Gui.column(
-		[Gui.test_id("files-fixture")],
+		{ test_id: "files-fixture" },
 		[
 			Gui.heading("Native Files fixture"),
 			Gui.text_s(status),
@@ -29,8 +29,8 @@ main = || {
 			Gui.button("Log", Ui.action(Signal.const(path), |value| Files.read_log(log, { path: value, position: Files.LogPosition.Start }))),
 			Gui.button("Open associated", Ui.action(Signal.const(path), |value| Files.open_path(opened, value))),
 			Gui.button("Cancel log", Ui.action(Signal.const({}), |_| Signal.cancel(log))),
-			Gui.action_button({ label: Signal.const("Read"), enabled: Signal.const(True) }, [], Ui.action(Signal.const(path), |value| Files.read_text(task, value))),
-			Gui.action_button({ label: Signal.const("Cancel"), enabled: Signal.const(True) }, [], Ui.action(Signal.const({}), |_| Signal.cancel(task))),
+			Gui.action_button({ caption: Signal.const("Read") }, Ui.action(Signal.const(path), |value| Files.read_text(task, value))),
+			Gui.action_button({ caption: Signal.const("Cancel") }, Ui.action(Signal.const({}), |_| Signal.cancel(task))),
 			Ui.on_mount(|| Files.read_text(task, path)),
 		],
 	)

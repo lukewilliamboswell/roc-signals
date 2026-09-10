@@ -919,7 +919,7 @@ Supported action commands:
 - `(submit <locator>)`, `(fill <locator> "<text>")`
 - `(check <locator>)` and `(uncheck <locator>)`
 
-`shortcut` dispatches the exact `Gui.on_shortcut` binding declared on the located
+`shortcut` dispatches the exact `shortcuts` binding declared on the located
 region through the shared engine. Keys use the public canonical vocabulary;
 modifier bits are Control `1`, Shift `2`, Alt `4`, and Meta `8` (add them for a
 combination). For example, `(shortcut (test-id "editor") "s" 3)` invokes

@@ -17,8 +17,14 @@ theme = Theme.from_json("examples-gui/counter/theme.json", theme_json)
 
 accent_button : Str, Gui.Msg -> Elem
 accent_button = |label, message| Gui.action_button(
-	{ label: Signal.const(label), enabled: Signal.const(True) },
-	[Gui.style({ padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent), hover_background: Rgb(theme.accent_hover), active_background: Rgb(theme.accent_active) })],
+	{
+		caption: Signal.const(label),
+		padding: theme.control_padding,
+		radius: theme.radius,
+		background: Rgb(theme.accent),
+		hover_background: Rgb(theme.accent_hover),
+		active_background: Rgb(theme.accent_active),
+	},
 	message,
 )
 
@@ -27,22 +33,22 @@ main = || Ui.state(
 	0.I64,
 	|count| {
 		Gui.column(
-			[Gui.style({ padding: 32, gap: 20 })],
+			{ padding: 32, gap: 20 },
 			[
 				Gui.heading("Counter"),
 				Gui.column(
-					[Gui.style({ foreground: Rgb(theme.text_secondary) })],
+					{ foreground: Rgb(theme.text_secondary) },
 					[Gui.text("A minimal Roc Signals application.")],
 				),
 				Gui.panel(
-					[Gui.style({ width: Px(380), padding: 24, gap: 20, border_width: 1, radius: 10, border_color: Rgb(theme.border), background: Rgb(theme.surface) })],
+					{ width: Px(380), padding: 24, gap: 20, border_width: 1, radius: 10, border_color: Rgb(theme.border), background: Rgb(theme.surface) },
 					[
 						Gui.column(
-							[Gui.test_id("count"), Gui.style({ font_size: 44, foreground: Rgb(theme.text_primary) })],
+							{ test_id: "count", font_size: 44, foreground: Rgb(theme.text_primary) },
 							[Gui.text_s(count.signal().map(|value| value.to_str()))],
 						),
 						Gui.row(
-							[Gui.style({ gap: theme.gap })],
+							{ gap: theme.gap },
 							[
 								accent_button("Increment", count.on_unit(|value| value + 1)),
 								Gui.button("Decrement", count.on_unit(|value| value - 1)),

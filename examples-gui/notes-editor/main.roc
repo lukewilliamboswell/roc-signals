@@ -59,91 +59,94 @@ main = || Ui.state(
 				{ on_close_requested: session.on_unit_with(body, Session.request_close), decision: session.signal().map(Session.close_decision) },
 				[
 					Gui.column(
-						[
-							Gui.test_id("notes-editor"),
-							Gui.style({ padding: 24, gap: 12, width: Fill, height: Fill, background: Rgb(theme.background), foreground: Rgb(theme.text_primary) }),
-							Gui.on_shortcut({ ..chord, key: "n" }, new),
-							Gui.on_shortcut({ ..chord, key: "o" }, open),
-							Gui.on_shortcut(chord, save),
-							Gui.on_shortcut({ ..chord, shift: True }, save_as),
-							Gui.on_shortcut({ ..chord, key: "Escape", control: False }, cancel),
-						],
+						{
+							test_id: "notes-editor",
+							padding: 24,
+							gap: 12,
+							width: Fill,
+							height: Fill,
+							background: Rgb(theme.background),
+							foreground: Rgb(theme.text_primary),
+							shortcuts: [{ chord: { ..chord, key: "n" }, msg: new }, { chord: { ..chord, key: "o" }, msg: open }, { chord: chord, msg: save }, { chord: { ..chord, shift: True }, msg: save_as }, { chord: { ..chord, key: "Escape", control: False }, msg: cancel }],
+						},
 						[
 							Gui.heading("Notes"),
 							Gui.column(
-								[Gui.style({ foreground: Rgb(theme.text_secondary) })],
+								{ foreground: Rgb(theme.text_secondary) },
 								[Gui.text("A quiet place to collect your thoughts.")],
 							),
 							Gui.row(
-								[Gui.style({ gap: 8 })],
+								{ gap: 8 },
 								[
-									Gui.action_button({ label: Signal.const("New"), enabled: ready }, [], new),
-									Gui.action_button({ label: Signal.const("Open…"), enabled: ready }, [], open),
-									Gui.action_button({ label: Signal.const("Save"), enabled: revert_ready }, [Gui.style({ padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent), hover_background: Rgb(theme.accent_hover), active_background: Rgb(theme.accent_active) })], save),
-									Gui.action_button({ label: Signal.const("Save As…"), enabled: ready }, [], save_as),
-									Gui.action_button({ label: Signal.const("Revert changes"), enabled: revert_ready }, [], revert),
+									Gui.action_button({ caption: Signal.const("New"), enabled: ready }, new),
+									Gui.action_button({ caption: Signal.const("Open…"), enabled: ready }, open),
+									Gui.action_button({ caption: Signal.const("Save"), enabled: revert_ready, padding: theme.control_padding, radius: theme.radius, background: Rgb(theme.accent), hover_background: Rgb(theme.accent_hover), active_background: Rgb(theme.accent_active) }, save),
+									Gui.action_button({ caption: Signal.const("Save As…"), enabled: ready }, save_as),
+									Gui.action_button({ caption: Signal.const("Revert changes"), enabled: revert_ready }, revert),
 								],
 							),
 							Gui.row(
-								[Gui.style({ gap: 12 })],
+								{ gap: 12 },
 								[
 									Gui.column(
-										[Gui.test_id("document-name"), Gui.style({ font_size: 18, foreground: Rgb(theme.text_primary) })],
+										{ test_id: "document-name", font_size: 18, foreground: Rgb(theme.text_primary) },
 										[Gui.text_s(session.signal().map(|state| state.baseline.title))],
 									),
 									Gui.column(
-										[
-											Gui.test_id("note-status"),
-											Gui.style_s(
-												view.map(
-													|value| {
-														dirty = Document.is_dirty({ draft: Session.draft(value.state, value.body), baseline: value.state.baseline })
-														Gui.Style.{
-															padding: 4,
-															font_size: 13,
-															foreground: if dirty {
-																Rgb(theme.warning)
-															} else {
-																Rgb(theme.text_secondary)
-															},
-														}
-													},
-												),
+										{
+											test_id: "note-status",
+											overrides: view.map(
+												|value| {
+													dirty = Document.is_dirty({ draft: Session.draft(value.state, value.body), baseline: value.state.baseline })
+													Gui.Style.{
+														padding: 4,
+														font_size: 13,
+														foreground: if dirty {
+															Rgb(theme.warning)
+														} else {
+															Rgb(theme.text_secondary)
+														},
+													}
+												},
 											),
-										],
+										},
 										[Gui.text_s(view.map(Session.status))],
 									),
 								],
 							),
 							Gui.row(
-								[Gui.style({ width: Fill, height: Fill, grow: True, gap: 0 })],
+								{ width: Fill, height: Fill, grow: True, gap: 0 },
 								[
-									Gui.column([Gui.style({ grow: True })], []),
+									Gui.column({ grow: True }, []),
 									Gui.column(
-										[Gui.style({ width: Px(740), height: Fill })],
+										{ width: Px(740), height: Fill },
 										[
 											Ui.switch(
 												session.signal().map(|state| state.document_generation),
 												|_| Gui.textarea(
-													{ label: "Note text", value: body.signal() },
-													[
-														Gui.placeholder("Start writing…"),
-														Gui.disabled_s(session.signal().map(|state| !Session.can_edit(state.phase) or state.close != Session.CloseState.NoClose)),
-														Gui.style({ width: Fill, height: Fill, grow: True, gap: 4 }),
-													],
+													{
+														label: "Note text",
+														value: body.signal(),
+														placeholder: "Start writing…",
+														disabled: session.signal().map(|state| !Session.can_edit(state.phase) or state.close != Session.CloseState.NoClose),
+														width: Fill,
+														height: Fill,
+														grow: True,
+														gap: 4,
+													},
 													body.on_str(|_, value| value),
 												),
 											),
 										],
 									),
-									Gui.column([Gui.style({ grow: True })], []),
+									Gui.column({ grow: True }, []),
 								],
 							),
 							Gui.row(
-								[Gui.style({ gap: 24 })],
+								{ gap: 24 },
 								[
 									Gui.column(
-										[Gui.test_id("note-summary"), Gui.style({ font_size: 13, foreground: Rgb(theme.text_secondary) })],
+										{ test_id: "note-summary", font_size: 13, foreground: Rgb(theme.text_secondary) },
 										[Gui.text_s(body.signal().map(|text| Document.counts_text(Document.counts(text))))],
 									),
 								],
@@ -151,10 +154,10 @@ main = || Ui.state(
 							# Conditional problem/dialog rows live in one trailing gap-0
 							# wrapper so their empty states cost no vertical rhythm.
 							Gui.column(
-								[Gui.style({ gap: 0 })],
+								{ gap: 0 },
 								[
 									Gui.column(
-										[Gui.test_id("note-problem"), Gui.style({ font_size: 13, foreground: Rgb(theme.danger) })],
+										{ test_id: "note-problem", font_size: 13, foreground: Rgb(theme.danger) },
 										[
 											Gui.text_s(
 												session.signal().map(
@@ -184,16 +187,24 @@ main = || Ui.state(
 											},
 										),
 										|| Gui.dialog(
-											{ label: "Discard your changes?", on_dismiss: session.on_unit(Session.cancel) },
-											[
-												Gui.test_id("discard-confirmation"),
-												Gui.style({ padding: 16, gap: theme.gap, background: Rgb(theme.card), radius: theme.radius }),
-											],
+											{
+												label: "Discard your changes?",
+												on_dismiss: session.on_unit(Session.cancel),
+												test_id: "discard-confirmation",
+												padding: 16,
+												gap: theme.gap,
+												background: Rgb(theme.card),
+												radius: theme.radius,
+												width: Auto,
+												foreground: Default,
+												border_color: Default,
+												border_width: 0,
+											},
 											[
 												Gui.heading("Discard your changes?"),
 												Gui.text("Your unsaved text will be replaced. Keep editing to return to this draft."),
 												Gui.row(
-													[],
+													Gui.RowProps.{},
 													[
 														Gui.button("Keep editing", session.on_unit(Session.cancel)),
 														Gui.button(
@@ -217,13 +228,16 @@ main = || Ui.state(
 									Ui.when(
 										session.signal().map(|state| state.close == Session.CloseState.ConfirmClose),
 										|| Gui.dialog(
-											{ label: "Save before closing?", on_dismiss: session.on_unit(Session.cancel) },
-											[Gui.test_id("close-confirmation")],
+											{
+												label: "Save before closing?",
+												on_dismiss: session.on_unit(Session.cancel),
+												test_id: "close-confirmation",
+											},
 											[
 												Gui.heading("Save before closing?"),
 												Gui.text("Your note has unsaved changes. Save them, discard them, or keep editing."),
 												Gui.row(
-													[],
+													Gui.RowProps.{},
 													[
 														Gui.button("Keep editing", session.on_unit(Session.cancel)),
 														Gui.button("Discard and close", session.on_unit(|state| { ..state, close: Session.CloseState.AllowClose })),

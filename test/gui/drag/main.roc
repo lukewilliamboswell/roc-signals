@@ -9,11 +9,11 @@ main = || Ui.state(
 	"none",
 	|last| {
 		Gui.column(
-			[],
+			Gui.ColumnProps.{},
 			[
 				Gui.heading("Internal drag and drop"),
-				Gui.panel([Gui.test_id("drag-source"), Gui.drag_source("task-λ")], [Gui.text("Drag this task")]),
-				Gui.panel([Gui.test_id("drop-target"), Gui.drop_target(last.on_detail(|_, key| key))], [Gui.text("Drop here")]),
+				Gui.panel({ test_id: "drag-source", drag_source: "task-λ" }, [Gui.text("Drag this task")]),
+				Gui.panel({ test_id: "drop-target", on_drop: last.on_detail(|_, key| key) }, [Gui.text("Drop here")]),
 				Gui.text_s(last.signal().map(|key| "Dropped: ${key}")),
 			],
 		)

@@ -68,14 +68,21 @@ all 39 specs, and confirmed rendering for every app.
 
 ## Controls and layout
 
-`Gui.row`, `Gui.column`, and `Gui.panel` take an attribute list followed by a
-child list. `Gui.style` accepts a `Gui.Style` record in which every field has a
-default, so a literal names only the fields it changes:
-`Gui.style({ padding: 12, gap: 4 })`. `Gui.style_s` changes that record through
-normal signal propagation; a record built inside a `Signal.map` transform is
-constructed explicitly as `Gui.Style.{ ... }` so its omitted fields still take
-their defaults. Each element accepts one style. A supplied style replaces the
-control's defaults, so include padding or borders explicitly when you want them.
+`Gui.row`, `Gui.column`, and `Gui.panel` take a props record followed by a
+child list. Every control has its own props type, such as `Gui.PanelProps`,
+whose fields all have defaults, so a literal names only what it changes:
+`Gui.column({ test_id: "count", padding: 12, gap: 4 }, children)`. The style
+fields carry that control's own presentation defaults: a panel keeps its
+padding and border unless the literal sets them. Attributes such as `test_id`,
+`label`, `selected`, `enabled`, `disabled`, `shortcuts`, `drag_source`, and
+`on_drop` live in the same record and cost nothing when omitted.
+
+`overrides` takes a `Signal(Gui.Style)` and replaces the static style fields
+through normal signal propagation. A record built inside a `Signal.map`
+transform is constructed explicitly as `Gui.Style.{ ... }` so its omitted
+fields still take their defaults; the same applies to a props record built
+outside the call, for example `Gui.PanelProps.{ padding: 4 }`, because only a
+literal passed directly to the control absorbs its defaults.
 
 Styles specify logical-pixel dimensions, spacing, padding, colors, borders,
 radius, font size, and overflow. Lengths are `Auto`, `Fill`, or `Px(value)`;
@@ -115,10 +122,9 @@ do not dispatch application events.
 | `heading`, `text` | literal string |
 | `text_s` | string signal |
 | `button` | label and unit message |
-| `button_attrs` | label, attributes, unit message |
-| `action_button` | `{ label, enabled }` signals, attributes, unit message |
-| `text_input`, `textarea` | `{ label, value }`, attributes, string message |
-| `checkbox` | `{ label, checked }`, attributes, boolean message |
+| `action_button` | `{ caption, enabled, ... }` props with signal caption, unit message |
+| `text_input`, `textarea` | `{ label, value, ... }` props, string message |
+| `checkbox` | `{ label, checked, ... }` props, boolean message |
 
 Text controls are controlled: their value comes from a signal and committed
 edits enter the corresponding message handler. Native editors retain selection,
@@ -137,21 +143,20 @@ redo.
 An explicit textarea height (`Px` or `Fill`) includes its caption and padding and
 constrains the retained editing viewport. `Auto` keeps a 320-pixel editor. Use
 `Fill` inside a container with a defined height to grow and shrink with its space.
-`Gui.enabled_s` and `Gui.disabled_s` change availability while preserving the
-control's identity.
-`Gui.placeholder` shows an explicit empty-field hint inside `text_input` and
-`textarea` while their document is empty, for example
-`Gui.text_input({ label, value }, [Gui.placeholder("Filter tasks…")], msg)`.
-The hint is static text declared by the app; a field without the attribute
-shows an empty field, and labels are never reused as hint text.
+The `enabled` and `disabled` signal fields change availability while preserving
+the control's identity.
+The `placeholder` field shows an explicit empty-field hint inside `text_input`
+and `textarea` while their document is empty, for example
+`Gui.text_input({ label, value, placeholder: "Filter tasks…" }, msg)`.
+The hint is static text declared by the app; a field without it shows an
+empty field, and labels are never reused as hint text.
 Tab and Shift-Tab traverse enabled controls in native layout order. Focused
 control actions and declared shortcuts run first; modal dialogs own their Tab
 navigation while open.
 
-`Gui.image({ source, label }, attrs)` renders a picture from a relative path
+`Gui.image({ source, label, ... })` renders a picture from a relative path
 inside the host's assets root, sized and rounded by its style, for example
-`Gui.image({ source: "avatars/maya.png", label: "Maya avatar" },
-[Gui.style({ width: Px(24), height: Px(24), radius: 24 })])`.
+`Gui.image({ source: "avatars/maya.png", label: "Maya avatar", width: Px(24), height: Px(24), radius: 24 })`.
 Launch the host with `--assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
 choose the root; the default is `assets/` beside the executable. Absolute
 paths, `..` traversal, URIs, and symbolic links never resolve, and a missing or
@@ -160,7 +165,8 @@ Ship an `assets/manifest.json` next to `main.roc`, ingest it at compile time,
 and start `Files.verify_assets` at mount to report each asset as ok, missing,
 or altered; the task-board and folder-explorer examples show the pattern.
 
-Use `Gui.test_id` for stable spec locators and `Gui.label` for semantic names.
+Use the `test_id` field for stable spec locators and `label` for semantic
+names; on an `action_button`, `label` replaces the live `caption` as the name.
 Labels do not establish native screen-reader support, which is not implemented.
 
 ## Embedded fonts
@@ -173,14 +179,14 @@ once on the app's root element:
 import "../../vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
 
 Gui.column(
-    [Gui.embedded_fonts([{ family: "Source Code Pro", bytes: source_code_pro }]), ...],
+    { embedded_fonts: [{ family: "Source Code Pro", bytes: source_code_pro }], ... },
     [...],
 )
 ```
 
-`Gui.font_family("Source Code Pro")` then renders an element and its
-descendants with that family; text styles inherit, so one attribute on a row
-or panel covers all of its text. Families not registered here must be
+`font_family: "Source Code Pro"` then renders an element and its descendants
+with that family; text styles inherit, so one field on a row or panel covers
+all of its text. Families not registered here must be
 installed on the machine.
 
 The host enforces bounds: at most 8 embedded fonts, at most 8 MiB per font,
@@ -191,7 +197,7 @@ the license text in the repository next to the font file.
 
 ## Modal dialogs
 
-Use `Gui.dialog({ label, on_dismiss }, attrs, children)` inside `Ui.when` so
+Use `Gui.dialog({ label, on_dismiss, ... }, children)` inside `Ui.when` so
 mounting and disposal explicitly own the modal lifetime. `label` supplies the
 semantic dialog name; `on_dismiss` is a normal unit message bound to Escape.
 Closing the dialog is the application's state transition, never hidden host
@@ -219,7 +225,7 @@ modal behavior or a window-close guard.
 
 ## Wide lists
 
-`Gui.virtual_list({ row_height, follow_tail }, attrs, children)` lays out only
+`Gui.virtual_list({ row_height, follow_tail, ... }, children)` lays out only
 the visible child range. Give every direct child the same fixed logical height;
 `row_height` must be between 1 and 16,384. Use `Ui.each` for keyed child rows.
 `follow_tail` is a boolean signal that keeps the final row visible as history
@@ -233,7 +239,8 @@ list for a wide collection.
 
 ## Keyboard regions
 
-`Gui.on_shortcut(chord, message)` binds a unit message within a focused region.
+The `shortcuts` field, a list of `{ chord, msg }` records, binds unit messages
+within a focused region.
 A chord is `{ key, control, shift, alt, meta }`, with every modifier explicit.
 Use lowercase letters, digits, or named keys: `Enter`, `Escape`, `Tab`, `Space`,
 `ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`, `Home`, `End`, `PageUp`,
@@ -246,8 +253,7 @@ See `test/gui/shortcuts` for a complete app and scoped routing spec.
 
 ## Internal drag and drop
 
-Add `Gui.drag_source(key)` to a card and `Gui.drop_target(message)` to a
-destination. Keys are nonempty strings of at most 256 UTF-8 bytes. Create the
+Set `drag_source: key` on a card and `on_drop: message` on a destination. Keys are nonempty strings of at most 256 UTF-8 bytes. Create the
 message with `Ui.action_detail` or `Ui.State.on_detail` to receive that key and
 return the same commands used by keyboard or button alternatives. The key is
 payload data; keyed row identity remains explicit in `Ui.each`.

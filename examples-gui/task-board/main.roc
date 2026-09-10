@@ -20,7 +20,7 @@ asset_entries = Manifest.entries(manifest_json)
 ## assignee without a generated avatar simply shows no picture.
 avatar : Str, U32 -> Elem
 avatar = |assignee, size| match Board.avatar_source(assignee) {
-	Some(source) => Gui.image({ source, label: "${assignee} avatar" }, [Gui.style({ width: Px(size), height: Px(size), radius: size })])
+	Some(source) => Gui.image({ source, label: "${assignee} avatar", width: Px(size), height: Px(size), radius: size })
 	None => Gui.text("")
 }
 
@@ -48,7 +48,8 @@ asset_problem_text = |report| {
 ## card away or moving it between columns cannot discard an unfinished edit.
 Editor : { column : Board.Column, task : Board.Task }
 
-TextField : { label : Str, value : Signal.Signal(Str) }, List(Gui.Attr), Gui.Msg -> Elem
+## Builds one text control from its label, controlled value, disabled signal, and reducer.
+TextField : Str, Signal.Signal(Str), Signal.Signal(Bool), Gui.Msg -> Elem
 
 BoardSnapshot : {
 	planned : Rows.Rows(Board.Task),
@@ -194,47 +195,50 @@ task_card = |row, column, handles, selected| {
 	key = row.key()
 	Ui.component(
 		|| Gui.panel(
-			[
-				Gui.test_id(key),
-				Gui.drag_source(key),
-				Gui.disabled_s(handles.edit_disabled),
-				Gui.drop_target(drop_message(handles, column, Key(key))),
-				Gui.selected_s(Signal.select(selected, key)),
-				Gui.style({ padding: 12, gap: 8, border_width: 1, radius: 8, background: Rgb(0x283A47), border_color: Rgb(0x4A6272) }),
-			],
+			{
+				test_id: key,
+				drag_source: key,
+				disabled: handles.edit_disabled,
+				on_drop: drop_message(handles, column, Key(key)),
+				selected: Signal.select(selected, key),
+				padding: 12,
+				gap: 8,
+				border_width: 1,
+				radius: 8,
+				background: Rgb(0x283A47),
+				border_color: Rgb(0x4A6272),
+			},
 			[
 				Gui.column(
-					[Gui.test_id("title-${key}"), Gui.style({ font_size: 15, foreground: Rgb(0xF2F5F6) })],
+					{ test_id: "title-${key}", font_size: 15, foreground: Rgb(0xF2F5F6) },
 					[Gui.text_s(row.map(|task| task.title))],
 				),
 				Gui.row(
-					[Gui.style({ gap: 8 })],
+					{ gap: 8 },
 					[
 						Ui.switch(row.map(|task| task.assignee), |assignee| avatar(assignee, 24)),
 						# The status color belongs to the priority word alone; the
 						# assignee stays in the muted secondary grey.
 						Gui.row(
-							[Gui.test_id("meta-${key}"), Gui.style({ gap: 0 })],
+							{ test_id: "meta-${key}", gap: 0 },
 							[
 								Gui.column(
-									[
-										Gui.style_s(
-											row.map(
-												|task| Gui.Style.{
-													font_size: 13,
-													foreground: match task.priority {
-														High => Rgb(0xF09A93)
-														Low => Rgb(0x8FD4A8)
-														_ => Rgb(0xA9BFCC)
-													},
+									{
+										overrides: row.map(
+											|task| Gui.Style.{
+												font_size: 13,
+												foreground: match task.priority {
+													High => Rgb(0xF09A93)
+													Low => Rgb(0x8FD4A8)
+													_ => Rgb(0xA9BFCC)
 												},
-											),
+											},
 										),
-									],
+									},
 									[Gui.text_s(row.map(|task| "${task.priority.to_str()} priority"))],
 								),
 								Gui.column(
-									[Gui.style({ font_size: 13, foreground: Rgb(0xA9BFCC) })],
+									{ font_size: 13, foreground: Rgb(0xA9BFCC) },
 									[Gui.text_s(row.map(|task| " · ${task.assignee}"))],
 								),
 							],
@@ -242,11 +246,13 @@ task_card = |row, column, handles, selected| {
 					],
 				),
 				Gui.row(
-					[],
+					Gui.RowProps.{},
 					[
 						Gui.action_button(
-							{ label: Signal.const("Edit"), enabled: Signal.const(True) },
-							[Gui.test_id("edit-${key}")],
+							{
+								caption: Signal.const("Edit"),
+								test_id: "edit-${key}",
+							},
 							Ui.action(
 								row.signal(),
 								|task| Ui.update_states([
@@ -268,11 +274,11 @@ column_view = |handles, column, selected| {
 	rows = column_state(handles, column).signal()
 	visible = Signal.map2(rows, handles.filter.signal(), visible_rows)
 	Gui.column(
-		[Gui.disabled_s(handles.edit_disabled), Gui.test_id("column-${column.to_str()}"), Gui.drop_target(drop_message(handles, column, End)), Gui.style({ grow: True, gap: 12, padding: 12, radius: 10, background: Rgb(0x1B2A33) })],
+		{ disabled: handles.edit_disabled, test_id: "column-${column.to_str()}", on_drop: drop_message(handles, column, End), grow: True, gap: 12, padding: 12, radius: 10, background: Rgb(0x1B2A33) },
 		[
 			Gui.heading(column.to_str()),
 			Gui.column(
-				[Gui.style({ font_size: 13, foreground: Rgb(0xA9BFCC) })],
+				{ font_size: 13, foreground: Rgb(0xA9BFCC) },
 				[Gui.text_s(rows.map(|items| "${Rows.len(items).to_str()} tasks"))],
 			),
 			Ui.each(visible, |row| task_card(row, column, handles, selected)),
@@ -281,7 +287,7 @@ column_view = |handles, column, selected| {
 			Ui.when(
 				visible.map(|items| Rows.len(items) == 0),
 				|| Gui.column(
-					[Gui.style({ font_size: 13, foreground: Rgb(0x93A9B6) })],
+					{ font_size: 13, foreground: Rgb(0x93A9B6) },
 					[Gui.text("No matching tasks")],
 				),
 				|| Gui.text(""),
@@ -292,13 +298,14 @@ column_view = |handles, column, selected| {
 
 ## Field reducers share one atomic edit operation. The UI owns the text draft;
 ## the corresponding keyed task receives the identical value in the same turn.
-edit_field : TextField, Handles, Board.Column, Str, List(Gui.Attr), (Board.Task, Str -> Board.Task), (Board.Task -> Str) -> Elem
-edit_field = |field, handles, column, label, attrs, update, read| {
+edit_field : TextField, Handles, Board.Column, Str, (Board.Task, Str -> Board.Task), (Board.Task -> Str) -> Elem
+edit_field = |field, handles, column, label, update, read| {
 	owner = column_state(handles, column)
 	reads = handles.context
 	field(
-		{ label, value: handles.editor.signal().map(|editor| read(editor.task)) },
-		attrs.append(Gui.disabled_s(handles.edit_disabled)),
+		label,
+		handles.editor.signal().map(|editor| read(editor.task)),
+		handles.edit_disabled,
 		Ui.action_str(
 			reads,
 			|context, text| {
@@ -319,11 +326,12 @@ priority_button = |handles, column, priority_key, priority| {
 	owner = column_state(handles, column)
 	reads = handles.context
 	Gui.action_button(
-		{ label: Signal.const(priority.to_str()), enabled: handles.editable },
-		[
-			Gui.label("${priority.to_str()} priority"),
-			Gui.selected_s(Signal.select(priority_key, priority.to_str())),
-		],
+		{
+			caption: Signal.const(priority.to_str()),
+			enabled: handles.editable,
+			label: "${priority.to_str()} priority",
+			selected: Signal.select(priority_key, priority.to_str()),
+		},
 		Ui.action(
 			reads,
 			|context| {
@@ -341,16 +349,18 @@ priority_button = |handles, column, priority_key, priority| {
 
 move_button : Handles, Board.Column -> Elem
 move_button = |handles, to|
-	Gui.action_button({ label: Signal.const("Move to ${to.to_str()}"), enabled: handles.editable }, [], Ui.action(handles.context, |current| move_task(handles, current, current.board.editor.task.key, to, End)))
+	Gui.action_button({ caption: Signal.const("Move to ${to.to_str()}"), enabled: handles.editable }, Ui.action(handles.context, |current| move_task(handles, current, current.board.editor.task.key, to, End)))
 
 reorder_buttons : Handles, Board.Column -> Elem
 reorder_buttons = |handles, column|
 	Gui.row(
-		[Gui.style({ gap: 8 })],
+		{ gap: 8 },
 		[
 			Gui.action_button(
-				{ label: Signal.const("Move to top"), enabled: handles.editable },
-				[],
+				{
+					caption: Signal.const("Move to top"),
+					enabled: handles.editable,
+				},
 				Ui.action(
 					handles.context,
 					|context| {
@@ -360,7 +370,7 @@ reorder_buttons = |handles, column|
 					},
 				),
 			),
-			Gui.action_button({ label: Signal.const("Move to bottom"), enabled: handles.editable }, [], Ui.action(handles.context, |current| move_task(handles, current, current.board.editor.task.key, column, End))),
+			Gui.action_button({ caption: Signal.const("Move to bottom"), enabled: handles.editable }, Ui.action(handles.context, |current| move_task(handles, current, current.board.editor.task.key, column, End))),
 		],
 	)
 
@@ -371,12 +381,15 @@ delete_confirmation = |handles, column| {
 	Ui.when(
 		handles.confirm_delete.signal(),
 		|| Gui.dialog(
-			{ label: "Delete task", on_dismiss: handles.confirm_delete.on_unit(|_| False) },
-			[Gui.test_id("delete-confirmation")],
+			{
+				label: "Delete task",
+				on_dismiss: handles.confirm_delete.on_unit(|_| False),
+				test_id: "delete-confirmation",
+			},
 			[
 				Gui.text("Delete this task? This removes it from the board."),
 				Gui.row(
-					[],
+					Gui.RowProps.{},
 					[
 						Gui.button("Cancel deletion", handles.confirm_delete.on_unit(|_| False)),
 						Gui.button(
@@ -394,14 +407,14 @@ delete_confirmation = |handles, column| {
 				),
 			],
 		),
-		|| Gui.action_button({ label: Signal.const("Delete task"), enabled: handles.editable }, [], handles.confirm_delete.on_unit(|_| True)),
+		|| Gui.action_button({ caption: Signal.const("Delete task"), enabled: handles.editable }, handles.confirm_delete.on_unit(|_| True)),
 	)
 }
 
 detail_view : Handles -> Elem
 detail_view = |handles|
 	Gui.panel(
-		[Gui.test_id("task-detail"), Gui.style({ width: Px(320), padding: 16, gap: 12, background: Rgb(0x283A47), radius: 8 })],
+		{ test_id: "task-detail", width: Px(320), padding: 16, gap: 12, background: Rgb(0x283A47), radius: 8, border_color: Default, border_width: 0 },
 		[
 			Gui.heading("Task details"),
 			Ui.when(
@@ -410,41 +423,41 @@ detail_view = |handles|
 					Ui.switch(
 						handles.editor.signal().map(|editor| editor.column),
 						|column| Gui.column(
-							[],
+							Gui.ColumnProps.{},
 							[
 								Gui.column(
-									[Gui.test_id("task-column"), Gui.style({ font_size: 13, foreground: Rgb(0xA9BFCC) })],
+									{ test_id: "task-column", font_size: 13, foreground: Rgb(0xA9BFCC) },
 									[Gui.text_s(handles.editor.signal().map(|editor| editor.column.to_str()))],
 								),
 								Gui.column(
-									[Gui.style({ gap: 4, font_size: 13, foreground: Rgb(0xA9BFCC) })],
-									[Gui.text("Task title"), edit_field(Gui.text_input, handles, column, "Task title", [Gui.style({ width: Fill })], |task, title| { ..task, title }, |task| task.title)],
+									{ gap: 4, font_size: 13, foreground: Rgb(0xA9BFCC) },
+									[Gui.text("Task title"), edit_field(|label, value, disabled, msg| Gui.text_input({ label, value, disabled, width: Fill }, msg), handles, column, "Task title", |task, title| { ..task, title }, |task| task.title)],
 								),
 								Gui.column(
-									[Gui.style({ gap: 4, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+									{ gap: 4, font_size: 13, foreground: Rgb(0xA9BFCC) },
 									[
 										Gui.text("Assignee"),
 										Gui.row(
-											[Gui.style({ gap: 8 })],
+											{ gap: 8 },
 											[
 												Ui.switch(handles.editor.signal().map(|editor| editor.task.assignee), |assignee| avatar(assignee, 32)),
-												edit_field(Gui.text_input, handles, column, "Assignee", [Gui.style({ width: Fill, grow: True })], |task, assignee| { ..task, assignee }, |task| task.assignee),
+												edit_field(|label, value, disabled, msg| Gui.text_input({ label, value, disabled, width: Fill, grow: True }, msg), handles, column, "Assignee", |task, assignee| { ..task, assignee }, |task| task.assignee),
 											],
 										),
 									],
 								),
-								edit_field(Gui.textarea, handles, column, "Task notes", [Gui.style({ height: Px(150) })], |task, notes| { ..task, notes }, |task| task.notes),
+								edit_field(|label, value, disabled, msg| Gui.textarea({ label, value, disabled, height: Px(150) }, msg), handles, column, "Task notes", |task, notes| { ..task, notes }, |task| task.notes),
 								Gui.text_s(handles.editor.signal().map(|editor| "Priority: ${editor.task.priority.to_str()}")),
 								{
 									priority_key = handles.editor.signal().map(|editor| editor.task.priority.to_str())
-									Gui.row([Gui.style({ gap: 8 })], Board.priorities.map(|priority| priority_button(handles, column, priority_key, priority)))
+									Gui.row({ gap: 8 }, Board.priorities.map(|priority| priority_button(handles, column, priority_key, priority)))
 								},
 								Gui.column(
-									[Gui.style({ font_size: 13, foreground: Rgb(0x93A9B6) })],
+									{ font_size: 13, foreground: Rgb(0x93A9B6) },
 									[Gui.text("Changes appear on the board immediately.")],
 								),
 								reorder_buttons(handles, column),
-								Gui.column([], Board.columns.keep_if(|other| other != column).map(|other| move_button(handles, other))),
+								Gui.column(Gui.ColumnProps.{}, Board.columns.keep_if(|other| other != column).map(|other| move_button(handles, other))),
 								delete_confirmation(handles, column),
 							],
 						),
@@ -459,12 +472,14 @@ new_task_form : Handles -> Elem
 new_task_form = |handles| {
 	reads = { context: handles.context, title: handles.draft.signal(), next_id: handles.next_id.signal() }.Signal
 	Gui.row(
-		[Gui.style({ gap: 12 })],
+		{ gap: 12 },
 		[
-			Gui.text_input({ label: "New task title", value: handles.draft.signal() }, [Gui.placeholder("New task title…"), Gui.disabled_s(handles.edit_disabled), Gui.style({ width: Px(260), gap: 4 })], handles.draft.on_str(|_, value| value)),
+			Gui.text_input({ label: "New task title", value: handles.draft.signal(), placeholder: "New task title…", disabled: handles.edit_disabled, width: Px(260), gap: 4 }, handles.draft.on_str(|_, value| value)),
 			Gui.action_button(
-				{ label: Signal.const("Add task"), enabled: Signal.map2(handles.draft.signal(), handles.editable, |title, editable| editable and !title.trim().is_empty()) },
-				[],
+				{
+					caption: Signal.const("Add task"),
+					enabled: Signal.map2(handles.draft.signal(), handles.editable, |title, editable| editable and !title.trim().is_empty()),
+				},
 				Ui.action(
 					reads,
 					|current| {
@@ -534,32 +549,32 @@ board_view = |handles| {
 		},
 		[
 			Gui.column(
-				[Gui.style({ padding: 24, gap: 12, width: Fill }), Gui.test_id("launch-board"), Gui.on_shortcut(chord, actions.save), Gui.on_shortcut({ ..chord, shift: True }, actions.save_as), Gui.on_shortcut({ ..chord, key: "o" }, actions.open), Gui.on_shortcut({ ..chord, key: "z" }, history_message(handles, False)), Gui.on_shortcut({ ..chord, key: "z", shift: True }, history_message(handles, True))],
+				{ test_id: "launch-board", padding: 24, gap: 12, width: Fill, shortcuts: [{ chord: chord, msg: actions.save }, { chord: { ..chord, shift: True }, msg: actions.save_as }, { chord: { ..chord, key: "o" }, msg: actions.open }, { chord: { ..chord, key: "z" }, msg: history_message(handles, False) }, { chord: { ..chord, key: "z", shift: True }, msg: history_message(handles, True) }] },
 				[
 					Gui.heading("Launch Board"),
 					Gui.column(
-						[Gui.style({ foreground: Rgb(0xA9BFCC) })],
+						{ foreground: Rgb(0xA9BFCC) },
 						[Gui.text("A small team's workspace for the next release.")],
 					),
 					document_toolbar(handles, actions),
 					Gui.row(
-						[Gui.style({ gap: 16 })],
+						{ gap: 16 },
 						[
 							new_task_form(handles),
-							Gui.text_input({ label: "Filter tasks", value: handles.filter.signal() }, [Gui.placeholder("Filter tasks…"), Gui.style({ width: Px(240), gap: 4 })], handles.filter.on_str(|_, text| text)),
+							Gui.text_input({ label: "Filter tasks", value: handles.filter.signal(), placeholder: "Filter tasks…", width: Px(240), gap: 4 }, handles.filter.on_str(|_, text| text)),
 						],
 					),
 					Gui.column(
-						[Gui.style({ gap: 2, font_size: 13, foreground: Rgb(0x93A9B6) })],
+						{ gap: 2, font_size: 13, foreground: Rgb(0x93A9B6) },
 						[
 							Gui.text("Drag onto a card to place a task before it, or into a column to move it to the end."),
 							Gui.text("Undo keeps up to 50 changes within 4 MiB; older changes are retired."),
 						],
 					),
 					Gui.row(
-						[Gui.style({ gap: 20, grow: True, overflow_x: Clip, overflow_y: Clip })],
+						{ gap: 20, grow: True, overflow_x: Clip, overflow_y: Clip },
 						[
-							Gui.row([Gui.style({ gap: 16, grow: True, overflow_x: Scroll })], Board.columns.map(|column| column_view(handles, column, selected))),
+							Gui.row({ gap: 16, grow: True, overflow_x: Scroll }, Board.columns.map(|column| column_view(handles, column, selected))),
 							detail_view(handles),
 						],
 					),
@@ -679,7 +694,7 @@ remember = |handles, context, writes| if can_edit(context.document.phase) {
 history_button : Handles, Bool -> Elem
 history_button = |handles, redo| Gui.action_button(
 	{
-		label: Signal.const(
+		caption: Signal.const(
 			if redo {
 				"Redo"
 			} else {
@@ -698,7 +713,6 @@ history_button = |handles, redo| Gui.action_button(
 			),
 		),
 	},
-	[],
 	history_message(handles, redo),
 )
 
@@ -758,18 +772,18 @@ document_toolbar = |handles, actions| {
 	# gap 0: everything below the button row is a conditional problem line or
 	# dialog, so the toolbar's empty states pay no vertical rhythm.
 	Gui.column(
-		[Gui.test_id("board-document"), Gui.style({ gap: 0 })],
+		{ test_id: "board-document", gap: 0 },
 		[
 			Gui.row(
-				[Gui.style({ gap: 8 })],
+				{ gap: 8 },
 				[
-					Gui.action_button({ label: Signal.const("Open…"), enabled: ready }, [], actions.open),
-					Gui.action_button({ label: Signal.const("Save"), enabled: ready }, [Gui.style({ padding: 8, radius: 6, background: Rgb(0x2E6FA3), hover_background: Rgb(0x3A80B8), active_background: Rgb(0x265D89) })], actions.save),
-					Gui.action_button({ label: Signal.const("Save As…"), enabled: ready }, [], actions.save_as),
+					Gui.action_button({ caption: Signal.const("Open…"), enabled: ready }, actions.open),
+					Gui.action_button({ caption: Signal.const("Save"), enabled: ready, padding: 8, radius: 6, background: Rgb(0x2E6FA3), hover_background: Rgb(0x3A80B8), active_background: Rgb(0x265D89) }, actions.save),
+					Gui.action_button({ caption: Signal.const("Save As…"), enabled: ready }, actions.save_as),
 					history_button(handles, False),
 					history_button(handles, True),
 					Gui.column(
-						[Gui.test_id("board-path"), Gui.style({ padding: 8, foreground: Rgb(0xF2F5F6) })],
+						{ test_id: "board-path", padding: 8, foreground: Rgb(0xF2F5F6) },
 						[
 							Gui.text_s(
 								handles.document.signal().map(
@@ -782,25 +796,23 @@ document_toolbar = |handles, actions| {
 						],
 					),
 					Gui.column(
-						[
-							Gui.test_id("board-status"),
-							Gui.style_s(
-								handles.context.map(
-									|context| Gui.Style.{
-										padding: 8,
-										font_size: 13,
-										foreground: match context.document.phase {
-											Phase.Idle => if dirty(context) {
-												Rgb(0xE8C27A)
-											} else {
-												Rgb(0x8FD4A8)
-											}
-											_ => Rgb(0xA9BFCC)
-										},
+						{
+							test_id: "board-status",
+							overrides: handles.context.map(
+								|context| Gui.Style.{
+									padding: 8,
+									font_size: 13,
+									foreground: match context.document.phase {
+										Phase.Idle => if dirty(context) {
+											Rgb(0xE8C27A)
+										} else {
+											Rgb(0x8FD4A8)
+										}
+										_ => Rgb(0xA9BFCC)
 									},
-								),
+								},
 							),
-						],
+						},
 						[
 							Gui.text_s(
 								handles.context.map(
@@ -823,14 +835,17 @@ document_toolbar = |handles, actions| {
 				],
 			),
 			Gui.column(
-				[Gui.test_id("board-problem"), Gui.style({ font_size: 13, foreground: Rgb(0xF09A93) })],
+				{ test_id: "board-problem", font_size: 13, foreground: Rgb(0xF09A93) },
 				[Gui.text_s(handles.document.signal().map(|doc| doc.problem))],
 			),
 			Ui.when(
 				handles.document.signal().map(|doc| doc.phase == Phase.ConfirmOpen),
 				|| Gui.dialog(
-					{ label: "Replace unsaved board?", on_dismiss: actions.cancel },
-					[Gui.test_id("board-discard")],
+					{
+						label: "Replace unsaved board?",
+						on_dismiss: actions.cancel,
+						test_id: "board-discard",
+					},
 					[
 						Gui.heading("Replace unsaved board?"),
 						Gui.text("Save your board first to keep these changes. Opening succeeds only after the new file is completely validated."),
@@ -842,7 +857,7 @@ document_toolbar = |handles, actions| {
 			),
 			Ui.when(handles.document.signal().map(|doc| doc.phase != Phase.Idle and doc.phase != Phase.ConfirmOpen), || Gui.button("Cancel operation", actions.cancel), || Gui.text("")),
 			Gui.column(
-				[Gui.test_id("asset-status"), Gui.style({ font_size: 13, foreground: Rgb(0xF09A93) })],
+				{ test_id: "asset-status", font_size: 13, foreground: Rgb(0xF09A93) },
 				[Gui.text_s(handles.asset_problem.signal())],
 			),
 			close_dialog(handles),
@@ -1048,18 +1063,21 @@ close_dialog = |handles| {
 	Ui.when(
 		handles.close.signal().map(|intent| intent == Close.Confirm),
 		|| Gui.dialog(
-			{ label: "Close this board?", on_dismiss: keep },
-			[Gui.test_id("board-close")],
+			{
+				label: "Close this board?",
+				on_dismiss: keep,
+				test_id: "board-close",
+			},
 			[
 				Gui.heading("Save your board before closing?"),
 				Gui.text("Keep editing to return to your project, or save a board document before closing."),
 				Gui.text_s(handles.document.signal().map(|doc| doc.problem)),
 				Gui.row(
-					[],
+					Gui.RowProps.{},
 					[
 						Gui.button("Keep editing", keep),
 						Gui.button("Close without saving", handles.close.on_unit(|_| Close.Closing)),
-						Gui.action_button({ label: Signal.const("Save and close"), enabled: handles.document.signal().map(|doc| doc.phase == Phase.Idle) }, [], Ui.action({ context: handles.context, next: handles.next_id.signal() }.Signal, |{ context, next }| save_document(handles, context, next, { save_as: False, close_after: True }))),
+						Gui.action_button({ caption: Signal.const("Save and close"), enabled: handles.document.signal().map(|doc| doc.phase == Phase.Idle) }, Ui.action({ context: handles.context, next: handles.next_id.signal() }.Signal, |{ context, next }| save_document(handles, context, next, { save_as: False, close_after: True }))),
 					],
 				),
 			],
@@ -1067,8 +1085,11 @@ close_dialog = |handles| {
 		|| Ui.when(
 			handles.close.signal().map(|intent| intent == Close.Saving),
 			|| Gui.dialog(
-				{ label: "Saving before closing", on_dismiss: keep },
-				[Gui.test_id("board-close-saving")],
+				{
+					label: "Saving before closing",
+					on_dismiss: keep,
+					test_id: "board-close-saving",
+				},
 				[
 					Gui.heading("Saving your board…"),
 					Gui.text("The window stays open until the submitted board is saved."),

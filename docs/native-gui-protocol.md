@@ -113,8 +113,9 @@ misstate its hit area.
 
 The public `Gui.Style` contains typed lengths, colors and overflow tags. Only the
 platform encoder creates records. `Gui.row`/`column`/`panel` choose direction;
-`Gui.style` and `style_s` describe the remaining fields. Each element accepts one
-style attribute. A supplied style replaces the helper's complete default style.
+each control's props record carries the remaining fields with that control's
+defaults, and an `overrides` signal replaces them. Each element publishes one
+style.
 The style signal is an ordinary typed, equality-pruned signal; there is no
 native styling observer graph.
 
@@ -144,10 +145,10 @@ Explicit textarea heights constrain the complete field; the retained editor
 fills the space after caption and padding. Auto presentation retains a
 320-pixel editor.
 
-`Gui.placeholder` lowers static empty-field hint text through field 12. The
+The `placeholder` props field lowers static empty-field hint text through field 12. The
 hint is app-declared configuration, not host behavior: the host shows exactly
 the supplied text while a controlled field's document is empty, and a field
-without the attribute shows nothing. Labels never become placeholder text, and
+without it shows nothing. Labels never become placeholder text, and
 the host holds no default hint strings. The browser host rejects the field like
 every other native scalar.
 
@@ -162,13 +163,13 @@ not resolve to a regular decodable image renders a neutral placeholder box
 is fetched remotely. The display-free spec host stores the field like every
 other native scalar and never touches the filesystem.
 
-`Gui.font_family` lowers a static family name through field 14. The GPUI host
+The `font_family` props field lowers a static family name through field 14. The GPUI host
 joins the family into the element's inherited text style, so descendants
 without their own family render with it. The family must be installed on the
 machine or registered through the embedded-font declaration below; an unknown
 family falls back through GPUI's ordinary font resolution.
 
-`Gui.embedded_fonts` lowers a startup font registration through field 15. The
+The `embedded_fonts` props field lowers a startup font registration through field 15. The
 value is a newline-delimited v1 record: a `1` version line, then one family
 line and one standard-base64 data line per font. Families are 1 to 128 UTF-8
 bytes without control characters. The record is bounded at **8 fonts** and
@@ -225,7 +226,7 @@ Native specs provide `request-window-close` and `expect-window-closed` as a
 semantic simulation of this protocol; GPUI tests exercise the installed native
 close callback separately.
 
-`Gui.on_shortcut` adds a typed `key_chord` filter to the canonical shared event
+Each `shortcuts` entry adds a typed `key_chord` filter to the canonical shared event
 binding. It always uses a unit `keydown` route with native delivery and static
 prevent-default/stop-propagation policy. Filter identity is the complete key and
 modifier record; event identity still comes from construction within the owning
@@ -257,7 +258,7 @@ not dispatch or consume the keystroke. Removing a region releases its shortcuts
 through ordinary scope disposal and releases the corresponding retained view.
 
 Internal drag sources expose a nonempty UTF-8 key of at most 256 bytes through
-`Gui.drag_source`. `Gui.drop_target` binds an ordinary native `drop` event with a
+the `drag_source` props field. `on_drop` binds an ordinary native `drop` event with a
 string-detail extraction descriptor. The target flag requires that binding;
 invalid keys or payload shapes reject preparation before publication. Both
 native scalar fields are rejected by the browser boundary.

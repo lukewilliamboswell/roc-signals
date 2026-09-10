@@ -9,25 +9,33 @@ main : () -> Elem
 main = || Ui.state(
 	True,
 	|first| Gui.column(
-		[],
+		Gui.ColumnProps.{},
 		[
 			Gui.button("Switch branch", first.on_unit(|value| !value)),
 			Ui.when(
 				first.signal(),
 				|| Gui.panel(
-					[
-						Gui.test_id("styled-branch"),
-						Gui.style({ padding: 12, background: Rgb(0x24323E) }),
-						Gui.selected_s(Signal.const(True)),
-					],
+					{
+						test_id: "styled-branch",
+						selected: Signal.const(True),
+						padding: 12,
+						background: Rgb(0x24323E),
+						border_color: Default,
+						border_width: 0,
+						radius: 0,
+					},
 					[Gui.text("First branch")],
 				),
 				|| Gui.panel(
-					[
-						Gui.test_id("styled-branch"),
-						Gui.style({ padding: 20, background: Rgb(0x354452) }),
-						Gui.selected_s(Signal.const(False)),
-					],
+					{
+						test_id: "styled-branch",
+						selected: Signal.const(False),
+						padding: 20,
+						background: Rgb(0x354452),
+						border_color: Default,
+						border_width: 0,
+						radius: 0,
+					},
 					[Gui.text("Second branch")],
 				),
 			),
