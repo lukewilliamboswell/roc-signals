@@ -27,7 +27,7 @@ Ui.state(
             [],
             [
                 Html.paragraph_s(label),
-                Html.button("Increment", count.on_unit(|n| n + 1)),
+                Html.button("Increment", count.update(|n| n + 1)),
             ],
         )
     },

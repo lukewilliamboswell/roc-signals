@@ -1,7 +1,8 @@
 app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc" }
 
 import pf.Elem exposing [Elem]
-import pf.Gui
+import pf.Event
+import pf.Gui exposing [Px]
 import pf.Signal
 import pf.Ui
 import Theme
@@ -20,20 +21,38 @@ import "theme.json" as theme_json : Str
 theme : Theme.Palette
 theme = Theme.from_json("examples-gui/counter/theme.json", theme_json)
 
-accent_button : Str, Gui.Msg -> Elem
-accent_button = |label, message| Gui.action_button(
-	{ label: Signal.const(label), enabled: Signal.const(True) },
-	[Gui.test_id(label), Gui.style({ padding: theme.control_padding, radius: theme.radius, foreground: Rgb(theme.text_primary), background: Rgb(theme.accent), hover_background: Rgb(theme.accent_hover), active_background: Rgb(theme.accent_active) })],
+accent_button : Str, Event.Handler -> Elem
+accent_button = |label, message| Elem.action_button(
+	{
+		caption: Signal.const(label),
+		test_id: label,
+		padding: theme.control_padding,
+		radius: theme.radius,
+		fg: theme.text_primary,
+		bg: theme.accent,
+		hover_bg: theme.accent_hover,
+		active_bg: theme.accent_active,
+	},
 	message,
 )
 
 ## The quiet actions. They read from the same palette as the accent button
 ## rather than falling back to the host's default control colours, which is
 ## what makes swapping the file rebuild the whole example.
-secondary_button : Str, Gui.Msg -> Elem
-secondary_button = |label, message| Gui.action_button(
-	{ label: Signal.const(label), enabled: Signal.const(True) },
-	[Gui.test_id(label), Gui.style({ padding: theme.control_padding, radius: theme.radius, border_width: 1, border_color: Rgb(theme.border), foreground: Rgb(theme.text_primary), background: Rgb(theme.surface), hover_background: Rgb(theme.card), active_background: Rgb(theme.background) })],
+secondary_button : Str, Event.Handler -> Elem
+secondary_button = |label, message| Elem.action_button(
+	{
+		caption: Signal.const(label),
+		test_id: label,
+		padding: theme.control_padding,
+		radius: theme.radius,
+		border_width: 1,
+		border_color: theme.border,
+		fg: theme.text_primary,
+		bg: theme.surface,
+		hover_bg: theme.card,
+		active_bg: theme.background,
+	},
 	message,
 )
 
@@ -41,41 +60,48 @@ main : () -> Elem
 main = || Ui.state(
 	0.I64,
 	|count| {
-		Gui.column(
-			[Gui.style({ padding: 16, gap: 12, width: Fill, height: Fill, background: Rgb(theme.background), foreground: Rgb(theme.text_primary) })],
+		Elem.col(
+			{ padding: 16, gap: 12, width: Fill, height: Fill, bg: theme.background, fg: theme.text_primary },
 			[
 				Ui.on_change_initial(Signal.const("Counter - Roc Signals"), Gui.set_title),
-				Gui.heading("Counter"),
-				Gui.column(
-					[Gui.style({ foreground: Rgb(theme.text_secondary) })],
-					[Gui.text("A minimal Roc Signals application.")],
+				Elem.heading("Counter"),
+				Elem.col(
+					{ fg: theme.text_secondary },
+					["A minimal Roc Signals application."],
 				),
 				# The panel takes the width of its own contents. A pinned width
 				# wider than the smallest window the host allows would put it off
 				# the edge; letting it stretch would leave a teaching example as
 				# one band across a wide window. The trailing column absorbs the
 				# remaining width instead.
-				Gui.row(
-					[Gui.style({ width: Fill, gap: 0 })],
+				Elem.row(
+					{ width: Fill, gap: 0 },
 					[
-						Gui.panel(
-							[Gui.style({ padding: 16, gap: 12, border_width: 1, radius: theme.radius, border_color: Rgb(theme.border), background: Rgb(theme.card) })],
+						Elem.panel(
+							{
+								padding: 16,
+								gap: 12,
+								border_width: 1,
+								radius: theme.radius,
+								border_color: theme.border,
+								bg: theme.card,
+							},
 							[
-								Gui.column(
-									[Gui.test_id("count"), Gui.style({ font_size: 32, foreground: Rgb(theme.text_primary) })],
-									[Gui.text_s(count.signal().map(|value| value.to_str()))],
+								Elem.col(
+									{ test_id: "count", font_size: 32, fg: theme.text_primary },
+									[Elem.text_s(count.read(|value| value.to_str()))],
 								),
-								Gui.row(
-									[Gui.style({ gap: theme.gap })],
+								Elem.row(
+									{ gap: theme.gap },
 									[
-										accent_button("Increment", count.on_unit(|value| value + 1)),
-										secondary_button("Decrement", count.on_unit(|value| value - 1)),
-										secondary_button("Reset", count.on_unit(|_| 0)),
+										accent_button("Increment", count.update(|value| value + 1)),
+										secondary_button("Decrement", count.update(|value| value - 1)),
+										secondary_button("Reset", count.update(|_| 0)),
 									],
 								),
 							],
 						),
-						Gui.column([Gui.style({ grow: True })], []),
+						Elem.col({ grow: True }, []),
 					],
 				),
 			],

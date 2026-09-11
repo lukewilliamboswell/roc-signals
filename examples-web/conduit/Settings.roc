@@ -132,43 +132,43 @@ Settings := {}.{
 								Auth.error_list(errors),
 								Html.paragraph_s_c(saved, "font-medium text-emerald-700"),
 								Html.form(
-									[Html.class_attr(Styles.form), Html.on_submit_prevent_default(form.on_unit(submit_form))],
+									[Html.class_attr(Styles.form), Html.on_submit_prevent_default(form.update(submit_form))],
 									[
 										Html.text_input_attrs(
 											"Profile picture URL",
 											image,
 											[Html.class_attr(Auth.field_class)],
-											form.on_str(|value, text| { ..value, image: text }),
+											form.update_str(|value, text| { ..value, image: text }),
 										),
 										Html.textarea_attrs(
 											"Bio",
 											bio,
 											[Html.class_attr(Auth.field_class)],
-											form.on_str(|value, text| { ..value, bio: text }),
+											form.update_str(|value, text| { ..value, bio: text }),
 										),
 										Html.text_input_attrs(
 											"Email",
 											email,
 											[Html.class_attr(Auth.field_class), Html.attr("type", "email")],
-											form.on_str(|value, text| { ..value, email: text }),
+											form.update_str(|value, text| { ..value, email: text }),
 										),
 										Html.text_input_attrs(
 											"New password",
 											password,
 											[Html.class_attr(Auth.field_class), Html.attr("type", "password")],
-											form.on_str(|value, text| { ..value, password: text }),
+											form.update_str(|value, text| { ..value, password: text }),
 										),
 										Html.button_attrs(
 											"Update Settings",
 											[Html.class_attr(Styles.primary_button), Html.attr("type", "submit")],
-											form.on_unit(submit_form),
+											form.update(submit_form),
 										),
 									],
 								),
 								Html.button_attrs(
 									"Sign out",
 									[Html.class_attr("mt-8 ${Styles.danger_button}"), Html.attr("type", "button")],
-									form.on_unit(|value| { ..value, logout_serial: value.logout_serial + 1 }),
+									form.update(|value| { ..value, logout_serial: value.logout_serial + 1 }),
 								),
 							],
 						)

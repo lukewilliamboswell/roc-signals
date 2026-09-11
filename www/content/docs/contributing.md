@@ -959,7 +959,7 @@ Supported action commands:
 - `(submit <locator>)`, `(fill <locator> "<text>")`
 - `(check <locator>)` and `(uncheck <locator>)`
 
-`shortcut` dispatches the exact `Gui.on_shortcut` binding declared on the located
+`shortcut` dispatches the exact `shortcuts` binding declared on the located
 region through the shared engine. Keys use the public canonical vocabulary;
 modifier bits are Control `1`, Shift `2`, Alt `4`, and Meta `8` (add them for a
 combination). For example, `(shortcut (test-id "editor") "s" 3)` invokes
@@ -1082,74 +1082,89 @@ scenario is not the place to re-check what a test already proves.
 
 ### Readable native file fixtures
 
-Use structured Files settlements for application workflows so specs do not need
-hand-counted UTF-8 frames or knowledge of the private `files1` payload:
+The `Files` primitives run synchronously inside an effect, so their results
+are declared ahead of time with `stub-file-*` forms, either in `setup` for
+mount-time effects or in `steps` before the step that triggers the call. A
+stub is a typed value the spec host hands back exactly as a real call would:
 
 ```lisp
+(stub-file-choice "notes-open" (chosen "/tmp/meeting.txt"))
+(stub-file-read "notes-read" :path "/tmp/meeting.txt" :text "First line\nSecond line: λ")
 (click (role button :name "Open…"))
-(expect-pending-task "notes-open" 1)
-(resolve-file-choice "notes-open" (chosen "/tmp/meeting.txt"))
-(resolve-file-read "notes-read" :path "/tmp/meeting.txt" :text "First line\nSecond line: λ")
 (expect-value (label "Note text") "First line\nSecond line: λ")
 ```
 
-The complete initial vocabulary is:
+Each stub answers one primitive call. A stat, read, directory, or launch stub
+is consumed by the first call of its kind whose path matches; a choice stub
+answers the next chooser; a `stub-file-reject` answers the next call of any
+kind, so declare it after any choice stub the same step needs. Writes,
+renames, removals, and flushes succeed without a stub and fail only when a
+reject stub is the next stub declared. A call with no matching stub returns
+`Unavailable` naming the missing stub.
+
+The conveniences are Roc code, so a spec stubs the primitives underneath
+them: `read_text!` is one read; `read_preview!` is one read whose `:size` may
+exceed its text to report truncation; `write_text!` needs no stub; `scan!` is
+one directory stub per folder it descends into; and `verify_assets!` is one
+read per manifest entry under `/assets`, the spec host's assets root, where
+`:file` supplies the bytes of a real asset relative to the spec's folder. The
+activity monitor's log reader is one stat plus one read per chunk. The
+vocabulary is:
 
 ```lisp
-(resolve-file-choice "save-path" (canceled))
-(resolve-file-choice "save-path" (chosen "/tmp/project.board.json"))
-(resolve-file-read "read" :path "/tmp/note.txt" :text "Contents")
-(resolve-file-write "write" :path "/tmp/note.txt" :bytes 8)
-(reject-file "read" :kind permission-denied :detail "/tmp/note.txt")
-```
-
-Directory browsing, previews, native launch, and incremental logs use the same
-structured vocabulary:
-
-```lisp
-(resolve-file-directory "folder" :path "/tmp" :entries
+(stub-file-choice "save-path" (canceled))
+(stub-file-choice "save-path" (chosen "/tmp/project.board.json"))
+(stub-file-stat "log" :path "/tmp/app.log" :kind file :bytes 6 :device 1 :inode 2)
+(stub-file-read "read" :path "/tmp/note.txt" :text "Contents")
+(stub-file-read "tail" :path "/tmp/app.log" :text "Ready\n" :offset 6 :size 12)
+(stub-file-read "asset" :path "/assets/avatars/maya.png" :file "../assets/avatars/maya.png")
+(stub-file-directory "folder" :path "/tmp" :entries
   ((file "/tmp/readme.txt" 123) (directory "/tmp/project" 0)
    (symbolic-link "/tmp/latest" 12) (other "/tmp/socket" 0)))
-(resolve-file-preview "preview" :path "/tmp/readme.txt" :text "First page" :truncated true)
-(resolve-file-open "launch" :path "/tmp/readme.txt")
-(resolve-file-log "tail" :path "/tmp/app.log" :text "Ready\n"
-  :device 7 :inode 13 :offset 6 :change initial :state at-end)
+(stub-file-open "launch" :path "/tmp/readme.txt")
+(stub-file-reject "read" :kind permission-denied :detail "/tmp/note.txt")
 ```
 
-Log changes are `initial`, `continued`, `rotated`, or `truncated`; states are
-`more`, `at-end`, or `partial-utf8`. Cursor numbers and directory file sizes are
-canonical unsigned decimal U64 values, including values above signed I64's
-maximum. Signs, leading zeros, quoted numbers, and overflow are refused. Preview
-and log text are bounded to 64 KiB. Direct directory fixtures accept up to
-10,000 entries and four MiB of combined root/entry path bytes. Directory fixtures
-settle `list_directory` tasks, not recursive scans; preview, log, and launch
-fixtures each require their corresponding declared service.
+The hosted `Http` functions are stubbed the same way. A response stub answers
+the next request for its URL; a reject stub answers the next request for any
+URL. Error kinds are `invalid-request`, `network`, `timeout`, `too-large`, and
+`unavailable`; `timeout` requires empty detail. Headers are optional:
 
-Fields may appear in any order; each documented field is required exactly once. Choice tags
-are `chosen` and `canceled`. Error kinds are `canceled`, `not-found`,
-`permission-denied`, `invalid-utf8`, `invalid-path`, `resource-limit`, `io`, and
-`unavailable`; canceled errors require empty detail. Paths must be valid UTF-8,
-at most 4096 bytes, and absolute in one of the spellings a native worker returns:
-POSIX-rooted (`/tmp/note.txt`), drive-rooted (`C:\Users\Lee` or `C:/Users/Lee`),
-or a UNC prefix (`\\server\share\docs`). A typed fixture can therefore express a
-Windows result directly instead of hand-writing a raw task frame. Read text and write byte counts have the
-native one-MiB bound, and error detail is bounded to 4096 UTF-8 bytes. Unknown
-fields, duplicate fields, invalid types, and oversized values reject the spec.
+```lisp
+(stub-http "feed" :url "https://example.test/feed" :status 200 :body "{\"items\":[]}")
+(stub-http "feed" :url "https://example.test/feed" :status 201
+  :headers (("content-type" "text/plain")) :body "")
+(stub-http-reject "feed" :kind timeout :detail "")
+```
 
-A fixture checks the pending task's declared service before calling its Roc
-result decoder. Read fixtures cannot settle write tasks; choice fixtures accept
-file, directory, and save choosers; error fixtures accept native Files tasks.
-A mismatch reports the source line, task label, expected service, and actual
-service or missing request. A task label locates a request for the harness; it
-does not determine service semantics. Settlements still use ordinary engine
-propagation and task ownership.
+Fields may appear in any order; each documented field is required exactly once.
+Paths must be valid UTF-8, at most 4096 bytes, and absolute in one of the
+spellings a native worker returns: POSIX-rooted (`/tmp/note.txt`), drive-rooted
+(`C:\Users\Lee` or `C:/Users/Lee`), or a UNC prefix (`\\server\share\docs`), so a
+stub can express a Windows result directly. Unknown fields, duplicate fields,
+invalid types, and oversized values reject the spec.
 
-These commands simulate results and perform no filesystem IO. They establish
-application response, cancellation, and state behavior; real filesystem and
-native chooser behavior need host tests and a native walkthrough. Keep raw
-`resolve-task`, `reject-task`, and `resolve-stale-task` when deliberately testing
-malformed payloads or stale delivery. The Board and Notes journeys demonstrate
-save snapshots, failed loads, cancellation, retries, and retained drafts.
+A read's `:size` and `:offset` and a stat's `:bytes`, `:device`, and `:inode`
+are canonical unsigned decimal U64 values, including values above signed
+I64's maximum. Signs, leading zeros, quoted numbers, and overflow are refused.
+Directory stubs accept up to 10,000 entries and four MiB of combined
+root/entry path bytes.
+
+Fields may appear in any order; each documented field is required exactly
+once unless marked optional. Choice tags are `chosen` and `canceled`. Error
+kinds are `not-found`, `permission-denied`, `invalid-utf8`, `invalid-path`,
+`resource-limit`, `io`, and `unavailable`. Paths must be absolute, valid
+UTF-8, and at most 4096 bytes; read text is bounded at 32 MiB and error detail
+at 4096 UTF-8 bytes. Unknown fields, duplicate fields, invalid types, and
+oversized values reject the spec.
+
+These stubs simulate results and perform no filesystem IO. They establish
+application response and state behavior; real filesystem and native chooser
+behavior need host tests and a native walkthrough. The raw `resolve-task`,
+`reject-task`, and `resolve-stale-task` commands settle engine tasks, which
+the browser platform still uses; no GUI example starts one. The Board and
+Notes journeys demonstrate save snapshots, failed loads, dismissed choosers,
+retries, and retained drafts.
 
 A supplied result does not assert the request payload the app emitted. For
 example, resolving a write with `:bytes 14` does not prove that the app submitted
@@ -1202,7 +1217,7 @@ click-only. Reset buttons dispatch app-managed prevent-default `reset` bindings.
 Checkbox controls use the checked-change default path even without a click
 handler. `submit` is for app-managed forms and requires a unit submit binding
 from `Html.on_submit_prevent_default`. `custom-event` sends its detail argument
-as `event.detail`, which reducers built with `State.on_detail` receive as text.
+as `event.detail`, which reducers built with `State.update_detail` receive as text.
 
 Common metric names include `dirty_source_roots`, `rows_reused`,
 `rows_created`, `rows_removed`, `scopes_created`, `scopes_disposed`,
@@ -1299,11 +1314,11 @@ from full snapshot reconciliation when testing update costs.
 Regenerate glue after changing exposed platform types or provided entrypoints:
 
 ```sh
-roc glue <path-to-roc>/src/glue/src/ZigGlue.roc src/signals platform-web/main.roc
+roc glue <path-to-roc>/src/glue/src/ZigGlue.roc src/signals platform-gui/main.roc
 zig fmt src/signals/roc_platform_abi.zig
 ```
 
-Use the `ZigGlue.roc` from the same Roc commit named by the `roc` header in `platform-web/main.roc`. The host
+Use the `ZigGlue.roc` from the same Roc commit named by the `roc` header in `platform-gui/main.roc`. Generate from the native platform: its header additionally provides `roc_prepare_effect` and `roc_run_effect`, which the native host links, while the two platforms otherwise declare the same hosted and provided symbols. The host
 uses the generated types' public `incref` and `decref` methods; generated helper
 functions are implementation details and must not be made public by hand.
 
@@ -1311,7 +1326,10 @@ functions are implementation details and must not be made public by hand.
 
 `platform-shared/` owns common signal, scope, descriptor, ownership, and render
 construction modules. `scripts/prepare_platforms.py` copies its Roc files into
-`platform-web/` and `platform-gui/`. These flat generated copies are individually
+`platform-web/` and `platform-gui/`. `Elem.roc` is the exception: each platform owns its
+own copy, because the native platform declares its control constructors inside
+the `Elem` module and Roc allows neither a second module for the same type nor
+an import cycle. Keep the `Elem` tag union identical in both copies. These flat generated copies are individually
 gitignored. The fixed repository layout needs no per-platform source configuration.
 
 Run `python3 scripts/prepare_platforms.py --check` or
@@ -1573,7 +1591,7 @@ roc build .test-out/bundles/examples-gui/notes-editor/main.roc --output=.test-ou
 buttons, labeled inputs, and checkboxes. See the native presentation protocol in
 `docs/native-gui-protocol.md` for field compatibility and limits. Signals, keyed
 rows, scopes, and ownership remain in the shared engine.
-Wide collections use `Gui.virtual_list` to bound child lookup and layout to the
+Wide collections use `Elem.virtual_list` to bound child lookup and layout to the
 visible range; ordinary containers enumerate direct children when rendered.
 See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
 `crates/gpui-host/README.md` for the boundary limits.

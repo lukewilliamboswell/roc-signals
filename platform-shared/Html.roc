@@ -73,10 +73,10 @@ event_delivery_auto_value = { native: False }
 event_delivery_native_value : Node.EventDelivery
 event_delivery_native_value = { native: True }
 
-fixed_event_binding : Node.FixedEventKind, Node.Msg -> Node.EventBinding
+fixed_event_binding : Node.FixedEventKind, Node.Handler -> Node.EventBinding
 fixed_event_binding = |kind, msg| { kind, msg, policy: event_policy_none_value, delivery: event_delivery_auto_value, name: "", key_chord: None }
 
-named_event_binding : Str, Node.EventPolicy, Node.Msg -> Node.EventBinding
+named_event_binding : Str, Node.EventPolicy, Node.Handler -> Node.EventBinding
 named_event_binding = |name, policy, msg| {
 	{ kind: { id: 0 }, msg, policy, delivery: event_delivery_auto_value, name, key_chord: None }
 }
@@ -242,59 +242,59 @@ Html := [].{
 	behavior = |name| attr("data-signals-behavior", name)
 
 	## Pointer-down event binding.
-	on_pointer_down : Node.Msg -> Node.Attr
+	on_pointer_down : Node.Handler -> Node.Attr
 	on_pointer_down = |msg| event_attr(fixed_event_binding(fixed_event_pointer_down, msg))
 
 	## Pointer-up event binding.
-	on_pointer_up : Node.Msg -> Node.Attr
+	on_pointer_up : Node.Handler -> Node.Attr
 	on_pointer_up = |msg| event_attr(fixed_event_binding(fixed_event_pointer_up, msg))
 
 	## Pointer-enter event binding.
-	on_pointer_enter : Node.Msg -> Node.Attr
+	on_pointer_enter : Node.Handler -> Node.Attr
 	on_pointer_enter = |msg| event_attr(fixed_event_binding(fixed_event_pointer_enter, msg))
 
 	## Pointer-leave event binding.
-	on_pointer_leave : Node.Msg -> Node.Attr
+	on_pointer_leave : Node.Handler -> Node.Attr
 	on_pointer_leave = |msg| event_attr(fixed_event_binding(fixed_event_pointer_leave, msg))
 
 	## Named event binding with an explicit static policy.
-	on_event : Str, EventPolicy, Node.Msg -> Node.Attr
+	on_event : Str, EventPolicy, Node.Handler -> Node.Attr
 	on_event = |name, policy, msg| event_attr(named_event_binding(name, policy, msg))
 
 	## Named event binding with the default event policy.
-	on_custom : Str, Node.Msg -> Node.Attr
+	on_custom : Str, Node.Handler -> Node.Attr
 	on_custom = |name, msg| on_event(name, event_policy_none, msg)
 
 	## Named event binding with explicit policy and delivery request.
-	on_event_delivery : Str, EventPolicy, EventDelivery, Node.Msg -> Node.Attr
+	on_event_delivery : Str, EventPolicy, EventDelivery, Node.Handler -> Node.Attr
 	on_event_delivery = |name, policy, delivery, msg| event_attr({ kind: { id: 0 }, msg, policy, delivery, name, key_chord: None })
 
 	## Keydown event binding.
-	on_key_down : Node.Msg -> Node.Attr
+	on_key_down : Node.Handler -> Node.Attr
 	on_key_down = |msg| on_event("keydown", event_policy_none, msg)
 
 	## Submit event binding that prevents browser navigation.
-	on_submit_prevent_default : Node.Msg -> Node.Attr
+	on_submit_prevent_default : Node.Handler -> Node.Attr
 	on_submit_prevent_default = |msg| on_event("submit", event_policy_prevent_default, msg)
 
 	## Focus event binding.
-	on_focus : Node.Msg -> Node.Attr
+	on_focus : Node.Handler -> Node.Attr
 	on_focus = |msg| on_event("focus", event_policy_none, msg)
 
 	## Blur event binding.
-	on_blur : Node.Msg -> Node.Attr
+	on_blur : Node.Handler -> Node.Attr
 	on_blur = |msg| on_event("blur", event_policy_none, msg)
 
 	## Change event binding.
-	on_change : Node.Msg -> Node.Attr
+	on_change : Node.Handler -> Node.Attr
 	on_change = |msg| on_event("change", event_policy_none, msg)
 
 	## Composition-start event binding.
-	on_composition_start : Node.Msg -> Node.Attr
+	on_composition_start : Node.Handler -> Node.Attr
 	on_composition_start = |msg| on_event("compositionstart", event_policy_none, msg)
 
 	## Composition-end event binding.
-	on_composition_end : Node.Msg -> Node.Attr
+	on_composition_end : Node.Handler -> Node.Attr
 	on_composition_end = |msg| on_event("compositionend", event_policy_none, msg)
 
 	## Generic `div` element with attrs and children.
@@ -482,15 +482,15 @@ Html := [].{
 	}
 
 	## A button whose label is static text and whose click fires `msg`.
-	button : Str, Node.Msg -> Elem
+	button : Str, Node.Handler -> Elem
 	button = |label, msg| button_attrs(label, [], msg)
 
 	## Static-label button with a class.
-	button_c : Str, Str, Node.Msg -> Elem
+	button_c : Str, Str, Node.Handler -> Elem
 	button_c = |label, classes, msg| button_attrs(label, [class_attr(classes)], msg)
 
 	## Static-label button with extra attrs.
-	button_attrs : Str, List(Node.Attr), Node.Msg -> Elem
+	button_attrs : Str, List(Node.Attr), Node.Handler -> Elem
 	button_attrs = |label, attrs, msg| {
 		Elem.Element({
 			namespace: Html,
@@ -504,15 +504,15 @@ Html := [].{
 	}
 
 	## A button whose label is signal-backed.
-	button_s : Signal(Str), Node.Msg -> Elem
+	button_s : Signal(Str), Node.Handler -> Elem
 	button_s = |label, msg| button_s_attrs(label, [], msg)
 
 	## Signal-label button with a class.
-	button_s_c : Signal(Str), Str, Node.Msg -> Elem
+	button_s_c : Signal(Str), Str, Node.Handler -> Elem
 	button_s_c = |label, classes, msg| button_s_attrs(label, [class_attr(classes)], msg)
 
 	## Signal-label button with extra attrs.
-	button_s_attrs : Signal(Str), List(Node.Attr), Node.Msg -> Elem
+	button_s_attrs : Signal(Str), List(Node.Attr), Node.Handler -> Elem
 	button_s_attrs = |label, attrs, msg| {
 		label_cap = label.cap
 		read_label : HostValue -> Str
@@ -529,15 +529,15 @@ Html := [].{
 	}
 
 	## A button whose label and disabled state are signal-backed.
-	action_button : Signal(Str), Signal(Bool), Node.Msg -> Elem
+	action_button : Signal(Str), Signal(Bool), Node.Handler -> Elem
 	action_button = |label, disabled, msg| action_button_attrs(label, disabled, [], msg)
 
 	## Signal-label action button with signal-backed disabled state and class.
-	action_button_c : Signal(Str), Signal(Bool), Str, Node.Msg -> Elem
+	action_button_c : Signal(Str), Signal(Bool), Str, Node.Handler -> Elem
 	action_button_c = |label, disabled, classes, msg| action_button_attrs(label, disabled, [class_attr(classes)], msg)
 
 	## Signal-label action button with signal-backed disabled state and attrs.
-	action_button_attrs : Signal(Str), Signal(Bool), List(Node.Attr), Node.Msg -> Elem
+	action_button_attrs : Signal(Str), Signal(Bool), List(Node.Attr), Node.Handler -> Elem
 	action_button_attrs = |label, disabled, attrs, msg| {
 		label_cap = label.cap
 		disabled_cap = disabled.cap
@@ -559,15 +559,15 @@ Html := [].{
 
 	## A text input bound to a signal value, firing `msg` (a text-payload message)
 	## on input.
-	text_input : Str, Signal(Str), Node.Msg -> Elem
+	text_input : Str, Signal(Str), Node.Handler -> Elem
 	text_input = |label, value, msg| text_input_attrs(label, value, [], msg)
 
 	## Text input with a static class.
-	text_input_c : Str, Signal(Str), Str, Node.Msg -> Elem
+	text_input_c : Str, Signal(Str), Str, Node.Handler -> Elem
 	text_input_c = |label, value, classes, msg| text_input_attrs(label, value, [class_attr(classes)], msg)
 
 	## Text input with extra attrs.
-	text_input_attrs : Str, Signal(Str), List(Node.Attr), Node.Msg -> Elem
+	text_input_attrs : Str, Signal(Str), List(Node.Attr), Node.Handler -> Elem
 	text_input_attrs = |label, value, attrs, msg| {
 		value_cap = value.cap
 		read_value : HostValue -> Str
@@ -587,15 +587,15 @@ Html := [].{
 
 	## A number input bound to a draft string value, firing `msg` (a str-payload
 	## message) on input. Parse the draft on a commit event such as blur/change.
-	number_input : Str, Signal(Str), Node.Msg -> Elem
+	number_input : Str, Signal(Str), Node.Handler -> Elem
 	number_input = |label, value, msg| number_input_attrs(label, value, [], msg)
 
 	## Number input with a static class.
-	number_input_c : Str, Signal(Str), Str, Node.Msg -> Elem
+	number_input_c : Str, Signal(Str), Str, Node.Handler -> Elem
 	number_input_c = |label, value, classes, msg| number_input_attrs(label, value, [class_attr(classes)], msg)
 
 	## Number input with extra attrs.
-	number_input_attrs : Str, Signal(Str), List(Node.Attr), Node.Msg -> Elem
+	number_input_attrs : Str, Signal(Str), List(Node.Attr), Node.Handler -> Elem
 	number_input_attrs = |label, value, attrs, msg| {
 		value_cap = value.cap
 		read_value : HostValue -> Str
@@ -616,15 +616,15 @@ Html := [].{
 
 	## A textarea bound to a signal value, firing `msg` (a text-payload message)
 	## on input.
-	textarea : Str, Signal(Str), Node.Msg -> Elem
+	textarea : Str, Signal(Str), Node.Handler -> Elem
 	textarea = |label, value, msg| textarea_attrs(label, value, [], msg)
 
 	## Textarea with a static class.
-	textarea_c : Str, Signal(Str), Str, Node.Msg -> Elem
+	textarea_c : Str, Signal(Str), Str, Node.Handler -> Elem
 	textarea_c = |label, value, classes, msg| textarea_attrs(label, value, [class_attr(classes)], msg)
 
 	## Textarea with extra attrs.
-	textarea_attrs : Str, Signal(Str), List(Node.Attr), Node.Msg -> Elem
+	textarea_attrs : Str, Signal(Str), List(Node.Attr), Node.Handler -> Elem
 	textarea_attrs = |label, value, attrs, msg| {
 		value_cap = value.cap
 		read_value : HostValue -> Str
@@ -644,15 +644,15 @@ Html := [].{
 
 	## A single-value select bound to a signal value, firing `msg` (a str-payload
 	## message) on change.
-	select : Str, Signal(Str), List(Elem), Node.Msg -> Elem
+	select : Str, Signal(Str), List(Elem), Node.Handler -> Elem
 	select = |label, value, options, msg| select_attrs(label, value, [], options, msg)
 
 	## Single-value select with a static class.
-	select_c : Str, Signal(Str), Str, List(Elem), Node.Msg -> Elem
+	select_c : Str, Signal(Str), Str, List(Elem), Node.Handler -> Elem
 	select_c = |label, value, classes, options, msg| select_attrs(label, value, [class_attr(classes)], options, msg)
 
 	## Single-value select with extra attrs.
-	select_attrs : Str, Signal(Str), List(Node.Attr), List(Elem), Node.Msg -> Elem
+	select_attrs : Str, Signal(Str), List(Node.Attr), List(Elem), Node.Handler -> Elem
 	select_attrs = |label, value, attrs, options, msg| {
 		value_cap = value.cap
 		read_value : HostValue -> Str
@@ -690,15 +690,15 @@ Html := [].{
 
 	## A radio option in a string-valued radio group. `selected` is the canonical
 	## group value; `msg` receives this option's value through the change event.
-	radio : Str, Str, Str, Signal(Str), Node.Msg -> Elem
+	radio : Str, Str, Str, Signal(Str), Node.Handler -> Elem
 	radio = |label, name, value, selected, msg| radio_attrs(label, name, value, selected, [], msg)
 
 	## Radio option with a static class.
-	radio_c : Str, Str, Str, Signal(Str), Str, Node.Msg -> Elem
+	radio_c : Str, Str, Str, Signal(Str), Str, Node.Handler -> Elem
 	radio_c = |label, name, value, selected, classes, msg| radio_attrs(label, name, value, selected, [class_attr(classes)], msg)
 
 	## Radio option with extra attrs.
-	radio_attrs : Str, Str, Str, Signal(Str), List(Node.Attr), Node.Msg -> Elem
+	radio_attrs : Str, Str, Str, Signal(Str), List(Node.Attr), Node.Handler -> Elem
 	radio_attrs = |label, name, value, selected, attrs, msg| {
 		checked = selected.map(|current| current == value)
 		checked_cap = checked.cap
@@ -722,15 +722,15 @@ Html := [].{
 
 	## A checkbox bound to a signal value, firing `msg` (a bool-payload message) on
 	## change.
-	checkbox : Str, Signal(Bool), Node.Msg -> Elem
+	checkbox : Str, Signal(Bool), Node.Handler -> Elem
 	checkbox = |label, checked, msg| checkbox_attrs(label, checked, [], msg)
 
 	## Checkbox with a static class.
-	checkbox_c : Str, Signal(Bool), Str, Node.Msg -> Elem
+	checkbox_c : Str, Signal(Bool), Str, Node.Handler -> Elem
 	checkbox_c = |label, checked, classes, msg| checkbox_attrs(label, checked, [class_attr(classes)], msg)
 
 	## Checkbox with extra attrs.
-	checkbox_attrs : Str, Signal(Bool), List(Node.Attr), Node.Msg -> Elem
+	checkbox_attrs : Str, Signal(Bool), List(Node.Attr), Node.Handler -> Elem
 	checkbox_attrs = |label, checked, attrs, msg| {
 		checked_cap = checked.cap
 		read_checked : HostValue -> Bool

@@ -1,6 +1,6 @@
 app [main] { pf: platform "../../../platform-gui/main.roc" }
+import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
-import pf.Gui
 import pf.Rows
 import pf.Ui
 
@@ -13,34 +13,34 @@ main = || Ui.state(
 			|editing|
 				Ui.state(
 					True,
-					|confirm| Gui.column(
-						[],
+					|confirm| Elem.col(
+						Elem.ColProps.{},
 						[
-							Gui.button("Add", Ui.action(rows.signal(), |current| Ui.update_states([rows.write(Rows.apply(current, [Append(["c"])]) ?? crash "unique"), editing.write(True), confirm.write(True)]))),
-							Gui.button(
+							Elem.button("Add", Action.run(rows.signal(), |current| Action.update([rows.set(Rows.apply(current, [Append(["c"])]) ?? crash "unique"), editing.set(True), confirm.set(True)]))),
+							Elem.button(
 								"Delete",
-								Ui.action(
+								Action.run(
 									rows.signal(),
-									|current| Ui.update_states([
-										rows.write(Rows.apply(current, [RemoveKey("c")]) ?? crash "exists"),
-										editing.write(False),
-										confirm.write(False),
+									|current| Action.update([
+										rows.set(Rows.apply(current, [RemoveKey("c")]) ?? crash "exists"),
+										editing.set(False),
+										confirm.set(False),
 									]),
 								),
 							),
-							Gui.button("Empty list", rows.on_unit(|current| Rows.replace_all(current, []) ?? crash "unique")),
-							Gui.button("Restore list", rows.on_unit(|current| Rows.replace_all(current, ["a", "b"]) ?? crash "unique")),
-							Gui.column([Gui.test_id("rows")], [Ui.each(rows.signal(), |row| Gui.text_s(row.signal()))]),
+							Elem.button("Empty list", rows.update(|current| Rows.replace_all(current, []) ?? crash "unique")),
+							Elem.button("Restore list", rows.update(|current| Rows.replace_all(current, ["a", "b"]) ?? crash "unique")),
+							Elem.col({ test_id: "rows" }, [Ui.each(rows.signal(), |row| Elem.text_s(row.signal()))]),
 							Ui.when(
 								editing.signal(),
-								|| Gui.column(
-									[],
+								|| Elem.col(
+									Elem.ColProps.{},
 									[
-										Gui.text("Detail"),
-										Ui.when(confirm.signal(), || Gui.text("Confirm"), || Gui.text("Editing")),
+										"Detail",
+										Ui.when(confirm.signal(), || Elem.text("Confirm"), || Elem.text("Editing")),
 									],
 								),
-								|| Gui.text("Closed"),
+								|| Elem.text("Closed"),
 							),
 						],
 					),

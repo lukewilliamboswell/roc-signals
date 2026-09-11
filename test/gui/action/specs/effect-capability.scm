@@ -1,0 +1,17 @@
+(test "Repeated effects preserve the handler's reads capability through teardown"
+  (steps
+    (click (role button :name "No-op effect"))
+    (click (role button :name "No-op effect"))
+    (click (role button :name "No-op effect"))
+    (click (role button :name "No-op effect"))
+    (click (role button :name "No-op effect"))
+    (click (role button :name "No-op effect"))
+    (click (role button :name "No-op effect"))
+    (click (role button :name "No-op effect"))
+    (click (role button :name "No-op effect"))
+    (click (role button :name "No-op effect"))
+    (click (role button :name "No-op effect"))
+    (click (role button :name "No-op effect"))
+    (expect-text (text "Idle") "Idle")
+  )
+)

@@ -1,83 +1,66 @@
 import Document
-import pf.Elem exposing [Elem]
+import pf.Action exposing [Action]
 import pf.Files
-import pf.Gui
-import pf.Signal
 import pf.Ui
 import Session
 
-## Task identities are constructed once for this document's owning scope.
+## Each document operation is one effect started by the handler that began
+## it: opening chooses a file and reads it, saving chooses a destination when
+## it needs one and writes the draft it was given. A chooser blocks the effect
+## until the user answers, and an operation the session did not start runs
+## nothing.
 Workflow := [].{
-	Tasks : {
-		choose_open : Signal.Task(Files.Choice, Files.Error),
-		choose_save : Signal.Task(Files.Choice, Files.Error),
-		read : Signal.Task(Files.TextFile, Files.Error),
-		write : Signal.Task(Files.Written, Files.Error),
+	## Open a document: the chooser, then the read, as one effect. The result
+	## installs the decoded text under a fresh lifetime in the same commit.
+	open! : Ui.State(Session.State), Session.Phase => Action(a)
+	open! = |session, phase| {
+		if phase != Busy(Opening) {
+			return Action.none
+		}
+		match Files.choose_file!() {
+			Err(error) => failed(session, error)
+			Ok(Files.Choice.Canceled) => Action.update([session.write(Session.cancel)])
+			Ok(Files.Choice.Chosen(path)) => match Files.read_text!(path) {
+				Ok(file) => Action.update([session.write(|state| Session.loaded(state, file))])
+				Err(error) => failed(session, error)
+			}
+		}
 	}
 
-	create_tasks : () -> Tasks
-	create_tasks = || {
-		choose_open: Files.choose_file_task("notes-open"),
-		choose_save: Files.choose_save_path_task("notes-save-path"),
-		read: Files.read_text_task("notes-read"),
-		write: Files.write_text_task("notes-write"),
+	## Save the body as it was when the save began, spelled the way the file
+	## was: the session's format encodes line endings and a byte-order mark.
+	save! : Ui.State(Session.State), Session.State, Bool => Action(a)
+	save! = |session, state, save_as| {
+		if state.phase != Busy(Saving) {
+			return Action.none
+		}
+		destination = match state.path {
+			Some(path) if !save_as => Ok(Files.Choice.Chosen(path))
+			_ => Files.choose_save_path!({
+				directory: match state.path {
+					None => Home
+					Some(path) => save_directory(path)
+				},
+				suggested_name: match state.path {
+					None => "Untitled note.txt"
+					Some(path) => Session.file_name(path)
+				},
+			})
+		}
+		match destination {
+			Err(error) => failed(session, error)
+			Ok(Files.Choice.Canceled) => Action.update([session.write(Session.cancel)])
+			Ok(Files.Choice.Chosen(path)) => match Files.write_text!({ path, text: Document.encode(state.body, state.format) }) {
+				Ok(_) => Action.update([session.write(|current| Session.written(current, { path, body: state.body }))])
+				Err(error) => failed(session, error)
+			}
+		}
 	}
 
-	## Phase is the only request dependency. Editing during Writing never
-	## restarts or supersedes the immutable snapshot already being saved.
-	bindings : Ui.State(Session.State), Tasks -> List(Elem)
-	bindings = |session, tasks| [
-		Ui.on_change(
-			session.signal().map(|state| state.phase),
-			|phase| match phase {
-				Session.Phase.ChoosingOpen => Files.choose_file(tasks.choose_open)
-				Session.Phase.Reading(path) => Files.read_text(tasks.read, path)
-				Session.Phase.ChoosingSave(choice) => {
-					directory = match choice.previous_path {
-						None => Home
-						Some(path) => save_directory(path)
-					}
-					suggested_name = match choice.previous_path {
-						None => "Untitled note.txt"
-						Some(path) => Session.file_name(path)
-					}
-					Files.choose_save_path(tasks.choose_save, { directory, suggested_name })
-				}
-				Session.Phase.Writing(write) => Files.write_text(tasks.write, { path: write.path, text: Document.encode(write.document.body, write.format) })
-				_ => Signal.noop
-			},
-		),
-		Ui.on_change(Signal.from_task(tasks.choose_open), |status| choice_result(session, status)),
-		Ui.on_change(Signal.from_task(tasks.choose_save), |status| choice_result(session, status)),
-		Ui.on_change(
-			Signal.from_task(tasks.read),
-			|status| match status {
-				Signal.TaskStatus.Loading => Signal.noop
-				# One settled state carries the new lifetime and its text, so the
-				# editor keyed by that lifetime can never mount with older text.
-				Signal.TaskStatus.Done(file) => session.update_cmd(|state| Session.loaded(state, file))
-				Signal.TaskStatus.Failed(error) => failed(session, error)
-			},
-		),
-		Ui.on_change(
-			Signal.from_task(tasks.write),
-			|status| match status {
-				Signal.TaskStatus.Loading => Signal.noop
-				Signal.TaskStatus.Done(result) => session.update_cmd(|state| Session.written(state, result.path))
-				Signal.TaskStatus.Failed(error) => failed(session, error)
-			},
-		),
-	]
-
-	## Cancel the active task through its scope-owned engine registration.
-	cancel : Ui.State(Session.State), Tasks, Session.Phase -> Gui.Cmd
-	cancel = |session, tasks, phase| match phase {
-		Session.Phase.ChoosingOpen => Signal.cancel(tasks.choose_open)
-		Session.Phase.ChoosingSave(_) => Signal.cancel(tasks.choose_save)
-		Session.Phase.Reading(_) => Signal.cancel(tasks.read)
-		Session.Phase.Writing(_) => Signal.cancel(tasks.write)
-		Session.Phase.ConfirmDiscard(_) => session.update_cmd(Session.cancel)
-		Session.Phase.Idle => Signal.noop
+	cancel : Ui.State(Session.State), Session.Phase -> Action(a)
+	cancel = |session, phase| match phase {
+		Session.Phase.ConfirmDiscard(_) => Action.update([session.write(Session.cancel)])
+		_ => Action.none
 	}
 
 	## Reopen the save dialog beside the document's current file. The parent is
@@ -94,23 +77,10 @@ Workflow := [].{
 		}
 	}
 
-	choice_result : Ui.State(Session.State), Signal.TaskStatus(Files.Choice, Files.Error) -> Gui.Cmd
-	choice_result = |session, status| match status {
-		Signal.TaskStatus.Loading => Signal.noop
-		Signal.TaskStatus.Done(Files.Choice.Canceled) => session.update_cmd(Session.cancel)
-		Signal.TaskStatus.Done(Files.Choice.Chosen(path)) => session.update_cmd(|state| Session.choose_path(state, path))
-		Signal.TaskStatus.Failed(error) => failed(session, error)
-	}
-
-	failed : Ui.State(Session.State), Files.Error -> Gui.Cmd
-	failed = |session, error| match error {
-		Files.Error.Canceled => session.update_cmd(Session.cancel)
-		_ => session.update_cmd(|state| Session.failed(state, Files.error_text(error)))
-	}
+	failed : Ui.State(Session.State), Files.Error -> Action(a)
+	failed = |session, error| Action.update([session.write(|state| Session.failed(state, Files.error_text(error)))])
 }
 
-## Save As reopens beside the current file and suggests its real name on either
-## operating system; a Windows path must not suggest a name full of separators.
 expect {
 	Workflow.save_directory("C:\\Users\\Lee\\Ideas.txt") == At("C:\\Users\\Lee") and
 	Workflow.save_directory("/home/lee/ideas.txt") == At("/home/lee") and

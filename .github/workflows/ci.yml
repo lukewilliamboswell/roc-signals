@@ -112,6 +112,28 @@ jobs:
           rustup target add --toolchain 1.95.0 x86_64-pc-windows-gnullvm
       - name: Verify GUI discovery and applications
         run: python scripts/minici gui
+      - name: Diagnose the Windows teardown crash
+        if: failure()
+        timeout-minutes: 5
+        run: |
+          $executable = ".test-out/gui/folder-explorer.exe"
+          if (!(Test-Path $executable)) { exit 0 }
+          & "C:/Program Files/LLVM/bin/lldb.exe" --batch `
+            -o "run" `
+            -k "thread backtrace all" `
+            -k "register read" `
+            -k "disassemble --frame --count 40" `
+            -k "image list -o -f" `
+            -- $executable --host-run-spec-json --host-entropy-seed 0 examples-gui/folder-explorer/specs/windows-paths.scm
+      - name: Preserve the Windows crash executable
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-folder-explorer-crash
+          path: |
+            .test-out/gui/folder-explorer.exe
+            .test-out/gui/folder-explorer.pdb
+          retention-days: 7
       - name: Record Windows archive dependency declarations
         run: |
           python -m unittest discover -s scripts -p 'test_windows_archive_audit.py'

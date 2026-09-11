@@ -113,11 +113,11 @@
       "name": "macos-interfaces",
       "target": "macos-sysroot",
       "repository": "lukewilliamboswell/roc-signals",
-      "release": "deps-macos-interfaces-20260910.1",
+      "release": "deps-macos-interfaces-20260911.1",
       "asset": "macos-interfaces-macos-sysroot.tar",
-      "sha256": "e61d3fb97d56b1f889e8dd766baff504d521efb36a702e703b9ba1b22d34c84b",
-      "size": 399360,
-      "source_sha": "cc19c282efcace4308f2c4abeee9f848c0781a07",
+      "sha256": "83f55925dc483908429ef2dc4876a58b034c20661ed793555e5d65aff94065d1",
+      "size": 409600,
+      "source_sha": "adf580c4390cc6b591e65d1c0ce35fe987193c37",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/macos-interface-dependencies.yml"
     }

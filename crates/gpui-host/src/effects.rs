@@ -1,249 +1,361 @@
-//! Native service adapter. Only owned primitive requests leave the UI thread;
-//! all task identity, cancellation state, and result propagation belong to Zig.
-use crate::protocol_gen::task_kind;
+//! Native filesystem services for the hosted `Files` functions. Each request
+//! arrives from an effect worker with its arguments as plain buffers, runs to
+//! completion there, and hands its result back as C structs the Zig host
+//! copies into Roc values. Choosers are the one kind that waits for the UI
+//! thread to show a dialog.
 use crate::{
-    Runtime,
-    assets::{self, AssetStatus},
-    bridge::Effect,
-    file_io::{self, FileError, Kind, LogChange, LogCursor, LogPosition, LogState},
+    Runtime, assets,
+    file_io::{self, FileError, Kind},
+    workers,
 };
 use gpui::{Context, PathPromptOptions};
 use std::{
-    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::AtomicBool,
+        mpsc,
     },
 };
 
-const MAX_REQUESTS: usize = 16;
-const MAX_PACKET: usize = 8 * 1024 * 1024;
-
-#[derive(Default)]
-pub(crate) struct Manager {
-    jobs: HashMap<u64, Arc<AtomicBool>>,
-    /// Paths a scripted run has queued as the answers to the next choosers, in
-    /// order. A native dialog cannot be driven from a script, and the display-free
-    /// specs resolve choosers by name; this is the scripted window's equivalent,
-    /// so a scenario can open a real file or folder and exercise the real worker.
-    scripted_choices: VecDeque<PathBuf>,
+/// An owned byte buffer handed to the Zig host. The host copies it into a Roc
+/// value and returns it through `signals_bytes_release`.
+#[repr(C)]
+pub(crate) struct Bytes {
+    ptr: *mut u8,
+    pub(crate) len: usize,
+    cap: usize,
 }
 
-impl Manager {
-    /// Queues the paths the next file and folder choosers will return instead
-    /// of opening a dialog. Only a scripted run supplies these; an ordinary
-    /// launch always prompts.
-    pub(crate) fn answer_choosers(&mut self, paths: Vec<PathBuf>) {
-        self.scripted_choices.extend(paths);
+impl Bytes {
+    pub(crate) fn from_vec(vec: Vec<u8>) -> Self {
+        let mut vec = vec;
+        let bytes = Self {
+            ptr: vec.as_mut_ptr(),
+            len: vec.len(),
+            cap: vec.capacity(),
+        };
+        std::mem::forget(vec);
+        bytes
     }
+    pub(crate) fn from_string(text: String) -> Self {
+        Self::from_vec(text.into_bytes())
+    }
+    /// Reclaims the buffer; a buffer the host never filled is a valid empty vector.
+    unsafe fn release(self) {
+        if self.ptr.is_null() {
+            return;
+        }
+        drop(unsafe { Vec::from_raw_parts(self.ptr, self.len, self.cap) });
+    }
+}
 
-    pub(crate) fn accept(&mut self, message: Effect, cx: &mut Context<Runtime>) {
-        match message {
-            Effect::Cancel(id) => self
-                .jobs
-                .get(&id)
-                .expect("cancel for unknown native worker")
-                .store(true, Ordering::Release),
-            Effect::Start { id, kind, request } => {
-                assert!(
-                    self.jobs.len() < MAX_REQUESTS,
-                    "engine exceeded native task capacity"
-                );
-                let request =
-                    Request::decode(kind, &request).expect("malformed native Files request");
-                let cancel = Arc::new(AtomicBool::new(false));
-                assert!(
-                    self.jobs.insert(id, cancel.clone()).is_none(),
-                    "duplicate native task identity"
-                );
-                match request {
-                    Request::ChooseFile | Request::ChooseDirectory => {
-                        if let Some(path) = self.scripted_choices.pop_front() {
-                            // The scripted answer takes the same validated path
-                            // the dialog's own result would; nothing downstream
-                            // can tell the two apart.
-                            self.deliver(id, choice(Some(path)), cancel, cx);
-                            return;
-                        }
-                        let directories = matches!(request, Request::ChooseDirectory);
-                        let receiver = cx.prompt_for_paths(PathPromptOptions {
-                            files: !directories,
-                            directories,
-                            multiple: false,
-                            prompt: None,
-                        });
-                        cx.spawn(async move |runtime, cx| {
-                            let result = match receiver.await {
-                                Ok(Ok(Some(mut paths))) if paths.len() == 1 => {
-                                    choice(Some(paths.remove(0)))
-                                }
-                                Ok(Ok(None)) => choice(None),
-                                Ok(Ok(Some(_))) => Err(FileError::Unavailable(
-                                    "single-path chooser returned an invalid selection count"
-                                        .into(),
-                                )),
-                                Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
-                                Err(error) => Err(FileError::Unavailable(error.to_string())),
-                            };
-                            let (failed, payload) = settle(result, &cancel);
-                            let _ = runtime.update(cx, |runtime, cx| {
-                                runtime.complete_task(id, failed, &payload, cx)
-                            });
-                        })
-                        .detach();
-                    }
-                    Request::ChooseSavePath {
-                        directory,
-                        suggested_name,
-                    } => {
-                        let directory = match directory.resolve() {
-                            Ok(directory) => directory,
-                            Err(error) => {
-                                self.deliver(id, Err(error), cancel, cx);
-                                return;
-                            }
-                        };
-                        if let Err(error) = validate_save_options(&directory, &suggested_name) {
-                            self.deliver(id, Err(error), cancel, cx);
-                            return;
-                        }
-                        let receiver =
-                            cx.prompt_for_new_path(Path::new(&directory), Some(&suggested_name));
-                        cx.spawn(async move |runtime, cx| {
-                            let result = match receiver.await {
-                                Ok(Ok(path)) => choice(path),
-                                Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
-                                Err(error) => Err(FileError::Unavailable(error.to_string())),
-                            };
-                            let (failed, payload) = settle(result, &cancel);
-                            let _ = runtime.update(cx, |runtime, cx| {
-                                runtime.complete_task(id, failed, &payload, cx)
-                            });
-                        })
-                        .detach();
-                    }
-                    request => {
-                        let worker_cancel = cancel.clone();
-                        let worker = cx.background_executor().spawn(async move {
-                            match request {
-                                Request::ReadText(path) => {
-                                    file_io::read_text(&path, &worker_cancel)
-                                        .map(|file| packet(&[&file.path, &file.text]))
-                                }
-                                Request::WriteText { path, text } => {
-                                    file_io::write_text(&path, &text, &worker_cancel, id)
-                                        .map(|file| packet(&[&file.path, &file.bytes.to_string()]))
-                                }
-                                Request::Scan(path) => {
-                                    file_io::scan(&path, &worker_cancel).map(scan_packet)
-                                }
-                                Request::ListDirectory(path) => {
-                                    file_io::list_directory(&path, &worker_cancel).map(|listing| {
-                                        entries_packet(&listing.path, listing.entries)
-                                    })
-                                }
-                                Request::OpenPath(path) => {
-                                    file_io::open_path(&path, &worker_cancel)
-                                        .map(|opened| packet(&[&opened.path]))
-                                }
-                                Request::ReadPreview(path) => {
-                                    file_io::read_preview(&path, &worker_cancel).map(|preview| {
-                                        packet(&[
-                                            &preview.path,
-                                            &preview.text,
-                                            if preview.truncated { "true" } else { "false" },
-                                        ])
-                                    })
-                                }
-                                Request::ReadLog { path, position } => {
-                                    file_io::read_log(&path, position, &worker_cancel)
-                                        .map(log_packet)
-                                }
-                                Request::VerifyAssets(entries) => {
-                                    assets::verify(&entries, &worker_cancel).map(assets_packet)
-                                }
-                                _ => unreachable!(),
-                            }
-                        });
-                        cx.spawn(async move |runtime, cx| {
-                            // A successful save may already have committed its rename.
-                            // The engine still rejects canceled delivery by request ID.
-                            let result = worker.await;
-                            let (failed, payload) = encode_result(result);
-                            let _ = runtime.update(cx, |runtime, cx| {
-                                runtime.complete_task(id, failed, &payload, cx)
-                            });
-                        })
-                        .detach();
-                    }
-                }
+#[repr(C)]
+pub(crate) struct FilesErrorOut {
+    kind: u32,
+    detail: Bytes,
+}
+
+#[repr(C)]
+pub(crate) struct FileEntryOut {
+    path: Bytes,
+    bytes: u64,
+    kind: u32,
+}
+
+#[repr(C)]
+pub(crate) struct FileEntriesOut {
+    ptr: *mut FileEntryOut,
+    len: usize,
+    cap: usize,
+}
+
+
+/// Every operation reports failure through the same struct; the kind numbers
+/// are the ones `native_services.zig` maps onto the Roc `Files.Error` tags.
+pub(crate) fn error_out(error: FileError) -> FilesErrorOut {
+    let (kind, detail) = match error {
+        FileError::Canceled => (0, String::new()),
+        FileError::NotFound(detail) => (1, detail),
+        FileError::PermissionDenied(detail) => (2, detail),
+        FileError::InvalidUtf8(detail) => (3, detail),
+        FileError::InvalidPath(detail) => (4, detail),
+        FileError::ResourceLimit(detail) => (5, detail),
+        FileError::Io(detail) => (6, detail),
+        FileError::Unavailable(detail) => (7, detail),
+    };
+    FilesErrorOut {
+        kind,
+        detail: Bytes::from_string(file_io::bounded_detail(detail)),
+    }
+}
+
+/// Views a Roc string argument; Roc strings are UTF-8 by construction.
+unsafe fn text<'a>(ptr: *const u8, len: usize, what: &str) -> Result<&'a str, FileError> {
+    if len == 0 {
+        return Ok("");
+    }
+    std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len) })
+        .map_err(|_| FileError::InvalidUtf8(what.into()))
+}
+
+fn entries_out(entries: Vec<file_io::Entry>) -> FileEntriesOut {
+    let mut out: Vec<FileEntryOut> = entries
+        .into_iter()
+        .map(|entry| FileEntryOut {
+            path: Bytes::from_string(entry.path),
+            bytes: entry.bytes,
+            kind: match entry.kind {
+                Kind::File => 0,
+                Kind::Directory => 1,
+                Kind::SymbolicLink => 2,
+                Kind::Other => 3,
+            },
+        })
+        .collect();
+    let result = FileEntriesOut {
+        ptr: out.as_mut_ptr(),
+        len: out.len(),
+        cap: out.capacity(),
+    };
+    std::mem::forget(out);
+    result
+}
+
+
+fn deliver<T>(result: Result<T, FileError>, err: *mut FilesErrorOut, on_ok: impl FnOnce(T)) -> u32 {
+    match result {
+        Ok(value) => {
+            on_ok(value);
+            0
+        }
+        Err(error) => {
+            unsafe { err.write(error_out(error)) };
+            1
+        }
+    }
+}
+
+#[repr(C)]
+pub(crate) struct StatOut {
+    kind: u32,
+    size: u64,
+    device: u64,
+    inode: u64,
+}
+
+fn kind_out(kind: Kind) -> u32 {
+    match kind {
+        Kind::File => 0,
+        Kind::Directory => 1,
+        Kind::SymbolicLink => 2,
+        Kind::Other => 3,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_stat(
+    path: *const u8,
+    path_len: usize,
+    out: *mut StatOut,
+    err: *mut FilesErrorOut,
+) -> u32 {
+    let result = unsafe { text(path, path_len, "path") }
+        .and_then(|path| file_io::stat(path, &AtomicBool::new(false)));
+    deliver(result, err, |meta| unsafe {
+        out.write(StatOut {
+            kind: kind_out(meta.kind),
+            size: meta.size,
+            device: meta.device,
+            inode: meta.inode,
+        });
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_read_bytes(
+    path: *const u8,
+    path_len: usize,
+    offset: u64,
+    max_bytes: u64,
+    out_bytes: *mut Bytes,
+    out_size: *mut u64,
+    err: *mut FilesErrorOut,
+) -> u32 {
+    let max = max_bytes.min(usize::MAX as u64) as usize;
+    let result = unsafe { text(path, path_len, "path") }
+        .and_then(|path| file_io::read_at(path, offset, max, &AtomicBool::new(false)));
+    deliver(result, err, |(bytes, size)| unsafe {
+        out_bytes.write(Bytes::from_vec(bytes));
+        out_size.write(size);
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_write_bytes(
+    path: *const u8,
+    path_len: usize,
+    bytes: *const u8,
+    bytes_len: usize,
+    err: *mut FilesErrorOut,
+) -> u32 {
+    let content: &[u8] = if bytes_len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(bytes, bytes_len) }
+    };
+    let result = unsafe { text(path, path_len, "path") }
+        .and_then(|path| file_io::write_bytes(path, content, &AtomicBool::new(false)));
+    deliver(result, err, |()| {})
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_rename(
+    from: *const u8,
+    from_len: usize,
+    to: *const u8,
+    to_len: usize,
+    err: *mut FilesErrorOut,
+) -> u32 {
+    let result = unsafe { text(from, from_len, "from") }.and_then(|from| {
+        let to = unsafe { text(to, to_len, "to") }?;
+        file_io::rename(from, to, &AtomicBool::new(false))
+    });
+    deliver(result, err, |()| {})
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_remove(
+    path: *const u8,
+    path_len: usize,
+    err: *mut FilesErrorOut,
+) -> u32 {
+    let result = unsafe { text(path, path_len, "path") }
+        .and_then(|path| file_io::remove(path, &AtomicBool::new(false)));
+    deliver(result, err, |()| {})
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_sync(
+    path: *const u8,
+    path_len: usize,
+    err: *mut FilesErrorOut,
+) -> u32 {
+    let result = unsafe { text(path, path_len, "path") }
+        .and_then(|path| file_io::sync(path, &AtomicBool::new(false)));
+    deliver(result, err, |()| {})
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_list_directory(
+    path: *const u8,
+    path_len: usize,
+    out_path: *mut Bytes,
+    out_entries: *mut FileEntriesOut,
+    err: *mut FilesErrorOut,
+) -> u32 {
+    let result = unsafe { text(path, path_len, "path") }
+        .and_then(|path| file_io::list_directory(path, &AtomicBool::new(false)));
+    deliver(result, err, |listing| unsafe {
+        out_path.write(Bytes::from_string(listing.path));
+        out_entries.write(entries_out(listing.entries));
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_open_path(
+    path: *const u8,
+    path_len: usize,
+    err: *mut FilesErrorOut,
+) -> u32 {
+    let result = unsafe { text(path, path_len, "path") }
+        .and_then(|path| file_io::open_path(path, &AtomicBool::new(false)));
+    deliver(result, err, |_| {})
+}
+
+/// The folder relative asset sources resolve against, as the host was launched.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_assets_root(out: *mut Bytes) {
+    let root = assets::root().to_string_lossy().into_owned();
+    unsafe { out.write(Bytes::from_string(root)) };
+}
+
+/// Shows a chooser for a waiting worker and answers it with the chosen path,
+/// `None` when the user dismissed the dialog.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_choose(
+    kind: u32,
+    directory: *const u8,
+    directory_len: usize,
+    home: u32,
+    name: *const u8,
+    name_len: usize,
+    out_path: *mut Bytes,
+    out_canceled: *mut u32,
+    err: *mut FilesErrorOut,
+) -> u32 {
+    let request = (|| {
+        Ok(match kind {
+            0 => Chooser::File,
+            1 => Chooser::Directory,
+            _ => Chooser::SavePath {
+                directory: if home != 0 {
+                    Directory::Home
+                } else {
+                    Directory::At(unsafe { text(directory, directory_len, "directory") }?.to_owned())
+                },
+                suggested_name: unsafe { text(name, name_len, "suggested name") }?.to_owned(),
+            },
+        })
+    })();
+    let result = request.and_then(wait_for_chooser).and_then(|choice| match choice {
+        None => Ok(None),
+        Some(path) => {
+            let path = path
+                .to_str()
+                .ok_or_else(|| FileError::InvalidUtf8("selected path".into()))?;
+            validate_path(path)?;
+            Ok(Some(path.to_owned()))
+        }
+    });
+    deliver(result, err, |choice| unsafe {
+        match choice {
+            None => {
+                out_canceled.write(1);
+                out_path.write(Bytes::from_vec(Vec::new()));
+            }
+            Some(path) => {
+                out_canceled.write(0);
+                out_path.write(Bytes::from_string(path));
             }
         }
-    }
+    })
+}
 
-    fn deliver(
-        &self,
-        id: u64,
-        result: Result<String, FileError>,
-        cancel: Arc<AtomicBool>,
-        cx: &mut Context<Runtime>,
-    ) {
-        cx.spawn(async move |runtime, cx| {
-            let (failed, payload) = settle(result, &cancel);
-            let _ = runtime.update(cx, |runtime, cx| {
-                runtime.complete_task(id, failed, &payload, cx)
-            });
-        })
-        .detach();
-    }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_bytes_release(bytes: Bytes) {
+    unsafe { bytes.release() }
+}
 
-    pub(crate) fn complete(&mut self, id: u64) {
-        assert!(
-            self.jobs.remove(&id).is_some(),
-            "completion for unknown native worker"
-        );
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_file_entries_release(entries: FileEntriesOut) {
+    if entries.ptr.is_null() {
+        return;
     }
-
-    pub(crate) fn shutdown(&mut self) {
-        for cancel in self.jobs.values() {
-            cancel.store(true, Ordering::Release);
-        }
-        self.jobs.clear();
+    for entry in unsafe { Vec::from_raw_parts(entries.ptr, entries.len, entries.cap) } {
+        unsafe { entry.path.release() };
     }
 }
 
-impl Drop for Manager {
-    fn drop(&mut self) {
-        self.shutdown();
-    }
-}
 
-#[derive(Debug, PartialEq, Eq)]
-enum Request {
-    ChooseFile,
-    ChooseDirectory,
-    ChooseSavePath {
+enum Chooser {
+    File,
+    Directory,
+    SavePath {
         directory: Directory,
         suggested_name: String,
     },
-    ReadText(String),
-    WriteText {
-        path: String,
-        text: String,
-    },
-    Scan(String),
-    ListDirectory(String),
-    OpenPath(String),
-    ReadPreview(String),
-    ReadLog {
-        path: String,
-        position: LogPosition,
-    },
-    VerifyAssets(Vec<(String, String)>),
 }
 
-#[derive(Debug, PartialEq, Eq)]
 enum Directory {
     Home,
     At(String),
@@ -256,6 +368,22 @@ impl Directory {
             Self::At(path) => Ok(path),
         }
     }
+}
+
+thread_local! {
+    /// Paths a scripted run has queued as the answers to the next choosers, in
+    /// order. A native dialog cannot be driven from a scenario, and the
+    /// display-free specs answer choosers with stubs; this is the window run's
+    /// equivalent, consulted on the UI thread before any dialog would open.
+    static SCRIPTED_CHOICES: std::cell::RefCell<std::collections::VecDeque<PathBuf>> =
+        std::cell::RefCell::new(std::collections::VecDeque::new());
+}
+
+/// Queues the paths the next file and folder choosers will return instead of
+/// opening a dialog. Only a scripted run supplies these; an ordinary launch
+/// always prompts.
+pub(crate) fn answer_choosers(paths: Vec<PathBuf>) {
+    SCRIPTED_CHOICES.with(|choices| choices.borrow_mut().extend(paths));
 }
 
 /// Resolves the native user's profile root from the environment an ordinary
@@ -291,196 +419,87 @@ fn home_directory(variable: impl Fn(&str) -> Option<String>) -> Result<String, F
     })
 }
 
-impl Request {
-    fn decode(kind: u32, payload: &str) -> Result<Self, &'static str> {
-        if payload.len() > MAX_PACKET {
-            return Err("packet limit");
-        }
-        let mut reader = Reader(payload);
-        if reader.frame()? != "files1" {
-            return Err("unsupported codec");
-        }
-        let request = match kind {
-            task_kind::CHOOSE_FILE => Self::ChooseFile,
-            task_kind::CHOOSE_DIRECTORY => Self::ChooseDirectory,
-            task_kind::CHOOSE_SAVE_PATH => {
-                let kind = reader.frame()?;
-                let path = reader.frame()?;
-                let directory = match (kind, path) {
-                    ("home", "") => Directory::Home,
-                    ("at", path) => Directory::At(path.into()),
-                    _ => return Err("invalid save directory"),
+/// A chooser a worker effect is waiting on. The worker blocks on the other
+/// end of `reply` until the dialog closes.
+pub(crate) struct ChooserRequest {
+    request: Chooser,
+    reply: mpsc::Sender<Result<Option<PathBuf>, FileError>>,
+}
+
+/// Asks the UI thread to show a chooser and blocks the calling worker until
+/// the user answers. Without a listening window there is nobody to show it.
+fn wait_for_chooser(request: Chooser) -> Result<Option<PathBuf>, FileError> {
+    let (reply, receiver) = mpsc::channel();
+    if !workers::post(workers::Message::Chooser(ChooserRequest { request, reply })) {
+        return Err(FileError::Unavailable(
+            "no window is open to show a file chooser".into(),
+        ));
+    }
+    receiver.recv().map_err(|_| {
+        FileError::Unavailable("the window closed before the file chooser answered".into())
+    })?
+}
+
+/// Shows the dialog a worker asked for and answers it when the dialog closes.
+/// The worker is blocked on `reply` in `signals_files_choose`.
+pub(crate) fn prompt(waiting: ChooserRequest, cx: &mut Context<Runtime>) {
+    let ChooserRequest { request, reply } = waiting;
+    if let Some(path) = SCRIPTED_CHOICES.with(|choices| choices.borrow_mut().pop_front()) {
+        // The scripted answer takes the same validated path the dialog's own
+        // result would; nothing downstream can tell the two apart.
+        let _ = reply.send(Ok(Some(path)));
+        return;
+    }
+    match request {
+        Chooser::File | Chooser::Directory => {
+            let directories = matches!(request, Chooser::Directory);
+            let receiver = cx.prompt_for_paths(PathPromptOptions {
+                files: !directories,
+                directories,
+                multiple: false,
+                prompt: None,
+            });
+            cx.spawn(async move |_, _| {
+                let result = match receiver.await {
+                    Ok(Ok(Some(mut paths))) if paths.len() == 1 => Ok(Some(paths.remove(0))),
+                    Ok(Ok(None)) => Ok(None),
+                    Ok(Ok(Some(_))) => Err(FileError::Unavailable(
+                        "single-path chooser returned an invalid selection count".into(),
+                    )),
+                    Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
+                    Err(error) => Err(FileError::Unavailable(error.to_string())),
                 };
-                Self::ChooseSavePath {
-                    directory,
-                    suggested_name: reader.frame()?.into(),
+                let _ = reply.send(result);
+            })
+            .detach();
+        }
+        Chooser::SavePath {
+            directory,
+            suggested_name,
+        } => {
+            let directory = match directory.resolve().and_then(|directory| {
+                validate_save_options(&directory, &suggested_name).map(|_| directory)
+            }) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                    return;
                 }
-            }
-            task_kind::READ_TEXT => Self::ReadText(reader.frame()?.into()),
-            task_kind::WRITE_TEXT => Self::WriteText {
-                path: reader.frame()?.into(),
-                text: reader.frame()?.into(),
-            },
-            task_kind::SCAN_DIRECTORY => Self::Scan(reader.frame()?.into()),
-            task_kind::LIST_DIRECTORY => Self::ListDirectory(reader.frame()?.into()),
-            task_kind::OPEN_PATH => Self::OpenPath(reader.frame()?.into()),
-            task_kind::READ_PREVIEW => Self::ReadPreview(reader.frame()?.into()),
-            task_kind::READ_LOG => {
-                let path = reader.frame()?.into();
-                let position = reader.frame()?;
-                let device = reader.number()?;
-                let inode = reader.number()?;
-                let offset = reader.number()?;
-                let position = match (position, device, inode, offset) {
-                    ("start", 0, 0, 0) => LogPosition::Start,
-                    ("end", 0, 0, 0) => LogPosition::End,
-                    ("after", device, inode, offset) => LogPosition::After(LogCursor {
-                        device,
-                        inode,
-                        offset,
-                    }),
-                    _ => return Err("invalid log cursor"),
+            };
+            let receiver = cx.prompt_for_new_path(Path::new(&directory), Some(&suggested_name));
+            cx.spawn(async move |_, _| {
+                let result = match receiver.await {
+                    Ok(Ok(path)) => Ok(path),
+                    Ok(Err(error)) => Err(FileError::Unavailable(error.to_string())),
+                    Err(error) => Err(FileError::Unavailable(error.to_string())),
                 };
-                Self::ReadLog { path, position }
-            }
-            task_kind::VERIFY_ASSETS => {
-                let count = reader.number()? as usize;
-                if count == 0 || count > assets::MAX_MANIFEST_ASSETS {
-                    return Err("asset manifest count out of bounds");
-                }
-                let mut entries = Vec::with_capacity(count);
-                for _ in 0..count {
-                    let name = reader.frame()?;
-                    if name.is_empty() || name.len() > assets::MAX_SOURCE_BYTES {
-                        return Err("asset name out of bounds");
-                    }
-                    let digest = reader.frame()?;
-                    let hex = digest.len() == 64
-                        && digest.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-                    if !hex {
-                        return Err("asset digest is not lowercase hex SHA-256");
-                    }
-                    entries.push((name.into(), digest.into()));
-                }
-                Self::VerifyAssets(entries)
-            }
-            _ => return Err("unknown task kind"),
-        };
-        if !reader.0.is_empty() {
-            return Err("trailing fields");
+                let _ = reply.send(result);
+            })
+            .detach();
         }
-        Ok(request)
     }
 }
 
-struct Reader<'a>(&'a str);
-impl<'a> Reader<'a> {
-    fn number(&mut self) -> Result<u64, &'static str> {
-        let frame = self.frame()?;
-        let value = frame
-            .parse::<u64>()
-            .map_err(|_| "invalid unsigned number")?;
-        if value.to_string() != frame {
-            return Err("noncanonical unsigned number");
-        }
-        Ok(value)
-    }
-    fn frame(&mut self) -> Result<&'a str, &'static str> {
-        let (length, rest) = self.0.split_once(':').ok_or("missing length")?;
-        let length_value = length.parse::<usize>().map_err(|_| "invalid length")?;
-        if length_value.to_string() != length {
-            return Err("noncanonical length");
-        }
-        let value = rest
-            .get(..length_value)
-            .ok_or("truncated frame or split UTF-8")?;
-        self.0 = &rest[length_value..];
-        Ok(value)
-    }
-}
-
-fn append_frame(output: &mut String, value: &str) {
-    use std::fmt::Write;
-    write!(output, "{}:", value.len()).unwrap();
-    output.push_str(value);
-    assert!(
-        output.len() <= MAX_PACKET,
-        "native Files result exceeded packet bound"
-    );
-}
-
-fn packet(fields: &[&str]) -> String {
-    let mut output = String::new();
-    append_frame(&mut output, "files1");
-    for field in fields {
-        append_frame(&mut output, field);
-    }
-    output
-}
-
-fn scan_packet(scan: file_io::Scan) -> String {
-    entries_packet(&scan.root, scan.entries)
-}
-
-fn entries_packet(path: &str, entries: Vec<file_io::Entry>) -> String {
-    let mut output = packet(&[path, &entries.len().to_string()]);
-    for entry in entries {
-        append_frame(&mut output, &entry.path);
-        append_frame(
-            &mut output,
-            match entry.kind {
-                Kind::File => "file",
-                Kind::Directory => "directory",
-                Kind::SymbolicLink => "symbolic-link",
-                Kind::Other => "other",
-            },
-        );
-        append_frame(&mut output, &entry.bytes.to_string());
-    }
-    output
-}
-
-fn assets_packet(report: assets::AssetReport) -> String {
-    let mut output = packet(&[&report.len().to_string()]);
-    for (name, status) in report {
-        append_frame(&mut output, &name);
-        append_frame(
-            &mut output,
-            match status {
-                AssetStatus::Ok => "ok",
-                AssetStatus::Missing => "missing",
-                AssetStatus::Mismatch => "mismatch",
-            },
-        );
-    }
-    output
-}
-
-fn log_packet(chunk: file_io::LogChunk) -> String {
-    packet(&[
-        &chunk.path,
-        &chunk.text,
-        &chunk.cursor.device.to_string(),
-        &chunk.cursor.inode.to_string(),
-        &chunk.cursor.offset.to_string(),
-        match chunk.change {
-            LogChange::Initial => "initial",
-            LogChange::Continued => "continued",
-            LogChange::Rotated => "rotated",
-            LogChange::Truncated => "truncated",
-        },
-        match chunk.state {
-            LogState::More => "more",
-            LogState::AtEnd => "at-end",
-            LogState::PartialUtf8 => "partial-utf8",
-        },
-    ])
-}
-
-/// Accepts the absolute paths the file workers can act on. The Windows worker
-/// walks names relative to a drive's volume root and refuses UNC and device
-/// prefixes; refusing them here as well means a network-share pick fails at
-/// the chooser, with a typed reason, rather than at the first read.
 fn validate_path(path: &str) -> Result<(), FileError> {
     if path.len() > 4096 {
         return Err(FileError::InvalidPath("path exceeds 4096 bytes".into()));
@@ -513,265 +532,23 @@ fn validate_save_options(directory: &str, name: &str) -> Result<(), FileError> {
     Ok(())
 }
 
-fn choice(path: Option<PathBuf>) -> Result<String, FileError> {
-    match path {
-        None => Ok(packet(&["canceled"])),
-        Some(path) => {
-            let path = path
-                .to_str()
-                .ok_or_else(|| FileError::InvalidUtf8("selected path".into()))?;
-            validate_path(path)?;
-            Ok(packet(&["chosen", path]))
-        }
-    }
-}
-
-fn settle(result: Result<String, FileError>, cancel: &AtomicBool) -> (bool, String) {
-    encode_result(if cancel.load(Ordering::Acquire) {
-        Err(FileError::Canceled)
-    } else {
-        result
-    })
-}
-
-fn encode_result(result: Result<String, FileError>) -> (bool, String) {
-    match result {
-        Ok(payload) => (false, payload),
-        Err(error) => {
-            let (code, detail) = match error {
-                FileError::Canceled => ("canceled", String::new()),
-                FileError::NotFound(detail) => ("not-found", detail),
-                FileError::PermissionDenied(detail) => ("permission-denied", detail),
-                FileError::InvalidUtf8(detail) => ("invalid-utf8", detail),
-                FileError::InvalidPath(detail) => ("invalid-path", detail),
-                FileError::ResourceLimit(detail) => ("resource-limit", detail),
-                FileError::Io(detail) => ("io", detail),
-                FileError::Unavailable(detail) => ("unavailable", detail),
-            };
-            (true, packet(&[code, &file_io::bounded_detail(detail)]))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// An absolute directory under the host operating system's path rules.
-    const ABSOLUTE_DIRECTORY: &str = if cfg!(windows) { "C:\\tmp" } else { "/tmp" };
-
-    /// A path below the absolute directory, spelled the way this system spells it.
-    fn under(name: &str) -> String {
-        format!("{ABSOLUTE_DIRECTORY}{}{name}", std::path::MAIN_SEPARATOR)
-    }
-
     #[test]
-    fn windows_paths_outside_a_drive_are_refused_at_validation() {
-        if cfg!(windows) {
-            assert!(validate_path(r"C:\Users\Lee").is_ok());
-            assert!(validate_path(r"\\?\C:\Users\Lee").is_ok());
-            for refused in [r"\\server\share\draft.txt", r"\\?\UNC\server\share", r"\\.\pipe\x"] {
-                let Err(FileError::InvalidPath(message)) = validate_path(refused) else {
-                    panic!("accepted {refused}");
-                };
-                assert!(message.contains("drive-rooted"), "{message}");
-            }
-        } else {
-            assert!(validate_path("/srv/share/draft.txt").is_ok());
-        }
-    }
-
-    #[test]
-    fn new_task_routes_and_cursor_frames_are_strict_and_unambiguous() {
-        assert_eq!(
-            Request::decode(7, &packet(&[ABSOLUTE_DIRECTORY])).unwrap(),
-            Request::ListDirectory(ABSOLUTE_DIRECTORY.into())
-        );
-        assert_eq!(
-            Request::decode(8, &packet(&[&under("file")])).unwrap(),
-            Request::OpenPath(under("file"))
-        );
-        assert_eq!(
-            Request::decode(9, &packet(&[&under("file")])).unwrap(),
-            Request::ReadPreview(under("file"))
-        );
-        assert_eq!(
-            Request::decode(
-                10,
-                &packet(&[&under("log"), "after", "1", "2", "18446744073709551615"])
-            )
-            .unwrap(),
-            Request::ReadLog {
-                path: under("log"),
-                position: LogPosition::After(LogCursor {
-                    device: 1,
-                    inode: 2,
-                    offset: u64::MAX
-                })
-            }
-        );
-        for fields in [
-            vec![&*under("log"), "start", "1", "0", "0"],
-            vec![&*under("log"), "after", "01", "0", "0"],
-            vec![&*under("log"), "after", "0", "0", "18446744073709551616"],
-            vec![&*under("log"), "middle", "0", "0", "0"],
-            vec![&*under("log"), "end", "0", "0"],
-        ] {
-            assert!(Request::decode(10, &packet(&fields)).is_err());
-        }
-        let chunk = file_io::LogChunk {
-            path: under("log"),
-            text: "λ\n".into(),
-            cursor: LogCursor {
-                device: 7,
-                inode: 13,
-                offset: 3,
-            },
-            change: LogChange::Rotated,
-            state: LogState::PartialUtf8,
-        };
-        assert_eq!(
-            log_packet(chunk),
-            packet(&[&under("log"), "λ\n", "7", "13", "3", "rotated", "partial-utf8"])
-        );
-    }
-
-    #[test]
-    fn asset_verification_requests_and_reports_are_strictly_framed() {
-        let digest = "a".repeat(64);
-        assert_eq!(
-            Request::decode(11, &packet(&["2", "avatars/maya.png", &digest, "glyphs/λ.png", &digest])).unwrap(),
-            Request::VerifyAssets(vec![
-                ("avatars/maya.png".into(), digest.clone()),
-                ("glyphs/λ.png".into(), digest.clone()),
-            ])
-        );
-        for fields in [
-            vec!["0"],
-            vec!["257"],
-            vec!["1", "", &digest],
-            vec!["1", "x.png", "A"],
-            vec!["2", "x.png", &digest],
-            vec!["1", "x.png", &digest[..63]],
-        ] {
-            assert!(Request::decode(11, &packet(&fields)).is_err(), "accepted {fields:?}");
-        }
-        assert_eq!(
-            assets_packet(vec![
-                ("avatars/maya.png".into(), AssetStatus::Ok),
-                ("glyphs/λ.png".into(), AssetStatus::Missing),
-                ("x.png".into(), AssetStatus::Mismatch),
-            ]),
-            packet(&["3", "avatars/maya.png", "ok", "glyphs/λ.png", "missing", "x.png", "mismatch"])
-        );
-    }
-
-    #[test]
-    fn maximum_request_name_returns_a_bounded_typed_refusal() {
-        let name = "x".repeat(MAX_PACKET - 22 - ABSOLUTE_DIRECTORY.len());
-        let request = packet(&["at", ABSOLUTE_DIRECTORY, &name]);
-        assert_eq!(request.len(), MAX_PACKET);
-        let Request::ChooseSavePath { suggested_name, .. } = Request::decode(3, &request).unwrap()
-        else {
-            panic!("wrong request kind")
-        };
-        let error = validate_save_options(ABSOLUTE_DIRECTORY, &suggested_name).unwrap_err();
-        assert_eq!(
-            encode_result(Err(error)),
-            (
-                true,
-                packet(&[
-                    "invalid-path",
-                    "suggested file name exceeds 255 UTF-8 bytes"
-                ])
-            )
-        );
-    }
-
-    #[test]
-    fn error_detail_limits_preserve_codes_and_mark_utf8_truncation() {
-        let detail = format!("{}λ{}", "x".repeat(4083), "é".repeat(MAX_PACKET / 2));
-        for (constructor, code) in [
-            (FileError::NotFound as fn(String) -> FileError, "not-found"),
-            (FileError::PermissionDenied, "permission-denied"),
-            (FileError::InvalidUtf8, "invalid-utf8"),
-            (FileError::InvalidPath, "invalid-path"),
-            (FileError::ResourceLimit, "resource-limit"),
-            (FileError::Io, "io"),
-            (FileError::Unavailable, "unavailable"),
-        ] {
-            let (failed, payload) = encode_result(Err(constructor(detail.clone())));
-            assert!(failed);
-            let mut reader = Reader(&payload);
-            assert_eq!(reader.frame().unwrap(), "files1");
-            assert_eq!(reader.frame().unwrap(), code);
-            let encoded_detail = reader.frame().unwrap();
-            assert_eq!(encoded_detail, format!("{} [truncated]", "x".repeat(4083)));
-            assert!(encoded_detail.len() <= file_io::MAX_ERROR_DETAIL_BYTES);
-            assert!(reader.0.is_empty());
-        }
-        assert_eq!(
-            encode_result(Err(FileError::Io("ordinary failure".into()))),
-            (true, packet(&["io", "ordinary failure"]))
-        );
-    }
-
-    #[test]
-    fn frames_preserve_utf8_newlines_colons_and_empty_text() {
-        let path = &under("a:b\nλ.txt");
-        let text = "first\nsecond:\0λ";
-        assert_eq!(
-            Request::decode(5, &packet(&[path, text])).unwrap(),
-            Request::WriteText {
-                path: path.into(),
-                text: text.into()
-            }
-        );
-        assert_eq!(
-            Request::decode(5, &packet(&[path, ""])).unwrap(),
-            Request::WriteText {
-                path: path.into(),
-                text: "".into()
-            }
-        );
-    }
-
-    #[test]
-    fn request_codec_rejects_malformed_and_wrong_shape_packets() {
-        for bad in [
-            "",
-            "06:files1",
-            "6:files1",
-            "6:files12:λx",
-            "6:files11:λ",
-            "6:files15:shorter",
-            "6:files1+1:x",
-        ] {
-            assert!(Request::decode(4, bad).is_err(), "accepted {bad:?}");
-        }
-        assert!(Request::decode(0, &packet(&[])).is_err());
-        assert!(Request::decode(1, &packet(&["extra"])).is_err());
-        assert!(Request::decode(5, &packet(&[&under("path")])).is_err());
-    }
-
-    #[test]
-    fn chooser_cancellation_and_explicit_cancellation_are_distinct() {
-        assert_eq!(choice(None).unwrap(), packet(&["canceled"]));
-        let cancel = AtomicBool::new(true);
-        assert_eq!(
-            settle(choice(None), &cancel),
-            (true, packet(&["canceled", ""]))
-        );
-        assert!(validate_save_options(ABSOLUTE_DIRECTORY, "../escape").is_err());
+    fn save_options_and_paths_are_validated() {
+        // An absolute directory is spelled differently on Windows, where a
+        // bare `/tmp` has no drive and is therefore relative.
+        let directory = if cfg!(windows) { r"C:\tmp" } else { "/tmp" };
+        assert!(validate_save_options(directory, "../escape").is_err());
         assert!(validate_save_options("relative", "note.txt").is_err());
-        assert_eq!(
-            Request::decode(3, &packet(&["home", "", "note.txt"])).unwrap(),
-            Request::ChooseSavePath {
-                directory: Directory::Home,
-                suggested_name: "note.txt".into()
-            }
-        );
-        assert!(Request::decode(3, &packet(&["home", ABSOLUTE_DIRECTORY, "note.txt"])).is_err());
+        assert!(validate_save_options(directory, "note.txt").is_ok());
+        assert!(validate_path("/tmp/a\0b").is_err());
+    }
+
+    #[test]
+    fn the_home_directory_comes_from_the_environment_this_system_provides() {
         assert_eq!(
             home_directory(|name| (name == "HOME").then(|| "/home/lee".to_string())).unwrap(),
             "/home/lee"
@@ -791,12 +568,45 @@ mod tests {
             };
             assert_eq!(home_directory(legacy).unwrap(), r"C:\Users\Lee");
         }
-        assert_eq!(
-            Request::decode(3, &packet(&["at", ABSOLUTE_DIRECTORY, "note.txt"])).unwrap(),
-            Request::ChooseSavePath {
-                directory: Directory::At(ABSOLUTE_DIRECTORY.into()),
-                suggested_name: "note.txt".into()
+    }
+
+    #[test]
+    fn windows_paths_outside_a_drive_are_refused_at_validation() {
+        if cfg!(windows) {
+            assert!(validate_path(r"C:\Users\Lee").is_ok());
+            for refused in [r"\\server\share\draft.txt", r"\\?\UNC\server\share", r"\\.\pipe\x"] {
+                let Err(FileError::InvalidPath(message)) = validate_path(refused) else {
+                    panic!("accepted {refused}");
+                };
+                assert!(message.contains("drive-rooted"), "{message}");
             }
-        );
+        } else {
+            assert!(validate_path("/srv/share/draft.txt").is_ok());
+        }
+    }
+
+    #[test]
+    fn error_details_are_bounded_and_kinds_are_stable() {
+        let out = error_out(FileError::NotFound("x".repeat(5000)));
+        assert_eq!(out.kind, 1);
+        assert!(out.detail.len <= 4096);
+        unsafe { out.detail.release() };
+        let out = error_out(FileError::Canceled);
+        assert_eq!((out.kind, out.detail.len), (0, 0));
+        unsafe { out.detail.release() };
+    }
+
+    #[test]
+    fn entries_round_trip_through_the_out_struct() {
+        let entries = entries_out(vec![file_io::Entry {
+            path: "/tmp/a".into(),
+            kind: Kind::SymbolicLink,
+            bytes: 7,
+        }]);
+        assert_eq!(entries.len, 1);
+        let first = unsafe { &*entries.ptr };
+        assert_eq!((first.kind, first.bytes), (2, 7));
+        unsafe { signals_file_entries_release(entries) };
+        assert_eq!(kind_out(Kind::Other), 3);
     }
 }

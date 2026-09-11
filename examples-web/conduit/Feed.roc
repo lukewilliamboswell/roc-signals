@@ -138,7 +138,7 @@ Feed := {}.{
 							attrs: [
 								Html.class_attr("block text-2xl font-semibold tracking-normal text-zinc-900 no-underline hover:text-emerald-700 hover:no-underline"),
 								Html.attr("href", "/article/${slug}"),
-								Html.on_event("click", Html.event_policy_prevent_default, intent.on_unit(|current| Nav.for_target(current, Route.article_location(slug)))),
+								Html.on_event("click", Html.event_policy_prevent_default, intent.update(|current| Nav.for_target(current, Route.article_location(slug)))),
 							],
 							children: [Html.text_s(title)],
 						}),

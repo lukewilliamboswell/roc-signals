@@ -407,7 +407,6 @@ pub fn Runner(comptime Ctx: type) type {
                 .resolve_task, .reject_task => {
                     const task_name = cmd.task_name orelse Ctx.fail("benchmark task command had no task name");
                     const payload = cmd.expected_text orelse "";
-                    if (!@import("../spec/spec_runner.zig").validateTaskFixture(Ctx, host, cmd)) Ctx.fail("benchmark file fixture task-kind mismatch");
                     const start_ns = nowNs();
                     const counts = Ctx.resolvePendingTask(host, roc_host, task_name, payload, cmd.cmd_type == .reject_task);
                     stats.dispatch_apply_ns += nowNs() - start_ns;

@@ -6,7 +6,7 @@ import pf.Signal
 import pf.Ui
 
 ## Custom DOM event coverage: Html.on_custom binds a named event whose
-## `event.detail` string reaches a reducer built with State.on_detail.
+## `event.detail` string reaches a reducer built with State.update_detail.
 detail_text : Str -> Str
 detail_text = |value|
 	if value.is_empty() {
@@ -42,8 +42,8 @@ main = || {
 							Html.div(
 								[
 									Html.test_id("chart"),
-									Html.on_custom("chart-hover", hovered.on_detail(take)),
-									Html.on_custom("chart-select", selected.on_detail(take)),
+									Html.on_custom("chart-hover", hovered.update_detail(take)),
+									Html.on_custom("chart-select", selected.update_detail(take)),
 								],
 								[Html.text("chart")],
 							),

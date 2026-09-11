@@ -3,23 +3,26 @@
 ## definitions, so a malformed theme fails `roc build` with a message naming
 ## the file and the offending key. The JSON grammar itself — strings, escapes,
 ## `\uXXXX`, numbers, whitespace — belongs to the builtin `Json` parser; this
-## module only adds the theme's own rules: `"#RRGGBB"` colors, layout bounds,
-## and required, unknown, and duplicate keys.
+## module only adds the theme's own rules: `"#RRGGBB"` colors, which parse
+## straight to `Gui.Color` values, layout bounds, and required, unknown, and
+## duplicate keys.
+import pf.Gui
+
 Theme := [].{
 	Palette : {
-		background : U32,
-		surface : U32,
-		card : U32,
-		border : U32,
-		text_primary : U32,
-		text_secondary : U32,
-		text_tertiary : U32,
-		accent : U32,
-		accent_hover : U32,
-		accent_active : U32,
-		danger : U32,
-		warning : U32,
-		success : U32,
+		background : Gui.Color,
+		surface : Gui.Color,
+		card : Gui.Color,
+		border : Gui.Color,
+		text_primary : Gui.Color,
+		text_secondary : Gui.Color,
+		text_tertiary : Gui.Color,
+		accent : Gui.Color,
+		accent_hover : Gui.Color,
+		accent_active : Gui.Color,
+		danger : Gui.Color,
+		warning : Gui.Color,
+		success : Gui.Color,
 		radius : U32,
 		control_padding : U32,
 		gap : U32,
@@ -159,10 +162,10 @@ Theme := [].{
 		Ok(entries)
 	}
 
-	color : List(Entry), Str, Str -> Try(U32, Error)
+	color : List(Entry), Str, Str -> Try(Gui.Color, Error)
 	color = |entries, file, key|
 		match lookup(entries, key) {
-			Ok(Value.Color(text)) => parse_color(file, key, text)
+			Ok(Value.Color(text)) => Ok(Rgb(parse_color(file, key, text)?))
 			Ok(Value.Layout(_)) => Err(Invalid("${file}: key \"${key}\" must be a \"#RRGGBB\" color string, not a number"))
 			Err(Missing) => Err(Invalid("${file}: missing key \"${key}\""))
 		}
@@ -223,11 +226,11 @@ complete_theme = "{\n\t\"background\": \"#16252C\",\n\t\"surface\": \"#1B2A33\",
 ## A complete theme parses to the exact color and layout values it spells out.
 expect {
 	theme = Theme.from_json(file, complete_theme)
-	theme.background == 0x16252C
-	and theme.accent == 0x2E6FA3
-	and theme.accent_hover == 0x3A80B8
-	and theme.accent_active == 0x265D89
-	and theme.success == 0x8FD4A8
+	theme.background == Rgb(0x16252C)
+	and theme.accent == Rgb(0x2E6FA3)
+	and theme.accent_hover == Rgb(0x3A80B8)
+	and theme.accent_active == Rgb(0x265D89)
+	and theme.success == Rgb(0x8FD4A8)
 	and theme.radius == 6
 	and theme.control_padding == 10
 	and theme.gap == 8
@@ -236,7 +239,7 @@ expect {
 ## Lowercase hex digits and compact whitespace both parse.
 expect {
 	entries = Theme.parse_object(file, "{\"accent\":\"#2e6fa3\",\"gap\":12}")?
-	Theme.color(entries, file, "accent")? == 0x2E6FA3
+	Theme.color(entries, file, "accent")? == Rgb(0x2E6FA3)
 	and Theme.number(entries, file, "gap")? == 12
 }
 
@@ -307,7 +310,7 @@ expect {
 ## not read this document at all.
 expect {
 	entries = Theme.parse_object(file, "{\"accent\": \"\\u0023\\u0032E6FA3\"}")?
-	Theme.color(entries, file, "accent")? == 0x2E6FA3
+	Theme.color(entries, file, "accent")? == Rgb(0x2E6FA3)
 }
 
 ## Non-ASCII text decodes, and then fails the color rule rather than the grammar.

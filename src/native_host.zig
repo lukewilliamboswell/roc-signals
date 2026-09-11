@@ -25,15 +25,15 @@ const DebugPhase = signals.debug_phase.Phase;
 const FaultAllocator = signals.fault_allocator.FaultAllocator;
 const spec_parser = @import("spec/spec_parser.zig");
 const spec_runner = @import("spec/spec_runner.zig");
+const spec_file_fixtures = @import("spec/file_fixtures.zig");
+const spec_http_fixtures = @import("spec/http_fixtures.zig");
+const services = @import("native_services.zig");
 const benchmark = @import("bench/benchmark.zig");
 const sim_dom = @import("sim_dom.zig");
 const native_style = signals.native_style;
 const roc_alloc_ledger = @import("roc_alloc_ledger.zig");
 const crash_handlers = @import("crash_handlers.zig");
-const native_tasks = @import("native_tasks.zig");
 const native_timers = @import("native_timers.zig");
-const native_files_codec = @import("native_files_codec.zig");
-const NativeTaskQueue = native_tasks.Queue(boundary.TaskKind);
 
 // Keep host-module tests discoverable when no matching root-host test uses
 // their functions. refAllDecls is a no-op in non-test builds.
@@ -45,9 +45,7 @@ comptime {
     std.testing.refAllDecls(benchmark);
     std.testing.refAllDecls(sim_dom);
     std.testing.refAllDecls(roc_alloc_ledger);
-    std.testing.refAllDecls(native_tasks);
     std.testing.refAllDecls(native_timers);
-    std.testing.refAllDecls(native_files_codec);
 }
 
 const gpui_spike = @hasDecl(build_options, "gpui_spike") and build_options.gpui_spike;
@@ -84,38 +82,16 @@ const NativeTaskCancellationPublication = struct {
     pub fn deinit(_: *@This()) void {}
 };
 
+/// The engine's task starts are observations here: the GUI platform runs its
+/// native work as effects, and engine tasks exist only for the spec runner's
+/// task commands and the engine tests that drive them.
 const NativeTaskPublication = struct {
     host: *HostEnv,
     record: ?NativeTaskRecord = null,
-    native: ?NativeTaskQueue.Prepared = null,
     request_id: ids.TaskRequestId,
 
-    fn prepare(host: *HostEnv, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8, cancellation_count: usize) error{ OutOfMemory, ResourceLimit }!NativeTaskPublication {
+    fn prepare(host: *HostEnv, request_id: ids.TaskRequestId, _: boundary.TaskKind, task_name: []const u8, _: []const u8, cancellation_count: usize) error{ OutOfMemory, ResourceLimit }!NativeTaskPublication {
         const allocator = host.hostAllocator();
-        if (Gpui.live) {
-            const arguments: usize = switch (kind) {
-                .external => failHost("external tasks require an external task executor"),
-                .choose_file, .choose_directory => 0,
-                .read_text, .scan_directory, .list_directory, .open_path, .read_preview => 1,
-                .write_text => 2,
-                .choose_save_path => 3,
-                .read_log => 5,
-                // Asset manifests carry a count frame plus two frames per
-                // asset; the dedicated validator owns that variable shape.
-                .verify_assets => 0,
-            };
-            if (kind == .verify_assets) {
-                native_files_codec.validateAssetsRequest(request) catch failHost("malformed native asset manifest request");
-            } else {
-                native_files_codec.validateRequest(request, arguments) catch failHost("malformed native Files request");
-            }
-            if (kind == .read_log) native_files_codec.validateLogRequest(request) catch failHost("malformed native Files log cursor");
-            return .{
-                .host = host,
-                .request_id = request_id,
-                .native = try Gpui.tasks.prepare(allocator, request_id.raw(), kind, request),
-            };
-        }
         const name = try allocator.dupe(u8, task_name);
         errdefer allocator.free(name);
         try host.started_tasks.ensureUnusedCapacity(allocator, 1);
@@ -123,15 +99,9 @@ const NativeTaskPublication = struct {
         return .{ .host = host, .request_id = request_id, .record = .{ .request_id = request_id, .name = name } };
     }
 
-    /// Transfers a prepared request to the native transport or an observation
-    /// to the spec runner without allocation. Each receiver owns its copy until
-    /// resolution, cancellation before dispatch, or teardown.
+    /// Transfers a prepared observation to the spec runner without allocation.
+    /// It stays until resolution, cancellation before dispatch, or teardown.
     pub fn commit(self: *NativeTaskPublication) void {
-        if (self.native) |*native| {
-            native.commit();
-            self.native = null;
-            return;
-        }
         self.host.started_tasks.appendAssumeCapacity(self.record orelse @panic("task publication committed twice"));
         self.record = null;
     }
@@ -149,8 +119,6 @@ const NativeTaskPublication = struct {
 
     /// Releases an unpublished name without recording a task start or cancel.
     pub fn deinit(self: *NativeTaskPublication) void {
-        if (self.native) |*native| native.deinit();
-        self.native = null;
         if (self.record) |record| self.host.hostAllocator().free(record.name);
         self.record = null;
     }
@@ -526,6 +494,17 @@ const NativeCtx = struct {
     /// Native-only scalar fields publish through the typed prepared DOM view.
     pub const native_presentation = true;
     pub const Handle = *HostEnv;
+    /// The native host runs `Then` effects as each turn settles: the live
+    /// host on its own worker threads, the spec host to completion on the
+    /// spot.
+    pub const runsEffects = true;
+
+    /// Has Roc turn an effect closure and its reads snapshot into the thunk a
+    /// worker runs. The export consumes the closure and capability references;
+    /// the snapshot handle remains borrowed for the call.
+    pub fn prepareEffect(_: Handle, _: *abi.RocHost, effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
+        return prepareEffectThunk(effect, snapshot, cap);
+    }
     pub const RegistryOps = hv.RegistryOps();
     pub const Metrics = RuntimeMetrics;
     pub const Sink = render_sink.DomSink(HostEnv);
@@ -533,18 +512,15 @@ const NativeCtx = struct {
     pub const TaskPublication = NativeTaskPublication;
     pub const TaskCancellationPublication = NativeTaskCancellationPublication;
 
-    /// Reserves native cancellation observations without changing live tasks.
+    /// Reserves cancellation observations without changing live tasks.
     pub fn prepareTaskCancellation(ctx: Handle, count: usize) std.mem.Allocator.Error!TaskCancellationPublication {
-        if (!Gpui.live) try ctx.canceled_tasks.ensureUnusedCapacity(ctx.hostAllocator(), count);
+        try ctx.canceled_tasks.ensureUnusedCapacity(ctx.hostAllocator(), count);
         return .{};
     }
 
-    /// Applies the fixed native transport bound before the engine publishes a
-    /// start. The source's declared refusal initializer owns the terminal value.
-    pub fn canAdmitTask(_: Handle, kind: boundary.TaskKind, payload_length: usize) bool {
-        if (!Gpui.live) return true;
-        if (kind == .external) failHost("external tasks require an external task executor");
-        return Gpui.tasks.canAdmit(payload_length);
+    /// Engine task starts are observations with no transport bound.
+    pub fn canAdmitTask(_: Handle, _: boundary.TaskKind, _: usize) bool {
+        return true;
     }
 
     /// Marks an infallible command call for the recoverable-only native sweep.
@@ -719,7 +695,13 @@ const HostActiveStructuralSignalKind = engine.HostActiveStructuralSignalKind;
 const HostDirtyStructuralSignal = engine.HostDirtyStructuralSignal;
 const HostKeyedRowDiffResult = engine.HostKeyedRowDiffResult;
 
-pub const std_options = crash_handlers.std_options;
+pub const std_options: std.Options = blk: {
+    var options = crash_handlers.std_options;
+    // The Windows fault handler installed by main needs tracing enabled to
+    // report the call stack, rather than only the access-violation address.
+    options.allow_stack_tracing = builtin.os.tag == .windows;
+    break :blk options;
+};
 pub const panic = crash_handlers.panic;
 
 fn writeStderr(bytes: []const u8) void {
@@ -1038,6 +1020,10 @@ const HostEnv = struct {
     spec_pending_close: ?struct { node: u64, event: ids.EventId } = null,
     spec_window_closed: bool = false,
     started_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
+    /// Spec-declared results for the synchronous `Files` primitives, consumed
+    /// oldest first as requests arrive; only the display-free spec host uses them.
+    file_stubs: services.FileStubs = .empty,
+    http_stubs: services.HttpStubs = .empty,
     canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
     location_index: usize = 0,
@@ -1123,8 +1109,28 @@ const HostEnv = struct {
         return .{ .ptr = self, .vtable = &HostAllocator.vtable };
     }
 
+    /// Declares one answer for a hosted `Files` function in spec mode.
+    fn stubFile(self: *HostEnv, stub: *const spec_file_fixtures.Stub) void {
+        const gpa = self.hostAllocator();
+        const copy = stub.dupe(gpa) catch @panic("out of memory");
+        self.file_stubs.append(gpa, copy) catch @panic("out of memory");
+    }
+
+    /// Declares one answer for the hosted `Http` function in spec mode.
+    fn stubHttp(self: *HostEnv, stub: *const spec_http_fixtures.Stub) void {
+        const gpa = self.hostAllocator();
+        const copy = stub.dupe(gpa) catch @panic("out of memory");
+        self.http_stubs.append(gpa, copy) catch @panic("out of memory");
+    }
+
     fn deinitTaskRecords(self: *HostEnv) void {
         const allocator = self.hostAllocator();
+        for (self.file_stubs.items) |stub| stub.deinit(allocator);
+        self.file_stubs.deinit(allocator);
+        self.file_stubs = .empty;
+        for (self.http_stubs.items) |stub| stub.deinit(allocator);
+        self.http_stubs.deinit(allocator);
+        self.http_stubs = .empty;
         for (self.started_tasks.items) |record| {
             allocator.free(record.name);
         }
@@ -1157,20 +1163,12 @@ const HostEnv = struct {
     }
 
     fn noteTaskResolved(self: *HostEnv, request_id: ids.TaskRequestId) void {
-        if (Gpui.live) {
-            Gpui.tasks.complete(self.hostAllocator(), request_id.raw());
-            return;
-        }
         if (self.takeStartedTask(request_id)) |record| {
             self.hostAllocator().free(record.name);
         }
     }
 
     fn recordCanceledTask(self: *HostEnv, request_id: ids.TaskRequestId) void {
-        if (Gpui.live) {
-            Gpui.tasks.cancel(self.hostAllocator(), request_id.raw());
-            return;
-        }
         const record = self.takeStartedTask(request_id) orelse return;
         self.canceled_tasks.append(self.hostAllocator(), record) catch {
             self.hostAllocator().free(record.name);
@@ -2359,8 +2357,15 @@ fn rocAllocFn(roc_host: *abi.RocHost, length: usize, alignment: usize) callconv(
     return rocAllocAt(roc_host, length, alignment, @returnAddress());
 }
 
+/// Roc code runs on the UI thread and on the effect worker, and both reach the
+/// allocation ledger through these hooks, so the ledger and its metrics are
+/// updated under one lock.
+var roc_alloc_lock: std.Io.Mutex = .init;
+
 fn rocAllocAt(roc_host: *abi.RocHost, length: usize, alignment: usize, return_address: usize) ?*anyopaque {
     const host = hostFromRocHost(roc_host);
+    std.Io.Threaded.mutexLock(&roc_alloc_lock);
+    defer std.Io.Threaded.mutexUnlock(&roc_alloc_lock);
     const previous_origin = host.allocation_sweep.origin;
     host.allocation_sweep.origin = .roc;
     defer host.allocation_sweep.origin = previous_origin;
@@ -2372,6 +2377,8 @@ fn rocAllocAt(roc_host: *abi.RocHost, length: usize, alignment: usize, return_ad
 
 fn rocDeallocFn(roc_host: *abi.RocHost, ptr: *anyopaque, alignment: usize) callconv(.c) void {
     const host = hostFromRocHost(roc_host);
+    std.Io.Threaded.mutexLock(&roc_alloc_lock);
+    defer std.Io.Threaded.mutexUnlock(&roc_alloc_lock);
     const previous_origin = host.allocation_sweep.origin;
     host.allocation_sweep.origin = .roc;
     defer host.allocation_sweep.origin = previous_origin;
@@ -2386,6 +2393,8 @@ fn rocReallocFn(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alig
 
 fn rocReallocAt(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alignment_arg: usize, return_address: usize) ?*anyopaque {
     const host = hostFromRocHost(roc_host);
+    std.Io.Threaded.mutexLock(&roc_alloc_lock);
+    defer std.Io.Threaded.mutexUnlock(&roc_alloc_lock);
     const previous_origin = host.allocation_sweep.origin;
     host.allocation_sweep.origin = .roc;
     defer host.allocation_sweep.origin = previous_origin;
@@ -2432,6 +2441,170 @@ fn hostDealloc(ptr: *anyopaque, alignment: usize) callconv(.c) void {
 
 fn hostRealloc(ptr: *anyopaque, new_length: usize, alignment: usize) callconv(.c) ?*anyopaque {
     return rocReallocAt(currentRocHost(), ptr, new_length, alignment, @returnAddress());
+}
+
+/// Libc's environment block. It is declared here rather than through `std.c`
+/// so the musl hosts, which resolve libc only when the application links,
+/// can still reference it. Darwin does not export `environ` from a shared
+/// library image, so it is reached through `_NSGetEnviron` there.
+extern var environ: [*:null]?[*:0]u8;
+extern fn _NSGetEnviron() *[*:null]?[*:0]u8;
+
+/// The running process's environment as the standard library's handle. Windows
+/// reads the live block; POSIX targets view libc's `environ` in place.
+fn processEnviron() std.process.Environ {
+    if (comptime std.process.Environ.Block == std.process.Environ.GlobalBlock) return .{ .block = .global };
+    const c_environ = if (comptime builtin.os.tag.isDarwin()) _NSGetEnviron().* else environ;
+    var count: usize = 0;
+    while (c_environ[count] != null) : (count += 1) {}
+    return .{ .block = .{ .slice = c_environ[0..count :null] } };
+}
+
+/// Hosted `Env.var!`: reads one process environment variable. Roc transfers
+/// the name to the host, so it is released here; the result string is one
+/// owned reference handed back to Roc. Any lookup failure is `Missing`.
+fn hostEnvVar(name: abi.RocStr) callconv(.c) abi.EnvVarResult {
+    const roc_host = currentRocHost();
+    defer name.decref(roc_host);
+    const allocator = currentHost().hostAllocator();
+    const value = std.process.Environ.getAlloc(processEnviron(), allocator, name.asSlice()) catch {
+        return .{ .payload = undefined, .tag = .Err };
+    };
+    defer allocator.free(value);
+    var result: abi.EnvVarResult = .{ .payload = undefined, .tag = .Ok };
+    const text = abi.RocStr.fromSlice(value, roc_host);
+    if (comptime @sizeOf(usize) == 8) {
+        result.payload = .{ .ok = text };
+    } else {
+        const slot: *abi.RocStr = @ptrCast(@alignCast(&result.payload));
+        slot.* = text;
+    }
+    return result;
+}
+
+/// The hosted `Files` and `Http` functions. Each receives owned Roc
+/// arguments, releases them, and returns the typed result the glue declares;
+/// the work itself happens in `native_services`, from the Rust host's C
+/// structs in a live window and from declared stubs in the spec host.
+fn hostFilesChooseFile() callconv(.c) abi.FilesChoose_fileResult {
+    const roc_host = currentRocHost();
+    if (!Gpui.live) return services.stubChoose(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, "choose_file");
+    return services.choose(roc_host, .file, "", false, "");
+}
+
+fn hostFilesChooseDirectory() callconv(.c) abi.FilesChoose_fileResult {
+    const roc_host = currentRocHost();
+    if (!Gpui.live) return services.stubChoose(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, "choose_directory");
+    return services.choose(roc_host, .directory, "", false, "");
+}
+
+fn hostFilesChooseSavePath(args: abi.FilesChoose_save_pathArgs) callconv(.c) abi.FilesChoose_fileResult {
+    const roc_host = currentRocHost();
+    defer args.decref(roc_host);
+    if (!Gpui.live) return services.stubChoose(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, "choose_save_path");
+    var holder = args;
+    const home = holder.directory.tag == .Home;
+    const directory: []const u8 = if (home) "" else @as(*const abi.RocStr, @ptrCast(@alignCast(&holder.directory.payload))).asSlice();
+    return services.choose(roc_host, .save_path, directory, home, holder.suggested_name.asSlice());
+}
+
+fn hostFilesStat(path: abi.RocStr) callconv(.c) abi.FilesStatResult {
+    const roc_host = currentRocHost();
+    defer path.decref(roc_host);
+    if (!Gpui.live) return services.stubStat(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, path.asSlice());
+    return services.stat(roc_host, path.asSlice());
+}
+
+fn hostFilesReadBytes(args: abi.FilesRead_bytesArgs) callconv(.c) abi.FilesRead_bytesResult {
+    const roc_host = currentRocHost();
+    defer args.decref(roc_host);
+    if (!Gpui.live) return services.stubReadBytes(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, args.path.asSlice(), args.offset, args.max_bytes);
+    return services.readBytes(roc_host, args.path.asSlice(), args.offset, args.max_bytes);
+}
+
+fn hostFilesWriteBytes(args: abi.FilesWrite_bytesArgs) callconv(.c) services.UnitResult {
+    const roc_host = currentRocHost();
+    defer args.decref(roc_host);
+    if (!Gpui.live) return services.stubUnit(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host);
+    const bytes: []const u8 = if (args.bytes.elements_ptr) |ptr| ptr[0..args.bytes.length] else "";
+    return services.writeBytes(roc_host, args.path.asSlice(), bytes);
+}
+
+fn hostFilesRename(args: abi.FilesRenameArgs) callconv(.c) services.UnitResult {
+    const roc_host = currentRocHost();
+    defer args.decref(roc_host);
+    if (!Gpui.live) return services.stubUnit(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host);
+    return services.rename(roc_host, args.from.asSlice(), args.to.asSlice());
+}
+
+fn hostFilesRemove(path: abi.RocStr) callconv(.c) services.UnitResult {
+    const roc_host = currentRocHost();
+    defer path.decref(roc_host);
+    if (!Gpui.live) return services.stubUnit(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host);
+    return services.remove(roc_host, path.asSlice());
+}
+
+fn hostFilesSync(path: abi.RocStr) callconv(.c) services.UnitResult {
+    const roc_host = currentRocHost();
+    defer path.decref(roc_host);
+    if (!Gpui.live) return services.stubUnit(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host);
+    return services.sync(roc_host, path.asSlice());
+}
+
+fn hostFilesListDirectory(path: abi.RocStr) callconv(.c) abi.FilesList_directoryResult {
+    const roc_host = currentRocHost();
+    defer path.decref(roc_host);
+    const host = currentHost();
+    if (!Gpui.live) return services.stubListDirectory(host.hostAllocator(), &host.file_stubs, roc_host, path.asSlice());
+    return services.listDirectory(roc_host, host.hostAllocator(), path.asSlice());
+}
+
+fn hostFilesOpenPath(path: abi.RocStr) callconv(.c) services.UnitResult {
+    const roc_host = currentRocHost();
+    defer path.decref(roc_host);
+    if (!Gpui.live) return services.stubOpenPath(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, path.asSlice());
+    return services.openPath(roc_host, path.asSlice());
+}
+
+fn hostFilesAssetsRoot() callconv(.c) abi.RocStr {
+    const roc_host = currentRocHost();
+    if (!Gpui.live) return abi.RocStr.fromSlice(services.spec_assets_root, roc_host);
+    return services.assetsRoot(roc_host);
+}
+
+fn hostHttpSend(request: abi.Request) callconv(.c) abi.HttpSendResult {
+    const roc_host = currentRocHost();
+    defer request.decref(roc_host);
+    const host = currentHost();
+    const gpa = host.hostAllocator();
+    var holder = request;
+    if (!Gpui.live) return services.stubHttpSend(gpa, &host.http_stubs, roc_host, holder.uri.asSlice());
+    const method: []const u8 = switch (holder.method.tag) {
+        .CONNECT => "CONNECT",
+        .DELETE => "DELETE",
+        .GET => "GET",
+        .HEAD => "HEAD",
+        .OPTIONS => "OPTIONS",
+        .PATCH => "PATCH",
+        .POST => "POST",
+        .PUT => "PUT",
+        .TRACE => "TRACE",
+        .Unknown => @as(*const abi.RocStr, @ptrCast(@alignCast(&holder.method.payload))).asSlice(),
+    };
+    const timeout_ms: ?u64 = switch (holder.timeout_ms.tag) {
+        .NoTimeout => null,
+        .TimeoutMilliseconds => @as(*const u64, @ptrCast(@alignCast(&holder.timeout_ms.payload))).*,
+    };
+    const pairs = if (holder.headers.elements_ptr) |ptr| ptr[0..holder.headers.length] else &.{};
+    const headers = gpa.alloc(services.HeaderIn, pairs.len) catch @panic("out of memory");
+    defer gpa.free(headers);
+    for (pairs, 0..) |*pair, index| {
+        const name = pair._0.asSlice();
+        const value = pair._1.asSlice();
+        headers[index] = .{ .name_ptr = name.ptr, .name_len = name.len, .value_ptr = value.ptr, .value_len = value.len };
+    }
+    const body: []const u8 = if (holder.body.elements_ptr) |ptr| ptr[0..holder.body.length] else "";
+    return services.httpSend(roc_host, gpa, .{ .method = method, .uri = holder.uri.asSlice(), .timeout_ms = timeout_ms, .headers = headers, .body = body });
 }
 
 fn hostDbg(bytes: [*]const u8, len: usize) callconv(.c) void {
@@ -3070,6 +3243,81 @@ fn acceptInitElem(host: *HostEnv, roc_host: *abi.RocHost, root_box: ElemBox) voi
     acceptInitElemWithStats(host, roc_host, root_box, null, null);
 }
 
+/// Calls the platform's `roc_run_effect` entry point, which consumes the
+/// closure and returns the next command. Host fixtures link no Roc
+/// application, so they cannot run one.
+/// One effect between its UI-thread preparation and the application of its
+/// result. The worker touches only `thunk` and `cmd`; everything else about
+/// the effect stays with the engine's running-effect record.
+const EffectJob = struct {
+    id: u64,
+    thunk: abi.RocErasedCallable,
+    cmd: erased_calls.Cmd = undefined,
+};
+
+fn prepareEffectThunk(effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
+    // Only the GUI platform declares the effect entry points; a host fixture
+    // links no application and the web platform runs effects in the browser.
+    if (comptime host_fixtures or !gpui_spike) {
+        failHost("effect closures run only on the native GUI host");
+    } else {
+        return abi.roc_prepare_effect(effect, snapshot.toRaw(), cap);
+    }
+}
+
+/// The worker's entry point. It runs Roc code that reaches the host only
+/// through the allocation hooks and the hosted effectful primitives.
+fn runEffectJob(job: *EffectJob) void {
+    if (comptime host_fixtures or !gpui_spike) {
+        failHost("effect closures run only on the native GUI host");
+    } else {
+        job.cmd = abi.roc_run_effect(job.thunk);
+    }
+}
+
+/// Hands the effects queued by the turns that just committed, oldest first,
+/// to workers. Each thunk was prepared by Roc when its `Then` committed. The
+/// live host runs every thunk on its own worker, so effects overlap and their
+/// results apply as they complete; the spec host runs each to completion on
+/// the spot, so specs stay deterministic. The spec host does not spawn a
+/// thread for this: the Roc linker for macOS resolves only the symbols the
+/// platform's own host needs, and `pthread_join` is not among them, so a
+/// joined worker here failed every macOS application link. An effect that
+/// queues further effects extends the same drain.
+fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
+    while (host.engine.takeNextPendingEffect()) |taken| {
+        var effect = taken;
+        const job = host.hostAllocator().create(EffectJob) catch @panic("out of memory");
+        job.* = .{ .id = effect.id, .thunk = effect.thunk };
+        host.engine.trackRunningEffect(host, &effect);
+        if (Gpui.live) {
+            Gpui.queueEffectJob(job);
+        } else {
+            runEffectJob(job);
+            completeEffectJob(host, roc_host, job);
+        }
+    }
+}
+
+/// Applies the command a finished effect returned, with the effect's declared
+/// reads as the origin so a chain of `Then`s keeps snapshotting the same
+/// signals. The command runs in the nearest scope still active at or above
+/// the effect's owner, and its changes to states retired while the effect ran
+/// are skipped.
+fn completeEffectJob(host: *HostEnv, roc_host: *abi.RocHost, job: *EffectJob) void {
+    var running = host.engine.finishRunningEffect(job.id);
+    const owner_scope_id = host.engine.nearestActiveScope(running.owner_scope_id);
+    host.engine.effect_origin = &running.reads;
+    host.engine.applying_effect_result = true;
+    _ = host.engine.tryRunCommand(host, roc_host, owner_scope_id, job.cmd) catch |err| failPreparedStateDispatch(err);
+    host.engine.applying_effect_result = false;
+    host.engine.effect_origin = null;
+    job.cmd.decref(roc_host);
+    host.engine.releaseFinishedEffect(host, &running);
+    host.hostAllocator().destroy(job);
+    finishHostMetrics(host);
+}
+
 fn failPreparedStateDispatch(err: HostEngine.CollectionError) noreturn {
     switch (err) {
         error.OutOfMemory => failHost("out of memory preparing atomic state transaction"),
@@ -3104,6 +3352,10 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: i
         defer cmd.decref(roc_host);
         if (stats) |s| s.dispatch_roc_ns += benchmark.nowNs() - start_ns;
         const apply_start_ns = benchmark.nowNs();
+        // The handler's declared reads are what a `Then` in its command snapshots.
+        var action_desc = desc;
+        host.engine.effect_origin = &action_desc.handler.action.reads;
+        defer host.engine.effect_origin = null;
         const counts = host.engine.tryRunCommand(host, roc_host, desc.handler.action.scope_id, cmd) catch |err| retry: {
             if (err != error.OutOfMemory or !host.recoverSelectedOutOfMemory()) failPreparedStateDispatch(err);
             break :retry host.engine.tryRunCommand(host, roc_host, desc.handler.action.scope_id, cmd) catch |retry_err| failPreparedStateDispatch(retry_err);
@@ -3427,21 +3679,26 @@ const BenchmarkCtx = struct {
         return setElementCheckedForBenchmark(elem, checked);
     }
 
-    /// Reports the declared service of the pending fixture target before any
-    /// payload decoder runs. Labels select test work; they never infer its kind.
-    pub fn pendingTaskKind(host: *Host, name: []const u8) ?boundary.TaskKind {
-        const index = host.engine.pendingTaskIndexByName(name) orelse return null;
-        return host.engine.pending_tasks.items[index].kind;
-    }
-
     /// Delivers pending task through the same source-update and propagation path as other inputs.
     pub fn resolvePendingTask(host: *Host, roc_host: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
-        return resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
+        const counts = resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
+        drainEffects(host, roc_host);
+        return counts;
     }
 
     /// Consumes a deliberately stale task result for lifecycle testing without reviving canceled work.
     pub fn resolveStalePendingTask(host: *Host, _: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
+    }
+
+    /// Declares one answer for a hosted `Files` function; see `native_services`.
+    pub fn stubFileResult(host: *Host, stub: *const spec_file_fixtures.Stub) void {
+        host.stubFile(stub);
+    }
+
+    /// Declares one answer for the hosted `Http` function; see `native_services`.
+    pub fn stubHttpResult(host: *Host, stub: *const spec_http_fixtures.Stub) void {
+        host.stubHttp(stub);
     }
 
     /// Advances interval source through the shared propagation queue.
@@ -3660,6 +3917,7 @@ const SpecRunnerCtx = struct {
     /// Dispatches roc event through validated routing and dependency-ordered propagation.
     pub fn dispatchRocEvent(host: *Host, roc_host: *RocHost, event_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue) void {
         dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, null);
+        drainEffects(host, roc_host);
     }
 
     /// Materializes unit as a capability-owned host value for boundary delivery.
@@ -3717,16 +3975,11 @@ const SpecRunnerCtx = struct {
         return sim_dom.textAttr(elem, name);
     }
 
-    /// Reports the declared service of the pending fixture target before any
-    /// payload decoder runs. Labels select test work; they never infer its kind.
-    pub fn pendingTaskKind(host: *Host, name: []const u8) ?boundary.TaskKind {
-        const index = host.engine.pendingTaskIndexByName(name) orelse return null;
-        return host.engine.pending_tasks.items[index].kind;
-    }
-
     /// Delivers pending task through the same source-update and propagation path as other inputs.
     pub fn resolvePendingTask(host: *Host, roc_host: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
-        return resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
+        const counts = resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
+        drainEffects(host, roc_host);
+        return counts;
     }
 
     /// Consumes a deliberately stale task result for lifecycle testing without reviving canceled work.
@@ -3734,9 +3987,21 @@ const SpecRunnerCtx = struct {
         return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
     }
 
+    /// Declares one answer for a hosted `Files` function; see `native_services`.
+    pub fn stubFileResult(host: *Host, stub: *const spec_file_fixtures.Stub) void {
+        host.stubFile(stub);
+    }
+
+    /// Declares one answer for the hosted `Http` function; see `native_services`.
+    pub fn stubHttpResult(host: *Host, stub: *const spec_http_fixtures.Stub) void {
+        host.stubHttp(stub);
+    }
+
     /// Advances interval source through the shared propagation queue.
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
-        return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
+        const counts = tickIntervalSourceForBenchmark(host, roc_host, period_ms);
+        drainEffects(host, roc_host);
+        return counts;
     }
 
     /// Publishes a location change and refreshes active location sources in the same engine turn.
@@ -3834,6 +4099,25 @@ comptime {
         @export(&hostDealloc, .{ .name = "roc_dealloc", .visibility = .hidden });
         @export(&hostRealloc, .{ .name = "roc_realloc", .visibility = .hidden });
         @export(&hostDbg, .{ .name = "roc_dbg", .visibility = .hidden });
+        @export(&hostEnvVar, .{ .name = "roc_env_var", .visibility = .hidden });
+        // The hosted Files and Http primitives are the native GUI platform's:
+        // they call into the Rust host, which the web examples' native build
+        // does not link, so only the GUI engine exports them.
+        if (gpui_spike) {
+            @export(&hostFilesChooseFile, .{ .name = "roc_files_choose_file", .visibility = .hidden });
+            @export(&hostFilesChooseDirectory, .{ .name = "roc_files_choose_directory", .visibility = .hidden });
+            @export(&hostFilesChooseSavePath, .{ .name = "roc_files_choose_save_path", .visibility = .hidden });
+            @export(&hostFilesStat, .{ .name = "roc_files_stat", .visibility = .hidden });
+            @export(&hostFilesReadBytes, .{ .name = "roc_files_read_bytes", .visibility = .hidden });
+            @export(&hostFilesWriteBytes, .{ .name = "roc_files_write_bytes", .visibility = .hidden });
+            @export(&hostFilesRename, .{ .name = "roc_files_rename", .visibility = .hidden });
+            @export(&hostFilesRemove, .{ .name = "roc_files_remove", .visibility = .hidden });
+            @export(&hostFilesSync, .{ .name = "roc_files_sync", .visibility = .hidden });
+            @export(&hostFilesListDirectory, .{ .name = "roc_files_list_directory", .visibility = .hidden });
+            @export(&hostFilesOpenPath, .{ .name = "roc_files_open_path", .visibility = .hidden });
+            @export(&hostFilesAssetsRoot, .{ .name = "roc_files_assets_root", .visibility = .hidden });
+            @export(&hostHttpSend, .{ .name = "roc_http_send", .visibility = .hidden });
+        }
         @export(&hostExpectFailed, .{ .name = "roc_expect_failed", .visibility = .hidden });
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });
         @export(&eachBoolSinkPush, .{ .name = "roc_each_bool_sink_push", .visibility = .hidden });
@@ -3871,10 +4155,9 @@ comptime {
             @export(&Gpui.timerSize, .{ .name = "signals_timer_size" });
             @export(&Gpui.nextTimer, .{ .name = "signals_timer_next" });
             @export(&Gpui.tickTimer, .{ .name = "signals_timer_tick" });
-            @export(&Gpui.effectVersion, .{ .name = "signals_effect_version" });
-            @export(&Gpui.effectSize, .{ .name = "signals_effect_size" });
-            @export(&Gpui.nextEffect, .{ .name = "signals_effect_next" });
-            @export(&Gpui.taskResult, .{ .name = "signals_task_result" });
+            @export(&Gpui.nextRocEffect, .{ .name = "signals_roc_effect_next" });
+            @export(&Gpui.runRocEffect, .{ .name = "signals_roc_effect_run" });
+            @export(&Gpui.completeRocEffect, .{ .name = "signals_roc_effect_done" });
             @export(&Gpui.scenarioOpen, .{ .name = "signals_scenario_open" });
             @export(&Gpui.scenarioHeader, .{ .name = "signals_scenario_header" });
             @export(&Gpui.scenarioChoice, .{ .name = "signals_scenario_choice" });
@@ -4032,6 +4315,11 @@ fn parseHostArgs(args: []const []const u8) HostArgResult {
 }
 
 fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
+    // A Roc application links no Zig start code, so nothing installs the
+    // fault handler that turns an access violation into a trace on stderr.
+    // Windows reports such a crash only as an exit status; the trace is
+    // what makes it diagnosable from a CI log.
+    if (comptime builtin.os.tag == .windows and std.debug.have_segfault_handling_support) std.debug.attachSegfaultHandler();
     var arg_storage: [max_host_args][]const u8 = undefined;
     const arg_count: usize = if (argc > 0) @intCast(argc) else 1;
     if (arg_count > max_host_args + 1) {
@@ -4112,6 +4400,8 @@ fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void
                 const text = cmd.expected_text orelse failHost("set_initial_online command is missing online text");
                 host.setOnline(onlineSnapshotFromSpecText(text));
             },
+            .seed_file_result => host.stubFile(&(cmd.file_stub orelse failHost("file stub command carried no stub"))),
+            .seed_http_result => host.stubHttp(&(cmd.http_stub orelse failHost("http stub command carried no stub"))),
             .seed_local_storage, .seed_session_storage => {
                 const key = cmd.task_name orelse failHost("seed storage command is missing key text");
                 const value = cmd.expected_text orelse failHost("seed storage command is missing value text");
@@ -4187,6 +4477,7 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
     applyPreMountSpecCommands(&host_env, host_env.test_state.commands);
     if (!result_json) {
         acceptInitElem(&host_env, &roc_host, abi.roc_ui_init());
+        drainEffects(&host_env, &roc_host);
     } else {
         const root_box = abi.roc_ui_init();
         if (host_env.engine.root_elem != null) failHost("Roc root Elem initialized more than once");
@@ -4220,6 +4511,8 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
         host_env.dumpDom();
     }
 
+    // Mount-time effects run before the first spec command observes the tree.
+    drainEffects(&host_env, &roc_host);
     const result = SpecRunner.run(&host_env, &roc_host, host_env.test_state.commands, verbose);
     host_env.allocation_sweep.tracking = false;
     if (fail_on_allocation != null and !host_env.allocation_sweep.selected_seen) {
@@ -12735,12 +13028,6 @@ const Gpui = struct {
     // The extern node layout is generated from the protocol manifest, so this
     // Zig writer and the Rust reader can never disagree on field order.
     const Node = render.native_protocol.RawNode(Slice, native_style.Style, native_style.Viewport);
-    const Effect = extern struct {
-        op: u32,
-        kind: u32,
-        id: u64,
-        request: Slice,
-    };
     var host: HostEnv = undefined;
     var roc_host: abi.RocHost = undefined;
     var live = false;
@@ -12871,8 +13158,11 @@ const Gpui = struct {
             scenario_spec = null;
         }
     }
-    var tasks: NativeTaskQueue = .{};
     var timers: native_timers.Registry = .{};
+    // Prepared effects wait here until the Rust host collects them; each runs
+    // on its own worker and its result applies whenever it completes.
+    var effect_jobs: std.ArrayListUnmanaged(*EffectJob) = .empty;
+    var effects_running: std.ArrayListUnmanaged(*EffectJob) = .empty;
     var child_order: signals.native_child_order.Tree = undefined;
     var lifetimes: [limit]u64 = @splat(0);
     var changed: [limit]u64 = undefined;
@@ -12909,14 +13199,25 @@ const Gpui = struct {
         current_roc_host = &roc_host;
         live = true;
         acceptInitElem(&host, &roc_host, abi.roc_ui_init());
+        drainEffects(&host, &roc_host);
     }
     fn unmount() callconv(.c) void {
         if (!live) return;
         child_order.deinit();
+        for (effect_jobs.items) |job| {
+            abi.decrefErasedCallable(job.thunk, &roc_host);
+            host.hostAllocator().destroy(job);
+        }
+        effect_jobs.deinit(host.hostAllocator());
+        effect_jobs = .empty;
+        const effects_still_running = effects_running.items.len != 0;
+        effects_running.deinit(host.hostAllocator());
+        effects_running = .empty;
         host.deinit();
-        tasks.deinit(host.hostAllocator());
         timers.deinit(host.hostAllocator());
-        if (host.gpa.deinit() == .leak) failHost("GPUI spike leaked host allocations");
+        // A thunk still running on a worker owns its job until it returns,
+        // so shutting down mid-effect cannot account for those allocations.
+        if (host.gpa.deinit() == .leak and !effects_still_running) failHost("GPUI spike leaked host allocations");
         current_host = null;
         current_roc_host = null;
         live = false;
@@ -12951,6 +13252,7 @@ const Gpui = struct {
             else => unreachable,
         };
         dispatchRocEvent(&host, &roc_host, ids.EventId.fromRaw(event), descriptor, payload);
+        drainEffects(&host, &roc_host);
     }
     fn count() callconv(.c) usize {
         return changed_len;
@@ -12983,40 +13285,6 @@ const Gpui = struct {
         if (!live) failHost("native title read before mount");
         out.* = Slice.from(host.currentDocumentTitle());
         return host.document_title_revision;
-    }
-    fn effectVersion() callconv(.c) u32 {
-        return render.native_protocol.effect_version;
-    }
-    fn effectSize() callconv(.c) usize {
-        return @sizeOf(Effect);
-    }
-    // One borrowed transport message. Copy its primitive payload before calling
-    // into the engine again; no application value or callable crosses this ABI.
-    fn nextEffect(out: *Effect) callconv(.c) u32 {
-        if (!live) failHost("native effect read before mount");
-        const message = tasks.next() orelse return 0;
-        out.* = switch (message) {
-            .start => |start| .{ .op = 1, .kind = @intFromEnum(start.kind), .id = start.id, .request = Slice.from(start.request) },
-            .cancel => |id| .{ .op = 2, .kind = 0, .id = id, .request = Slice.from("") },
-        };
-        return 1;
-    }
-    // Result decoding and propagation run on the engine's UI thread. A canceled
-    // or disposed request is rejected before calling any declaration-owned decoder.
-    fn taskResult(id: u64, failed: u32, ptr: [*]const u8, len: usize) callconv(.c) void {
-        if (!live or failed > 1 or len > native_tasks.max_payload_bytes) failHost("invalid native task completion");
-        if (!std.unicode.utf8ValidateSlice(ptr[0..len])) failHost("native task completion is not UTF-8");
-        clear();
-        const request_id = ids.TaskRequestId.fromRaw(id);
-        if (tasks.isCanceled(id)) {
-            if (host.engine.classifyTaskResolution(request_id) != .superseded) failHost("canceled native task remained pending");
-            tasks.complete(host.hostAllocator(), id);
-            host.engine.noteStaleTaskResolutionIgnored();
-            return;
-        }
-        const index = host.engine.pendingTaskIndexByRequestId(request_id) orelse failHost("native completion has no pending request");
-        _ = tryResolvePendingTaskAt(&host, &roc_host, index, ptr[0..len], failed == 1) catch |err| failPreparedStateDispatch(err);
-        finishHostMetrics(&host);
     }
     // Every slice is borrowed until the next mount/dispatch/unmount call. Rust
     // copies it before another host call and never owns any Roc allocation.
@@ -13060,6 +13328,34 @@ const Gpui = struct {
         if (!live) failHost("GPUI child query before mount");
         return (child_order.childAt(ids.ElemId.fromRaw(parent), rank) catch failHost("invalid GPUI child rank")).raw();
     }
+    fn queueEffectJob(job: *EffectJob) void {
+        effect_jobs.append(host.hostAllocator(), job) catch @panic("out of memory");
+    }
+    // Hands the Rust host the next prepared effect. The job pointer is opaque
+    // to Rust; it comes back through `runRocEffect` on a worker thread and
+    // `completeRocEffect` on the UI thread.
+    fn nextRocEffect(out: *u64) callconv(.c) u32 {
+        if (!live) failHost("effect read before mount");
+        if (effect_jobs.items.len == 0) return 0;
+        const job = effect_jobs.orderedRemove(0);
+        effects_running.append(host.hostAllocator(), job) catch @panic("out of memory");
+        out.* = @intFromPtr(job);
+        return 1;
+    }
+    // Runs on a Rust host worker thread: only the job and Roc code.
+    fn runRocEffect(job_raw: u64) callconv(.c) void {
+        const job: *EffectJob = @ptrFromInt(job_raw);
+        runEffectJob(job);
+    }
+    fn completeRocEffect(job_raw: u64) callconv(.c) void {
+        if (!live) failHost("effect completion before mount");
+        const job: *EffectJob = @ptrFromInt(job_raw);
+        const index = std.mem.indexOfScalar(*EffectJob, effects_running.items, job) orelse failHost("effect completion does not match a running effect");
+        _ = effects_running.orderedRemove(index);
+        clear();
+        completeEffectJob(&host, &roc_host, job);
+        drainEffects(&host, &roc_host);
+    }
     fn timerVersion() callconv(.c) u32 {
         return render.native_protocol.timer_version;
     }
@@ -13076,6 +13372,7 @@ const Gpui = struct {
         clear();
         if (!timers.isActive(token)) return 0;
         _ = host.engine.tickIntervalSourceByRuntimeToken(&host, &roc_host, token);
+        drainEffects(&host, &roc_host);
         return 1;
     }
     fn metrics(out: [*]u64) callconv(.c) void {

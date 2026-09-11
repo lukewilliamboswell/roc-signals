@@ -1,22 +1,21 @@
 app [main] { pf: platform "../../../platform-gui/main.roc" }
 
 import pf.Elem exposing [Elem]
-import pf.Gui
 import pf.Signal
 import pf.Ui
 
 main : () -> Elem
 main = || Ui.state(
 	KeepOpen,
-	|decision| Gui.window_lifecycle(
-		{ on_close_requested: decision.on_unit(|_| AwaitDecision), decision: decision.signal() },
+	|decision| Elem.window_lifecycle(
+		{ on_close_requested: decision.update(|_| AwaitDecision), decision: decision.signal() },
 		[
-			Gui.column(
-				[],
+			Elem.col(
+				Elem.ColProps.{},
 				[
-					Gui.heading("Window close contract"),
-					Gui.text_s(
-						decision.signal().map(
+					Elem.heading("Window close contract"),
+					Elem.text_s(
+						decision.read(
 							|value| match value {
 								KeepOpen => "Open"
 								AwaitDecision => "Deciding"
@@ -24,8 +23,8 @@ main = || Ui.state(
 							},
 						),
 					),
-					Gui.button("Keep open", decision.on_unit(|_| KeepOpen)),
-					Gui.button("Approve close", decision.on_unit(|_| Close)),
+					Elem.button("Keep open", decision.update(|_| KeepOpen)),
+					Elem.button("Approve close", decision.update(|_| Close)),
 				],
 			),
 		],

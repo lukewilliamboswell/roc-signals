@@ -168,14 +168,14 @@ Auth := {}.{
 								),
 								error_list(errors),
 								Html.form(
-									[Html.class_attr(Styles.form), Html.on_submit_prevent_default(form.on_unit(submit_form))],
+									[Html.class_attr(Styles.form), Html.on_submit_prevent_default(form.update(submit_form))],
 									[
 										if is_register {
 											Html.text_input_attrs(
 												"Username",
 												username,
 												[Html.class_attr(field_class)],
-												form.on_str(|value, text| { ..value, username: text }),
+												form.update_str(|value, text| { ..value, username: text }),
 											)
 										} else {
 											Html.text("")
@@ -184,18 +184,18 @@ Auth := {}.{
 											"Email",
 											email,
 											[Html.class_attr(field_class), Html.attr("type", "email")],
-											form.on_str(|value, text| { ..value, email: text }),
+											form.update_str(|value, text| { ..value, email: text }),
 										),
 										Html.text_input_attrs(
 											"Password",
 											password,
 											[Html.class_attr(field_class), Html.attr("type", "password")],
-											form.on_str(|value, text| { ..value, password: text }),
+											form.update_str(|value, text| { ..value, password: text }),
 										),
 										Html.button_attrs(
 											heading,
 											[Html.class_attr(Styles.primary_button), Html.attr("type", "submit")],
-											form.on_unit(submit_form),
+											form.update(submit_form),
 										),
 									],
 								),

@@ -555,7 +555,7 @@ page = |{ show_debug, show_info, show_warn, show_error, query, follow_tail, newe
 										"Query",
 										query_signal,
 										[Html.class_attr("input"), Html.attr("placeholder", "upstream timeout")],
-										query.on_str(|_, value| value),
+										query.update_str(|_, value| value),
 									),
 									Html.paragraph_c("Matching lines are highlighted in the stream.", "hint"),
 								],
@@ -567,10 +567,10 @@ page = |{ show_debug, show_info, show_warn, show_error, query, follow_tail, newe
 									Html.div_c(
 										"flex flex-wrap items-center gap-3",
 										[
-											check_row("Show debug", show_debug.signal(), show_debug.on_bool(|_, value| value)),
-											check_row("Show info", show_info.signal(), show_info.on_bool(|_, value| value)),
-											check_row("Show warn", show_warn.signal(), show_warn.on_bool(|_, value| value)),
-											check_row("Show error", show_error.signal(), show_error.on_bool(|_, value| value)),
+											check_row("Show debug", show_debug.signal(), show_debug.update_bool(|_, value| value)),
+											check_row("Show info", show_info.signal(), show_info.update_bool(|_, value| value)),
+											check_row("Show warn", show_warn.signal(), show_warn.update_bool(|_, value| value)),
+											check_row("Show error", show_error.signal(), show_error.update_bool(|_, value| value)),
 										],
 									),
 								],
@@ -582,8 +582,8 @@ page = |{ show_debug, show_info, show_warn, show_error, query, follow_tail, newe
 									Html.div_c(
 										"flex flex-wrap items-center gap-3",
 										[
-											check_row("Follow tail", follow_signal, follow_tail.on_bool(|_, value| value)),
-											check_row("Newest first", newest_signal, newest_first.on_bool(|_, value| value)),
+											check_row("Follow tail", follow_signal, follow_tail.update_bool(|_, value| value)),
+											check_row("Newest first", newest_signal, newest_first.update_bool(|_, value| value)),
 										],
 									),
 								],
@@ -592,7 +592,7 @@ page = |{ show_debug, show_info, show_warn, show_error, query, follow_tail, newe
 								"field",
 								[
 									Html.paragraph_c("Buffer", "field-label"),
-									Html.button_c("Clear log", "button-danger", epoch.on_unit(|value| !value)),
+									Html.button_c("Clear log", "button-danger", epoch.update(|value| !value)),
 								],
 							),
 						],

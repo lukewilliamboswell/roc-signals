@@ -56,7 +56,7 @@ corresponding structure builder to obtain that subtree.
 
 ## An event, step by step
 
-For a button bound to `count.on_unit(|n| n + 1)`:
+For a button bound to `count.update(|n| n + 1)`:
 
 1. The browser runtime forwards the bound event ID and declared payload to Wasm.
 2. The engine calls the reducer with the current count.

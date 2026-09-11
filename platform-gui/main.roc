@@ -2,12 +2,12 @@ platform ""
 	requires {
 		main : () -> Elem
 	}
-	exposes [Elem, Signal, Gui, Ui, Rows, Files]
+	exposes [Elem, Event, Action, Env, Signal, Gui, Ui, Rows, Files, Http]
 	packages {
 		roc: "nightly-2026-09-04-c125b82",
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
 	}
-	provides { "roc_ui_init": ui_init }
+	provides { "roc_ui_init": ui_init, "roc_prepare_effect": prepare_effect!, "roc_run_effect": run_effect! }
 	hosted {
 		"roc_each_bool_sink_push": EachSink.push_bool!,
 		"roc_rows_delta_clear_sink_push": EachSink.push_delta_clear!,
@@ -18,6 +18,20 @@ platform ""
 		"roc_rows_delta_update_sink_push": EachSink.push_delta_update!,
 		"roc_rows_snapshot_description_sink_push": EachSink.push_snapshot_description!,
 		"roc_rows_snapshot_sink_push": EachSink.push_snapshot!,
+		"roc_env_var": Env.var!,
+		"roc_files_choose_file": Files.choose_file!,
+		"roc_files_choose_directory": Files.choose_directory!,
+		"roc_files_choose_save_path": Files.choose_save_path!,
+		"roc_files_stat": Files.stat!,
+		"roc_files_read_bytes": Files.read_bytes!,
+		"roc_files_write_bytes": Files.write_bytes!,
+		"roc_files_rename": Files.rename!,
+		"roc_files_remove": Files.remove!,
+		"roc_files_sync": Files.sync!,
+		"roc_files_list_directory": Files.list_directory!,
+		"roc_files_open_path": Files.open_path!,
+		"roc_files_assets_root": Files.assets_root!,
+		"roc_http_send": Http.send!,
 		"roc_host_value_clone": HostValue.clone!,
 		"roc_host_value_get_with_capability": HostValue.get_with_capability!,
 		"roc_host_value_get_with_split": HostValue.get_with_split!,
@@ -36,14 +50,37 @@ platform ""
 
 import Elem exposing [Elem]
 import EachSink
-import HostValue
+import HostValue exposing [HostValue]
+import Node
 import Signal
 import Gui
+import Event
+import Action
+import Env
 import Files
+import Http
 import Ui
 import Rows
 
 ui_init : () -> Box(Elem)
 ui_init = || {
 	Box.box(main())
+}
+
+## Prepares the effect of one `Action.then` for the host: `effect` is the boxed
+## effectful closure the action carries, `snapshot` the fresh reads value, and
+## `capability` the authority that validates it. Decoding the snapshot touches
+## host-owned values, so this runs on the UI thread and returns the thunk the
+## effect worker runs.
+prepare_effect! : Box((HostValue, HostValue.CapabilityHandle => Box((() => Node.Cmd)))), HostValue, HostValue.CapabilityHandle => Box((() => Node.Cmd))
+prepare_effect! = |effect_box, snapshot, capability| {
+	effect! = Box.unbox(effect_box)
+	effect!(snapshot, capability)
+}
+
+## Runs a prepared effect thunk; the worker thread calls this.
+run_effect! : Box((() => Node.Cmd)) => Node.Cmd
+run_effect! = |thunk_box| {
+	thunk! = Box.unbox(thunk_box)
+	thunk!()
 }

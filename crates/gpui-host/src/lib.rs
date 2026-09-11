@@ -5,6 +5,8 @@ mod controls;
 mod dialog;
 mod drag;
 mod effects;
+mod http;
+mod workers;
 mod file_io;
 mod input;
 mod probe;
@@ -538,7 +540,6 @@ struct Runtime {
     trace_engine: bool,
     unfocused_keys: Option<Subscription>,
     engine: Engine,
-    effects: effects::Manager,
     dialogs: dialog::Dialogs,
     window_lifecycle: window_lifecycle::Lifecycle,
     /// Window identity decided by the graph but not yet handed to the platform
@@ -607,7 +608,6 @@ impl Runtime {
             trace_engine: false,
             unfocused_keys: None,
             engine,
-            effects: crate::effects::Manager::default(),
             dialogs: crate::dialog::Dialogs::default(),
             window_lifecycle: crate::window_lifecycle::Lifecycle::default(),
             pending_title: None,
@@ -619,6 +619,7 @@ impl Runtime {
             fonts: fonts::Registry::default(),
         };
         runtime.apply(initial, cx);
+        crate::workers::listen(cx);
         runtime.drain_effects(cx);
         runtime
     }
@@ -712,13 +713,14 @@ impl Runtime {
         while let Some(message) = self.engine.next_timer() {
             self.timers.accept(message, cx);
         }
-        while let Some(message) = self.engine.next_effect() {
-            self.effects.accept(message, cx);
+        // Every prepared effect gets its own worker; the listener started in
+        // `new` applies each result on the UI thread as it completes.
+        while let Some(job) = self.engine.next_roc_effect() {
+            crate::workers::run(self.engine.roc_effect_runner(), job);
         }
     }
-    fn complete_task(&mut self, id: u64, failed: bool, payload: &str, cx: &mut Context<Self>) {
-        self.effects.complete(id);
-        let changes = self.engine.task_result(id, failed, payload);
+    fn complete_roc_effect(&mut self, job: u64, cx: &mut Context<Self>) {
+        let changes = self.engine.roc_effect_done(job);
         self.apply(changes, cx);
         self.drain_effects(cx);
     }
@@ -833,9 +835,8 @@ impl Runtime {
 }
 impl Drop for Runtime {
     fn drop(&mut self) {
-        // Invalidate worker callbacks before Engine releases task-owned values.
+        // Invalidate timer callbacks before Engine releases its values.
         self.timers.shutdown();
-        self.effects.shutdown();
     }
 }
 
@@ -1414,7 +1415,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                     cx.new(|cx| {
                         let mut runtime = Runtime::new(!smoke || smoke_timers, cx);
                         runtime.trace_engine = trace_engine;
-                        runtime.effects.answer_choosers(choices);
+                        effects::answer_choosers(choices);
                         runtime
                     })
                 },
@@ -1828,7 +1829,6 @@ mod tests {
             trace_engine: false,
             unfocused_keys: None,
             engine: Engine::test_boundary(),
-            effects: crate::effects::Manager::default(),
             dialogs: crate::dialog::Dialogs::default(),
             window_lifecycle: crate::window_lifecycle::Lifecycle::default(),
             pending_title: None,

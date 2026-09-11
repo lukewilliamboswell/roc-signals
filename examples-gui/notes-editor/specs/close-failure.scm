@@ -2,9 +2,9 @@
   (steps
     (fill (label "Note text") "Do not lose this")
     (request-window-close)
+    (stub-file-choice "notes-save-path" (chosen "/tmp/Ideas café.txt"))
+    (stub-file-reject "notes-write" :kind permission-denied :detail "destination")
     (click (role button :name "Save and close"))
-    (resolve-file-choice "notes-save-path" (chosen "/tmp/Ideas café.txt"))
-    (reject-file "notes-write" :kind permission-denied :detail "destination")
     (expect-window-closed false)
     (expect-value (label "Note text") "Do not lose this")
     (expect-disabled (label "Note text") false)

@@ -1,14 +1,15 @@
 import pf.Files
+import LogReader
 import Feed
 import LineStream
 
 ## Only accepted reads advance the file cursor. Choosing, errors, and paused
 ## reads preserve the last accepted history; a new source commits on first data.
 Session := [].{
-	Source := [Replay, Log({ path : Str, position : Files.LogPosition })].{
+	Source := [Replay, Log({ path : Str, position : LogReader.Position })].{
 		is_eq : _
 	}
-	Request : { path : Str, position : Files.LogPosition }
+	Request : { path : Str, position : LogReader.Position }
 	Phase := [Idle, Choosing, Reading(Request), Waiting, Paused].{
 		is_eq : _
 	}
@@ -23,7 +24,7 @@ Session := [].{
 
 	chosen : State, Files.Choice -> State
 	chosen = |state, choice| match (state.phase, choice) {
-		(Choosing, Files.Choice.Chosen(path)) => { ..state, phase: Reading({ path, position: Files.LogPosition.Start }), notice: "Opening ${path}…" }
+		(Choosing, Files.Choice.Chosen(path)) => { ..state, phase: Reading({ path, position: LogReader.Position.Start }), notice: "Opening ${path}…" }
 		(Choosing, Files.Choice.Canceled) => pause(state)
 		_ => crash "A log choice arrived outside its operation"
 	}
@@ -52,13 +53,36 @@ Session := [].{
 		None => state
 	}
 
-	accept : State, Feed.History, Files.LogChunk -> Accepted
+	## Accepts the chunks one drain read in order. A drain whose read the user
+	## paused meanwhile is discarded, so the accepted cursor never moves past
+	## what the session showed; a refused line stops the drain there. A drain
+	## that stopped with more of the file unread leaves the session waiting,
+	## so the next poll continues from the accepted cursor.
+	accept_all : State, Feed.History, List(LogReader.Chunk) -> Accepted
+	accept_all = |state, history, chunks| match (state.phase, chunks.first()) {
+		(Reading(active), Ok(first)) if active.path == first.path => {
+			accepted = chunks.fold(
+				{ session: state, history },
+				|current, chunk| match current.session.phase {
+					Reading(_) => accept(current.session, current.history, chunk)
+					_ => current
+				},
+			)
+			match accepted.session.phase {
+				Reading(_) => { ..accepted, session: { ..accepted.session, phase: Waiting } }
+				_ => accepted
+			}
+		}
+		_ => { session: state, history }
+	}
+
+	accept : State, Feed.History, LogReader.Chunk -> Accepted
 	accept = |state, history, chunk| {
 		request = match state.phase {
 			Reading(active) if active.path == chunk.path => active
 			_ => crash "A log read arrived outside its matching operation"
 		}
-		reset = request.position == Files.LogPosition.Start or chunk.change == Files.LogChange.Rotated or chunk.change == Files.LogChange.Truncated
+		reset = request.position == LogReader.Position.Start or chunk.change == LogReader.Change.Rotated or chunk.change == LogReader.Change.Truncated
 		lines = if reset {
 			LineStream.empty
 		} else {
@@ -70,19 +94,19 @@ Session := [].{
 				history,
 			}
 			Ok(assembled) => {
-				position = Files.LogPosition.After(chunk.cursor)
-				phase = if chunk.state == Files.LogState.More {
+				position = LogReader.Position.After(chunk.cursor)
+				phase = if chunk.state == LogReader.State.More {
 					Reading({ path: chunk.path, position })
 				} else {
 					Waiting
 				}
 				notice = match chunk.change {
-					Files.LogChange.Rotated => "File replaced: retained history restarted from the new file."
-					Files.LogChange.Truncated => "File truncated: retained history restarted from the beginning."
+					LogReader.Change.Rotated => "File replaced: retained history restarted from the new file."
+					LogReader.Change.Truncated => "File truncated: retained history restarted from the beginning."
 					_ => match chunk.state {
-						Files.LogState.More => "Reading existing log records…"
-						Files.LogState.PartialUtf8 => "Following file; waiting for a complete UTF-8 character."
-						Files.LogState.AtEnd => if assembled.state.partial.is_empty() {
+						LogReader.State.More => "Reading existing log records…"
+						LogReader.State.PartialUtf8 => "Following file; waiting for a complete UTF-8 character."
+						LogReader.State.AtEnd => if assembled.state.partial.is_empty() {
 							"Following file; caught up."
 						} else {
 							"Following file; waiting for the final line's newline."
@@ -107,7 +131,7 @@ Session := [].{
 
 ## A refused long line never advances the accepted cursor or destroys history.
 expect {
-	before = { ..Session.initial, phase: Session.Phase.Reading({ path: "/log", position: Files.LogPosition.Start }) }
+	before = { ..Session.initial, phase: Session.Phase.Reading({ path: "/log", position: LogReader.Position.Start }) }
 	history = Feed.append(Feed.empty)
 	result = Session.accept(
 		before,
@@ -116,8 +140,8 @@ expect {
 			path: "/log",
 			text: Str.join_with(List.repeat("x", 16385), ""),
 			cursor: { device: 1, inode: 2, offset: 16385 },
-			change: Files.LogChange.Initial,
-			state: Files.LogState.AtEnd,
+			change: LogReader.Change.Initial,
+			state: LogReader.State.AtEnd,
 		},
 	)
 	result.session.source == before.source and result.session.phase == Session.Phase.Paused and result.history.next_id == history.next_id
@@ -126,14 +150,14 @@ expect {
 ## A replacement file cannot inherit an unfinished line from the retired file.
 expect {
 	first = Session.accept(
-		{ ..Session.initial, phase: Session.Phase.Reading({ path: "/log", position: Files.LogPosition.Start }) },
+		{ ..Session.initial, phase: Session.Phase.Reading({ path: "/log", position: LogReader.Position.Start }) },
 		Feed.empty,
 		{
 			path: "/log",
 			text: "old\npartial",
 			cursor: { device: 1, inode: 2, offset: 11 },
-			change: Files.LogChange.Initial,
-			state: Files.LogState.AtEnd,
+			change: LogReader.Change.Initial,
+			state: LogReader.State.AtEnd,
 		},
 	)
 	rotated = Session.accept(
@@ -143,8 +167,8 @@ expect {
 			path: "/log",
 			text: "new\n",
 			cursor: { device: 1, inode: 3, offset: 4 },
-			change: Files.LogChange.Rotated,
-			state: Files.LogState.AtEnd,
+			change: LogReader.Change.Rotated,
+			state: LogReader.State.AtEnd,
 		},
 	)
 	rotated.history.rows.len() == 1 and rotated.history.rows.get(0)?.message == "new" and rotated.history.rows.get(0)?.id == 2 and rotated.session.lines.partial == ""
@@ -152,7 +176,7 @@ expect {
 
 ## Read failure exposes an exact retry without moving the accepted source.
 expect {
-	request = { path: "/log", position: Files.LogPosition.Start }
+	request = { path: "/log", position: LogReader.Position.Start }
 	state = { ..Session.initial, phase: Session.Phase.Reading(request) }
 	failed = Session.failed(state, "Permission denied")
 	Session.retry_read(failed).phase == Session.Phase.Reading(request) and failed.source == Session.Source.Replay

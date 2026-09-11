@@ -124,12 +124,12 @@ main = || {
 						"Large each controls",
 						[],
 						[
-							Html.button("Update middle row", mode.on_unit(|_| 1)),
-							Html.button("Append one row", mode.on_unit(|_| 2)),
-							Html.button("Remove middle row", mode.on_unit(|_| 3)),
-							Html.button("Filter even rows", mode.on_unit(|_| 4)),
-							Html.button("Reverse rows", mode.on_unit(|_| 5)),
-							Html.button("Reset rows", mode.on_unit(|_| 0)),
+							Html.button("Update middle row", mode.update(|_| 1)),
+							Html.button("Append one row", mode.update(|_| 2)),
+							Html.button("Remove middle row", mode.update(|_| 3)),
+							Html.button("Filter even rows", mode.update(|_| 4)),
+							Html.button("Reverse rows", mode.update(|_| 5)),
+							Html.button("Reset rows", mode.update(|_| 0)),
 						],
 					),
 					Html.section(

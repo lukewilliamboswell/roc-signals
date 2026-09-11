@@ -7,9 +7,6 @@
 /// Version of the statically linked native GUI presentation boundary.
 pub const protocol_version: u32 = 12;
 
-/// Version of the separate native effects (task transport) boundary.
-pub const effect_version: u32 = 2;
-
 /// Version of the separate native timer boundary.
 pub const timer_version: u32 = 1;
 
@@ -122,27 +119,27 @@ pub const native_bool_field_count: usize = 3;
 pub const TaskKind = enum(u32) {
     /// App-declared external task; the only route the browser host accepts.
     external = 0,
-    /// Native file chooser dialog.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     choose_file = 1,
-    /// Native directory chooser dialog.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     choose_directory = 2,
-    /// Native save-path chooser with location kind, directory, and suggested name.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     choose_save_path = 3,
-    /// Bounded UTF-8 text read of one absolute path.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     read_text = 4,
-    /// Atomic bounded UTF-8 text write of one absolute path.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     write_text = 5,
-    /// Bounded recursive directory metadata scan.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     scan_directory = 6,
-    /// Bounded direct-children directory listing.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     list_directory = 7,
-    /// Hand one regular file to its associated application.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     open_path = 8,
-    /// Bounded UTF-8 prefix read with an explicit truncation marker.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     read_preview = 9,
-    /// Cursor-driven bounded log chunk read with rotation detection.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     read_log = 10,
-    /// Hash a bounded manifest of relative assets against expected SHA-256 digests.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     verify_assets = 11,
 };
 

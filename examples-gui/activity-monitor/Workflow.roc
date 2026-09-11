@@ -1,57 +1,74 @@
+import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
 import pf.Files
-import pf.Gui
 import pf.Signal
 import pf.Ui
+import LogReader
 import Session
 
-## Files stay on the shared, scope-owned task path. At most one read is active;
-## complete chunks drain sequentially and caught-up files use a scoped timer.
+## Every native step is the effect of the handler that asked for it: opening a
+## log runs the chooser, which blocks until the user answers, and then drains
+## the chosen file; resuming, retrying, and polling drain from the accepted
+## cursor. A drain reads consecutive chunks while the file has more, up to
+## `drain_chunks` per effect, and commits them together; a caught-up file is
+## polled by a scoped timer that exists only while the session waits on it.
 Workflow := [].{
-	Tasks : { choose : Signal.Task(Files.Choice, Files.Error), read : Signal.Task(Files.LogChunk, Files.Error) }
+	drain_chunks = 64
 
-	create : () -> Tasks
-	create = || { choose: Files.choose_file_task("activity-open"), read: Files.read_log_task("activity-read") }
+	## Polls the followed file every 500 ms while the session is waiting for
+	## more of it; each tick moves the session into `Reading` and drains from
+	## the accepted cursor.
+	poll : Ui.State(Session.Accepted) -> Elem
+	poll = |model| Ui.when(
+		model.read(|value| value.session.phase == Session.Phase.Waiting),
+		|| Action.every(500, model.read(|value| value.session), |_| Action.then([model.write(|value| { ..value, session: Session.read_next(value.session) })], |current| advance!(model, current))),
+		|| Elem.text(""),
+	)
 
-	bindings : Ui.State(Session.Accepted), Tasks -> List(Elem)
-	bindings = |model, tasks| [
-		Ui.on_change(
-			model.signal().map(|value| value.session.phase),
-			|phase| match phase {
-				Session.Phase.Choosing => Files.choose_file(tasks.choose)
-				Session.Phase.Reading(request) => Files.read_log(tasks.read, request)
-				_ => Signal.noop
-			},
-		),
-		Ui.on_change(
-			Signal.from_task(tasks.choose),
-			|status| match status {
-				Signal.TaskStatus.Loading => Signal.noop
-				Signal.TaskStatus.Done(choice) => model.update_cmd(|value| { ..value, session: Session.chosen(value.session, choice) })
-				Signal.TaskStatus.Failed(error) => failed(model, error)
-			},
-		),
-		Ui.on_change(
-			Signal.from_task(tasks.read),
-			|status| match status {
-				Signal.TaskStatus.Loading => Signal.noop
-				Signal.TaskStatus.Done(chunk) => model.update_cmd(|value| Session.accept(value.session, value.history, chunk))
-				Signal.TaskStatus.Failed(error) => failed(model, error)
-			},
-		),
-		Ui.when(model.signal().map(|value| value.session.phase == Session.Phase.Waiting), || Ui.on_change(Signal.interval(500), |_| model.update_cmd(|value| { ..value, session: Session.read_next(value.session) })), || Gui.text("")),
-	]
-
-	cancel : Ui.State(Session.Accepted), Tasks, Session.Phase -> Gui.Cmd
-	cancel = |model, tasks, phase| match phase {
-		Session.Phase.Choosing => Signal.cancel(tasks.choose)
-		Session.Phase.Reading(_) => Signal.cancel(tasks.read)
-		_ => model.update_cmd(|value| { ..value, session: Session.pause(value.session) })
+	## Opens the chooser and drains the chosen log from its start.
+	open! : Ui.State(Session.Accepted) => Action(a)
+	open! = |model| match Files.choose_file!() {
+		Err(error) => failed(model, error)
+		Ok(Files.Choice.Canceled) => Action.update([model.write(|value| { ..value, session: Session.chosen(value.session, Files.Choice.Canceled) })])
+		Ok(Files.Choice.Chosen(path)) => Action.then(
+			[model.write(|value| { ..value, session: Session.chosen(value.session, Files.Choice.Chosen(path)) })],
+			|_| drain!(model, { path, position: LogReader.Position.Start }),
+		)
 	}
 
-	failed : Ui.State(Session.Accepted), Files.Error -> Gui.Cmd
-	failed = |model, error| match error {
-		Files.Error.Canceled => model.update_cmd(|value| { ..value, session: Session.pause(value.session) })
-		_ => model.update_cmd(|value| { ..value, session: Session.failed(value.session, Files.error_text(error)) })
+	## Drains the read the session's phase asks for, after a handler moved it
+	## into `Reading`.
+	advance! : Ui.State(Session.Accepted), Session.State => Action(a)
+	advance! = |model, state| match state.phase {
+		Session.Phase.Reading(request) => drain!(model, request)
+		_ => Action.none
 	}
+
+	drain! : Ui.State(Session.Accepted), Session.Request => Action(a)
+	drain! = |model, request| match read_chunks!(request, []) {
+		Ok(chunks) => Action.update([model.write(|value| Session.accept_all(value.session, value.history, chunks))])
+		Err(error) => failed(model, error)
+	}
+
+	## A failure after some chunks were read keeps them; the next poll meets
+	## the failure again from the accepted cursor.
+	read_chunks! : Session.Request, List(LogReader.Chunk) => Try(List(LogReader.Chunk), Files.Error)
+	read_chunks! = |request, chunks| match LogReader.read!(request) {
+		Err(error) => if chunks.is_empty() {
+			Err(error)
+		} else {
+			Ok(chunks)
+		}
+		Ok(chunk) => {
+			collected = chunks.append(chunk)
+			if chunk.state == LogReader.State.More and collected.len() < drain_chunks {
+				read_chunks!({ path: chunk.path, position: LogReader.Position.After(chunk.cursor) }, collected)
+			} else {
+				Ok(collected)
+			}
+		}
+	}
+
+	failed : Ui.State(Session.Accepted), Files.Error -> Action(a)
+	failed = |model, error| Action.update([model.write(|value| { ..value, session: Session.failed(value.session, Files.error_text(error)) })])
 }

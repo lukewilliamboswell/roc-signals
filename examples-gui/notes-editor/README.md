@@ -18,9 +18,12 @@ roc test examples-gui/notes-editor/main.roc
 On Windows use `python` rather than `python3`, which is usually the Store
 shortcut there.
 
+On Windows use `python` rather than `python3`, which is usually the Store
+shortcut there.
+
 Control+N creates a document, Control+O opens one, Control+S saves, and
-Control+Shift+S chooses a new destination. Escape cancels an operation or closes
-the discard confirmation. Native editor selection, movement, and clipboard
+Control+Shift+S chooses a new destination. Escape closes the discard
+confirmation, and the native choosers handle their own Escape. Native editor selection, movement, and clipboard
 bindings retain their usual behavior. Paragraphs wrap to the viewport; Control+Z
 undoes typing and Control+Shift+Z or Control+Y redoes it. The editor owns bounded
 history (128 boundaries and 8 MiB), cleared on a new document lifetime even when
@@ -31,10 +34,10 @@ changes after another edit. Revert restores the last accepted file snapshot.
 New and Open ask before replacing unsaved text; canceling the confirmation or
 file chooser preserves it. Errors leave the draft available for retry.
 
-A write captures its complete text before background work begins. Editing can
-continue while it saves; completion accepts the submitted snapshot, so later
-edits remain dirty. File operations are serialized for this document. Canceling
-a save cannot undo a rename that has already committed. See the
+A write captures its complete text when the destination is chosen and runs as
+one synchronous call inside an effect; completion accepts the submitted
+snapshot, so later edits remain dirty. File operations are serialized for this
+document. See the
 [native Files contract](../../docs/native-gui-protocol.md) for limits and path
 handling. Text files are limited to one MiB; oversized editor replacements are
 refused as complete operations. Files and filenames must be valid UTF-8.
@@ -43,9 +46,9 @@ The discard dialog focuses Keep editing, contains Tab/Shift-Tab navigation,
 and restores the prior live control when dismissed. Enter/Space activate
 focused buttons; Escape keeps the current draft. Closing an edited document
 asks whether to Save and close, Discard and close, or Keep editing. A closing
-save freezes editing and waits for successful completion; cancellation or failure
-keeps the window and draft open. Closing during another file operation asks the
-user to finish or cancel it first.
+save freezes editing and waits for successful completion; a dismissed chooser
+or a failure keeps the window and draft open. Closing during another file
+operation asks the user to finish or cancel it first.
 A file opens in the editor as LF text with no byte-order mark: a leading
 U+FEFF is removed rather than kept as an invisible first character, and CRLF
 becomes LF so the caret, the counts and native undo see one character per line
@@ -72,8 +75,10 @@ advances the lifetime and installs its text as a single settled value, so the
 editor can never mount against another document's text. Typing, saving, and the
 temporary unavailability during a chooser leave the lifetime alone, which is
 what preserves native selection and undo history while a document is edited.
-`Workflow.roc` observes only its phase to start tasks, and task results enter
-ordinary shared engine propagation. The native semantic specs supply typed task outcomes to
-check cancellation, failures, stale results, repeat saves, and snapshot ownership
-deterministically. Filesystem worker tests and actual GPUI interaction tests
+`Workflow.roc`
+holds the effects the handlers start: the handler that moves the session into
+`Busy` runs the chooser, read, or write as its effect, and a chooser blocks
+that effect until the user answers. The native
+semantic specs stub chooser outcomes and file results to check dismissal,
+failures, repeat saves, and snapshot ownership deterministically. Filesystem worker tests and actual GPUI interaction tests
 cover the native boundaries separately.

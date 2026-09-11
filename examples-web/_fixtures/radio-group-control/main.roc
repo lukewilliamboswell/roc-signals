@@ -40,8 +40,8 @@ main = || {
 				[Html.attr("data-fixture", "radio-group-control")],
 				[
 					Html.heading("Radio Group Control"),
-					Html.radio("Monthly", "billing", "monthly", billing_signal, model.on_str(set_billing)),
-					Html.radio("Annual", "billing", "annual", billing_signal, model.on_str(set_billing)),
+					Html.radio("Monthly", "billing", "monthly", billing_signal, model.update_str(set_billing)),
+					Html.radio("Annual", "billing", "annual", billing_signal, model.update_str(set_billing)),
 					Html.paragraph_s(billing_text),
 					Html.paragraph_s(changes_text),
 				],

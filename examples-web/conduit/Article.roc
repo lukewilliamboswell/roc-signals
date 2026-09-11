@@ -286,7 +286,7 @@ Article := {}.{
 													|| Html.button_attrs(
 														"Delete Article",
 														[Html.class_attr("mb-4 ${Styles.danger_button}"), Html.attr("type", "button")],
-														model.on_unit(|value| { ..value, article_delete_serial: value.article_delete_serial + 1 }),
+														model.update(|value| { ..value, article_delete_serial: value.article_delete_serial + 1 }),
 													),
 													|| Html.text(""),
 												),
@@ -425,19 +425,19 @@ Article := {}.{
 	comment_form : Signal.Signal(Str), Signal.Signal(List(Str)), Ui.State(Article.State) -> Elem
 	comment_form = |body, errors, model|
 		Html.form(
-			[Html.class_attr("mb-8 grid gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4"), Html.on_submit_prevent_default(model.on_unit(submit_comment))],
+			[Html.class_attr("mb-8 grid gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4"), Html.on_submit_prevent_default(model.update(submit_comment))],
 			[
 				Auth.error_list(errors),
 				Html.textarea_attrs(
 					"Comment",
 					body,
 					[Html.class_attr(Auth.field_class)],
-					model.on_str(|value, text| { ..value, comment_body: text }),
+					model.update_str(|value, text| { ..value, comment_body: text }),
 				),
 				Html.button_attrs(
 					"Post Comment",
 					[Html.class_attr(Styles.primary_button), Html.attr("type", "submit")],
-					model.on_unit(submit_comment),
+					model.update(submit_comment),
 				),
 			],
 		)
@@ -458,7 +458,7 @@ Article := {}.{
 					|| Html.button_attrs(
 						"Delete Comment",
 						[Html.class_attr("mt-3 ${Styles.danger_button}"), Html.attr("type", "button")],
-						model.on_unit(|value| { ..value, comment_delete_serial: value.comment_delete_serial + 1, comment_delete_id: comment_id_from_key(key) }),
+						model.update(|value| { ..value, comment_delete_serial: value.comment_delete_serial + 1, comment_delete_id: comment_id_from_key(key) }),
 					),
 					|| Html.text(""),
 				),

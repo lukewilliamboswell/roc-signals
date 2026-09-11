@@ -75,29 +75,27 @@ Windows-path specs rather than by the whole suite.
 
 ## Controls and layout
 
-`Gui.row`, `Gui.column`, and `Gui.panel` take an attribute list followed by a
-child list. `Gui.style` accepts a complete presentation record; `Gui.style_s`
-changes that record through normal signal propagation. Each element accepts one
-style. A supplied style replaces the control's defaults, so include padding or
-borders explicitly when you want them.
+`Elem.row`, `Elem.col`, and `Elem.panel` take a props record followed by a
+child list. Every control has its own props type, such as `Elem.PanelProps`,
+whose fields all have defaults, so a literal names only what it changes:
+`Elem.col({ test_id: "count", padding: 12, gap: 4 }, ["Count"])`. A string
+literal in a child list is literal text, the same as `Elem.text`. The style
+fields carry that control's own presentation defaults: a panel keeps its
+padding and border unless the literal sets them. Attributes such as `test_id`,
+`label`, `selected`, `enabled`, `disabled`, `shortcuts`, `drag_source`, and
+`on_drop` live in the same record and cost nothing when omitted.
 
-`Gui.Style` is a nominal record whose every field has its neutral default, so a
-style literal names only the fields it sets and the value is still complete:
-`Gui.style({ padding: 16, width: Fill })`. Omitting a field is not "unset" - it
-selects the default, and an explicit `gap: 0` overrides the default `8`.
-Omitting the style attribute altogether still selects the control helper's own
-defaults; there is no partial merging between a supplied style and those.
-`Gui.style_default` remains the complete neutral value, useful when you want it
-by name, and `{ ..some_style, gap: 4 }` updates an existing style.
-
-Two spellings are worth knowing. A single-field style needs the trailing comma,
-because `{ padding }` is a block expression and `{ padding, }` is a record. And
-where the expected type is not already known - inside the closure passed to
-`Signal.map`, for instance - construct the type by name:
-`Gui.style_s(state.map(|value| Gui.Style.{ padding: 12, }))`.
+`changes` takes a `Signal(Gui.Style)` and replaces the static style fields
+through normal signal propagation. A record built inside a `Signal.map`
+transform is constructed explicitly as `Gui.Style.{ ... }` so its omitted
+fields still take their defaults; the same applies to a props record built
+outside the call, for example `Elem.PanelProps.{ padding: 4 }`, because only a
+literal passed directly to the control absorbs its defaults.
 
 Styles specify logical-pixel dimensions, spacing, padding, colors, borders,
-radius, font size, and overflow. Lengths are `Auto`, `Fill`, or `Px(value)`;
+radius, font size, and overflow. Lengths are `Auto`, `Fill`, or pixels written
+as a typed number literal, `380.Px`, with `Px` imported from `Gui`
+(`import pf.Gui exposing [Px]`); `Px(value)` is the same value for a computed number.
 colors are `Default` or `Rgb(value)`. Zero font size and default colors inherit.
 `Fill` means the parent's content box: a Fill child stays inside the parent's
 padding and shares the remaining space with its siblings, and its own content
@@ -106,12 +104,12 @@ when its content can exceed it. These are native presentation properties.
 Semantic labels, test IDs, selected state, and enabled state are separate
 attributes.
 
-`hover_background` and `active_background` color an enabled button while the
+`hover_bg` and `active_bg` color an enabled button while the
 pointer rests on or presses it. Default state colors keep the host's standard
 feedback on default-background buttons and leave explicitly colored buttons
-unchanged, so declare them alongside an explicit `background` - typically as
+unchanged, so declare them alongside an explicit `bg` - typically as
 theme knobs next to the accent color. Text inputs and textareas render their
-inner field from the same style record: explicit `background`, `foreground`,
+inner field from the same style record: explicit `bg`, `fg`,
 `border_color`, `radius`, and `font_size` replace the host's dark field
 defaults, the placeholder derives from the foreground at reduced alpha, and
 an explicit foreground also tints the cursor and selection, so a
@@ -119,7 +117,7 @@ light-background editor is fully legible.
 The initial window is 1200 × 820 logical pixels and can be moved, resized,
 minimized, and maximized. The host requests client decorations on Wayland and
 supplies a draggable title bar and resize borders when the compositor delegates
-them to the app. The title-bar Close button uses the same `Gui.window_lifecycle` close
+them to the app. The title-bar Close button uses the same `Elem.window_lifecycle` close
 guard as an OS close request. The minimum window size is 360 × 240 logical pixels.
 Apps own their content padding; the frame sits outside that content.
 
@@ -131,13 +129,12 @@ do not dispatch application events.
 
 | Control | Inputs |
 | --- | --- |
-| `heading`, `text` | literal string |
+| `heading`, `text` | literal string; a child list also accepts a bare `"string"` as text |
 | `text_s` | string signal |
 | `button` | label and unit message |
-| `button_attrs` | label, attributes, unit message |
-| `action_button` | `{ label, enabled }` signals, attributes, unit message |
-| `text_input`, `textarea` | `{ label, value }`, attributes, string message |
-| `checkbox` | `{ label, checked }`, attributes, boolean message |
+| `action_button` | `{ caption, enabled, ... }` props with signal caption, unit message |
+| `text_input`, `textarea` | `{ label, value, ... }` props, string message |
+| `checkbox` | `{ label, checked, ... }` props, boolean message |
 
 Text controls are controlled: their value comes from a signal and committed
 edits enter the corresponding message handler. Native editors retain selection,
@@ -156,34 +153,34 @@ redo.
 An explicit textarea height (`Px` or `Fill`) includes its caption and padding and
 constrains the retained editing viewport. `Auto` keeps a 320-pixel editor. Use
 `Fill` inside a container with a defined height to grow and shrink with its space.
-`Gui.enabled_s` and `Gui.disabled_s` change availability while preserving the
-control's identity.
-`Gui.placeholder` shows an explicit empty-field hint inside `text_input` and
-`textarea` while their document is empty, for example
-`Gui.text_input({ label, value }, [Gui.placeholder("Filter tasks…")], msg)`.
-The hint is static text declared by the app; a field without the attribute
-shows an empty field, and labels are never reused as hint text.
+The `enabled` and `disabled` signal fields change availability while preserving
+the control's identity.
+The `placeholder` field shows an explicit empty-field hint inside `text_input`
+and `textarea` while their document is empty, for example
+`Elem.text_input({ label, value, placeholder: "Filter tasks…" }, msg)`.
+The hint is static text declared by the app; a field without it shows an
+empty field, and labels are never reused as hint text.
 Tab and Shift-Tab traverse enabled controls in native layout order. Focused
 control actions and declared shortcuts run first; modal dialogs own their Tab
 navigation while open.
 
-`Gui.image({ source, label }, attrs)` renders a picture from a relative path
+`Elem.image({ source, label, ... })` renders a picture from a relative path
 inside the host's assets root, sized and rounded by its style, for example
-`Gui.image({ source: "avatars/maya.png", label: "Maya avatar" },
-[Gui.style({ width: Px(24), height: Px(24), radius: 24 })])`.
+`Elem.image({ source: "avatars/maya.png", label: "Maya avatar", width: 24.Px, height: 24.Px, radius: 24 })`.
 Launch the host with `--host-assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
 choose the root; the default is `assets/` beside the executable. Absolute
 paths, `..` traversal, URIs, and symbolic links never resolve, and a missing or
 undecodable image shows a neutral placeholder box instead of nothing.
 Ship an `assets/manifest.json` next to `main.roc`, ingest it at compile time,
-and start `Files.verify_assets` at mount to report each asset as ok, missing,
-or altered; the task-board and folder-explorer examples show the pattern. That
+and call `Files.verify_assets!` from a mount effect to report each asset as ok,
+missing, or altered; the task-board and folder-explorer examples show the pattern. That
 report is advisory data, not a gate on rendering: the placeholder above comes
 from the host's own resolution and decoding, so an altered but still decodable
 image keeps rendering, and the check is one startup reading rather than a watch
 that notices a restored file.
 
-Use `Gui.test_id` for stable spec locators and `Gui.label` for semantic names.
+Use the `test_id` field for stable spec locators and `label` for semantic
+names; on an `action_button`, `label` replaces the live `caption` as the name.
 Labels do not establish native screen-reader support, which is not implemented.
 
 ## Embedded fonts
@@ -195,15 +192,15 @@ once on the app's root element:
 ```roc
 import "assets/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
 
-Gui.column(
-    [Gui.embedded_fonts([{ family: "Source Code Pro", bytes: source_code_pro }]), ...],
+Elem.col(
+    { embedded_fonts: [{ family: "Source Code Pro", bytes: source_code_pro }], ... },
     [...],
 )
 ```
 
-`Gui.font_family("Source Code Pro")` then renders an element and its
-descendants with that family; text styles inherit, so one attribute on a row
-or panel covers all of its text. Families not registered here must be
+`font_family: "Source Code Pro"` then renders an element and its descendants
+with that family; text styles inherit, so one field on a row or panel covers
+all of its text. Families not registered here must be
 installed on the machine.
 
 The host enforces bounds: at most 8 embedded fonts, at most 8 MiB per font,
@@ -214,11 +211,11 @@ the license text in the repository next to the font file.
 
 ## Modal dialogs
 
-Use `Gui.dialog({ label, on_dismiss }, attrs, children)` inside `Ui.when` so
+Use `Elem.dialog({ label, on_dismiss, ... }, children)` inside `Ui.when` so
 mounting and disposal explicitly own the modal lifetime. `label` supplies the
 semantic dialog name; `on_dismiss` is a normal unit message bound to Escape.
 Closing the dialog is the application's state transition, never hidden host
-state. Native file choosers are separate `Files` tasks.
+state. Native file choosers are `Files` functions called from an effect.
 
 The host focuses the first enabled button, checkbox, or text control when a
 dialog opens. Tab and Shift-Tab wrap through its current child order. Buttons
@@ -242,7 +239,7 @@ modal behavior or a window-close guard.
 
 ## Wide lists
 
-`Gui.virtual_list({ row_height, follow_tail }, attrs, children)` lays out only
+`Elem.virtual_list({ row_height, follow_tail, ... }, children)` lays out only
 the visible child range. Give every direct child the same fixed logical height;
 `row_height` must be between 1 and 16,384. Use `Ui.each` for keyed child rows.
 `follow_tail` is a boolean signal that keeps the final row visible as history
@@ -256,7 +253,8 @@ list for a wide collection.
 
 ## Keyboard regions
 
-`Gui.on_shortcut(chord, message)` binds a unit message within a focused region.
+The `shortcuts` field, a list of `{ chord, msg }` records, binds unit messages
+within a focused region.
 A chord is `{ key, control, shift, alt, meta }`, with every modifier explicit.
 Use lowercase letters, digits, or named keys: `Enter`, `Escape`, `Tab`, `Space`,
 `ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`, `Home`, `End`, `PageUp`,
@@ -269,9 +267,8 @@ See `test/gui/shortcuts` for a complete app and scoped routing spec.
 
 ## Internal drag and drop
 
-Add `Gui.drag_source(key)` to a card and `Gui.drop_target(message)` to a
-destination. Keys are nonempty strings of at most 256 UTF-8 bytes. Create the
-message with `Ui.action_detail` or `Ui.State.on_detail` to receive that key and
+Set `drag_source: key` on a card and `on_drop: message` on a destination. Keys are nonempty strings of at most 256 UTF-8 bytes. Create the
+message with `Ui.action_detail` or `Ui.State.update_detail` to receive that key and
 return the same commands used by keyboard or button alternatives. The key is
 payload data; keyed row identity remains explicit in `Ui.each`.
 
@@ -287,14 +284,77 @@ job and rejects any stale callback. Native transactions reserve at most 256 live
 or newly declared timers. Activity Monitor uses a 500 ms interval whose scope is
 present only while replay is running or a followed log is waiting for more data.
 
-`pf.Files` provides native file/directory choosers, UTF-8 reads, atomic text
-writes, recursive scans, direct-child directory listings, bounded previews,
-incremental log reads, and associated-application launches as typed tasks. Use `Signal.from_task` to
-observe results and `Signal.cancel` to invalidate pending work. See the
-[task reference](@/docs/reference.md#native-files) for signatures, errors, and
-bounds. A dismissed chooser returns `Choice.Canceled`; explicit task cancellation
-returns `Error.Canceled`. Keep the submitted write snapshot separate from the
-editable draft so a completed save cannot incorrectly mark later edits as saved.
+`pf.Files` provides the host's file primitives as effectful functions that
+return `Try(value, Error)`: choosers, metadata, byte reads and writes, rename,
+remove, flush, directory listing, and launching a file in its associated
+application. On top of them the module offers conveniences written in Roc,
+`read_text!`, `write_text!`, `read_preview!`, `scan!`, and `verify_assets!`,
+and anything more specific is app code built the same way; the activity
+monitor's `LogReader` module, which follows a growing log and notices rotation
+through `stat!` and `read_bytes!`, is the example. Call them from an action's
+effect. A chooser shows its dialog on the UI thread
+and blocks the effect until the user answers, so the code after the call can
+use the choice directly; the window keeps rendering and other effects keep
+running meanwhile. A dismissed chooser returns
+`Choice.Canceled`. See the [Files reference](@/docs/reference.md#native-files)
+for signatures, errors, and bounds. Keep the submitted write snapshot separate
+from the editable draft so a completed save cannot incorrectly mark later
+edits as saved.
+
+## Actions
+
+Every handler is pure, so `main` and the code it builds never call `!`
+functions. What a handler returns is an `Action`: data the engine interprets.
+`Action.run(reads, |snapshot| ...)` binds an action to an event; the declared
+reads are snapshotted when the event fires. There are two kinds of action:
+
+- `Action.update(changes)` applies a batch of state changes atomically.
+- `Action.then(changes, effect)` applies the batch, then runs `effect` after
+  that commit with a *fresh* snapshot of the declared reads, then continues
+  with the action the effect returns.
+
+A state change is `state.write(f)`, a reducer applied to the value the state
+holds when the batch commits, or `state.set(value)` for a value that does not
+depend on the old one. Because reducers run at commit, a chain that waited on
+an effect never writes a value captured before the effect ran.
+
+```roc
+save! : Ui.State(Status), Str => Action(Str)
+save! = |status, text| match Files.write_text!({ path: "/tmp/notes.txt", text }) {
+    Ok(_) => Action.update([status.set(Saved)])
+    Err(err) => Action.update([status.set(Failed(Files.error_text(err)))])
+}
+
+Elem.button("Save", Action.run(draft.signal(), |_|
+    Action.then([status.set(Saving)], |text| save!(status, text))
+))
+```
+
+The effect is where `!` functions are called: hosted primitives such as
+`Env.var!`, `Files.read_text!`, and `Http.get!`, and any effectful function a
+package exposes. It runs on a worker
+thread after the event's transaction commits, so `Saving` is on screen before
+the write starts, the window keeps rendering and handling input while the
+write runs, and the result enters the graph only as the next action, applied
+on the UI thread. Every effect runs on its own worker thread, so a slow one
+never delays another, and results apply in the order effects complete rather
+than the order they started. Disposing the scope that started an effect never
+cancels it: a dialog button whose changes close the dialog still gets its
+effect run, and a result that arrives after its scope is gone is applied to
+the states that still exist, skipping writes to states that were retired with
+the scope. If the commit itself retires a scope holding one of the reads, the
+effect receives the reads as the handler saw them. When the same handler can fire again before its earlier
+effect finishes, decide in state which result wins: either do not start a
+second operation while one is running, as the examples' `Busy` phases do, or
+carry a request counter in the reads and have the result's reducer ignore a
+stale one. An effect can return another `then`, so a chooser followed by a
+read is two effects with a commit between them, each snapshotting the
+handler's reads again. Prefer a named top-level
+function for the effect and pass it the state handles it writes, so it
+captures nothing. `Action.on_change`, `Action.on_change_initial`,
+`Action.on_mount`, and `Action.every` bind actions to signal changes, mount,
+and scoped intervals; `Action.every` takes the reads its action and effect
+see at each tick, and a change to those reads between ticks does not run it. The browser platform does not run `then` effects.
 
 ## Example coverage
 
@@ -325,9 +385,9 @@ remains a separate form of validation.
 
 ## Window close decisions
 
-Wrap the app's top-level content in `Gui.window_lifecycle` to protect work before
+Wrap the app's top-level content in `Elem.window_lifecycle` to protect work before
 closing. Its `on_close_requested` message receives a unit event through the
-ordinary graph. Its `decision` is a `Signal(Gui.CloseDecision)`:
+ordinary graph. Its `decision` is a `Signal(Elem.CloseDecision)`:
 `KeepOpen` cancels the request, `AwaitDecision` waits for confirmation or work,
 and `Close` completes the pending request. This lets a save result close the
 window only after the write succeeds. Close without a pending request is inert.

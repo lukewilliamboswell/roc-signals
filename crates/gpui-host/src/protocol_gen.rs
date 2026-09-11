@@ -9,38 +9,35 @@ use crate::bridge::{Slice, Style};
 /// Version of the statically linked native GUI presentation boundary.
 pub const PROTOCOL_VERSION: u32 = 12;
 
-/// Version of the separate native effects (task transport) boundary.
-pub const EFFECT_VERSION: u32 = 2;
-
 /// Version of the separate native timer boundary.
 pub const TIMER_VERSION: u32 = 1;
 
-/// Closed task service routes carried in native effect messages.
+/// Closed service routes for hosted `Files` requests.
 #[allow(dead_code)]
 pub mod task_kind {
     /// App-declared external task; the only route the browser host accepts.
     pub const EXTERNAL: u32 = 0;
-    /// Native file chooser dialog.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     pub const CHOOSE_FILE: u32 = 1;
-    /// Native directory chooser dialog.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     pub const CHOOSE_DIRECTORY: u32 = 2;
-    /// Native save-path chooser with location kind, directory, and suggested name.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     pub const CHOOSE_SAVE_PATH: u32 = 3;
-    /// Bounded UTF-8 text read of one absolute path.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     pub const READ_TEXT: u32 = 4;
-    /// Atomic bounded UTF-8 text write of one absolute path.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     pub const WRITE_TEXT: u32 = 5;
-    /// Bounded recursive directory metadata scan.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     pub const SCAN_DIRECTORY: u32 = 6;
-    /// Bounded direct-children directory listing.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     pub const LIST_DIRECTORY: u32 = 7;
-    /// Hand one regular file to its associated application.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     pub const OPEN_PATH: u32 = 8;
-    /// Bounded UTF-8 prefix read with an explicit truncation marker.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     pub const READ_PREVIEW: u32 = 9;
-    /// Cursor-driven bounded log chunk read with rotation detection.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     pub const READ_LOG: u32 = 10;
-    /// Hash a bounded manifest of relative assets against expected SHA-256 digests.
+    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
     pub const VERIFY_ASSETS: u32 = 11;
 }
 

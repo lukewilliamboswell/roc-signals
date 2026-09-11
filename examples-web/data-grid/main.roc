@@ -81,7 +81,7 @@ render_row = |selected, notes, _, row| {
 						"Select ${name}",
 						row.map(|r| r.selected),
 						"checkbox",
-						selected.on_bool(|current, on| GridData.toggle_selected(current, row_id, on)),
+						selected.update_bool(|current, on| GridData.toggle_selected(current, row_id, on)),
 					),
 					Html.paragraph_s_attrs(row.map(|r| r.name), [Html.class_attr("${cell_class} font-medium numeric"), Html.test_id("row-name-${key}")]),
 					Html.paragraph_s_attrs(row.map(|r| r.team), [Html.class_attr(cell_class), Html.test_id("row-team-${key}")]),
@@ -90,7 +90,7 @@ render_row = |selected, notes, _, row| {
 						"Note for ${name}",
 						row.map(|r| r.note),
 						[Html.class_attr(input_class), Html.attr("placeholder", "e.g. needs review")],
-						notes.on_str(|current, value| GridData.set_note(current, row_id, value)),
+						notes.update_str(|current, value| GridData.set_note(current, row_id, value)),
 					),
 				],
 			)
@@ -122,7 +122,7 @@ select_all_row = |all_checked, selected, query|
 				"Select all matching rows",
 				all_checked,
 				"checkbox",
-				selected.on_bool_with(query, |current, query_value, on| GridData.set_all_matching(current, query_value, on)),
+				selected.update_bool_with(query, |current, query_value, on| GridData.set_all_matching(current, query_value, on)),
 			),
 			Html.paragraph_c("Select all matching rows", "text-sm text-zinc-700"),
 		],
@@ -379,7 +379,7 @@ main = || {
 																				"Filter",
 																				query,
 																				[Html.class_attr(input_class), Html.attr("placeholder", "Node-0042 or Atlas")],
-																				query_state.on_str(|_, value| value),
+																				query_state.update_str(|_, value| value),
 																			),
 																			Html.paragraph_c("Matches on name or team across all ${GridData.row_count.to_str()} rows.", "hint"),
 																		],
@@ -391,10 +391,10 @@ main = || {
 																			Html.div_c(
 																				"flex flex-wrap items-center gap-2",
 																				[
-																					Html.button_c("Sort by id", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, ById))),
-																					Html.button_c("Sort by name", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, ByName))),
-																					Html.button_c("Sort by team", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, ByTeam))),
-																					Html.button_c("Sort by score", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, ByScore))),
+																					Html.button_c("Sort by id", sort_button_class, sort.update(|current| GridData.apply_sort_click(current, ById))),
+																					Html.button_c("Sort by name", sort_button_class, sort.update(|current| GridData.apply_sort_click(current, ByName))),
+																					Html.button_c("Sort by team", sort_button_class, sort.update(|current| GridData.apply_sort_click(current, ByTeam))),
+																					Html.button_c("Sort by score", sort_button_class, sort.update(|current| GridData.apply_sort_click(current, ByScore))),
 																				],
 																			),
 																			Html.paragraph_s_attrs(
@@ -454,12 +454,12 @@ main = || {
 															Html.div_c(
 																"flex flex-wrap items-center gap-2",
 																[
-																	Html.button_c("First page", "button-ghost", page.on_unit(|_| 0)),
+																	Html.button_c("First page", "button-ghost", page.update(|_| 0)),
 																	Html.action_button_c(
 																		Signal.const("Previous page"),
 																		prev_disabled,
 																		"button",
-																		page.on_unit(
+																		page.update(
 																			|current| if current == 0 {
 																				0
 																			} else {
@@ -471,7 +471,7 @@ main = || {
 																		Signal.const("Next page"),
 																		next_disabled,
 																		"button-primary",
-																		page.on_unit(|current| current + 1),
+																		page.update(|current| current + 1),
 																	),
 																],
 															),

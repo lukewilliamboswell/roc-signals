@@ -8,13 +8,13 @@ public API; it is not a catalog of every GPUI capability.
 | Application | Workflow | Platform coverage |
 | --- | --- | --- |
 | [Task Board](task-board/) | Open and save board documents, undo edits and moves, protect unsaved work | Keyed rows, atomic commands, drag/drop, history, files, close decisions |
-| [Notes Editor](notes-editor/) | Edit and undo wrapped text, save snapshots, protect drafts on close | Multiline input, clipboard, shortcuts, document lifetimes, native file tasks |
-| [Folder Explorer](folder-explorer/) | Navigate folders with history and breadcrumbs, preview text, open files | Directory tasks, cancel/retry, shortcuts, bounded previews, virtual lists |
-| [Activity Monitor](activity-monitor/) | Follow a real log or run explicit replay, pause, retry, filter, and inspect | Incremental file tasks, scoped timers, bounded history, virtual lists |
+| [Notes Editor](notes-editor/) | Edit and undo wrapped text, save snapshots, protect drafts on close | Multiline input, clipboard, shortcuts, document lifetimes, native file effects |
+| [Folder Explorer](folder-explorer/) | Navigate folders with history and breadcrumbs, preview text, open files | Directory effects, chooser dismissal, retry, shortcuts, bounded previews, virtual lists |
+| [Activity Monitor](activity-monitor/) | Follow a real log or run explicit replay, pause, retry, filter, and inspect | Incremental file effects, scoped timers, bounded history, virtual lists |
 
 Activity Monitor separates simulated replay from explicitly chosen real log files.
 Folder Explorer starts with a sample tree and offers real directory navigation,
-text previews, and opening files in their associated application. Notes Editor reads and writes real files through native tasks. See each
+text previews, and opening files in their associated application. Notes Editor reads and writes real files through native file effects. See each
 app's source and specs for the state transitions and error handling.
 
 [Counter](counter/) and [Keyed Rows](keyed-rows/) remain small starting points.

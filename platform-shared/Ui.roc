@@ -7,7 +7,7 @@ import Node
 import Rows exposing [Rows]
 import Signal exposing [Signal]
 
-state_event_msg : Node.BinderRef, Node.BinderRef, Node.EventExtractionPlan, HostValue.EventReducerHandle -> Node.Msg
+state_event_msg : Node.BinderRef, Node.BinderRef, Node.EventExtractionPlan, HostValue.EventReducerHandle -> Node.Handler
 state_event_msg = |binder, read_binder, event_extraction_plan, payload_reducer| {
 	{
 		event_extraction_plan,
@@ -15,7 +15,7 @@ state_event_msg = |binder, read_binder, event_extraction_plan, payload_reducer| 
 	}
 }
 
-action_event_msg : Signal(a), Node.EventExtractionPlan, Capability(payload), (a, payload -> Node.Cmd) -> Node.Msg
+action_event_msg : Signal(a), Node.EventExtractionPlan, Capability(payload), (a, payload -> Node.Cmd) -> Node.Handler
 action_event_msg = |reads, event_extraction_plan, payload_cap, to_cmd| {
 	read_cap = reads.cap
 	wrapped : HostValue, HostValue -> Node.Cmd
@@ -108,12 +108,12 @@ decode_key_payload = |bytes| {
 ## wherever it is mounted.
 Ui := [].{
 
-	## Keyboard event payload for `State.on_key` and `Ui.action_key`.
+	## Keyboard event payload for `State.update_key` and `Ui.action_key`.
 	KeyPayload : { key : Str, shift_key : Bool }
 
 	## An opaque destination-and-value recipe created by `State.write`.
 	## Collect these proposals with `Ui.update_states`; do not inspect them.
-	StateWrite : Node.StateWrite
+	StateWrite : Node.StateChange
 
 	## Stable keyed-row handle. A captured row remains valid for the lifetime of
 	## its row scope, including when a delayed structural builder first reads it.
@@ -140,17 +140,25 @@ Ui := [].{
 	}
 
 	## A handle to a state binder, given to the `Ui.state` body. `signal` reads the
-	## current value; event methods build `Node.Msg` reducers for DOM payloads.
+	## current value; event methods build `Node.Handler` reducers for DOM payloads.
 	State(a) := { ref : Node.BinderRef, cap : Capability(a) }.{
 
 		## Read this state as a signal.
 		signal : State(a) -> Signal(a)
 		signal = |st| Signal.from_expr(Node.SignalExpr.Ref(st.ref), st.cap)
 
+		## Derive a signal from this state: `count.read(|n| n.to_str())` is
+		## `count.signal().map(|n| n.to_str())`.
+		read : State(a), (a -> b) -> Signal(b)
+			where [
+				b.is_eq : b, b -> Bool,
+			]
+		read = |st, f| st.signal().map(f)
+
 		## Build a unit-triggered reducer message: `f` maps the current value to the
 		## next value, ignoring the unit payload.
-		on_unit : State(a), (a -> a) -> Node.Msg
-		on_unit = |st, f| {
+		update : State(a), (a -> a) -> Node.Handler
+		update = |st, f| {
 			current_cap = st.cap
 
 			## Keep the host's unit extraction payload inhabited across the erased ABI.
@@ -173,8 +181,8 @@ Ui := [].{
 		}
 
 		## Build a text-input reducer message using the event target value.
-		on_str : State(a), (a, Str -> a) -> Node.Msg
-		on_str = |st, f| {
+		update_str : State(a), (a, Str -> a) -> Node.Handler
+		update_str = |st, f| {
 			current_cap = st.cap
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
@@ -196,8 +204,8 @@ Ui := [].{
 		}
 
 		## Build a checkbox reducer message using the event target checked state.
-		on_bool : State(a), (a, Bool -> a) -> Node.Msg
-		on_bool = |st, f| {
+		update_bool : State(a), (a, Bool -> a) -> Node.Handler
+		update_bool = |st, f| {
 			current_cap = st.cap
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
@@ -219,8 +227,8 @@ Ui := [].{
 		}
 
 		## Build a custom-event reducer message using `event.detail` serialized as text.
-		on_detail : State(a), (a, Str -> a) -> Node.Msg
-		on_detail = |st, f| {
+		update_detail : State(a), (a, Str -> a) -> Node.Handler
+		update_detail = |st, f| {
 			current_cap = st.cap
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
@@ -242,8 +250,8 @@ Ui := [].{
 		}
 
 		## Build a keyboard reducer message with key text and shift-key state.
-		on_key : State(a), (a, KeyPayload -> a) -> Node.Msg
-		on_key = |st, f| {
+		update_key : State(a), (a, KeyPayload -> a) -> Node.Handler
+		update_key = |st, f| {
 			current_cap = st.cap
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
@@ -266,84 +274,84 @@ Ui := [].{
 
 		## Build a unit-triggered reducer that atomically snapshots `read` while
 		## writing only `st`.
-		on_unit_with : State(a), State(b), (a, b -> a) -> Node.Msg
-		on_unit_with = |st, read, f| {
+		update_with : State(a), State(b), (a, b -> a) -> Node.Handler
+		update_with = |st, other, f| {
 			payload_cap : Capability({})
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
 			wrapped = |current_hv, read_hv, _payload_hv| {
 				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, read.cap))
+				read_value = Box.unbox(Capability.get(read_hv, other.cap))
 				Capability.store(Box.box(f(current, read_value)), st.cap)
 			}
-			state_event_msg(st.ref, read.ref, EventExtraction.unit, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(read.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.unit, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
 		}
 
 		## Build a text reducer that atomically snapshots `read`.
-		on_str_with : State(a), State(b), (a, b, Str -> a) -> Node.Msg
-		on_str_with = |st, read, f| {
+		update_str_with : State(a), State(b), (a, b, Str -> a) -> Node.Handler
+		update_str_with = |st, other, f| {
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
 			wrapped = |current_hv, read_hv, payload_hv| {
 				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, read.cap))
+				read_value = Box.unbox(Capability.get(read_hv, other.cap))
 				payload : Str
 				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
 				Capability.store(Box.box(f(current, read_value, payload)), st.cap)
 			}
-			state_event_msg(st.ref, read.ref, EventExtraction.target_value, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(read.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.target_value, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
 		}
 
 		## Build a checkbox reducer that atomically snapshots `read`.
-		on_bool_with : State(a), State(b), (a, b, Bool -> a) -> Node.Msg
-		on_bool_with = |st, read, f| {
+		update_bool_with : State(a), State(b), (a, b, Bool -> a) -> Node.Handler
+		update_bool_with = |st, other, f| {
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
 			wrapped = |current_hv, read_hv, payload_hv| {
 				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, read.cap))
+				read_value = Box.unbox(Capability.get(read_hv, other.cap))
 				payload : Bool
 				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
 				Capability.store(Box.box(f(current, read_value, payload)), st.cap)
 			}
-			state_event_msg(st.ref, read.ref, EventExtraction.target_checked, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(read.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.target_checked, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
 		}
 
 		## Build a custom-detail reducer that atomically snapshots `read`.
-		on_detail_with : State(a), State(b), (a, b, Str -> a) -> Node.Msg
-		on_detail_with = |st, read, f| {
+		update_detail_with : State(a), State(b), (a, b, Str -> a) -> Node.Handler
+		update_detail_with = |st, other, f| {
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
 			wrapped = |current_hv, read_hv, payload_hv| {
 				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, read.cap))
+				read_value = Box.unbox(Capability.get(read_hv, other.cap))
 				payload : Str
 				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
 				Capability.store(Box.box(f(current, read_value, payload)), st.cap)
 			}
-			state_event_msg(st.ref, read.ref, EventExtraction.detail, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(read.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.detail, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
 		}
 
 		## Build a key reducer that atomically snapshots `read`.
-		on_key_with : State(a), State(b), (a, b, KeyPayload -> a) -> Node.Msg
-		on_key_with = |st, read, f| {
+		update_key_with : State(a), State(b), (a, b, KeyPayload -> a) -> Node.Handler
+		update_key_with = |st, other, f| {
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue, HostValue -> HostValue
 			wrapped = |current_hv, read_hv, payload_hv| {
 				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, read.cap))
+				read_value = Box.unbox(Capability.get(read_hv, other.cap))
 				payload_bytes : List(U8)
 				payload_bytes = Box.unbox(Capability.get(payload_hv, payload_cap))
 				Capability.store(Box.box(f(current, read_value, decode_key_payload(payload_bytes))), st.cap)
 			}
-			state_event_msg(st.ref, read.ref, EventExtraction.key_shift, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(read.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.key_shift, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
 		}
 
 		## Build a command that replaces this state. Unlike event messages, state
 		## commands can be returned from `Ui.on_change`, `Ui.on_mount`, and other
 		## command-producing hooks.
 		set_cmd : State(a), a -> Node.Cmd
-		set_cmd = |st, next| Node.Cmd.UpdateState(st.write(next))
+		set_cmd = |st, next| Node.Cmd.UpdateChanges([st.set(next)])
 
 		## Describe a pure update of this state's settled value when the command
 		## executes. Useful for appending a task result or timer event to retained
@@ -351,27 +359,41 @@ Ui := [].{
 		## The state must remain live; preparation may evaluate the update again
 		## after refusal. The returned command is reusable and owns no state value.
 		update_cmd : State(a), (a -> a) -> Node.Cmd
-		update_cmd = |st, update| {
+		update_cmd = |st, f| {
 			cap = st.cap
 			transform : HostValue -> HostValue
 			transform = |current| {
 				value = Box.unbox(Capability.get(current, cap))
-				Capability.store(Box.box(update(value)), cap)
+				Capability.store(Box.box(f(value)), cap)
 			}
 			Node.Cmd.UpdateTransform({ binder: st.ref, capability: Capability.handle(cap), transform: Box.box(transform) })
 		}
 
-		## Describe a replacement for `Ui.update_states`. The proposal captures
-		## a typed value and can be reused; it does not mutate the source itself.
-		write : State(a), a -> StateWrite
-		write = |st, next| {
+		## Describe replacing this state with `next` when a batch commits. Prefer
+		## `write` when the new value depends on the old one, so a batch that runs
+		## after an effect never applies a value captured before it.
+		set : State(a), a -> StateWrite
+		set = |st, next| {
 			cap = st.cap
 			initial : () -> HostValue
 			initial = || Capability.store(Box.box(next), cap)
-			{
+			Node.StateChange.Set({
 				binder: st.ref,
 				update: { capability: Capability.handle(cap), initial: Box.box(initial) },
+			})
+		}
+
+		## Describe reducing this state with `f` when a batch commits. `f` receives
+		## the value the state holds at that moment, never a stale capture.
+		write : State(a), (a -> a) -> StateWrite
+		write = |st, f| {
+			cap = st.cap
+			transform : HostValue -> HostValue
+			transform = |current| {
+				value = Box.unbox(Capability.get(current, cap))
+				Capability.store(Box.box(f(value)), cap)
 			}
+			Node.StateChange.Transform({ binder: st.ref, capability: Capability.handle(cap), transform: Box.box(transform) })
 		}
 	}
 
@@ -402,7 +424,7 @@ Ui := [].{
 	## destination must appear at most once, including unchanged proposals.
 	## Derived values and observers see only the complete settled result.
 	update_states : List(StateWrite) -> Node.Cmd
-	update_states = |writes| Node.Cmd.UpdateStates(writes)
+	update_states = |changes| Node.Cmd.UpdateChanges(changes)
 
 	## Introduce a reusable local scope. State/when/each ordinals inside the body
 	## are local to this component instance instead of consuming the caller's
@@ -414,7 +436,7 @@ Ui := [].{
 	## of the declared reads. Equal clicks remain separate occurrences; changing
 	## the reads alone never runs the command. Combine independent reads with a
 	## named record of signals before passing them here.
-	action : Signal(a), (a -> Node.Cmd) -> Node.Msg
+	action : Signal(a), (a -> Node.Cmd) -> Node.Handler
 	action = |reads, to_cmd| {
 		read_cap = reads.cap
 		payload_cap : Capability({})
@@ -437,25 +459,25 @@ Ui := [].{
 
 	## Describe a command for each accepted text-input event. The second
 	## argument is `event.target.value`; declared reads use the settled snapshot.
-	action_str : Signal(a), (a, Str -> Node.Cmd) -> Node.Msg
+	action_str : Signal(a), (a, Str -> Node.Cmd) -> Node.Handler
 	action_str = |reads, to_cmd|
 		action_event_msg(reads, EventExtraction.target_value, Capability.new(), to_cmd)
 
 	## Describe a command for each accepted checked-change event, receiving
 	## `event.target.checked` without storing an occurrence counter in state.
-	action_bool : Signal(a), (a, Bool -> Node.Cmd) -> Node.Msg
+	action_bool : Signal(a), (a, Bool -> Node.Cmd) -> Node.Handler
 	action_bool = |reads, to_cmd|
 		action_event_msg(reads, EventExtraction.target_checked, Capability.new(), to_cmd)
 
 	## Describe a command for each accepted custom event, receiving its detail
-	## serialized as text under the same contract as `State.on_detail`.
-	action_detail : Signal(a), (a, Str -> Node.Cmd) -> Node.Msg
+	## serialized as text under the same contract as `State.update_detail`.
+	action_detail : Signal(a), (a, Str -> Node.Cmd) -> Node.Handler
 	action_detail = |reads, to_cmd|
 		action_event_msg(reads, EventExtraction.detail, Capability.new(), to_cmd)
 
 	## Describe a command for each accepted key event, receiving key text and
 	## shift state. Decoding uses the shared validated keyboard payload format.
-	action_key : Signal(a), (a, KeyPayload -> Node.Cmd) -> Node.Msg
+	action_key : Signal(a), (a, KeyPayload -> Node.Cmd) -> Node.Handler
 	action_key = |reads, to_cmd|
 		action_event_msg(reads, EventExtraction.key_shift, Capability.new(), |value, bytes| to_cmd(value, decode_key_payload(bytes)))
 

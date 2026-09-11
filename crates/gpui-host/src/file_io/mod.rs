@@ -1,47 +1,35 @@
-//! Bounded file primitives for scope-owned worker requests.
+//! Bounded file primitives behind the hosted `Files` functions.
 //!
 //! Every path component is opened relative to an owned directory handle
 //! without following symbolic links or reparse points, so a substituted link
-//! cannot redirect an in-flight operation. Scans are bounded observations, not
-//! filesystem snapshots: concurrent removals/changes can fail the entire
-//! request. No Roc value, task registry, or GUI state belongs here. The result
-//! and error vocabulary is shared; each operating system supplies the
-//! primitives behind it.
+//! cannot redirect an in-flight operation. Listings are bounded observations,
+//! not filesystem snapshots: concurrent removals or changes can fail the
+//! entire request. No Roc value or GUI state belongs here. The result and
+//! error vocabulary is shared; each operating system supplies the primitives
+//! behind it.
 use std::{
     fs::File,
     io::{self, Read},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-pub use unix::{list_directory, open_path, read_bytes, read_log, read_preview, read_text, scan, write_text};
+pub use unix::{list_directory, open_path, read_at, remove, rename, stat, sync, write_bytes};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{list_directory, open_path, read_bytes, read_log, read_preview, read_text, scan, write_text};
+pub use windows::{list_directory, open_path, read_at, remove, rename, stat, sync, write_bytes};
 
 pub const MAX_PATH_BYTES: usize = 4096;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4096;
-pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 pub const MAX_SCAN_ENTRIES: usize = 10_000;
 pub const MAX_SCAN_DEPTH: usize = 64;
 pub const MAX_SCAN_PATH_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_CHUNK_BYTES: usize = 64 * 1024;
 pub(super) const CHUNK_BYTES: usize = MAX_CHUNK_BYTES;
-pub(super) static TEMP_SERIAL: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct TextFile {
-    pub path: String,
-    pub text: String,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Written {
-    pub path: String,
-    pub bytes: u64,
-}
 #[derive(Debug, PartialEq, Eq)]
 pub struct Entry {
     pub path: String,
@@ -49,57 +37,18 @@ pub struct Entry {
     pub bytes: u64,
 }
 #[derive(Debug, PartialEq, Eq)]
-pub struct Scan {
-    pub root: String,
-    pub entries: Vec<Entry>,
-}
-#[derive(Debug, PartialEq, Eq)]
 pub struct DirectoryListing {
     pub path: String,
     pub entries: Vec<Entry>,
 }
+/// No-follow metadata of one entry; `device` and `inode` identify the file
+/// so a follower can notice replacement.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Preview {
-    pub path: String,
-    pub text: String,
-    pub truncated: bool,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Opened {
-    pub path: String,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LogCursor {
+pub struct Metadata {
+    pub kind: Kind,
+    pub size: u64,
     pub device: u64,
     pub inode: u64,
-    pub offset: u64,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LogPosition {
-    Start,
-    End,
-    After(LogCursor),
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LogChange {
-    Initial,
-    Continued,
-    Rotated,
-    Truncated,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LogState {
-    More,
-    AtEnd,
-    PartialUtf8,
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct LogChunk {
-    pub path: String,
-    pub text: String,
-    pub cursor: LogCursor,
-    pub change: LogChange,
-    pub state: LogState,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -171,12 +120,4 @@ pub(super) fn read_chunk(
     canceled(cancel)?;
     bytes.truncate(used);
     Ok(bytes)
-}
-
-pub(super) fn utf8_prefix(bytes: &[u8], path: &str) -> Result<usize, FileError> {
-    match std::str::from_utf8(bytes) {
-        Ok(_) => Ok(bytes.len()),
-        Err(error) if error.error_len().is_none() => Ok(error.valid_up_to()),
-        Err(_) => Err(FileError::InvalidUtf8(path.into())),
-    }
 }

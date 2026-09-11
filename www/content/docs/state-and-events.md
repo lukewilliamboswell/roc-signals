@@ -28,7 +28,8 @@ Ui.state(
 The handle gives you:
 
 - **`model.signal()`** — the current value, as a signal you can derive from.
-- **reducers** — `on_unit`, `on_str`, `on_bool`, `on_key`, `on_detail` — which
+- **`model.read(f)`** — shorthand for `model.signal().map(f)`.
+- **reducers** — `update`, `update_str`, `update_bool`, `update_key`, `update_detail` — which
   build event handlers.
 - **`model.set_cmd(next)`** — a replacement command for an action or lifecycle
   hook to return.
@@ -84,14 +85,14 @@ state. The handle method determines the payload:
 
 | Method | Reducer signature | Payload |
 | --- | --- | --- |
-| `on_unit` | `a -> a` | clicks, submits, blur — payload ignored |
-| `on_str` | `a, Str -> a` | `input` / `change`, receives the field value |
-| `on_bool` | `a, Bool -> a` | checkbox change, receives checked state |
-| `on_key` | `a, KeyPayload -> a` | `keydown`, receives `{ key, shift_key }` |
-| `on_detail` | `a, Str -> a` | custom events, receives `event.detail` as text |
+| `update` | `a -> a` | clicks, submits, blur — payload ignored |
+| `update_str` | `a, Str -> a` | `input` / `change`, receives the field value |
+| `update_bool` | `a, Bool -> a` | checkbox change, receives checked state |
+| `update_key` | `a, KeyPayload -> a` | `keydown`, receives `{ key, shift_key }` |
+| `update_detail` | `a, Str -> a` | custom events, receives `event.detail` as text |
 
 The event attribute chooses when the reducer runs; the state method chooses
-which payload it receives. For example, `Html.on_blur(model.on_unit(...))`
+which payload it receives. For example, `Html.on_blur(model.update(...))`
 ignores the blur payload and updates `model`.
 
 An annotated helper is useful for a reducer with parsing or validation:
@@ -105,7 +106,7 @@ commit_seats = |model|
     }
 ```
 
-Then attach it: `Html.on_blur(model.on_unit(commit_seats))`.
+Then attach it: `Html.on_blur(model.update(commit_seats))`.
 
 ## Actions with declared reads
 
@@ -228,8 +229,8 @@ events send the edited value to a reducer or action.
 ### Text and textarea
 
 ```roc
-Html.text_input("Name", name, model.on_str(|v, text| { ..v, name: text }))
-Html.textarea("Bio", bio, model.on_str(|v, text| { ..v, bio: text }))
+Html.text_input("Name", name, model.update_str(|v, text| { ..v, name: text }))
+Html.textarea("Bio", bio, model.update_str(|v, text| { ..v, bio: text }))
 ```
 
 Variants: `_c` adds a class string, `_attrs` adds a list of attributes.
@@ -250,8 +251,8 @@ commit event:
 Html.number_input_attrs(
     "Seats",
     seats_draft,
-    [Html.on_blur(model.on_unit(commit_seats))],
-    model.on_str(|v, text| { ..v, seats_draft: text }),
+    [Html.on_blur(model.update(commit_seats))],
+    model.update_str(|v, text| { ..v, seats_draft: text }),
 )
 ```
 
@@ -267,7 +268,7 @@ Html.select(
     "Plan",
     plan,
     [Html.option("starter", "Starter"), Html.option("growth", "Growth")],
-    model.on_str(|v, text| { ..v, plan: text }),
+    model.update_str(|v, text| { ..v, plan: text }),
 )
 ```
 
@@ -281,8 +282,8 @@ Radios are string-valued. Each option derives its own checked state from the
 shared value signal:
 
 ```roc
-Html.radio("Monthly", "billing", "monthly", billing, model.on_str(set_billing))
-Html.radio("Annual", "billing", "annual", billing, model.on_str(set_billing))
+Html.radio("Monthly", "billing", "monthly", billing, model.update_str(set_billing))
+Html.radio("Annual", "billing", "annual", billing, model.update_str(set_billing))
 ```
 
 Arguments are `(label, group_name, option_value, selected_signal, msg)`.
@@ -290,15 +291,15 @@ Arguments are `(label, group_name, option_value, selected_signal, msg)`.
 ### Checkbox
 
 ```roc
-Html.checkbox("Accept terms", accepted, model.on_bool(|v, checked| { ..v, accepted: checked }))
+Html.checkbox("Accept terms", accepted, model.update_bool(|v, checked| { ..v, accepted: checked }))
 ```
 
 ### Buttons
 
 ```roc
-Html.button("Save", model.on_unit(save))                          # static label
-Html.button_s(label_signal, model.on_unit(save))                  # signal label
-Html.action_button(label_signal, disabled_signal, model.on_unit(save))
+Html.button("Save", model.update(save))                          # static label
+Html.button_s(label_signal, model.update(save))                  # signal label
+Html.action_button(label_signal, disabled_signal, model.update(save))
 ```
 
 `action_button` binds both the label and `disabled` to signals.
@@ -346,7 +347,7 @@ Fixed helpers cover the common surface: `on_pointer_down`, `on_pointer_up`,
 ### Keyboard
 
 ```roc
-Html.on_key_down(model.on_key(|v, payload| { ..v, last_key: payload.key }))
+Html.on_key_down(model.update_key(|v, payload| { ..v, last_key: payload.key }))
 ```
 
 `Ui.KeyPayload` is `{ key : Str, shift_key : Bool }`. The JavaScript runtime
@@ -355,13 +356,13 @@ reads the DOM event and hands Roc typed bytes; you never touch a `KeyboardEvent`
 ### Custom events
 
 For JavaScript widgets that emit `CustomEvent`, `on_custom` binds by name and
-`on_detail` receives `event.detail` as text:
+`update_detail` receives `event.detail` as text:
 
 ```roc
 Html.div(
     [
         Html.test_id("chart"),
-        Html.on_custom("chart-select", model.on_detail(|v, detail| { ..v, picked: detail })),
+        Html.on_custom("chart-select", model.update_detail(|v, detail| { ..v, picked: detail })),
     ],
     [Html.text("Chart")],
 )
@@ -373,7 +374,7 @@ Event policies describe browser behavior such as preventing the default action
 or stopping propagation. Attach a policy to the binding:
 
 ```roc
-Html.on_event("pointerdown", Html.event_policy_stop_propagation, model.on_unit(open_menu))
+Html.on_event("pointerdown", Html.event_policy_stop_propagation, model.update(open_menu))
 ```
 
 Constants: `event_policy_none`, `event_policy_prevent_default`,
@@ -382,7 +383,7 @@ combinations, build the record:
 
 ```roc
 self_capture = { ..Html.event_policy_none, capture: True, self: True }
-Html.on_event("click", self_capture, model.on_unit(select_self_only))
+Html.on_event("click", self_capture, model.update(select_self_only))
 ```
 
 The typical use is a nested control inside a draggable or clickable parent that
@@ -431,7 +432,7 @@ Html.text_input_attrs(
         Html.aria_describedby("invite-email-message"),
         Html.aria_invalid_s(email_invalid),
     ],
-    model.on_str(|value, text| { ..value, email: text }),
+    model.update_str(|value, text| { ..value, email: text }),
 )
 
 Html.div(

@@ -137,7 +137,7 @@ main = || {
 						[
 							Html.class_attr(panel_class),
 							Html.attr("id", "validation-form"),
-							Html.on_submit_prevent_default(model.on_unit(submit_if_valid)),
+							Html.on_submit_prevent_default(model.update(submit_if_valid)),
 						],
 						[
 							Html.text_input_attrs(
@@ -150,7 +150,7 @@ main = || {
 									Html.aria_describedby("invite-email-message"),
 									Html.aria_invalid_s(email_invalid),
 								],
-								model.on_str(set_email),
+								model.update_str(set_email),
 							),
 							Html.div(
 								[
@@ -166,7 +166,7 @@ main = || {
 									Html.aria_describedby("terms-message"),
 									Html.aria_invalid_s(terms_invalid),
 								],
-								model.on_bool(set_accepted),
+								model.update_bool(set_accepted),
 							),
 							Html.div(
 								[
@@ -180,7 +180,7 @@ main = || {
 								Signal.const("Send invite"),
 								submit_disabled,
 								[Html.class_attr("button-primary"), Html.attr("type", "button")],
-								model.on_unit(submit_if_valid),
+								model.update(submit_if_valid),
 							),
 							Ui.on_change(request_signal, |request| Signal.start_str(task, request)),
 						],

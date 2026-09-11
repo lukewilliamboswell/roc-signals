@@ -39,7 +39,7 @@ main = || {
 							Html.paragraph_s_attrs(left_text.map(prefix_left), [Html.test_id("left")]),
 							# B: the combine result
 							Html.paragraph_s_attrs(combined, [Html.test_id("joined")]),
-							Html.button("Bump left", left.on_unit(|n| n + 1)),
+							Html.button("Bump left", left.update(|n| n + 1)),
 						],
 					)
 				},

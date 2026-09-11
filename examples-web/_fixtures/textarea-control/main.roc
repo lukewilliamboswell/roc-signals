@@ -58,10 +58,10 @@ main = || {
 						[
 							Html.attr("id", "message-body"),
 							Html.attr("placeholder", "Write a note"),
-							Html.on_focus(model.on_unit(record_focus)),
-							Html.on_blur(model.on_unit(record_blur)),
+							Html.on_focus(model.update(record_focus)),
+							Html.on_blur(model.update(record_blur)),
 						],
-						model.on_str(record_body),
+						model.update_str(record_body),
 					),
 					Html.paragraph_s(body_text),
 					Html.paragraph_s(focus_text),

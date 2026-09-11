@@ -17,7 +17,7 @@ main = ||
 					observed = Signal.fake_task("write-observer", |value| value, |err| err)
 					invalid = Signal.fake_task("partial-write", |value| value, |err| err)
 					reset_writes : List(Ui.StateWrite)
-					reset_writes = [first.write("A"), second.write("B")]
+					reset_writes = [first.set("A"), second.set("B")]
 					reset = Ui.update_states(reset_writes)
 					reset_first = first.set_cmd("A")
 					Html.div_c(
@@ -36,9 +36,9 @@ main = ||
 									},
 							),
 							Html.button("Swap", Ui.action(pair, |value|
-								Ui.update_states([first.write(value.second), second.write(value.first)]))),
+								Ui.update_states([first.set(value.second), second.set(value.first)]))),
 							Html.button("Swap reversed", Ui.action(pair, |value|
-								Ui.update_states([second.write(value.first), first.write(value.second)]))),
+								Ui.update_states([second.set(value.first), first.set(value.second)]))),
 							Html.button("Cached reset", Ui.action(pair, |_value| reset)),
 							Html.button("Cached single", Ui.action(pair, |_value| reset_first)),
 							Ui.when(

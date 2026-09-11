@@ -1,14 +1,12 @@
-import Node
-import Signal
-
-# A private, bounded sequence of UTF-8 frames: decimal byte length, colon, data.
-# The first frame is the codec version; result shape belongs to the task kind.
-frame : Str -> Str
-frame = |value| "${value.to_utf8().len().to_str()}:${value}"
-
-packet : List(Str) -> Str
-packet = |fields| Str.join_with(["files1"].concat(fields).map(frame), "")
-
+## Native filesystem and dialog primitives as effectful functions, called from
+## an action's effect, and the conveniences the platform builds on them in
+## Roc. Paths are absolute UTF-8 strings of at most 4096 bytes; the host never
+## follows a symbolic link, in a path or as a target. A chooser blocks the
+## effect until the user answers.
+## Paths are spelled by the operating system the host runs on: a Windows
+## worker returns drive-rooted paths written with backslashes. Derive any
+## parent, name, root, or breadcrumb through `Files.parse_path` and the
+## `Files.Path` queries rather than by splitting a path string on one separator.
 utf8 : List(U8) -> Str
 utf8 = |bytes| match Str.from_utf8(bytes) {
 	Ok(value) => value
@@ -117,92 +115,11 @@ path_last_separator = |bytes, style, root_len, end| {
 
 path_slice : List(U8), U64, U64 -> Str
 path_slice = |bytes, from, to| utf8(bytes.drop_first(from).take_first(to - from))
-
-valid_sha256 : Str -> Bool
-valid_sha256 = |digest| {
-	bytes = digest.to_utf8()
-	bytes.len() == 64 and bytes.fold(True, |ok, byte| ok and ((byte >= 48 and byte <= 57) or (byte >= 97 and byte <= 102)))
-}
-
-number : Str -> U64
-number = |text| match U64.from_str(text) {
-	Ok(value) if value.to_str() == text => value
-	_ => crash "malformed Files unsigned number"
-}
-
-read_frame : List(U8) -> { value : Str, rest : List(U8) }
-read_frame = |bytes| {
-	var $end = 0.U64
-	while $end < bytes.len() and bytes.get($end) != Ok(58) {
-		$end = $end + 1
-	}
-	if $end == bytes.len() {
-		crash "malformed Files frame length"
-	}
-	count = number(utf8(bytes.take_first($end)))
-	start = $end + 1
-	if count > bytes.len() - start {
-		crash "truncated Files frame"
-	}
-	{ value: utf8(bytes.drop_first(start).take_first(count)), rest: bytes.drop_first(start + count) }
-}
-
-reader : Str -> List(U8)
-reader = |payload| {
-	bytes = payload.to_utf8()
-	if bytes.len() > 8388608 {
-		crash "Files payload limit exceeded"
-	}
-	version = read_frame(bytes)
-	if version.value != "files1" {
-		crash "unsupported Files payload version"
-	}
-	version.rest
-}
-
-finish : List(U8) -> {}
-finish = |rest| {
-	if !rest.is_empty() {
-		crash "unexpected Files payload fields"
-	}
-	{}
-}
-
-file_task : Node.TaskKind, Str, (Str -> a) -> Signal.Task(a, Files.Error)
-	where [a.is_eq : a, a -> Bool]
-file_task = |kind, name, decode|
-	Signal.host_task_source_with_eq(
-		kind,
-		{ name, reset_on_start: True, canceled: || Files.Error.Canceled, refused: || Files.Error.ResourceLimit("native task capacity is full") },
-		decode,
-		Files.decode_error,
-		|left, right| left.is_eq(right),
-		|left, right| left == right,
-	)
-
-file_start : Node.TaskKind, Signal.Task(a, Files.Error), List(Str) -> Node.Cmd
-file_start = |kind, task, fields| {
-	if task.source.kind != kind {
-		crash "Files command used a different task kind"
-	}
-	Signal.start_str(task, packet(fields))
-}
-
-## Native file dialogs and bounded background filesystem work. Paths are absolute
-## UTF-8 strings of at most 4096 bytes, spelled by the operating system the host
-## runs on: a Windows worker returns drive-rooted paths written with
-## backslashes, and refuses a UNC or device path with InvalidPath as soon as it
-## is chosen. Derive any parent, name, root, or breadcrumb through
-## `Files.parse_path` and the `Files.Path` queries rather than by splitting a
-## path string on one separator. Every completion uses the shared task
-## signal and scope lifetime. At most 16 native operations, including canceled
-## workers awaiting completion, may be retained; saturation returns ResourceLimit.
 Files := [].{
 	Choice := [Canceled, Chosen(Str)].{
 		is_eq : _
 	}
 	Error := [
-		Canceled,
 		NotFound(Str),
 		PermissionDenied(Str),
 		InvalidUtf8(Str),
@@ -216,6 +133,53 @@ Files := [].{
 	Kind := [File, Directory, SymbolicLink, Other].{
 		is_eq : _
 	}
+	Metadata : { kind : Kind, bytes : U64, device : U64, inode : U64 }
+	Read : { bytes : List(U8), size : U64 }
+	Entry : { path : Str, kind : Kind, bytes : U64 }
+	Directory : { path : Str, entries : List(Entry) }
+	SaveOptions : { directory : [Home, At(Str)], suggested_name : Str }
+
+	## Open the platform's single-file chooser and wait for the user's answer.
+	## Dismissing the dialog is the successful `Canceled` choice.
+	choose_file! : () => Try(Choice, Error)
+
+	## Open the platform's single-folder chooser and wait for the user's answer.
+	choose_directory! : () => Try(Choice, Error)
+
+	## Ask for a save path at the user's home or an absolute initial directory
+	## and wait for the user's answer. Home returns Unavailable if the native
+	## environment has no UTF-8 HOME value. The suggestion is one nonempty file
+	## name of at most 255 UTF-8 bytes.
+	choose_save_path! : SaveOptions => Try(Choice, Error)
+
+	## Metadata of the entry at a path without following a symbolic link.
+	stat! : Str => Try(Metadata, Error)
+
+	## Read at most `max_bytes` bytes of a regular file starting at `offset`,
+	## with the file's size at that moment.
+	read_bytes! : { path : Str, offset : U64, max_bytes : U64 } => Try(Read, Error)
+
+	## Create or replace a regular file with the bytes.
+	write_bytes! : { path : Str, bytes : List(U8) } => Try({}, Error)
+
+	## Rename an entry, replacing any regular file at the destination.
+	rename! : { from : Str, to : Str } => Try({}, Error)
+
+	## Remove a regular file or an empty directory.
+	remove! : Str => Try({}, Error)
+
+	## Flush a regular file's contents to durable storage.
+	sync! : Str => Try({}, Error)
+
+	## List a folder's direct children, sorted by path.
+	list_directory! : Str => Try(Directory, Error)
+
+	## Hand a regular file to its associated application.
+	open_path! : Str => Try({}, Error)
+
+	## The folder the host resolves relative asset sources against.
+	assets_root! : () => Str
+
 
 	## How one path spells its root and separators. A native worker returns the
 	## operating system's own spelling, so both cases reach the same application.
@@ -358,174 +322,189 @@ Files := [].{
 	parse_path = |text| Path.{ text, style: path_style(text) }
 	TextFile : { path : Str, text : Str }
 	Written : { path : Str, bytes : U64 }
-	Entry : { path : Str, kind : Kind, bytes : U64 }
 	Scan : { root : Str, entries : List(Entry) }
-	Directory : { path : Str, entries : List(Entry) }
-	Opened : { path : Str }
 	Preview : { path : Str, text : Str, truncated : Bool }
-	LogCursor : { device : U64, inode : U64, offset : U64 }
-	LogPosition := [Start, End, After(LogCursor)].{
-		is_eq : _
-	}
-	LogChange := [Initial, Continued, Rotated, Truncated].{
-		is_eq : _
-	}
-	LogState := [More, AtEnd, PartialUtf8].{
-		is_eq : _
-	}
-	LogChunk : { path : Str, text : Str, cursor : LogCursor, change : LogChange, state : LogState }
-
-	## Create one file-choice task. The label is diagnostic and never routes work.
-	choose_file_task : Str -> Signal.Task(Choice, Error)
-	choose_file_task = |name| file_task(Node.TaskKind.ChooseFile, name, decode_choice)
-
-	## Create one folder-choice task.
-	choose_directory_task : Str -> Signal.Task(Choice, Error)
-	choose_directory_task = |name| file_task(Node.TaskKind.ChooseDirectory, name, decode_choice)
-
-	## Create one save-destination task. Dialog cancellation is a successful Choice.
-	choose_save_path_task : Str -> Signal.Task(Choice, Error)
-	choose_save_path_task = |name| file_task(Node.TaskKind.ChooseSavePath, name, decode_choice)
-
-	## Open the platform's single-file chooser.
-	choose_file : Signal.Task(Choice, Error) -> Node.Cmd
-	choose_file = |task| file_start(Node.TaskKind.ChooseFile, task, [])
-
-	## Open the platform's single-folder chooser.
-	choose_directory : Signal.Task(Choice, Error) -> Node.Cmd
-	choose_directory = |task| file_start(Node.TaskKind.ChooseDirectory, task, [])
-
-	## Ask for a save path at the user's home or an absolute initial directory.
-	## Home is the native user's profile root: HOME on Linux and macOS, USERPROFILE
-	## (or HOMEDRIVE and HOMEPATH) on Windows. It returns Unavailable only when the
-	## environment names no UTF-8 directory at all.
-	## The suggestion is one nonempty file name of at most 255 UTF-8 bytes.
-	choose_save_path : Signal.Task(Choice, Error), { directory : [Home, At(Str)], suggested_name : Str } -> Node.Cmd
-	choose_save_path = |task, options| {
-		location = match options.directory {
-			Home => ["home", ""]
-			At(path) => ["at", path]
-		}
-		file_start(Node.TaskKind.ChooseSavePath, task, location.append(options.suggested_name))
-	}
-
-	## Create a task for strict UTF-8 files of at most one MiB.
-	read_text_task : Str -> Signal.Task(TextFile, Error)
-	read_text_task = |name| file_task(Node.TaskKind.ReadText, name, decode_text)
-
-	## Read a complete file without publishing partial contents.
-	read_text : Signal.Task(TextFile, Error), Str -> Node.Cmd
-	read_text = |task, path| file_start(Node.TaskKind.ReadText, task, [path])
-
-	## Create a task that writes at most one MiB through a temporary file + rename.
-	write_text_task : Str -> Signal.Task(Written, Error)
-	write_text_task = |name| file_task(Node.TaskKind.WriteText, name, decode_written)
-
-	## Save the submitted immutable text. Cancellation cannot undo a committed rename.
-	## Replacement is atomic; parent-directory power-loss durability is not guaranteed.
-	## Failed temporary cleanup returns Io and may leave the temporary file behind.
-	write_text : Signal.Task(Written, Error), { path : Str, text : Str } -> Node.Cmd
-	write_text = |task, file| file_start(Node.TaskKind.WriteText, task, [file.path, file.text])
-
-	## Create a recursive folder scan: at most 10,000 entries and 64 levels.
-	## Symlinks and other entries are reported; symlinks are never traversed.
-	## Paths including the root are bounded at four MiB; limits refuse the whole scan.
-	scan_task : Str -> Signal.Task(Scan, Error)
-	scan_task = |name| file_task(Node.TaskKind.ScanDirectory, name, decode_scan)
-
-	## Publish one complete metadata result, or a typed error without truncation.
-	## Entries are observed over time; concurrent filesystem changes may fail the scan.
-	scan : Signal.Task(Scan, Error), Str -> Node.Cmd
-	scan = |task, root| file_start(Node.TaskKind.ScanDirectory, task, [root])
-
-	## Create a direct-child listing task, bounded like scan but without recursion.
-	list_directory_task : Str -> Signal.Task(Directory, Error)
-	list_directory_task = |name| file_task(Node.TaskKind.ListDirectory, name, decode_directory)
-
-	## Observe one directory's direct children; refuse the whole result on error.
-	list_directory : Signal.Task(Directory, Error), Str -> Node.Cmd
-	list_directory = |task, path| file_start(Node.TaskKind.ListDirectory, task, [path])
-
-	## Create a task that requests the desktop's associated file application.
-	open_path_task : Str -> Signal.Task(Opened, Error)
-	open_path_task = |name| file_task(Node.TaskKind.OpenPath, name, decode_opened)
-
-	## Success confirms an accepted launch, not the external application's lifetime.
-	## Cancellation cannot undo a completed handoff. The regular file is validated
-	## without following links first; the external app subsequently resolves its path.
-	open_path : Signal.Task(Opened, Error), Str -> Node.Cmd
-	open_path = |task, path| file_start(Node.TaskKind.OpenPath, task, [path])
-
-	## Create a bounded UTF-8 preview task; at most 64 KiB is returned.
-	read_preview_task : Str -> Signal.Task(Preview, Error)
-	read_preview_task = |name| file_task(Node.TaskKind.ReadPreview, name, decode_preview)
-
-	## Read a prefix, reporting truncation. Only a code point cut by the byte bound
-	## is omitted; invalid internal UTF-8 or an incomplete complete file is refused.
-	read_preview : Signal.Task(Preview, Error), Str -> Node.Cmd
-	read_preview = |task, path| file_start(Node.TaskKind.ReadPreview, task, [path])
-
-	## Create a stateless incremental log task. Cursors belong to the application;
-	## no descriptor or registry is retained between completed requests.
-	read_log_task : Str -> Signal.Task(LogChunk, Error)
-	read_log_task = |name| file_task(Node.TaskKind.ReadLog, name, decode_log)
-
-	## Read at most 64 KiB, consuming complete UTF-8 code points. An incomplete
-	## endpoint is left unread and reported as PartialUtf8; invalid bytes are errors.
-	## Chunks may split lines: the application owns bounded partial-line assembly.
-	## Start reads history; End seeds EOF after validating its terminal code point,
-	## refusing an incomplete endpoint. End does not validate skipped history.
-	## Device/inode change restarts at zero as Rotated; size below offset restarts
-	## as Truncated. Same-inode truncate-and-regrow between observations is invisible.
-	read_log : Signal.Task(LogChunk, Error), { path : Str, position : LogPosition } -> Node.Cmd
-	read_log = |task, request| {
-		fields = match request.position {
-			LogPosition.Start => ["start", "0", "0", "0"]
-			LogPosition.End => ["end", "0", "0", "0"]
-			LogPosition.After(cursor) => ["after", cursor.device.to_str(), cursor.inode.to_str(), cursor.offset.to_str()]
-		}
-		file_start(Node.TaskKind.ReadLog, task, [request.path].concat(fields))
-	}
-
 	AssetStatus := [Ok, Missing, Mismatch].{
 		is_eq : _
 	}
 	AssetEntry : { name : Str, sha256 : Str }
 	AssetCheck : { name : Str, status : AssetStatus }
 
-	## Create one bounded asset-verification task.
-	verify_assets_task : Str -> Signal.Task(List(AssetCheck), Error)
-	verify_assets_task = |name| file_task(Node.TaskKind.VerifyAssets, name, decode_asset_report)
+	max_text_bytes = 1048576
+	max_preview_bytes = 65536
+	max_scan_entries = 10000
+	max_scan_depth = 64
+	max_scan_path_bytes = 4194304
+	max_asset_bytes = 33554432
 
-	## Hash each manifest entry under the host's assets root and report ok,
-	## missing, or mismatch per asset, in manifest order. Names are relative
-	## paths of 1 to 1024 UTF-8 bytes; digests are 64 lowercase hex characters
-	## of SHA-256. Manifests carry 1 to 256 entries; the host refuses symlinked
-	## or traversing paths and bounds each hashed asset at 32 MiB.
-	verify_assets : Signal.Task(List(AssetCheck), Error), List(AssetEntry) -> Node.Cmd
-	verify_assets = |task, entries| {
-		if entries.is_empty() or entries.len() > 256 {
-			crash "Files asset manifests contain 1 to 256 entries"
+	## Read a complete UTF-8 file of at most one MiB.
+	read_text! : Str => Try(TextFile, Error)
+	read_text! = |path| match Files.read_bytes!({ path, offset: 0, max_bytes: max_text_bytes + 1 }) {
+		Err(error) => Err(error)
+		Ok(read) => if read.size > max_text_bytes {
+			Err(ResourceLimit("${path} exceeds ${max_text_bytes.to_str()} bytes"))
+		} else {
+			match Str.from_utf8(read.bytes) {
+				Ok(text) => Ok({ path, text })
+				Err(_) => Err(InvalidUtf8(path))
+			}
 		}
-		fields = entries.fold(
-			[entries.len().to_str()],
-			|acc, entry| {
-				if entry.name.is_empty() or entry.name.to_utf8().len() > 1024 {
-					crash "Files asset names contain 1 to 1024 UTF-8 bytes"
+	}
+
+	## Write text of at most one MiB through a temporary sibling, a flush, and a
+	## rename, so the destination is either its old or its new complete content.
+	## Parent-directory durability across power loss is not guaranteed.
+	write_text! : { path : Str, text : Str } => Try(Written, Error)
+	write_text! = |file| {
+		bytes = file.text.to_utf8()
+		if bytes.len() > max_text_bytes {
+			return Err(ResourceLimit("${file.path} exceeds ${max_text_bytes.to_str()} bytes"))
+		}
+		temporary = "${file.path}.roc-signals-tmp"
+		match Files.write_bytes!({ path: temporary, bytes }) {
+			Err(error) => Err(error)
+			Ok({}) => match Files.sync!(temporary) {
+				Err(error) => discard_temporary!(temporary, error)
+				Ok({}) => match Files.rename!({ from: temporary, to: file.path }) {
+					Err(error) => discard_temporary!(temporary, error)
+					Ok({}) => Ok({ path: file.path, bytes: bytes.len() })
 				}
-				if !valid_sha256(entry.sha256) {
-					crash "Files asset digests are 64 lowercase hex characters"
-				}
-				acc.append(entry.name).append(entry.sha256)
-			},
-		)
-		file_start(Node.TaskKind.VerifyAssets, task, fields)
+			}
+		}
+	}
+
+	discard_temporary! : Str, Error => Try(Written, Error)
+	discard_temporary! = |temporary, error| match Files.remove!(temporary) {
+		_ => Err(error)
+	}
+
+	## Read a UTF-8 prefix of at most 64 KiB; `truncated` reports omitted bytes,
+	## and a code point cut by the bound is excluded.
+	read_preview! : Str => Try(Preview, Error)
+	read_preview! = |path| match Files.read_bytes!({ path, offset: 0, max_bytes: max_preview_bytes }) {
+		Err(error) => Err(error)
+		Ok(read) => match utf8_prefix(read.bytes) {
+			Err(_) => Err(InvalidUtf8(path))
+			Ok(text) => Ok({ path, text, truncated: read.size > read.bytes.len() })
+		}
+	}
+
+	## The longest prefix that is complete UTF-8; only an incomplete final code
+	## point is excluded, and invalid bytes anywhere are refused.
+	utf8_prefix : List(U8) -> Try(Str, [InvalidUtf8])
+	utf8_prefix = |bytes| utf8_prefix_from(bytes, 0)
+
+	utf8_prefix_from : List(U8), U64 -> Try(Str, [InvalidUtf8])
+	utf8_prefix_from = |bytes, dropped| match Str.from_utf8(bytes) {
+		Ok(text) => Ok(text)
+		Err(_) => match bytes.last() {
+			# Only a continuation or lead byte at the end can be an incomplete
+			# code point; anything else is invalid content.
+			Ok(byte) if ((byte >= 128 and byte <= 191) or (byte >= 194 and byte <= 244)) and dropped < 3 => utf8_prefix_from(bytes.take_first(bytes.len() - 1), dropped + 1)
+			_ => Err(InvalidUtf8)
+		}
+	}
+
+	## Scan a folder recursively: at most 10,000 entries and 64 levels, symbolic
+	## links reported but never followed, four MiB of paths including the root.
+	scan! : Str => Try(Scan, Error)
+	scan! = |root| match scan_into!(root, 0, { entries: [], path_bytes: root.to_utf8().len() }) {
+		Err(error) => Err(error)
+		Ok(budget) => Ok({ root, entries: budget.entries })
+	}
+
+	ScanBudget : { entries : List(Entry), path_bytes : U64 }
+
+	scan_into! : Str, U64, ScanBudget => Try(ScanBudget, Error)
+	scan_into! = |path, depth, budget| {
+		if depth > max_scan_depth {
+			return Err(ResourceLimit("${path} is nested deeper than ${max_scan_depth.to_str()} levels"))
+		}
+		match Files.list_directory!(path) {
+			Err(error) => Err(error)
+			Ok(directory) => scan_entries!(directory.entries, depth, budget)
+		}
+	}
+
+	scan_entries! : List(Entry), U64, ScanBudget => Try(ScanBudget, Error)
+	scan_entries! = |entries, depth, budget| match entries.first() {
+		Err(_) => Ok(budget)
+		Ok(entry) => {
+			path_bytes = budget.path_bytes + entry.path.to_utf8().len()
+			if budget.entries.len() >= max_scan_entries {
+				return Err(ResourceLimit("scan holds more than ${max_scan_entries.to_str()} entries"))
+			}
+			if path_bytes > max_scan_path_bytes {
+				return Err(ResourceLimit("scan holds more than ${max_scan_path_bytes.to_str()} bytes of paths"))
+			}
+			next = { entries: budget.entries.append(entry), path_bytes }
+			descended = if entry.kind == Directory {
+				scan_into!(entry.path, depth + 1, next)
+			} else {
+				Ok(next)
+			}
+			match descended {
+				Err(error) => Err(error)
+				Ok(after) => scan_entries!(entries.drop_first(1), depth, after)
+			}
+		}
+	}
+
+	## Verify a manifest of 1 to 256 assets against the host's assets root:
+	## each relative name of 1 to 1024 bytes is read and hashed with SHA-256.
+	## A missing, unreadable, symbolic-link, or special entry is `Missing`.
+	verify_assets! : List(AssetEntry) => Try(List(AssetCheck), Error)
+	verify_assets! = |entries| {
+		if entries.is_empty() or entries.len() > 256 {
+			return Err(InvalidPath("asset manifests contain 1 to 256 entries"))
+		}
+		verify_each!(Files.assets_root!(), entries, [])
+	}
+
+	verify_each! : Str, List(AssetEntry), List(AssetCheck) => Try(List(AssetCheck), Error)
+	verify_each! = |root, remaining, checks| match remaining.first() {
+		Err(_) => Ok(checks)
+		Ok(entry) => match verify_asset!(root, entry) {
+			Err(error) => Err(error)
+			Ok(status) => verify_each!(root, remaining.drop_first(1), checks.append({ name: entry.name, status }))
+		}
+	}
+
+	verify_asset! : Str, AssetEntry => Try(AssetStatus, Error)
+	verify_asset! = |root, entry| {
+		name_bytes = entry.name.to_utf8().len()
+		if name_bytes == 0 or name_bytes > 1024 {
+			return Err(InvalidPath("asset names contain 1 to 1024 UTF-8 bytes"))
+		}
+		if entry.name.starts_with("/") or entry.name.contains("\\") or entry.name.split_on("/").contains("..") {
+			return Err(InvalidPath("asset names are relative paths without traversal: ${entry.name}"))
+		}
+		if !valid_sha256(entry.sha256) {
+			return Err(InvalidPath("asset digests are 64 lowercase hex characters: ${entry.name}"))
+		}
+		match Files.read_bytes!({ path: "${root}/${entry.name}", offset: 0, max_bytes: max_asset_bytes + 1 }) {
+			Err(NotFound(_)) => Ok(Missing)
+			Err(InvalidPath(_)) => Ok(Missing)
+			Err(error) => Err(error)
+			Ok(read) => if read.size > max_asset_bytes {
+				Err(ResourceLimit("${entry.name} exceeds ${max_asset_bytes.to_str()} bytes"))
+			} else if Crypto.SHA256.hash(read.bytes).to_hex() == entry.sha256 {
+				Ok(Ok)
+			} else {
+				Ok(Mismatch)
+			}
+		}
+	}
+
+	valid_sha256 : Str -> Bool
+	valid_sha256 = |digest| {
+		bytes = digest.to_utf8()
+		bytes.len() == 64 and bytes.fold(True, |ok, byte| ok and ((byte >= 48 and byte <= 57) or (byte >= 97 and byte <= 102)))
 	}
 
 	## Describe a native failure without losing its typed case.
 	error_text : Error -> Str
 	error_text = |error| match error {
-		Canceled => "Canceled"
 		NotFound(path) => "Not found: ${path}"
 		PermissionDenied(path) => "Permission denied: ${path}"
 		InvalidUtf8(path) => "Not valid UTF-8: ${path}"
@@ -534,188 +513,15 @@ Files := [].{
 		Io(detail) => "File operation failed: ${detail}"
 		Unavailable(detail) => "Native service unavailable: ${detail}"
 	}
-
-	decode_choice = |payload| {
-		kind = read_frame(reader(payload))
-		match kind.value {
-			"canceled" => {
-				finish(kind.rest)
-				Choice.Canceled
-			}
-			"chosen" => {
-				path = read_frame(kind.rest)
-				finish(path.rest)
-				Choice.Chosen(path.value)
-			}
-			_ => crash "malformed Files choice"
-		}
-	}
-
-	decode_text = |payload| {
-		path = read_frame(reader(payload))
-		text = read_frame(path.rest)
-		finish(text.rest)
-		if text.value.to_utf8().len() > 1048576 {
-			crash "Files text result limit exceeded"
-		}
-		{ path: path.value, text: text.value }
-	}
-
-	decode_written = |payload| {
-		path = read_frame(reader(payload))
-		bytes = read_frame(path.rest)
-		finish(bytes.rest)
-		{ path: path.value, bytes: number(bytes.value) }
-	}
-
-	decode_scan = |payload| {
-		root = read_frame(reader(payload))
-		count = read_frame(root.rest)
-		total = number(count.value)
-		if total > 10000 {
-			crash "Files scan result limit exceeded"
-		}
-		var $rest = count.rest
-		var $entries = []
-		var $index = 0.U64
-		while $index < total {
-			path = read_frame($rest)
-			kind = read_frame(path.rest)
-			bytes = read_frame(kind.rest)
-			entry_kind = match kind.value {
-				"file" => Kind.File
-				"directory" => Kind.Directory
-				"symbolic-link" => Kind.SymbolicLink
-				"other" => Kind.Other
-				_ => crash "malformed Files entry kind"
-			}
-			$entries = $entries.append({ path: path.value, kind: entry_kind, bytes: number(bytes.value) })
-			$rest = bytes.rest
-			$index = $index + 1
-		}
-		finish($rest)
-		{ root: root.value, entries: $entries }
-	}
-
-	decode_directory = |payload| {
-		scan_result = decode_scan(payload)
-		{ path: scan_result.root, entries: scan_result.entries }
-	}
-
-	decode_opened = |payload| {
-		path = read_frame(reader(payload))
-		finish(path.rest)
-		{ path: path.value }
-	}
-
-	decode_preview = |payload| {
-		path = read_frame(reader(payload))
-		text = read_frame(path.rest)
-		truncated = read_frame(text.rest)
-		finish(truncated.rest)
-		if text.value.to_utf8().len() > 65536 {
-			crash "Files preview result limit exceeded"
-		}
-		{
-			path: path.value,
-			text: text.value,
-			truncated: match truncated.value {
-				"true" => True
-				"false" => False
-				_ => crash "malformed Files preview truncation"
-			},
-		}
-	}
-
-	decode_log = |payload| {
-		path = read_frame(reader(payload))
-		text = read_frame(path.rest)
-		device = read_frame(text.rest)
-		inode = read_frame(device.rest)
-		offset = read_frame(inode.rest)
-		change = read_frame(offset.rest)
-		state = read_frame(change.rest)
-		finish(state.rest)
-		if text.value.to_utf8().len() > 65536 {
-			crash "Files log result limit exceeded"
-		}
-		{
-			path: path.value,
-			text: text.value,
-			cursor: { device: number(device.value), inode: number(inode.value), offset: number(offset.value) },
-			change: match change.value {
-				"initial" => LogChange.Initial
-				"continued" => LogChange.Continued
-				"rotated" => LogChange.Rotated
-				"truncated" => LogChange.Truncated
-				_ => crash "malformed Files log change"
-			},
-			state: match state.value {
-				"more" => LogState.More
-				"at-end" => LogState.AtEnd
-				"partial-utf8" => LogState.PartialUtf8
-				_ => crash "malformed Files log state"
-			},
-		}
-	}
-
-	decode_asset_report = |payload| {
-		count = read_frame(reader(payload))
-		total = number(count.value)
-		if total == 0 or total > 256 {
-			crash "Files asset report limit exceeded"
-		}
-		var $rest = count.rest
-		var $checks = []
-		var $index = 0.U64
-		while $index < total {
-			name = read_frame($rest)
-			status = read_frame(name.rest)
-			$checks = $checks.append({
-				name: name.value,
-				status: match status.value {
-					"ok" => AssetStatus.Ok
-					"missing" => AssetStatus.Missing
-					"mismatch" => AssetStatus.Mismatch
-					_ => crash "malformed Files asset status"
-				},
-			})
-			$rest = status.rest
-			$index = $index + 1
-		}
-		finish($rest)
-		$checks
-	}
-
-	decode_error = |payload| {
-		kind = read_frame(reader(payload))
-		detail = read_frame(kind.rest)
-		finish(detail.rest)
-		match kind.value {
-			"canceled" if detail.value == "" => Error.Canceled
-			"not-found" => Error.NotFound(detail.value)
-			"permission-denied" => Error.PermissionDenied(detail.value)
-			"invalid-utf8" => Error.InvalidUtf8(detail.value)
-			"invalid-path" => Error.InvalidPath(detail.value)
-			"resource-limit" => Error.ResourceLimit(detail.value)
-			"io" => Error.Io(detail.value)
-			"unavailable" => Error.Unavailable(detail.value)
-			_ => crash "malformed Files error kind"
-		}
-	}
 }
 
-## Frames preserve separators, line breaks, non-ASCII text, and empty content.
-expect Files.decode_text(packet(["/tmp/a:b\nλ.txt", "first\nsecond: λ"])) == { path: "/tmp/a:b\nλ.txt", text: "first\nsecond: λ" }
-expect Files.decode_choice(packet(["canceled"])) == Files.Choice.Canceled
-expect Files.decode_written(packet(["/tmp/empty", "0"])) == { path: "/tmp/empty", bytes: 0 }
-expect Files.decode_scan(packet(["/tmp", "1", "/tmp/link", "symbolic-link", "0"])) == { root: "/tmp", entries: [{ path: "/tmp/link", kind: Files.Kind.SymbolicLink, bytes: 0 }] }
-expect Files.decode_asset_report(packet(["2", "avatars/maya.png", "ok", "glyphs/λ.png", "missing"])) == [{ name: "avatars/maya.png", status: Files.AssetStatus.Ok }, { name: "glyphs/λ.png", status: Files.AssetStatus.Missing }]
+expect Files.utf8_prefix("héllo".to_utf8()) == Ok("héllo")
+expect Files.utf8_prefix("hé".to_utf8().take_first(2)) == Ok("h")
+expect Files.utf8_prefix([0xff, 0x41]) == Err(InvalidUtf8)
+expect Files.valid_sha256("0000000000000000000000000000000000000000000000000000000000000000")
+expect !Files.valid_sha256("00000000000000000000000000000000000000000000000000000000000000ZZ")
 
-expect Files.decode_directory(packet(["/tmp", "1", "/tmp/child", "directory", "0"])) == { path: "/tmp", entries: [{ path: "/tmp/child", kind: Files.Kind.Directory, bytes: 0 }] }
-expect Files.decode_opened(packet(["/tmp/a:λ.txt"])) == { path: "/tmp/a:λ.txt" }
-expect Files.decode_preview(packet(["/tmp/text", "first\nλ", "true"])) == { path: "/tmp/text", text: "first\nλ", truncated: True }
-expect Files.decode_log(packet(["/tmp/log", "λ\n", "7", "13", "3", "rotated", "partial-utf8"])) == { path: "/tmp/log", text: "λ\n", cursor: { device: 7, inode: 13, offset: 3 }, change: Files.LogChange.Rotated, state: Files.LogState.PartialUtf8 }
+
 
 ## A Posix path separates only on `/`, so a backslash is an ordinary character
 ## in a Unix file name and Unicode segments survive intact.

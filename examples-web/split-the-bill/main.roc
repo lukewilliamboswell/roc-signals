@@ -501,7 +501,7 @@ people_panel = |roster, person_rows, has_people| {
 				"Add person form",
 				[
 					Html.class_attr("grid gap-3"),
-					Html.on_submit_prevent_default(roster.on_unit(add_person)),
+					Html.on_submit_prevent_default(roster.update(add_person)),
 				],
 				[
 					Html.div_c(
@@ -519,7 +519,7 @@ people_panel = |roster, person_rows, has_people| {
 											Html.attr("placeholder", "Priya Raman"),
 											Html.aria_describedby("person-draft-note"),
 										],
-										roster.on_str(set_person_draft),
+										roster.update_str(set_person_draft),
 									),
 								],
 							),
@@ -527,7 +527,7 @@ people_panel = |roster, person_rows, has_people| {
 								Signal.const("Add person"),
 								roster_signal.map(person_draft_blocked),
 								[Html.class_attr("button"), Html.attr("type", "button")],
-								roster.on_unit(add_person),
+								roster.update(add_person),
 							),
 						],
 					),
@@ -597,7 +597,7 @@ person_row = |roster, name, row|
 								Signal.const("Remove ${name}"),
 								row.map(person_locked),
 								[Html.class_attr("button button-sm"), Html.attr("type", "button")],
-								roster.on_unit(remove_person(name)),
+								roster.update(remove_person(name)),
 							),
 						],
 					),
@@ -630,7 +630,7 @@ expenses_panel = |ledger, people, expense_views, has_expenses| {
 				"Add expense form",
 				[
 					Html.class_attr("grid gap-3"),
-					Html.on_submit_prevent_default(ledger.on_unit(add_expense)),
+					Html.on_submit_prevent_default(ledger.update(add_expense)),
 				],
 				[
 					Html.div_c(
@@ -644,7 +644,7 @@ expenses_panel = |ledger, people, expense_views, has_expenses| {
 										"New expense description",
 										ledger_signal.map(|value| value.description),
 										[Html.class_attr(input_class), Html.attr("placeholder", "Groceries")],
-										ledger.on_str(set_expense_description),
+										ledger.update_str(set_expense_description),
 									),
 								],
 							),
@@ -660,7 +660,7 @@ expenses_panel = |ledger, people, expense_views, has_expenses| {
 											Html.attr("placeholder", "24.00"),
 											Html.attr("inputmode", "decimal"),
 										],
-										ledger.on_str(set_expense_amount),
+										ledger.update_str(set_expense_amount),
 									),
 								],
 							),
@@ -673,7 +673,7 @@ expenses_panel = |ledger, people, expense_views, has_expenses| {
 										ledger_signal.map(|value| value.payer),
 										input_class,
 										[Ui.each(Signal.map(people, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| Html.option(each_row.key(), each_row.key()))],
-										ledger.on_str(set_expense_payer),
+										ledger.update_str(set_expense_payer),
 									),
 								],
 							),
@@ -693,7 +693,7 @@ expenses_panel = |ledger, people, expense_views, has_expenses| {
 								Signal.const("Add expense"),
 								add_blocked,
 								[Html.class_attr("button-primary"), Html.attr("type", "button")],
-								ledger.on_unit(add_expense),
+								ledger.update(add_expense),
 							),
 						],
 					),
@@ -728,7 +728,7 @@ expense_row = |ledger, description, view|
 					Html.button_attrs(
 						"Remove ${description}",
 						[Html.class_attr("button-ghost button-sm"), Html.attr("type", "button")],
-						ledger.on_unit(|current| { ..current, items: Bill.remove_expense(current.items, description) }),
+						ledger.update(|current| { ..current, items: Bill.remove_expense(current.items, description) }),
 					),
 				],
 			),
@@ -747,7 +747,7 @@ expense_row = |ledger, description, view|
 									Html.attr("placeholder", "24.00"),
 									Html.attr("inputmode", "decimal"),
 								],
-								ledger.on_str(|current, text| { ..current, items: Bill.set_amount(current.items, description, text) }),
+								ledger.update_str(|current, text| { ..current, items: Bill.set_amount(current.items, description, text) }),
 							),
 						],
 					),
@@ -797,7 +797,7 @@ share_row = |ledger, names, member|
 				"${names.expense} includes ${names.person}",
 				member.map(|value| value.included),
 				"checkbox",
-				ledger.on_bool(
+				ledger.update_bool(
 					|current, included| {
 						..current,
 						items: Bill.set_share(current.items, names.expense, names.person, included),

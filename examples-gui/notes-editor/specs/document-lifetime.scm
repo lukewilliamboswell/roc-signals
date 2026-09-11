@@ -10,64 +10,57 @@
     (expect-metric-delta scopes_created 0)
     (expect-metric-delta scopes_disposed 0)
 
-    ; A save, including the interval where the editor is temporarily
-    ; unavailable, changes only the accepted baseline. The two scopes here
-    ; belong to the conditional Cancel-operation row, not to the editor.
+    ; A save changes only the accepted baseline; the editor survives it.
     (mark-metrics)
+    (stub-file-choice "notes-save-path" (chosen "/tmp/Ideas.txt"))
     (shortcut (test-id "notes-editor") "s" 1)
-    (expect-disabled (label "Note text") true)
-    (resolve-file-choice "notes-save-path" (chosen "/tmp/Ideas.txt"))
     (expect-disabled (label "Note text") false)
-    (resolve-file-write "notes-write" :path "/tmp/Ideas.txt" :bytes 18)
     (expect-text (test-id "note-status") "No changes")
     (expect-value (label "Note text") "Same body and more")
-    (expect-metric-delta scopes_created 2)
-    (expect-metric-delta scopes_disposed 2)
-
-    ; The remaining windows are identical open cycles from a clean document, so
-    ; their conditional rows cost the same two scopes every time. A cycle that
-    ; accepts a document costs exactly one more: its replacement editor.
+    (expect-metric-delta scopes_created 0)
+    (expect-metric-delta scopes_disposed 0)
 
     ; A failed read installs no document, so it replaces neither the editor nor
     ; the draft the reader still owns.
     (mark-metrics)
+    (stub-file-choice "notes-open" (chosen "/tmp/Broken.txt"))
+    (stub-file-reject "notes-read" :kind invalid-utf8 :detail "document bytes")
     (shortcut (test-id "notes-editor") "o" 1)
-    (resolve-file-choice "notes-open" (chosen "/tmp/Broken.txt"))
-    (reject-file "notes-read" :kind invalid-utf8 :detail "document bytes")
     (expect-text (test-id "note-problem") "Not valid UTF-8: document bytes")
     (expect-value (label "Note text") "Same body and more")
     (expect-text (test-id "document-name") "Ideas.txt")
-    (expect-metric-delta scopes_created 2)
-    (expect-metric-delta scopes_disposed 2)
+    (expect-metric-delta scopes_created 0)
+    (expect-metric-delta scopes_disposed 0)
 
-    ; A successful read accepts a new document, so it gets a new editor.
+    ; A successful read accepts a new document, so it gets a new editor: one
+    ; scope created for the replacement, one disposed for the old.
     (mark-metrics)
+    (stub-file-choice "notes-open" (chosen "/tmp/First.txt"))
+    (stub-file-read "notes-read" :path "/tmp/First.txt" :text "Same body")
     (shortcut (test-id "notes-editor") "o" 1)
-    (resolve-file-choice "notes-open" (chosen "/tmp/First.txt"))
-    (resolve-file-read "notes-read" :path "/tmp/First.txt" :text "Same body")
     (expect-value (label "Note text") "Same body")
     (expect-text (test-id "document-name") "First.txt")
     (expect-text (test-id "note-status") "No changes")
-    (expect-metric-delta scopes_created 3)
-    (expect-metric-delta scopes_disposed 3)
+    (expect-metric-delta scopes_created 1)
+    (expect-metric-delta scopes_disposed 1)
 
     ; The decisive case: a different document whose text equals the text already
     ; on screen. Equal text must not let the previous document's editor, and its
     ; native selection and undo history, survive into the new document.
     (mark-metrics)
+    (stub-file-choice "notes-open" (chosen "/tmp/Second.txt"))
+    (stub-file-read "notes-read" :path "/tmp/Second.txt" :text "Same body")
     (shortcut (test-id "notes-editor") "o" 1)
-    (resolve-file-choice "notes-open" (chosen "/tmp/Second.txt"))
-    (resolve-file-read "notes-read" :path "/tmp/Second.txt" :text "Same body")
     (expect-value (label "Note text") "Same body")
     (expect-text (test-id "document-name") "Second.txt")
-    (expect-metric-delta scopes_created 3)
-    (expect-metric-delta scopes_disposed 3)
+    (expect-metric-delta scopes_created 1)
+    (expect-metric-delta scopes_disposed 1)
 
     ; Reopening the same path with the same text is still a new document.
     (mark-metrics)
+    (stub-file-choice "notes-open" (chosen "/tmp/Second.txt"))
+    (stub-file-read "notes-read" :path "/tmp/Second.txt" :text "Same body")
     (shortcut (test-id "notes-editor") "o" 1)
-    (resolve-file-choice "notes-open" (chosen "/tmp/Second.txt"))
-    (resolve-file-read "notes-read" :path "/tmp/Second.txt" :text "Same body")
     (expect-value (label "Note text") "Same body")
-    (expect-metric-delta scopes_created 3)
-    (expect-metric-delta scopes_disposed 3)))
+    (expect-metric-delta scopes_created 1)
+    (expect-metric-delta scopes_disposed 1)))

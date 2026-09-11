@@ -5,6 +5,7 @@ const signals = @import("signals");
 const boundary = signals.boundary;
 const sexpr = @import("sexpr.zig");
 const file_fixtures = @import("file_fixtures.zig");
+const http_fixtures = @import("http_fixtures.zig");
 
 pub const SpecCommandType = enum {
     click,
@@ -40,6 +41,10 @@ pub const SpecCommandType = enum {
     resolve_task,
     resolve_stale_task,
     reject_task,
+    stub_file_result,
+    seed_file_result,
+    stub_http_result,
+    seed_http_result,
     tick_interval,
     tick_interval_if_active,
     expect_cleanup,
@@ -134,7 +139,8 @@ pub fn writeCanonical(writer: *std.Io.Writer, spec: ParsedTestSpec) std.Io.Write
         try writeField(writer, "text", cmd.locator.text);
         try writeField(writer, "test_id", cmd.locator.test_id);
         try writeField(writer, "task", cmd.task_name);
-        if (cmd.expected_task_kinds != 0) try writer.print(" kinds={x}", .{cmd.expected_task_kinds});
+        if (cmd.file_stub) |stub| try writeFileStub(writer, stub);
+        if (cmd.http_stub) |stub| try writeHttpStub(writer, stub);
         try writeField(writer, "attr", cmd.expected_attr);
         if (cmd.interval_ms) |value| try writer.print(" interval={d}", .{value});
         if (cmd.shortcut) |chord| try writer.print(" shortcut={d}+{d}", .{ chord.key, chord.modifiers });
@@ -143,6 +149,74 @@ pub fn writeCanonical(writer: *std.Io.Writer, spec: ParsedTestSpec) std.Io.Write
         if (cmd.expected_metric_delta) |value| try writer.print(" delta={d}", .{value});
         if (cmd.expected_bool) |value| try writer.print(" bool={}", .{value});
         try writer.writeByte('\n');
+    }
+}
+
+/// A scripted file answer, every field spelled out in the order the form
+/// declares them, so a stub that changes shape moves a golden line.
+fn writeFileStub(writer: *std.Io.Writer, stub: file_fixtures.Stub) std.Io.Writer.Error!void {
+    try writer.print(" file={s}", .{@tagName(stub)});
+    switch (stub) {
+        .choice => |path| {
+            try writer.writeAll(" path=");
+            try writeOptionalQuoted(writer, path);
+        },
+        .stat => |value| {
+            try writeField(writer, "path", value.path);
+            try writer.print(" kind={s} bytes={d} device={d} inode={d}", .{ @tagName(value.kind), value.bytes, value.device, value.inode });
+        },
+        .read => |value| {
+            try writeField(writer, "path", value.path);
+            // A `:file` stub may carry an image; text is quoted, anything
+            // else is named by length and digest so the golden stays text.
+            if (std.unicode.utf8ValidateSlice(value.bytes)) {
+                try writeField(writer, "bytes", value.bytes);
+            } else {
+                var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+                std.crypto.hash.sha2.Sha256.hash(value.bytes, &digest, .{});
+                try writer.print(" bytes=<{d} bytes sha256:{x}>", .{ value.bytes.len, digest });
+            }
+            if (value.offset) |offset| try writer.print(" offset={d}", .{offset});
+            if (value.size) |size| try writer.print(" size={d}", .{size});
+        },
+        .directory => |value| {
+            try writeField(writer, "path", value.path);
+            try writer.writeAll(" entries=[");
+            for (value.entries, 0..) |entry, index| {
+                if (index > 0) try writer.writeByte(' ');
+                try writer.print("{s}:{d}:", .{ @tagName(entry.kind), entry.bytes });
+                try writeQuoted(writer, entry.path);
+            }
+            try writer.writeByte(']');
+        },
+        .open => |path| try writeField(writer, "path", path),
+        .reject => |value| {
+            try writer.print(" kind={s}", .{@tagName(value.kind)});
+            try writeField(writer, "detail", value.detail);
+        },
+    }
+}
+
+/// A scripted HTTP answer in the same spirit.
+fn writeHttpStub(writer: *std.Io.Writer, stub: http_fixtures.Stub) std.Io.Writer.Error!void {
+    try writer.print(" http={s}", .{@tagName(stub)});
+    switch (stub) {
+        .response => |value| {
+            try writeField(writer, "uri", value.uri);
+            try writer.print(" status={d} headers=[", .{value.status});
+            for (value.headers, 0..) |header, index| {
+                if (index > 0) try writer.writeByte(' ');
+                try writeQuoted(writer, header.name);
+                try writer.writeByte('=');
+                try writeQuoted(writer, header.value);
+            }
+            try writer.writeByte(']');
+            try writeField(writer, "body", value.body);
+        },
+        .reject => |value| {
+            try writer.print(" kind={s}", .{@tagName(value.kind)});
+            try writeField(writer, "detail", value.detail);
+        },
     }
 }
 
@@ -234,7 +308,6 @@ pub const SpecCommand = struct {
     cmd_type: SpecCommandType,
     locator: Locator,
     task_name: ?[]const u8 = null,
-    expected_task_kinds: u64 = 0,
     expected_attr: ?[]const u8 = null,
     interval_ms: ?u64 = null,
     shortcut: ?signals.key_chord.Chord = null,
@@ -242,6 +315,8 @@ pub const SpecCommand = struct {
     expected_count: ?u64,
     expected_metric_delta: ?i64 = null,
     expected_bool: ?bool,
+    file_stub: ?file_fixtures.Stub = null,
+    http_stub: ?http_fixtures.Stub = null,
     line_num: usize,
 };
 
@@ -252,6 +327,8 @@ pub fn freeSpecCommands(allocator: std.mem.Allocator, commands: []SpecCommand) v
         if (cmd.task_name) |name| allocator.free(name);
         if (cmd.expected_attr) |attr| allocator.free(attr);
         if (cmd.expected_text) |text| allocator.free(text);
+        if (cmd.file_stub) |stub| stub.deinit(allocator);
+        if (cmd.http_stub) |stub| stub.deinit(allocator);
     }
     if (commands.len > 0) {
         allocator.free(commands);
@@ -288,7 +365,7 @@ pub fn parseTestSpecFile(allocator: std.mem.Allocator, file_path: []const u8) Pa
     };
     defer allocator.free(content);
 
-    return parseSExprTestSpec(allocator, content);
+    return parseSExprTestSpecFrom(allocator, content, std.fs.path.dirname(file_path) orelse "");
 }
 
 fn dupePlain(allocator: std.mem.Allocator, input: []const u8) ParseError![]u8 {
@@ -332,6 +409,11 @@ pub fn onlineSnapshotFromSpecText(text: []const u8) ParseError!boundary.OnlineSn
 
 /// Parses sexpr test spec and rejects malformed input without semantic recovery.
 pub fn parseSExprTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseError!ParsedTestSpec {
+    return parseSExprTestSpecFrom(allocator, content, "");
+}
+
+/// Parses spec text whose relative file references resolve against `base_dir`.
+pub fn parseSExprTestSpecFrom(allocator: std.mem.Allocator, content: []const u8, base_dir: []const u8) ParseError!ParsedTestSpec {
     var reader = sexpr.Reader.init(allocator, content);
     const root = reader.readOne() catch |err| switch (err) {
         error.InvalidSyntax => return ParseError.InvalidFormat,
@@ -367,12 +449,12 @@ pub fn parseSExprTestSpec(allocator: std.mem.Allocator, content: []const u8) Par
         if (exprSymbolEql(section_items[0], "setup")) {
             if (is_scenario or saw_setup or saw_steps) return ParseError.InvalidFormat;
             saw_setup = true;
-            for (section_items[1..]) |form| try appendDecodedForm(allocator, &commands, form, true);
+            for (section_items[1..]) |form| try appendDecodedForm(allocator, &commands, form, true, base_dir);
         } else if (exprSymbolEql(section_items[0], "steps")) {
             if (saw_steps) return ParseError.InvalidFormat;
             saw_steps = true;
             if (section_items.len == 1) return ParseError.InvalidFormat;
-            for (section_items[1..]) |form| try appendDecodedForm(allocator, &commands, form, false);
+            for (section_items[1..]) |form| try appendDecodedForm(allocator, &commands, form, false, base_dir);
         } else {
             return ParseError.InvalidFormat;
         }
@@ -585,6 +667,7 @@ fn appendDecodedForm(
     commands: *std.ArrayListUnmanaged(SpecCommand),
     form: sexpr.Expr,
     is_setup: bool,
+    base_dir: []const u8,
 ) ParseError!void {
     const items = exprList(form) orelse return ParseError.InvalidFormat;
     if (items.len == 0) return ParseError.InvalidFormat;
@@ -592,12 +675,16 @@ fn appendDecodedForm(
     const args = items[1..];
     const line = form.span.line;
 
-    const command: SpecCommand = if (is_setup)
+    // Scripted primitives are allowed in both sections: in setup they seed
+    // the answer before the application mounts, in steps they stub it.
+    const command: SpecCommand = if (file_fixtures.recognizes(head))
+        try decodeFileFixtureForm(allocator, base_dir, head, args, is_setup, line)
+    else if (http_fixtures.recognizes(head))
+        try decodeHttpFixtureForm(allocator, head, args, is_setup, line)
+    else if (is_setup)
         try decodeSetupForm(allocator, head, args, line)
     else if (try decodeWindowForm(allocator, head, args, line)) |window|
         window
-    else if (file_fixtures.recognizes(head))
-        try decodeFixtureForm(allocator, head, args, line)
     else
         try decodeStepForm(allocator, head, args, line);
 
@@ -607,16 +694,33 @@ fn appendDecodedForm(
     };
 }
 
-fn decodeFixtureForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    const fixture = try file_fixtures.parse(allocator, head, args);
+/// A scripted file primitive: a `(stub-file-* ...)` step, or the same form in
+/// `(setup ...)`, which seeds the answer before the application mounts.
+fn decodeFileFixtureForm(allocator: std.mem.Allocator, base_dir: []const u8, head: []const u8, args: []const sexpr.Expr, is_setup: bool, line: usize) ParseError!SpecCommand {
+    const fixture = try file_fixtures.parse(allocator, base_dir, head, args);
     return .{
-        .cmd_type = if (fixture.failed) .reject_task else .resolve_task,
+        .cmd_type = if (is_setup) .seed_file_result else .stub_file_result,
         .locator = emptyLocator(),
-        .task_name = fixture.task_name,
-        .expected_task_kinds = fixture.kinds,
-        .expected_text = fixture.payload,
+        .task_name = fixture.label,
+        .expected_text = null,
         .expected_count = null,
         .expected_bool = null,
+        .file_stub = fixture.stub,
+        .line_num = line,
+    };
+}
+
+/// A scripted HTTP exchange, stubbed in the steps or seeded in the setup.
+fn decodeHttpFixtureForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, is_setup: bool, line: usize) ParseError!SpecCommand {
+    const fixture = try http_fixtures.parse(allocator, head, args);
+    return .{
+        .cmd_type = if (is_setup) .seed_http_result else .stub_http_result,
+        .locator = emptyLocator(),
+        .task_name = fixture.label,
+        .expected_text = null,
+        .expected_count = null,
+        .expected_bool = null,
+        .http_stub = fixture.stub,
         .line_num = line,
     };
 }
@@ -927,6 +1031,8 @@ fn freeOneCommand(allocator: std.mem.Allocator, command: SpecCommand) void {
     if (command.task_name) |name| allocator.free(name);
     if (command.expected_attr) |attr| allocator.free(attr);
     if (command.expected_text) |text| allocator.free(text);
+    if (command.file_stub) |stub| stub.deinit(allocator);
+    if (command.http_stub) |stub| stub.deinit(allocator);
 }
 
 fn freeCommandList(allocator: std.mem.Allocator, commands: *std.ArrayListUnmanaged(SpecCommand)) void {
@@ -1448,16 +1554,16 @@ test "S-expression spec parser decodes native shortcuts" {
 
 test "file fixture forms reject malformed values and release partial allocations" {
     const invalid = [_][]const u8{
-        "(resolve-file-choice \"open\" (chosen \"relative\"))",
-        "(resolve-file-choice \"open\" (canceled \"extra\"))",
-        "(resolve-file-choice \"open\" (chosen \"/tmp/a\") \"extra\")",
-        "(resolve-file-read \"read\" :path \"/tmp/a\" :path \"duplicate\")",
-        "(resolve-file-read \"read\" :path \"/tmp/a\" :wrong \"value\")",
-        "(resolve-file-read \"read\" :path \"/tmp/a\" :text false)",
-        "(resolve-file-write \"write\" :path \"/tmp/a\" :bytes -1)",
-        "(resolve-file-write \"write\" :path \"/tmp/a\" :bytes 1048577)",
-        "(reject-file \"read\" :kind invented :detail \"no\")",
-        "(reject-file \"read\" :kind canceled :detail \"not empty\")",
+        "(stub-file-choice \"open\" (chosen \"relative\"))",
+        "(stub-file-choice \"open\" (canceled \"extra\"))",
+        "(stub-file-choice \"open\" (chosen \"/tmp/a\") \"extra\")",
+        "(stub-file-read \"read\" :path \"/tmp/a\" :path \"duplicate\")",
+        "(stub-file-read \"read\" :path \"/tmp/a\" :wrong \"value\")",
+        "(stub-file-read \"read\" :path \"/tmp/a\" :text false)",
+        "(stub-file-read \"read\" :path \"/tmp/a\" :text \"abc\" :size 2)",
+        "(stub-file-stat \"stat\" :path \"/tmp/a\" :kind file :bytes -1)",
+        "(stub-file-reject \"read\" :kind invented :detail \"no\")",
+        "(stub-file-reject \"read\" :kind canceled :detail \"\")",
     };
     for (invalid) |form| {
         const content = try std.fmt.allocPrint(std.testing.allocator, "(test \"invalid\" (steps {s}))", .{form});
@@ -1470,18 +1576,19 @@ fn parseFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
     var parsed = try parseSExprTestSpec(allocator,
         \\(test "file workflow"
         \\  (steps
-        \\    (resolve-file-choice "open" (chosen "/tmp/λ:note.txt"))
-        \\    (resolve-file-choice "save" (canceled))
-        \\    (resolve-file-read "read" :path "/tmp/a" :text "first\nλ")
-        \\    (resolve-file-write "write" :bytes 0 :path "/tmp/a")
-        \\    (reject-file "read" :detail "not allowed" :kind permission-denied)))
+        \\    (stub-file-choice "open" (chosen "/tmp/λ:note.txt"))
+        \\    (stub-file-choice "save" (canceled))
+        \\    (stub-file-read "read" :path "/tmp/a" :text "first\nλ")
+        \\    (stub-file-stat "stat" :bytes 0 :path "/tmp/a" :kind directory)
+        \\    (stub-file-reject "read" :detail "not allowed" :kind permission-denied)))
     );
     defer parsed.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 5), parsed.commands.len);
-    try std.testing.expectEqualStrings("6:files18:canceled", parsed.commands[1].expected_text.?);
-    try std.testing.expectEqualStrings("6:files16:/tmp/a1:0", parsed.commands[3].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.reject_task, parsed.commands[4].cmd_type);
-    try std.testing.expectEqual(@as(usize, 4), parsed.commands[1].line_num);
+    try std.testing.expectEqualStrings("/tmp/λ:note.txt", parsed.commands[0].file_stub.?.choice.?);
+    try std.testing.expect(parsed.commands[1].file_stub.?.choice == null);
+    try std.testing.expectEqual(file_fixtures.Kind.directory, parsed.commands[3].file_stub.?.stat.kind);
+    try std.testing.expectEqual(SpecCommandType.stub_file_result, parsed.commands[4].cmd_type);
+    try std.testing.expectEqual(file_fixtures.ErrorKind.permission_denied, parsed.commands[4].file_stub.?.reject.kind);
 }
 
 test "file fixture parsing owns every allocation on success and refusal" {
@@ -1503,19 +1610,23 @@ fn parseExtendedFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
     var parsed = try parseSExprTestSpec(allocator,
         \\(test "native content"
         \\ (steps
-        \\  (resolve-file-log "tail" :path "/tmp/log" :text "λ\n" :device 18446744073709551615 :inode 13 :offset 3 :change rotated :state partial-utf8)
-        \\  (resolve-file-directory "folder" :path "/tmp" :entries ((file "/tmp/λ" 18446744073709551615) (directory "/tmp/child" 0) (symbolic-link "/tmp/link" 9)))
-        \\  (resolve-file-preview "preview" :path "/tmp/λ" :text "first\nsecond" :truncated true)
-        \\  (resolve-file-open "launch" :path "/tmp/λ")))
+        \\  (stub-file-stat "tail" :path "/tmp/log" :kind file :bytes 18446744073709551615 :device 1 :inode 13)
+        \\  (stub-file-directory "folder" :path "/tmp" :entries ((file "/tmp/λ" 18446744073709551615) (directory "/tmp/child" 0) (symbolic-link "/tmp/link" 9)))
+        \\  (stub-file-read "preview" :path "/tmp/λ" :text "first\nsecond" :offset 3 :size 70000)
+        \\  (stub-file-open "launch" :path "/tmp/λ")))
     );
     defer parsed.deinit(allocator);
-    try std.testing.expectEqualStrings("6:files18:/tmp/log3:λ\n20:184467440737095516152:131:37:rotated12:partial-utf8", parsed.commands[0].expected_text.?);
-    try std.testing.expect(file_fixtures.admits(parsed.commands[0].expected_task_kinds, .read_log));
-    try std.testing.expect(!file_fixtures.admits(parsed.commands[0].expected_task_kinds, .read_text));
-    try std.testing.expect(file_fixtures.admits(parsed.commands[1].expected_task_kinds, .list_directory));
-    try std.testing.expect(!file_fixtures.admits(parsed.commands[1].expected_task_kinds, .scan_directory));
-    try std.testing.expectEqualStrings("6:files17:/tmp/λ12:first\nsecond4:true", parsed.commands[2].expected_text.?);
-    try std.testing.expectEqualStrings("6:files17:/tmp/λ", parsed.commands[3].expected_text.?);
+    const meta = parsed.commands[0].file_stub.?.stat;
+    try std.testing.expectEqual(@as(u64, 18446744073709551615), meta.bytes);
+    try std.testing.expectEqual(@as(u64, 13), meta.inode);
+    const directory = parsed.commands[1].file_stub.?.directory;
+    try std.testing.expectEqual(@as(usize, 3), directory.entries.len);
+    try std.testing.expectEqual(file_fixtures.Kind.symbolic_link, directory.entries[2].kind);
+    try std.testing.expectEqual(@as(u64, 18446744073709551615), directory.entries[0].bytes);
+    const read = parsed.commands[2].file_stub.?.read;
+    try std.testing.expectEqual(@as(?u64, 3), read.offset);
+    try std.testing.expectEqual(@as(?u64, 70000), read.size);
+    try std.testing.expectEqualStrings("/tmp/λ", parsed.commands[3].file_stub.?.open);
 }
 
 test "extended file fixtures preserve full unsigned cursors under allocation failure" {
@@ -1524,17 +1635,17 @@ test "extended file fixtures preserve full unsigned cursors under allocation fai
 
 test "extended file fixtures reject noncanonical unsigned numbers and unknown tags" {
     for ([_][]const u8{ "-1", "+1", "00", "01", "18446744073709551616", "\"123\"" }) |number| {
-        const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"bad cursor\" (steps (resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device {s} :inode 1 :offset 0 :change initial :state at-end)))", .{number});
+        const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"bad cursor\" (steps (stub-file-stat \"tail\" :path \"/tmp/log\" :kind file :bytes 1 :device {s} :inode 1)))", .{number});
         defer std.testing.allocator.free(text);
         try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
     }
     for ([_][]const u8{
-        "(resolve-file-preview \"preview\" :path \"/tmp/a\" :text \"x\" :truncated \"true\")",
-        "(resolve-file-directory \"folder\" :path \"/tmp\" :entries ((imaginary \"/tmp/a\" 1)))",
-        "(resolve-file-directory \"folder\" :path \"/tmp\" :entries ((file \"/tmp/a\" +1)))",
-        "(resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change replaced :state at-end)",
-        "(resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change initial :state finished)",
-        "(resolve-file-log \"tail\" :path \"/tmp/log\" :text \"\" :device 1 :inode 2 :offset 0 :change initial :change at-end)",
+        "(stub-file-read \"preview\" :path \"/tmp/a\" :text \"x\" :truncated true)",
+        "(stub-file-directory \"folder\" :path \"/tmp\" :entries ((imaginary \"/tmp/a\" 1)))",
+        "(stub-file-directory \"folder\" :path \"/tmp\" :entries ((file \"/tmp/a\" +1)))",
+        "(stub-file-stat \"tail\" :path \"/tmp/log\" :kind pipe :bytes 1)",
+        "(stub-file-stat \"tail\" :path \"/tmp/log\" :kind file)",
+        "(stub-file-stat \"tail\" :path \"/tmp/log\" :kind file :bytes 1 :device 1 :device 2)",
     }) |form| {
         const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"bad native content\" (steps {s}))", .{form});
         defer std.testing.allocator.free(text);
@@ -1546,7 +1657,7 @@ test "extended file fixtures reject oversized preview text before settlement" {
     const oversized = try std.testing.allocator.alloc(u8, 65537);
     defer std.testing.allocator.free(oversized);
     @memset(oversized, 'a');
-    const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"too large\" (steps (resolve-file-preview \"preview\" :path \"/tmp/a\" :text \"{s}\" :truncated false)))", .{oversized});
+    const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"too large\" (steps (stub-file-preview \"preview\" :path \"/tmp/a\" :text \"{s}\" :truncated false)))", .{oversized});
     defer std.testing.allocator.free(text);
     try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
 }

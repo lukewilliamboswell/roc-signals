@@ -5,9 +5,10 @@
   ; number of steps is a fact the harness can assert rather than a screenshot.
   (steps
     (expect-visible (text "Activity Monitor"))
-    ; Retry and Cancel are phase-gated: they are not offered at all unless the
-    ; phase they belong to is live, so their absence here is the assertion.
-    (expect-absent (text "Retry read"))
+    ; Retry is always rendered and gated by its enabled state: nothing has
+    ; failed yet, so it is offered but disabled. Reads are one-shot effects
+    ; under this model, so there is no operation to cancel and no such control.
+    (expect-disabled (role button :name "Retry read") true)
     (expect-absent (text "Cancel operation"))
     (expect-count "event-" 0)
     (snapshot "initial")

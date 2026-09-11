@@ -162,7 +162,7 @@ line_row = |row| {
                 "flex gap-2",
                 [
                     Html.paragraph_s_attrs(label, [Html.test_id("quantity-${sku}")]),
-                    Html.button_attrs("Add one", [Html.test_id("add-${sku}")], qty.on_unit(|n| n + 1)),
+                    Html.button_attrs("Add one", [Html.test_id("add-${sku}")], qty.update(|n| n + 1)),
                 ],
             )
         },
@@ -213,7 +213,7 @@ counter = |label|
                 Html.div_c(
                     "flex gap-2",
                     [
-                        Html.button("Increment ${label}", count.on_unit(|n| n + 1)),
+                        Html.button("Increment ${label}", count.update(|n| n + 1)),
                         Html.text_s(text),
                     ],
                 )

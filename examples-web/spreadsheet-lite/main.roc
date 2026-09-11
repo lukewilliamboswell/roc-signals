@@ -231,10 +231,10 @@ render_cell = |sheet, cursor, key, cell| {
 			Html.test_id("cell-${key}"),
 			Html.class_attr_s(Signal.map(cell, tone_class)),
 			Html.attr_s("data-kind", Signal.map(cell, |view| Sheet.CellKind.to_str(view.kind))),
-			Html.on_focus(cursor.on_unit(|current| { ..current, selected: index, editing: True })),
-			Html.on_blur(cursor.on_unit(|current| { ..current, editing: False })),
+			Html.on_focus(cursor.update(|current| { ..current, selected: index, editing: True })),
+			Html.on_blur(cursor.update(|current| { ..current, editing: False })),
 		],
-		sheet.on_str(|sources, text| set_source(sources, index, text)),
+		sheet.update_str(|sources, text| set_source(sources, index, text)),
 	)
 }
 
@@ -341,7 +341,7 @@ formula_bar = |sheet, cursor, book| {
 									Html.class_attr("input tabular-nums"),
 									Html.attr("placeholder", "=B2+C2"),
 								],
-								sheet.on_str_with(cursor, |sources, caret, text| set_source(sources, caret.selected, text)),
+								sheet.update_str_with(cursor, |sources, caret, text| set_source(sources, caret.selected, text)),
 							),
 							Html.paragraph_c(
 								"Typing here writes the selected cell. The grid keeps showing computed values.",
@@ -547,7 +547,7 @@ main = || {
 																					},
 																				),
 																				[Html.attr("type", "button"), Html.class_attr("button button-sm")],
-																				show_formulas.on_unit(|on| !on),
+																				show_formulas.update(|on| !on),
 																			),
 																			Html.button_s_attrs(
 																				Signal.map(
@@ -559,7 +559,7 @@ main = || {
 																					},
 																				),
 																				[Html.attr("type", "button"), Html.class_attr("button button-sm")],
-																				hide_empty.on_unit(|on| !on),
+																				hide_empty.update(|on| !on),
 																			),
 																			Html.button_s_attrs(
 																				Signal.map(
@@ -571,7 +571,7 @@ main = || {
 																					},
 																				),
 																				[Html.attr("type", "button"), Html.class_attr("button button-sm")],
-																				reverse_rows.on_unit(|on| !on),
+																				reverse_rows.update(|on| !on),
 																			),
 																		],
 																	),

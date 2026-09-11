@@ -27,7 +27,7 @@ main = || {
 				"",
 				[
 					Html.heading("Task latest wins"),
-					Html.button("Refresh", version.on_unit(|value| value + 1)),
+					Html.button("Refresh", version.update(|value| value + 1)),
 					Html.button("Cancel", Ui.action(Signal.const({}), |_| Signal.cancel(task))),
 					Html.text_s(label),
 					Ui.on_mount(|| Signal.start_str(task, request_text(0))),

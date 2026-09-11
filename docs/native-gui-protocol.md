@@ -5,15 +5,14 @@ text and boolean field tables, the task-kind routes, and the extern node record
 layout - has one authority: `protocol/native-protocol.json`. Running
 `python3 scripts/generate_protocol.py` regenerates the committed artifacts
 (`src/signals/native_protocol_gen.zig`, `crates/gpui-host/src/protocol_gen.rs`,
-the marked section of `platform-gui/Gui.roc`, and the tables below);
+the marked section of `platform-gui/Elem.roc`, and the tables below);
 `scripts/test.py zig` fails when any of them is stale. The prose in this
 document stays hand-written.
 
 <!-- BEGIN GENERATED PROTOCOL TABLES (scripts/generate_protocol.py; edit protocol/native-protocol.json) -->
 
-The statically linked GUI boundary uses protocol version **12**;
-the separate native effects boundary is version **2** and the
-separate timer boundary is version **1**.
+The statically linked GUI boundary uses protocol version **12**
+and the separate timer boundary is version **1**.
 
 | Version | Change |
 | --- | --- |
@@ -61,17 +60,17 @@ Scalar boolean fields:
 | Id | Kind | Purpose |
 | --- | --- | --- |
 | 0 | `external` | App-declared external task; the only route the browser host accepts. |
-| 1 | `choose_file` | Native file chooser dialog. |
-| 2 | `choose_directory` | Native directory chooser dialog. |
-| 3 | `choose_save_path` | Native save-path chooser with location kind, directory, and suggested name. |
-| 4 | `read_text` | Bounded UTF-8 text read of one absolute path. |
-| 5 | `write_text` | Atomic bounded UTF-8 text write of one absolute path. |
-| 6 | `scan_directory` | Bounded recursive directory metadata scan. |
-| 7 | `list_directory` | Bounded direct-children directory listing. |
-| 8 | `open_path` | Hand one regular file to its associated application. |
-| 9 | `read_preview` | Bounded UTF-8 prefix read with an explicit truncation marker. |
-| 10 | `read_log` | Cursor-driven bounded log chunk read with rotation detection. |
-| 11 | `verify_assets` | Hash a bounded manifest of relative assets against expected SHA-256 digests. |
+| 1 | `choose_file` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 2 | `choose_directory` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 3 | `choose_save_path` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 4 | `read_text` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 5 | `write_text` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 6 | `scan_directory` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 7 | `list_directory` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 8 | `open_path` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 9 | `read_preview` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 10 | `read_log` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 11 | `verify_assets` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
 
 <!-- END GENERATED PROTOCOL TABLES -->
 
@@ -106,7 +105,7 @@ Retired version-1 records (17 fields, without the state backgrounds) are
 refused like any other invalid record: platform and host are statically linked
 and ship together, so no compatibility window exists.
 
-`hover_background` and `active_background` color enabled buttons while the
+`hover_bg` and `active_bg` color enabled buttons while the
 pointer rests on or presses them. An explicit state color always wins; with
 both at the inherit sentinel, a default-background button keeps the host's
 standard hover/active feedback, and an explicitly colored button shows no state
@@ -115,9 +114,10 @@ checkbox's feedback is its glyph and cursor, and a row-wide highlight would
 misstate its hit area.
 
 The public `Gui.Style` contains typed lengths, colors and overflow tags. Only the
-platform encoder creates records. `Gui.row`/`column`/`panel` choose direction;
-`Gui.style` and `style_s` describe the remaining fields. Each element accepts one
-style attribute. A supplied style replaces the helper's complete default style.
+platform encoder creates records. `Elem.row`/`column`/`panel` choose direction;
+each control's props record carries the remaining fields with that control's
+defaults, and a `changes` signal replaces them. Each element publishes one
+style.
 The style signal is an ordinary typed, equality-pruned signal; there is no
 native styling observer graph.
 
@@ -138,7 +138,7 @@ cross axis Fill is a percentage of the parent's content box. The committed
 parent's direction decides which axis is which.
 
 Text inputs and textareas resolve their inner field from the same record:
-explicit `background`, `foreground`, and `border_color` replace the host's
+explicit `bg`, `fg`, and `border_color` replace the host's
 dark field defaults, a nonzero `radius` replaces the standard rounding, and a
 nonzero `font_size` sizes the editor text with a proportional line height.
 The placeholder derives from the effective foreground at reduced alpha, and
@@ -147,7 +147,7 @@ Explicit textarea heights constrain the complete field; the retained editor
 fills the space after caption and padding. Auto presentation retains a
 320-pixel editor.
 
-`Gui.read_only_s` lowers boolean field 6. Read-only is not disabled, and the
+The `read_only` props field lowers boolean field 6. Read-only is not disabled, and the
 two are separate fields because they make different claims. Disabled says a
 control is unavailable: the host dims it and removes its tab stop. Read-only
 says the document belongs to the application: the control keeps its ordinary
@@ -159,14 +159,14 @@ cannot diverge from its source the way an enabled one with ignored change
 events would. A control may carry both fields; disabled's presentation and
 tab-stop effects apply on top, and either flag alone refuses edits.
 
-`Gui.placeholder` lowers static empty-field hint text through field 12. The
+The `placeholder` props field lowers static empty-field hint text through field 12. The
 hint is app-declared configuration, not host behavior: the host shows exactly
 the supplied text while a controlled field's document is empty, and a field
-without the attribute shows nothing. Labels never become placeholder text, and
+without it shows nothing. Labels never become placeholder text, and
 the host holds no default hint strings. The browser host rejects the field like
 every other native scalar.
 
-`Gui.image` lowers element tag `img` with its relative source text on field
+`Elem.image` lowers element tag `img` with its relative source text on field
 13. The source is application data, not a filesystem capability: the host
 resolves it against one process-wide assets root (`--host-assets-root <dir>`, else
 `ROC_SIGNALS_ASSETS_ROOT`, else `assets/` beside the executable) and refuses
@@ -177,13 +177,13 @@ not resolve to a regular decodable image renders a neutral placeholder box
 is fetched remotely. The display-free spec host stores the field like every
 other native scalar and never touches the filesystem.
 
-`Gui.font_family` lowers a static family name through field 14. The GPUI host
+The `font_family` props field lowers a static family name through field 14. The GPUI host
 joins the family into the element's inherited text style, so descendants
 without their own family render with it. The family must be installed on the
 machine or registered through the embedded-font declaration below; an unknown
 family falls back through GPUI's ordinary font resolution.
 
-`Gui.embedded_fonts` lowers a startup font registration through field 15. The
+The `embedded_fonts` props field lowers a startup font registration through field 15. The
 value is a newline-delimited v1 record: a `1` version line, then one family
 line and one standard-base64 data line per font. Families are 1 to 128 UTF-8
 bytes without control characters. The record is bounded at **8 fonts** and
@@ -216,7 +216,7 @@ Version 7 adds the explicit detail kind; rebuild the host and app together.
 Deferred callbacks validate both node identity and current binding, and cannot
 update disposed or rebound controls.
 
-`Gui.window_lifecycle` declares one `window` element directly beneath the
+`Elem.window_lifecycle` declares one `window` element directly beneath the
 semantic root. Field 11 carries exactly `keep-open`, `await-decision`, or `close`,
 and a native unit `close-requested` binding is mandatory. Preparation rejects
 nested or duplicate registrations, missing bindings, invalid policy text, and
@@ -240,7 +240,7 @@ Native specs provide `request-window-close` and `expect-window-closed` as a
 semantic simulation of this protocol; GPUI tests exercise the installed native
 close callback separately.
 
-`Gui.on_shortcut` adds a typed `key_chord` filter to the canonical shared event
+Each `shortcuts` entry adds a typed `key_chord` filter to the canonical shared event
 binding. It always uses a unit `keydown` route with native delivery and static
 prevent-default/stop-propagation policy. Filter identity is the complete key and
 modifier record; event identity still comes from construction within the owning
@@ -248,7 +248,7 @@ scope. Duplicate chords are errors, and each element accepts at most 32. The
 browser rejects these filters during descriptor collection and again before wire
 staging. The native publication retains them without inventing browser opcodes.
 
-The public `Gui.KeyChord` record has `key: Str` and four boolean fields:
+The public `Event.KeyChord` record has `key: Str` and four boolean fields:
 `control`, `shift`, `alt`, and `meta`. Keys are lowercase `a`–`z`, digits `0`–`9`,
 or `Enter`, `Escape`, `Tab`, `Space`, `ArrowLeft`, `ArrowRight`, `ArrowUp`,
 `ArrowDown`, `Home`, `End`, `PageUp`, `PageDown`, `Backspace`, `Delete`, and
@@ -272,7 +272,7 @@ not dispatch or consume the keystroke. Removing a region releases its shortcuts
 through ordinary scope disposal and releases the corresponding retained view.
 
 Internal drag sources expose a nonempty UTF-8 key of at most 256 bytes through
-`Gui.drag_source`. `Gui.drop_target` binds an ordinary native `drop` event with a
+the `drag_source` props field. `on_drop` binds an ordinary native `drop` event with a
 string-detail extraction descriptor. The target flag requires that binding;
 invalid keys or payload shapes reject preparation before publication. Both
 native scalar fields are rejected by the browser boundary.
@@ -285,7 +285,7 @@ is reused in that transaction. Disposed, replaced, rebound, disabled, or foreign
 sources and targets cannot deliver a stale drop. Accepted drops enter ordinary
 engine propagation as string detail. The key is application data, never an
 identity derived from content. External drags are not supported.
-`Gui.dialog` lowers the explicit `dialog` tag, semantic label, native style,
+`Elem.dialog` lowers the explicit `dialog` tag, semantic label, native style,
 and an ordinary Escape shortcut. It needs no additional ABI field. Rust copies
 the existing committed parent ID so modal membership follows engine topology.
 Presentation relocates the dialog view into an occluding overlay without
@@ -329,7 +329,7 @@ names, and test IDs support native specs and GPUI test selectors. They do not
 establish native screen-reader support: this adapter does not publish an
 operating-system accessibility tree.
 
-`Gui.virtual_list({row_height, follow_tail}, attrs, children)` presents direct
+`Elem.virtual_list({row_height, follow_tail}, attrs, children)` presents direct
 children at a fixed logical height. `Ui.each` retains its ordinary key and scope
 semantics; scrolling changes GPUI layout work, not which reactive scopes exist.
 The `native_viewport` field is a separate canonical record
@@ -367,99 +367,76 @@ shared engine's `SetDocumentTitle` command, exposed by `Gui.set_title`, and not
 a second route into the window: the host applies a title on the next frame and
 skips a revision it has already applied.
 
-## Native Files and task transport
+## Effect preparation ownership
 
-`Files` declares native chooser, read, write, and recursive scan tasks. Each
-factory takes a diagnostic label; the label never selects host behavior.
-`Node.TaskKind` is an explicit closed route; the generated task-kind table
-above is the authoritative numbering.
-The browser rejects non-external task routes before command publication. Its
-existing task command wire format is unchanged.
+The engine calls `roc_prepare_effect` on the UI thread to turn an effect
+closure and its reads snapshot into an independently owned worker thunk.
+The export consumes the supplied effect callable and capability references;
+the numeric snapshot handle is borrowed, and Roc reads its value through that
+capability. The engine retains separate references for the export so its own
+capability remains valid when it drops the snapshot after preparation. The
+returned thunk owns the Roc values needed by the worker. `roc_run_effect`
+consumes that thunk and returns an owned command for the engine to apply.
 
-Task declarations own separate initializers for cancellation and capacity
-refusal. `Signal.cancel(task)` publishes the declared terminal error and retires
-the pending request in one shared source transaction. Canceling an already
-settled task has no effect. Saturation publishes the declared refusal value and
-supersedes older work for that source. Files uses `Error.Canceled` and
-`Error.ResourceLimit`. Neither case invokes a failure decoder with invented text.
-Scope disposal cancels without creating a new application-visible value.
+## Native Files
 
-The separate native effects boundary is version **2**. Rust checks
-`signals_effect_version()` and `signals_effect_size()` before mount.
-`signals_effect_next(out)` returns zero when empty or one after writing an
-`extern` record: `op: u32`, `kind: u32`, `id: u64`, and request pointer/length.
-Start has op=1 and an explicit kind; cancel has op=2, kind=0, and an empty request.
-The UI thread copies request bytes before the next engine call. Results enter
-through `signals_task_result(id, failed, pointer, length)`, where failed is zero
-or one and text is strict UTF-8. No Roc value, callable, layout, or pointer leaves
-the engine thread.
+`Files` exposes the host's file primitives as hosted effectful functions:
+three choosers, `stat`, `read_bytes`, `write_bytes`, `rename`, `remove`,
+`sync`, `list_directory`, `open_path`, and `assets_root`. Each call runs to
+completion on the effect worker that made it and returns a typed result;
+nothing is queued, tracked, or canceled by the engine. Everything the platform
+offers above those primitives, text reads and atomic text writes, previews,
+recursive scans, and asset verification, is Roc code in the `Files` module,
+and the activity monitor's log reader is Roc code in that app. The route
+numbers in `Node.TaskKind` remain only for the engine's own tasks; the native
+platform routes nothing through them.
 
-The host reserves at most **16** operations, including queued work, running work,
-canceled workers, and completed results awaiting UI-thread delivery. It reserves
-and copies requests before engine commit; publication allocates nothing. A queued
-request canceled before dispatch releases immediately. A running request retains
-its reservation until completion; late canceled results are rejected before any
-Roc decoder runs. Result commit releases the reservation before observers launch
-follow-up work. Rust only schedules copied primitive work and returns results;
-identity, scope lifetime, replacement, and propagation remain in the engine.
+Each primitive is its own hosted entry point with the argument and result
+types the glue generates from its Roc signature: `roc_files_read_bytes` takes
+`{ path, offset, max_bytes }` and returns `Try({ bytes, size }, Error)` as an
+extern tag union, and so on. The Zig host releases the owned arguments and
+builds the result value directly. In a live window the work happens in Rust,
+which returns plain C structs, buffers with a pointer and length, that the
+host copies into Roc values and releases through the matching
+`signals_*_release`. The spec host answers the same calls from declared
+`stub-file-*` results instead and never touches the filesystem. No Roc value,
+callable, layout, or pointer leaves the worker that made the call, and nothing
+crosses either boundary encoded as text.
 
-GPUI dialogs use the desktop portal. Explicit cancellation invalidates result
-delivery; the pinned GPUI API provides no handle for closing an already open
-dialog, so its receiver keeps a reservation until the dialog actually settles.
-Closing the host invalidates worker flags and callbacks before engine teardown.
-Workers check cancellation between bounded chunks or entries; a blocked operating
-system call can delay completion. Capacity remains bounded during that delay.
+Choosers need the windowing event loop. The worker posts the request to the UI
+thread's mailbox and blocks on a reply channel; the UI thread shows the desktop
+portal dialog and replies when it settles. Other effects keep running on their
+own workers meanwhile. The pinned GPUI API provides no handle for closing an
+already open dialog, so a chooser settles only when the user does. Closing the
+window while a chooser is open answers the waiting worker with `Unavailable`.
 
-Files uses a strict private `files1` codec. Each frame is a canonical decimal UTF-8
-byte length, a colon, and exactly that many bytes. Every packet begins with the
-frame `6:files1`, has at most **8 MiB**, and has no trailing fields. Lengths have
-no signs or leading zeroes. Native publication validates request framing before
-publishing work; both adapter and Roc result decoder reject malformed packets.
-Task kind defines the remaining request frames:
-
-| Kind | Request frames |
-| --- | --- |
-| Choose file / directory | none |
-| Choose save path | location kind (`home` or `at`), directory, suggested file name |
-| Read text / scan / list directory / open path / read preview | absolute path |
-| Read log | absolute path, position (`start`, `end`, `after`), device, inode, offset |
-| Write text | absolute path, complete UTF-8 text |
-| Verify assets | asset count, then per asset: relative name, lowercase hex SHA-256 |
-
-Choice results are `chosen, path` or `canceled`. A user dismissing a dialog is
-`Done(Choice.Canceled)`; explicit task cancellation is `Failed(Error.Canceled)`.
-Read results are `path, text`; write results are `path, byte count`; scan results
-are `root, entry count` followed by `path, kind, bytes` for each entry. Entry kinds
-are `file`, `directory`, `symbolic-link`, and `other`. Errors have `code, detail`;
-codes are `canceled`, `not-found`, `permission-denied`, `invalid-utf8`,
-`invalid-path`, `resource-limit`, `io`, and `unavailable`.
-Diagnostic detail is at most **4096 UTF-8 bytes**, including an explicit
-` [truncated]` suffix when detail was omitted. Error codes remain unchanged;
-paths, text, and metadata results are never truncated.
+Every path component is opened relative to an owned directory handle without
+following symbolic links or reparse points, so a substituted link cannot
+redirect an operation. `stat` reports the entry itself, never a link target;
+`read_bytes`, `write_bytes`, and `sync` refuse anything but a regular file;
+`rename` replaces only a regular file at its destination; `remove` unlinks a
+file, a link itself, or an empty directory. Entry kinds are `File`,
+`Directory`, `SymbolicLink`, and `Other`. `list_directory` returns direct
+children sorted by path within the same 10,000-entry and four-MiB
+aggregate-path bounds as a recursive scan, refusing the whole result on
+overflow. `open_path` validates one regular file, passes its absolute pathname
+to `gio open` without a shell, discards launcher output, and reports
+`Unavailable` on launch failure or a 30-second deadline; the associated
+application then resolves the path under its own access policy. A user
+dismissing a dialog is `Ok(Choice.Canceled)`, not an error. Errors are `NotFound`, `PermissionDenied`, `InvalidUtf8`,
+`InvalidPath`, `ResourceLimit`, `Io`, and `Unavailable`, each with diagnostic
+detail of at most **4096 UTF-8 bytes**, including an explicit ` [truncated]`
+suffix when detail was omitted.
 
 `choose_save_path` takes `{directory: [Home, At(Str)], suggested_name: Str}`.
 `Home` resolves the native user's profile root: `HOME` on Linux and macOS, and
 `USERPROFILE` (falling back to `HOMEDRIVE` plus `HOMEPATH`) on Windows, where an
 ordinary process has no `HOME`. Only an environment that names no UTF-8 directory
 at all returns `Unavailable`. `At` supplies an explicit initial directory. Both paths
-must be absolute and valid. In the private request record `home` requires an
-empty directory frame; `at` carries the supplied path. No empty-path convention
-is exposed to applications. Suggested names must be a single nonempty file name
-of at most **255 UTF-8 bytes**; invalid names return `InvalidPath`.
-
-Paths are absolute UTF-8, at most **4096 bytes**; invalid paths and unsupported
-traversal return typed errors. Text reads and writes are bounded at **1 MiB**.
-Scans return one complete metadata result of at most **10,000 entries**, **64
-levels**, and **4 MiB of paths including the root**. They observe the filesystem
-over time; concurrent changes may fail the scan. Symlinks and other entries are reported
-without traversal. Limits refuse the entire operation instead of truncating it.
-Writes create a temporary sibling, write and synchronize the immutable submitted
-text, and rename it into place. This guarantees atomic replacement; the parent
-directory is not synchronized, so power-loss durability is not guaranteed.
-Failure or cancellation before commit attempts to remove the temporary file;
-failed cleanup returns `Io` and may leave that file behind. Cancellation cannot
-undo a rename that has already committed.
-
+must be absolute and valid. Suggested names must be a single nonempty file name
+of at most **255 UTF-8 bytes**; invalid names return `InvalidPath`. Paths are
+absolute UTF-8, at most **4096 bytes**; invalid paths and unsupported traversal
+return typed errors.
 
 ## Native timers
 
@@ -486,68 +463,6 @@ day-sized executor waits to avoid overflowing native clock arithmetic. Normal
 smoke checks disable clocks for deterministic assertions; `--host-smoke-timers`
 enables real timer delivery and waits 1.2 seconds after the requested action.
 
-### Asset verification
-
-`VerifyAssets` requests carry a canonical asset count of 1 to **256**, then a
-relative name of 1 to **1024 UTF-8 bytes** and a 64-character lowercase hex
-SHA-256 digest per asset; the Zig publication validator rejects any other
-shape. The worker hashes each named file under the committed assets root
-through the same no-follow primitives as every Files read, bounded at
-**32 MiB** per asset. Results are `count` followed by `name, status` pairs in
-manifest order; statuses are `ok`, `missing` (also covering symlinked or
-special files), and `mismatch`. A traversing name, an unreadable file, or an
-asset above the byte bound fails the whole task with its typed error. Apps
-ingest `assets/manifest.json` at compile time and start verification once at
-mount; specs settle it deterministically with the `resolve-file-assets`
-fixture.
-
-### Directory navigation, previews, associated applications, and logs
-
-`ListDirectory` returns `path, count` followed by the same entry triples as a
-recursive scan. It observes only direct children, under the same 10,000-entry,
-four-MiB aggregate-path, UTF-8 and no-follow rules. It refuses the complete result
-on overflow or observation failure. Existing recursive scan semantics are unchanged.
-
-`OpenPath` returns `path` once the launcher accepts the handoff: `gio open` in the
-Unix worker, which macOS builds also use, and `rundll32.exe
-url.dll,FileProtocolHandler` in the Windows worker, where an unassociated
-extension still counts as accepted. The worker validates one regular file
-through no-follow handles, then passes the absolute pathname as an argument,
-without a shell. The associated application subsequently resolves
-that path under its own access policy; the host does not promise a stable file
-snapshot across that external handoff. Launcher output is discarded and the
-launcher is killed and reaped on cancellation or a 30-second deadline. Launch
-failures/deadlines are typed `Unavailable`; cancellation cannot undo a completed
-handoff or close the independently owned application.
-
-`ReadPreview` returns `path, text, truncated` (`true`/`false`). It reads at most
-64 KiB plus one lookahead byte, returns at most 64 KiB of complete UTF-8, and
-reports omitted bytes explicitly. An incomplete code point cut by the prefix
-bound is left out. Invalid internal UTF-8, or an incomplete code point at the end
-of a complete file, returns `InvalidUtf8`. Content beyond the prefix is not validated.
-
-`ReadLog` returns `path, text, device, inode, offset, change, state`. All cursor
-integers are canonical unsigned 64-bit decimals. `start` and `end` requests carry
-zero device/inode/offset; `after` carries the application's previous cursor.
-Position tags and cursor fields are validated before command publication.
-The result changes are `initial`, `continued`, `rotated`, `truncated`; states are
-`more`, `at-end`, `partial-utf8`. The worker opens a regular file independently
-for every request, retains no cursor or descriptor between results, reads at
-most 64 KiB plus one lookahead byte, and advances only through complete UTF-8.
-An incomplete endpoint remains unread with `partial-utf8`; an invalid internal
-sequence returns `InvalidUtf8`. `more` means unread bytes were observed; the app
-may request the next bounded chunk. Chunks may split lines, so applications own
-bounded partial-line assembly and history.
-
-A different device/inode restarts at offset zero with `rotated`; observed size
-below the previous offset restarts with `truncated`. Same-inode truncation and
-regrowth between observations cannot be detected. Concurrent writes are bounded
-observations, not snapshots. `start` reads history; `end` returns an empty chunk
-at EOF after validating its terminal code point (up to four bytes). An incomplete
-or invalid EOF code point refuses `end` with `InvalidUtf8`; skipped history is
-not validated. All routes use the existing 16-operation reservations, shared
-scope cancellation, stale-result rejection, and typed failure delivery.
-
 ## Adding a protocol field
 
 The manifest owns the tables; the generator owns the transcription; a bounded
@@ -560,7 +475,7 @@ amount of behavior stays hand-written. To add a native scalar field:
    reads the value directly, add its slot to `raw_node.fields` in the intended
    ABI position.
 2. Run `python3 scripts/generate_protocol.py`. This regenerates the Zig/Rust
-   enums, counts, and `RawNode` layouts, the `Gui.roc` constants, and the
+   enums, counts, and `RawNode` layouts, the `Elem.roc` constants, and the
    tables above. Every derived contract (metadata counts, descriptor-index
    sizes, `signals_node_size`, version asserts) follows automatically.
 3. Write the honest residue - the behavior no table can express. The Zig
@@ -573,7 +488,7 @@ amount of behavior stays hand-written. To add a native scalar field:
    - `crates/gpui-host/src/bridge.rs`: copy the new `RawNode` slot into `Node`
      (a missed slot is unused-field/`E0063`-adjacent, and the size assert plus
      `cargo test` catch drift) and present it in the host.
-   - `platform-gui/Gui.roc`: an `Attribute` variant lowering to the generated
+   - `platform-gui/Elem.roc`: a props field lowering to the generated
      `*_field` constant.
 4. Describe the field's semantics in prose in this document, and rebuild both
    sides together (`python3 scripts/build_gui.py`).

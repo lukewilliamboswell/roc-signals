@@ -1,25 +1,19 @@
 import Document
+import pf.Elem exposing [Elem]
 import pf.Files
-import pf.Gui
 
-## A document operation owns its submitted snapshot until its task settles.
-## Editing the live body while a write runs never changes what that write saves.
+## A document operation runs as one effect that owns the snapshot it submitted;
+## editing the live body while a save runs never changes what that save writes.
 Session := [].{
 	Destination := [NewDocument, OpenDocument, RevertDocument].{
 		is_eq : _
 	}
 
-	Write : { path : Str, document : Document.Snapshot, format : Document.Format }
-	SaveChoice : { document : Document.Snapshot, format : Document.Format, previous_path : [None, Some(Str)] }
+	Operation := [Opening, Saving].{
+		is_eq : _
+	}
 
-	Phase := [
-		Idle,
-		ConfirmDiscard(Destination),
-		ChoosingOpen,
-		Reading(Str),
-		ChoosingSave(SaveChoice),
-		Writing(Write),
-	].{
+	Phase := [Idle, ConfirmDiscard(Destination), Busy(Operation)].{
 		is_eq : _
 	}
 
@@ -69,7 +63,7 @@ Session := [].{
 	}
 
 	## Window closure remains an ordinary app transition, including async saving.
-	close_decision : State -> Gui.CloseDecision
+	close_decision : State -> Elem.CloseDecision
 	close_decision = |state| match state.close {
 		NoClose => KeepOpen
 		ConfirmClose | SaveClose => AwaitDecision
@@ -86,20 +80,18 @@ Session := [].{
 	}
 
 	save_and_close : State -> State
-	save_and_close = |state| {
-		next = begin_save({ state: { ..state, close: NoClose }, save_as: False })
-		{ ..next, close: SaveClose }
-	}
+	save_and_close = |state| { ..begin_save({ ..state, close: NoClose }), close: SaveClose }
 
 	## Only one file operation may be started for this document at a time.
 	can_start : State -> Bool
 	can_start = |state| state.phase == Idle and state.close == NoClose
 
-	## Writes keep the editor available; document replacement waits for its result.
+	## A save keeps the editor available, since it writes the snapshot it was
+	## given; document replacement waits for its result.
 	can_edit : Phase -> Bool
 	can_edit = |phase|
 		match phase {
-			Idle | Writing(_) => True
+			Idle | Busy(Saving) => True
 			_ => False
 		}
 
@@ -109,15 +101,11 @@ Session := [].{
 	file_name : Str -> Str
 	file_name = |path| Files.parse_path(path).name()
 
-	## Capture a save snapshot before any dialog or write begins.
-	begin_save : { state : State, save_as : Bool } -> State
-	begin_save = |{ state, save_as }|
+	## Start a save; the effect that follows captures the draft it submits.
+	begin_save : State -> State
+	begin_save = |state|
 		if can_start(state) {
-			phase = match state.path {
-				Some(path) if !save_as => Writing({ path, document: draft(state), format: state.format })
-				_ => ChoosingSave({ document: draft(state), format: state.format, previous_path: state.path })
-			}
-			{ ..state, phase, problem: None }
+			{ ..state, phase: Busy(Saving), problem: None }
 		} else {
 			state
 		}
@@ -129,46 +117,42 @@ Session := [].{
 			phase = if Document.is_dirty({ draft: draft(state), baseline: state.baseline }) {
 				ConfirmDiscard(OpenDocument)
 			} else {
-				ChoosingOpen
+				Busy(Opening)
 			}
 			{ ..state, phase, problem: None }
 		} else {
 			state
 		}
 
-	## Choosing a path continues the operation that owns that dialog.
-	choose_path : State, Str -> State
-	choose_path = |state, path|
+	## Discarding the draft continues the open that asked for confirmation.
+	confirm_open : State -> State
+	confirm_open = |state|
 		match state.phase {
-			ChoosingOpen => { ..state, phase: Reading(path) }
-			ChoosingSave(choice) => { ..state, phase: Writing({ path, document: choice.document, format: choice.format }) }
-			_ => crash "A file choice arrived without its owning Notes operation"
+			ConfirmDiscard(OpenDocument) => { ..state, phase: Busy(Opening), problem: None }
+			_ => state
 		}
 
-	## Describe a complete new accepted document. Only `loaded` installs one,
-	## because only that path can allocate the lifetime that must own it.
-	from_file : { path : Str, text : Str } -> State
-	from_file = |file| {
-		opened = Document.decode(file.text)
-		{
-			document_generation: 0,
-			close: NoClose,
-			path: Some(file.path),
-			baseline: { title: file_name(file.path), body: opened.text },
-			body: opened.text,
-			format: opened.format,
-			phase: Idle,
-			problem: None,
-		}
-	}
-
-	## A successful read belongs to the active reading operation. Every accepted
-	## replacement takes a fresh lifetime, including one whose text equals the
-	## text already on screen, because it is a different document.
+	## Install a read result as a complete new accepted document. The view uses
+	## the same file value for its body source in one coordinated state write.
 	loaded : State, { path : Str, text : Str } -> State
 	loaded = |state, file|
 		match state.phase {
-			Reading(_) => { ..from_file(file), document_generation: next_generation(state) }
+			Busy(Opening) => {
+				# The file is decoded once, here: the editor holds LF text with
+				# no byte-order mark, and the format remembers what the file used
+				# so a save writes that spelling back.
+				opened = Document.decode(file.text)
+				{
+					document_generation: next_generation(state),
+					close: NoClose,
+					path: Some(file.path),
+					baseline: { title: file_name(file.path), body: opened.text },
+					body: opened.text,
+					format: opened.format,
+					phase: Idle,
+					problem: None,
+				}
+			}
 			_ => crash "A file read arrived without its owning Notes operation"
 		}
 
@@ -186,26 +170,24 @@ Session := [].{
 			} else {
 				"No changes"
 			}
-			ChoosingOpen => "Choose a document…"
-			Reading(_) => "Opening document…"
-			ChoosingSave(_) => "Choose where to save…"
-			Writing(_) => "Saving document…"
+			Busy(Opening) => "Opening document…"
+			Busy(Saving) => "Saving document…"
 		}
 
 	## A successful save accepts the submitted body, never a later editor value.
 	## The current draft may therefore remain dirty after this operation succeeds.
-	written : State, Str -> State
-	written = |state, path|
+	written : State, { path : Str, body : Str } -> State
+	written = |state, saved|
 		match state.phase {
-			Writing(write) => {
+			Busy(Saving) => {
 				..state,
 				close: if state.close == SaveClose {
 					AllowClose
 				} else {
 					NoClose
 				},
-				path: Some(path),
-				baseline: { title: file_name(path), body: write.document.body },
+				path: Some(saved.path),
+				baseline: { title: file_name(saved.path), body: saved.body },
 				phase: Idle,
 				problem: None,
 			}
@@ -222,11 +204,11 @@ Session := [].{
 }
 
 ## A save retains its submitted text even when a newer draft exists on completion.
+## A save commits the body as it was when the save began; later typing stays dirty.
 expect {
 	editing = Session.edit(Session.initial, "First revision")
-	choosing = Session.begin_save({ state: editing, save_as: False })
-	writing = Session.choose_path(choosing, "/tmp/Ideas.txt")
-	saved = Session.edit(Session.written(writing, "/tmp/Ideas.txt"), "Second revision")
+	saving = Session.begin_save(editing)
+	saved = Session.edit(Session.written(saving, { path: "/tmp/Ideas.txt", body: "First revision" }), "Second revision")
 	actual =
 		\\saved body: ${saved.baseline.body}
 		\\still dirty: ${Str.inspect(Document.is_dirty({ draft: Session.draft(saved), baseline: saved.baseline }))}
@@ -237,22 +219,19 @@ expect {
 		\\ready: True
 }
 
-## A second save cannot replace an active write's captured snapshot.
+## A second save request while one is running changes nothing.
 expect {
-	accepted = { title: "Ideas.txt", body: "First revision" }
-	state = { ..Session.initial, path: Some("/tmp/Ideas.txt"), baseline: accepted, body: accepted.body }
-	writing = Session.begin_save({ state, save_as: False })
-	second = Session.begin_save({ state: Session.edit(writing, "Second revision"), save_as: False })
-	second.phase == writing.phase
+	saving = Session.begin_save(Session.initial)
+	Session.begin_save(saving) == saving
 }
 
-## Dialog cancellation and write failures preserve the previously accepted file.
+## Cancellation and failure keep the accepted document and the edited body.
 expect {
 	accepted = { title: "Ideas.txt", body: "Accepted" }
 	state = { ..Session.initial, path: Some("/tmp/Ideas.txt"), baseline: accepted, body: "Edited" }
-	choosing = Session.begin_save({ state, save_as: True })
-	canceled = Session.cancel(choosing)
-	failed = Session.failed(choosing, "Permission denied")
+	saving = Session.begin_save(state)
+	canceled = Session.cancel(saving)
+	failed = Session.failed(saving, "Permission denied")
 	actual =
 		\\cancel baseline: ${canceled.baseline.body}
 		\\cancel body: ${canceled.body}
@@ -265,38 +244,35 @@ expect {
 		\\failure path: Some("/tmp/Ideas.txt")
 }
 
-## An edited document requires discard confirmation before the Open dialog starts.
+## Opening over an edited draft asks first; confirming starts the read.
 expect {
 	requested = Session.begin_open(Session.edit(Session.initial, "Keep this draft"))
-	requested.phase == ConfirmDiscard(OpenDocument)
+	requested.phase == ConfirmDiscard(OpenDocument) and Session.confirm_open(requested).phase == Busy(Opening)
 }
 
-## Finishing a write allows the same text to be saved again without a nonce.
+## Saving equal text is still a save.
 expect {
 	accepted = { title: "Ideas.txt", body: "Same text" }
 	state = { ..Session.initial, path: Some("/tmp/Ideas.txt"), baseline: accepted, body: accepted.body }
-	first = Session.begin_save({ state, save_as: False })
-	saved = Session.written(first, "/tmp/Ideas.txt")
-	second = Session.begin_save({ state: saved, save_as: False })
-	second.phase == Writing({ path: "/tmp/Ideas.txt", document: accepted, format: Document.native_format })
+	saved = Session.written(Session.begin_save(state), { path: "/tmp/Ideas.txt", body: "Same text" })
+	Session.begin_save(saved).phase == Busy(Saving)
 }
 
-## A successful read replaces the baseline and names the file without parsing its body.
+## A loaded file installs its text as the body, decoded, under a new lifetime.
 expect {
-	requested = { ..Session.initial, phase: Reading("/tmp/新しい note.txt") }
-	loaded = Session.loaded(requested, { path: "/tmp/新しい note.txt", text: "Heading\n\nBody\n" })
-	loaded.baseline == { title: "新しい note.txt", body: "Heading\n\nBody\n" } and loaded.body == "Heading\n\nBody\n"
+	requested = { ..Session.initial, phase: Busy(Opening) }
+	loaded = Session.loaded(requested, { path: "/tmp/新しい note.txt", text: "Heading\r\n\r\nBody\r\n" })
+	loaded.baseline == { title: "新しい note.txt", body: "Heading\n\nBody\n" } and loaded.body == "Heading\n\nBody\n" and loaded.format == { ending: Crlf, bom: False }
 }
 
-## Saving before closing closes only after its owned write has succeeded.
+## Closing with unsaved work waits for a decision; a completed save closes.
 expect {
 	requested = Session.request_close(Session.edit(Session.initial, "Keep this"))
 	saving = Session.save_and_close(requested)
-	writing = Session.choose_path(saving, "/tmp/Close.txt")
-	done = Session.written(writing, "/tmp/Close.txt")
+	done = Session.written(saving, { path: "/tmp/Close.txt", body: "Keep this" })
 	actual =
 		\\requested: ${Str.inspect(Session.close_decision(requested))}
-		\\saving: ${Str.inspect(Session.close_decision(writing))}
+		\\saving: ${Str.inspect(Session.close_decision(saving))}
 		\\done: ${Str.inspect(Session.close_decision(done))}
 		\\saved: ${done.baseline.body}
 	actual ==
@@ -306,25 +282,23 @@ expect {
 		\\saved: Keep this
 }
 
-## Failed or canceled saves abandon closure while preserving the current draft owner.
+## A failed or canceled closing save keeps the window open.
 expect {
 	saving = Session.save_and_close(Session.request_close(Session.edit(Session.initial, "Draft")))
 	Session.close_decision(Session.failed(saving, "Permission denied")) == KeepOpen and Session.close_decision(Session.cancel(saving)) == KeepOpen
 }
 
-## Equal text still belongs to a new document lifetime when opened or reset.
+## Every accepted replacement takes a fresh lifetime, even for equal text.
 expect {
-	reading = { ..Session.initial, phase: Session.Phase.Reading("/tmp/Empty.txt") }
+	reading = { ..Session.initial, phase: Session.Phase.Busy(Session.Operation.Opening) }
 	loaded = Session.loaded(reading, { path: "/tmp/Empty.txt", text: "" })
 	next = Session.new_document(loaded)
 	loaded.document_generation == 1 and next.document_generation == 2
 }
 
-## Repeated opens of equal text keep allocating distinct lifetimes, and the body
-## installed by a replacement always belongs to that replacement's lifetime.
 expect {
 	open_again : Session.State -> Session.State
-	open_again = |state| Session.loaded({ ..state, phase: Session.Phase.Reading("/tmp/Same.txt") }, { path: "/tmp/Same.txt", text: "Same body" })
+	open_again = |state| Session.loaded({ ..state, phase: Session.Phase.Busy(Session.Operation.Opening) }, { path: "/tmp/Same.txt", text: "Same body" })
 	first = open_again(Session.initial)
 	second = open_again(first)
 	third = open_again(second)
@@ -335,37 +309,32 @@ expect {
 	]
 }
 
-## Typing, saving, cancellation and temporary availability changes all preserve
-## the current editor lifetime.
+## Typing, saving, failing and canceling never touch the lifetime.
 expect {
 	state = { ..Session.initial, document_generation: 4, path: Some("/tmp/Ideas.txt"), baseline: { title: "Ideas.txt", body: "Body" }, body: "Body" }
 	typed = Session.edit(state, "Body and more")
-	writing = Session.begin_save({ state: typed, save_as: False })
-	saved = Session.written(writing, "/tmp/Ideas.txt")
+	writing = Session.begin_save(typed)
+	saved = Session.written(writing, { path: "/tmp/Ideas.txt", body: "Body and more" })
 	failed = Session.failed(writing, "Permission denied")
 	canceled = Session.cancel(Session.begin_open(typed))
 	[typed, writing, saved, failed, canceled].map(|value| value.document_generation) == [4, 4, 4, 4, 4]
 }
 
-## Reverting a draft is a document replacement, so it takes a fresh lifetime and
-## restores the accepted baseline text.
+## Reverting is a document replacement: the accepted text under a new lifetime.
 expect {
 	state = { ..Session.initial, document_generation: 2, path: Some("/tmp/Ideas.txt"), baseline: { title: "Ideas.txt", body: "Accepted" }, body: "Edited" }
 	reverted = Session.revert({ ..state, phase: Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument) })
 	reverted.document_generation == 3 and reverted.body == "Accepted" and reverted.phase == Idle
 }
 
-## A failed read installs no document, so it neither replaces the draft nor
-## spends a lifetime the reader would have to reconcile.
+## A failed read keeps the draft and its lifetime.
 expect {
-	state = { ..Session.initial, document_generation: 7, phase: Session.Phase.Reading("/tmp/Ideas.txt"), body: "Draft" }
+	state = { ..Session.initial, document_generation: 7, phase: Session.Phase.Busy(Session.Operation.Opening), body: "Draft" }
 	failed = Session.failed(state, "Not valid UTF-8: document bytes")
 	failed.document_generation == 7 and failed.body == "Draft" and failed.baseline == Document.blank
 }
 
-## Lifetimes are allocated to exhaustion rather than wrapping around, because a
-## reused lifetime would silently hand a new document the previous editor.
 expect {
-	last = { ..Session.initial, document_generation: 18446744073709551614, phase: Session.Phase.Reading("/tmp/Last.txt") }
+	last = { ..Session.initial, document_generation: 18446744073709551614, phase: Session.Phase.Busy(Session.Operation.Opening) }
 	Session.loaded(last, { path: "/tmp/Last.txt", text: "" }).document_generation == 18446744073709551615
 }

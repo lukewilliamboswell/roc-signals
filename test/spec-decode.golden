@@ -9,74 +9,78 @@ scenario "event-space-800x600" window=800x600 assets=none choose=[] diagnostic=n
 == examples-gui/activity-monitor/specs/file-following.scm
 test "A real log drains chunks and assembles records before polling"
   3: click locator=role_name role="button" name="Step replay"
-  4: click locator=role_name role="button" name="Open log…"
-  5: resolve_task locator=none task="activity-open" kinds=e expected="6:files16:chosen15:/tmp/events.log"
-  6: expect_pending_task locator=none task="activity-read" count=1
-  7: resolve_task locator=none task="activity-read" kinds=400 expected="6:files115:/tmp/events.log9:first\npar1:11:21:97:initial4:more"
-  8: expect_absent locator=test_id test_id="event-1"
-  9: expect_visible locator=test_id test_id="event-2"
-  10: expect_interval locator=none interval=500 count=0
-  11: expect_pending_task locator=none task="activity-read" count=1
-  12: resolve_task locator=none task="activity-read" kinds=400 expected="6:files115:/tmp/events.log5:tial\n1:11:22:149:continued6:at-end"
-  13: expect_visible locator=test_id test_id="event-3"
-  14: expect_absent locator=text text="Replay paused"
-  15: expect_interval locator=none interval=500 count=1
-  16: expect_pending_task locator=none task="activity-read" count=0
-  17: click locator=role_name role="button" name="Inspect 3"
-  18: expect_visible locator=text text="Event 3 · TEXT · Log · partial"
-  19: expect_disabled locator=role_name role="checkbox" name="Errors only" bool=true
-  20: tick_interval locator=none interval=500
-  21: expect_interval locator=none interval=500 count=0
-  22: mark_metrics locator=none
-  23: resolve_task locator=none task="activity-read" kinds=400 expected="6:files115:/tmp/events.log0:1:11:22:149:continued6:at-end"
-  24: expect_metric_delta locator=none expected="rows_created" delta=0
-  25: expect_metric_delta locator=none expected="rows_removed" delta=0
-  26: expect_visible locator=text text="Retained: 2 / 1000"
-  27: click locator=role_name role="button" name="Pause following"
-  28: expect_interval locator=none interval=500 count=0
+  4: stub_file_result locator=none task="activity-open" file=choice path="/tmp/events.log"
+  5: stub_file_result locator=none task="activity-read" file=stat path="/tmp/events.log" kind=file bytes=14 device=1 inode=2
+  6: stub_file_result locator=none task="activity-read" file=read path="/tmp/events.log" bytes="first\npar" size=14
+  7: stub_file_result locator=none task="activity-read" file=stat path="/tmp/events.log" kind=file bytes=14 device=1 inode=2
+  8: stub_file_result locator=none task="activity-read" file=read path="/tmp/events.log" bytes="tial\n" offset=9 size=14
+  9: click locator=role_name role="button" name="Open log…"
+  10: expect_absent locator=test_id test_id="event-1"
+  11: expect_visible locator=test_id test_id="event-2"
+  12: expect_visible locator=test_id test_id="event-3"
+  13: expect_absent locator=text text="Replay paused"
+  14: expect_interval locator=none interval=500 count=1
+  15: click locator=role_name role="button" name="Inspect 3"
+  16: expect_visible locator=text text="Event 3 · TEXT · Log · partial"
+  17: expect_disabled locator=role_name role="checkbox" name="Errors only" bool=true
+  18: stub_file_result locator=none task="activity-read" file=stat path="/tmp/events.log" kind=file bytes=14 device=1 inode=2
+  19: stub_file_result locator=none task="activity-read" file=read path="/tmp/events.log" bytes="" offset=14 size=14
+  20: mark_metrics locator=none
+  21: tick_interval locator=none interval=500
+  22: expect_interval locator=none interval=500 count=1
+  23: expect_metric_delta locator=none expected="rows_created" delta=0
+  24: expect_metric_delta locator=none expected="rows_removed" delta=0
+  25: expect_visible locator=text text="Retained: 2 / 1000"
+  26: click locator=role_name role="button" name="Pause following"
+  27: expect_interval locator=none interval=500 count=0
 == examples-gui/activity-monitor/specs/file-recovery.scm
-test "Canceling and retrying log reads preserves accepted history"
-  3: click locator=role_name role="button" name="Open log…"
-  4: resolve_task locator=none task="activity-open" kinds=e expected="6:files16:chosen15:/tmp/events.log"
-  5: resolve_task locator=none task="activity-read" kinds=400 expected="6:files115:/tmp/events.log6:first\n1:11:21:67:initial6:at-end"
-  6: tick_interval locator=none interval=500
-  7: click locator=role_name role="button" name="Pause following"
-  8: expect_canceled_task locator=none task="activity-read" count=1
-  9: expect_interval locator=none interval=500 count=0
-  10: resolve_stale_task locator=none task="activity-read" expected="canceled payload must not be decoded"
-  11: expect_visible locator=text text="Retained: 1 / 1000"
-  12: click locator=role_name role="button" name="Resume following"
-  13: reject_task locator=none task="activity-read" kinds=ffe expected="6:files117:permission-denied15:/tmp/events.log"
-  14: expect_visible locator=test_id test_id="event-1"
-  15: expect_disabled locator=role_name role="button" name="Retry read" bool=false
-  16: click locator=role_name role="button" name="Retry read"
-  17: resolve_task locator=none task="activity-read" kinds=400 expected="6:files115:/tmp/events.log7:second\n1:11:22:139:continued6:at-end"
-  18: expect_visible locator=test_id test_id="event-2"
-  19: expect_visible locator=text text="Retained: 2 / 1000"
-  20: click locator=role_name role="button" name="Pause following"
-  21: click locator=role_name role="button" name="Use simulated replay"
-  22: expect_visible locator=text text="Retained: 0 / 1000"
-  23: click locator=role_name role="button" name="Step replay"
-  24: expect_visible locator=test_id test_id="event-3"
+test "Pausing, failing, and retrying log reads preserves accepted history"
+  3: stub_file_result locator=none task="activity-open" file=choice path="/tmp/events.log"
+  4: stub_file_result locator=none task="activity-read" file=stat path="/tmp/events.log" kind=file bytes=6 device=1 inode=2
+  5: stub_file_result locator=none task="activity-read" file=read path="/tmp/events.log" bytes="first\n" size=6
+  6: click locator=role_name role="button" name="Open log…"
+  7: stub_file_result locator=none task="activity-read" file=stat path="/tmp/events.log" kind=file bytes=6 device=1 inode=2
+  8: stub_file_result locator=none task="activity-read" file=read path="/tmp/events.log" bytes="" offset=6 size=6
+  9: tick_interval locator=none interval=500
+  10: click locator=role_name role="button" name="Pause following"
+  11: expect_interval locator=none interval=500 count=0
+  12: expect_visible locator=text text="Retained: 1 / 1000"
+  13: stub_file_result locator=none task="activity-read" file=reject kind=permission_denied detail="/tmp/events.log"
+  14: click locator=role_name role="button" name="Resume following"
+  15: expect_visible locator=test_id test_id="event-1"
+  16: expect_disabled locator=role_name role="button" name="Retry read" bool=false
+  17: stub_file_result locator=none task="activity-read" file=stat path="/tmp/events.log" kind=file bytes=13 device=1 inode=2
+  18: stub_file_result locator=none task="activity-read" file=read path="/tmp/events.log" bytes="second\n" offset=6 size=13
+  19: click locator=role_name role="button" name="Retry read"
+  20: expect_visible locator=test_id test_id="event-2"
+  21: expect_visible locator=text text="Retained: 2 / 1000"
+  22: click locator=role_name role="button" name="Pause following"
+  23: click locator=role_name role="button" name="Use simulated replay"
+  24: expect_visible locator=text text="Retained: 0 / 1000"
+  25: click locator=role_name role="button" name="Step replay"
+  26: expect_visible locator=test_id test_id="event-3"
 == examples-gui/activity-monitor/specs/file-rotation.scm
 test "File replacement and truncation retire old records and partial lines"
-  3: click locator=role_name role="button" name="Open log…"
-  4: resolve_task locator=none task="activity-open" kinds=e expected="6:files16:chosen15:/tmp/events.log"
-  5: resolve_task locator=none task="activity-read" kinds=400 expected="6:files115:/tmp/events.log14:old\nunfinished1:11:22:147:initial6:at-end"
-  6: click locator=role_name role="button" name="Inspect 1"
-  7: tick_interval locator=none interval=500
-  8: resolve_task locator=none task="activity-read" kinds=400 expected="6:files115:/tmp/events.log4:new\n1:11:31:47:rotated6:at-end"
-  9: expect_absent locator=test_id test_id="event-1"
-  10: expect_visible locator=test_id test_id="event-2"
-  11: expect_visible locator=text text="This event is no longer in retained history."
-  12: expect_text locator=test_id test_id="activity-status" expected="File replaced: retained history restarted from the new file."
-  13: click locator=role_name role="button" name="Inspect 2"
-  14: expect_visible locator=text text="Event 2 · TEXT · Log · new"
-  15: tick_interval locator=none interval=500
-  16: resolve_task locator=none task="activity-read" kinds=400 expected="6:files115:/tmp/events.log2:x\n1:11:31:29:truncated6:at-end"
-  17: expect_absent locator=test_id test_id="event-2"
-  18: expect_visible locator=test_id test_id="event-3"
-  19: expect_text locator=test_id test_id="activity-status" expected="File truncated: retained history restarted from the beginning."
+  3: stub_file_result locator=none task="activity-open" file=choice path="/tmp/events.log"
+  4: stub_file_result locator=none task="activity-read" file=stat path="/tmp/events.log" kind=file bytes=14 device=1 inode=2
+  5: stub_file_result locator=none task="activity-read" file=read path="/tmp/events.log" bytes="old\nunfinished" size=14
+  6: click locator=role_name role="button" name="Open log…"
+  7: click locator=role_name role="button" name="Inspect 1"
+  8: stub_file_result locator=none task="activity-read" file=stat path="/tmp/events.log" kind=file bytes=4 device=1 inode=3
+  9: stub_file_result locator=none task="activity-read" file=read path="/tmp/events.log" bytes="new\n" size=4
+  10: tick_interval locator=none interval=500
+  11: expect_absent locator=test_id test_id="event-1"
+  12: expect_visible locator=test_id test_id="event-2"
+  13: expect_visible locator=text text="This event is no longer in retained history."
+  14: expect_text locator=test_id test_id="activity-status" expected="File replaced: retained history restarted from the new file."
+  15: click locator=role_name role="button" name="Inspect 2"
+  16: expect_visible locator=text text="Event 2 · TEXT · Log · new"
+  17: stub_file_result locator=none task="activity-read" file=stat path="/tmp/events.log" kind=file bytes=2 device=1 inode=3
+  18: stub_file_result locator=none task="activity-read" file=read path="/tmp/events.log" bytes="x\n" size=2
+  19: tick_interval locator=none interval=500
+  20: expect_absent locator=test_id test_id="event-2"
+  21: expect_visible locator=test_id test_id="event-3"
+  22: expect_text locator=test_id test_id="activity-status" expected="File truncated: retained history restarted from the beginning."
 == examples-gui/activity-monitor/specs/filter.scm
 test "Filtering retains the selected event and reveals new matching events"
   3: click locator=role_name role="button" name="Start replay"
@@ -136,34 +140,34 @@ test "Follow-tail changes what is revealed, not how much work an append costs"
 == examples-gui/activity-monitor/specs/replay-and-filter.scm
 scenario "replay-and-filter" window=1200x820 assets=none choose=[] diagnostic=none on=[]
   7: expect_visible locator=text text="Activity Monitor"
-  10: expect_absent locator=text text="Retry read"
-  11: expect_absent locator=text text="Cancel operation"
-  12: expect_count locator=none expected="event-" count=0
-  13: snapshot locator=none expected="initial"
-  14: click locator=role_name role="button" name="Step replay"
-  15: wait locator=none interval=400
-  16: click locator=role_name role="button" name="Step replay"
-  17: wait locator=none interval=400
-  18: click locator=role_name role="button" name="Step replay"
-  19: wait locator=none interval=400
-  20: expect_count locator=none expected="event-" count=3
-  21: snapshot locator=none expected="replayed"
-  22: click locator=role_name role="button" name="Clear history"
-  23: wait locator=none interval=500
-  24: expect_count locator=none expected="event-" count=0
-  25: click locator=role_name role="button" name="Step replay"
-  26: wait locator=none interval=400
-  27: click locator=role_name role="button" name="Step replay"
-  28: wait locator=none interval=400
-  29: expect_count locator=none expected="event-" count=2
-  30: type_text locator=label label="Filter activity" expected="zzz"
-  31: wait locator=none interval=700
-  32: expect_count locator=none expected="event-" count=0
-  33: snapshot locator=none expected="filtered-empty"
-  34: key locator=none expected="ctrl-a"
-  35: key locator=none expected="backspace"
-  36: wait locator=none interval=700
-  37: expect_count locator=none expected="event-" count=2
+  11: expect_disabled locator=role_name role="button" name="Retry read" bool=true
+  12: expect_absent locator=text text="Cancel operation"
+  13: expect_count locator=none expected="event-" count=0
+  14: snapshot locator=none expected="initial"
+  15: click locator=role_name role="button" name="Step replay"
+  16: wait locator=none interval=400
+  17: click locator=role_name role="button" name="Step replay"
+  18: wait locator=none interval=400
+  19: click locator=role_name role="button" name="Step replay"
+  20: wait locator=none interval=400
+  21: expect_count locator=none expected="event-" count=3
+  22: snapshot locator=none expected="replayed"
+  23: click locator=role_name role="button" name="Clear history"
+  24: wait locator=none interval=500
+  25: expect_count locator=none expected="event-" count=0
+  26: click locator=role_name role="button" name="Step replay"
+  27: wait locator=none interval=400
+  28: click locator=role_name role="button" name="Step replay"
+  29: wait locator=none interval=400
+  30: expect_count locator=none expected="event-" count=2
+  31: type_text locator=label label="Filter activity" expected="zzz"
+  32: wait locator=none interval=700
+  33: expect_count locator=none expected="event-" count=0
+  34: snapshot locator=none expected="filtered-empty"
+  35: key locator=none expected="ctrl-a"
+  36: key locator=none expected="backspace"
+  37: wait locator=none interval=700
+  38: expect_count locator=none expected="event-" count=2
 == examples-gui/activity-monitor/specs/replay-work.scm
 test "Appending, filtering and following an activity feed each do their own work"
   3: click locator=role_name role="button" name="Step replay"
@@ -266,14 +270,12 @@ scenario "minimum-window" window=360x240 assets=none choose=[] diagnostic=none o
   13: expect_visible locator=text text="0"
 == examples-gui/folder-explorer/specs/asset-verification.scm
 test "Startup glyph verification names problem assets advisorily and browsing continues"
-  3: expect_visible locator=role_name role="heading" name="Folder Explorer"
-  4: expect_pending_task locator=none task="asset-verify" count=1
-  5: expect_text locator=test_id test_id="asset-status" expected="Checking assets…"
-  6: resolve_task locator=none task="asset-verify" kinds=800 expected="6:files11:217:glyphs/folder.png2:ok15:glyphs/file.png8:mismatch"
-  7: expect_pending_task locator=none task="asset-verify" count=0
-  8: expect_text locator=test_id test_id="asset-status" expected="Problem assets: glyphs/file.png (altered). Startup check only: glyphs the host cannot load show placeholder boxes. Restart to re-check after restoring them."
-  9: click locator=role_name role="button" name="Use sample"
-  10: expect_visible locator=test_id test_id="entry:docs"
+  3: seed_file_result locator=none task="folder-glyph" file=read path="/assets/glyphs/folder.png" bytes=<122 bytes sha256:54a467e1f1da195edf51144beaeb6112f4bfab7040db9728a4879c692207754e>
+  4: seed_file_result locator=none task="file-glyph" file=read path="/assets/glyphs/file.png" bytes="altered"
+  6: expect_visible locator=role_name role="heading" name="Folder Explorer"
+  7: expect_text locator=test_id test_id="asset-status" expected="Problem assets: glyphs/file.png (altered). Startup check only: glyphs the host cannot load show placeholder boxes. Restart to re-check after restoring them."
+  8: click locator=role_name role="button" name="Use sample"
+  9: expect_visible locator=test_id test_id="entry:docs"
 == examples-gui/folder-explorer/specs/assets-healthy.scm
 scenario "assets-healthy" window=1200x820 assets=none choose=[] diagnostic=none on=[]
   9: wait locator=none interval=600
@@ -324,65 +326,54 @@ scenario "browse-and-preview" window=1200x820 assets=none choose=[] diagnostic=n
   33: expect_history locator=test_id test_id="text-preview" count=0
   34: snapshot locator=none expected="previewed"
 == examples-gui/folder-explorer/specs/cancel-restart.scm
-test "Canceled navigation retains accepted content and retries the destination"
+test "A dismissed folder choice retains accepted content and a later choice succeeds"
   3: click locator=role_name role="button" name="README.md"
-  4: click locator=role_name role="button" name="Choose folder"
-  5: resolve_task locator=none task="folder-choice" kinds=e expected="6:files16:chosen12:/tmp/project"
-  6: expect_pending_task locator=none task="folder-list" count=1
-  7: expect_disabled locator=role_name role="button" name="Choose folder" bool=true
-  8: expect_text locator=test_id test_id="dataset-source" expected="Sample workspace"
-  9: expect_visible locator=text text="Size: 1536 B"
-  10: click locator=role_name role="button" name="Cancel"
-  11: expect_pending_task locator=none task="folder-list" count=0
-  12: expect_canceled_task locator=none task="folder-list" count=1
-  13: expect_visible locator=text text="Canceled"
-  14: expect_disabled locator=role_name role="button" name="Back" bool=true
-  15: click locator=role_name role="button" name="Retry"
-  16: expect_pending_task locator=none task="folder-list" count=1
-  17: resolve_stale_task locator=none task="folder-list" expected="not decoded after cancellation"
-  18: expect_text locator=test_id test_id="dataset-source" expected="Sample workspace"
-  19: resolve_task locator=none task="folder-list" kinds=80 expected="6:files112:/tmp/project1:217:/tmp/project/docs9:directory4:409622:/tmp/project/notes.txt4:file2:12"
-  20: expect_visible locator=text text="Folder: /tmp/project"
-  21: expect_visible locator=text text="2 matching entries"
-  22: click locator=role_name role="button" name="/tmp/project/docs"
-  23: expect_visible locator=text text="Folder: /tmp/project"
-  24: click locator=role_name role="button" name="Cancel"
-  25: resolve_stale_task locator=none task="folder-list" expected="canceled child cannot replace its parent"
-  26: expect_visible locator=test_id test_id="entry:/tmp/project/notes.txt"
-  27: click locator=role_name role="button" name="Retry"
-  28: resolve_task locator=none task="folder-list" kinds=80 expected="6:files117:/tmp/project/docs1:127:/tmp/project/docs/readme.md4:file1:5"
-  29: expect_visible locator=text text="Folder: /tmp/project/docs"
-  30: expect_visible locator=text text="1 matching entries"
+  4: stub_file_result locator=none task="folder-choice" file=choice path=none
+  5: click locator=role_name role="button" name="Choose folder"
+  6: expect_visible locator=text text="Folder selection canceled."
+  7: expect_text locator=test_id test_id="dataset-source" expected="Sample workspace"
+  8: expect_visible locator=text text="Size: 1536 B"
+  9: expect_disabled locator=role_name role="button" name="Back" bool=true
+  10: stub_file_result locator=none task="folder-choice" file=choice path="/tmp/project"
+  11: stub_file_result locator=none task="folder-list" file=directory path="/tmp/project" entries=[directory:4096:"/tmp/project/docs" file:12:"/tmp/project/notes.txt"]
+  12: click locator=role_name role="button" name="Choose folder"
+  13: expect_visible locator=text text="Folder: /tmp/project"
+  14: expect_visible locator=text text="2 matching entries"
+  15: stub_file_result locator=none task="folder-list" file=reject kind=not_found detail="/tmp/project/docs"
+  16: click locator=role_name role="button" name="/tmp/project/docs"
+  17: expect_visible locator=text text="Not found: /tmp/project/docs"
+  18: expect_visible locator=text text="Folder: /tmp/project"
+  19: expect_visible locator=test_id test_id="entry:/tmp/project/notes.txt"
+  20: stub_file_result locator=none task="folder-list" file=directory path="/tmp/project/docs" entries=[file:5:"/tmp/project/docs/readme.md"]
+  21: click locator=role_name role="button" name="Retry"
+  22: expect_visible locator=text text="Folder: /tmp/project/docs"
+  23: expect_visible locator=text text="1 matching entries"
 == examples-gui/folder-explorer/specs/chooser-and-error.scm
 test "Chooser dismissal and navigation failure keep the accepted folder and history"
-  3: shortcut locator=test_id test_id="explorer" shortcut=111+1
-  4: resolve_task locator=none task="folder-choice" kinds=e expected="6:files18:canceled"
+  3: stub_file_result locator=none task="folder-choice" file=choice path=none
+  4: shortcut locator=test_id test_id="explorer" shortcut=111+1
   5: expect_visible locator=text text="Folder selection canceled."
-  6: click locator=role_name role="button" name="Choose folder"
-  7: shortcut locator=test_id test_id="explorer" shortcut=257+0
-  8: expect_canceled_task locator=none task="folder-choice" count=1
-  9: resolve_stale_task locator=none task="folder-choice" expected="late chooser result is ignored"
-  10: click locator=role_name role="button" name="Choose folder"
-  11: resolve_task locator=none task="folder-choice" kinds=e expected="6:files16:chosen12:/tmp/project"
-  12: reject_task locator=none task="folder-list" kinds=ffe expected="6:files117:permission-denied12:/tmp/project"
-  13: expect_visible locator=text text="Permission denied: /tmp/project"
-  14: expect_text locator=test_id test_id="dataset-source" expected="Sample workspace"
-  15: expect_visible locator=text text="6 matching entries"
-  16: click locator=role_name role="button" name="Retry"
-  17: resolve_task locator=none task="folder-list" kinds=80 expected="6:files112:/tmp/project1:117:/tmp/project/docs9:directory1:0"
-  18: click locator=role_name role="button" name="/tmp/project/docs"
-  19: resolve_task locator=none task="folder-list" kinds=80 expected="6:files117:/tmp/project/docs1:0"
-  20: click locator=role_name role="button" name="Back"
-  21: reject_task locator=none task="folder-list" kinds=ffe expected="6:files19:not-found12:/tmp/project"
-  22: expect_visible locator=text text="Folder: /tmp/project/docs"
-  23: expect_disabled locator=role_name role="button" name="Forward" bool=true
-  24: click locator=role_name role="button" name="Retry"
-  25: resolve_task locator=none task="folder-list" kinds=80 expected="6:files112:/tmp/project1:117:/tmp/project/docs9:directory1:0"
-  26: expect_visible locator=text text="Folder: /tmp/project"
-  27: expect_disabled locator=role_name role="button" name="Forward" bool=false
-  28: click locator=role_name role="button" name="Forward"
-  29: resolve_task locator=none task="folder-list" kinds=80 expected="6:files117:/tmp/project/docs1:0"
-  30: expect_visible locator=text text="Folder: /tmp/project/docs"
+  6: stub_file_result locator=none task="folder-choice" file=choice path="/tmp/project"
+  7: stub_file_result locator=none task="folder-list" file=reject kind=permission_denied detail="/tmp/project"
+  8: click locator=role_name role="button" name="Choose folder"
+  9: expect_visible locator=text text="Permission denied: /tmp/project"
+  10: expect_text locator=test_id test_id="dataset-source" expected="Sample workspace"
+  11: expect_visible locator=text text="6 matching entries"
+  12: stub_file_result locator=none task="folder-list" file=directory path="/tmp/project" entries=[directory:0:"/tmp/project/docs"]
+  13: click locator=role_name role="button" name="Retry"
+  14: stub_file_result locator=none task="folder-list" file=directory path="/tmp/project/docs" entries=[]
+  15: click locator=role_name role="button" name="/tmp/project/docs"
+  16: stub_file_result locator=none task="folder-list" file=reject kind=not_found detail="/tmp/project"
+  17: click locator=role_name role="button" name="Back"
+  18: expect_visible locator=text text="Folder: /tmp/project/docs"
+  19: expect_disabled locator=role_name role="button" name="Forward" bool=true
+  20: stub_file_result locator=none task="folder-list" file=directory path="/tmp/project" entries=[directory:0:"/tmp/project/docs"]
+  21: click locator=role_name role="button" name="Retry"
+  22: expect_visible locator=text text="Folder: /tmp/project"
+  23: expect_disabled locator=role_name role="button" name="Forward" bool=false
+  24: stub_file_result locator=none task="folder-list" file=directory path="/tmp/project/docs" entries=[]
+  25: click locator=role_name role="button" name="Forward"
+  26: expect_visible locator=text text="Folder: /tmp/project/docs"
 == examples-gui/folder-explorer/specs/filter-sort-and-scroll-800x600.scm
 scenario "filter-sort-and-scroll-800x600" window=800x600 assets=none choose=[] diagnostic=none on=[]
   9: expect_count locator=none expected="entry:" count=6
@@ -426,27 +417,6 @@ scenario "inspector-800x600" window=800x600 assets=none choose=[] diagnostic=non
   25: expect_onscreen locator=test_id test_id="file-list"
   26: expect_onscreen locator=test_id test_id="shortcut-hints"
   27: snapshot locator=none expected="previewed"
-== examples-gui/folder-explorer/specs/late-results.scm
-test "A canceled scan refuses its late result and the retry decides the folder"
-  3: click locator=role_name role="button" name="Choose folder"
-  4: resolve_task locator=none task="folder-choice" kinds=e expected="6:files16:chosen12:/tmp/project"
-  5: expect_pending_task locator=none task="folder-list" count=1
-  6: click locator=role_name role="button" name="Cancel"
-  7: expect_pending_task locator=none task="folder-list" count=0
-  8: expect_canceled_task locator=none task="folder-list" count=1
-  11: mark_metrics locator=none
-  12: resolve_stale_task locator=none task="folder-list" expected="arrived after cancellation"
-  13: expect_metric_delta locator=none expected="stale_task_results_ignored" delta=1
-  14: expect_metric_delta locator=none expected="rows_created" delta=0
-  15: expect_metric_delta locator=none expected="rows_removed" delta=0
-  16: expect_metric_delta locator=none expected="scopes_created" delta=0
-  17: expect_text locator=test_id test_id="dataset-source" expected="Sample workspace"
-  18: expect_visible locator=text text="6 matching entries"
-  21: click locator=role_name role="button" name="Retry"
-  22: expect_pending_task locator=none task="folder-list" count=1
-  23: resolve_task locator=none task="folder-list" kinds=80 expected="6:files112:/tmp/project1:122:/tmp/project/notes.txt4:file2:12"
-  24: expect_visible locator=text text="Folder: /tmp/project"
-  25: expect_visible locator=text text="1 matching entries"
 == examples-gui/folder-explorer/specs/long-path-360x600.scm
 scenario "long-path-360x600" window=360x600 assets=none choose=[] diagnostic=none on=[]
   18: click locator=role_name role="button" name="docs"
@@ -481,35 +451,30 @@ scenario "preview-is-readable-1200x820" window=1200x820 assets=none choose=[] di
   22: expect_visible locator=text text="Preview: README.md"
   23: snapshot locator=none expected="preview-focused"
 == examples-gui/folder-explorer/specs/preview-open.scm
-test "Preview and associated launch use typed cancellable tasks without losing content"
-  3: click locator=role_name role="button" name="Choose folder"
-  4: resolve_task locator=none task="folder-choice" kinds=e expected="6:files16:chosen12:/tmp/project"
-  5: resolve_task locator=none task="folder-list" kinds=80 expected="6:files112:/tmp/project1:221:/tmp/project/note.txt4:file5:7000017:/tmp/project/link13:symbolic-link1:4"
+test "Preview and associated launch report typed results without losing content"
+  3: stub_file_result locator=none task="folder-choice" file=choice path="/tmp/project"
+  4: stub_file_result locator=none task="folder-list" file=directory path="/tmp/project" entries=[file:70000:"/tmp/project/note.txt" symbolic_link:4:"/tmp/project/link"]
+  5: click locator=role_name role="button" name="Choose folder"
   6: click locator=role_name role="button" name="/tmp/project/note.txt"
-  7: click locator=role_name role="button" name="Preview text"
-  8: expect_pending_task locator=none task="file-preview" count=1
-  9: expect_disabled locator=role_name role="button" name="Open in app" bool=true
-  10: resolve_task locator=none task="file-preview" kinds=200 expected="6:files121:/tmp/project/note.txt13:First line\nλ4:true"
-  11: expect_value locator=label label="Text preview" expected="First line\nλ"
-  12: expect_visible locator=text text="Preview: /tmp/project/note.txt · truncated"
-  13: click locator=role_name role="button" name="Preview text"
-  14: click locator=role_name role="button" name="Cancel"
-  15: expect_value locator=label label="Text preview" expected="First line\nλ"
-  16: resolve_stale_task locator=none task="file-preview" expected="canceled preview is never decoded"
-  17: click locator=role_name role="button" name="Retry"
-  18: reject_task locator=none task="file-preview" kinds=ffe expected="6:files112:invalid-utf821:/tmp/project/note.txt"
-  19: expect_visible locator=text text="Not valid UTF-8: /tmp/project/note.txt"
-  20: expect_value locator=label label="Text preview" expected="First line\nλ"
-  21: click locator=role_name role="button" name="Open in app"
-  22: reject_task locator=none task="file-open" kinds=ffe expected="6:files111:unavailable25:No associated application"
-  23: expect_value locator=label label="Text preview" expected="First line\nλ"
-  24: click locator=role_name role="button" name="Retry"
-  25: resolve_task locator=none task="file-open" kinds=100 expected="6:files121:/tmp/project/note.txt"
-  26: expect_visible locator=text text="Opened /tmp/project/note.txt in its associated application."
-  27: click locator=role_name role="button" name="/tmp/project/link"
-  28: expect_disabled locator=role_name role="button" name="Preview text" bool=true
-  29: expect_disabled locator=role_name role="button" name="Open in app" bool=true
-  30: expect_visible locator=text text="Symbolic links are shown but are not followed."
+  7: stub_file_result locator=none task="file-preview" file=read path="/tmp/project/note.txt" bytes="First line\nλ" size=70000
+  8: click locator=role_name role="button" name="Preview text"
+  9: expect_value locator=label label="Text preview" expected="First line\nλ"
+  10: expect_visible locator=text text="Preview: /tmp/project/note.txt · truncated"
+  11: stub_file_result locator=none task="file-preview" file=reject kind=invalid_utf8 detail="/tmp/project/note.txt"
+  12: click locator=role_name role="button" name="Preview text"
+  13: expect_visible locator=text text="Not valid UTF-8: /tmp/project/note.txt"
+  14: expect_value locator=label label="Text preview" expected="First line\nλ"
+  15: stub_file_result locator=none task="file-open" file=reject kind=unavailable detail="No associated application"
+  16: click locator=role_name role="button" name="Open in app"
+  17: expect_visible locator=text text="Native service unavailable: No associated application"
+  18: expect_value locator=label label="Text preview" expected="First line\nλ"
+  19: stub_file_result locator=none task="file-open" file=open path="/tmp/project/note.txt"
+  20: click locator=role_name role="button" name="Retry"
+  21: expect_visible locator=text text="Opened /tmp/project/note.txt in its associated application."
+  22: click locator=role_name role="button" name="/tmp/project/link"
+  23: expect_disabled locator=role_name role="button" name="Preview text" bool=true
+  24: expect_disabled locator=role_name role="button" name="Open in app" bool=true
+  25: expect_visible locator=text text="Symbolic links are shown but are not followed."
 == examples-gui/folder-explorer/specs/real-folder-preview.scm
 scenario "real-folder-preview" window=1200x820 assets=none choose=["specs/fixtures/project"] diagnostic=none on=[]
   8: click locator=role_name role="button" name="Choose folder"
@@ -584,48 +549,47 @@ test "Sample folders support breadcrumbs Up Back Forward and text previews"
   24: expect_visible locator=text text="No preview loaded."
 == examples-gui/folder-explorer/specs/scan-rescan.scm
 test "Direct-child navigation refresh and breadcrumbs reconcile accepted paths"
-  3: click locator=role_name role="button" name="Choose folder"
-  4: resolve_task locator=none task="folder-choice" kinds=e expected="6:files16:chosen12:/tmp/project"
-  5: resolve_task locator=none task="folder-list" kinds=80 expected="6:files112:/tmp/project1:417:/tmp/project/docs9:directory4:409622:/tmp/project/notes.txt4:file2:1220:/tmp/project/current13:symbolic-link1:924:/tmp/project/events.pipe5:other1:0"
+  3: stub_file_result locator=none task="folder-choice" file=choice path="/tmp/project"
+  4: stub_file_result locator=none task="folder-list" file=directory path="/tmp/project" entries=[directory:4096:"/tmp/project/docs" file:12:"/tmp/project/notes.txt" symbolic_link:9:"/tmp/project/current" other:0:"/tmp/project/events.pipe"]
+  5: click locator=role_name role="button" name="Choose folder"
   6: expect_visible locator=text text="1 files · 1 folders · 1 links · 1 other · 12 B"
   7: expect_visible locator=text text="notes.txt"
   8: click locator=role_name role="button" name="/tmp/project/notes.txt"
   9: expect_visible locator=text text="Size: 12 B"
-  10: click locator=role_name role="button" name="Refresh"
-  11: expect_visible locator=text text="Size: 12 B"
-  12: resolve_task locator=none task="folder-list" kinds=80 expected="6:files112:/tmp/project1:217:/tmp/project/docs9:directory1:022:/tmp/project/notes.txt4:file2:24"
-  13: expect_visible locator=text text="Size: 24 B"
+  10: stub_file_result locator=none task="folder-list" file=directory path="/tmp/project" entries=[directory:0:"/tmp/project/docs" file:24:"/tmp/project/notes.txt"]
+  11: click locator=role_name role="button" name="Refresh"
+  12: expect_visible locator=text text="Size: 24 B"
+  13: stub_file_result locator=none task="folder-list" file=directory path="/tmp/project/docs" entries=[file:7:"/tmp/project/docs/日本語.md"]
   14: click locator=role_name role="button" name="/tmp/project/docs"
-  15: resolve_task locator=none task="folder-list" kinds=80 expected="6:files117:/tmp/project/docs1:130:/tmp/project/docs/日本語.md4:file1:7"
-  16: expect_absent locator=test_id test_id="entry:/tmp/project/notes.txt"
+  15: expect_absent locator=test_id test_id="entry:/tmp/project/notes.txt"
+  16: stub_file_result locator=none task="folder-list" file=directory path="/tmp/project" entries=[file:24:"/tmp/project/notes.txt"]
   17: click locator=role_name role="button" name="Go to /tmp/project"
-  18: resolve_task locator=none task="folder-list" kinds=80 expected="6:files112:/tmp/project1:122:/tmp/project/notes.txt4:file2:24"
-  19: click locator=role_name role="button" name="/tmp/project/notes.txt"
+  18: click locator=role_name role="button" name="/tmp/project/notes.txt"
+  19: stub_file_result locator=none task="folder-list" file=directory path="/tmp/project" entries=[]
   20: shortcut locator=test_id test_id="explorer" shortcut=274+0
-  21: resolve_task locator=none task="folder-list" kinds=80 expected="6:files112:/tmp/project1:0"
-  22: expect_visible locator=text text="0 matching entries"
-  23: expect_visible locator=text text="Select a file to inspect it. Open a folder to browse its contents."
-  24: click locator=role_name role="button" name="Use sample"
-  25: expect_visible locator=text text="6 matching entries"
+  21: expect_visible locator=text text="0 matching entries"
+  22: expect_visible locator=text text="Select a file to inspect it. Open a folder to browse its contents."
+  23: click locator=role_name role="button" name="Use sample"
+  24: expect_visible locator=text text="6 matching entries"
 == examples-gui/folder-explorer/specs/windows-paths.scm
 test "Windows breadcrumbs name the drive root and every real parent folder"
-  3: click locator=role_name role="button" name="Choose folder"
-  4: resolve_task locator=none task="folder-choice" kinds=e expected="6:files16:chosen12:C:\\Users\\Lee"
-  5: resolve_task locator=none task="folder-list" kinds=80 expected="6:files112:C:\\Users\\Lee1:218:C:\\Users\\Lee\\Notes9:directory1:022:C:\\Users\\Lee\\Ideas.txt4:file1:5"
+  3: stub_file_result locator=none task="folder-choice" file=choice path="C:\\Users\\Lee"
+  4: stub_file_result locator=none task="folder-list" file=directory path="C:\\Users\\Lee" entries=[directory:0:"C:\\Users\\Lee\\Notes" file:5:"C:\\Users\\Lee\\Ideas.txt"]
+  6: click locator=role_name role="button" name="Choose folder"
   7: expect_visible locator=label label="Go to C:\\"
   8: expect_visible locator=label label="Go to C:\\Users"
   9: expect_visible locator=label label="Go to C:\\Users\\Lee"
   10: expect_text locator=test_id test_id="dataset-source" expected="Folder: C:\\Users\\Lee"
   11: expect_visible locator=text text="Ideas.txt"
   12: expect_visible locator=text text="Notes"
-  13: click locator=role_name role="button" name="C:\\Users\\Lee\\Notes"
-  14: resolve_task locator=none task="folder-list" kinds=80 expected="6:files118:C:\\Users\\Lee\\Notes1:0"
+  13: stub_file_result locator=none task="folder-list" file=directory path="C:\\Users\\Lee\\Notes" entries=[]
+  14: click locator=role_name role="button" name="C:\\Users\\Lee\\Notes"
   15: expect_text locator=test_id test_id="dataset-source" expected="Folder: C:\\Users\\Lee\\Notes"
-  16: click locator=role_name role="button" name="Up"
-  17: resolve_task locator=none task="folder-list" kinds=80 expected="6:files112:C:\\Users\\Lee1:0"
+  16: stub_file_result locator=none task="folder-list" file=directory path="C:\\Users\\Lee" entries=[]
+  17: click locator=role_name role="button" name="Up"
   18: expect_text locator=test_id test_id="dataset-source" expected="Folder: C:\\Users\\Lee"
-  19: click locator=label label="Go to C:\\Users"
-  20: resolve_task locator=none task="folder-list" kinds=80 expected="6:files18:C:\\Users1:112:C:\\Users\\Lee9:directory1:0"
+  19: stub_file_result locator=none task="folder-list" file=directory path="C:\\Users" entries=[directory:0:"C:\\Users\\Lee"]
+  20: click locator=label label="Go to C:\\Users"
   21: expect_text locator=test_id test_id="dataset-source" expected="Folder: C:\\Users"
   22: expect_visible locator=role_name role="button" name="C:\\Users\\Lee"
   23: expect_visible locator=text text="Lee"
@@ -747,31 +711,17 @@ test "The scope clock stops when its branch is disposed and restarts fresh"
   17: tick_interval locator=none interval=1000
   18: expect_visible locator=text text="Scope clock: 1"
 == examples-gui/notes-editor/specs/cancel.scm
-test "Cancel preserves the draft and prevents stale task results from replacing it"
-  3: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
-  4: resolve_task locator=none task="notes-open" kinds=e expected="6:files16:chosen20:/tmp/Ideas café.txt"
-  5: expect_pending_task locator=none task="notes-read" count=1
-  6: click locator=role_name role="button" name="Cancel operation"
-  7: expect_pending_task locator=none task="notes-read" count=0
-  8: expect_canceled_task locator=none task="notes-read" count=1
-  9: expect_text locator=test_id test_id="note-status" expected="No changes"
-  10: fill locator=label label="Note text" expected="Current draft"
-  11: resolve_stale_task locator=none task="notes-read" expected="6:files120:/tmp/Ideas café.txt9:Late body"
-  12: expect_value locator=label label="Note text" expected="Current draft"
-  13: expect_text locator=test_id test_id="document-name" expected="Untitled note"
-  14: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
-  15: resolve_task locator=none task="notes-save-path" kinds=e expected="6:files16:chosen20:/tmp/Ideas café.txt"
-  16: fill locator=label label="Note text" expected="Newer draft"
-  17: shortcut locator=test_id test_id="notes-editor" shortcut=257+0
-  18: expect_pending_task locator=none task="notes-write" count=0
-  19: expect_canceled_task locator=none task="notes-write" count=1
-  20: expect_value locator=label label="Note text" expected="Newer draft"
-  21: expect_text locator=test_id test_id="note-status" expected="Unsaved changes"
-  22: expect_text locator=test_id test_id="document-name" expected="Untitled note"
-  23: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
-  24: shortcut locator=test_id test_id="notes-editor" shortcut=257+0
-  25: expect_pending_task locator=none task="notes-save-path" count=0
-  26: expect_value locator=label label="Note text" expected="Newer draft"
+test "Dismissed choosers preserve the draft and the document name"
+  3: stub_file_result locator=none task="notes-open" file=choice path=none
+  4: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
+  5: expect_text locator=test_id test_id="note-status" expected="No changes"
+  6: fill locator=label label="Note text" expected="Current draft"
+  7: expect_text locator=test_id test_id="document-name" expected="Untitled note"
+  8: stub_file_result locator=none task="notes-save-path" file=choice path=none
+  9: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
+  10: expect_value locator=label label="Note text" expected="Current draft"
+  11: expect_text locator=test_id test_id="note-status" expected="Unsaved changes"
+  12: expect_text locator=test_id test_id="document-name" expected="Untitled note"
 == examples-gui/notes-editor/specs/close-cancel.scm
 test "Canceling close keeps the draft and a later discard completes a fresh request"
   3: fill locator=label label="Note text" expected="Keep this note"
@@ -781,14 +731,13 @@ test "Canceling close keeps the draft and a later discard completes a fresh requ
   7: expect_value locator=label label="Note text" expected="Keep this note"
   8: expect_disabled locator=label label="Note text" bool=false
   9: request_window_close locator=none
-  10: click locator=role_name role="button" name="Save and close"
-  11: click locator=role_name role="button" name="Cancel operation"
+  10: stub_file_result locator=none task="notes-save-path" file=choice path=none
+  11: click locator=role_name role="button" name="Save and close"
   12: expect_window_closed locator=none bool=false
   13: expect_value locator=label label="Note text" expected="Keep this note"
-  14: expect_pending_task locator=none task="notes-save-path" count=0
-  15: request_window_close locator=none
-  16: click locator=role_name role="button" name="Discard and close"
-  17: expect_window_closed locator=none bool=true
+  14: request_window_close locator=none
+  15: click locator=role_name role="button" name="Discard and close"
+  16: expect_window_closed locator=none bool=true
 == examples-gui/notes-editor/specs/close-clean.scm
 test "A clean document closes immediately"
   2: request_window_close locator=none
@@ -797,9 +746,9 @@ test "A clean document closes immediately"
 test "A failed closing save keeps the draft editable and permits retry"
   3: fill locator=label label="Note text" expected="Do not lose this"
   4: request_window_close locator=none
-  5: click locator=role_name role="button" name="Save and close"
-  6: resolve_task locator=none task="notes-save-path" kinds=e expected="6:files16:chosen20:/tmp/Ideas café.txt"
-  7: reject_task locator=none task="notes-write" kinds=ffe expected="6:files117:permission-denied11:destination"
+  5: stub_file_result locator=none task="notes-save-path" file=choice path="/tmp/Ideas café.txt"
+  6: stub_file_result locator=none task="notes-write" file=reject kind=permission_denied detail="destination"
+  7: click locator=role_name role="button" name="Save and close"
   8: expect_window_closed locator=none bool=false
   9: expect_value locator=label label="Note text" expected="Do not lose this"
   10: expect_disabled locator=label label="Note text" bool=false
@@ -814,15 +763,10 @@ test "Save and close waits for success without losing the submitted note"
   5: expect_window_closed locator=none bool=false
   6: expect_visible locator=test_id test_id="close-confirmation"
   7: request_window_close locator=none
-  8: click locator=role_name role="button" name="Save and close"
-  9: expect_absent locator=test_id test_id="close-confirmation"
-  10: expect_disabled locator=label label="Note text" bool=true
-  11: expect_pending_task locator=none task="notes-save-path" count=1
-  12: resolve_task locator=none task="notes-save-path" kinds=e expected="6:files16:chosen20:/tmp/Ideas café.txt"
-  13: expect_window_closed locator=none bool=false
-  14: expect_disabled locator=label label="Note text" bool=true
-  15: resolve_task locator=none task="notes-write" kinds=20 expected="6:files120:/tmp/Ideas café.txt2:14"
-  16: expect_window_closed locator=none bool=true
+  8: stub_file_result locator=none task="notes-save-path" file=choice path="/tmp/Ideas café.txt"
+  9: click locator=role_name role="button" name="Save and close"
+  10: expect_absent locator=test_id test_id="close-confirmation"
+  11: expect_window_closed locator=none bool=true
 == examples-gui/notes-editor/specs/dialog-minimum-window.scm
 scenario "dialog-minimum-window" window=360x600 assets=none choose=[] diagnostic=none on=[]
   9: type_text locator=label label="Note text" expected="hi"
@@ -866,49 +810,47 @@ test "Every accepted document gets its own editor, and editing keeps it"
   9: expect_value locator=label label="Note text" expected="Same body and more"
   10: expect_metric_delta locator=none expected="scopes_created" delta=0
   11: expect_metric_delta locator=none expected="scopes_disposed" delta=0
-  16: mark_metrics locator=none
-  17: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
-  18: expect_disabled locator=label label="Note text" bool=true
-  19: resolve_task locator=none task="notes-save-path" kinds=e expected="6:files16:chosen14:/tmp/Ideas.txt"
-  20: expect_disabled locator=label label="Note text" bool=false
-  21: resolve_task locator=none task="notes-write" kinds=20 expected="6:files114:/tmp/Ideas.txt2:18"
-  22: expect_text locator=test_id test_id="note-status" expected="No changes"
-  23: expect_value locator=label label="Note text" expected="Same body and more"
-  24: expect_metric_delta locator=none expected="scopes_created" delta=2
-  25: expect_metric_delta locator=none expected="scopes_disposed" delta=2
-  33: mark_metrics locator=none
-  34: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
-  35: resolve_task locator=none task="notes-open" kinds=e expected="6:files16:chosen15:/tmp/Broken.txt"
-  36: reject_task locator=none task="notes-read" kinds=ffe expected="6:files112:invalid-utf814:document bytes"
-  37: expect_text locator=test_id test_id="note-problem" expected="Not valid UTF-8: document bytes"
-  38: expect_value locator=label label="Note text" expected="Same body and more"
-  39: expect_text locator=test_id test_id="document-name" expected="Ideas.txt"
-  40: expect_metric_delta locator=none expected="scopes_created" delta=2
-  41: expect_metric_delta locator=none expected="scopes_disposed" delta=2
-  44: mark_metrics locator=none
-  45: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
-  46: resolve_task locator=none task="notes-open" kinds=e expected="6:files16:chosen14:/tmp/First.txt"
-  47: resolve_task locator=none task="notes-read" kinds=10 expected="6:files114:/tmp/First.txt9:Same body"
-  48: expect_value locator=label label="Note text" expected="Same body"
-  49: expect_text locator=test_id test_id="document-name" expected="First.txt"
-  50: expect_text locator=test_id test_id="note-status" expected="No changes"
-  51: expect_metric_delta locator=none expected="scopes_created" delta=3
-  52: expect_metric_delta locator=none expected="scopes_disposed" delta=3
-  57: mark_metrics locator=none
-  58: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
-  59: resolve_task locator=none task="notes-open" kinds=e expected="6:files16:chosen15:/tmp/Second.txt"
-  60: resolve_task locator=none task="notes-read" kinds=10 expected="6:files115:/tmp/Second.txt9:Same body"
-  61: expect_value locator=label label="Note text" expected="Same body"
-  62: expect_text locator=test_id test_id="document-name" expected="Second.txt"
-  63: expect_metric_delta locator=none expected="scopes_created" delta=3
-  64: expect_metric_delta locator=none expected="scopes_disposed" delta=3
-  67: mark_metrics locator=none
-  68: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
-  69: resolve_task locator=none task="notes-open" kinds=e expected="6:files16:chosen15:/tmp/Second.txt"
-  70: resolve_task locator=none task="notes-read" kinds=10 expected="6:files115:/tmp/Second.txt9:Same body"
-  71: expect_value locator=label label="Note text" expected="Same body"
-  72: expect_metric_delta locator=none expected="scopes_created" delta=3
-  73: expect_metric_delta locator=none expected="scopes_disposed" delta=3
+  14: mark_metrics locator=none
+  15: stub_file_result locator=none task="notes-save-path" file=choice path="/tmp/Ideas.txt"
+  16: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
+  17: expect_disabled locator=label label="Note text" bool=false
+  18: expect_text locator=test_id test_id="note-status" expected="No changes"
+  19: expect_value locator=label label="Note text" expected="Same body and more"
+  20: expect_metric_delta locator=none expected="scopes_created" delta=0
+  21: expect_metric_delta locator=none expected="scopes_disposed" delta=0
+  25: mark_metrics locator=none
+  26: stub_file_result locator=none task="notes-open" file=choice path="/tmp/Broken.txt"
+  27: stub_file_result locator=none task="notes-read" file=reject kind=invalid_utf8 detail="document bytes"
+  28: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
+  29: expect_text locator=test_id test_id="note-problem" expected="Not valid UTF-8: document bytes"
+  30: expect_value locator=label label="Note text" expected="Same body and more"
+  31: expect_text locator=test_id test_id="document-name" expected="Ideas.txt"
+  32: expect_metric_delta locator=none expected="scopes_created" delta=0
+  33: expect_metric_delta locator=none expected="scopes_disposed" delta=0
+  37: mark_metrics locator=none
+  38: stub_file_result locator=none task="notes-open" file=choice path="/tmp/First.txt"
+  39: stub_file_result locator=none task="notes-read" file=read path="/tmp/First.txt" bytes="Same body"
+  40: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
+  41: expect_value locator=label label="Note text" expected="Same body"
+  42: expect_text locator=test_id test_id="document-name" expected="First.txt"
+  43: expect_text locator=test_id test_id="note-status" expected="No changes"
+  44: expect_metric_delta locator=none expected="scopes_created" delta=1
+  45: expect_metric_delta locator=none expected="scopes_disposed" delta=1
+  50: mark_metrics locator=none
+  51: stub_file_result locator=none task="notes-open" file=choice path="/tmp/Second.txt"
+  52: stub_file_result locator=none task="notes-read" file=read path="/tmp/Second.txt" bytes="Same body"
+  53: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
+  54: expect_value locator=label label="Note text" expected="Same body"
+  55: expect_text locator=test_id test_id="document-name" expected="Second.txt"
+  56: expect_metric_delta locator=none expected="scopes_created" delta=1
+  57: expect_metric_delta locator=none expected="scopes_disposed" delta=1
+  60: mark_metrics locator=none
+  61: stub_file_result locator=none task="notes-open" file=choice path="/tmp/Second.txt"
+  62: stub_file_result locator=none task="notes-read" file=read path="/tmp/Second.txt" bytes="Same body"
+  63: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
+  64: expect_value locator=label label="Note text" expected="Same body"
+  65: expect_metric_delta locator=none expected="scopes_created" delta=1
+  66: expect_metric_delta locator=none expected="scopes_disposed" delta=1
 == examples-gui/notes-editor/specs/document-reset-lifetime.scm
 test "New and Revert replace the document, and cancelling them does not"
   4: fill locator=label label="Note text" expected="Draft one"
@@ -975,45 +917,42 @@ test "Multiline editing derives Unicode counts and exact dirty state"
   18: expect_text locator=test_id test_id="note-status" expected="No changes"
 == examples-gui/notes-editor/specs/failures.scm
 test "Typed read and write failures preserve the accepted document and allow retry"
-  3: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
-  4: resolve_task locator=none task="notes-open" kinds=e expected="6:files16:chosen20:/tmp/Ideas café.txt"
-  5: reject_task locator=none task="notes-read" kinds=ffe expected="6:files112:invalid-utf814:document bytes"
+  3: stub_file_result locator=none task="notes-open" file=choice path="/tmp/Ideas café.txt"
+  4: stub_file_result locator=none task="notes-read" file=reject kind=invalid_utf8 detail="document bytes"
+  5: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
   6: expect_value locator=label label="Note text" expected=""
   7: expect_text locator=test_id test_id="note-problem" expected="Not valid UTF-8: document bytes"
   8: expect_text locator=test_id test_id="document-name" expected="Untitled note"
   9: fill locator=label label="Note text" expected="Do not lose this"
-  10: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
-  11: resolve_task locator=none task="notes-save-path" kinds=e expected="6:files16:chosen20:/tmp/Ideas café.txt"
-  12: reject_task locator=none task="notes-write" kinds=ffe expected="6:files117:permission-denied11:destination"
+  10: stub_file_result locator=none task="notes-save-path" file=choice path="/tmp/Ideas café.txt"
+  11: stub_file_result locator=none task="notes-write" file=reject kind=permission_denied detail="destination"
+  12: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
   13: expect_value locator=label label="Note text" expected="Do not lose this"
   14: expect_text locator=test_id test_id="note-status" expected="Unsaved changes"
   15: expect_text locator=test_id test_id="note-problem" expected="Permission denied: destination"
-  16: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
-  17: expect_text locator=test_id test_id="note-problem" expected=""
-  18: resolve_task locator=none task="notes-save-path" kinds=e expected="6:files16:chosen20:/tmp/Ideas café.txt"
-  19: resolve_task locator=none task="notes-write" kinds=20 expected="6:files120:/tmp/Ideas café.txt2:16"
-  20: expect_text locator=test_id test_id="note-status" expected="No changes"
-  21: fill locator=label label="Note text" expected="Edited again"
+  16: stub_file_result locator=none task="notes-save-path" file=choice path="/tmp/Ideas café.txt"
+  17: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
+  18: expect_text locator=test_id test_id="note-problem" expected=""
+  19: expect_text locator=test_id test_id="note-status" expected="No changes"
+  20: fill locator=label label="Note text" expected="Edited again"
+  21: stub_file_result locator=none task="notes-save-path" file=choice path=none
   22: shortcut locator=test_id test_id="notes-editor" shortcut=115+3
-  23: resolve_task locator=none task="notes-save-path" kinds=e expected="6:files18:canceled"
-  24: expect_value locator=label label="Note text" expected="Edited again"
-  25: expect_text locator=test_id test_id="document-name" expected="Ideas café.txt"
-  26: expect_text locator=test_id test_id="note-status" expected="Unsaved changes"
+  23: expect_value locator=label label="Note text" expected="Edited again"
+  24: expect_text locator=test_id test_id="document-name" expected="Ideas café.txt"
+  25: expect_text locator=test_id test_id="note-status" expected="Unsaved changes"
 == examples-gui/notes-editor/specs/line-endings.scm
 test "A CRLF file with a byte-order mark opens as plain lines and counts them once"
-  3: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
-  4: resolve_task locator=none task="notes-open" kinds=e expected="6:files16:chosen14:/tmp/Ideas.txt"
-  6: resolve_task locator=none task="notes-read" kinds=10 expected="6:files114:/tmp/Ideas.txt28:﻿First idea\r\nSecond idea\r\n"
+  3: stub_file_result locator=none task="notes-open" file=choice path="/tmp/Ideas.txt"
+  5: stub_file_result locator=none task="notes-read" file=read path="/tmp/Ideas.txt" bytes="﻿First idea\r\nSecond idea\r\n"
+  6: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
   7: expect_value locator=label label="Note text" expected="First idea\nSecond idea\n"
   8: expect_text locator=test_id test_id="note-summary" expected="4 words · 23 characters"
   9: expect_text locator=test_id test_id="note-status" expected="No changes"
   10: fill locator=label label="Note text" expected="First idea\nSecond idea\nThird idea\n"
   11: expect_text locator=test_id test_id="note-status" expected="Unsaved changes"
   12: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
-  13: expect_pending_task locator=none task="notes-write" count=1
-  14: resolve_task locator=none task="notes-write" kinds=20 expected="6:files114:/tmp/Ideas.txt2:41"
-  15: expect_text locator=test_id test_id="note-status" expected="No changes"
-  16: expect_value locator=label label="Note text" expected="First idea\nSecond idea\nThird idea\n"
+  13: expect_text locator=test_id test_id="note-status" expected="No changes"
+  14: expect_value locator=label label="Note text" expected="First idea\nSecond idea\nThird idea\n"
 == examples-gui/notes-editor/specs/native-history.scm
 scenario "native-history" window=1200x820 assets=none choose=[] diagnostic=none on=[]
   8: expect_history locator=label label="Note text" count=0
@@ -1038,73 +977,52 @@ test "New document and Escape shortcuts preserve or discard exactly as requested
   11: expect_value locator=label label="Note text" expected=""
   12: expect_text locator=test_id test_id="note-status" expected="No changes"
   13: expect_text locator=test_id test_id="document-name" expected="Untitled note"
-  14: expect_pending_task locator=none task="notes-open" count=0
-  15: expect_pending_task locator=none task="notes-write" count=0
 == examples-gui/notes-editor/specs/open.scm
 test "Opening confirms dirty text then installs one complete Unicode file"
   3: fill locator=label label="Note text" expected="Keep this draft"
   4: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
   5: expect_visible locator=test_id test_id="discard-confirmation"
-  6: expect_pending_task locator=none task="notes-open" count=0
-  7: click locator=role_name role="button" name="Keep editing"
-  8: expect_value locator=label label="Note text" expected="Keep this draft"
-  9: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
+  6: click locator=role_name role="button" name="Keep editing"
+  7: expect_value locator=label label="Note text" expected="Keep this draft"
+  8: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
+  9: stub_file_result locator=none task="notes-open" file=choice path=none
   10: click locator=role_name role="button" name="Discard changes"
-  11: expect_text locator=test_id test_id="note-status" expected="Choose a document…"
-  12: resolve_task locator=none task="notes-open" kinds=e expected="6:files18:canceled"
-  13: expect_value locator=label label="Note text" expected="Keep this draft"
-  14: expect_text locator=test_id test_id="note-status" expected="Unsaved changes"
-  15: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
+  11: expect_value locator=label label="Note text" expected="Keep this draft"
+  12: expect_text locator=test_id test_id="note-status" expected="Unsaved changes"
+  13: shortcut locator=test_id test_id="notes-editor" shortcut=111+1
+  14: stub_file_result locator=none task="notes-open" file=choice path="/tmp/Ideas café.txt"
+  15: stub_file_result locator=none task="notes-read" file=read path="/tmp/Ideas café.txt" bytes="Heading\n\ncafé 🙂\n"
   16: click locator=role_name role="button" name="Discard changes"
-  17: resolve_task locator=none task="notes-open" kinds=e expected="6:files16:chosen20:/tmp/Ideas café.txt"
-  18: expect_text locator=test_id test_id="note-status" expected="Opening document…"
-  19: expect_disabled locator=label label="Note text" bool=true
-  20: resolve_task locator=none task="notes-read" kinds=10 expected="6:files120:/tmp/Ideas café.txt20:Heading\n\ncafé 🙂\n"
-  21: expect_text locator=test_id test_id="document-name" expected="Ideas café.txt"
-  22: expect_value locator=label label="Note text" expected="Heading\n\ncafé 🙂\n"
-  23: expect_text locator=test_id test_id="note-status" expected="No changes"
-  24: expect_text locator=test_id test_id="note-summary" expected="2 words · 16 characters"
-  25: expect_disabled locator=label label="Note text" bool=false
-  26: shortcut locator=test_id test_id="notes-editor" shortcut=110+1
-  27: expect_value locator=label label="Note text" expected=""
-  28: expect_text locator=test_id test_id="document-name" expected="Untitled note"
-  29: expect_text locator=test_id test_id="note-status" expected="No changes"
+  17: expect_text locator=test_id test_id="document-name" expected="Ideas café.txt"
+  18: expect_value locator=label label="Note text" expected="Heading\n\ncafé 🙂\n"
+  19: expect_text locator=test_id test_id="note-status" expected="No changes"
+  20: expect_text locator=test_id test_id="note-summary" expected="2 words · 16 characters"
+  21: expect_disabled locator=label label="Note text" bool=false
+  22: shortcut locator=test_id test_id="notes-editor" shortcut=110+1
+  23: expect_value locator=label label="Note text" expected=""
+  24: expect_text locator=test_id test_id="document-name" expected="Untitled note"
+  25: expect_text locator=test_id test_id="note-status" expected="No changes"
 == examples-gui/notes-editor/specs/save.scm
-test "Background saves own their submitted snapshot and serialize repeated saves"
+test "Saves own their submitted snapshot and later saves reuse the chosen path"
   5: expect_document_title locator=none expected="Untitled note - Notes"
   6: fill locator=label label="Note text" expected="First revision"
-  7: expect_document_title locator=none expected="* Untitled note - Notes"
+  7: stub_file_result locator=none task="notes-save-path" file=choice path="/tmp/Ideas café.txt"
   8: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
-  9: expect_text locator=test_id test_id="note-status" expected="Choose where to save…"
-  10: expect_pending_task locator=none task="notes-save-path" count=1
-  11: expect_disabled locator=label label="Note text" bool=true
-  12: resolve_task locator=none task="notes-save-path" kinds=e expected="6:files16:chosen20:/tmp/Ideas café.txt"
-  13: expect_text locator=test_id test_id="note-status" expected="Saving document…"
-  14: expect_disabled locator=label label="Note text" bool=false
-  15: expect_disabled locator=role_name role="button" name="Save" bool=true
-  16: fill locator=label label="Note text" expected="Second revision"
-  17: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
-  18: expect_pending_task locator=none task="notes-write" count=1
-  19: expect_canceled_task locator=none task="notes-write" count=0
-  20: resolve_task locator=none task="notes-write" kinds=20 expected="6:files120:/tmp/Ideas café.txt2:14"
-  21: expect_text locator=test_id test_id="document-name" expected="Ideas café.txt"
+  9: expect_text locator=test_id test_id="document-name" expected="Ideas café.txt"
+  10: expect_value locator=label label="Note text" expected="First revision"
+  11: expect_text locator=test_id test_id="note-status" expected="No changes"
+  12: expect_disabled locator=label label="Note text" bool=false
+  13: fill locator=label label="Note text" expected="Second revision"
+  14: expect_text locator=test_id test_id="note-status" expected="Unsaved changes"
+  15: expect_document_title locator=none expected="* Ideas café.txt - Notes"
+  16: click locator=role_name role="button" name="Revert changes"
+  17: click locator=role_name role="button" name="Discard changes"
+  18: expect_value locator=label label="Note text" expected="First revision"
+  19: expect_text locator=test_id test_id="note-status" expected="No changes"
+  20: fill locator=label label="Note text" expected="Second revision"
+  21: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
   22: expect_value locator=label label="Note text" expected="Second revision"
-  23: expect_text locator=test_id test_id="note-status" expected="Unsaved changes"
-  24: expect_document_title locator=none expected="* Ideas café.txt - Notes"
-  25: click locator=role_name role="button" name="Revert changes"
-  26: click locator=role_name role="button" name="Discard changes"
-  27: expect_value locator=label label="Note text" expected="First revision"
-  28: expect_text locator=test_id test_id="note-status" expected="No changes"
-  29: expect_document_title locator=none expected="Ideas café.txt - Notes"
-  30: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
-  31: expect_pending_task locator=none task="notes-save-path" count=0
-  32: expect_pending_task locator=none task="notes-write" count=1
-  33: resolve_task locator=none task="notes-write" kinds=20 expected="6:files120:/tmp/Ideas café.txt2:14"
-  34: expect_text locator=test_id test_id="note-status" expected="No changes"
-  35: shortcut locator=test_id test_id="notes-editor" shortcut=115+1
-  36: expect_pending_task locator=none task="notes-write" count=1
-  37: resolve_task locator=none task="notes-write" kinds=20 expected="6:files120:/tmp/Ideas café.txt2:14"
-  38: expect_text locator=test_id test_id="note-status" expected="No changes"
+  23: expect_text locator=test_id test_id="note-status" expected="No changes"
 == examples-gui/notes-editor/specs/unicode.scm
 test "Unicode statistics preserve original document spelling"
   3: fill locator=label label="Note text" expected="é 🇦🇺 👨‍👩‍👧‍👦"
@@ -1122,35 +1040,32 @@ test "Unicode statistics preserve original document spelling"
   15: expect_text locator=test_id test_id="note-summary" expected="2 words · 3 characters"
 == examples-gui/notes-editor/specs/windows-paths.scm
 test "A Windows document is named by its final path component through Save As"
-  3: click locator=role_name role="button" name="Open…"
-  4: resolve_task locator=none task="notes-open" kinds=e expected="6:files16:chosen22:C:\\Users\\Lee\\Ideas.txt"
-  5: resolve_task locator=none task="notes-read" kinds=10 expected="6:files122:C:\\Users\\Lee\\Ideas.txt5:Hello"
+  3: stub_file_result locator=none task="notes-open" file=choice path="C:\\Users\\Lee\\Ideas.txt"
+  4: stub_file_result locator=none task="notes-read" file=read path="C:\\Users\\Lee\\Ideas.txt" bytes="Hello"
+  5: click locator=role_name role="button" name="Open…"
   6: expect_text locator=test_id test_id="document-name" expected="Ideas.txt"
   7: expect_text locator=test_id test_id="note-status" expected="No changes"
-  8: click locator=role_name role="button" name="Save As…"
-  9: expect_pending_task locator=none task="notes-save-path" count=1
-  10: resolve_task locator=none task="notes-save-path" kinds=e expected="6:files16:chosen28:C:\\Users\\Lee\\Notes\\Ideas.txt"
-  11: resolve_task locator=none task="notes-write" kinds=20 expected="6:files128:C:\\Users\\Lee\\Notes\\Ideas.txt1:5"
-  12: expect_text locator=test_id test_id="document-name" expected="Ideas.txt"
-  13: expect_text locator=test_id test_id="note-status" expected="No changes"
+  8: stub_file_result locator=none task="notes-save-path" file=choice path="C:\\Users\\Lee\\Notes\\Ideas.txt"
+  9: click locator=role_name role="button" name="Save As…"
+  10: expect_text locator=test_id test_id="document-name" expected="Ideas.txt"
+  11: expect_text locator=test_id test_id="note-status" expected="No changes"
 == examples-gui/task-board/specs/asset-verification-ok.scm
 test "An all-ok asset verification report leaves the status line empty"
-  3: expect_visible locator=role_name role="heading" name="Launch Board"
-  4: expect_pending_task locator=none task="asset-verify" count=1
-  5: expect_text locator=test_id test_id="asset-status" expected="Checking assets…"
-  6: resolve_task locator=none task="asset-verify" kinds=800 expected="6:files11:316:avatars/maya.png2:ok15:avatars/jon.png2:ok15:avatars/sam.png2:ok"
-  7: expect_pending_task locator=none task="asset-verify" count=0
+  3: seed_file_result locator=none task="maya" file=read path="/assets/avatars/maya.png" bytes=<494 bytes sha256:aeb17694a3f988d07ce16b5adbb4f9b56599f0f3589bbbb11eee7be388c9000c>
+  4: seed_file_result locator=none task="jon" file=read path="/assets/avatars/jon.png" bytes=<490 bytes sha256:2bdb053c4fd1be23692f5bd41adff385ace3dad0a4f9ddc9b211ccc5c0fc8aec>
+  5: seed_file_result locator=none task="sam" file=read path="/assets/avatars/sam.png" bytes=<475 bytes sha256:ff81a96e7f666a199f814d95e9028bd7ae6fb46ea53d9a67a1dff96ab8b971a5>
+  7: expect_visible locator=role_name role="heading" name="Launch Board"
   8: expect_text locator=test_id test_id="asset-status" expected=""
 == examples-gui/task-board/specs/asset-verification.scm
 test "Startup asset verification names missing and altered assets and keeps the board editable"
-  3: expect_visible locator=role_name role="heading" name="Launch Board"
-  4: expect_pending_task locator=none task="asset-verify" count=1
-  5: resolve_task locator=none task="asset-verify" kinds=800 expected="6:files11:316:avatars/maya.png2:ok15:avatars/jon.png7:missing15:avatars/sam.png8:mismatch"
-  6: expect_pending_task locator=none task="asset-verify" count=0
-  7: expect_text locator=test_id test_id="asset-status" expected="Problem assets: avatars/jon.png (missing), avatars/sam.png (altered). Startup check only: avatars the host cannot load show placeholder boxes. Restart to re-check after restoring them."
-  8: fill locator=label label="New task title" expected="Board still edits with placeholder avatars"
-  9: click locator=role_name role="button" name="Add task"
-  10: expect_visible locator=test_id test_id="task-7"
+  3: seed_file_result locator=none task="maya" file=read path="/assets/avatars/maya.png" bytes=<494 bytes sha256:aeb17694a3f988d07ce16b5adbb4f9b56599f0f3589bbbb11eee7be388c9000c>
+  4: seed_file_result locator=none task="jon" file=reject kind=not_found detail="/assets/avatars/jon.png"
+  5: seed_file_result locator=none task="sam" file=read path="/assets/avatars/sam.png" bytes="altered"
+  7: expect_visible locator=role_name role="heading" name="Launch Board"
+  8: expect_text locator=test_id test_id="asset-status" expected="Problem assets: avatars/jon.png (missing), avatars/sam.png (altered). Startup check only: avatars the host cannot load show placeholder boxes. Restart to re-check after restoring them."
+  9: fill locator=label label="New task title" expected="Board still edits with placeholder avatars"
+  10: click locator=role_name role="button" name="Add task"
+  11: expect_visible locator=test_id test_id="task-7"
 == examples-gui/task-board/specs/assets-healthy.scm
 scenario "assets-healthy" window=1200x820 assets=none choose=[] diagnostic=none on=[]
   9: wait locator=none interval=600
@@ -1175,8 +1090,8 @@ scenario "assets-problem" window=1200x820 assets="specs/assets-problem" choose=[
 == examples-gui/task-board/specs/close-cancel-save.scm
 test "Canceling the save chooser during close retains the board and permits editing"
   3: request_window_close locator=none
-  4: click locator=role_name role="button" name="Save and close"
-  5: resolve_task locator=none task="board-save-path" kinds=e expected="6:files18:canceled"
+  4: stub_file_result locator=none task="board-save-path" file=choice path=none
+  5: click locator=role_name role="button" name="Save and close"
   6: expect_window_closed locator=none bool=false
   7: expect_visible locator=test_id test_id="board-close"
   8: click locator=role_name role="button" name="Keep editing"
@@ -1200,18 +1115,14 @@ test "Closing protects unsaved board data and waits for the save result"
   8: expect_absent locator=test_id test_id="board-close"
   9: expect_value locator=label label="Task title" expected="Keep this project"
   10: request_window_close locator=none
-  11: click locator=role_name role="button" name="Save and close"
-  12: expect_visible locator=test_id test_id="board-close-saving"
-  13: expect_window_closed locator=none bool=false
-  14: resolve_task locator=none task="board-save-path" kinds=e expected="6:files16:chosen15:/tmp/board.json"
-  15: expect_window_closed locator=none bool=false
-  16: reject_task locator=none task="board-write" kinds=ffe expected="6:files117:permission-denied15:/tmp/board.json"
-  17: expect_window_closed locator=none bool=false
-  18: expect_visible locator=test_id test_id="board-close"
-  19: click locator=role_name role="button" name="Save and close"
-  20: resolve_task locator=none task="board-save-path" kinds=e expected="6:files16:chosen15:/tmp/board.json"
-  21: resolve_task locator=none task="board-write" kinds=20 expected="6:files115:/tmp/board.json1:1"
-  22: expect_window_closed locator=none bool=true
+  11: stub_file_result locator=none task="board-save-path" file=choice path="/tmp/board.json"
+  12: stub_file_result locator=none task="board-write" file=reject kind=permission_denied detail="/tmp/board.json"
+  13: click locator=role_name role="button" name="Save and close"
+  14: expect_window_closed locator=none bool=false
+  15: expect_visible locator=test_id test_id="board-close"
+  16: stub_file_result locator=none task="board-save-path" file=choice path="/tmp/board.json"
+  17: click locator=role_name role="button" name="Save and close"
+  18: expect_window_closed locator=none bool=true
 == examples-gui/task-board/specs/create-and-delete.scm
 test "Repeated titles create distinct tasks and deletion requires confirmation"
   3: expect_disabled locator=role_name role="button" name="Add task" bool=true
@@ -1326,14 +1237,14 @@ test "An opened document selects nothing, so no editor survives it"
   3: click locator=test_id test_id="edit-task-1"
   4: fill locator=label label="Task notes" expected="Text from the document being replaced."
   5: click locator=role_name role="button" name="Open…"
-  6: click locator=role_name role="button" name="Discard and open"
-  7: resolve_task locator=none task="board-open" kinds=e expected="6:files16:chosen23:/tmp/project.board.json"
-  11: resolve_task locator=none task="board-read" kinds=10 expected="6:files123:/tmp/project.board.json155:{\"version\":1,\"next\":2,\"planned\":[{\"key\":\"task-1\",\"title\":\"Reused key\",\"notes\":\"\",\"assignee\":\"Unassigned\",\"priority\":\"Normal\"}],\"progress\":[],\"complete\":[]}"
-  12: expect_text locator=test_id test_id="board-path" expected="/tmp/project.board.json"
-  13: expect_text locator=test_id test_id="task-detail" expected="Task detailsSelect a task to edit its details."
-  16: click locator=test_id test_id="edit-task-1"
-  17: expect_value locator=label label="Task title" expected="Reused key"
-  18: expect_value locator=label label="Task notes" expected=""
+  6: stub_file_result locator=none task="board-open" file=choice path="/tmp/project.board.json"
+  9: stub_file_result locator=none task="board-read" file=read path="/tmp/project.board.json" bytes="{\"version\":1,\"next\":2,\"planned\":[{\"key\":\"task-1\",\"title\":\"Reused key\",\"notes\":\"\",\"assignee\":\"Unassigned\",\"priority\":\"Normal\"}],\"progress\":[],\"complete\":[]}"
+  10: click locator=role_name role="button" name="Discard and open"
+  11: expect_text locator=test_id test_id="board-path" expected="/tmp/project.board.json"
+  12: expect_text locator=test_id test_id="task-detail" expected="Task detailsSelect a task to edit its details."
+  15: click locator=test_id test_id="edit-task-1"
+  16: expect_value locator=label label="Task title" expected="Reused key"
+  17: expect_value locator=label label="Task notes" expected=""
 == examples-gui/task-board/specs/editor-lifetime-history.scm
 test "Domain history and deletion retire the editors they replace"
   3: click locator=test_id test_id="edit-task-1"
@@ -1430,22 +1341,20 @@ scenario "editor-ownership" window=1200x820 assets=none choose=[] diagnostic=non
   31: expect_value locator=label label="Task notes" expected=""
   32: expect_history locator=label label="Task notes" count=0
 == examples-gui/task-board/specs/file-cancel-retry.scm
-test "Cancel and write failures preserve unsaved data and permit a retry"
-  3: click locator=role_name role="button" name="Save"
-  4: click locator=role_name role="button" name="Cancel operation"
+test "Dismissed choosers and write failures preserve unsaved data and permit a retry"
+  3: stub_file_result locator=none task="board-save-path" file=choice path=none
+  4: click locator=role_name role="button" name="Save"
   5: expect_text locator=test_id test_id="board-status" expected="Unsaved changes"
-  6: expect_canceled_task locator=none task="board-save-path" count=1
-  7: resolve_stale_task locator=none task="board-save-path" expected="6:files16:chosen23:/tmp/project.board.json"
-  8: expect_pending_task locator=none task="board-write" count=0
+  6: expect_text locator=test_id test_id="board-problem" expected="Operation canceled; the current board is unchanged."
+  7: stub_file_result locator=none task="board-save-path" file=choice path="/tmp/project.board.json"
+  8: stub_file_result locator=none task="board-write" file=reject kind=permission_denied detail="/tmp/project.board.json"
   9: click locator=role_name role="button" name="Save"
-  10: resolve_task locator=none task="board-save-path" kinds=e expected="6:files16:chosen23:/tmp/project.board.json"
-  11: reject_task locator=none task="board-write" kinds=ffe expected="6:files117:permission-denied23:/tmp/project.board.json"
-  12: expect_text locator=test_id test_id="board-path" expected="Untitled board"
-  13: expect_value locator=label label="Task title" expected="Sketch the welcome screen"
+  10: expect_text locator=test_id test_id="board-problem" expected="Permission denied: /tmp/project.board.json"
+  11: expect_text locator=test_id test_id="board-path" expected="Untitled board"
+  12: expect_value locator=label label="Task title" expected="Sketch the welcome screen"
+  13: stub_file_result locator=none task="board-save-path" file=choice path="/tmp/project.board.json"
   14: click locator=role_name role="button" name="Save"
-  15: resolve_task locator=none task="board-save-path" kinds=e expected="6:files16:chosen23:/tmp/project.board.json"
-  16: resolve_task locator=none task="board-write" kinds=20 expected="6:files123:/tmp/project.board.json1:1"
-  17: expect_text locator=test_id test_id="board-status" expected="Saved"
+  15: expect_text locator=test_id test_id="board-status" expected="Saved"
 == examples-gui/task-board/specs/minimum-window.scm
 scenario "minimum-window" window=360x240 assets=none choose=[] diagnostic=none on=[]
   7: expect_count locator=none expected="task-" count=8
@@ -1458,32 +1367,26 @@ test "Opening validates complete documents and preserves the current board on re
   4: click locator=role_name role="button" name="Open…"
   5: expect_visible locator=test_id test_id="board-discard"
   6: click locator=role_name role="button" name="Keep editing"
-  7: expect_pending_task locator=none task="board-open" count=0
-  8: click locator=role_name role="button" name="Open…"
-  9: click locator=role_name role="button" name="Discard and open"
-  10: resolve_task locator=none task="board-open" kinds=e expected="6:files16:chosen23:/tmp/project.board.json"
-  11: expect_disabled locator=label label="Task title" bool=true
-  12: expect_disabled locator=label label="Task notes" bool=true
-  13: expect_disabled locator=label label="New task title" bool=true
-  14: expect_disabled locator=role_name role="button" name="Undo" bool=true
-  15: expect_disabled locator=test_id test_id="task-1" bool=true
-  16: resolve_task locator=none task="board-read" kinds=10 expected="6:files123:/tmp/project.board.json8:not json"
-  17: expect_value locator=label label="Task title" expected="Keep this draft"
-  18: expect_disabled locator=label label="Task title" bool=false
-  19: expect_text locator=test_id test_id="board-path" expected="Untitled board"
-  20: expect_text locator=test_id test_id="board-problem" expected="This file is not a complete board JSON document"
-  21: click locator=role_name role="button" name="Open…"
-  22: click locator=role_name role="button" name="Discard and open"
-  23: resolve_task locator=none task="board-open" kinds=e expected="6:files16:chosen23:/tmp/project.board.json"
-  24: resolve_task locator=none task="board-read" kinds=10 expected="6:files123:/tmp/project.board.json63:{\"version\":1,\"next\":1,\"planned\":[],\"progress\":[],\"complete\":[]}"
-  25: expect_text locator=test_id test_id="board-status" expected="Saved"
-  26: expect_text locator=test_id test_id="board-path" expected="/tmp/project.board.json"
-  27: expect_absent locator=test_id test_id="task-1"
-  28: expect_disabled locator=role_name role="button" name="Undo" bool=true
-  29: fill locator=label label="New task title" expected="First task"
-  30: click locator=role_name role="button" name="Add task"
-  31: expect_visible locator=test_id test_id="task-1"
-  32: expect_text locator=test_id test_id="board-status" expected="Unsaved changes"
+  7: click locator=role_name role="button" name="Open…"
+  8: stub_file_result locator=none task="board-open" file=choice path="/tmp/project.board.json"
+  9: stub_file_result locator=none task="board-read" file=read path="/tmp/project.board.json" bytes="not json"
+  10: click locator=role_name role="button" name="Discard and open"
+  11: expect_value locator=label label="Task title" expected="Keep this draft"
+  12: expect_disabled locator=label label="Task title" bool=false
+  13: expect_text locator=test_id test_id="board-path" expected="Untitled board"
+  14: expect_text locator=test_id test_id="board-problem" expected="This file is not a complete board JSON document"
+  15: click locator=role_name role="button" name="Open…"
+  16: stub_file_result locator=none task="board-open" file=choice path="/tmp/project.board.json"
+  17: stub_file_result locator=none task="board-read" file=read path="/tmp/project.board.json" bytes="{\"version\":1,\"next\":1,\"planned\":[],\"progress\":[],\"complete\":[]}"
+  18: click locator=role_name role="button" name="Discard and open"
+  19: expect_text locator=test_id test_id="board-status" expected="Saved"
+  20: expect_text locator=test_id test_id="board-path" expected="/tmp/project.board.json"
+  21: expect_absent locator=test_id test_id="task-1"
+  22: expect_disabled locator=role_name role="button" name="Undo" bool=true
+  23: fill locator=label label="New task title" expected="First task"
+  24: click locator=role_name role="button" name="Add task"
+  25: expect_visible locator=test_id test_id="task-1"
+  26: expect_text locator=test_id test_id="board-status" expected="Unsaved changes"
 == examples-gui/task-board/specs/reorder-and-transfer.scm
 test "Reorder moves a surviving card and transfer preserves edited domain state"
   3: fill locator=label label="Task notes" expected="Keep this edit while moving the task."
@@ -1508,33 +1411,29 @@ test "Reorder moves a surviving card and transfer preserves edited domain state"
   22: expect_value locator=label label="Task notes" expected="Keep this edit while moving the task."
 == examples-gui/task-board/specs/save-snapshot.scm
 test "Saving retains an exact board snapshot while later edits remain dirty"
-  3: click locator=role_name role="button" name="Save"
-  4: expect_pending_task locator=none task="board-save-path" count=1
-  5: expect_disabled locator=label label="Task title" bool=false
-  6: fill locator=label label="Task title" expected="Edited after save began"
-  7: resolve_task locator=none task="board-save-path" kinds=e expected="6:files16:chosen23:/tmp/project.board.json"
-  8: expect_pending_task locator=none task="board-write" count=1
-  9: expect_disabled locator=label label="Task title" bool=false
-  10: resolve_task locator=none task="board-write" kinds=20 expected="6:files123:/tmp/project.board.json1:1"
-  11: expect_text locator=test_id test_id="board-status" expected="Unsaved changes"
-  12: expect_text locator=test_id test_id="board-path" expected="/tmp/project.board.json"
-  13: click locator=role_name role="button" name="Undo"
-  14: expect_value locator=label label="Task title" expected="Sketch the welcome screen"
-  15: expect_text locator=test_id test_id="board-status" expected="Saved"
-  16: click locator=role_name role="button" name="Redo"
-  17: expect_value locator=label label="Task title" expected="Edited after save began"
-  18: expect_text locator=test_id test_id="board-status" expected="Unsaved changes"
+  3: stub_file_result locator=none task="board-save-path" file=choice path="/tmp/project.board.json"
+  4: click locator=role_name role="button" name="Save"
+  5: expect_text locator=test_id test_id="board-status" expected="Saved"
+  6: expect_text locator=test_id test_id="board-path" expected="/tmp/project.board.json"
+  7: fill locator=label label="Task title" expected="Edited after save"
+  8: expect_text locator=test_id test_id="board-status" expected="Unsaved changes"
+  9: click locator=role_name role="button" name="Undo"
+  10: expect_value locator=label label="Task title" expected="Sketch the welcome screen"
+  11: expect_text locator=test_id test_id="board-status" expected="Saved"
+  12: click locator=role_name role="button" name="Redo"
+  13: expect_value locator=label label="Task title" expected="Edited after save"
+  14: expect_text locator=test_id test_id="board-status" expected="Unsaved changes"
 == examples-gui/task-board/specs/save-validation.scm
 test "Save validates retained drafts without discarding invalid text"
   3: fill locator=label label="Task title" expected="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   4: expect_value locator=label label="Task title" expected="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   5: click locator=role_name role="button" name="Save"
-  6: expect_pending_task locator=none task="board-save-path" count=0
-  7: expect_text locator=test_id test_id="board-problem" expected="Cannot save: Task limits are 512 bytes for titles, 8192 for notes, and 128 for assignees. Your draft is retained."
-  8: expect_value locator=label label="Task title" expected="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-  9: fill locator=label label="Task title" expected="A valid task"
+  6: expect_text locator=test_id test_id="board-problem" expected="Cannot save: Task limits are 512 bytes for titles, 8192 for notes, and 128 for assignees. Your draft is retained."
+  7: expect_value locator=label label="Task title" expected="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  8: fill locator=label label="Task title" expected="A valid task"
+  9: stub_file_result locator=none task="board-save-path" file=choice path=none
   10: click locator=role_name role="button" name="Save"
-  11: expect_pending_task locator=none task="board-save-path" count=1
+  11: expect_text locator=test_id test_id="board-problem" expected="Operation canceled; the current board is unchanged."
 == examples-gui/task-board/specs/selection-and-detail.scm
 scenario "selection-and-detail" window=1200x820 assets=none choose=[] diagnostic=none on=[]
   7: expect_count locator=none expected="task-" count=8
@@ -1584,17 +1483,13 @@ test "Document and board keyboard shortcuts use the same commands as controls"
   5: expect_value locator=label label="Task title" expected="Sketch the welcome screen"
   6: shortcut locator=test_id test_id="launch-board" shortcut=122+3
   7: expect_value locator=label label="Task title" expected="Shortcut edit"
-  8: shortcut locator=test_id test_id="launch-board" shortcut=115+1
-  9: expect_pending_task locator=none task="board-save-path" count=1
-  10: resolve_task locator=none task="board-save-path" kinds=e expected="6:files16:chosen25:/tmp/shortcuts.board.json"
-  11: resolve_task locator=none task="board-write" kinds=20 expected="6:files125:/tmp/shortcuts.board.json1:1"
-  12: shortcut locator=test_id test_id="launch-board" shortcut=115+3
-  13: expect_pending_task locator=none task="board-save-path" count=1
-  14: resolve_task locator=none task="board-save-path" kinds=e expected="6:files18:canceled"
-  15: shortcut locator=test_id test_id="launch-board" shortcut=111+1
-  16: expect_pending_task locator=none task="board-open" count=1
-  17: resolve_task locator=none task="board-open" kinds=e expected="6:files18:canceled"
-  18: expect_value locator=label label="Task title" expected="Shortcut edit"
+  8: stub_file_result locator=none task="board-save-path" file=choice path="/tmp/shortcuts.board.json"
+  9: shortcut locator=test_id test_id="launch-board" shortcut=115+1
+  10: stub_file_result locator=none task="board-save-path" file=choice path=none
+  11: shortcut locator=test_id test_id="launch-board" shortcut=115+3
+  12: stub_file_result locator=none task="board-open" file=choice path=none
+  13: shortcut locator=test_id test_id="launch-board" shortcut=111+1
+  14: expect_value locator=label label="Task title" expected="Shortcut edit"
 == examples-gui/task-board/specs/undo-domain.scm
 test "Undo and redo restore edits movement creation and deletion without reusing new identities"
   3: fill locator=label label="Task title" expected="Renamed"
@@ -12333,6 +12228,35 @@ test "Token editor — uppercase hex normalises through every binding"
   27: expect_attr locator=test_id test_id="preview-button" attr="style" expected="color: #ffffff; background: #2563eb; padding: 8px; font-size: 20px"
   28: expect_text locator=test_id test_id="ratio-button" expected="5.16:1"
   29: expect_text locator=test_id test_id="stylesheet" expected=":root { --color-bg: #ffffff; --color-fg: #767676; --color-accent: #2563eb; --space-sm: 8px; --font-md: 20px; --radius-md: 4px; }"
+== test/gui/action/specs/action.scm
+test "Then commits its changes, runs its effect after the turn, and applies the effect's action"
+  3: expect_text locator=text text="Idle" expected="Idle"
+  4: click locator=role_name role="button" name="Succeed"
+  5: expect_text locator=text text="Done: PATH is set" expected="Done: PATH is set"
+  6: click locator=role_name role="button" name="Fail"
+  7: expect_text locator=text text="Failed: boom" expected="Failed: boom"
+  8: click locator=role_name role="button" name="Reset"
+  9: expect_text locator=text text="Idle" expected="Idle"
+  10: stub_file_result locator=none task="read" file=read path="/tmp/roc-signals-action-fixture.txt" bytes="hello file"
+  11: click locator=role_name role="button" name="Write"
+  12: expect_text locator=text text="Done: read hello file" expected="Done: read hello file"
+  13: click locator=role_name role="button" name="Succeed"
+  14: expect_text locator=text text="Done: PATH is set" expected="Done: PATH is set"
+== test/gui/action/specs/effect-capability.scm
+test "Repeated effects preserve the handler's reads capability through teardown"
+  3: click locator=role_name role="button" name="No-op effect"
+  4: click locator=role_name role="button" name="No-op effect"
+  5: click locator=role_name role="button" name="No-op effect"
+  6: click locator=role_name role="button" name="No-op effect"
+  7: click locator=role_name role="button" name="No-op effect"
+  8: click locator=role_name role="button" name="No-op effect"
+  9: click locator=role_name role="button" name="No-op effect"
+  10: click locator=role_name role="button" name="No-op effect"
+  11: click locator=role_name role="button" name="No-op effect"
+  12: click locator=role_name role="button" name="No-op effect"
+  13: click locator=role_name role="button" name="No-op effect"
+  14: click locator=role_name role="button" name="No-op effect"
+  15: expect_text locator=text text="Idle" expected="Idle"
 == test/gui/compound-disposal/specs/append-delete.scm
 test "Sparse append followed by compound disposal can be repeated"
   3: click locator=role_name role="button" name="Add"
@@ -12384,41 +12308,61 @@ test "Native drop routes its typed detail through ordinary state propagation"
   3: expect_visible locator=text text="Dropped: none"
   4: custom_event locator=test_id test_id="drop-target" task="drop" expected="task-λ"
   5: expect_visible locator=text text="Dropped: task-λ"
-== test/gui/files/specs/navigation-log.scm
-test "Native directory preview log and associated-open routes keep typed results"
-  3: click locator=role_name role="button" name="List"
-  4: expect_pending_task locator=none task="fixture-list" count=1
-  5: resolve_task locator=none task="fixture-list" kinds=80 expected="6:files14:/tmp1:113:/tmp/file.txt4:file1:7"
-  6: expect_text locator=text text="Listed 1 direct entries" expected="Listed 1 direct entries"
-  7: click locator=role_name role="button" name="Preview"
-  8: resolve_task locator=none task="fixture-preview" kinds=200 expected="6:files113:/tmp/file.txt8:hello λ4:true"
-  9: expect_text locator=text text="Preview: hello λ" expected="Preview: hello λ"
-  10: click locator=role_name role="button" name="Log"
-  11: resolve_task locator=none task="fixture-log" kinds=400 expected="6:files113:/tmp/file.txt7:next λ1:11:21:79:continued6:at-end"
-  12: expect_text locator=text text="Log: next λ" expected="Log: next λ"
-  13: click locator=role_name role="button" name="Open associated"
-  14: resolve_task locator=none task="fixture-open" kinds=100 expected="6:files113:/tmp/file.txt"
-  15: expect_text locator=text text="Opened: /tmp/file.txt" expected="Opened: /tmp/file.txt"
-  16: click locator=role_name role="button" name="Log"
-  17: click locator=role_name role="button" name="Cancel log"
-  18: expect_canceled_task locator=none task="fixture-log" count=1
-  19: expect_text locator=text text="Canceled" expected="Canceled"
-  20: resolve_stale_task locator=none task="fixture-log" expected="not decoded after cancellation"
-  21: expect_text locator=text text="Canceled" expected="Canceled"
-== test/gui/files/specs/read-cancel.scm
-test "Native Files results and cancellation share task propagation"
-  3: expect_pending_task locator=none task="fixture-read" count=1
-  4: resolve_task locator=none task="fixture-read" expected="6:files110:/tmp/a.txt5:hello"
+== test/gui/files/specs/synchronous-files.scm
+test "Files primitives and conveniences decode stubbed results and report typed errors"
+  3: seed_file_result locator=none task="mount" file=read path="/tmp/roc-signals-files-fixture.txt" bytes="hello"
   5: expect_text locator=text text="Loaded 5 bytes" expected="Loaded 5 bytes"
-  6: click locator=role_name role="button" name="Read"
-  7: expect_pending_task locator=none task="fixture-read" count=1
-  8: expect_text locator=text text="Loading" expected="Loading"
-  9: click locator=role_name role="button" name="Cancel"
-  10: expect_pending_task locator=none task="fixture-read" count=0
-  11: expect_canceled_task locator=none task="fixture-read" count=1
-  12: expect_text locator=text text="Canceled" expected="Canceled"
-  13: resolve_stale_task locator=none task="fixture-read" expected="not decoded after cancellation"
-  14: expect_text locator=text text="Canceled" expected="Canceled"
+  6: click locator=role_name role="button" name="Write"
+  7: expect_text locator=text text="Wrote 5 bytes" expected="Wrote 5 bytes"
+  8: stub_file_result locator=none task="write" file=reject kind=permission_denied detail="/tmp/roc-signals-files-fixture.txt"
+  9: click locator=role_name role="button" name="Write"
+  10: expect_text locator=text text="Permission denied: /tmp/roc-signals-files-fixture.txt" expected="Permission denied: /tmp/roc-signals-files-fixture.txt"
+  11: stub_file_result locator=none task="stat" file=stat path="/tmp/roc-signals-files-fixture.txt" kind=file bytes=5 device=0 inode=42
+  12: click locator=role_name role="button" name="Stat"
+  13: expect_text locator=text text="Size 5 inode 42" expected="Size 5 inode 42"
+  14: stub_file_result locator=none task="bytes" file=read path="/tmp/roc-signals-files-fixture.txt" bytes="hello"
+  15: click locator=role_name role="button" name="Read bytes"
+  16: expect_text locator=text text="Bytes 3 of 5" expected="Bytes 3 of 5"
+  17: stub_file_result locator=none task="list" file=directory path="/tmp/roc-signals-files-depth" entries=[file:7:"/tmp/roc-signals-files-depth/file.txt"]
+  18: click locator=role_name role="button" name="List"
+  19: expect_text locator=text text="Listed 1 direct entries" expected="Listed 1 direct entries"
+  20: stub_file_result locator=none task="scan" file=directory path="/tmp/roc-signals-files-depth" entries=[directory:0:"/tmp/roc-signals-files-depth/sub" file:7:"/tmp/roc-signals-files-depth/file.txt"]
+  21: stub_file_result locator=none task="scan-sub" file=directory path="/tmp/roc-signals-files-depth/sub" entries=[file:1:"/tmp/roc-signals-files-depth/sub/inner.txt"]
+  22: click locator=role_name role="button" name="Scan"
+  23: expect_text locator=text text="Scanned 3 entries" expected="Scanned 3 entries"
+  24: stub_file_result locator=none task="preview" file=read path="/tmp/roc-signals-files-fixture.txt" bytes="hello λ" size=70000
+  25: click locator=role_name role="button" name="Preview"
+  26: expect_text locator=text text="Preview: hello λ (truncated)" expected="Preview: hello λ (truncated)"
+  27: stub_file_result locator=none task="open" file=open path="/tmp/roc-signals-files-fixture.txt"
+  28: click locator=role_name role="button" name="Open associated"
+  29: expect_text locator=text text="Opened: /tmp/roc-signals-files-fixture.txt" expected="Opened: /tmp/roc-signals-files-fixture.txt"
+  30: stub_file_result locator=none task="asset" file=read path="/assets/avatars/maya.png" bytes="abc"
+  31: click locator=role_name role="button" name="Verify assets"
+  32: expect_text locator=text text="Verified 1 assets: ok" expected="Verified 1 assets: ok"
+  33: click locator=role_name role="button" name="Read"
+  34: expect_text locator=text text="Native service unavailable: no spec stub for read_bytes /tmp/roc-signals-files-fixture.txt" expected="Native service unavailable: no spec stub for read_bytes /tmp/roc-signals-files-fixture.txt"
+== test/gui/http/specs/requests.scm
+test "Http primitives decode stubbed responses and report typed errors"
+  3: expect_text locator=text text="Idle" expected="Idle"
+  4: stub_http_result locator=none task="fetch" http=response uri="http://127.0.0.1:8765/hello.txt" status=200 headers=[] body="hello λ"
+  5: click locator=role_name role="button" name="Fetch"
+  6: expect_text locator=text text="Fetched: hello λ" expected="Fetched: hello λ"
+  7: stub_http_result locator=none task="fetch" http=response uri="http://127.0.0.1:8765/hello.txt" status=404 headers=[] body="missing"
+  8: click locator=role_name role="button" name="Fetch"
+  9: expect_text locator=text text="HTTP status 404" expected="HTTP status 404"
+  10: stub_http_result locator=none task="fetch" http=reject kind=timeout detail=""
+  11: click locator=role_name role="button" name="Fetch"
+  12: expect_text locator=text text="The request timed out" expected="The request timed out"
+  13: stub_http_result locator=none task="send" http=response uri="http://127.0.0.1:8765/hello.txt" status=201 headers=["content-type"="text/plain" "x-echo"="ping"] body=""
+  14: click locator=role_name role="button" name="Send"
+  15: expect_text locator=text text="Status 201 with 2 headers" expected="Status 201 with 2 headers"
+  16: click locator=role_name role="button" name="Fetch"
+  17: expect_text locator=text text="Native service unavailable: no spec stub for http://127.0.0.1:8765/hello.txt" expected="Native service unavailable: no spec stub for http://127.0.0.1:8765/hello.txt"
+== test/gui/overlap/specs/handshake.scm
+test "Mount effects decode the stubbed handshake in queue order"
+  3: seed_file_result locator=none task="first" file=read path="/tmp/roc-signals-overlap-fixture.txt" bytes="ready-0"
+  4: seed_file_result locator=none task="second" file=read path="/tmp/roc-signals-overlap-fixture.txt" bytes="waiting-0"
+  6: expect_text locator=text text="Both effects overlapped" expected="Both effects overlapped"
 == test/gui/presentation/specs/controls.scm
 test "checkbox enables an action and updates selected native presentation"
   3: expect_disabled locator=test_id test_id="run-action" bool=true

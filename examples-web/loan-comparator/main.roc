@@ -249,10 +249,10 @@ scenario_panel = |scenario| {
 			Html.div_c(
 				"grid gap-3 sm:grid-cols-2",
 				[
-					money_field("${name} principal", "2400", draft_signal.map(|value| value.principal), draft.on_str(set_principal)),
-					money_field("${name} annual rate", "6", draft_signal.map(|value| value.rate), draft.on_str(set_rate)),
-					money_field("${name} term months", "12", draft_signal.map(|value| value.term), draft.on_str(set_term)),
-					money_field("${name} extra payment", "0", draft_signal.map(|value| value.extra), draft.on_str(set_extra)),
+					money_field("${name} principal", "2400", draft_signal.map(|value| value.principal), draft.update_str(set_principal)),
+					money_field("${name} annual rate", "6", draft_signal.map(|value| value.rate), draft.update_str(set_rate)),
+					money_field("${name} term months", "12", draft_signal.map(|value| value.term), draft.update_str(set_term)),
+					money_field("${name} extra payment", "0", draft_signal.map(|value| value.extra), draft.update_str(set_extra)),
 				],
 			),
 			Html.div_c(
@@ -493,7 +493,7 @@ comparison_panel = |pair, summaries, schedules| {
 							Html.option(Pair.to_str(AvsC), "Scenario A vs Scenario C"),
 							Html.option(Pair.to_str(BvsC), "Scenario B vs Scenario C"),
 						],
-						pair.on_str(|_, value| value),
+						pair.update_str(|_, value| value),
 					),
 					Html.paragraph_c("Break-even is the first month the two running totals swap places.", "hint"),
 				],

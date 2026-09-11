@@ -46,7 +46,7 @@ history_panel = || Ui.state("", |history| Ui.state(False, |running| {
 		Html.paragraph_s_attrs(history.signal(), [Html.test_id("history")]),
 		Html.button("Append event", Ui.action(Signal.const({}), |_| append)),
 		Html.button("Unchanged history", Ui.action(Signal.const({}), |_| history.update_cmd(|current| current))),
-		Html.button("Toggle history clock", running.on_unit(|current| !current)),
+		Html.button("Toggle history clock", running.update(|current| !current)),
 		Ui.when(running.signal(), || {
 			Ui.on_change(Signal.interval(250), |_| append)
 		}, || Html.text("History clock stopped")),

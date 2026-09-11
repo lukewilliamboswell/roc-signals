@@ -5,8 +5,10 @@ import Manifest
 import Session
 import pf.Files
 import "assets/manifest.json" as manifest_json : Str
+import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
-import pf.Gui
+import pf.Event
+import pf.Gui exposing [Px]
 import pf.Rows
 import pf.Signal
 import pf.Ui
@@ -25,11 +27,11 @@ asset_entries = Manifest.entries(manifest_json)
 ## its bytes match the manifest digest.
 kind_glyph : Explorer.Kind -> Elem
 kind_glyph = |kind| {
-	glyph = |source, label| Gui.image({ source, label }, [Gui.style({ width: Px(16), height: Px(16), radius: 3 })])
+	glyph = |source, label| Elem.image({ source, label, width: 16.Px, height: 16.Px, radius: 3 })
 	match kind {
 		Directory => glyph("glyphs/folder.png", "Folder glyph")
 		File => glyph("glyphs/file.png", "File glyph")
-		_ => Gui.text("")
+		_ => Elem.text("")
 	}
 }
 
@@ -83,14 +85,6 @@ expect {
 	}
 }
 
-Tasks : {
-	chooser : Signal.Task(Files.Choice, Files.Error),
-	listing : Signal.Task(Files.Directory, Files.Error),
-	preview : Signal.Task(Files.Preview, Files.Error),
-	open : Signal.Task(Files.Opened, Files.Error),
-	verify : Signal.Task(List(Files.AssetCheck), Files.Error),
-}
-
 ## Filtering and ordering run only when their projected inputs change. Selection
 ## remains independent of this explicit operation over the current directory.
 visible_entries : Rows.Rows(Explorer.Entry), Str, Explorer.Sort -> Rows.Rows(Explorer.Entry)
@@ -102,28 +96,55 @@ visible_entries = |entries, query, order| {
 entry_row : Ui.Row(Explorer.Entry), Handles, Signal.Signal(Str), Signal.Signal(Bool) -> Elem
 entry_row = |row, handles, selected, ready| {
 	key = row.key()
-	Gui.row(
+	Elem.row(
+		{
+			test_id: "entry:${key}",
+			selected: Signal.select(selected, key),
+			padding: 4,
+			gap: 12,
+			width: Fill,
+			radius: 6,
+		},
 		[
-			Gui.test_id("entry:${key}"),
-			Gui.selected_s(Signal.select(selected, key)),
-			Gui.style({ padding: 4, gap: 12, width: Fill, radius: 6 }),
-		],
-		[
-			Gui.action_button(
-				{ label: row.map(|entry| Explorer.file_name(entry.path)), enabled: ready },
-				[Gui.label(key), Gui.style({ grow: True, padding: 4, radius: 4, background: Rgb(0x1B2A33), overflow_x: Clip })],
-				Ui.action(row.signal(), |entry| handles.model.update_cmd(|state| Session.activate(state, entry))),
+			Elem.action_button(
+				{
+					caption: row.map(|entry| Explorer.file_name(entry.path)),
+					enabled: ready,
+					label: key,
+					grow: True,
+					padding: 4,
+					radius: 4,
+					bg: Rgb(0x1B2A33),
+					overflow_x: Clip,
+				},
+				Action.run(
+					{ entry: row.signal(), state: handles.model.signal() }.Signal,
+					|reads| Action.then([handles.model.write(|state| Session.activate(state, reads.entry))], |current| advance!(handles.model, |snapshot| snapshot.state, current)),
+				),
 			),
-			Gui.row(
-				[Gui.style({ width: Px(90), padding: 4, gap: 6, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })],
+			Elem.row(
+				{
+					width: 90.Px,
+					padding: 4,
+					gap: 6,
+					font_size: 13,
+					fg: Rgb(0x93A9B6),
+					overflow_x: Clip,
+				},
 				[
 					Ui.switch(row.map(|entry| entry.kind), kind_glyph),
-					Gui.text_s(row.map(|entry| entry.kind.to_str())),
+					Elem.text_s(row.map(|entry| entry.kind.to_str())),
 				],
 			),
-			Gui.column(
-				[Gui.style({ width: Px(90), padding: 4, font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })],
-				[Gui.text_s(row.map(Explorer.size_text))],
+			Elem.col(
+				{
+					width: 90.Px,
+					padding: 4,
+					font_size: 13,
+					fg: Rgb(0x93A9B6),
+					overflow_x: Clip,
+				},
+				[Elem.text_s(row.map(Explorer.size_text))],
 			),
 		],
 	)
@@ -147,15 +168,22 @@ inspect_view = |handles| {
 			Sample(_) => False
 		},
 	)
-	Gui.panel(
-		# The inspector shares the content row's width with the list rather than
-		# claiming a fixed 340 pixels: at the declared 360-pixel minimum a fixed
-		# panel is laid out past the right edge, where nothing can reach it. It
-		# bounds itself to the row's height and scrolls a long path or error.
-		[Gui.test_id("file-details"), Gui.style({ width: Fill, height: Fill, gap: 12, padding: 16, background: Rgb(0x283A47), radius: 8, overflow_y: Scroll })],
+	Elem.panel(
+		{
+			# The inspector shares the height left by the header and footer bands;
+			# it bounds itself to the row's height and scrolls a long path or error.
+			test_id: "file-details",
+			width: Fill,
+			height: Fill,
+			gap: 12,
+			padding: 16,
+			bg: Rgb(0x283A47),
+			radius: 8,
+			overflow_y: Scroll,
+		},
 		[
-			Gui.heading("File details"),
-			Gui.text_s(
+			Elem.heading("File details"),
+			Elem.text_s(
 				selection.map(
 					|value| match value {
 						NoSelection => "Select a file to inspect it. Open a folder to browse its contents."
@@ -163,10 +191,10 @@ inspect_view = |handles| {
 					},
 				),
 			),
-			Gui.column(
-				[Gui.style({ gap: 2, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+			Elem.col(
+				{ gap: 2, font_size: 13, fg: Rgb(0xA9BFCC) },
 				[
-					Gui.text_s(
+					Elem.text_s(
 						selection.map(
 							|value| match value {
 								NoSelection => ""
@@ -174,7 +202,7 @@ inspect_view = |handles| {
 							},
 						),
 					),
-					Gui.text_s(
+					Elem.text_s(
 						selection.map(
 							|value| match value {
 								NoSelection => ""
@@ -184,17 +212,23 @@ inspect_view = |handles| {
 					),
 				],
 			),
-			Gui.row(
-				[Gui.style({ gap: 8 })],
+			Elem.row(
+				{ gap: 8 },
 				[
-					Gui.action_button({ label: Signal.const("Preview text"), enabled: can_preview }, [Gui.style({ padding: 8, radius: 6, background: Rgb(0x2E6FA3) })], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.preview_selected))),
-					Gui.action_button({ label: Signal.const("Open in app"), enabled: can_open }, [], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.open_selected))),
+					Elem.action_button({
+						caption: Signal.const("Preview text"),
+						enabled: can_preview,
+						padding: 8,
+						radius: 6,
+						bg: Rgb(0x2E6FA3),
+					}, step(handles, Session.preview_selected)),
+					Elem.action_button({ caption: Signal.const("Open in app"), enabled: can_open }, step(handles, Session.open_selected)),
 				],
 			),
-			Gui.column(
-				[Gui.style({ font_size: 13, foreground: Rgb(0x93A9B6) })],
+			Elem.col(
+				{ font_size: 13, fg: Rgb(0x93A9B6) },
 				[
-					Gui.text_s(
+					Elem.text_s(
 						selection.map(
 							|value| match value {
 								Selected(entry) if entry.kind == SymbolicLink => "Symbolic links are shown but are not followed."
@@ -205,10 +239,10 @@ inspect_view = |handles| {
 					),
 				],
 			),
-			Gui.column(
-				[Gui.style({ font_size: 13, foreground: Rgb(0xA9BFCC) })],
+			Elem.col(
+				{ font_size: 13, fg: Rgb(0xA9BFCC) },
 				[
-					Gui.text_s(
+					Elem.text_s(
 						model.map(
 							|state| match state.preview {
 								NoPreview => "No preview loaded."
@@ -222,7 +256,7 @@ inspect_view = |handles| {
 					),
 				],
 			),
-			Gui.textarea(
+			Elem.textarea(
 				{
 					label: "Text preview",
 					value: model.map(
@@ -231,84 +265,59 @@ inspect_view = |handles| {
 							Ready(preview) => preview.text
 						},
 					),
+					test_id: "text-preview",
+					placeholder: "Preview a file to read it here.",
+					read_only: Signal.const(True),
+					width: Fill,
+					height: 220.Px,
 				},
-				# The preview is a document to read, not an unavailable control: it
-				# stays legible and keyboard reachable, and read-only refuses every
-				# edit so the shown text cannot diverge from the loaded preview.
-				[Gui.test_id("text-preview"), Gui.placeholder("Preview a file to read it here."), Gui.read_only_s(Signal.const(True)), Gui.style({ width: Fill, height: Px(220) })],
-				handles.model.on_str(|state, _| state),
+				handles.model.update_str(|state, _| state),
 			),
 		],
 	)
 }
 
-cancel : Tasks, Session.Phase -> Gui.Cmd
-cancel = |tasks, phase| match phase {
-	Choosing => Signal.cancel(tasks.chooser)
-	Listing(_) => Signal.cancel(tasks.listing)
-	Previewing(_) => Signal.cancel(tasks.preview)
-	Opening(_) => Signal.cancel(tasks.open)
-	Idle => Signal.noop
+workflow : Handles -> List(Elem)
+workflow = |handles| [
+	Action.on_mount(|| Action.then([], |_| verify_assets!(handles.asset_problem))),
+]
+
+## A handler that commits one session transition and then runs whatever
+## operation the state it reached asks for.
+step : Handles, (Session.State -> Session.State) -> Event.Handler
+step = |handles, change| Action.run(handles.model.signal(), |_| Action.then([handles.model.write(change)], |current| advance!(handles.model, |state| state, current)))
+
+## Runs the `Files` call the session's phase asks for, as the effect of the
+## handler that entered it. The folder chooser blocks until the user answers,
+## and the folder it names is listed by a second effect after the choice
+## commits. `state_of` finds the session in the handler's reads, which each
+## commit snapshots again.
+advance! : Ui.State(Session.State), (reads -> Session.State), reads => Action(reads)
+advance! = |model, state_of, reads| match state_of(reads).phase {
+	Idle => Action.none
+	Choosing => match Files.choose_directory!() {
+		Ok(choice) => Action.then([model.write(|state| Session.chosen(state, choice))], |next| advance!(model, state_of, next))
+		Err(error) => Action.update([model.write(|state| Session.failed(state, error))])
+	}
+	Listing(visit) => settle(model, Files.list_directory!(Session.path(visit.destination)), Session.loaded)
+	Previewing(path) => settle(model, Files.read_preview!(path), Session.previewed)
+	Opening(path) => settle(model, Files.open_path!(path), |state, _| Session.opened(state, path))
 }
 
-workflow : Handles, Tasks -> List(Elem)
-workflow = |handles, tasks| [
-	Ui.on_mount(|| Files.verify_assets(tasks.verify, asset_entries)),
-	Ui.on_change(
-		Signal.from_task(tasks.verify),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Failed(error) => handles.asset_problem.set_cmd("Asset verification failed: ${Files.error_text(error)}")
-			Signal.TaskStatus.Done(report) => handles.asset_problem.set_cmd(asset_problem_text(report))
-		},
-	),
-	Ui.on_change(
-		handles.model.signal().map(|state| state.phase),
-		|phase| match phase {
-			Idle => Signal.noop
-			Choosing => Files.choose_directory(tasks.chooser)
-			Listing(visit) => Files.list_directory(tasks.listing, Session.path(visit.destination))
-			Previewing(path) => Files.read_preview(tasks.preview, path)
-			Opening(path) => Files.open_path(tasks.open, path)
-		},
-	),
-	Ui.on_change(
-		Signal.from_task(tasks.chooser),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Done(result) => handles.model.update_cmd(|state| Session.chosen(state, result))
-			Signal.TaskStatus.Failed(error) => handles.model.update_cmd(|state| Session.failed(state, error))
-		},
-	),
-	Ui.on_change(
-		Signal.from_task(tasks.listing),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Done(result) => handles.model.update_cmd(|state| Session.loaded(state, result))
-			Signal.TaskStatus.Failed(error) => handles.model.update_cmd(|state| Session.failed(state, error))
-		},
-	),
-	Ui.on_change(
-		Signal.from_task(tasks.preview),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Done(result) => handles.model.update_cmd(|state| Session.previewed(state, result))
-			Signal.TaskStatus.Failed(error) => handles.model.update_cmd(|state| Session.failed(state, error))
-		},
-	),
-	Ui.on_change(
-		Signal.from_task(tasks.open),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Done(result) => handles.model.update_cmd(|state| Session.opened(state, result))
-			Signal.TaskStatus.Failed(error) => handles.model.update_cmd(|state| Session.failed(state, error))
-		},
-	),
-]
+settle : Ui.State(Session.State), Try(a, Files.Error), (Session.State, a -> Session.State) -> Action(reads)
+settle = |model, result, accept| match result {
+	Ok(value) => Action.update([model.write(|state| accept(state, value))])
+	Err(error) => Action.update([model.write(|state| Session.failed(state, error))])
+}
+
+verify_assets! : Ui.State(Str) => Action({})
+verify_assets! = |asset_problem| match Files.verify_assets!(asset_entries) {
+	Ok(report) => Action.update([asset_problem.set(asset_problem_text(report))])
+	Err(error) => Action.update([asset_problem.set("Asset verification failed: ${Files.error_text(error)}")])
+}
 
 explorer_view : Handles -> Elem
 explorer_view = |handles| {
-	tasks = { chooser: Files.choose_directory_task("folder-choice"), listing: Files.list_directory_task("folder-list"), preview: Files.read_preview_task("file-preview"), open: Files.open_path_task("file-open"), verify: Files.verify_assets_task("asset-verify") }
 	model = handles.model.signal()
 	dataset = model.map(|state| state.rows)
 	source = model.map(|state| state.source)
@@ -323,28 +332,25 @@ explorer_view = |handles| {
 		},
 	)
 	total = dataset.map(|entries| Explorer.summary(Rows.to_list(entries)))
-	choose_action = Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.begin_choose))
-	refresh_action = Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.refresh))
-	back_action = Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.backward))
-	forward_action = Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.forward))
-	up_action = Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.up))
-	cancel_action = Ui.action(phase, |value| cancel(tasks, value))
+	choose_action = step(handles, Session.begin_choose)
+	refresh_action = step(handles, Session.refresh)
+	back_action = step(handles, Session.backward)
+	forward_action = step(handles, Session.forward)
+	up_action = step(handles, Session.up)
 	crumbs = source.map(|location| Rows.from_list(Session.breadcrumbs(location), |crumb| crumb.path) ?? crash "Breadcrumb paths must be unique")
-	Gui.column(
-		[
-			Gui.test_id("explorer"),
+	Elem.col(
+		{
 			# The root bounds itself to the window and hands the free height to
-			# the content row, so the chrome bands below it stay on screen.
-			Gui.style({ gap: 12, padding: 24, width: Fill, height: Fill }),
-			Gui.on_shortcut({ key: "o", control: True, shift: False, alt: False, meta: False }, choose_action),
-			Gui.on_shortcut({ key: "F5", control: False, shift: False, alt: False, meta: False }, refresh_action),
-			Gui.on_shortcut({ key: "Escape", control: False, shift: False, alt: False, meta: False }, cancel_action),
-			Gui.on_shortcut({ key: "ArrowLeft", control: False, shift: False, alt: True, meta: False }, back_action),
-			Gui.on_shortcut({ key: "ArrowRight", control: False, shift: False, alt: True, meta: False }, forward_action),
-			Gui.on_shortcut({ key: "ArrowUp", control: False, shift: False, alt: True, meta: False }, up_action),
-		],
-		workflow(handles, tasks).concat([
-			# The browsed folder is this window's document, so the switcher names it.
+			# the content row; every band of chrome above the list is height the
+			# preview does not get.
+			test_id: "explorer",
+			gap: 12,
+			padding: 24,
+			width: Fill,
+			height: Fill,
+			shortcuts: [{ chord: { key: "o", control: True, shift: False, alt: False, meta: False }, msg: choose_action }, { chord: { key: "F5", control: False, shift: False, alt: False, meta: False }, msg: refresh_action }, { chord: { key: "ArrowLeft", control: False, shift: False, alt: True, meta: False }, msg: back_action }, { chord: { key: "ArrowRight", control: False, shift: False, alt: True, meta: False }, msg: forward_action }, { chord: { key: "ArrowUp", control: False, shift: False, alt: True, meta: False }, msg: up_action }],
+		},
+		workflow(handles).concat([
 			Ui.on_change_initial(
 				source.map(
 					|value| {
@@ -355,71 +361,79 @@ explorer_view = |handles| {
 				),
 				Gui.set_title,
 			),
-			# Heading and standing invitation share one band: at 800x600 every
-			# line of chrome above the list is height the preview does not get.
-			Gui.row(
-				[Gui.style({ gap: 16, width: Fill, overflow_x: Clip })],
-				[
-					Gui.heading("Folder Explorer"),
-					Gui.column(
-						[Gui.style({ grow: True, font_size: 13, foreground: Rgb(0xA9BFCC), overflow_x: Clip })],
-						[Gui.text("Browse a folder on this computer, or explore the built-in sample workspace.")],
-					),
-				],
+			Elem.heading("Folder Explorer"),
+			Elem.col(
+				{ fg: Rgb(0xA9BFCC) },
+				["Browse a folder on this computer, or explore the built-in sample workspace."],
 			),
-			Gui.row(
-				[Gui.style({ gap: 8 })],
+			Elem.row(
+				{ gap: 8 },
 				[
-					Gui.action_button({ label: Signal.const("Back"), enabled: model.map(|state| state.phase == Idle and !state.back.is_empty()) }, [], back_action),
-					Gui.action_button({ label: Signal.const("Forward"), enabled: model.map(|state| state.phase == Idle and !state.forward.is_empty()) }, [], forward_action),
-					Gui.action_button({ label: Signal.const("Up"), enabled: model.map(|state| state.phase == Idle and Session.path(state.source) != Explorer.parent_path(Session.path(state.source))) }, [], up_action),
-					Gui.action_button({ label: Signal.const("Refresh"), enabled: ready }, [], refresh_action),
-					Gui.action_button({ label: Signal.const("Choose folder"), enabled: ready }, [Gui.style({ padding: 8, radius: 6, background: Rgb(0x2E6FA3), hover_background: Rgb(0x3A80B8), active_background: Rgb(0x265D89) })], choose_action),
-					Gui.action_button({ label: Signal.const("Use sample"), enabled: ready }, [], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.load_sample))),
-					# Cancel and Retry are rare-phase controls: they render only in
-					# the phases where they apply instead of resting disabled.
-					Ui.when(
-						ready.map(|value| !value),
-						|| Gui.action_button({ label: Signal.const("Cancel"), enabled: ready.map(|value| !value) }, [], cancel_action),
-						|| Gui.text(""),
-					),
+					Elem.action_button({
+						caption: Signal.const("Back"),
+						enabled: model.map(|state| state.phase == Idle and !state.back.is_empty()),
+					}, back_action),
+					Elem.action_button({
+						caption: Signal.const("Forward"),
+						enabled: model.map(|state| state.phase == Idle and !state.forward.is_empty()),
+					}, forward_action),
+					Elem.action_button({
+						caption: Signal.const("Up"),
+						enabled: model.map(|state| state.phase == Idle and Session.path(state.source) != Explorer.parent_path(Session.path(state.source))),
+					}, up_action),
+					Elem.action_button({ caption: Signal.const("Refresh"), enabled: ready }, refresh_action),
+					Elem.action_button({
+						caption: Signal.const("Choose folder"),
+						enabled: ready,
+						padding: 8,
+						radius: 6,
+						bg: Rgb(0x2E6FA3),
+						hover_bg: Rgb(0x3A80B8),
+						active_bg: Rgb(0x265D89),
+					}, choose_action),
+					Elem.action_button({ caption: Signal.const("Use sample"), enabled: ready }, step(handles, Session.load_sample)),
+					# Retry is a rare-phase control: it renders only in the phase
+					# where it applies instead of resting disabled.
 					Ui.when(
 						model.map(|state| state.phase == Idle and state.retry != NoRetry),
-						|| Gui.action_button({ label: Signal.const("Retry"), enabled: model.map(|state| state.phase == Idle and state.retry != NoRetry) }, [], Ui.action(Signal.const({}), |_| handles.model.update_cmd(Session.retry_last))),
-						|| Gui.text(""),
+						|| Elem.action_button({
+							caption: Signal.const("Retry"),
+							enabled: model.map(|state| state.phase == Idle and state.retry != NoRetry),
+						}, step(handles, Session.retry_last)),
+						|| Elem.text(""),
 					),
 				],
 			),
-			Gui.row(
-				[Gui.test_id("breadcrumbs"), Gui.style({ gap: 6, width: Fill, overflow_x: Scroll })],
+			Elem.row(
+				{ test_id: "breadcrumbs", gap: 6, width: Fill, overflow_x: Scroll },
 				[
 					Ui.each(
 						crumbs,
-						|row| Gui.action_button(
-							{ label: row.map(|crumb| crumb.label), enabled: ready },
-							[
-								Gui.label(
-									if row.key().is_empty() {
-										"Go to sample root"
-									} else {
-										"Go to ${row.key()}"
-									},
-								),
-							],
-							Ui.action(row.signal(), |crumb| handles.model.update_cmd(|state| Session.navigate(state, crumb.path))),
+						|row| Elem.action_button(
+							{
+								caption: row.map(|crumb| crumb.label),
+								enabled: ready,
+								label: if row.key().is_empty() {
+									"Go to sample root"
+								} else {
+									"Go to ${row.key()}"
+								},
+							},
+							Action.run(
+								{ crumb: row.signal(), state: handles.model.signal() }.Signal,
+								|reads| Action.then([handles.model.write(|state| Session.navigate(state, reads.crumb.path))], |current| advance!(handles.model, |snapshot| snapshot.state, current)),
+							),
 						),
 					),
 				],
 			),
-			# One status band: where the listing came from, what the last
-			# operation did, and what the folder and the filter contain.
-			Gui.row(
-				[Gui.style({ gap: 16, width: Fill, overflow_x: Clip })],
+			Elem.row(
+				{ gap: 16 },
 				[
-					Gui.column(
-						[Gui.test_id("dataset-source"), Gui.style({ font_size: 13, foreground: Rgb(0xA9BFCC), overflow_x: Clip })],
+					Elem.col(
+						{ test_id: "dataset-source", font_size: 13, fg: Rgb(0xA9BFCC), overflow_x: Clip },
 						[
-							Gui.text_s(
+							Elem.text_s(
 								model.map(
 									|state| match state.source {
 										Sample(path) => if path.is_empty() {
@@ -433,74 +447,85 @@ explorer_view = |handles| {
 							),
 						],
 					),
-					Gui.column([Gui.test_id("operation-status"), Gui.style({ font_size: 13, foreground: Rgb(0xA9BFCC), overflow_x: Clip })], [Gui.text_s(model.map(|state| state.notice))]),
-					Gui.column([Gui.test_id("dataset-summary"), Gui.style({ font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })], [Gui.text_s(total.map(|summary| "${summary.files.to_str()} files · ${summary.folders.to_str()} folders · ${summary.links.to_str()} links · ${summary.other.to_str()} other · ${summary.bytes.to_str()} B"))]),
-					Gui.column([Gui.test_id("results-summary"), Gui.style({ font_size: 13, foreground: Rgb(0x93A9B6), overflow_x: Clip })], [Gui.text_s(visible.map(|entries| "${Rows.len(entries).to_str()} matching entries"))]),
+					Elem.col({ test_id: "operation-status", font_size: 13, fg: Rgb(0xA9BFCC), overflow_x: Clip }, [Elem.text_s(model.map(|state| state.notice))]),
 				],
 			),
-			# Filtering and ordering are the same decision about what the list
-			# shows, so they share one band instead of two.
-			Gui.row(
-				[Gui.style({ gap: 8, width: Fill, overflow_x: Clip })],
+			Elem.row(
+				{ gap: 8 },
 				[
-					Gui.text_input({ label: "Filter this folder", value: model.map(|state| state.query) }, [Gui.placeholder("Filter this folder…"), Gui.disabled_s(ready.map(|value| !value)), Gui.style({ width: Px(240), gap: 4 })], handles.model.on_str(|state, text| { ..state, query: text })),
-					Gui.action_button({ label: Signal.const("Clear filter"), enabled: model.map(|state| state.phase == Idle and !state.query.is_empty()) }, [], handles.model.on_unit(|state| { ..state, query: "" })),
-				].concat(Explorer.sorts.map(|order| Gui.action_button({ label: Signal.const(order.to_str()), enabled: ready }, [Gui.selected_s(handles.order.signal().map(|current| current == order))], handles.order.on_unit(|_| order)))),
+					Elem.text_input({
+						label: "Filter this folder",
+						value: model.map(|state| state.query),
+						placeholder: "Filter this folder…",
+						disabled: ready.map(|value| !value),
+						width: 240.Px,
+						gap: 4,
+					}, handles.model.update_str(|state, text| { ..state, query: text })),
+					Elem.action_button({
+						caption: Signal.const("Clear filter"),
+						enabled: model.map(|state| state.phase == Idle and !state.query.is_empty()),
+					}, handles.model.update(|state| { ..state, query: "" })),
+				],
 			),
-			# The content row takes the height the bands above and below leave.
-			# Each side then scrolls its own overflow rather than growing.
-			Gui.row(
-				[Gui.style({ gap: 16, width: Fill, height: Fill, grow: True, overflow_x: Clip, overflow_y: Clip })],
+			Elem.row({ gap: 8 }, Explorer.sorts.map(|order| Elem.action_button({
+				caption: Signal.const(order.to_str()),
+				enabled: ready,
+				selected: handles.order.read(|current| current == order),
+			}, handles.order.update(|_| order)))),
+			Elem.row(
+				{ gap: 16 },
 				[
-					Gui.column(
-						# The list clips; its virtual viewport owns the scrolling, so a
-					# second scroller here would nest two independent offsets.
-					[Gui.test_id("file-list"), Gui.style({ width: Fill, height: Fill, gap: 0, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Clip })],
+					Elem.col({ test_id: "dataset-summary", font_size: 13, fg: Rgb(0x93A9B6), overflow_x: Clip }, [Elem.text_s(total.map(|summary| "${summary.files.to_str()} files · ${summary.folders.to_str()} folders · ${summary.links.to_str()} links · ${summary.other.to_str()} other · ${summary.bytes.to_str()} B"))]),
+					Elem.col({ test_id: "results-summary", font_size: 13, fg: Rgb(0x93A9B6), overflow_x: Clip }, [Elem.text_s(visible.map(|entries| "${Rows.len(entries).to_str()} matching entries"))]),
+				],
+			),
+			Elem.row(
+				# The content row takes the free height and clips: the list's
+				# viewport and the inspector each own their own scrolling.
+				{ gap: 16, width: Fill, height: Fill, grow: True, overflow_x: Clip, overflow_y: Clip },
+				[
+					Elem.col(
+						{
+							test_id: "file-list",
+							width: Fill,
+							height: Fill,
+							gap: 0,
+							padding: 12,
+							radius: 10,
+							bg: Rgb(0x1B2A33),
+							overflow_y: Clip,
+						},
 						[
 							Ui.when(
 								visible.map(|entries| Rows.len(entries) == 0),
-								|| Gui.column(
-									[Gui.style({ font_size: 13, foreground: Rgb(0x93A9B6) })],
-									[Gui.text("No matching entries. Clear the filter or choose another folder.")],
+								|| Elem.col(
+									{ font_size: 13, fg: Rgb(0x93A9B6) },
+									["No matching entries. Clear the filter or choose another folder."],
 								),
-								|| Gui.text(""),
+								|| Elem.text(""),
 							),
-							Gui.virtual_list({ row_height: 44, follow_tail: Signal.const(False) }, [Gui.test_id("file-viewport"), Gui.style({ height: Fill, width: Fill, grow: True })], [Ui.each(visible, |row| entry_row(row, handles, selected, ready))]),
+							Elem.virtual_list({
+								row_height: 44,
+								follow_tail: Signal.const(False),
+								test_id: "file-viewport",
+								height: Fill,
+								width: Fill,
+								grow: True,
+							}, [Ui.each(visible, |row| entry_row(row, handles, selected, ready))]),
 						],
 					),
 					inspect_view(handles),
 				],
 			),
-			# One footer band. The trailing problem line is empty on healthy
-			# runs, so it pays no gap rhythm above the shortcut hint.
-			Gui.column(
-				[Gui.style({ gap: 2, width: Fill, overflow_x: Clip })],
-				[
-					Gui.column(
-						[Gui.test_id("shortcut-hints"), Gui.style({ font_size: 13, foreground: Rgb(0x93A9B6) })],
-						[Gui.text("Alt+Left / Right: history · Alt+Up: parent · F5: refresh · Ctrl+O: choose folder · Esc: cancel")],
-					),
-					Gui.column(
-						[
-							Gui.test_id("asset-status"),
-							Gui.style_s(
-								handles.asset_problem.signal().map(
-									|text| Gui.Style.{
-										font_size: 13,
-										# Only a real problem earns the danger color; the
-										# in-progress line is ordinary secondary text.
-										foreground: if text == asset_checking {
-											Rgb(0xA9BFCC)
-										} else {
-											Rgb(0xF09A93)
-										},
-									},
-								),
-							),
-						],
-						[Gui.text_s(handles.asset_problem.signal())],
-					),
-				],
+			Elem.col(
+				{ test_id: "shortcut-hints", font_size: 13, fg: Rgb(0x93A9B6) },
+				["Alt+Left / Right: history · Alt+Up: parent · F5: refresh · Ctrl+O: choose folder · Esc: cancel"],
+			),
+			# Trailing problem line: empty on healthy runs, so it pays no gap
+			# rhythm between the always-visible bands above.
+			Elem.col(
+				{ test_id: "asset-status", font_size: 13, fg: Rgb(0xF09A93) },
+				[Elem.text_s(handles.asset_problem.signal())],
 			),
 		]),
 	)

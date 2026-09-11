@@ -72,7 +72,7 @@ class ManifestValidationTests(unittest.TestCase):
 
     def test_external_task_route_is_pinned_to_zero(self):
         bad = manifest()
-        bad["task_kinds"][0]["id"] = 12
+        bad["task_kinds"][0]["id"] = max(kind["id"] for kind in bad["task_kinds"]) + 1
         with self.assertRaisesRegex(SystemExit, "external route"):
             gen.validate(bad)
 
@@ -96,7 +96,6 @@ class RenderingTests(unittest.TestCase):
         rust = gen.render_rust(data)
         self.assertIn(f"pub const protocol_version: u32 = {data['protocol_version']};", zig)
         self.assertIn(f"pub const PROTOCOL_VERSION: u32 = {data['protocol_version']};", rust)
-        self.assertIn(f"pub const EFFECT_VERSION: u32 = {data['effect_version']};", rust)
         self.assertIn(f"pub const TIMER_VERSION: u32 = {data['timer_version']};", rust)
 
     def test_native_counts_render_from_the_tables(self):

@@ -60,15 +60,15 @@ main = || {
 						"Reset default form",
 						[
 							Html.attr("id", "reset-default-form"),
-							Html.on_event("reset", Html.event_policy_prevent_default, model.on_unit(record_reset)),
+							Html.on_event("reset", Html.event_policy_prevent_default, model.update(record_reset)),
 						],
 						[
-							Html.text_input("Name", name_signal, model.on_str(set_name)),
-							Html.checkbox("Accept reset terms", accepted_signal, model.on_bool(set_accepted)),
+							Html.text_input("Name", name_signal, model.update_str(set_name)),
+							Html.checkbox("Accept reset terms", accepted_signal, model.update_bool(set_accepted)),
 							Html.button_attrs(
 								"Reset form",
 								[Html.attr("type", "reset")],
-								model.on_unit(record_reset_click),
+								model.update(record_reset_click),
 							),
 							Html.paragraph_s(reset_clicks_text),
 							Html.paragraph_s(resets_text),

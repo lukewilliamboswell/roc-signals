@@ -43,23 +43,23 @@ main = || {
 						"Default submit form",
 						[
 							Html.attr("id", "default-submit-form"),
-							Html.on_submit_prevent_default(model.on_unit(record_submit)),
+							Html.on_submit_prevent_default(model.update(record_submit)),
 						],
 						[
 							Html.button_attrs(
 								"Send via implicit submit",
 								[],
-								model.on_unit(record_click),
+								model.update(record_click),
 							),
 							Html.button_attrs(
 								"Send via explicit submit",
 								[Html.attr("type", "submit")],
-								model.on_unit(record_click),
+								model.update(record_click),
 							),
 							Html.button_attrs(
 								"Click without submit",
 								[Html.attr("type", "button")],
-								model.on_unit(record_click),
+								model.update(record_click),
 							),
 							Html.paragraph_s(clicks_text),
 							Html.paragraph_s(submits_text),

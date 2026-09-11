@@ -95,7 +95,7 @@ main = ||
                 "grid gap-4",
                 [
                     Html.heading_c("Reading List", "text-2xl font-semibold"),
-                    Html.text_input("Title", title, draft.on_str(|_current, value| value)),
+                    Html.text_input("Title", title, draft.update_str(|_current, value| value)),
                     Html.paragraph_s(echo),
                 ],
             )
@@ -110,7 +110,7 @@ Four new things:
 - **`draft.signal()`** reads the state as a signal you can derive from.
 - **`title.map(...)`** creates a derived node. The lambda runs at mount
   and again when `title` changes.
-- **`draft.on_str(|_current, value| value)`** builds a reducer. On each `input`
+- **`draft.update_str(|_current, value| value)`** builds a reducer. On each `input`
   event the host calls it with the current state and the field's text; whatever
   it returns becomes the new state. Here we discard the old value and keep the
   typed text.
@@ -245,10 +245,10 @@ draft = state.map(|value| value.draft)
 # in the section_c children list
 Html.form_label(
     "Add book",
-    [Html.on_submit_prevent_default(model.on_unit(add_book))],
+    [Html.on_submit_prevent_default(model.update(add_book))],
     [
-        Html.text_input("Title", draft, model.on_str(|value, text| { ..value, draft: text })),
-        Html.button_attrs("Add book", [Html.attr("type", "button")], model.on_unit(add_book)),
+        Html.text_input("Title", draft, model.update_str(|value, text| { ..value, draft: text })),
+        Html.button_attrs("Add book", [Html.attr("type", "button")], model.update(add_book)),
     ],
 )
 ```
@@ -258,8 +258,8 @@ the button handles clicks. Both run the same reducer, so there is one code path
 for "add a book". The explicit `type="button"` prevents the click from also
 performing the button's default form submission.
 
-`model.on_unit` builds a reducer that ignores the event payload —
-`Model -> Model`. `model.on_str` receives the field's text as a second argument.
+`model.update` builds a reducer that ignores the event payload —
+`Model -> Model`. `model.update_str` receives the field's text as a second argument.
 
 The input is **controlled**: its displayed value comes from the `draft` signal,
 and typing dispatches a reducer that updates the state the signal reads from.
@@ -301,7 +301,7 @@ book_row = |row| {
                 "Read",
                 read,
                 [Html.test_id("book-${id}"), Html.aria_describedby("title-${id}")],
-                model.on_bool(|value, checked| set_read(value, id, checked)),
+                model.update_bool(|value, checked| set_read(value, id, checked)),
             ),
             Html.paragraph_s_attrs(title, [Html.attr("id", "title-${id}")]),
         ],
@@ -309,7 +309,7 @@ book_row = |row| {
 }
 ```
 
-`model.on_bool` receives the checkbox's new checked state. Store that value in
+`model.update_bool` receives the checkbox's new checked state. Store that value in
 the model so the reducer describes the requested state directly.
 
 **Why `Html.test_id("book-${id}")`?** Every row's checkbox has the same
@@ -379,7 +379,7 @@ bare `Ui.each(...)` with a conditional:
 Html.checkbox(
     "Unread only",
     unread_only,
-    model.on_bool(|value, checked| { ..value, unread_only: checked }),
+    model.update_bool(|value, checked| { ..value, unread_only: checked }),
 ),
 Html.paragraph_s_attrs(summary, [Html.test_id("summary")]),
 Ui.when(
@@ -502,7 +502,7 @@ main = ||
                             "Read",
                             read,
                             [Html.test_id("book-${id}"), Html.aria_describedby("title-${id}")],
-                            model.on_bool(|value, checked| set_read(value, id, checked)),
+                            model.update_bool(|value, checked| set_read(value, id, checked)),
                         ),
                         Html.paragraph_s_attrs(title, [Html.attr("id", "title-${id}")]),
                     ],
@@ -516,16 +516,16 @@ main = ||
                     Html.heading_c("Reading List", "text-2xl font-semibold"),
                     Html.form_label(
                         "Add book",
-                        [Html.on_submit_prevent_default(model.on_unit(add_book))],
+                        [Html.on_submit_prevent_default(model.update(add_book))],
                         [
-                            Html.text_input("Title", draft, model.on_str(|value, text| { ..value, draft: text })),
-                            Html.button_attrs("Add book", [Html.attr("type", "button")], model.on_unit(add_book)),
+                            Html.text_input("Title", draft, model.update_str(|value, text| { ..value, draft: text })),
+                            Html.button_attrs("Add book", [Html.attr("type", "button")], model.update(add_book)),
                         ],
                     ),
                     Html.checkbox(
                         "Unread only",
                         unread_only,
-                        model.on_bool(|value, checked| { ..value, unread_only: checked }),
+                        model.update_bool(|value, checked| { ..value, unread_only: checked }),
                     ),
                     Html.paragraph_s_attrs(summary, [Html.test_id("summary")]),
                     Ui.when(

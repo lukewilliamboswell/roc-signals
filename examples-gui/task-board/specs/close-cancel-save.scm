@@ -1,8 +1,8 @@
 (test "Canceling the save chooser during close retains the board and permits editing"
  (steps
   (request-window-close)
+  (stub-file-choice "board-save-path" (canceled))
   (click (role button :name "Save and close"))
-  (resolve-file-choice "board-save-path" (canceled))
   (expect-window-closed false)
   (expect-visible (test-id "board-close"))
   (click (role button :name "Keep editing"))

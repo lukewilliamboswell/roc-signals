@@ -14,7 +14,7 @@ main = || Ui.state(
 			Html.on_event(
 				"click",
 				Html.event_policy_prevent_default,
-				st.on_unit(|cur| { serial: cur.serial + 1, path: "/x" }),
+				st.update(|cur| { serial: cur.serial + 1, path: "/x" }),
 			),
 		],
 	),

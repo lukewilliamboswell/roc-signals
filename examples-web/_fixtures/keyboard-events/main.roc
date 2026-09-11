@@ -38,8 +38,8 @@ main = || {
 					Html.text_input_attrs(
 						"Key capture",
 						Signal.const(""),
-						[Html.on_key_down(keys.on_key(set_key))],
-						keys.on_str(|state, _value| state),
+						[Html.on_key_down(keys.update_key(set_key))],
+						keys.update_str(|state, _value| state),
 					),
 					Html.paragraph_s_attrs(Signal.map(keys.signal(), key_text), [Html.test_id("last-key")]),
 					Html.paragraph_s_attrs(Signal.map(keys.signal(), count_text), [Html.test_id("key-count")]),

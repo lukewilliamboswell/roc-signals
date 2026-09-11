@@ -8,7 +8,7 @@ and the Rust GPUI host. This script renders that manifest into:
 
 - `src/signals/native_protocol_gen.zig` (whole file)
 - `crates/gpui-host/src/protocol_gen.rs` (whole file)
-- `platform-gui/Gui.roc` (between GENERATED markers)
+- `platform-gui/Elem.roc` (between GENERATED markers)
 - `docs/native-gui-protocol.md` (between GENERATED markers)
 
 Generated artifacts are committed; regeneration is idempotent. `--check`
@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "protocol" / "native-protocol.json"
 ZIG_OUT = ROOT / "src" / "signals" / "native_protocol_gen.zig"
 RUST_OUT = ROOT / "crates" / "gpui-host" / "src" / "protocol_gen.rs"
-ROC_OUT = ROOT / "platform-gui" / "Gui.roc"
+ROC_OUT = ROOT / "platform-gui" / "Elem.roc"
 DOCS_OUT = ROOT / "docs" / "native-gui-protocol.md"
 
 ROC_BEGIN = "# BEGIN GENERATED PROTOCOL (scripts/generate_protocol.py; edit protocol/native-protocol.json)"
@@ -55,7 +55,7 @@ def load_manifest(path: Path = MANIFEST) -> dict:
 def validate(manifest: dict) -> None:
     if manifest.get("schema_version") != 1:
         raise SystemExit("unsupported protocol manifest schema")
-    for key in ("protocol_version", "effect_version", "timer_version"):
+    for key in ("protocol_version", "timer_version"):
         if not isinstance(manifest.get(key), int) or manifest[key] < 1:
             raise SystemExit(f"protocol manifest {key} must be a positive integer")
     for table, custom_key in (("text_fields", "custom_text_field_id"), ("bool_fields", "custom_bool_field_id")):
@@ -131,9 +131,6 @@ def render_zig(manifest: dict) -> str:
     out("")
     out("/// Version of the statically linked native GUI presentation boundary.")
     out(f"pub const protocol_version: u32 = {manifest['protocol_version']};")
-    out("")
-    out("/// Version of the separate native effects (task transport) boundary.")
-    out(f"pub const effect_version: u32 = {manifest['effect_version']};")
     out("")
     out("/// Version of the separate native timer boundary.")
     out(f"pub const timer_version: u32 = {manifest['timer_version']};")
@@ -223,13 +220,10 @@ def render_rust(manifest: dict) -> str:
     out("/// Version of the statically linked native GUI presentation boundary.")
     out(f"pub const PROTOCOL_VERSION: u32 = {manifest['protocol_version']};")
     out("")
-    out("/// Version of the separate native effects (task transport) boundary.")
-    out(f"pub const EFFECT_VERSION: u32 = {manifest['effect_version']};")
-    out("")
     out("/// Version of the separate native timer boundary.")
     out(f"pub const TIMER_VERSION: u32 = {manifest['timer_version']};")
     out("")
-    out("/// Closed task service routes carried in native effect messages.")
+    out("/// Closed service routes for hosted `Files` requests.")
     out("#[allow(dead_code)]")
     out("pub mod task_kind {")
     for kind in manifest["task_kinds"]:
@@ -268,9 +262,8 @@ def render_docs_section(manifest: dict) -> str:
     lines: list[str] = [DOCS_BEGIN]
     out = lines.append
     out("")
-    out(f"The statically linked GUI boundary uses protocol version **{manifest['protocol_version']}**;")
-    out(f"the separate native effects boundary is version **{manifest['effect_version']}** and the")
-    out(f"separate timer boundary is version **{manifest['timer_version']}**.")
+    out(f"The statically linked GUI boundary uses protocol version **{manifest['protocol_version']}**")
+    out(f"and the separate timer boundary is version **{manifest['timer_version']}**.")
     out("")
     out("| Version | Change |")
     out("| --- | --- |")

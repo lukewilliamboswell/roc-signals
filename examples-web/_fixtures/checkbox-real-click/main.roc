@@ -49,7 +49,7 @@ main = || {
 				[Html.attr("data-fixture", "checkbox-real-click")],
 				[
 					Html.heading("Checkbox Real Click"),
-					Html.checkbox("Accept terms", accepted_signal, model.on_bool(record_checked)),
+					Html.checkbox("Accept terms", accepted_signal, model.update_bool(record_checked)),
 					Html.paragraph_s(status_text),
 					Html.paragraph_s(changes_text),
 				],

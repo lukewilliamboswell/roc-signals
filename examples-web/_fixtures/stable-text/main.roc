@@ -26,7 +26,7 @@ main = || {
 							Html.paragraph_c("The signal output remains text-identical across updates.", "max-w-3xl text-sm text-zinc-700"),
 						],
 					),
-					Html.button("Bump", count.on_unit(|value| value + 1)),
+					Html.button("Bump", count.update(|value| value + 1)),
 					Html.text_s(stable),
 				],
 			)

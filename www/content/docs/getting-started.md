@@ -105,7 +105,7 @@ main = ||
                 [
                     Html.heading_c("Hello from Roc", "text-2xl font-semibold"),
                     Html.paragraph_s_attrs(label, [Html.test_id("count")]),
-                    Html.button("Increment", count.on_unit(|n| n + 1)),
+                    Html.button("Increment", count.update(|n| n + 1)),
                 ],
             )
         },

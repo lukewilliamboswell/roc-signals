@@ -63,8 +63,8 @@ main = || {
 						[
 							Html.heading("Branch replacement"),
 							Html.paragraph_s_attrs(current, [Html.test_id("mode")]),
-							Html.button("Next mode", mode.on_unit(next_mode)),
-							Html.button("Increment", count.on_unit(|value| value + 1)),
+							Html.button("Next mode", mode.update(next_mode)),
+							Html.button("Increment", count.update(|value| value + 1)),
 							Ui.switch(mode.signal(), |selected| branch(selected, label)),
 						],
 					)

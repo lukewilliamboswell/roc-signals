@@ -1,7 +1,7 @@
 app [main] { pf: platform "../../../platform-gui/main.roc" }
 
+import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
-import pf.Gui
 import pf.Signal
 import pf.Ui
 
@@ -9,19 +9,19 @@ main : () -> Elem
 main = || Ui.state(
 	0.U64,
 	|count| {
-		Gui.column(
-			[],
+		Elem.col(
+			Elem.ColProps.{},
 			[
-				Gui.heading("Scoped timer lifetime"),
-				Gui.text_s(count.signal().map(|value| "Ticks: ${value.to_str()}")),
+				Elem.heading("Scoped timer lifetime"),
+				Elem.text_s(count.read(|value| "Ticks: ${value.to_str()}")),
 				Ui.when(
-					count.signal().map(|value| value < 2),
+					count.read(|value| value < 2),
 					|| {
-						Ui.on_change(Signal.interval(100), |value| count.update_cmd(|_| value))
+						Action.on_change(Signal.interval(100), |value| Action.update([count.write(|_| value)]))
 					},
-					|| Gui.text("Paused after 2 ticks"),
+					|| Elem.text("Paused after 2 ticks"),
 				),
-				Gui.button("Restart", count.on_unit(|_| 0)),
+				Elem.button("Restart", count.update(|_| 0)),
 			],
 		)
 	},

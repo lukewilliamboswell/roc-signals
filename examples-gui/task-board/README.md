@@ -50,7 +50,7 @@ Assignee avatars are tiny generated PNGs in `assets/` — regenerate them and
 `assets/manifest.json` (real SHA-256 hashes) with `python3 assets/generate.py`
 (`python` on Windows, where `python3` is usually the Store shortcut).
 The app ingests the manifest at compile time and verifies it at startup through
-`Files.verify_assets`; if an asset is missing or altered, a danger-colored
+`Files.verify_assets!`; if an asset is missing or altered, a danger-colored
 status line names it while everything else keeps working.
 
 That report is advisory and does not gate rendering. Drawing an avatar is the
@@ -85,10 +85,9 @@ that loads successfully selects nothing, so no editor survives the replacement:
 its tasks may reuse the previous document's keys, and picking one opens fresh
 inputs on the new document. Saving holds
 an immutable snapshot from the moment Save was requested, including time spent
-in the chooser. Editing can continue while choosing a destination or writing;
-success marks only that submitted snapshot saved. Later edits stay dirty. A
-failed or canceled write preserves the board and lets Save retry; cancellation
-does not undo a filesystem rename that already committed.
+in the chooser. The chooser and the write run as one effect; success marks
+only that submitted snapshot saved, and later edits stay dirty. A failed write
+or a dismissed chooser preserves the board and lets Save retry.
 
 Undo/Redo covers field changes, priority, creation, deletion, and movement.
 Changing a field creates one history entry per delivered edit. History holds at
@@ -122,6 +121,6 @@ Focused native text inputs keep their standard text-editing undo/redo precedence
 the toolbar buttons explicitly undo or redo board changes. Keyboard semantic
 specs dispatch the declared shortcuts; they do not emulate OS keyboard routing.
 
-Opening a replacement disables mutations until its read completes. Save chooser
-and write phases allow editing. Exhausted task identities stop creation with an
+Opening a replacement disables mutations until its read completes. The save
+phases allow editing. Exhausted task identities stop creation with an
 explanation while existing tasks remain editable and saveable; IDs never wrap.

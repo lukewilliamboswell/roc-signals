@@ -227,9 +227,9 @@ render_builder_row = |schema, key, field| {
 					Html.div_c(
 						"flex shrink-0 items-center gap-1",
 						[
-							row_button("↑", "Move up ${key}", "button button-sm", schema.on_unit(|state| Form.move_up(state, key))),
-							row_button("↓", "Move down ${key}", "button button-sm", schema.on_unit(|state| Form.move_down(state, key))),
-							row_button("✕", "Delete ${key}", "button-danger button-sm", schema.on_unit(|state| Form.delete_field(state, key))),
+							row_button("↑", "Move up ${key}", "button button-sm", schema.update(|state| Form.move_up(state, key))),
+							row_button("↓", "Move down ${key}", "button button-sm", schema.update(|state| Form.move_down(state, key))),
+							row_button("✕", "Delete ${key}", "button-danger button-sm", schema.update(|state| Form.delete_field(state, key))),
 						],
 					),
 				],
@@ -240,7 +240,7 @@ render_builder_row = |schema, key, field| {
 					"Label ${key}",
 					label_value,
 					[Html.class_attr("input"), Html.attr("placeholder", "Work email"), Html.attr("data-field", key)],
-					schema.on_str(|state, value| Form.set_label(state, key, value)),
+					schema.update_str(|state, value| Form.set_label(state, key, value)),
 				),
 			),
 			Html.div_c(
@@ -250,7 +250,7 @@ render_builder_row = |schema, key, field| {
 						"Required ${key}",
 						required_value,
 						"checkbox",
-						schema.on_bool(|state, value| Form.set_required(state, key, value)),
+						schema.update_bool(|state, value| Form.set_required(state, key, value)),
 					),
 					Html.text("Required"),
 				],
@@ -263,7 +263,7 @@ render_builder_row = |schema, key, field| {
 						"Options ${key}",
 						options_value,
 						[Html.class_attr("input"), Html.attr("placeholder", "Small, Medium, Large"), Html.aria_invalid_s(rule_broken)],
-						schema.on_str(|state, value| Form.set_options(state, key, value)),
+						schema.update_str(|state, value| Form.set_options(state, key, value)),
 					),
 				),
 				|| Html.div_c(
@@ -275,7 +275,7 @@ render_builder_row = |schema, key, field| {
 								"Minimum ${key}",
 								min_value,
 								[Html.class_attr("input"), Html.attr("placeholder", "2"), Html.aria_invalid_s(rule_broken)],
-								schema.on_str(|state, value| Form.set_min(state, key, value)),
+								schema.update_str(|state, value| Form.set_min(state, key, value)),
 							),
 						),
 						labelled(
@@ -284,7 +284,7 @@ render_builder_row = |schema, key, field| {
 								"Maximum ${key}",
 								max_value,
 								[Html.class_attr("input"), Html.attr("placeholder", "40"), Html.aria_invalid_s(rule_broken)],
-								schema.on_str(|state, value| Form.set_max(state, key, value)),
+								schema.update_str(|state, value| Form.set_max(state, key, value)),
 							),
 						),
 					],
@@ -327,7 +327,7 @@ render_preview_row = |answers, key, row| {
 	number_field : Signal.Signal(Bool)
 	number_field = row.map(|value| Form.is_number(value.kind))
 
-	write_text = answers.on_str(|state, value| Form.set_answer_text(state, key, value))
+	write_text = answers.update_str(|state, value| Form.set_answer_text(state, key, value))
 
 	Html.section_c(
 		"Preview field ${key}",
@@ -343,7 +343,7 @@ render_preview_row = |answers, key, row| {
 							"Answer ${key}",
 							flag_value,
 							[Html.class_attr("checkbox"), Html.aria_invalid_s(invalid)],
-							answers.on_bool(|state, value| Form.set_answer_flag(state, key, value)),
+							answers.update_bool(|state, value| Form.set_answer_flag(state, key, value)),
 						),
 						Html.text("Yes"),
 					],
@@ -441,7 +441,7 @@ preview_panel = |answers, submits, view|
 							Html.button_attrs(
 								"Clear preview answers",
 								[Html.attr("type", "button"), Html.class_attr("button-ghost")],
-								answers.on_unit(|_state| Form.initial_answers),
+								answers.update(|_state| Form.initial_answers),
 							),
 						],
 					),
@@ -452,7 +452,7 @@ preview_panel = |answers, submits, view|
 				[
 					Html.form_label(
 						"Preview form",
-						[Html.class_attr("grid gap-4"), Html.on_submit_prevent_default(submits.on_unit(|count| count))],
+						[Html.class_attr("grid gap-4"), Html.on_submit_prevent_default(submits.update(|count| count))],
 						[
 							Ui.when(
 								view.has_fields,
@@ -466,7 +466,7 @@ preview_panel = |answers, submits, view|
 										Signal.const("Submit form"),
 										view.submit_disabled,
 										[Html.attr("type", "button"), Html.class_attr("button-primary")],
-										submits.on_unit(|count| count + 1),
+										submits.update(|count| count + 1),
 									),
 								],
 							),
@@ -562,11 +562,11 @@ main = ||
 											Html.div_c(
 												"toolbar",
 												[
-													Html.button_c("Add text field", "button button-sm", schema.on_unit(|state| Form.add_field(state, Form.text_kind))),
-													Html.button_c("Add number field", "button button-sm", schema.on_unit(|state| Form.add_field(state, Form.number_kind))),
-													Html.button_c("Add email field", "button button-sm", schema.on_unit(|state| Form.add_field(state, Form.email_kind))),
-													Html.button_c("Add select field", "button button-sm", schema.on_unit(|state| Form.add_field(state, Form.select_kind))),
-													Html.button_c("Add checkbox field", "button button-sm", schema.on_unit(|state| Form.add_field(state, Form.checkbox_kind))),
+													Html.button_c("Add text field", "button button-sm", schema.update(|state| Form.add_field(state, Form.text_kind))),
+													Html.button_c("Add number field", "button button-sm", schema.update(|state| Form.add_field(state, Form.number_kind))),
+													Html.button_c("Add email field", "button button-sm", schema.update(|state| Form.add_field(state, Form.email_kind))),
+													Html.button_c("Add select field", "button button-sm", schema.update(|state| Form.add_field(state, Form.select_kind))),
+													Html.button_c("Add checkbox field", "button button-sm", schema.update(|state| Form.add_field(state, Form.checkbox_kind))),
 												],
 											),
 										],

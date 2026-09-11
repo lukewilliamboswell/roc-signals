@@ -1329,7 +1329,7 @@ test "EventMessage.fromAbi preserves action reads payload capability and command
         .eq = testCallableToken(0x15000),
     };
     const callback = testCallableToken(0x16000);
-    const raw = abi.NodeMsg{
+    const raw = abi.NodeHandler{
         .event_extraction_plan = testEventExtractionPlan(.none),
         .handler = .{ .payload = .{ .action = .{
             .reads = &reads,

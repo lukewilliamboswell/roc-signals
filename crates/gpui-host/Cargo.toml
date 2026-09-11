@@ -4,8 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-sha2 = "0.10"
 unicode-segmentation = "1"
+# The HTTP client is GPUI's own fork of reqwest with the feature set GPUI's
+# http client already enables, so the locked dependency graph does not change.
+reqwest = { package = "zed-reqwest", version = "=0.12.15-zed", default-features = false, features = ["charset", "http2", "macos-system-configuration", "multipart", "rustls-tls-native-roots", "socks", "stream"] }
+tokio = { version = "1", default-features = false, features = ["rt"] }
 
 # GPUI's Wayland backend is the supported Linux presentation layer. Windows uses
 # GPUI's DirectX/DirectWrite backend; the manifest feature is omitted because it

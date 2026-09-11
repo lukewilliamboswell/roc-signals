@@ -84,7 +84,7 @@ route_link = |label, target, intent|
 		[
 			Html.class_attr(link_class),
 			Html.attr("href", target.path),
-			Html.on_event("click", Html.event_policy_prevent_default, intent.on_unit(|current| intent_for(current, target))),
+			Html.on_event("click", Html.event_policy_prevent_default, intent.update(|current| intent_for(current, target))),
 		],
 	)
 
@@ -136,7 +136,7 @@ search_result_row = |key, row, intent, watched| {
 			route_link("Open ${key}", Route.package_location(key), intent),
 			line(summary, note_class, "summary-${key}"),
 			line(watch_line, note_class, "watch-${key}"),
-			Html.button_c("Watch ${key}", link_class, watched.on_unit(|_current| key)),
+			Html.button_c("Watch ${key}", link_class, watched.update(|_current| key)),
 		],
 	)
 }
@@ -152,9 +152,9 @@ search_page = |handles, search_view, ordered_rows| {
 		panel_class,
 		[
 			Html.heading_c("Package search", "text-xl font-semibold text-zinc-950"),
-			Html.text_input_c("Search packages", handles.query.signal(), input_class, handles.query.on_str(|_, value| value)),
+			Html.text_input_c("Search packages", handles.query.signal(), input_class, handles.query.update_str(|_, value| value)),
 			line(status_line, status_class, "search-status"),
-			Html.checkbox("Reverse order", handles.reversed.signal(), handles.reversed.on_bool(|_current, value| value)),
+			Html.checkbox("Reverse order", handles.reversed.signal(), handles.reversed.update_bool(|_current, value| value)),
 			line(order_line, status_class, "order"),
 			Ui.when(
 				has_rows,

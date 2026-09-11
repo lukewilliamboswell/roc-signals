@@ -266,7 +266,7 @@ include_checkbox = |recipe, selected| {
 	id = recipe.id
 	checked = selected.signal().map(|ids| ids.contains(id))
 	toggle =
-		selected.on_bool(
+		selected.update_bool(
 			|ids, on|
 				if on {
 					if ids.contains(id) {
@@ -422,7 +422,7 @@ page = |controls| {
 												recipe_id.signal(),
 												input_class,
 												Recipes.catalogue.map(recipe_option),
-												recipe_id.on_str(|_, value| value),
+												recipe_id.update_str(|_, value| value),
 											),
 										],
 									),
@@ -434,7 +434,7 @@ page = |controls| {
 												"Target servings",
 												servings_draft.signal(),
 												[Html.class_attr(input_class), Html.attr("placeholder", "6"), Html.attr("min", "0"), Html.attr("max", "96")],
-												servings_draft.on_str(|_, value| value),
+												servings_draft.update_str(|_, value| value),
 											),
 											Html.paragraph_c("A whole number from 0 to 96.", "hint"),
 										],
@@ -451,8 +451,8 @@ page = |controls| {
 											Html.div(
 												[Html.class_attr("grid gap-2"), Html.attr("role", "radiogroup"), Html.attr("aria-label", "Scale by")],
 												[
-													radio_row("Scale by servings", "scale-mode", "servings", scale_mode.signal(), scale_mode.on_str(|_, value| value)),
-													radio_row("Scale by pan size", "scale-mode", "pan", scale_mode.signal(), scale_mode.on_str(|_, value| value)),
+													radio_row("Scale by servings", "scale-mode", "servings", scale_mode.signal(), scale_mode.update_str(|_, value| value)),
+													radio_row("Scale by pan size", "scale-mode", "pan", scale_mode.signal(), scale_mode.update_str(|_, value| value)),
 												],
 											),
 										],
@@ -471,7 +471,7 @@ page = |controls| {
 													Html.option("round24", "24 cm round"),
 													Html.option("tray30", "30x20 cm tray"),
 												],
-												pan.on_str(|_, value| value),
+												pan.update_str(|_, value| value),
 											),
 											Html.paragraph_c("Used only while scaling by pan size.", "hint"),
 										],
@@ -485,8 +485,8 @@ page = |controls| {
 									Html.div(
 										[Html.class_attr("flex flex-wrap gap-4"), Html.attr("role", "radiogroup"), Html.attr("aria-label", "Units")],
 										[
-											radio_row("Metric units", "unit-system", "metric", units.signal(), units.on_str(|_, value| value)),
-											radio_row("Imperial units", "unit-system", "imperial", units.signal(), units.on_str(|_, value| value)),
+											radio_row("Metric units", "unit-system", "metric", units.signal(), units.update_str(|_, value| value)),
+											radio_row("Imperial units", "unit-system", "imperial", units.signal(), units.update_str(|_, value| value)),
 										],
 									),
 									Html.paragraph_c("Teaspoons and pinches are the same in both systems.", "hint"),

@@ -32,8 +32,8 @@ main = || {
 							Html.section("Clone B", [Html.test_id("clone-b"), Html.attr_s("data-value", shared_value)], []),
 							Html.section("Constant A", [Html.test_id("constant-a"), Html.attr_s("data-value", first_constant)], []),
 							Html.section("Constant B", [Html.test_id("constant-b"), Html.attr_s("data-value", second_constant)], []),
-							Html.button("Increment left", left.on_unit(|value| value + 1)),
-							Html.button("Increment right", right.on_unit(|value| value + 1)),
+							Html.button("Increment left", left.update(|value| value + 1)),
+							Html.button("Increment right", right.update(|value| value + 1)),
 						],
 					)
 				},

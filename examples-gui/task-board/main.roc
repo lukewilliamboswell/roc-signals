@@ -5,8 +5,10 @@ import Codec
 import Manifest
 import pf.Files
 import "assets/manifest.json" as manifest_json : Str
+import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
-import pf.Gui
+import pf.Event
+import pf.Gui exposing [Px]
 import pf.Rows
 import pf.Signal
 import pf.Ui
@@ -23,8 +25,14 @@ asset_entries = Manifest.entries(manifest_json)
 ## the manifest digest.
 avatar : Str, U32 -> Elem
 avatar = |assignee, size| match Board.avatar_source(assignee) {
-	Some(source) => Gui.image({ source, label: "${assignee} avatar" }, [Gui.style({ width: Px(size), height: Px(size), radius: size })])
-	None => Gui.text("")
+	Some(source) => Elem.image({
+		source,
+		label: "${assignee} avatar",
+		width: Px(size),
+		height: Px(size),
+		radius: size,
+	})
+	None => Elem.text("")
 }
 
 asset_status_text : Files.AssetStatus -> Str
@@ -115,7 +123,8 @@ select_editor = |{ current, editing, column, task }|
 		{ lifetime: next_lifetime(current), column, task }
 	}
 
-TextField : { label : Str, value : Signal.Signal(Str) }, List(Gui.Attr), Gui.Msg -> Elem
+## Builds one text control from its label, controlled value, disabled signal, and reducer.
+TextField : Str, Signal.Signal(Str), Signal.Signal(Bool), Event.Handler -> Elem
 
 BoardSnapshot : {
 	planned : Rows.Rows(Board.Task),
@@ -130,17 +139,21 @@ History : { past : List(BoardSnapshot), future : List(BoardSnapshot) }
 
 Save : { text : Str, snapshot : BoardSnapshot }
 
-Phase := [Idle, ConfirmOpen, ChoosingOpen, Reading(Str), ChoosingSave(Save), Writing({ path : Str, save : Save })].{
+Operation := [Opening, Saving].{
 	is_eq : _
 }
+
+Phase := [Idle, ConfirmOpen, Busy(Operation)].{
+	is_eq : _
+}
+
+Destination := [Known(Str), Chosen]
 
 Close := [KeepEditing, Confirm, Saving, Closing].{
 	is_eq : _
 }
 
 DocumentState : { path : [None, Some(Str)], baseline : [None, Some(BoardSnapshot)], phase : Phase, problem : Str }
-
-Tasks : { open : Signal.Task(Files.Choice, Files.Error), save : Signal.Task(Files.Choice, Files.Error), read : Signal.Task(Files.TextFile, Files.Error), write : Signal.Task(Files.Written, Files.Error), verify : Signal.Task(List(Files.AssetCheck), Files.Error) }
 
 Context : { board : BoardSnapshot, history : History, document : DocumentState }
 
@@ -160,7 +173,6 @@ Handles : {
 	bytes : Ui.State(U64),
 	document : Ui.State(DocumentState),
 	asset_problem : Ui.State(Str),
-	tasks : Tasks,
 	close : Ui.State(Close),
 	editable : Signal.Signal(Bool),
 	edit_disabled : Signal.Signal(Bool),
@@ -207,11 +219,11 @@ find_task = |snapshot, key|
 ## Pointer drops and explicit controls share the same domain move. The native
 ## host authenticates the drag lifetime; the reducer resolves current task data
 ## by its key and preserves the independently owned detail editor.
-move_task : Handles, Context, Str, Board.Column, Rows.Before -> Gui.Cmd
+move_task : Handles, Context, Str, Board.Column, Rows.Before -> Action(a)
 move_task = |handles, context, key, destination_column, before| {
 	current = context.board
 	match find_task(current, key) {
-		Err(_) => Ui.update_states([])
+		Err(_) => Action.update([])
 		Ok(found) => {
 			source = column_state(handles, found.column)
 			destination = column_state(handles, destination_column)
@@ -220,13 +232,13 @@ move_task = |handles, context, key, destination_column, before| {
 				Key(target) => target == key
 			}
 			if drop_on_self and found.column == destination_column {
-				Ui.update_states([])
+				Action.update([])
 			} else if found.column == destination_column {
 				next = Rows.apply(column_rows(current, found.column), [MoveKeyBefore({ key, before })]) ?? crash "The target card must belong to its column"
 				if next == column_rows(current, found.column) {
-					Signal.noop
+					Action.none
 				} else {
-					remember(handles, context, [source.write(next)])
+					remember(handles, context, [source.set(next)])
 				}
 			} else {
 				remaining = Rows.apply(column_rows(current, found.column), [RemoveKey(key)]) ?? crash "The moved task must exist"
@@ -235,11 +247,11 @@ move_task = |handles, context, key, destination_column, before| {
 					Key(target) => InsertBefore({ before: target, items: [found.task] })
 				}
 				moved = Rows.apply(column_rows(current, destination_column), [insertion]) ?? crash "Task keys must be unique across columns"
-				writes = [source.write(remaining), destination.write(moved)]
+				writes = [source.set(remaining), destination.set(moved)]
 				if current.editor.task.key == key {
 					# A transfer moves the task the user is already editing, so its
 					# native inputs keep their lifetime, selection, and history.
-					remember(handles, context, writes.append(handles.editor.write({ ..current.editor, column: destination_column, task: found.task })))
+					remember(handles, context, writes.append(handles.editor.set({ ..current.editor, column: destination_column, task: found.task })))
 				} else {
 					remember(handles, context, writes)
 				}
@@ -248,9 +260,9 @@ move_task = |handles, context, key, destination_column, before| {
 	}
 }
 
-drop_message : Handles, Board.Column, Rows.Before -> Gui.Msg
+drop_message : Handles, Board.Column, Rows.Before -> Event.Handler
 drop_message = |handles, column, before|
-	Ui.action_detail(handles.context, |current, key| move_task(handles, current, key, column, before))
+	Action.run_detail(handles.context, |current, key| move_task(handles, current, key, column, before))
 
 ## The unfiltered view forwards its Rows generation unchanged, preserving sparse
 ## updates. An active text search explicitly examines that column's tasks.
@@ -273,71 +285,76 @@ task_card : Ui.Row(Board.Task), Board.Column, Handles, Signal.Signal(Str) -> Ele
 task_card = |row, column, handles, selected| {
 	key = row.key()
 	Ui.component(
-		|| Gui.panel(
+		|| Elem.panel(
+			{
+				test_id: key,
+				drag_source: key,
+				disabled: handles.edit_disabled,
+				on_drop: drop_message(handles, column, Key(key)),
+				selected: Signal.select(selected, key),
+				padding: 12,
+				gap: 8,
+				border_width: 1,
+				radius: 8,
+				bg: Rgb(0x283A47),
+				border_color: Rgb(0x4A6272),
+			},
 			[
-				Gui.test_id(key),
-				Gui.drag_source(key),
-				Gui.disabled_s(handles.edit_disabled),
-				Gui.drop_target(drop_message(handles, column, Key(key))),
-				Gui.selected_s(Signal.select(selected, key)),
-				Gui.style({ padding: 12, gap: 8, border_width: 1, radius: 8, background: Rgb(0x283A47), border_color: Rgb(0x4A6272) }),
-			],
-			[
-				Gui.column(
-					[Gui.test_id("title-${key}"), Gui.style({ font_size: 15, foreground: Rgb(0xF2F5F6) })],
-					[Gui.text_s(row.map(|task| task.title))],
+				Elem.col(
+					{ test_id: "title-${key}", font_size: 15, fg: Rgb(0xF2F5F6) },
+					[Elem.text_s(row.map(|task| task.title))],
 				),
-				Gui.row(
-					[Gui.style({ gap: 8 })],
+				Elem.row(
+					{ gap: 8 },
 					[
 						Ui.switch(row.map(|task| task.assignee), |assignee| avatar(assignee, 24)),
 						# The status color belongs to the priority word alone; the
 						# assignee stays in the muted secondary grey.
-						Gui.row(
-							[Gui.test_id("meta-${key}"), Gui.style({ gap: 0 })],
+						Elem.row(
+							{ test_id: "meta-${key}", gap: 0 },
 							[
-								Gui.column(
-									[
-										Gui.style_s(
-											row.map(
-												|task| Gui.Style.{
-													font_size: 13,
-													foreground: match task.priority {
-														High => Rgb(0xF09A93)
-														Low => Rgb(0x8FD4A8)
-														_ => Rgb(0xA9BFCC)
-													},
+								Elem.col(
+									{
+										changes: row.map(
+											|task| Gui.Style.{
+												font_size: 13,
+												fg: match task.priority {
+													High => Rgb(0xF09A93)
+													Low => Rgb(0x8FD4A8)
+													_ => Rgb(0xA9BFCC)
 												},
-											),
+											},
 										),
-									],
-									[Gui.text_s(row.map(|task| "${task.priority.to_str()} priority"))],
+									},
+									[Elem.text_s(row.map(|task| "${task.priority.to_str()} priority"))],
 								),
-								Gui.column(
-									[Gui.style({ font_size: 13, foreground: Rgb(0xA9BFCC) })],
-									[Gui.text_s(row.map(|task| " · ${task.assignee}"))],
+								Elem.col(
+									{ font_size: 13, fg: Rgb(0xA9BFCC) },
+									[Elem.text_s(row.map(|task| " · ${task.assignee}"))],
 								),
 							],
 						),
 					],
 				),
-				Gui.row(
-					[],
+				Elem.row(
+					Elem.RowProps.{},
 					[
-						Gui.action_button(
-							{ label: Signal.const("Edit"), enabled: Signal.const(True) },
-							[Gui.test_id("edit-${key}")],
+						Elem.action_button(
+							{
+								caption: Signal.const("Edit"),
+								test_id: "edit-${key}",
+							},
 							# Reads the one shared context signal rather than a per-card
 							# combination of it, so selecting a task stays proportional to
 							# the change and not to the number of cards on the board.
-							Ui.action(
+							Action.run(
 								handles.context,
 								|context| match find_task(context.board, key) {
-									Err(_) => Signal.noop
-									Ok(found) => Ui.update_states([
-										handles.editor.write(select_editor({ current: context.board.editor, editing: context.board.editing, column: found.column, task: found.task })),
-										handles.editing.write(True),
-										handles.confirm_delete.write(False),
+									Err(_) => Action.none
+									Ok(found) => Action.update([
+										handles.editor.set(select_editor({ current: context.board.editor, editing: context.board.editing, column: found.column, task: found.task })),
+										handles.editing.set(True),
+										handles.confirm_delete.set(False),
 									])
 								},
 							),
@@ -353,24 +370,35 @@ column_view : Handles, Board.Column, Signal.Signal(Str) -> Elem
 column_view = |handles, column, selected| {
 	rows = column_state(handles, column).signal()
 	visible = Signal.map2(rows, handles.filter.signal(), visible_rows)
-	Gui.column(
-		[Gui.disabled_s(handles.edit_disabled), Gui.test_id("column-${column.to_str()}"), Gui.drop_target(drop_message(handles, column, End)), Gui.style({ width: Px(256), height: Fill, gap: 12, padding: 12, radius: 10, background: Rgb(0x1B2A33), overflow_y: Scroll })],
+	Elem.col(
+		{
+			disabled: handles.edit_disabled,
+			test_id: "column-${column.to_str()}",
+			on_drop: drop_message(handles, column, End),
+			width: 256.Px,
+			height: Fill,
+			overflow_y: Scroll,
+			gap: 12,
+			padding: 12,
+			radius: 10,
+			bg: Rgb(0x1B2A33),
+		},
 		[
-			Gui.heading(column.to_str()),
-			Gui.column(
-				[Gui.style({ font_size: 13, foreground: Rgb(0xA9BFCC) })],
-				[Gui.text_s(rows.map(|items| task_count_text(Rows.len(items))))],
+			Elem.heading(column.to_str()),
+			Elem.col(
+				{ font_size: 13, fg: Rgb(0xA9BFCC) },
+				[Elem.text_s(rows.map(|items| task_count_text(Rows.len(items))))],
 			),
 			Ui.each(visible, |row| task_card(row, column, handles, selected)),
 			# Trailing so the hidden branch's empty text costs no gap slot
 			# between the count line and the first card.
 			Ui.when(
 				visible.map(|items| Rows.len(items) == 0),
-				|| Gui.column(
-					[Gui.style({ font_size: 13, foreground: Rgb(0x93A9B6) })],
-					[Gui.text("No matching tasks")],
+				|| Elem.col(
+					{ font_size: 13, fg: Rgb(0x93A9B6) },
+					["No matching tasks"],
 				),
-				|| Gui.text(""),
+				|| Elem.text(""),
 			),
 		],
 	)
@@ -378,64 +406,72 @@ column_view = |handles, column, selected| {
 
 ## Field reducers share one atomic edit operation. The UI owns the text draft;
 ## the corresponding keyed task receives the identical value in the same turn.
-edit_field : TextField, Handles, Str, List(Gui.Attr), (Board.Task, Str -> Board.Task), (Board.Task -> Str) -> Elem
-edit_field = |field, handles, label, attrs, update, read|
+edit_field : TextField, Handles, Str, (Board.Task, Str -> Board.Task), (Board.Task -> Str) -> Elem
+edit_field = |field, handles, label, update, read| {
+	reads = handles.context
 	field(
-		{ label, value: handles.editor.signal().map(|editor| read(editor.task)) },
-		attrs.append(Gui.disabled_s(handles.edit_disabled)),
-		Ui.action_str(
-			handles.context,
+		label,
+		handles.editor.read(|editor| read(editor.task)),
+		handles.edit_disabled,
+		Action.run_str(
+			reads,
 			|context, text| {
 				current = context.board
 				column = current.editor.column
 				task = update(current.editor.task, text)
 				if task == current.editor.task {
-					return Signal.noop
+					return Action.none
 				}
 				rows = Rows.apply(column_rows(current, column), [SetKey({ key: task.key, item: task })]) ?? crash "The active editor must name a live task"
 				# An edit is not a replacement: the lifetime is carried through so
 				# the native input keeps the caret and history it just used.
-				remember(handles, context, [column_state(handles, column).write(rows), handles.editor.write({ ..current.editor, task }), handles.bytes.write(current.bytes - task_bytes(current.editor.task) + task_bytes(task))])
+				remember(handles, context, [column_state(handles, column).set(rows), handles.editor.set({ ..current.editor, task }), handles.bytes.set(current.bytes - task_bytes(current.editor.task) + task_bytes(task))])
 			},
 		),
 	)
+}
 
 priority_button : Handles, Signal.Signal(Str), Board.Priority -> Elem
-priority_button = |handles, priority_key, priority|
-	Gui.action_button(
-		{ label: Signal.const(priority.to_str()), enabled: handles.editable },
-		[
-			Gui.label("${priority.to_str()} priority"),
-			Gui.selected_s(Signal.select(priority_key, priority.to_str())),
-		],
-		Ui.action(
-			handles.context,
+priority_button = |handles, priority_key, priority| {
+	reads = handles.context
+	Elem.action_button(
+		{
+			caption: Signal.const(priority.to_str()),
+			enabled: handles.editable,
+			label: "${priority.to_str()} priority",
+			selected: Signal.select(priority_key, priority.to_str()),
+		},
+		Action.run(
+			reads,
 			|context| {
 				current = context.board
 				column = current.editor.column
 				task = { ..current.editor.task, priority }
 				if task == current.editor.task {
-					return Signal.noop
+					return Action.none
 				}
 				rows = Rows.apply(column_rows(current, column), [SetKey({ key: task.key, item: task })]) ?? crash "The active editor must name a live task"
-				remember(handles, context, [column_state(handles, column).write(rows), handles.editor.write({ ..current.editor, task })])
+				remember(handles, context, [column_state(handles, column).set(rows), handles.editor.set({ ..current.editor, task })])
 			},
 		),
 	)
+}
 
 move_button : Handles, Board.Column -> Elem
 move_button = |handles, to|
-	Gui.action_button({ label: Signal.const("Move to ${to.to_str()}"), enabled: handles.editable }, [], Ui.action(handles.context, |current| move_task(handles, current, current.board.editor.task.key, to, End)))
+	Elem.action_button({ caption: Signal.const("Move to ${to.to_str()}"), enabled: handles.editable }, Action.run(handles.context, |current| move_task(handles, current, current.board.editor.task.key, to, End)))
 
 reorder_buttons : Handles, Board.Column -> Elem
 reorder_buttons = |handles, column|
-	Gui.row(
-		[Gui.style({ gap: 8 })],
+	Elem.row(
+		{ gap: 8 },
 		[
-			Gui.action_button(
-				{ label: Signal.const("Move to top"), enabled: handles.editable },
-				[],
-				Ui.action(
+			Elem.action_button(
+				{
+					caption: Signal.const("Move to top"),
+					enabled: handles.editable,
+				},
+				Action.run(
 					handles.context,
 					|context| {
 						current = context.board
@@ -444,7 +480,7 @@ reorder_buttons = |handles, column|
 					},
 				),
 			),
-			Gui.action_button({ label: Signal.const("Move to bottom"), enabled: handles.editable }, [], Ui.action(handles.context, |current| move_task(handles, current, current.board.editor.task.key, column, End))),
+			Elem.action_button({ caption: Signal.const("Move to bottom"), enabled: handles.editable }, Action.run(handles.context, |current| move_task(handles, current, current.board.editor.task.key, column, End))),
 		],
 	)
 
@@ -453,18 +489,21 @@ delete_confirmation = |handles| {
 	reads = handles.context
 	Ui.when(
 		handles.confirm_delete.signal(),
-		|| Gui.dialog(
-			{ label: "Delete task", on_dismiss: handles.confirm_delete.on_unit(|_| False) },
-			[Gui.test_id("delete-confirmation")],
+		|| Elem.dialog(
+			{
+				label: "Delete task",
+				on_dismiss: handles.confirm_delete.update(|_| False),
+				test_id: "delete-confirmation",
+			},
 			[
-				Gui.text("Delete this task? This removes it from the board."),
-				Gui.row(
-					[],
+				"Delete this task? This removes it from the board.",
+				Elem.row(
+					Elem.RowProps.{},
 					[
-						Gui.button("Cancel deletion", handles.confirm_delete.on_unit(|_| False)),
-						Gui.button(
+						Elem.button("Cancel deletion", handles.confirm_delete.update(|_| False)),
+						Elem.button(
 							"Confirm delete",
-							Ui.action(
+							Action.run(
 								reads,
 								|context| {
 									current = context.board
@@ -472,7 +511,7 @@ delete_confirmation = |handles| {
 									remaining = Rows.apply(column_rows(current, column), [RemoveKey(current.editor.task.key)]) ?? crash "The task selected for deletion must exist"
 									# Retiring the editor drops the deleted task's text instead of
 									# leaving it retained, and uncharged, in every later snapshot.
-									remember(handles, context, [column_state(handles, column).write(remaining), handles.editor.write(retired_editor(current.editor)), handles.editing.write(False), handles.confirm_delete.write(False), handles.bytes.write(current.bytes - task_bytes(current.editor.task))])
+									remember(handles, context, [column_state(handles, column).set(remaining), handles.editor.set(retired_editor(current.editor)), handles.editing.set(False), handles.confirm_delete.set(False), handles.bytes.set(current.bytes - task_bytes(current.editor.task))])
 								},
 							),
 						),
@@ -480,16 +519,25 @@ delete_confirmation = |handles| {
 				),
 			],
 		),
-		|| Gui.action_button({ label: Signal.const("Delete task"), enabled: handles.editable }, [], handles.confirm_delete.on_unit(|_| True)),
+		|| Elem.action_button({ caption: Signal.const("Delete task"), enabled: handles.editable }, handles.confirm_delete.update(|_| True)),
 	)
 }
 
 detail_view : Handles -> Elem
 detail_view = |handles|
-	Gui.panel(
-		[Gui.test_id("task-detail"), Gui.style({ width: Px(320), height: Fill, padding: 16, gap: 12, background: Rgb(0x283A47), radius: 8, overflow_y: Scroll })],
+	Elem.panel(
+		{
+			test_id: "task-detail",
+			width: 320.Px,
+			height: Fill,
+			padding: 16,
+			gap: 12,
+			bg: Rgb(0x283A47),
+			radius: 8,
+			overflow_y: Scroll,
+		},
 		[
-			Gui.heading("Task details"),
+			Elem.heading("Task details"),
 			Ui.when(
 				handles.editing.signal(),
 				|| {
@@ -498,48 +546,48 @@ detail_view = |handles|
 					# keyed separately: moving a task between columns rebuilds its
 					# movement controls without discarding the text being edited.
 					Ui.switch(
-						handles.editor.signal().map(|editor| editor.lifetime),
-						|_| Gui.column(
-							[],
+						handles.editor.read(|editor| editor.lifetime),
+						|_| Elem.col(
+							Elem.ColProps.{},
 							[
-								Gui.column(
-									[Gui.test_id("task-column"), Gui.style({ font_size: 13, foreground: Rgb(0xA9BFCC) })],
-									[Gui.text_s(handles.editor.signal().map(|editor| editor.column.to_str()))],
+								Elem.col(
+									{ test_id: "task-column", font_size: 13, fg: Rgb(0xA9BFCC) },
+									[Elem.text_s(handles.editor.read(|editor| editor.column.to_str()))],
 								),
-								Gui.column(
-									[Gui.style({ gap: 4, font_size: 13, foreground: Rgb(0xA9BFCC) })],
-									[Gui.text("Task title"), edit_field(Gui.text_input, handles, "Task title", [Gui.style({ width: Fill })], |task, title| { ..task, title }, |task| task.title)],
+								Elem.col(
+									{ gap: 4, font_size: 13, fg: Rgb(0xA9BFCC) },
+									["Task title", edit_field(|label, value, disabled, msg| Elem.text_input({ label, value, disabled, width: Fill }, msg), handles, "Task title", |task, title| { ..task, title }, |task| task.title)],
 								),
-								Gui.column(
-									[Gui.style({ gap: 4, font_size: 13, foreground: Rgb(0xA9BFCC) })],
+								Elem.col(
+									{ gap: 4, font_size: 13, fg: Rgb(0xA9BFCC) },
 									[
-										Gui.text("Assignee"),
-										Gui.row(
-											[Gui.style({ gap: 8 })],
+										"Assignee",
+										Elem.row(
+											{ gap: 8 },
 											[
-												Ui.switch(handles.editor.signal().map(|editor| editor.task.assignee), |assignee| avatar(assignee, 32)),
-												edit_field(Gui.text_input, handles, "Assignee", [Gui.style({ width: Fill, grow: True })], |task, assignee| { ..task, assignee }, |task| task.assignee),
+												Ui.switch(handles.editor.read(|editor| editor.task.assignee), |assignee| avatar(assignee, 32)),
+												edit_field(|label, value, disabled, msg| Elem.text_input({ label, value, disabled, width: Fill, grow: True }, msg), handles, "Assignee", |task, assignee| { ..task, assignee }, |task| task.assignee),
 											],
 										),
 									],
 								),
-								edit_field(Gui.textarea, handles, "Task notes", [Gui.style({ height: Px(150) })], |task, notes| { ..task, notes }, |task| task.notes),
-								Gui.text_s(handles.editor.signal().map(|editor| "Priority: ${editor.task.priority.to_str()}")),
+								edit_field(|label, value, disabled, msg| Elem.textarea({ label, value, disabled, height: 150.Px }, msg), handles, "Task notes", |task, notes| { ..task, notes }, |task| task.notes),
+								Elem.text_s(handles.editor.read(|editor| "Priority: ${editor.task.priority.to_str()}")),
 								{
-									priority_key = handles.editor.signal().map(|editor| editor.task.priority.to_str())
-									Gui.row([Gui.style({ gap: 8 })], Board.priorities.map(|priority| priority_button(handles, priority_key, priority)))
+									priority_key = handles.editor.read(|editor| editor.task.priority.to_str())
+									Elem.row({ gap: 8 }, Board.priorities.map(|priority| priority_button(handles, priority_key, priority)))
 								},
-								Gui.column(
-									[Gui.style({ font_size: 13, foreground: Rgb(0x93A9B6) })],
-									[Gui.text("Changes appear on the board immediately.")],
+								Elem.col(
+									{ font_size: 13, fg: Rgb(0x93A9B6) },
+									["Changes appear on the board immediately."],
 								),
 								Ui.switch(
-									handles.editor.signal().map(|editor| editor.column),
-									|column| Gui.column(
-										[],
+									handles.editor.read(|editor| editor.column),
+									|column| Elem.col(
+										Elem.ColProps.{},
 										[
 											reorder_buttons(handles, column),
-											Gui.column([], Board.columns.keep_if(|other| other != column).map(|other| move_button(handles, other))),
+											Elem.col(Elem.ColProps.{}, Board.columns.keep_if(|other| other != column).map(|other| move_button(handles, other))),
 										],
 									),
 								),
@@ -548,7 +596,7 @@ detail_view = |handles|
 						),
 					)
 				},
-				|| Gui.text("Select a task to edit its details."),
+				|| Elem.text("Select a task to edit its details."),
 			),
 		],
 	)
@@ -556,24 +604,33 @@ detail_view = |handles|
 new_task_form : Handles -> Elem
 new_task_form = |handles| {
 	reads = { context: handles.context, title: handles.draft.signal(), next_id: handles.next_id.signal() }.Signal
-	Gui.row(
-		[Gui.style({ gap: 12 })],
+	Elem.row(
+		{ gap: 12 },
 		[
-			Gui.text_input({ label: "New task title", value: handles.draft.signal() }, [Gui.placeholder("New task title…"), Gui.disabled_s(handles.edit_disabled), Gui.style({ width: Px(260), gap: 4 })], handles.draft.on_str(|_, value| value)),
-			Gui.action_button(
-				{ label: Signal.const("Add task"), enabled: Signal.map2(handles.draft.signal(), handles.editable, |title, editable| editable and !title.trim().is_empty()) },
-				[],
-				Ui.action(
+			Elem.text_input({
+				label: "New task title",
+				value: handles.draft.signal(),
+				placeholder: "New task title…",
+				disabled: handles.edit_disabled,
+				width: 260.Px,
+				gap: 4,
+			}, handles.draft.update_str(|_, value| value)),
+			Elem.action_button(
+				{
+					caption: Signal.const("Add task"),
+					enabled: Signal.map2(handles.draft.signal(), handles.editable, |title, editable| editable and !title.trim().is_empty()),
+				},
+				Action.run(
 					reads,
 					|current| {
 						if current.title.trim().is_empty() {
-							return Signal.noop
+							return Action.none
 						}
 						if total_tasks(current.context.board) >= 500 {
-							return handles.document.set_cmd({ ..current.context.document, problem: "This board already has 500 tasks. Delete a task before adding another; your new task draft is retained." })
+							return Action.update([handles.document.set({ ..current.context.document, problem: "This board already has 500 tasks. Delete a task before adding another; your new task draft is retained." })])
 						}
 						if current.next_id == 18446744073709551615 {
-							return handles.document.set_cmd({ ..current.context.document, problem: "This board has exhausted its task identities. Existing tasks can still be edited and saved." })
+							return Action.update([handles.document.set({ ..current.context.document, problem: "This board has exhausted its task identities. Existing tasks can still be edited and saved." })])
 						}
 						task = Board.new_task(current.next_id, current.title)
 						rows = Rows.apply(current.context.board.planned, [Append([task])]) ?? crash "The next task ID must be unique"
@@ -581,13 +638,13 @@ new_task_form = |handles| {
 							handles,
 							current.context,
 							[
-								handles.bytes.write(current.context.board.bytes + task_bytes(task)),
-								handles.planned.write(rows),
-								handles.next_id.write(current.next_id + 1),
-								handles.draft.write(""),
-								handles.editor.write({ lifetime: next_lifetime(current.context.board.editor), column: Planned, task }),
-								handles.editing.write(True),
-								handles.confirm_delete.write(False),
+								handles.bytes.set(current.context.board.bytes + task_bytes(task)),
+								handles.planned.set(rows),
+								handles.next_id.set(current.next_id + 1),
+								handles.draft.set(""),
+								handles.editor.set({ lifetime: next_lifetime(current.context.board.editor), column: Planned, task }),
+								handles.editing.set(True),
+								handles.confirm_delete.set(False),
 							],
 						)
 					},
@@ -610,31 +667,19 @@ board_view = |handles| {
 			""
 		},
 	)
-	# The window identity names the open board file and marks unsaved work, so
-	# the desktop switcher agrees with the toolbar about what is on screen.
-	window_title = handles.context.map(
-		|context| {
-			mark = if dirty(context) { "* " } else { "" }
-			name = match context.document.path {
-				None => "Untitled board"
-				Some(value) => value
-			}
-			"${mark}${name} - Launch Board"
-		},
-	)
-	Gui.window_lifecycle(
+	Elem.window_lifecycle(
 		{
-			on_close_requested: Ui.action(
+			on_close_requested: Action.run(
 				handles.context,
-				|context| handles.close.set_cmd(
+				|context| Action.update([handles.close.set(
 					if dirty(context) or context.document.phase != Phase.Idle {
 						Close.Confirm
 					} else {
 						Close.Closing
 					},
-				),
+				)]),
 			),
-			decision: handles.close.signal().map(
+			decision: handles.close.read(
 				|intent| match intent {
 					Close.KeepEditing => KeepOpen
 					Close.Confirm | Close.Saving => AwaitDecision
@@ -643,34 +688,64 @@ board_view = |handles| {
 			),
 		},
 		[
-			Gui.column(
-				[Gui.style({ padding: 24, gap: 12, width: Fill, height: Fill }), Gui.test_id("launch-board"), Gui.on_shortcut(chord, actions.save), Gui.on_shortcut({ ..chord, shift: True }, actions.save_as), Gui.on_shortcut({ ..chord, key: "o" }, actions.open), Gui.on_shortcut({ ..chord, key: "z" }, history_message(handles, False)), Gui.on_shortcut({ ..chord, key: "z", shift: True }, history_message(handles, True))],
+			Elem.col(
+				{
+					test_id: "launch-board",
+					padding: 24,
+					gap: 12,
+					width: Fill,
+					height: Fill,
+					shortcuts: [{ chord: chord, msg: actions.save }, { chord: { ..chord, shift: True }, msg: actions.save_as }, { chord: { ..chord, key: "o" }, msg: actions.open }, { chord: { ..chord, key: "z" }, msg: history_message(handles, False) }, { chord: { ..chord, key: "z", shift: True }, msg: history_message(handles, True) }],
+				},
 				[
-					Ui.on_change_initial(window_title, Gui.set_title),
-					Gui.heading("Launch Board"),
-					Gui.column(
-						[Gui.style({ foreground: Rgb(0xA9BFCC) })],
-						[Gui.text("A small team's workspace for the next release.")],
+					# The window identity names the open board file and marks unsaved
+					# work, so the desktop switcher agrees with the toolbar.
+					Ui.on_change_initial(
+						handles.context.map(
+							|context| {
+								mark = if dirty(context) { "* " } else { "" }
+								name = match context.document.path {
+									None => "Untitled board"
+									Some(value) => value
+								}
+								"${mark}${name} - Launch Board"
+							},
+						),
+						Gui.set_title,
+					),
+					Elem.heading("Launch Board"),
+					Elem.col(
+						{ fg: Rgb(0xA9BFCC) },
+						["A small team's workspace for the next release."],
 					),
 					document_toolbar(handles, actions),
-					Gui.row(
-						[Gui.style({ gap: 16 })],
+					Elem.row(
+						{ gap: 16 },
 						[
 							new_task_form(handles),
-							Gui.text_input({ label: "Filter tasks", value: handles.filter.signal() }, [Gui.placeholder("Filter tasks…"), Gui.style({ width: Px(240), gap: 4 })], handles.filter.on_str(|_, text| text)),
+							Elem.text_input({
+								label: "Filter tasks",
+								value: handles.filter.signal(),
+								placeholder: "Filter tasks…",
+								width: 240.Px,
+								gap: 4,
+							}, handles.filter.update_str(|_, text| text)),
 						],
 					),
-					Gui.column(
-						[Gui.style({ gap: 2, font_size: 13, foreground: Rgb(0x93A9B6) })],
+					Elem.col(
+						{ gap: 2, font_size: 13, fg: Rgb(0x93A9B6) },
 						[
-							Gui.text("Drag onto a card to place a task before it, or into a column to move it to the end."),
-							Gui.text("Undo keeps up to 50 changes within 4 MiB; older changes are retired."),
+							"Drag onto a card to place a task before it, or into a column to move it to the end.",
+							"Undo keeps up to 50 changes within 4 MiB; older changes are retired.",
 						],
 					),
-					Gui.row(
-						[Gui.style({ gap: 20, height: Fill, grow: True, overflow_x: Clip, overflow_y: Clip })],
+					# The content row takes the free height; the columns scroll sideways
+					# inside it and the detail panel keeps its own width, so the detail
+					# stays reachable at the smaller supported sizes.
+					Elem.row(
+						{ gap: 20, height: Fill, grow: True, overflow_x: Clip, overflow_y: Clip },
 						[
-							Gui.row([Gui.style({ gap: 16, width: Fill, height: Fill, overflow_x: Scroll })], Board.columns.map(|column| column_view(handles, column, selected))),
+							Elem.row({ gap: 16, width: Fill, height: Fill, overflow_x: Scroll }, Board.columns.map(|column| column_view(handles, column, selected))),
 							detail_view(handles),
 						],
 					),
@@ -718,15 +793,14 @@ main = || Ui.state(
 																						{ path: None, baseline: None, phase: Phase.Idle, problem: "" },
 																						|document| {
 																							context = { board: movement, history: history.signal(), document: document.signal() }.Signal
-																							tasks = { open: Files.choose_file_task("board-open"), save: Files.choose_save_path_task("board-save-path"), read: Files.read_text_task("board-read"), write: Files.write_text_task("board-write"), verify: Files.verify_assets_task("asset-verify") }
 																							Ui.state(
 																								Close.KeepEditing,
 																								|close| Ui.state(
 																									asset_checking,
 																									|asset_problem| {
-																										editable = document.signal().map(|doc| can_edit(doc.phase))
+																										editable = document.read(|doc| can_edit(doc.phase))
 																										edit_disabled = editable.map(|value| !value)
-																										board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete, movement, context, history, bytes, document, asset_problem, tasks, close, editable, edit_disabled })
+																										board_view({ planned, progress, complete, editor, editing, filter, draft, next_id, confirm_delete, movement, context, history, bytes, document, asset_problem, close, editable, edit_disabled })
 																									},
 																								),
 																							)
@@ -792,17 +866,17 @@ trim_history = |items| {
 	$kept
 }
 
-remember : Handles, Context, List(Ui.StateWrite) -> Gui.Cmd
+remember : Handles, Context, List(Ui.StateWrite) -> Action(a)
 remember = |handles, context, writes| if can_edit(context.document.phase) {
-	Ui.update_states(writes.append(handles.history.write({ past: trim_history([context.board].concat(context.history.past)), future: [] })))
+	Action.update(writes.append(handles.history.set({ past: trim_history([context.board].concat(context.history.past)), future: [] })))
 } else {
-	Signal.noop
+	Action.none
 }
 
 history_button : Handles, Bool -> Elem
-history_button = |handles, redo| Gui.action_button(
+history_button = |handles, redo| Elem.action_button(
 	{
-		label: Signal.const(
+		caption: Signal.const(
 			if redo {
 				"Redo"
 			} else {
@@ -821,16 +895,15 @@ history_button = |handles, redo| Gui.action_button(
 			),
 		),
 	},
-	[],
 	history_message(handles, redo),
 )
 
-history_message : Handles, Bool -> Gui.Msg
-history_message = |handles, redo| Ui.action(
+history_message : Handles, Bool -> Event.Handler
+history_message = |handles, redo| Action.run(
 	handles.context,
 	|context| {
 		if !can_edit(context.document.phase) {
-			return Signal.noop
+			return Action.none
 		}
 		stack = if redo {
 			context.history.future
@@ -838,24 +911,24 @@ history_message = |handles, redo| Ui.action(
 			context.history.past
 		}
 		match stack.first() {
-			Err(_) => Signal.noop
+			Err(_) => Action.none
 			Ok(previous) => {
 				history = if redo {
 					{ past: trim_history([context.board].concat(context.history.past)), future: stack.drop_first(1) }
 				} else {
 					{ past: stack.drop_first(1), future: trim_history([context.board].concat(context.history.future)) }
 				}
-				Ui.update_states([
-					handles.planned.write(previous.planned),
-					handles.progress.write(previous.progress),
-					handles.complete.write(previous.complete),
+				Action.update([
+					handles.planned.set(previous.planned),
+					handles.progress.set(previous.progress),
+					handles.complete.set(previous.complete),
 					# A restored snapshot is a different document as far as the native
 					# inputs are concerned, so it never inherits their history.
-					handles.editor.write({ ..previous.editor, lifetime: next_lifetime(context.board.editor) }),
-					handles.editing.write(previous.editing),
-					handles.bytes.write(previous.bytes),
-					handles.confirm_delete.write(False),
-					handles.history.write(bound_history(history, redo)),
+					handles.editor.set({ ..previous.editor, lifetime: next_lifetime(context.board.editor) }),
+					handles.editing.set(previous.editing),
+					handles.bytes.set(previous.bytes),
+					handles.confirm_delete.set(False),
+					handles.history.set(bound_history(history, redo)),
 				])
 			}
 		}
@@ -864,7 +937,7 @@ history_message = |handles, redo| Ui.action(
 
 can_edit : Phase -> Bool
 can_edit = |phase| match phase {
-	Phase.Idle | Phase.ChoosingSave(_) | Phase.Writing(_) => True
+	Phase.Idle | Phase.Busy(Operation.Saving) => True
 	_ => False
 }
 
@@ -874,30 +947,38 @@ dirty = |context| match context.document.baseline {
 	Some(saved) => context.board.planned != saved.planned or context.board.progress != saved.progress or context.board.complete != saved.complete
 }
 
-DocumentActions : { open : Gui.Msg, save : Gui.Msg, save_as : Gui.Msg, cancel : Gui.Msg }
+DocumentActions : { open : Event.Handler, save : Event.Handler, save_as : Event.Handler, cancel : Event.Handler, discard_and_open : Event.Handler }
 
 document_toolbar : Handles, DocumentActions -> Elem
 document_toolbar = |handles, actions| {
-	ready = handles.document.signal().map(|doc| doc.phase == Phase.Idle)
+	ready = handles.document.read(|doc| doc.phase == Phase.Idle)
 
 	# gap 0: everything below the button row is a conditional problem line or
 	# dialog, so the toolbar's empty states pay no vertical rhythm.
-	Gui.column(
-		[Gui.test_id("board-document"), Gui.style({ gap: 0 })],
+	Elem.col(
+		{ test_id: "board-document", gap: 0 },
 		[
-			Gui.row(
-				[Gui.style({ gap: 8 })],
+			Elem.row(
+				{ gap: 8 },
 				[
-					Gui.action_button({ label: Signal.const("Open…"), enabled: ready }, [], actions.open),
-					Gui.action_button({ label: Signal.const("Save"), enabled: ready }, [Gui.style({ padding: 8, radius: 6, background: Rgb(0x2E6FA3), hover_background: Rgb(0x3A80B8), active_background: Rgb(0x265D89) })], actions.save),
-					Gui.action_button({ label: Signal.const("Save As…"), enabled: ready }, [], actions.save_as),
+					Elem.action_button({ caption: Signal.const("Open…"), enabled: ready }, actions.open),
+					Elem.action_button({
+						caption: Signal.const("Save"),
+						enabled: ready,
+						padding: 8,
+						radius: 6,
+						bg: Rgb(0x2E6FA3),
+						hover_bg: Rgb(0x3A80B8),
+						active_bg: Rgb(0x265D89),
+					}, actions.save),
+					Elem.action_button({ caption: Signal.const("Save As…"), enabled: ready }, actions.save_as),
 					history_button(handles, False),
 					history_button(handles, True),
-					Gui.column(
-						[Gui.test_id("board-path"), Gui.style({ padding: 8, foreground: Rgb(0xF2F5F6) })],
+					Elem.col(
+						{ test_id: "board-path", padding: 8, fg: Rgb(0xF2F5F6) },
 						[
-							Gui.text_s(
-								handles.document.signal().map(
+							Elem.text_s(
+								handles.document.read(
 									|doc| match doc.path {
 										None => "Untitled board"
 										Some(path) => path
@@ -906,28 +987,26 @@ document_toolbar = |handles, actions| {
 							),
 						],
 					),
-					Gui.column(
-						[
-							Gui.test_id("board-status"),
-							Gui.style_s(
-								handles.context.map(
-									|context| Gui.Style.{
-										padding: 8,
-										font_size: 13,
-										foreground: match context.document.phase {
-											Phase.Idle => if dirty(context) {
-												Rgb(0xE8C27A)
-											} else {
-												Rgb(0x8FD4A8)
-											}
-											_ => Rgb(0xA9BFCC)
-										},
+					Elem.col(
+						{
+							test_id: "board-status",
+							changes: handles.context.map(
+								|context| Gui.Style.{
+									padding: 8,
+									font_size: 13,
+									fg: match context.document.phase {
+										Phase.Idle => if dirty(context) {
+											Rgb(0xE8C27A)
+										} else {
+											Rgb(0x8FD4A8)
+										}
+										_ => Rgb(0xA9BFCC)
 									},
-								),
+								},
 							),
-						],
+						},
 						[
-							Gui.text_s(
+							Elem.text_s(
 								handles.context.map(
 									|context| match context.document.phase {
 										Phase.Idle => if dirty(context) {
@@ -936,10 +1015,8 @@ document_toolbar = |handles, actions| {
 											"Saved"
 										}
 										Phase.ConfirmOpen => "Waiting for confirmation"
-										Phase.ChoosingOpen => "Choose a board document"
-										Phase.Reading(_) => "Opening board…"
-										Phase.ChoosingSave(_) => "Choose a save destination"
-										Phase.Writing(_) => "Saving board snapshot…"
+										Phase.Busy(Operation.Opening) => "Opening board…"
+										Phase.Busy(Operation.Saving) => "Saving board snapshot…"
 									},
 								),
 							),
@@ -947,82 +1024,54 @@ document_toolbar = |handles, actions| {
 					),
 				],
 			),
-			Gui.column(
-				[Gui.test_id("board-problem"), Gui.style({ font_size: 13, foreground: Rgb(0xF09A93) })],
-				[Gui.text_s(handles.document.signal().map(|doc| doc.problem))],
+			Elem.col(
+				{ test_id: "board-problem", font_size: 13, fg: Rgb(0xF09A93) },
+				[Elem.text_s(handles.document.read(|doc| doc.problem))],
 			),
 			Ui.when(
-				handles.document.signal().map(|doc| doc.phase == Phase.ConfirmOpen),
-				|| Gui.dialog(
-					{ label: "Replace unsaved board?", on_dismiss: actions.cancel },
-					[Gui.test_id("board-discard")],
+				handles.document.read(|doc| doc.phase == Phase.ConfirmOpen),
+				|| Elem.dialog(
+					{
+						label: "Replace unsaved board?",
+						on_dismiss: actions.cancel,
+						test_id: "board-discard",
+					},
 					[
-						Gui.heading("Replace unsaved board?"),
-						Gui.text("Save your board first to keep these changes. Opening succeeds only after the new file is completely validated."),
-						Gui.button("Keep editing", actions.cancel),
-						Gui.button("Discard and open", handles.document.on_unit(|doc| { ..doc, phase: Phase.ChoosingOpen })),
+						Elem.heading("Replace unsaved board?"),
+						"Save your board first to keep these changes. Opening succeeds only after the new file is completely validated.",
+						Elem.button("Keep editing", actions.cancel),
+						Elem.button("Discard and open", actions.discard_and_open),
 					],
 				),
-				|| Gui.text(""),
+				|| Elem.text(""),
 			),
-			Ui.when(handles.document.signal().map(|doc| doc.phase != Phase.Idle and doc.phase != Phase.ConfirmOpen), || Gui.button("Cancel operation", actions.cancel), || Gui.text("")),
-			Gui.column(
-				[
-					Gui.test_id("asset-status"),
-					Gui.style_s(
-						handles.asset_problem.signal().map(
-							|text| Gui.Style.{
-								font_size: 13,
-								# Only a real problem earns the danger color; the
-								# in-progress line is ordinary secondary text.
-								foreground: if text == asset_checking {
-									Rgb(0xA9BFCC)
-								} else {
-									Rgb(0xF09A93)
-								},
-							},
-						),
-					),
-				],
-				[Gui.text_s(handles.asset_problem.signal())],
+			Elem.col(
+				{ test_id: "asset-status", font_size: 13, fg: Rgb(0xF09A93) },
+				[Elem.text_s(handles.asset_problem.signal())],
 			),
 			close_dialog(handles),
 		],
 	)
 }
 
-failed_file : Handles, Files.Error -> Gui.Cmd
-failed_file = |handles, error| handles.document.update_cmd(
-	|doc| {
-		..doc,
-		phase: Phase.Idle,
-		problem: match error {
-			Files.Error.Canceled => "Operation canceled; the current board is unchanged."
-			_ => Files.error_text(error)
-		},
-	},
-)
+## A failed or canceled operation returns to `Idle` with its problem shown. A
+## save that was closing the window reopens the close dialog instead, so the
+## problem appears where the user was.
+settle_problem : Handles, Str, Bool -> Action(a)
+settle_problem = |handles, problem, close_after| Action.update([
+	handles.document.write(|doc| { ..doc, phase: Phase.Idle, problem }),
+	handles.close.write(|intent| if close_after and intent == Close.Saving { Close.Confirm } else { intent }),
+])
 
-choice_result : Handles, Signal.TaskStatus(Files.Choice, Files.Error) -> Gui.Cmd
-choice_result = |handles, status| match status {
-	Signal.TaskStatus.Loading => Signal.noop
-	Signal.TaskStatus.Failed(error) => failed_file(handles, error)
-	Signal.TaskStatus.Done(Files.Choice.Canceled) => failed_file(handles, Files.Error.Canceled)
-	Signal.TaskStatus.Done(Files.Choice.Chosen(path)) => handles.document.update_cmd(
-		|doc| {
-			..doc,
-			phase: match doc.phase {
-				Phase.ChoosingOpen => Phase.Reading(path)
-				Phase.ChoosingSave(save) => Phase.Writing({ path, save })
-				_ => doc.phase
-			},
-		},
-	)
-}
+failed_file : Handles, Files.Error, Bool -> Action(a)
+failed_file = |handles, error, close_after| settle_problem(handles, Files.error_text(error), close_after)
 
-load_document : Handles, Files.TextFile -> Gui.Cmd
+canceled : Handles, Bool -> Action(a)
+canceled = |handles, close_after| settle_problem(handles, "Operation canceled; the current board is unchanged.", close_after)
+
+load_document : Handles, Files.TextFile -> Action(a)
 load_document = |handles, file| match Codec.decode(file.text) {
-	Err(Codec.Error.Invalid(problem)) => handles.document.update_cmd(|doc| { ..doc, phase: Phase.Idle, problem })
+	Err(Codec.Error.Invalid(problem)) => Action.update([handles.document.write(|doc| { ..doc, phase: Phase.Idle, problem })])
 	Ok(decoded) => {
 		planned = Rows.from_list(decoded.planned, |task| task.key) ?? crash "Validated board keys must be unique"
 		progress = Rows.from_list(decoded.progress, |task| task.key) ?? crash "Validated board keys must be unique"
@@ -1034,68 +1083,70 @@ load_document = |handles, file| match Codec.decode(file.text) {
 		editor = { lifetime: 0, column: Planned, task: Board.new_task(0, "") }
 		bytes = decoded.planned.concat(decoded.progress).concat(decoded.complete).fold(0.U64, |sum, task| sum + task_bytes(task))
 		snapshot = { planned, progress, complete, editor, editing: False, bytes }
-		Ui.update_states([
-			handles.planned.write(planned),
-			handles.progress.write(progress),
-			handles.complete.write(complete),
-			handles.editor.write(editor),
-			handles.editing.write(False),
-			handles.bytes.write(bytes),
-			handles.next_id.write(decoded.next),
-			handles.history.write({ past: [], future: [] }),
-			handles.filter.write(""),
-			handles.draft.write(""),
-			handles.confirm_delete.write(False),
-			handles.document.write({ path: Some(file.path), baseline: Some(snapshot), phase: Phase.Idle, problem: "" }),
+		Action.update([
+			handles.planned.set(planned),
+			handles.progress.set(progress),
+			handles.complete.set(complete),
+			handles.editor.set(editor),
+			handles.editing.set(False),
+			handles.bytes.set(bytes),
+			handles.next_id.set(decoded.next),
+			handles.history.set({ past: [], future: [] }),
+			handles.filter.set(""),
+			handles.draft.set(""),
+			handles.confirm_delete.set(False),
+			handles.document.set({ path: Some(file.path), baseline: Some(snapshot), phase: Phase.Idle, problem: "" }),
 		])
 	}
 }
 
 document_bindings : Handles -> List(Elem)
 document_bindings = |handles| [
-	Ui.on_mount(|| Files.verify_assets(handles.tasks.verify, asset_entries)),
-	Ui.on_change(
-		Signal.from_task(handles.tasks.verify),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Failed(error) => handles.asset_problem.set_cmd("Asset verification failed: ${Files.error_text(error)}")
-			Signal.TaskStatus.Done(report) => handles.asset_problem.set_cmd(asset_problem_text(report))
-		},
-	),
-	Ui.on_change(
-		handles.document.signal().map(|doc| doc.phase),
-		|phase| match phase {
-			Phase.ChoosingOpen => Files.choose_file(handles.tasks.open)
-			Phase.Reading(path) => Files.read_text(handles.tasks.read, path)
-			Phase.ChoosingSave(_) => Files.choose_save_path(handles.tasks.save, { directory: Home, suggested_name: "My project.board.json" })
-			Phase.Writing(write) => Files.write_text(handles.tasks.write, { path: write.path, text: write.save.text })
-			_ => Signal.noop
-		},
-	),
-	Ui.on_change(Signal.from_task(handles.tasks.open), |status| choice_result(handles, status)),
-	Ui.on_change(Signal.from_task(handles.tasks.save), |status| choice_result(handles, status)),
-	Ui.on_change(
-		Signal.from_task(handles.tasks.read),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Failed(error) => failed_file(handles, error)
-			Signal.TaskStatus.Done(file) => load_document(handles, file)
-		},
-	),
-	Ui.on_change(
-		Signal.from_task(handles.tasks.write),
-		|status| match status {
-			Signal.TaskStatus.Loading => Signal.noop
-			Signal.TaskStatus.Failed(error) => failed_file(handles, error)
-			Signal.TaskStatus.Done(result) => handles.document.update_cmd(
-				|doc| match doc.phase {
-					Phase.Writing(write) if write.path == result.path => { ..doc, path: Some(result.path), baseline: Some(write.save.snapshot), phase: Phase.Idle, problem: "" }
-					_ => doc
-				},
-			)
-		},
-	),
+	Action.on_mount(|| Action.then([], |_| verify_assets!(handles))),
 ]
+
+## The whole open flow is one effect started by the handler that entered
+## `Busy(Opening)`: the chooser blocks it until the user answers, then the
+## chosen document is read and validated before anything on the board changes.
+open! : Handles => Action(a)
+open! = |handles| match Files.choose_file!() {
+	Err(error) => failed_file(handles, error, False)
+	Ok(Files.Choice.Canceled) => canceled(handles, False)
+	Ok(Files.Choice.Chosen(path)) => match Files.read_text!(path) {
+		Ok(file) => load_document(handles, file)
+		Err(error) => failed_file(handles, error, False)
+	}
+}
+
+## Writes a save the handler already validated, choosing the destination
+## first when the board has no path yet or the user asked for one. A save
+## started from the close dialog closes the window once it succeeds, unless
+## the user chose to keep the window open while it ran; a failed one reopens
+## the close dialog with the problem.
+write! : Handles, Destination, Save, Bool => Action(a)
+write! = |handles, destination, save, close_after| {
+	path = match destination {
+		Known(known) => known
+		Chosen => match Files.choose_save_path!({ directory: Home, suggested_name: "My project.board.json" }) {
+			Err(error) => return failed_file(handles, error, close_after)
+			Ok(Files.Choice.Canceled) => return canceled(handles, close_after)
+			Ok(Files.Choice.Chosen(chosen)) => chosen
+		}
+	}
+	match Files.write_text!({ path, text: save.text }) {
+		Ok(result) => Action.update([
+			handles.document.write(|doc| { ..doc, path: Some(result.path), baseline: Some(save.snapshot), phase: Phase.Idle, problem: "" }),
+			handles.close.write(|intent| if close_after and intent == Close.Saving { Close.Closing } else { intent }),
+		])
+		Err(error) => failed_file(handles, error, close_after)
+	}
+}
+
+verify_assets! : Handles => Action({})
+verify_assets! = |handles| match Files.verify_assets!(asset_entries) {
+	Ok(report) => Action.update([handles.asset_problem.set(asset_problem_text(report))])
+	Err(error) => Action.update([handles.asset_problem.set("Asset verification failed: ${Files.error_text(error)}")])
+}
 
 ## Evict the oldest opposite-direction entries when a large current draft enters
 ## history. The live edit always succeeds; an oversized snapshot has no undo entry.
@@ -1150,82 +1201,78 @@ expect {
 }
 
 ## Save and Save-and-close share exact immutable snapshot ownership.
-save_document : Handles, Context, U64, { save_as : Bool, close_after : Bool } -> Gui.Cmd
+save_document : Handles, Context, U64, { save_as : Bool, close_after : Bool } -> Action(a)
 save_document = |handles, context, next, options| {
 	if context.document.phase != Phase.Idle {
-		return Signal.noop
+		return Action.none
 	}
 	text = Codec.encode({ next, planned: Rows.to_list(context.board.planned), progress: Rows.to_list(context.board.progress), complete: Rows.to_list(context.board.complete) })
 	if text.to_utf8().len() > 1048576 {
-		return handles.document.set_cmd({ ..context.document, problem: "The encoded board exceeds one MiB. Shorten task notes before saving." })
+		return Action.update([handles.document.set({ ..context.document, problem: "The encoded board exceeds one MiB. Shorten task notes before saving." })])
 	}
 	match Codec.decode(text) {
-		Err(Codec.Error.Invalid(problem)) => return handles.document.set_cmd({ ..context.document, problem: "Cannot save: ${problem}. Your draft is retained." })
+		Err(Codec.Error.Invalid(problem)) => return Action.update([handles.document.set({ ..context.document, problem: "Cannot save: ${problem}. Your draft is retained." })])
 		Ok(_) => {}
 	}
 	save = { text, snapshot: context.board }
-	phase = match context.document.path {
-		Some(path) if !options.save_as => Phase.Writing({ path, save })
-		_ => Phase.ChoosingSave(save)
+	destination = match context.document.path {
+		Some(path) if !options.save_as => Known(path)
+		_ => Chosen
 	}
-	writes = [handles.document.write({ ..context.document, phase, problem: "" })]
-	Ui.update_states(
+	writes = [handles.document.set({ ..context.document, phase: Phase.Busy(Operation.Saving), problem: "" })]
+	Action.then(
 		if options.close_after {
-			writes.append(handles.close.write(Close.Saving))
+			writes.append(handles.close.set(Close.Saving))
 		} else {
 			writes
 		},
+		|_| write!(handles, destination, save, options.close_after),
 	)
 }
 
 close_dialog : Handles -> Elem
 close_dialog = |handles| {
-	keep = handles.close.on_unit(|_| Close.KeepEditing)
+	keep = handles.close.update(|_| Close.KeepEditing)
 	Ui.when(
-		handles.close.signal().map(|intent| intent == Close.Confirm),
-		|| Gui.dialog(
-			{ label: "Close this board?", on_dismiss: keep },
-			[Gui.test_id("board-close")],
+		handles.close.read(|intent| intent == Close.Confirm),
+		|| Elem.dialog(
+			{
+				label: "Close this board?",
+				on_dismiss: keep,
+				test_id: "board-close",
+			},
 			[
-				Gui.heading("Save your board before closing?"),
-				Gui.text("Keep editing to return to your project, or save a board document before closing."),
-				Gui.text_s(handles.document.signal().map(|doc| doc.problem)),
-				Gui.row(
-					[],
+				Elem.heading("Save your board before closing?"),
+				"Keep editing to return to your project, or save a board document before closing.",
+				Elem.text_s(handles.document.read(|doc| doc.problem)),
+				Elem.row(
+					Elem.RowProps.{},
 					[
-						Gui.button("Keep editing", keep),
-						Gui.button("Close without saving", handles.close.on_unit(|_| Close.Closing)),
-						Gui.action_button({ label: Signal.const("Save and close"), enabled: handles.document.signal().map(|doc| doc.phase == Phase.Idle) }, [], Ui.action({ context: handles.context, next: handles.next_id.signal() }.Signal, |{ context, next }| save_document(handles, context, next, { save_as: False, close_after: True }))),
+						Elem.button("Keep editing", keep),
+						Elem.button("Close without saving", handles.close.update(|_| Close.Closing)),
+						Elem.action_button({
+							caption: Signal.const("Save and close"),
+							enabled: handles.document.read(|doc| doc.phase == Phase.Idle),
+						}, Action.run({ context: handles.context, next: handles.next_id.signal() }.Signal, |{ context, next }| save_document(handles, context, next, { save_as: False, close_after: True }))),
 					],
 				),
 			],
 		),
 		|| Ui.when(
-			handles.close.signal().map(|intent| intent == Close.Saving),
-			|| Gui.dialog(
-				{ label: "Saving before closing", on_dismiss: keep },
-				[Gui.test_id("board-close-saving")],
+			handles.close.read(|intent| intent == Close.Saving),
+			|| Elem.dialog(
+				{
+					label: "Saving before closing",
+					on_dismiss: keep,
+					test_id: "board-close-saving",
+				},
 				[
-					Gui.heading("Saving your board…"),
-					Gui.text("The window stays open until the submitted board is saved."),
-					Gui.button("Keep window open", keep),
-					Ui.on_change(
-						handles.context,
-						|context| if context.document.phase == Phase.Idle {
-							handles.close.set_cmd(
-								if dirty(context) {
-									Close.Confirm
-								} else {
-									Close.Closing
-								},
-							)
-						} else {
-							Signal.noop
-						},
-					),
+					Elem.heading("Saving your board…"),
+					"The window stays open until the submitted board is saved.",
+					Elem.button("Keep window open", keep),
 				],
 			),
-			|| Gui.text(""),
+			|| Elem.text(""),
 		),
 	)
 }
@@ -1233,34 +1280,34 @@ close_dialog = |handles| {
 document_actions : Handles -> DocumentActions
 document_actions = |handles| {
 	save_reads = { context: handles.context, next: handles.next_id.signal() }.Signal
-	save_message = |save_as| Ui.action(save_reads, |{ context, next }| save_document(handles, context, next, { save_as, close_after: False }))
-	open = Ui.action(
+	save_message = |save_as| Action.run(save_reads, |{ context, next }| save_document(handles, context, next, { save_as, close_after: False }))
+	open = Action.run(
 		handles.context,
 		|context| if context.document.phase != Phase.Idle {
-			Signal.noop
+			Action.none
+		} else if dirty(context) {
+			Action.update([handles.document.set({ ..context.document, phase: Phase.ConfirmOpen, problem: "" })])
 		} else {
-			handles.document.set_cmd({
-				..context.document,
-				phase: if dirty(context) {
-					Phase.ConfirmOpen
-				} else {
-					Phase.ChoosingOpen
-				},
-				problem: "",
-			})
+			Action.then([handles.document.set({ ..context.document, phase: Phase.Busy(Operation.Opening), problem: "" })], |_| open!(handles))
 		},
 	)
-	cancel = Ui.action(
+	discard_and_open = Action.run(
 		handles.document.signal(),
-		|doc| match doc.phase {
-			Phase.ChoosingOpen => Signal.cancel(handles.tasks.open)
-			Phase.ChoosingSave(_) => Signal.cancel(handles.tasks.save)
-			Phase.Reading(_) => Signal.cancel(handles.tasks.read)
-			Phase.Writing(_) => Signal.cancel(handles.tasks.write)
-			_ => handles.document.set_cmd({ ..doc, phase: Phase.Idle })
+		|doc| if doc.phase == Phase.ConfirmOpen {
+			Action.then([handles.document.set({ ..doc, phase: Phase.Busy(Operation.Opening), problem: "" })], |_| open!(handles))
+		} else {
+			Action.none
 		},
 	)
-	{ open, save: save_message(False), save_as: save_message(True), cancel }
+	cancel = Action.run(
+		handles.document.signal(),
+		|doc| if doc.phase == Phase.ConfirmOpen {
+			Action.update([handles.document.set({ ..doc, phase: Phase.Idle })])
+		} else {
+			Action.none
+		},
+	)
+	{ open, save: save_message(False), save_as: save_message(True), cancel, discard_and_open }
 }
 
 ## Editor lifetimes are allocated, never derived from a task's text. Exhaustion
