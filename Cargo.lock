@@ -4953,6 +4953,8 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "libc",
+ "serde",
+ "serde_json",
  "tokio",
  "unicode-segmentation",
  "windows-sys 0.61.2",

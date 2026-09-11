@@ -7,7 +7,7 @@
 use crate::bridge::{Slice, Style};
 
 /// Version of the statically linked native GUI presentation boundary.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Version of the separate native timer boundary.
 pub const TIMER_VERSION: u32 = 1;

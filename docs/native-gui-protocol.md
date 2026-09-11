@@ -11,11 +11,12 @@ document stays hand-written.
 
 <!-- BEGIN GENERATED PROTOCOL TABLES (scripts/generate_protocol.py; edit protocol/native-protocol.json) -->
 
-The statically linked GUI boundary uses protocol version **12**
+The statically linked GUI boundary uses protocol version **13**
 and the separate timer boundary is version **1**.
 
 | Version | Change |
 | --- | --- |
+| 13 | Adds the source column to each scenario step so cross-language diagnostics identify the exact SCM form. |
 | 12 | Adds the `native_read_only` boolean field and its node word: a control that refuses edits while staying readable and keyboard reachable, distinct from disabled. |
 | 11 | Adds `signals_document_title`, the host read of the window identity decided by the shared engine's `SetDocumentTitle` command. |
 | 10 | Extends the presentation record to style version 2 with hover and active background slots (18 u32 style record); style version 1 records are no longer accepted. |

@@ -408,6 +408,7 @@ struct RawScenario {
 pub(crate) struct RawStep {
     kind: Slice,
     line: u64,
+    column: u64,
     locator_kind: Slice,
     role: Slice,
     name: Slice,
@@ -444,6 +445,7 @@ pub(crate) enum Arg {
 pub(crate) struct Command {
     pub(crate) kind: String,
     pub(crate) line: u64,
+    pub(crate) column: u64,
     pub(crate) locator_kind: String,
     pub(crate) role: String,
     pub(crate) name: String,
@@ -536,6 +538,7 @@ pub(crate) fn load_scenario(path: &str) -> Result<Scenario, String> {
             commands.push(Command {
                 kind: raw.kind.copy(),
                 line: raw.line,
+                column: raw.column,
                 locator_kind: raw.locator_kind.copy(),
                 role: raw.role.copy(),
                 name: raw.name.copy(),

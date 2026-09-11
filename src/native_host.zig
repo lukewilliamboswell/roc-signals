@@ -12503,6 +12503,7 @@ const Gpui = struct {
     const RawStep = extern struct {
         kind: Slice,
         line: u64,
+        column: u64,
         locator_kind: Slice,
         role: Slice,
         name: Slice,
@@ -12581,6 +12582,7 @@ const Gpui = struct {
         out.* = .{
             .kind = Slice.from(@tagName(cmd.step)),
             .line = cmd.line_num,
+            .column = cmd.column_num,
             .locator_kind = Slice.from(@tagName(locator.kind)),
             .role = optionalSlice(locator.role),
             .name = optionalSlice(locator.name),

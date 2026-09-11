@@ -5,7 +5,7 @@
 //! that this committed artifact matches the manifest.
 
 /// Version of the statically linked native GUI presentation boundary.
-pub const protocol_version: u32 = 12;
+pub const protocol_version: u32 = 13;
 
 /// Version of the separate native timer boundary.
 pub const timer_version: u32 = 1;

@@ -461,6 +461,9 @@ fn freePayload(allocator: std.mem.Allocator, payload: anytype) void {
 pub const SpecCommand = struct {
     step: Step,
     line_num: usize,
+    /// One-based source column of the step form. Older synthetic commands may
+    /// omit it and retain the conventional first column.
+    column_num: usize = 1,
 
     /// The kind of this command, for reports and the ABI.
     pub fn kind(self: SpecCommand) SpecCommandType {
@@ -1004,7 +1007,7 @@ fn appendDecodedForm(
 
     // Scripted primitives are allowed in both sections: in setup they seed
     // the answer before the application mounts, in steps they stub it.
-    const command: SpecCommand = if (file_fixtures.recognizes(head))
+    var command: SpecCommand = if (file_fixtures.recognizes(head))
         try decodeFileFixtureForm(allocator, base_dir, head, args, is_setup, line)
     else if (http_fixtures.recognizes(head))
         try decodeHttpFixtureForm(allocator, head, args, is_setup, line)
@@ -1014,6 +1017,7 @@ fn appendDecodedForm(
         window
     else
         try decodeStepForm(allocator, head, args, line);
+    command.column_num = form.span.column;
 
     commands.append(allocator, command) catch {
         freeOneCommand(allocator, command);
@@ -1104,6 +1108,7 @@ test "S-expression spec parser decodes setup locators actions and assertions" {
     try std.testing.expectEqual(@as(usize, 7), spec.commands.len);
     try std.testing.expectEqual(SpecCommandType.set_initial_location, spec.commands[0].kind());
     try std.testing.expectEqual(@as(usize, 4), spec.commands[0].line_num);
+    try std.testing.expectEqual(@as(usize, 5), spec.commands[0].column_num);
     try std.testing.expectEqual(SpecCommandType.seed_local_storage, spec.commands[2].kind());
     try std.testing.expectEqual(SpecCommandType.fill, spec.commands[3].kind());
     try std.testing.expectEqual(LocatorKind.label, legacyView(spec.commands[3].step).locator.kind);

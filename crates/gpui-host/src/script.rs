@@ -95,10 +95,11 @@ pub(crate) enum Action {
     Close,
 }
 
-/// A decoded step, keeping its source line so a failure can be located.
+/// A decoded step, keeping its source position so a failure can be located.
 #[derive(Clone, Debug)]
 pub(crate) struct Step {
     pub(crate) line: usize,
+    pub(crate) column: usize,
     pub(crate) action: Action,
 }
 
@@ -116,9 +117,10 @@ pub(crate) fn steps(scenario: &Scenario) -> Result<Vec<Step>, String> {
             decode(command)
                 .map(|action| Step {
                     line: command.line as usize,
+                    column: command.column as usize,
                     action,
                 })
-                .map_err(|error| format!("line {}: {error}", command.line))
+                .map_err(|error| format!("{}:{}: {error}", command.line, command.column))
         })
         .collect()
 }
@@ -617,6 +619,7 @@ mod tests {
         Command {
             kind: kind.into(),
             line: 7,
+            column: 9,
             locator_kind: "none".into(),
             role: String::new(),
             name: String::new(),
@@ -670,14 +673,14 @@ mod tests {
     /// Reading the file here ties the argument names this decoder asks for to
     /// the names the engine emits: a renamed tag or payload field fails here
     /// rather than at run time as a step with no meaning.
-    #[derive(serde::Deserialize)]
+    #[derive(Debug, serde::Deserialize)]
     struct PublishedStep {
         kind: String,
         capability: String,
         args: Vec<PublishedArg>,
     }
 
-    #[derive(serde::Deserialize)]
+    #[derive(Debug, serde::Deserialize)]
     struct PublishedArg {
         name: String,
         #[serde(rename = "type")]
@@ -747,7 +750,7 @@ mod tests {
             commands: vec![command("mark_metrics")],
         };
         let error = steps(&scenario).unwrap_err();
-        assert!(error.starts_with("line 7:"), "{error}");
+        assert!(error.starts_with("7:9:"), "{error}");
     }
 
     #[test]
