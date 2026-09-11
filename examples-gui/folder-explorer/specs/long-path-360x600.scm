@@ -1,0 +1,31 @@
+(scenario "long-path-360x600"
+  :window "360x600"
+  ; The narrow supported size with a long path and a loaded preview. Vertically
+  ; everything must stay bounded: the list keeps its own area and the footer is
+  ; still laid out inside the window, even for a name no line can hold.
+  ;
+  ; The inspector and the footer hint are deliberately not asserted onscreen
+  ; here. At 360 logical pixels neither will shrink below the minimum width of
+  ; what it holds — the inspector's heading and button row, the hint's single
+  ; unbreakable line — so both are laid out past the right edge. That is a
+  ; width problem this scenario does not claim to have solved, and it is
+  ; recorded in the backlog; the height defect this work fixed is what the
+  ; `#file-list` bound below checks.
+  ;
+  ; The entries and the preview editor are inside scrolling regions the bounds
+  ; probe does not record, so they are asserted by what they hold instead.
+  (steps
+    (click (role button :name "docs"))
+    (wait 700)
+    (expect-count "entry:" 4)
+    (click (role button :name "2026-09-architecture-decision-record-native-presentation-boundary.md"))
+    (wait 700)
+    (expect-selected (test-id "entry:docs/2026-09-architecture-decision-record-native-presentation-boundary.md") true)
+    (expect-visible (text "Size: 6144 B"))
+    (click (role button :name "Preview text"))
+    (wait 900)
+    (expect-visible (text "Preview: docs/2026-09-architecture-decision-record-native-presentation-boundary.md"))
+    (expect-disabled (test-id "text-preview") false)
+    (expect-history (test-id "text-preview") 0)
+    (expect-onscreen (test-id "file-list"))
+    (snapshot "long-path-preview")))

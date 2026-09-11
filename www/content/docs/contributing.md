@@ -873,7 +873,9 @@ ordering and rendering details in JavaScript/browser contract tests.
 
 Put each independent case in its own `*.scm` file under the app's
 `specs/` directory. The driver discovers files recursively and gives each one a
-fresh app process. Keep pre-mount state in an optional `(setup ...)` form;
+fresh app process. A file's head form says which host runs it: a `(test ...)`
+runs on the display-free host, a `(scenario ...)` against a real window (see
+[Window scenarios](#window-scenarios) below). Keep pre-mount state in an optional `(setup ...)` form;
 setup accepts only `initial-location`, `initial-visibility`, `initial-online`,
 `local-storage`, and `session-storage`.
 
@@ -970,6 +972,105 @@ Supported assertions:
 - `(expect-checked <locator> true|false)`
 - `(expect-disabled <locator> true|false)`
 - `(expect-updates <locator> <count>)`
+
+### Window scenarios
+
+The display-free host runs the engine without a presentation layer, so a
+`(test ...)` cannot see a control that GPUI laid out beyond the window, a dialog
+that does not fit, or a native editor that kept the previous document's undo
+history. For the GUI examples those states are covered by `(scenario ...)`
+specs, which live in the same `specs/` directory, use the same locators and
+the same step names, and are parsed by the same engine parser. The GUI host
+interprets them against a real window, through its `--host-scenario` flag;
+`python3 scripts/gui_scenarios.py --directory .test-out/gui` runs every one.
+
+```lisp
+(scenario "detail reachability"
+  :window "800x600"
+  (steps
+    (click (test-id "edit-task-4"))
+    (wait 400)
+    (expect-selected (test-id "task-4") true)
+    (expect-value (label "Task title") "Polish the project sidebar")
+    (expect-history (label "Task notes") 0)
+    (expect-onscreen (test-id "task-detail"))
+    (snapshot "task-4-selected")))
+```
+
+The header names what the run needs, relative to the example directory:
+`:window "WIDTHxHEIGHT"` sizes the window (the host default otherwise, and a
+capture harness's `--host-window-size` overrides it); `:assets "path"` runs
+against a prepared assets root instead of the example's `assets/`, which is how
+the asset scenarios show a missing, altered or unreadable file without a
+scenario damaging the working tree (see `task-board/specs/assets-problem/`,
+whose `generate.py` derives that root from the shipped assets); and
+`:choose ("path" ...)` answers the file and folder choosers in order, because a
+native dialog cannot be driven from a spec. Everything past the chooser — the
+listing, preview, log-follow or open worker — is the real one, which is what
+separates a scenario from a test that resolves the worker's result by name;
+the parser refuses a `resolve-file-*` fixture inside a scenario for that reason.
+
+A scenario shares `click`, `focus`, `shortcut`, `expect-visible`,
+`expect-absent`, `expect-text`, `expect-value` and `expect-disabled` with a
+test. Its own steps are `(wait ms)`, which lets timers, tasks and propagation
+settle; `(type locator "text")`, which focuses an editor and types through the
+real key dispatch path (a scenario refuses `fill`, which sets a value without
+the keyboard); `(key "ctrl-s")`, one keystroke written the way GPUI writes
+bindings; `(expect-selected locator true)`, `(expect-focused locator)` and
+`(expect-count "test-id-prefix" n)`; `(expect-history locator n)`, which reads
+how many native undo entries an editor is holding — how document ownership
+becomes testable; `(expect-onscreen locator)`, which reads a control's laid-out
+bounds and means *visible without scrolling*, so a failure is a usability
+finding rather than proof that nothing can reach the control; `(snapshot
+"name")`, which records the rendered tree as evidence; and `(close)`, which must
+be last and leaves through the window's own close request the way the frame's
+close button does — an application with unsaved work may answer with a dialog
+and keep the window. The display-free host refuses every one of these by name.
+
+Every run writes a JSON report of every observation under
+`.test-out/gui-scenarios/<app>/`, and on macOS also photographs the
+application's own window in the state the scenario finished in — including the
+state a failing assertion stopped at. Captures go through `gui_capture.py`, so
+they find the window by the process id the driver started and refuse a window
+whose size does not match what the report says was requested; no region of
+your desktop is captured. The report is written before a `(close)` takes the
+window, so the driver also reads the process exit status: a crash during
+teardown fails the scenario even when every assertion passed. Pass
+`--no-capture` to run the scenarios alone, `--scenario SUBSTRING` to select
+some of them, and `--artifacts PATH` to write elsewhere.
+
+A scenario whose header carries `:diagnostic "reason"` documents a defect owned
+elsewhere. It runs and its failure is reported, but it does not fail the run —
+and a diagnostic that starts passing *does* fail the run, so a fix cannot leave
+a stale exclusion behind. Never weaken an assertion to make a scenario pass;
+state the reason and let it run as a diagnostic instead. A defect that only
+some runs show adds `:on (...)`, naming systems (`linux`, `macos`, `windows`)
+or the window frame the run saw (`client-frame` where the host drew its own
+title bar and insets, which it does when the compositor delegated decorations
+and the window is not fullscreen, as on a Wayland desktop; `server-frame`
+otherwise, as on macOS). The host copies the diagnostic and its scope into the
+report and records which frame the run had, so the driver judges a scope from
+the evidence alone; the scenario is an ordinary check wherever nothing named
+matches.
+
+The scenarios are platform-neutral, because the interpreter lives in the host
+rather than in the driver: the same checks run on every system the GUI
+supports. Only the captures are macOS-only, and the driver says which half it
+ran rather than reporting a pass for evidence it never gathered. On Linux the
+scenarios need the same private display as the smoke checks, which
+`python3 scripts/minici gui-scenarios` arranges — under Weston on an Xvfb
+display there, and directly on macOS and Windows. CI runs that target after
+`gui-smoke` and keeps the JSON reports when it fails.
+
+Two limits found by running the driver against real fixes: a dialog is lifted
+into its own render layer and the bounds probe records nothing for it, so
+`expect-onscreen` cannot judge a dialog and those scenarios rely on their
+capture instead; and a control inside a scrolling region is likewise not
+recorded. Both are gaps in the probe, not properties of the applications.
+
+Keep the two forms apart by what they prove. Semantic and work-budget
+assertions belong in a test; presentation assertions belong in a scenario. A
+scenario is not the place to re-check what a test already proves.
 
 ### Readable native file fixtures
 
@@ -1317,100 +1418,11 @@ and fails on a crash or a 30-second timeout. This checks the GPUI window/renderi
 path separately from the display-free specs. Run the same script on a desktop
 after the GUI suite to exercise the local graphics driver.
 
-## Scripted GUI regression scenarios
-
-`gui_smoke.py` answers one question: did the application mount and render. That
-is not enough to catch a control laid out beyond the window or a native editor
-that kept the previous document's undo history — both of which the maintained
-semantic specs also cannot see, because they run without a presentation layer.
-
-`python3 scripts/gui_regression.py --directory .test-out/gui` runs the scenarios
-stored beside each example in `examples-gui/<app>/regression/*.script`, covering
-initial, populated, selected, focused, disabled/read-only, modal, error/loading
-and resized states. Each scenario is a line-per-step script executed against the
-real window by the host's `--host-script` flag:
-
-```text
-# size: 800x600
-click #edit-task-4
-wait 400
-expect-selected #task-4
-expect-value "Task title" Polish the project sidebar
-expect-history "Task notes" 0
-expect-onscreen #task-detail
-snapshot task-4-selected
-```
-
-Controls are named by the application's own `Gui.test_id` or by the label a
-person reads — never by pixel coordinates, so the scenarios survive layout work.
-Besides the ordinary state assertions, two observations exist only here:
-`expect-history` reads how many native undo entries an editor is holding, which
-is how document ownership becomes testable, and `expect-onscreen` reads a
-control's laid-out bounds. `expect-onscreen` means *visible without scrolling*;
-the host's window-scroll fallback means a failure is a usability finding rather
-than a proof that nothing can reach the control.
-
-A native file or folder dialog cannot be driven from a script. A scenario that
-needs a real file names it in its front matter, `# choose: <path relative to
-the example>`, once per chooser in the order the script opens them; the driver
-passes each as `--host-choose` and the host hands it to the next chooser instead
-of prompting, after the same path validation the dialog's own answer receives.
-Everything past the chooser — the listing, preview, log-follow or open worker —
-is the real one, which is what separates these scenarios from the specs that
-resolve the worker's result by name. The `close` step, which must be last,
-leaves through the window's own close request the way the frame's close button
-does: an application with unsaved work may answer with a dialog and keep the
-window. The report is written before the window goes, so the driver also reads
-the process exit status; a crash during teardown is reported as the failure
-even when every assertion passed. `activity-monitor/follow-and-close` and
-`folder-explorer/real-folder-preview` are the scenarios built on this.
-
-Every run writes a JSON report of every observation under
-`.test-out/gui-regression/<app>/`, and on macOS also photographs the
-application's own window in the state the script finished in — including the
-state a failing assertion stopped at. Captures go through `gui_capture.py`, so
-they find the window by the process id the driver started and refuse a window
-whose size does not match the request; no region of your desktop is captured.
-Pass `--no-capture` to run the scripts alone, `--scenario SUBSTRING` to select
-some of them, and `--artifacts PATH` to write elsewhere.
-
-The scenarios themselves are platform-neutral, because the interpreter lives in
-the host rather than in the driver: the same checks run on every system the GUI
-supports. Only the captures are macOS-only, and the driver says which half it
-ran rather than reporting a pass for evidence it never gathered. On Linux the
-scenarios need the same private display as the smoke checks, which
-`python3 scripts/minici gui-scenarios` arranges — under Weston on an Xvfb
-display there, and directly on macOS and Windows. CI runs that target after
-`gui-smoke` and keeps the JSON reports when it fails.
-
-A scenario runs against its example's own `assets/` directory. A script whose
-front matter carries `# assets: <path relative to the example>` runs against a
-prepared root instead, which is how the asset scenarios show a missing, altered
-or unreadable file without a script damaging the working tree; the named
-directory must exist. See `examples-gui/task-board/regression/assets-problem/`,
-whose `generate.py` derives that root from the shipped assets.
-
-A script whose front matter carries `# diagnostic:` documents a defect owned
-elsewhere. It runs and its failure is reported, but it does not fail the run —
-and a diagnostic that starts passing *does* fail the run, so a fix cannot leave
-a stale exclusion behind. Never weaken an assertion to make a scenario pass;
-state the reason in the script and let it run as a diagnostic instead. A
-defect that only some runs show carries `# diagnostic-on:` after its reason,
-naming systems (`linux`, `macos`, `windows`) or the window frame the run saw
-(`client-frame` where the host drew its own title bar and insets, which it
-does when the compositor delegated decorations and the window is not
-fullscreen, as on a Wayland desktop; `server-frame` otherwise, as on macOS). The report records which frame a run had, so a
-frame scope is judged after the run; the scenario is an ordinary check
-wherever nothing named matches.
-
-Window captures are implemented for macOS only. On Linux the driver runs the
-scripts without captures; the scripts themselves, including `expect-onscreen`,
-work anywhere the examples run, but this repository has only executed them on
-Apple Silicon macOS so far.
+## Native GUI host flags
 
 Normal GUI launches do not print engine metrics. Pass `--host-trace-engine` to an
 app executable to log event-turn metrics to stderr; `--host-smoke` prints its explicit
-validation result, and `--host-script` prints its own pass or failure line. Host
+validation result, and `--host-scenario` prints its own pass or failure line. Host
 errors remain visible without tracing.
 
 Host builds default to two Cargo workers. Use `scripts/build_gui.py --jobs N`

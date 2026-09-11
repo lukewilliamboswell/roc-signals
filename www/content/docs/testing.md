@@ -330,21 +330,22 @@ mount harness checks that the HostValue registry is empty after `unmount` and
 also checks the exported Roc allocation count and byte total. Those latter
 checks establish ledger balance only when the host has the ledger enabled.
 
-## Desktop regression scenarios
+## Window scenarios
 
 Native specs run without a presentation layer, so they cannot see a control laid
 out beyond the window or a native editor that kept the previous document's undo
-history. For the GUI examples those states are covered by scripted scenarios in
-`examples-gui/<app>/regression/*.script`, run by
-`python3 scripts/gui_regression.py`. They drive the real window through the
-host's `--host-script` flag, name controls by test id or visible label rather than by
-pixel coordinates, and record their observations — and on macOS the window
-itself — as artifacts. See [Contributing](@/docs/contributing.md) for the step
-vocabulary, the diagnostic convention, and what is macOS-only.
+history. For the GUI examples those states are covered by `(scenario ...)`
+specs beside the `(test ...)` specs in `examples-gui/<app>/specs/`, written in
+the same language and parsed by the same engine parser, and run against the
+real window by `python3 scripts/gui_scenarios.py` through the GUI host's
+`--host-scenario` flag. They name controls by test id or visible label rather
+than by pixel coordinates, and record their observations — and on macOS the
+window itself — as artifacts. See [Contributing](@/docs/contributing.md) for
+the window-only steps, the diagnostic convention, and what is macOS-only.
 
-Keep the two apart. Semantic and work-budget assertions belong in the specs
-above; presentation assertions belong in the scenarios. A scenario is not the
-place to re-check what a spec already proves.
+Keep the two forms apart by what they prove. Semantic and work-budget
+assertions belong in a test; presentation assertions belong in a scenario. A
+scenario is not the place to re-check what a test already proves.
 
 ## What belongs where
 

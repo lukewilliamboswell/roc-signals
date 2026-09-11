@@ -6,7 +6,7 @@
 //! the window) are exactly the class the semantic specs cannot see, so the host
 //! records the bounds itself while a script is running.
 //!
-//! The recording is opt-in: without `--host-script` no listener is installed and the
+//! The recording is opt-in: without `--host-scenario` no listener is installed and the
 //! render path is byte-for-byte the shipped one. Recording never influences
 //! layout — a prepaint listener observes bounds that have already been decided.
 

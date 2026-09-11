@@ -109,16 +109,17 @@ Do not attach unguarded host callbacks to arbitrary containers.
 
 ### GUI-16 — Desktop regression coverage
 
-Scripted interaction and capture scenarios now exist for all six apps in
-`examples-gui/<app>/regression/*.script`, run by `scripts/gui_regression.py`
-against the real window through the host's `--host-script` flag. They cover initial,
+Window scenarios now exist for all six apps as `(scenario ...)` specs in
+`examples-gui/<app>/specs/`, run by `scripts/gui_scenarios.py` against the real
+window through the host's `--host-scenario` flag. They cover initial,
 populated, selected, focused, disabled/read-only, modal, error/loading and
 resized states at 1200×820, 800×600, 360×600 and the 360×240 host minimum,
 including equal-text editor replacement (via native undo depth) and the
 reachability of off-screen actions (via recorded layout bounds). Controls are
 named by `test_id` or visible label, never by pixel coordinates; native
-semantic assertions stay in `specs/` and presentation assertions in
-`regression/`. Reports and macOS window captures are written per scenario and
+semantic assertions stay in `(test ...)` specs and presentation assertions in
+`(scenario ...)` specs, one language and one parser for both (unified
+2026-09-11). Reports and macOS window captures are written per scenario and
 kept for failures; captures name the window by the process id the driver
 started and never grab a screen region.
 
@@ -142,9 +143,9 @@ Linux, 2026-09-11: all 29 scenarios ran on a Linux desktop Wayland session with
 the debug host and the 2026-09-04 nightly compiler. Twenty-eight pass; the one
 failure is the counter's minimum-window layout, which is a genuine Linux
 finding (GUI-35) rather than a script defect, and now runs as a diagnostic
-scoped to the client-side frame with `# diagnostic-on:`; under Weston in CI it
+scoped to the client-side frame with `:on`; under Weston in CI it
 passes, and the driver knows which frame it saw from the report. Two scenarios added that day open a
-real file and a real folder through the workers by way of `# choose:` and leave
+real file and a real folder through the workers by way of `:choose` and leave
 through the window's own close request (see GUI-29 and GUI-32). The run was
 on the desktop compositor, not under the Weston-on-Xvfb arrangement
 `scripts/minici gui-scenarios` uses in CI; that path is still unexecuted here.
@@ -424,7 +425,7 @@ symptom points at teardown ordering between the polling task/timer and the
 runtime it reports into, not at the Roc application.
 
 Linux, 2026-09-11: `activity-monitor/follow-and-close` opens the real
-`regression/fixtures/events.log` through the worker, follows it for four
+`specs/fixtures/events.log` through the worker, follows it for four
 seconds (eight polls), and closes the window through the host's own close
 request; the process exits cleanly under Wayland with the debug host. The
 scenario is an ordinary check, and the driver now fails a scenario whose
@@ -502,7 +503,7 @@ undetermined. Tab from the list moves focus to the toolbar's Up, not to the
 details buttons.
 
 Linux, 2026-09-11: not reproduced. `folder-explorer/real-folder-preview`
-chooses the real `regression/fixtures/project` folder through the worker,
+chooses the real `specs/fixtures/project` folder through the worker,
 selects `note.txt`, and Preview text loads it; the CRLF fixture `crlf.txt`
 previews with its `\r\n` endings intact in the read-only editor. The maintained
 `preview-open.scm` spec already selects a `Folder` source entry and invokes the

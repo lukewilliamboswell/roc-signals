@@ -992,12 +992,9 @@ struct HostArgs {
     click: Option<String>,
     drop_request: Option<(String, String)>,
     expected: Option<String>,
-    script: Option<String>,
-    script_report: Option<String>,
-    script_hold: bool,
-    /// Paths a scripted run hands to the file and folder choosers, in order,
-    /// instead of opening native dialogs a script cannot drive.
-    choices: Vec<String>,
+    scenario: Option<String>,
+    scenario_report: Option<String>,
+    scenario_hold: bool,
     window_size: Option<(f32, f32)>,
 }
 
@@ -1015,10 +1012,16 @@ const RENAMED_HOST_FLAGS: &[(&str, &str)] = &[
     ("--smoke-click", "--host-smoke-click"),
     ("--smoke-drop", "--host-smoke-drop"),
     ("--smoke-expect", "--host-smoke-expect"),
-    ("--script", "--host-script"),
-    ("--script-report", "--host-script-report"),
-    ("--script-hold", "--host-script-hold"),
+    ("--script", "--host-scenario"),
+    ("--script-report", "--host-scenario-report"),
+    ("--script-hold", "--host-scenario-hold"),
     ("--window-size", "--host-window-size"),
+    // The line-per-step scripts became (scenario ...) specs, parsed by the
+    // engine; their choosers are answered from the header, not a flag.
+    ("--host-script", "--host-scenario"),
+    ("--host-script-report", "--host-scenario-report"),
+    ("--host-script-hold", "--host-scenario-hold"),
+    ("--host-choose", ":choose in the scenario header"),
 ];
 
 /// Reads the host options out of a command line, left to right.
@@ -1054,7 +1057,7 @@ fn parse_host_args(args: &[String]) -> Result<HostArgs, String> {
             "--host-trace-engine" => parsed.trace_engine = true,
             "--host-smoke" => parsed.smoke = true,
             "--host-smoke-timers" => parsed.smoke_timers = true,
-            "--host-script-hold" => parsed.script_hold = true,
+            "--host-scenario-hold" => parsed.scenario_hold = true,
             "--host-assets-root" => {
                 parsed.assets_root = Some(value(args, &mut i, &arg, 1)?.to_string());
             }
@@ -1064,14 +1067,11 @@ fn parse_host_args(args: &[String]) -> Result<HostArgs, String> {
             "--host-smoke-expect" => {
                 parsed.expected = Some(value(args, &mut i, &arg, 1)?.to_string());
             }
-            "--host-script" => {
-                parsed.script = Some(value(args, &mut i, &arg, 1)?.to_string());
+            "--host-scenario" => {
+                parsed.scenario = Some(value(args, &mut i, &arg, 1)?.to_string());
             }
-            "--host-script-report" => {
-                parsed.script_report = Some(value(args, &mut i, &arg, 1)?.to_string());
-            }
-            "--host-choose" => {
-                parsed.choices.push(value(args, &mut i, &arg, 1)?.to_string());
+            "--host-scenario-report" => {
+                parsed.scenario_report = Some(value(args, &mut i, &arg, 1)?.to_string());
             }
             "--host-smoke-drop" => {
                 let source = value(args, &mut i, &arg, 2)?.to_string();
@@ -1095,9 +1095,6 @@ fn parse_host_args(args: &[String]) -> Result<HostArgs, String> {
             }
         }
         i += 1;
-    }
-    if !parsed.choices.is_empty() && parsed.script.is_none() {
-        return Err("Error: --host-choose answers choosers only under --host-script".into());
     }
     Ok(parsed)
 }
@@ -1309,10 +1306,45 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
     if host.run_spec_json {
         return unsafe { signals_spec_main(argc, argv) };
     }
+    // A scenario is parsed by the engine's spec parser before the window
+    // exists, so a malformed file is refused with its reason rather than
+    // after a window has opened. Its header names what a run needs relative to
+    // the example directory — the parent of the `specs/` directory it lives in.
+    let scenario = host.scenario.as_ref().map(|path| {
+        let path = std::path::PathBuf::from(path);
+        let scenario = bridge::load_scenario(&path.to_string_lossy()).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        });
+        let steps = script::steps(&scenario).unwrap_or_else(|error| {
+            eprintln!("Error: {}: {error}", path.display());
+            std::process::exit(1);
+        });
+        let example = path
+            .parent()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        probe::enable();
+        (path, example, scenario, steps)
+    });
     let assets_root = host
         .assets_root
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("ROC_SIGNALS_ASSETS_ROOT").map(std::path::PathBuf::from));
+        .or_else(|| std::env::var_os("ROC_SIGNALS_ASSETS_ROOT").map(std::path::PathBuf::from))
+        .or_else(|| {
+            // A scenario runs against its example's own assets unless its
+            // header prepared another root; the root must exist, because a
+            // scenario about damaged assets that silently ran against nothing
+            // would prove the wrong thing.
+            let (_, example, scenario, _) = scenario.as_ref()?;
+            let root = example.join(scenario.assets.as_deref().unwrap_or("assets"));
+            if scenario.assets.is_some() && !root.is_dir() {
+                eprintln!("Error: :assets names no directory: {}", root.display());
+                std::process::exit(1);
+            }
+            root.is_dir().then_some(root)
+        });
     if let Some(root) = assets_root {
         assets::set_root(root);
     }
@@ -1322,22 +1354,38 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
     let click = host.click;
     let drop_request = host.drop_request;
     let expected = host.expected;
-    let script_path = host.script.map(std::path::PathBuf::from);
-    let script_report = host.script_report.map(std::path::PathBuf::from);
+    let script_report = host.scenario_report.map(std::path::PathBuf::from);
     // A held window stays open after the last step so a capture harness can
-    // photograph the state the script left behind — including the state a
+    // photograph the state the scenario left behind — including the state a
     // failing assertion stopped at, which is the evidence worth keeping.
-    let script_hold = host.script_hold;
-    let choices: Vec<std::path::PathBuf> = host.choices.iter().map(Into::into).collect();
-    let script = script_path.as_ref().map(|path| {
-        let source = std::fs::read_to_string(path)
-            .unwrap_or_else(|error| panic!("cannot read script {}: {error}", path.display()));
-        let steps = script::parse(&source)
-            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-        probe::enable();
-        (path.clone(), steps)
-    });
-    let window_size = host.window_size.unwrap_or((1200., 820.));
+    let script_hold = host.scenario_hold;
+    // Chooser answers come from the header, resolved against the example
+    // directory and required to exist: a scenario that names a fixture which
+    // is not there would otherwise open a real dialog nobody can answer.
+    let choices: Vec<std::path::PathBuf> = scenario
+        .as_ref()
+        .map(|(_, example, scenario, _)| {
+            scenario
+                .choices
+                .iter()
+                .map(|choice| {
+                    let path = example.join(choice);
+                    if !path.exists() {
+                        eprintln!("Error: :choose names nothing on disk: {}", path.display());
+                        std::process::exit(1);
+                    }
+                    path.canonicalize().unwrap_or(path)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // An explicit size wins, because a capture harness states the size it
+    // then verifies; otherwise the scenario's own header sizes the window.
+    let window_size = host
+        .window_size
+        .or_else(|| scenario.as_ref().and_then(|(_, _, scenario, _)| scenario.window))
+        .unwrap_or((1200., 820.));
+    let script = scenario.map(|(path, _, scenario, steps)| (path, scenario, steps));
     Application::new().run(move |cx| {
         input::bind_keys(cx);
         controls::bind_keys(cx);
@@ -1373,7 +1421,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
             )
             .unwrap();
         cx.activate(true);
-        if let Some((path, steps)) = script {
+        if let Some((path, scenario, steps)) = script {
             let name = path
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
@@ -1490,6 +1538,8 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                             &name,
                             window_size,
                             client_frame,
+                            scenario.diagnostic.as_deref(),
+                            &scenario.scopes,
                             &snapshots,
                             failure.as_deref(),
                         ),
@@ -1691,27 +1741,22 @@ mod tests {
             "Count: 1",
             "--host-assets-root",
             "/assets",
-            "--host-script",
-            "s.txt",
-            "--host-script-report",
+            "--host-scenario",
+            "s.scm",
+            "--host-scenario-report",
             "r.json",
-            "--host-script-hold",
-            "--host-choose",
-            "/logs/events.log",
-            "--host-choose",
-            "/project",
+            "--host-scenario-hold",
             "--host-trace-engine",
             "--host-window-size",
             "800x600",
         ])
         .expect("a complete host command line parses");
-        assert_eq!(parsed.choices, vec!["/logs/events.log", "/project"]);
         assert!(
             host_args(&["--host-choose", "/project"])
                 .unwrap_err()
-                .contains("--host-script")
+                .contains(":choose")
         );
-        assert!(parsed.smoke && parsed.smoke_timers && parsed.script_hold && parsed.trace_engine);
+        assert!(parsed.smoke && parsed.smoke_timers && parsed.scenario_hold && parsed.trace_engine);
         assert_eq!(parsed.click.as_deref(), Some("Increment"));
         assert_eq!(
             parsed.drop_request,
@@ -1719,8 +1764,8 @@ mod tests {
         );
         assert_eq!(parsed.expected.as_deref(), Some("Count: 1"));
         assert_eq!(parsed.assets_root.as_deref(), Some("/assets"));
-        assert_eq!(parsed.script.as_deref(), Some("s.txt"));
-        assert_eq!(parsed.script_report.as_deref(), Some("r.json"));
+        assert_eq!(parsed.scenario.as_deref(), Some("s.scm"));
+        assert_eq!(parsed.scenario_report.as_deref(), Some("r.json"));
         assert_eq!(parsed.window_size, Some((800., 600.)));
     }
 
@@ -1746,7 +1791,7 @@ mod tests {
             parsed.drop_request,
             Some(("--host-script-hold".into(), "--host-smoke".into()))
         );
-        assert!(!parsed.script_hold && !parsed.smoke);
+        assert!(!parsed.scenario_hold && !parsed.smoke);
     }
 
     #[test]

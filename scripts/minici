@@ -90,20 +90,20 @@ def gui_smoke() -> None:
 
 
 def gui_scenarios() -> None:
-    """Drive the scripted scenarios against real windows, wherever we can open one.
+    """Drive the window scenarios against real windows, wherever we can open one.
 
-    The scenarios themselves are platform-neutral — the interpreter lives in the
-    host — so this runs the same checks on every supported system. Only the
-    window captures are macOS-only, and the runner says so rather than quietly
-    reporting a pass for evidence it did not gather.
+    The scenarios are ordinary specs — the engine parses them and the GUI host
+    interprets them — so this runs the same checks on every supported system.
+    Only the window captures are macOS-only, and the runner says so rather than
+    quietly reporting a pass for evidence it did not gather.
     """
     if platform.system() == "Linux":
         if not all(shutil.which(tool) for tool in ("weston", "xvfb-run")):
             raise SystemExit("Linux gui-scenarios requires weston and xvfb-run (CI installs both)")
         run("xvfb-run", "-a", "-s", "-screen 0 1280x1024x24", sys.executable,
-            "scripts/gui_regression.py", "--wayland")
+            "scripts/gui_scenarios.py", "--wayland")
     else:
-        run(sys.executable, "scripts/gui_regression.py")
+        run(sys.executable, "scripts/gui_scenarios.py")
 
 
 def selection() -> None:

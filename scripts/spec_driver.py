@@ -26,6 +26,34 @@ NATIVE_SPEC_ENTROPY_SEED = 0
 class SpecCase:
     id: str
     path: Path
+    #: ``test`` for a display-free spec, ``scenario`` for one driven against a
+    #: real window. Both share one grammar and one engine parser; only the
+    #: host that runs them differs, so discovery has to tell them apart.
+    form: str = "test"
+
+
+def spec_form(path: Path) -> str:
+    """Names the head form of a spec file without parsing it.
+
+    The engine is the parser; this only reads the first symbol so a directory
+    of specs can be split between the display-free host and the window host.
+    A file whose head is neither is left to the host to refuse with its reason.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character.isspace():
+            index += 1
+        elif character == ";":
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline + 1
+        elif character == "(":
+            head = text[index + 1:index + 1 + 16].split(None, 1)[0] if text[index + 1:].strip() else ""
+            return head if head in ("test", "scenario") else "unknown"
+        else:
+            break
+    return "unknown"
 
 
 @dataclass(frozen=True)
@@ -59,7 +87,7 @@ def discover_specs(spec_directory: Path) -> tuple[SpecCase, ...]:
         if path.is_symlink() or not path.is_file():
             continue
         relative = path.relative_to(root).as_posix()
-        cases.append(SpecCase(relative, path))
+        cases.append(SpecCase(relative, path, spec_form(path)))
     cases.sort(key=lambda case: case.id)
     if not cases:
         raise ValueError(f"no *.scm files found in {spec_directory}")
@@ -71,11 +99,18 @@ def select_specs(
     *,
     patterns: tuple[str, ...] = (),
     shard: tuple[int, int] | None = None,
+    form: str | None = "test",
 ) -> tuple[SpecCase, ...]:
+    """Filters cases by id pattern, shard, and form.
+
+    ``form`` defaults to the display-free specs, which is what every existing
+    caller runs; the window driver asks for ``"scenario"`` and ``None`` keeps both.
+    """
     selected = tuple(
         case
         for case in cases
-        if not patterns or any(fnmatch.fnmatchcase(case.id, pattern) for pattern in patterns)
+        if (not patterns or any(fnmatch.fnmatchcase(case.id, pattern) for pattern in patterns))
+        and (form is None or case.form == form)
     )
     if shard is None:
         return selected
