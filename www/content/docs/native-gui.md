@@ -327,11 +327,12 @@ the write starts, the window keeps rendering and handling input while the
 write runs, and the result enters the graph only as the next action, applied
 on the UI thread. Every effect runs on its own worker thread, so a slow one
 never delays another, and results apply in the order effects complete rather
-than the order they started. An effect belongs to the innermost scope still
-alive after its changes commit, so a dialog button whose changes close the
-dialog still gets its effect run and its result applied to the states outside.
-An effect whose scope is disposed by something else while it runs has its
-result discarded. When the same handler can fire again before its earlier
+than the order they started. Disposing the scope that started an effect never
+cancels it: a dialog button whose changes close the dialog still gets its
+effect run, and a result that arrives after its scope is gone is applied to
+the states that still exist, skipping writes to states that were retired with
+the scope. If the commit itself retires a scope holding one of the reads, the
+effect receives the reads as the handler saw them. When the same handler can fire again before its earlier
 effect finishes, decide in state which result wins: either do not start a
 second operation while one is running, as the examples' `Busy` phases do, or
 carry a request counter in the reads and have the result's reducer ignore a
@@ -341,7 +342,8 @@ handler's reads again. Prefer a named top-level
 function for the effect and pass it the state handles it writes, so it
 captures nothing. `Action.on_change`, `Action.on_change_initial`,
 `Action.on_mount`, and `Action.every` bind actions to signal changes, mount,
-and scoped intervals. The browser platform does not run `then` effects.
+and scoped intervals; `Action.every` takes the reads its action and effect
+see at each tick, and a change to those reads between ticks does not run it. The browser platform does not run `then` effects.
 
 ## Example coverage
 

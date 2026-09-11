@@ -13,7 +13,7 @@ use super::{
 use std::{
     ffi::{OsStr, c_void},
     fs::File,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Seek, SeekFrom, Write},
     os::windows::{
         ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
@@ -35,9 +35,9 @@ use windows_sys::{
     },
     Win32::{
         Foundation::{
-            ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_BAD_NETPATH, ERROR_BAD_PATHNAME,
+            ERROR_ACCESS_DENIED, ERROR_BAD_NETPATH, ERROR_BAD_PATHNAME,
             ERROR_CANT_ACCESS_FILE, ERROR_CANT_RESOLVE_FILENAME, ERROR_DIRECTORY,
-            ERROR_DIRECTORY_NOT_SUPPORTED, ERROR_DISK_FULL, ERROR_FILE_EXISTS,
+            ERROR_DIRECTORY_NOT_SUPPORTED, ERROR_DISK_FULL,
             ERROR_FILE_NOT_FOUND, ERROR_FILENAME_EXCED_RANGE, ERROR_HANDLE_DISK_FULL,
             ERROR_INVALID_NAME, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES,
             ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY, ERROR_PATH_NOT_FOUND,
@@ -46,13 +46,12 @@ use windows_sys::{
         },
         Storage::FileSystem::{
             DELETE, FILE_ATTRIBUTE_DEVICE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
             FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
             FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
             FILE_STANDARD_INFO, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FileAttributeTagInfo,
-            FileBasicInfo, FileIdExtdDirectoryInfo, FileIdExtdDirectoryRestartInfo, FileIdInfo,
+            FileIdExtdDirectoryInfo, FileIdExtdDirectoryRestartInfo, FileIdInfo,
             FileStandardInfo, GetFileInformationByHandleEx, SYNCHRONIZE,
-            SetFileInformationByHandle,
         },
         System::IO::IO_STATUS_BLOCK,
     },

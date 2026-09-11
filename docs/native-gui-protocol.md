@@ -389,8 +389,7 @@ overflow. `open_path` validates one regular file, passes its absolute pathname
 to `gio open` without a shell, discards launcher output, and reports
 `Unavailable` on launch failure or a 30-second deadline; the associated
 application then resolves the path under its own access policy. A user
-dismissing a dialog is `Ok(Choice.Canceled)`; the host never produces
-`Error.Canceled`. Errors are `NotFound`, `PermissionDenied`, `InvalidUtf8`,
+dismissing a dialog is `Ok(Choice.Canceled)`, not an error. Errors are `NotFound`, `PermissionDenied`, `InvalidUtf8`,
 `InvalidPath`, `ResourceLimit`, `Io`, and `Unavailable`, each with diagnostic
 detail of at most **4096 UTF-8 bytes**, including an explicit ` [truncated]`
 suffix when detail was omitted.

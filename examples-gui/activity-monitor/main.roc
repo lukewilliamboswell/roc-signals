@@ -340,7 +340,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 			),
 			Ui.when(
 				{ running: running.signal(), replay }.Signal.map(|value| value.running and value.replay),
-				|| Action.every(500, |_| append()),
+				|| Action.every(500, Signal.const({}), |_| append()),
 				|| Elem.text(""),
 			),
 			Workflow.poll(model),

@@ -303,7 +303,7 @@ expect {
 expect {
 	before = { ..Session.initial, source: Folder("/tmp/docs"), back: [Folder("/tmp")], selection: Selected({ path: "/tmp/docs/a.txt", kind: File, bytes: 5 }) }
 	pending = Session.backward(before)
-	failed = Session.failed(pending, Files.Error.Canceled)
+	failed = Session.failed(pending, Files.Error.PermissionDenied("/tmp"))
 	retry = Session.retry_last(failed)
 	after = Session.loaded(retry, { path: "/tmp", entries: [] })
 	Rows.content_is_eq(failed.rows, before.rows) and failed.selection == before.selection and failed.back == before.back and failed.source == before.source and after.source == Folder("/tmp") and after.back.is_empty() and after.forward == [before.source]

@@ -145,23 +145,22 @@ pub const HostSignalBinding = signal_records.Binding;
 pub const validateExistingSignalRecord = signal_records.validateExistingSignalRecord;
 
 /// One effect accepted by a committed `Then`, owned by the engine until the
-/// host takes it: the closure Roc will consume, and an independently retained
-/// reference to the declared reads it receives.
+/// host takes it: the thunk Roc prepared from the effect closure and its reads
+/// snapshot, and an independently retained reference to the declared reads so
+/// a chained `Then` in the effect's result can snapshot them again.
 pub const PendingEffect = struct {
     id: u64,
     owner_scope_id: ids.ScopeId,
-    effect: abi.RocErasedCallable,
+    thunk: abi.RocErasedCallable,
     reads: HostSignalBinding,
 };
 
 /// An effect the host has handed to its worker. The engine keeps the declared
-/// reads so the command the effect returns can snapshot them, and marks the
-/// effect canceled when its owning scope is disposed before it finishes.
+/// reads so the command the effect returns can snapshot them.
 pub const RunningEffect = struct {
     id: u64,
     owner_scope_id: ids.ScopeId,
     reads: HostSignalBinding,
-    canceled: bool = false,
 };
 
 const HostPendingOnChangeCommand = struct {
@@ -814,6 +813,10 @@ pub fn Engine(comptime Ctx: type) type {
         /// The declared reads of whatever handler, sink, or effect is having its
         /// command applied right now; a `Then` snapshots them for its effect.
         effect_origin: ?*HostSignalBinding = null,
+        /// Set while an effect's result command runs, so its changes to states
+        /// that were retired while the effect ran are skipped instead of
+        /// treated as a malformed command.
+        applying_effect_result: bool = false,
         active_intervals: effects_runtime.IntervalRegistry = .empty,
         cleanup_events: HostCleanupEvents = .empty,
         next_task_request_id: u64 = 1,
@@ -4446,7 +4449,6 @@ pub fn Engine(comptime Ctx: type) type {
             };
             var scope_lookup = ScopeLookup{ .engine = self };
             effects_runtime.cancelPendingTasksInScopeSubtree(Ctx, ctx, Ctx.allocator(ctx), &self.pending_tasks, self.roc_host, ids.ScopeId.fromRaw(scope_id), &scope_lookup);
-            self.dropPendingEffectsInScopeSubtree(ctx, ids.ScopeId.fromRaw(scope_id), &scope_lookup);
         }
 
         /// Appends cleanup event using capacity that must already satisfy the caller's transaction contract.
@@ -14192,15 +14194,20 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         fn resolveStateCommandTarget(self: *Self, owner_scope_id: ids.ScopeId, binder_token: HostBinderToken) ids.NodeId {
+            return self.findStateCommandTarget(owner_scope_id, binder_token) orelse @panic("UpdateState referenced a state binder outside the command's active scope");
+        }
+
+        /// The state a binder names from the command's owning scope outward,
+        /// or null when no active scope on that path declares it.
+        fn findStateCommandTarget(self: *Self, owner_scope_id: ids.ScopeId, binder_token: HostBinderToken) ?ids.NodeId {
             var scope_id = owner_scope_id;
             while (true) {
                 if (scope_id.index() >= self.scopes.items.len or !self.scopes.items[scope_id.index()].lifecycle.isActive()) @panic("state command owner referenced an inactive scope");
                 if (self.active_stream.stateNodeForBinder(scope_id, binder_token)) |node_id| return node_id;
                 const scope = self.scopes.items[scope_id.index()];
-                if (scope.parent_scope_id == null) break;
+                if (scope.parent_scope_id == null) return null;
                 scope_id = scope.parent_scope_id.?;
             }
-            @panic("UpdateState referenced a state binder outside the command's active scope");
         }
 
         /// Evaluates scope is each site row descendant or self using explicit scope ownership rather than DOM position or content.
@@ -16961,20 +16968,29 @@ pub fn Engine(comptime Ctx: type) type {
         /// Applies an atomic batch of state changes. Every destination is
         /// resolved before any recipe or reducer runs; a reducer reads its
         /// state's settled value at this commit, so it can never apply a value
-        /// captured before an effect. Duplicate destinations are rejected.
+        /// captured before an effect. Duplicate destinations are rejected. A
+        /// change from an effect's result whose state was retired while the
+        /// effect ran is skipped; any other change to a missing state is a bug.
         pub fn tryUpdateChangeCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, changes: []const abi.NodeStateChange) CollectionError!render.Counts {
             const allocator = Ctx.allocator(ctx);
             const writes = try allocator.alloc(StateWrite, changes.len);
             defer allocator.free(writes);
+            const selected = try allocator.alloc(usize, changes.len);
+            defer allocator.free(selected);
             var destinations: std.AutoHashMapUnmanaged(u64, void) = .empty;
             defer destinations.deinit(allocator);
             try destinations.ensureTotalCapacity(allocator, std.math.cast(u32, changes.len) orelse return error.ResourceLimit);
-            for (changes, writes) |change, *write| {
+            var write_count: usize = 0;
+            for (changes, 0..) |change, change_index| {
                 const binder = switch (change.tag) {
                     .Set => change.payload_set().binder,
                     .Transform => change.payload_transform().binder,
                 };
-                const target_node_id = self.resolveStateCommandTarget(owner_scope_id, retained_values.hostSignalTokenFromCallable(binder));
+                const binder_token = retained_values.hostSignalTokenFromCallable(binder);
+                const target_node_id = if (self.applying_effect_result)
+                    self.findStateCommandTarget(owner_scope_id, binder_token) orelse continue
+                else
+                    self.resolveStateCommandTarget(owner_scope_id, binder_token);
                 const state_cap = Ctx.stateCapability(ctx, target_node_id.raw());
                 switch (change.tag) {
                     .Set => assertHostValueCapabilitiesMatch(change.payload_set().update.capability, state_cap, "state change value capability did not match its target state"),
@@ -16982,51 +16998,77 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 const destination = destinations.getOrPutAssumeCapacity(target_node_id.raw());
                 if (destination.found_existing) return error.InvalidDescriptor;
-                write.* = .{ .state_id = target_node_id.raw(), .cap = state_cap, .value = undefined };
+                writes[write_count] = .{ .state_id = target_node_id.raw(), .cap = state_cap, .value = undefined };
+                selected[write_count] = change_index;
+                write_count += 1;
             }
-            for (changes, writes) |change, *write| write.value = switch (change.tag) {
-                .Set => erased_calls.callValueInitThunk(roc_host, change.payload_set().update.initial),
+            for (writes[0..write_count], selected[0..write_count]) |*write, change_index| write.value = switch (changes[change_index].tag) {
+                .Set => erased_calls.callValueInitThunk(roc_host, changes[change_index].payload_set().update.initial),
                 .Transform => blk: {
-                    const transform = change.payload_transform();
+                    const transform = changes[change_index].payload_transform();
                     const current = Ctx.stateValueByNodeId(ctx, write.state_id);
                     defer callHostValueToUnitWithCapability(ctx, roc_host, write.cap, hv.hostValueCapabilityDrop(write.cap), current);
                     break :blk callHostValueToHostValueWithCapability(ctx, roc_host, write.cap, transform.transform, current);
                 },
             };
-            return self.tryDispatchStateWrites(ctx, roc_host, writes);
+            return self.tryDispatchStateWrites(ctx, roc_host, writes[0..write_count]);
         }
 
         /// Applies a `Then` command: its changes commit now, and its effect is
-        /// queued with an independently retained reference to the declared
-        /// reads of the handler, sink, or effect whose command this is. The host
-        /// runs queued effects after the turn settles. The reads are cloned
-        /// before the commit because the changes may retire the scope that ran
-        /// the command, such as a dialog whose button closes it; the effect
-        /// then belongs to the nearest surviving ancestor, where every state it
-        /// can still write resolves.
+        /// queued for the host to run after the turn settles. Roc prepares the
+        /// effect's thunk here, from a snapshot of the declared reads of the
+        /// handler, sink, or effect whose command this is, taken after the
+        /// changes committed. The changes may retire the scope that ran the
+        /// command, such as a dialog whose button closes it: the effect then
+        /// belongs to the nearest surviving ancestor, and if a retired scope
+        /// held one of the reads, the snapshot is the one taken just before
+        /// the commit, which is what the handler saw.
         pub fn tryThenCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, cmd: erased_calls.ThenCmd) CollectionError!render.Counts {
-            if (comptime !@hasDecl(Ctx, "runsEffects")) @panic("Then commands are unsupported by this host");
-            const origin = self.effect_origin orelse @panic("a Then command needs declared reads; bind it through an action, a change sink, or Action.on_mount");
-            const allocator = Ctx.allocator(ctx);
-            try self.pending_effects.ensureUnusedCapacity(allocator, 1);
-            var reads = origin.cloneRetained(allocator, &self.pending_roc_metrics);
-            errdefer self.releaseEffectReads(ctx, &reads);
-            const counts = try self.tryUpdateChangeCommands(ctx, roc_host, owner_scope_id, cmd.changes.items());
-            abi.increfErasedCallable(cmd.effect, 1);
-            self.pending_roc_metrics.bump(.closure_retains, 1);
-            self.pending_effects.appendAssumeCapacity(.{
-                .id = self.next_effect_id,
-                .owner_scope_id = self.nearestActiveScope(owner_scope_id),
-                .effect = cmd.effect,
-                .reads = reads,
-            });
-            self.next_effect_id += 1;
-            return counts;
+            if (comptime @hasDecl(Ctx, "runsEffects")) {
+                const origin = self.effect_origin orelse @panic("a Then command needs declared reads; bind it through an action, a change sink, or Action.on_mount");
+                const allocator = Ctx.allocator(ctx);
+                try self.pending_effects.ensureUnusedCapacity(allocator, 1);
+                var reads = origin.cloneRetained(allocator, &self.pending_roc_metrics);
+                errdefer self.releaseEffectReads(ctx, &reads);
+                const cap = retained_values.retainHostValueCapability(self.hostSignalBindingCapability(ctx, &reads), &self.pending_roc_metrics);
+                defer retained_values.releaseHostValueCapability(cap, roc_host, &self.pending_roc_metrics);
+                const before = self.evalHostSignalBinding(ctx, roc_host, &reads);
+                var before_dropped = false;
+                errdefer if (!before_dropped) callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), before);
+                const counts = try self.tryUpdateChangeCommands(ctx, roc_host, owner_scope_id, cmd.changes.items());
+                const snapshot = if (self.readsStatesActive(&reads)) blk: {
+                    callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), before);
+                    before_dropped = true;
+                    break :blk self.evalHostSignalBinding(ctx, roc_host, &reads);
+                } else before;
+                before_dropped = true;
+                defer callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), snapshot);
+                abi.increfErasedCallable(cmd.effect, 1);
+                self.pending_roc_metrics.bump(.closure_retains, 1);
+                Ctx.pushHostValueCapabilities(ctx, &.{cap});
+                const thunk = Ctx.prepareEffect(ctx, roc_host, cmd.effect, snapshot, cap);
+                Ctx.popHostValueCapabilities(ctx);
+                self.pending_effects.appendAssumeCapacity(.{
+                    .id = self.next_effect_id,
+                    .owner_scope_id = self.nearestActiveScope(owner_scope_id),
+                    .thunk = thunk,
+                    .reads = reads,
+                });
+                self.next_effect_id += 1;
+                return counts;
+            } else {
+                @panic("Then commands are unsupported by this host");
+            }
+        }
+
+        fn readsStatesActive(self: *Self, reads: *const HostSignalBinding) bool {
+            for (reads.source_node_ids) |node_id| if (self.stateIndexByNodeId(node_id) == null) return false;
+            return true;
         }
 
         /// The innermost scope at or above `scope_id` that is still active.
         /// The root scope never retires, so the walk always ends.
-        fn nearestActiveScope(self: *Self, scope_id: ids.ScopeId) ids.ScopeId {
+        pub fn nearestActiveScope(self: *Self, scope_id: ids.ScopeId) ids.ScopeId {
             var current = scope_id;
             while (true) {
                 if (current.index() >= self.scopes.items.len) @panic("command owner referenced an unknown scope");
@@ -17037,22 +17079,21 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         /// Hands the host the oldest queued effect, transferring ownership of
-        /// its closure and reads reference.
+        /// its thunk and reads reference.
         pub fn takeNextPendingEffect(self: *Self) ?PendingEffect {
             if (self.pending_effects.items.len == 0) return null;
             return self.pending_effects.orderedRemove(0);
         }
 
-        /// Releases an effect the host took but did not hand to Roc, or one
-        /// whose owning scope was disposed before it ran.
+        /// Releases an effect the host took but did not hand to Roc.
         pub fn releasePendingEffect(self: *Self, ctx: Ctx.Handle, effect: *PendingEffect) void {
-            const roc_host = self.roc_host orelse @panic("pending effect cannot release its closure without a Roc host");
-            abi.decrefErasedCallable(effect.effect, roc_host);
+            const roc_host = self.roc_host orelse @panic("pending effect cannot release its thunk without a Roc host");
+            abi.decrefErasedCallable(effect.thunk, roc_host);
             self.releaseEffectReads(ctx, &effect.reads);
             effect.* = undefined;
         }
 
-        /// Records an effect whose closure the host has prepared for its worker,
+        /// Records an effect whose thunk the host has handed to its worker,
         /// taking over the reads reference until the effect finishes.
         pub fn trackRunningEffect(self: *Self, ctx: Ctx.Handle, effect: *PendingEffect) void {
             self.running_effects.ensureUnusedCapacity(Ctx.allocator(ctx), 1) catch @panic("out of memory");
@@ -17064,8 +17105,7 @@ pub fn Engine(comptime Ctx: type) type {
             effect.* = undefined;
         }
 
-        /// Removes a finished effect's record. A canceled record has already
-        /// released its reads; the host must not apply that effect's command.
+        /// Removes a finished effect's record so the host can apply its command.
         pub fn finishRunningEffect(self: *Self, effect_id: u64) RunningEffect {
             for (self.running_effects.items, 0..) |running, index| {
                 if (running.id == effect_id) return self.running_effects.orderedRemove(index);
@@ -17073,9 +17113,9 @@ pub fn Engine(comptime Ctx: type) type {
             @panic("finished effect was not running");
         }
 
-        /// Releases the reads of a finished effect the host has applied or discarded.
+        /// Releases the reads of a finished effect the host has applied.
         pub fn releaseFinishedEffect(self: *Self, ctx: Ctx.Handle, running: *RunningEffect) void {
-            if (!running.canceled) self.releaseEffectReads(ctx, &running.reads);
+            self.releaseEffectReads(ctx, &running.reads);
             running.* = undefined;
         }
 
@@ -17084,33 +17124,12 @@ pub fn Engine(comptime Ctx: type) type {
             reads.deinit(Ctx.allocator(ctx), ctx, roc_host, &self.pending_roc_metrics);
         }
 
-        fn dropPendingEffectsInScopeSubtree(self: *Self, ctx: Ctx.Handle, scope_id: ids.ScopeId, scope_lookup: anytype) void {
-            var write_index: usize = 0;
-            for (self.pending_effects.items) |*effect| {
-                if (scope_lookup.descendantOrSelf(effect.owner_scope_id, scope_id)) {
-                    self.releasePendingEffect(ctx, effect);
-                    continue;
-                }
-                self.pending_effects.items[write_index] = effect.*;
-                write_index += 1;
-            }
-            self.pending_effects.items.len = write_index;
-            for (self.running_effects.items) |*running| {
-                if (running.canceled or !scope_lookup.descendantOrSelf(running.owner_scope_id, scope_id)) continue;
-                self.releaseEffectReads(ctx, &running.reads);
-                running.canceled = true;
-            }
-        }
-
         fn clearPendingEffects(self: *Self, ctx: Ctx.Handle) void {
             for (self.pending_effects.items) |*effect| self.releasePendingEffect(ctx, effect);
             self.pending_effects.items.len = 0;
             self.pending_effects.deinit(Ctx.allocator(ctx));
             self.pending_effects = .empty;
-            for (self.running_effects.items) |*running| {
-                if (!running.canceled) self.releaseEffectReads(ctx, &running.reads);
-                running.canceled = true;
-            }
+            for (self.running_effects.items) |*running| self.releaseEffectReads(ctx, &running.reads);
             self.running_effects.items.len = 0;
             self.running_effects.deinit(Ctx.allocator(ctx));
             self.running_effects = .empty;

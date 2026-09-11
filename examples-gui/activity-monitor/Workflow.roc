@@ -16,20 +16,13 @@ Workflow := [].{
 	drain_chunks = 64
 
 	## Polls the followed file every 500 ms while the session is waiting for
-	## more of it. The timer's scope is keyed on the accepted cursor, so each
-	## accepted read restarts the wait.
+	## more of it; each tick moves the session into `Reading` and drains from
+	## the accepted cursor.
 	poll : Ui.State(Session.Accepted) -> Elem
-	poll = |model| Ui.switch(
-		model.read(
-			|value| match (value.session.phase, value.session.source) {
-				(Session.Phase.Waiting, Session.Source.Log(request)) => Poll(request)
-				_ => NoPoll
-			},
-		),
-		|case| match case {
-			Poll(request) => Action.every(500, |_| Action.then([model.write(|value| { ..value, session: Session.read_next(value.session) })], |_| drain!(model, request)))
-			NoPoll => Elem.text("")
-		},
+	poll = |model| Ui.when(
+		model.read(|value| value.session.phase == Session.Phase.Waiting),
+		|| Action.every(500, model.read(|value| value.session), |_| Action.then([model.write(|value| { ..value, session: Session.read_next(value.session) })], |current| advance!(model, current))),
+		|| Elem.text(""),
 	)
 
 	## Opens the chooser and drains the chosen log from its start.
@@ -77,8 +70,5 @@ Workflow := [].{
 	}
 
 	failed : Ui.State(Session.Accepted), Files.Error -> Action(a)
-	failed = |model, error| match error {
-		Files.Error.Canceled => Action.update([model.write(|value| { ..value, session: Session.pause(value.session) })])
-		_ => Action.update([model.write(|value| { ..value, session: Session.failed(value.session, Files.error_text(error)) })])
-	}
+	failed = |model, error| Action.update([model.write(|value| { ..value, session: Session.failed(value.session, Files.error_text(error)) })])
 }

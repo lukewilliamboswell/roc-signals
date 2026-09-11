@@ -1,3 +1,4 @@
+import Capability
 import Elem exposing [Elem]
 import HostValue exposing [HostValue]
 import Node
@@ -86,8 +87,39 @@ Action(a) := [Action(Node.Cmd)].{
 	on_mount : (() -> Action({})) -> Elem
 	on_mount = |to_action| Ui.on_change_initial(Signal.const({}), |_| to_cmd(to_action()))
 
-	## Run an action on every tick of a scoped interval; the reads are the
-	## tick count.
-	every : U64, (U64 -> Action(U64)) -> Elem
-	every = |period_ms, to_action| Ui.on_change(Signal.interval(period_ms), |tick| to_cmd(to_action(tick)))
+	## Run an action on every tick of a scoped interval, with `reads` as they
+	## are at that tick. A change to the reads between ticks does not run it.
+	every : U64, Signal(a), (a -> Action(a)) -> Elem
+	every = |period_ms, reads, to_action| Ui.on_change(sampled(Signal.interval(period_ms), reads), |value| to_cmd(to_action(value)))
+
+	## `reads` as they are at each change of `trigger`, published only then:
+	## the pair signal compares ticks alone, so a reads change between ticks
+	## is pruned, and the projection never compares equal, so every tick
+	## publishes even when the reads did not change.
+	sampled : Signal(U64), Signal(a) -> Signal(a)
+	sampled = |trigger, reads| {
+		pair_cap : Capability.Capability({ tick : U64, value : a })
+		pair_cap = Capability.new_with_eq(|left, right| left.tick == right.tick)
+		pair : HostValue, HostValue -> HostValue
+		pair = |tick_hv, reads_hv| {
+			tick : U64
+			tick = Box.unbox(Capability.get(tick_hv, trigger.cap))
+			value : a
+			value = Box.unbox(Capability.get(reads_hv, reads.cap))
+			Capability.store(Box.box({ tick, value }), pair_cap)
+		}
+		pair_box = Box.box(pair)
+		paired : Signal({ tick : U64, value : a })
+		paired = Signal.from_expr(Node.SignalExpr.Map2(pair_box, Signal.to_expr(trigger), Signal.to_expr(reads), pair_box, Capability.handle(pair_cap)), pair_cap)
+		value_cap : Capability.Capability(a)
+		value_cap = Capability.new_with_eq(|_, _| False)
+		project : HostValue -> HostValue
+		project = |pair_hv| {
+			current : { tick : U64, value : a }
+			current = Box.unbox(Capability.get(pair_hv, pair_cap))
+			Capability.store(Box.box(current.value), value_cap)
+		}
+		project_box = Box.box(project)
+		Signal.from_expr(Node.SignalExpr.Map(project_box, Signal.to_expr(paired), project_box, Capability.handle(value_cap)), value_cap)
+	}
 }

@@ -918,20 +918,17 @@ document_toolbar = |handles, actions| {
 ## A failed or canceled operation returns to `Idle` with its problem shown. A
 ## save that was closing the window reopens the close dialog instead, so the
 ## problem appears where the user was.
-failed_file : Handles, Files.Error, Bool -> Action(a)
-failed_file = |handles, error, close_after| Action.update([
-	handles.document.write(
-		|doc| {
-			..doc,
-			phase: Phase.Idle,
-			problem: match error {
-				Files.Error.Canceled => "Operation canceled; the current board is unchanged."
-				_ => Files.error_text(error)
-			},
-		},
-	),
+settle_problem : Handles, Str, Bool -> Action(a)
+settle_problem = |handles, problem, close_after| Action.update([
+	handles.document.write(|doc| { ..doc, phase: Phase.Idle, problem }),
 	handles.close.write(|intent| if close_after and intent == Close.Saving { Close.Confirm } else { intent }),
 ])
+
+failed_file : Handles, Files.Error, Bool -> Action(a)
+failed_file = |handles, error, close_after| settle_problem(handles, Files.error_text(error), close_after)
+
+canceled : Handles, Bool -> Action(a)
+canceled = |handles, close_after| settle_problem(handles, "Operation canceled; the current board is unchanged.", close_after)
 
 load_document : Handles, Files.TextFile -> Action(a)
 load_document = |handles, file| match Codec.decode(file.text) {
@@ -981,7 +978,7 @@ document_bindings = |handles| [
 open! : Handles => Action(a)
 open! = |handles| match Files.choose_file!() {
 	Err(error) => failed_file(handles, error, False)
-	Ok(Files.Choice.Canceled) => failed_file(handles, Files.Error.Canceled, False)
+	Ok(Files.Choice.Canceled) => canceled(handles, False)
 	Ok(Files.Choice.Chosen(path)) => match Files.read_text!(path) {
 		Ok(file) => load_document(handles, file)
 		Err(error) => failed_file(handles, error, False)
@@ -999,7 +996,7 @@ write! = |handles, destination, save, close_after| {
 		Known(known) => known
 		Chosen => match Files.choose_save_path!({ directory: Home, suggested_name: "My project.board.json" }) {
 			Err(error) => return failed_file(handles, error, close_after)
-			Ok(Files.Choice.Canceled) => return failed_file(handles, Files.Error.Canceled, close_after)
+			Ok(Files.Choice.Canceled) => return canceled(handles, close_after)
 			Ok(Files.Choice.Chosen(chosen)) => chosen
 		}
 	}

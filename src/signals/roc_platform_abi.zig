@@ -3634,19 +3634,17 @@ comptime {
 
 /// Tag discriminant for Files.Error.
 pub const FilesErrorTag = enum(u8) {
-    Canceled = 0,
-    InvalidPath = 1,
-    InvalidUtf8 = 2,
-    Io = 3,
-    NotFound = 4,
-    PermissionDenied = 5,
-    ResourceLimit = 6,
-    Unavailable = 7,
+    InvalidPath = 0,
+    InvalidUtf8 = 1,
+    Io = 2,
+    NotFound = 3,
+    PermissionDenied = 4,
+    ResourceLimit = 5,
+    Unavailable = 6,
 };
 
 /// Payload union for Files.Error.
 pub const FilesErrorPayload = extern union {
-    canceled: [0]u8,
     invalid_path: RocStr,
     invalid_utf8: RocStr,
     io: RocStr,
@@ -6850,7 +6848,6 @@ pub const FilesChoose_fileResultRelease = struct {
 
 fn decrefFilesError(value: FilesError, roc_host: *RocHost) void {
     switch (value.tag) {
-        .Canceled => {},
         .InvalidPath => {
             value.payload_invalid_path().decref(roc_host);
         },
@@ -6877,7 +6874,6 @@ fn decrefFilesError(value: FilesError, roc_host: *RocHost) void {
 
 fn increfFilesError(value: FilesError, amount: isize) void {
     switch (value.tag) {
-        .Canceled => {},
         .InvalidPath => {
             value.payload_invalid_path().incref(amount);
         },

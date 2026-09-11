@@ -7,10 +7,7 @@ Files := [].{
 	Choice := [Canceled, Chosen(Str)].{
 		is_eq : _
 	}
-	## `Canceled` is never produced by the host; it is available to apps that
-	## treat a dismissed chooser as a failure.
 	Error := [
-		Canceled,
 		NotFound(Str),
 		PermissionDenied(Str),
 		InvalidUtf8(Str),
@@ -256,7 +253,6 @@ Files := [].{
 	## Describe a native failure without losing its typed case.
 	error_text : Error -> Str
 	error_text = |error| match error {
-		Canceled => "Canceled"
 		NotFound(path) => "Not found: ${path}"
 		PermissionDenied(path) => "Permission denied: ${path}"
 		InvalidUtf8(path) => "Not valid UTF-8: ${path}"

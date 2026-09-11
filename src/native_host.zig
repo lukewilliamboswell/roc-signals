@@ -495,6 +495,12 @@ const NativeCtx = struct {
     pub const Handle = *HostEnv;
     /// The native host runs `Then` effects on the UI thread after each turn.
     pub const runsEffects = true;
+
+    /// Has Roc turn an effect closure and its reads snapshot into the thunk a
+    /// worker runs; the closure reference is consumed.
+    pub fn prepareEffect(_: Handle, _: *abi.RocHost, effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
+        return prepareEffectThunk(effect, snapshot, cap);
+    }
     pub const RegistryOps = hv.RegistryOps();
     pub const Metrics = RuntimeMetrics;
     pub const Sink = render_sink.DomSink(HostEnv);
@@ -3248,10 +3254,9 @@ fn runEffectJob(job: *EffectJob) void {
     }
 }
 
-/// Prepares the effects queued by the turns that just committed, oldest
-/// first, on the UI thread: each effect's closure receives a fresh snapshot of
-/// its origin's declared reads and returns the thunk a worker runs. The live
-/// host runs every thunk on its own worker, so effects overlap and their
+/// Hands the effects queued by the turns that just committed, oldest first,
+/// to workers. Each thunk was prepared by Roc when its `Then` committed. The
+/// live host runs every thunk on its own worker, so effects overlap and their
 /// results apply as they complete; the spec host runs each on a worker thread
 /// it joins at once, so specs stay deterministic while still exercising the
 /// cross-thread path. An effect that queues further effects extends the same
@@ -3259,15 +3264,8 @@ fn runEffectJob(job: *EffectJob) void {
 fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
     while (host.engine.takeNextPendingEffect()) |taken| {
         var effect = taken;
-        const cap = host.engine.hostSignalBindingCapability(host, &effect.reads);
-        const snapshot = host.engine.evalHostSignalBinding(host, roc_host, &effect.reads);
-        const caps = [_]HostValueCapability{cap};
-        signals.retained_values.pushCapabilities(NativeCtx, host, &caps);
-        const thunk = prepareEffectThunk(effect.effect, snapshot, cap);
-        signals.retained_values.popCapabilities(NativeCtx, host);
-        callHostValueToUnitWithCapability(host, roc_host, cap, hv.hostValueCapabilityDrop(cap), snapshot);
         const job = host.hostAllocator().create(EffectJob) catch @panic("out of memory");
-        job.* = .{ .id = effect.id, .thunk = thunk };
+        job.* = .{ .id = effect.id, .thunk = effect.thunk };
         host.engine.trackRunningEffect(host, &effect);
         if (Gpui.live) {
             Gpui.queueEffectJob(job);
@@ -3281,15 +3279,17 @@ fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
 
 /// Applies the command a finished effect returned, with the effect's declared
 /// reads as the origin so a chain of `Then`s keeps snapshotting the same
-/// signals. An effect whose owning scope was disposed while it ran has its
-/// command discarded.
+/// signals. The command runs in the nearest scope still active at or above
+/// the effect's owner, and its changes to states retired while the effect ran
+/// are skipped.
 fn completeEffectJob(host: *HostEnv, roc_host: *abi.RocHost, job: *EffectJob) void {
     var running = host.engine.finishRunningEffect(job.id);
-    if (!running.canceled) {
-        host.engine.effect_origin = &running.reads;
-        _ = host.engine.tryRunCommand(host, roc_host, running.owner_scope_id, job.cmd) catch |err| failPreparedStateDispatch(err);
-        host.engine.effect_origin = null;
-    }
+    const owner_scope_id = host.engine.nearestActiveScope(running.owner_scope_id);
+    host.engine.effect_origin = &running.reads;
+    host.engine.applying_effect_result = true;
+    _ = host.engine.tryRunCommand(host, roc_host, owner_scope_id, job.cmd) catch |err| failPreparedStateDispatch(err);
+    host.engine.applying_effect_result = false;
+    host.engine.effect_origin = null;
     job.cmd.decref(roc_host);
     host.engine.releaseFinishedEffect(host, &running);
     host.hostAllocator().destroy(job);

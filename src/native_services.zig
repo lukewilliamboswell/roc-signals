@@ -86,7 +86,7 @@ fn str(roc_host: *abi.RocHost, text: []const u8) abi.RocStr {
 
 fn filesError(roc_host: *abi.RocHost, tag: abi.FilesErrorTag, detail: []const u8) abi.FilesError {
     var err: abi.FilesError = .{ .payload = undefined, .tag = tag };
-    if (tag != .Canceled) payloadPtr(abi.RocStr, &err).* = str(roc_host, detail);
+    payloadPtr(abi.RocStr, &err).* = str(roc_host, detail);
     return err;
 }
 
