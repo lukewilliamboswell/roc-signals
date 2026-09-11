@@ -89,6 +89,89 @@ pub fn isWindowOnly(cmd_type: SpecCommandType) bool {
     };
 }
 
+/// The window-only steps the GUI host decodes by tag name. The Rust decoder
+/// carries the same list; a test on each side pins the two together, because
+/// the tag names cross the ABI as strings and nothing else checks them.
+pub const window_step_tags = [_][]const u8{
+    "wait",           "click",         "focus",           "type_text",      "key",             "shortcut",
+    "expect_visible", "expect_absent", "expect_text",     "expect_value",   "expect_disabled", "expect_selected",
+    "expect_focused", "expect_count",  "expect_onscreen", "expect_history", "snapshot",        "close",
+};
+
+/// Writes a parsed spec in one deterministic line per command, every field
+/// spelled out. This is what a spec *means* to the runner, independent of how
+/// it was spelled, and the checked-in golden of every spec's canonical form is
+/// the proof that a parser change changed nothing: the same spec must produce
+/// the same command sequence.
+pub fn writeCanonical(writer: *std.Io.Writer, spec: ParsedTestSpec) std.Io.Writer.Error!void {
+    try writer.print("{s} ", .{if (spec.scenario != null) "scenario" else "test"});
+    try writeQuoted(writer, spec.name);
+    if (spec.scenario) |header| {
+        try writer.print(" window={d}x{d}", .{ header.window_width, header.window_height });
+        try writer.writeAll(" assets=");
+        try writeOptionalQuoted(writer, header.assets);
+        try writer.writeAll(" choose=[");
+        for (header.choices, 0..) |choice, index| {
+            if (index > 0) try writer.writeByte(' ');
+            try writeQuoted(writer, choice);
+        }
+        try writer.writeAll("] diagnostic=");
+        try writeOptionalQuoted(writer, header.diagnostic);
+        try writer.writeAll(" on=[");
+        for (header.on, 0..) |token, index| {
+            if (index > 0) try writer.writeByte(' ');
+            try writer.writeAll(token);
+        }
+        try writer.writeByte(']');
+    }
+    try writer.writeByte('\n');
+    for (spec.commands) |cmd| {
+        try writer.print("  {d}: {s}", .{ cmd.line_num, @tagName(cmd.cmd_type) });
+        try writer.print(" locator={s}", .{@tagName(cmd.locator.kind)});
+        try writeField(writer, "role", cmd.locator.role);
+        try writeField(writer, "name", cmd.locator.name);
+        try writeField(writer, "label", cmd.locator.label);
+        try writeField(writer, "text", cmd.locator.text);
+        try writeField(writer, "test_id", cmd.locator.test_id);
+        try writeField(writer, "task", cmd.task_name);
+        if (cmd.expected_task_kinds != 0) try writer.print(" kinds={x}", .{cmd.expected_task_kinds});
+        try writeField(writer, "attr", cmd.expected_attr);
+        if (cmd.interval_ms) |value| try writer.print(" interval={d}", .{value});
+        if (cmd.shortcut) |chord| try writer.print(" shortcut={d}+{d}", .{ chord.key, chord.modifiers });
+        try writeField(writer, "expected", cmd.expected_text);
+        if (cmd.expected_count) |value| try writer.print(" count={d}", .{value});
+        if (cmd.expected_metric_delta) |value| try writer.print(" delta={d}", .{value});
+        if (cmd.expected_bool) |value| try writer.print(" bool={}", .{value});
+        try writer.writeByte('\n');
+    }
+}
+
+fn writeField(writer: *std.Io.Writer, name: []const u8, value: ?[]const u8) std.Io.Writer.Error!void {
+    if (value) |text| {
+        try writer.print(" {s}=", .{name});
+        try writeQuoted(writer, text);
+    }
+}
+
+fn writeOptionalQuoted(writer: *std.Io.Writer, value: ?[]const u8) std.Io.Writer.Error!void {
+    if (value) |text| try writeQuoted(writer, text) else try writer.writeAll("none");
+}
+
+/// Quotes with the same escapes the reader accepts, so a golden line is
+/// unambiguous even for text holding quotes, backslashes, or line ends.
+fn writeQuoted(writer: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!void {
+    try writer.writeByte('"');
+    for (text) |byte| switch (byte) {
+        '"' => try writer.writeAll("\\\""),
+        '\\' => try writer.writeAll("\\\\"),
+        '\n' => try writer.writeAll("\\n"),
+        '\r' => try writer.writeAll("\\r"),
+        '\t' => try writer.writeAll("\\t"),
+        else => try writer.writeByte(byte),
+    };
+    try writer.writeByte('"');
+}
+
 /// The header of a `(scenario ...)`: what the window run needs before its
 /// first step. Everything here used to be script front matter read by the
 /// Python driver; the host owns it now so that one parser decides.
@@ -208,107 +291,6 @@ pub fn parseTestSpecFile(allocator: std.mem.Allocator, file_path: []const u8) Pa
     return parseSExprTestSpec(allocator, content);
 }
 
-const SplitTrailingQuoted = struct {
-    head: []const u8,
-    quoted: []const u8,
-};
-
-/// True when the byte at `idx` is escaped by an odd run of preceding backslashes.
-fn isEscapedAt(input: []const u8, idx: usize) bool {
-    var backslashes: usize = 0;
-    var i = idx;
-    while (i > 0) {
-        i -= 1;
-        if (input[i] != '\\') break;
-        backslashes += 1;
-    }
-    return backslashes % 2 == 1;
-}
-
-/// Index of the last `"` that is not itself escaped.
-///
-/// The quoted values are unescaped later, so the delimiter scan has to skip
-/// `\"` — otherwise an expected string containing a quote splits in the wrong
-/// place and the whole line fails to parse.
-fn findUnescapedQuoteLast(input: []const u8) ?usize {
-    var i = input.len;
-    while (i > 0) {
-        i -= 1;
-        if (input[i] == '"' and !isEscapedAt(input, i)) return i;
-    }
-    return null;
-}
-
-fn splitTrailingQuoted(input: []const u8) ParseError!SplitTrailingQuoted {
-    const end_quote = findUnescapedQuoteLast(input) orelse return ParseError.InvalidFormat;
-    if (end_quote == 0) return ParseError.InvalidFormat;
-    const before_end = input[0..end_quote];
-    const start_quote = findUnescapedQuoteLast(before_end) orelse return ParseError.InvalidFormat;
-    const tail = std.mem.trim(u8, input[end_quote + 1 ..], " \t");
-    if (tail.len != 0) return ParseError.InvalidFormat;
-    return .{
-        .head = std.mem.trim(u8, input[0..start_quote], " \t"),
-        .quoted = input[start_quote + 1 .. end_quote],
-    };
-}
-
-fn splitTrailingToken(input: []const u8) ParseError!struct { head: []const u8, token: []const u8 } {
-    const trimmed = std.mem.trim(u8, input, " \t");
-    const space_idx = std.mem.findLastAny(u8, trimmed, " \t") orelse return ParseError.InvalidFormat;
-    return .{
-        .head = std.mem.trim(u8, trimmed[0..space_idx], " \t"),
-        .token = std.mem.trim(u8, trimmed[space_idx + 1 ..], " \t"),
-    };
-}
-
-fn parseSingleQuoted(input: []const u8) ParseError![]const u8 {
-    const trimmed = std.mem.trim(u8, input, " \t");
-    if (trimmed.len < 2 or trimmed[0] != '"' or trimmed[trimmed.len - 1] != '"') return ParseError.InvalidFormat;
-    return trimmed[1 .. trimmed.len - 1];
-}
-
-fn splitTwoQuoted(input: []const u8) ParseError!struct { first: []const u8, second: []const u8 } {
-    const trimmed = std.mem.trim(u8, input, " \t");
-    if (trimmed.len < 5 or trimmed[0] != '"') return ParseError.InvalidFormat;
-    const first_end = std.mem.findScalarPos(u8, trimmed, 1, '"') orelse return ParseError.InvalidFormat;
-    const rest = std.mem.trim(u8, trimmed[first_end + 1 ..], " \t");
-    if (rest.len < 2 or rest[0] != '"' or rest[rest.len - 1] != '"') return ParseError.InvalidFormat;
-    return .{
-        .first = trimmed[1..first_end],
-        .second = rest[1 .. rest.len - 1],
-    };
-}
-
-fn dupeUnescapedQuoted(allocator: std.mem.Allocator, input: []const u8) ParseError![]u8 {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    var index: usize = 0;
-    while (index < input.len) {
-        const byte = input[index];
-        if (byte != '\\') {
-            out.append(allocator, byte) catch return ParseError.OutOfMemory;
-            index += 1;
-            continue;
-        }
-
-        index += 1;
-        if (index >= input.len) return ParseError.InvalidFormat;
-        const escaped: u8 = switch (input[index]) {
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            '\\' => '\\',
-            '"' => '"',
-            else => return ParseError.InvalidFormat,
-        };
-        out.append(allocator, escaped) catch return ParseError.OutOfMemory;
-        index += 1;
-    }
-
-    return out.toOwnedSlice(allocator) catch return ParseError.OutOfMemory;
-}
-
 fn dupePlain(allocator: std.mem.Allocator, input: []const u8) ParseError![]u8 {
     return allocator.dupe(u8, input) catch return ParseError.OutOfMemory;
 }
@@ -346,355 +328,6 @@ pub fn onlineSnapshotFromSpecText(text: []const u8) ParseError!boundary.OnlineSn
     if (std.mem.eql(u8, text, "online")) return .online;
     if (std.mem.eql(u8, text, "offline")) return .offline;
     return ParseError.InvalidFormat;
-}
-
-// Locator values are quoted with the same escapes `writeLegacyQuoted` emits, so
-// they are unescaped here rather than taken literally. Without this a locator
-// could not name an element whose text contains a backslash, quote, or newline
-// -- for instance a Windows path shown in a breadcrumb.
-fn parseQuotedValue(allocator: std.mem.Allocator, prefix: []const u8, input: []const u8) ParseError!?[]const u8 {
-    if (!std.mem.startsWith(u8, input, prefix)) return null;
-    const rest = std.mem.trim(u8, input[prefix.len..], " \t");
-    if (rest.len < 2 or rest[0] != '"' or rest[rest.len - 1] != '"') return ParseError.InvalidFormat;
-    return try dupeUnescapedQuoted(allocator, rest[1 .. rest.len - 1]);
-}
-
-fn parseLocator(allocator: std.mem.Allocator, input: []const u8) ParseError!Locator {
-    const trimmed = std.mem.trim(u8, input, " \t");
-    if (trimmed.len == 0) return ParseError.InvalidFormat;
-
-    if (std.mem.startsWith(u8, trimmed, "role:")) {
-        const rest = trimmed["role:".len..];
-        const space_idx = std.mem.findAny(u8, rest, " \t") orelse return ParseError.InvalidFormat;
-        const role = rest[0..space_idx];
-        const name_part = std.mem.trim(u8, rest[space_idx + 1 ..], " \t");
-        const name = (try parseQuotedValue(allocator, "name:", name_part)) orelse return ParseError.InvalidFormat;
-        const role_copy = allocator.dupe(u8, role) catch return ParseError.OutOfMemory;
-        return .{
-            .kind = .role_name,
-            .role = role_copy,
-            .name = name,
-        };
-    }
-
-    if ((try parseQuotedValue(allocator, "label:", trimmed))) |value| return .{ .kind = .label, .label = value };
-    if ((try parseQuotedValue(allocator, "text:", trimmed))) |value| return .{ .kind = .text, .text = value };
-    if ((try parseQuotedValue(allocator, "test_id:", trimmed))) |value| return .{ .kind = .test_id, .test_id = value };
-
-    return ParseError.InvalidFormat;
-}
-
-fn appendSpecCommand(
-    commands: *std.ArrayListUnmanaged(SpecCommand),
-    allocator: std.mem.Allocator,
-    cmd_type: SpecCommandType,
-    locator: Locator,
-    expected_text: ?[]const u8,
-    expected_count: ?u64,
-    expected_bool: ?bool,
-    line_num: usize,
-) ParseError!void {
-    commands.append(allocator, .{
-        .cmd_type = cmd_type,
-        .locator = locator,
-        .expected_text = expected_text,
-        .expected_count = expected_count,
-        .expected_metric_delta = null,
-        .expected_bool = expected_bool,
-        .line_num = line_num,
-    }) catch return ParseError.OutOfMemory;
-}
-
-fn parseBoolToken(token: []const u8) ParseError!bool {
-    if (std.mem.eql(u8, token, "true")) return true;
-    if (std.mem.eql(u8, token, "false")) return false;
-    return ParseError.InvalidFormat;
-}
-
-/// Parses test spec and rejects malformed input without semantic recovery.
-pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseError![]SpecCommand {
-    var commands: std.ArrayListUnmanaged(SpecCommand) = .empty;
-    errdefer commands.deinit(allocator);
-
-    var line_num: usize = 0;
-    var lines = std.mem.splitScalar(u8, content, '\n');
-
-    while (lines.next()) |line| {
-        line_num += 1;
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
-
-        if (std.mem.startsWith(u8, trimmed, "click ")) {
-            try appendSpecCommand(&commands, allocator, .click, try parseLocator(allocator, trimmed[6..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "real_click ")) {
-            try appendSpecCommand(&commands, allocator, .real_click, try parseLocator(allocator, trimmed["real_click ".len..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "pointer_down ")) {
-            try appendSpecCommand(&commands, allocator, .pointer_down, try parseLocator(allocator, trimmed["pointer_down ".len..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "pointer_up ")) {
-            try appendSpecCommand(&commands, allocator, .pointer_up, try parseLocator(allocator, trimmed["pointer_up ".len..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "pointer_enter ")) {
-            try appendSpecCommand(&commands, allocator, .pointer_enter, try parseLocator(allocator, trimmed["pointer_enter ".len..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "pointer_leave ")) {
-            try appendSpecCommand(&commands, allocator, .pointer_leave, try parseLocator(allocator, trimmed["pointer_leave ".len..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "key_down ")) {
-            const shift_split = try splitTrailingToken(trimmed["key_down ".len..]);
-            const key_split = try splitTrailingQuoted(shift_split.head);
-            const key_copy = try dupeUnescapedQuoted(allocator, key_split.quoted);
-            errdefer allocator.free(key_copy);
-            try appendSpecCommand(&commands, allocator, .key_down, try parseLocator(allocator, key_split.head), key_copy, null, try parseBoolToken(shift_split.token), line_num);
-        } else if (std.mem.eql(u8, trimmed, "request_window_close")) {
-            try appendSpecCommand(&commands, allocator, .request_window_close, emptyLocator(), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "expect_window_closed ")) {
-            try appendSpecCommand(&commands, allocator, .expect_window_closed, emptyLocator(), null, null, try parseBoolToken(trimmed["expect_window_closed ".len..]), line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "shortcut ")) {
-            const modifier_split = try splitTrailingToken(trimmed["shortcut ".len..]);
-            const modifiers = std.fmt.parseInt(u32, modifier_split.token, 10) catch return ParseError.InvalidFormat;
-            const key_split = try splitTrailingQuoted(modifier_split.head);
-            const key = try dupeUnescapedQuoted(allocator, key_split.quoted);
-            defer allocator.free(key);
-            const chord = signals.key_chord.parse(key, modifiers) catch return ParseError.InvalidFormat;
-            try appendSpecCommand(&commands, allocator, .shortcut, try parseLocator(allocator, key_split.head), null, null, null, line_num);
-            commands.items[commands.items.len - 1].shortcut = chord;
-        } else if (std.mem.startsWith(u8, trimmed, "focus ")) {
-            try appendSpecCommand(&commands, allocator, .focus, try parseLocator(allocator, trimmed["focus ".len..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "blur ")) {
-            try appendSpecCommand(&commands, allocator, .blur, try parseLocator(allocator, trimmed["blur ".len..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "change ")) {
-            const split = try splitTrailingQuoted(trimmed["change ".len..]);
-            const value_copy = try dupeUnescapedQuoted(allocator, split.quoted);
-            try appendSpecCommand(&commands, allocator, .change, try parseLocator(allocator, split.head), value_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "select_option ")) {
-            const split = try splitTrailingQuoted(trimmed["select_option ".len..]);
-            const value_copy = try dupeUnescapedQuoted(allocator, split.quoted);
-            try appendSpecCommand(&commands, allocator, .select_option, try parseLocator(allocator, split.head), value_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "composition_start ")) {
-            try appendSpecCommand(&commands, allocator, .composition_start, try parseLocator(allocator, trimmed["composition_start ".len..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "composition_end ")) {
-            try appendSpecCommand(&commands, allocator, .composition_end, try parseLocator(allocator, trimmed["composition_end ".len..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "custom_event ")) {
-            const detail_split = try splitTrailingQuoted(trimmed["custom_event ".len..]);
-            const event_split = try splitTrailingQuoted(detail_split.head);
-            const event_name = try dupeUnescapedQuoted(allocator, event_split.quoted);
-            errdefer allocator.free(event_name);
-            const detail = try dupeUnescapedQuoted(allocator, detail_split.quoted);
-            errdefer allocator.free(detail);
-            try appendSpecCommand(&commands, allocator, .custom_event, try parseLocator(allocator, event_split.head), detail, null, null, line_num);
-            commands.items[commands.items.len - 1].task_name = event_name;
-        } else if (std.mem.startsWith(u8, trimmed, "submit ")) {
-            try appendSpecCommand(&commands, allocator, .submit, try parseLocator(allocator, trimmed["submit ".len..]), null, null, null, line_num);
-        } else if (std.mem.eql(u8, trimmed, "mark_metrics")) {
-            try appendSpecCommand(&commands, allocator, .mark_metrics, emptyLocator(), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "fill ")) {
-            const split = try splitTrailingQuoted(trimmed[5..]);
-            const value_copy = try dupeUnescapedQuoted(allocator, split.quoted);
-            try appendSpecCommand(&commands, allocator, .fill, try parseLocator(allocator, split.head), value_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "check ")) {
-            try appendSpecCommand(&commands, allocator, .check, try parseLocator(allocator, trimmed[6..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "uncheck ")) {
-            try appendSpecCommand(&commands, allocator, .uncheck, try parseLocator(allocator, trimmed[8..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "expect_text ")) {
-            const split = try splitTrailingQuoted(trimmed[12..]);
-            const text_copy = try dupeUnescapedQuoted(allocator, split.quoted);
-            try appendSpecCommand(&commands, allocator, .expect_text, try parseLocator(allocator, split.head), text_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "expect_visible ")) {
-            try appendSpecCommand(&commands, allocator, .expect_visible, try parseLocator(allocator, trimmed[15..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "expect_absent ")) {
-            try appendSpecCommand(&commands, allocator, .expect_absent, try parseLocator(allocator, trimmed[14..]), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "expect_value ")) {
-            const split = try splitTrailingQuoted(trimmed[13..]);
-            const value_copy = try dupeUnescapedQuoted(allocator, split.quoted);
-            try appendSpecCommand(&commands, allocator, .expect_value, try parseLocator(allocator, split.head), value_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "expect_attr ")) {
-            const value_split = try splitTrailingQuoted(trimmed["expect_attr ".len..]);
-            const name_split = try splitTrailingToken(value_split.head);
-            const attr_name = allocator.dupe(u8, name_split.token) catch return ParseError.OutOfMemory;
-            errdefer allocator.free(attr_name);
-            const value_copy = try dupeUnescapedQuoted(allocator, value_split.quoted);
-            errdefer allocator.free(value_copy);
-            try appendSpecCommand(&commands, allocator, .expect_attr, try parseLocator(allocator, name_split.head), value_copy, null, null, line_num);
-            commands.items[commands.items.len - 1].expected_attr = attr_name;
-        } else if (std.mem.startsWith(u8, trimmed, "expect_no_attr ")) {
-            const name_split = try splitTrailingToken(trimmed["expect_no_attr ".len..]);
-            const attr_name = allocator.dupe(u8, name_split.token) catch return ParseError.OutOfMemory;
-            errdefer allocator.free(attr_name);
-            try appendSpecCommand(&commands, allocator, .expect_no_attr, try parseLocator(allocator, name_split.head), null, null, null, line_num);
-            commands.items[commands.items.len - 1].expected_attr = attr_name;
-        } else if (std.mem.startsWith(u8, trimmed, "expect_checked ")) {
-            const split = try splitTrailingToken(trimmed[15..]);
-            try appendSpecCommand(&commands, allocator, .expect_checked, try parseLocator(allocator, split.head), null, null, try parseBoolToken(split.token), line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "expect_disabled ")) {
-            const split = try splitTrailingToken(trimmed[16..]);
-            try appendSpecCommand(&commands, allocator, .expect_disabled, try parseLocator(allocator, split.head), null, null, try parseBoolToken(split.token), line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "expect_updates ")) {
-            const split = try splitTrailingToken(trimmed[15..]);
-            const expected_count = std.fmt.parseInt(u64, split.token, 10) catch return ParseError.InvalidFormat;
-            try appendSpecCommand(&commands, allocator, .expect_updates, try parseLocator(allocator, split.head), null, expected_count, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "resolve_task ")) {
-            const split = try splitTwoQuoted(trimmed["resolve_task ".len..]);
-            const task_name = try dupePlain(allocator, split.first);
-            errdefer allocator.free(task_name);
-            const payload = try dupeUnescapedQuoted(allocator, split.second);
-            errdefer allocator.free(payload);
-            try appendSpecCommand(&commands, allocator, .resolve_task, emptyLocator(), payload, null, null, line_num);
-            commands.items[commands.items.len - 1].task_name = task_name;
-        } else if (std.mem.startsWith(u8, trimmed, "resolve_stale_task ")) {
-            const split = try splitTwoQuoted(trimmed["resolve_stale_task ".len..]);
-            const task_name = try dupePlain(allocator, split.first);
-            errdefer allocator.free(task_name);
-            const payload = try dupeUnescapedQuoted(allocator, split.second);
-            errdefer allocator.free(payload);
-            try appendSpecCommand(&commands, allocator, .resolve_stale_task, emptyLocator(), payload, null, null, line_num);
-            commands.items[commands.items.len - 1].task_name = task_name;
-        } else if (std.mem.startsWith(u8, trimmed, "reject_task ")) {
-            const split = try splitTwoQuoted(trimmed["reject_task ".len..]);
-            const task_name = try dupePlain(allocator, split.first);
-            errdefer allocator.free(task_name);
-            const payload = try dupeUnescapedQuoted(allocator, split.second);
-            errdefer allocator.free(payload);
-            try appendSpecCommand(&commands, allocator, .reject_task, emptyLocator(), payload, null, null, line_num);
-            commands.items[commands.items.len - 1].task_name = task_name;
-        } else if (std.mem.startsWith(u8, trimmed, "tick_interval ")) {
-            const period_text = std.mem.trim(u8, trimmed["tick_interval ".len..], " \t");
-            const period_ms = std.fmt.parseInt(u64, period_text, 10) catch return ParseError.InvalidFormat;
-            try appendSpecCommand(&commands, allocator, .tick_interval, emptyLocator(), null, null, null, line_num);
-            commands.items[commands.items.len - 1].interval_ms = period_ms;
-        } else if (std.mem.startsWith(u8, trimmed, "tick_interval_if_active ")) {
-            const period_text = std.mem.trim(u8, trimmed["tick_interval_if_active ".len..], " \t");
-            const period_ms = std.fmt.parseInt(u64, period_text, 10) catch return ParseError.InvalidFormat;
-            try appendSpecCommand(&commands, allocator, .tick_interval_if_active, emptyLocator(), null, null, null, line_num);
-            commands.items[commands.items.len - 1].interval_ms = period_ms;
-        } else if (std.mem.startsWith(u8, trimmed, "expect_cleanup ")) {
-            const split = try splitTrailingToken(trimmed["expect_cleanup ".len..]);
-            const name_value = try parseSingleQuoted(split.head);
-            const task_name = allocator.dupe(u8, name_value) catch return ParseError.OutOfMemory;
-            errdefer allocator.free(task_name);
-            const expected_count = std.fmt.parseInt(u64, split.token, 10) catch return ParseError.InvalidFormat;
-            try appendSpecCommand(&commands, allocator, .expect_cleanup, emptyLocator(), null, expected_count, null, line_num);
-            commands.items[commands.items.len - 1].task_name = task_name;
-        } else if (std.mem.startsWith(u8, trimmed, "expect_pending_task ")) {
-            const split = try splitTrailingToken(trimmed["expect_pending_task ".len..]);
-            const name_value = try parseSingleQuoted(split.head);
-            const task_name = allocator.dupe(u8, name_value) catch return ParseError.OutOfMemory;
-            errdefer allocator.free(task_name);
-            const expected_count = std.fmt.parseInt(u64, split.token, 10) catch return ParseError.InvalidFormat;
-            try appendSpecCommand(&commands, allocator, .expect_pending_task, emptyLocator(), null, expected_count, null, line_num);
-            commands.items[commands.items.len - 1].task_name = task_name;
-        } else if (std.mem.startsWith(u8, trimmed, "expect_canceled_task ")) {
-            const split = try splitTrailingToken(trimmed["expect_canceled_task ".len..]);
-            const name_value = try parseSingleQuoted(split.head);
-            const task_name = allocator.dupe(u8, name_value) catch return ParseError.OutOfMemory;
-            errdefer allocator.free(task_name);
-            const expected_count = std.fmt.parseInt(u64, split.token, 10) catch return ParseError.InvalidFormat;
-            try appendSpecCommand(&commands, allocator, .expect_canceled_task, emptyLocator(), null, expected_count, null, line_num);
-            commands.items[commands.items.len - 1].task_name = task_name;
-        } else if (std.mem.startsWith(u8, trimmed, "expect_interval ")) {
-            const split = try splitTrailingToken(trimmed["expect_interval ".len..]);
-            const period_ms = std.fmt.parseInt(u64, split.head, 10) catch return ParseError.InvalidFormat;
-            const expected_count = std.fmt.parseInt(u64, split.token, 10) catch return ParseError.InvalidFormat;
-            try appendSpecCommand(&commands, allocator, .expect_interval, emptyLocator(), null, expected_count, null, line_num);
-            commands.items[commands.items.len - 1].interval_ms = period_ms;
-        } else if (std.mem.startsWith(u8, trimmed, "set_initial_location ")) {
-            const location = try parseSingleQuoted(trimmed["set_initial_location ".len..]);
-            const location_copy = allocator.dupe(u8, location) catch return ParseError.OutOfMemory;
-            try appendSpecCommand(&commands, allocator, .set_initial_location, emptyLocator(), location_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "set_initial_visibility ")) {
-            const visibility_text = std.mem.trim(u8, trimmed["set_initial_visibility ".len..], " \t");
-            const visibility_copy = allocator.dupe(u8, visibility_text) catch return ParseError.OutOfMemory;
-            try appendSpecCommand(&commands, allocator, .set_initial_visibility, emptyLocator(), visibility_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "set_initial_online ")) {
-            const online_text = std.mem.trim(u8, trimmed["set_initial_online ".len..], " \t");
-            const online_copy = allocator.dupe(u8, online_text) catch return ParseError.OutOfMemory;
-            try appendSpecCommand(&commands, allocator, .set_initial_online, emptyLocator(), online_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "seed_local_storage ")) {
-            const split = try splitTwoQuoted(trimmed["seed_local_storage ".len..]);
-            const key = try dupePlain(allocator, split.first);
-            errdefer allocator.free(key);
-            const value = try dupePlain(allocator, split.second);
-            errdefer allocator.free(value);
-            try appendSpecCommand(&commands, allocator, .seed_local_storage, emptyLocator(), value, null, null, line_num);
-            commands.items[commands.items.len - 1].task_name = key;
-        } else if (std.mem.startsWith(u8, trimmed, "seed_session_storage ")) {
-            const split = try splitTwoQuoted(trimmed["seed_session_storage ".len..]);
-            const key = try dupePlain(allocator, split.first);
-            errdefer allocator.free(key);
-            const value = try dupePlain(allocator, split.second);
-            errdefer allocator.free(value);
-            try appendSpecCommand(&commands, allocator, .seed_session_storage, emptyLocator(), value, null, null, line_num);
-            commands.items[commands.items.len - 1].task_name = key;
-        } else if (std.mem.startsWith(u8, trimmed, "navigate ")) {
-            const location = try parseSingleQuoted(trimmed["navigate ".len..]);
-            const location_copy = allocator.dupe(u8, location) catch return ParseError.OutOfMemory;
-            try appendSpecCommand(&commands, allocator, .navigate, emptyLocator(), location_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "set_visibility ")) {
-            const visibility_text = std.mem.trim(u8, trimmed["set_visibility ".len..], " \t");
-            const visibility_copy = allocator.dupe(u8, visibility_text) catch return ParseError.OutOfMemory;
-            try appendSpecCommand(&commands, allocator, .set_visibility, emptyLocator(), visibility_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "set_online ")) {
-            const online_text = std.mem.trim(u8, trimmed["set_online ".len..], " \t");
-            const online_copy = allocator.dupe(u8, online_text) catch return ParseError.OutOfMemory;
-            try appendSpecCommand(&commands, allocator, .set_online, emptyLocator(), online_copy, null, null, line_num);
-        } else if (std.mem.eql(u8, trimmed, "history_back")) {
-            try appendSpecCommand(&commands, allocator, .history_back, emptyLocator(), null, null, null, line_num);
-        } else if (std.mem.eql(u8, trimmed, "history_forward")) {
-            try appendSpecCommand(&commands, allocator, .history_forward, emptyLocator(), null, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "expect_current_location ")) {
-            const location = try parseSingleQuoted(trimmed["expect_current_location ".len..]);
-            const location_copy = allocator.dupe(u8, location) catch return ParseError.OutOfMemory;
-            try appendSpecCommand(&commands, allocator, .expect_current_location, emptyLocator(), location_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "assert_current_location ")) {
-            const location = try parseSingleQuoted(trimmed["assert_current_location ".len..]);
-            const location_copy = allocator.dupe(u8, location) catch return ParseError.OutOfMemory;
-            try appendSpecCommand(&commands, allocator, .assert_current_location, emptyLocator(), location_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "expect_document_title ")) {
-            const title = try parseSingleQuoted(trimmed["expect_document_title ".len..]);
-            const title_copy = allocator.dupe(u8, title) catch return ParseError.OutOfMemory;
-            try appendSpecCommand(&commands, allocator, .expect_document_title, emptyLocator(), title_copy, null, null, line_num);
-        } else if (std.mem.startsWith(u8, trimmed, "expect_local_storage ")) {
-            const split = try splitTwoQuoted(trimmed["expect_local_storage ".len..]);
-            const key = try dupePlain(allocator, split.first);
-            errdefer allocator.free(key);
-            const value = try dupePlain(allocator, split.second);
-            errdefer allocator.free(value);
-            try appendSpecCommand(&commands, allocator, .expect_local_storage, emptyLocator(), value, null, null, line_num);
-            commands.items[commands.items.len - 1].task_name = key;
-        } else if (std.mem.startsWith(u8, trimmed, "expect_session_storage ")) {
-            const split = try splitTwoQuoted(trimmed["expect_session_storage ".len..]);
-            const key = try dupePlain(allocator, split.first);
-            errdefer allocator.free(key);
-            const value = try dupePlain(allocator, split.second);
-            errdefer allocator.free(value);
-            try appendSpecCommand(&commands, allocator, .expect_session_storage, emptyLocator(), value, null, null, line_num);
-            commands.items[commands.items.len - 1].task_name = key;
-        } else if (std.mem.startsWith(u8, trimmed, "expect_no_local_storage ")) {
-            const key_value = try parseSingleQuoted(trimmed["expect_no_local_storage ".len..]);
-            const key = try dupePlain(allocator, key_value);
-            errdefer allocator.free(key);
-            try appendSpecCommand(&commands, allocator, .expect_no_local_storage, emptyLocator(), null, null, null, line_num);
-            commands.items[commands.items.len - 1].task_name = key;
-        } else if (std.mem.startsWith(u8, trimmed, "expect_no_session_storage ")) {
-            const key_value = try parseSingleQuoted(trimmed["expect_no_session_storage ".len..]);
-            const key = try dupePlain(allocator, key_value);
-            errdefer allocator.free(key);
-            try appendSpecCommand(&commands, allocator, .expect_no_session_storage, emptyLocator(), null, null, null, line_num);
-            commands.items[commands.items.len - 1].task_name = key;
-        } else if (std.mem.startsWith(u8, trimmed, "expect_metric_delta_at_most ")) {
-            const split = try splitTrailingToken(trimmed["expect_metric_delta_at_most ".len..]);
-            const metric_name = allocator.dupe(u8, split.head) catch return ParseError.OutOfMemory;
-            const expected_delta = std.fmt.parseInt(i64, split.token, 10) catch return ParseError.InvalidFormat;
-            try appendSpecCommand(&commands, allocator, .expect_metric_delta_at_most, emptyLocator(), metric_name, null, null, line_num);
-            commands.items[commands.items.len - 1].expected_metric_delta = expected_delta;
-        } else if (std.mem.startsWith(u8, trimmed, "expect_metric_delta ")) {
-            const split = try splitTrailingToken(trimmed[20..]);
-            const metric_name = allocator.dupe(u8, split.head) catch return ParseError.OutOfMemory;
-            const expected_delta = std.fmt.parseInt(i64, split.token, 10) catch return ParseError.InvalidFormat;
-            try appendSpecCommand(&commands, allocator, .expect_metric_delta, emptyLocator(), metric_name, null, null, line_num);
-            commands.items[commands.items.len - 1].expected_metric_delta = expected_delta;
-        } else {
-            return ParseError.InvalidFormat;
-        }
-    }
-
-    return commands.toOwnedSlice(allocator) catch ParseError.OutOfMemory;
 }
 
 /// Parses sexpr test spec and rejects malformed input without semantic recovery.
@@ -924,13 +557,27 @@ fn exprBool(expr: sexpr.Expr) ParseError!bool {
     };
 }
 
-/// Decodes a locator form by rendering it in the legacy spelling the line
-/// grammar already understands, so both grammars keep one locator vocabulary.
+/// Decodes a locator form: `(role button :name "Save")`, `(label "Email")`,
+/// `(text "Loading")` or `(test-id "status")`. This is the one locator decoder;
+/// every host resolves the value it produces.
 fn locatorFromExpr(allocator: std.mem.Allocator, expr: sexpr.Expr) ParseError!Locator {
-    var line: std.Io.Writer.Allocating = .init(allocator);
-    defer line.deinit();
-    try writeLegacyArg(&line.writer, expr);
-    return parseLocator(allocator, line.written());
+    const items = exprList(expr) orelse return ParseError.InvalidFormat;
+    if (items.len == 0) return ParseError.InvalidFormat;
+    const kind = exprSymbol(items[0]) orelse return ParseError.InvalidFormat;
+    if (std.mem.eql(u8, kind, "role")) {
+        if (items.len != 4 or !exprSymbolEql(items[2], ":name")) return ParseError.InvalidFormat;
+        const role = exprSymbol(items[1]) orelse exprString(items[1]) orelse return ParseError.InvalidFormat;
+        const name = exprString(items[3]) orelse return ParseError.InvalidFormat;
+        const role_copy = try dupePlain(allocator, role);
+        errdefer allocator.free(role_copy);
+        return .{ .kind = .role_name, .role = role_copy, .name = try dupePlain(allocator, name) };
+    }
+    if (items.len != 2) return ParseError.InvalidFormat;
+    const value = exprString(items[1]) orelse return ParseError.InvalidFormat;
+    if (std.mem.eql(u8, kind, "label")) return .{ .kind = .label, .label = try dupePlain(allocator, value) };
+    if (std.mem.eql(u8, kind, "text")) return .{ .kind = .text, .text = try dupePlain(allocator, value) };
+    if (std.mem.eql(u8, kind, "test-id")) return .{ .kind = .test_id, .test_id = try dupePlain(allocator, value) };
+    return ParseError.InvalidFormat;
 }
 
 fn appendDecodedForm(
@@ -942,141 +589,305 @@ fn appendDecodedForm(
     const items = exprList(form) orelse return ParseError.InvalidFormat;
     if (items.len == 0) return ParseError.InvalidFormat;
     const head = exprSymbol(items[0]) orelse return ParseError.InvalidFormat;
+    const args = items[1..];
+    const line = form.span.line;
 
-    if (!is_setup) {
-        if (try decodeWindowForm(allocator, head, items[1..], form.span.line)) |command| {
-            commands.append(allocator, command) catch {
-                freeOneCommand(allocator, command);
-                return ParseError.OutOfMemory;
-            };
-            return;
-        }
-    }
+    const command: SpecCommand = if (is_setup)
+        try decodeSetupForm(allocator, head, args, line)
+    else if (try decodeWindowForm(allocator, head, args, line)) |window|
+        window
+    else if (file_fixtures.recognizes(head))
+        try decodeFixtureForm(allocator, head, args, line)
+    else
+        try decodeStepForm(allocator, head, args, line);
 
-    if (!is_setup and file_fixtures.recognizes(head)) {
-        const fixture = try file_fixtures.parse(allocator, head, items[1..]);
-        errdefer allocator.free(fixture.task_name);
-        errdefer allocator.free(fixture.payload);
-        try commands.append(allocator, .{
-            .cmd_type = if (fixture.failed) .reject_task else .resolve_task,
-            .locator = emptyLocator(),
-            .task_name = fixture.task_name,
-            .expected_task_kinds = fixture.kinds,
-            .expected_text = fixture.payload,
-            .expected_count = null,
-            .expected_bool = null,
-            .line_num = form.span.line,
-        });
-        return;
-    }
-
-    var line: std.Io.Writer.Allocating = .init(allocator);
-    defer line.deinit();
-    const writer = &line.writer;
-
-    if (is_setup) {
-        const legacy_head = if (std.mem.eql(u8, head, "initial-location"))
-            "set_initial_location"
-        else if (std.mem.eql(u8, head, "initial-visibility"))
-            "set_initial_visibility"
-        else if (std.mem.eql(u8, head, "initial-online"))
-            "set_initial_online"
-        else if (std.mem.eql(u8, head, "local-storage"))
-            "seed_local_storage"
-        else if (std.mem.eql(u8, head, "session-storage"))
-            "seed_session_storage"
-        else
-            return ParseError.InvalidFormat;
-        writer.writeAll(legacy_head) catch return ParseError.OutOfMemory;
-    } else {
-        if (std.mem.startsWith(u8, head, "initial-") or
-            std.mem.eql(u8, head, "local-storage") or
-            std.mem.eql(u8, head, "session-storage")) return ParseError.InvalidFormat;
-        try writeLegacyHead(writer, head);
-    }
-
-    for (items[1..]) |arg| {
-        writer.writeByte(' ') catch return ParseError.OutOfMemory;
-        try writeLegacyArg(writer, arg);
-    }
-
-    const parsed = try parseTestSpec(allocator, line.written());
-    if (parsed.len != 1) {
-        freeSpecCommands(allocator, parsed);
-        return ParseError.InvalidFormat;
-    }
-    var command = parsed[0];
-    command.line_num = form.span.line;
-    allocator.free(parsed);
     commands.append(allocator, command) catch {
         freeOneCommand(allocator, command);
         return ParseError.OutOfMemory;
     };
 }
 
-fn writeLegacyHead(writer: anytype, head: []const u8) ParseError!void {
-    if (std.mem.eql(u8, head, "assert-current-location")) {
-        writer.writeAll("expect_current_location") catch return ParseError.OutOfMemory;
-        return;
-    }
-    for (head) |byte| {
-        writer.writeByte(if (byte == '-') '_' else byte) catch return ParseError.OutOfMemory;
-    }
+fn decodeFixtureForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    const fixture = try file_fixtures.parse(allocator, head, args);
+    return .{
+        .cmd_type = if (fixture.failed) .reject_task else .resolve_task,
+        .locator = emptyLocator(),
+        .task_name = fixture.task_name,
+        .expected_task_kinds = fixture.kinds,
+        .expected_text = fixture.payload,
+        .expected_count = null,
+        .expected_bool = null,
+        .line_num = line,
+    };
 }
 
-fn writeLegacyArg(writer: anytype, expr: sexpr.Expr) ParseError!void {
-    switch (expr.value) {
-        .list => try writeLegacyLocator(writer, expr),
+/// A bare command with nothing but its type and line; the decoders below fill
+/// in what each form carries and free what they took if a later argument fails.
+fn bare(cmd_type: SpecCommandType, line: usize) SpecCommand {
+    return .{
+        .cmd_type = cmd_type,
+        .locator = emptyLocator(),
+        .expected_text = null,
+        .expected_count = null,
+        .expected_bool = null,
+        .line_num = line,
+    };
+}
+
+/// The pre-mount state a `(setup ...)` may declare. Setup is declarative:
+/// nothing here dispatches an event or touches the tree.
+fn decodeSetupForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (std.mem.eql(u8, head, "initial-location")) {
+        return textForm(allocator, .set_initial_location, args, line);
+    } else if (std.mem.eql(u8, head, "initial-visibility")) {
+        return symbolForm(allocator, .set_initial_visibility, args, line);
+    } else if (std.mem.eql(u8, head, "initial-online")) {
+        return symbolForm(allocator, .set_initial_online, args, line);
+    } else if (std.mem.eql(u8, head, "local-storage")) {
+        return keyValueForm(allocator, .seed_local_storage, args, line);
+    } else if (std.mem.eql(u8, head, "session-storage")) {
+        return keyValueForm(allocator, .seed_session_storage, args, line);
+    }
+    return ParseError.InvalidFormat;
+}
+
+/// Every step a `(test ...)` may take, decoded straight from its form. The
+/// head is the spec spelling; the command type is the runner's. Argument
+/// shapes are checked here once, with the line of the form in every refusal.
+fn decodeStepForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    // Setup vocabulary is refused inside steps by falling through to the
+    // unknown-head refusal below: none of these heads is a step.
+    const Shape = enum { locator, locator_text, locator_bool, locator_count, text, symbol, key_value, key, count_after_key, interval, interval_count, metric_delta, none };
+    const Form = struct { head: []const u8, cmd_type: SpecCommandType, shape: Shape };
+    const forms = [_]Form{
+        .{ .head = "click", .cmd_type = .click, .shape = .locator },
+        .{ .head = "real-click", .cmd_type = .real_click, .shape = .locator },
+        .{ .head = "pointer-down", .cmd_type = .pointer_down, .shape = .locator },
+        .{ .head = "pointer-up", .cmd_type = .pointer_up, .shape = .locator },
+        .{ .head = "pointer-enter", .cmd_type = .pointer_enter, .shape = .locator },
+        .{ .head = "pointer-leave", .cmd_type = .pointer_leave, .shape = .locator },
+        .{ .head = "focus", .cmd_type = .focus, .shape = .locator },
+        .{ .head = "blur", .cmd_type = .blur, .shape = .locator },
+        .{ .head = "composition-start", .cmd_type = .composition_start, .shape = .locator },
+        .{ .head = "composition-end", .cmd_type = .composition_end, .shape = .locator },
+        .{ .head = "submit", .cmd_type = .submit, .shape = .locator },
+        .{ .head = "check", .cmd_type = .check, .shape = .locator },
+        .{ .head = "uncheck", .cmd_type = .uncheck, .shape = .locator },
+        .{ .head = "expect-visible", .cmd_type = .expect_visible, .shape = .locator },
+        .{ .head = "expect-absent", .cmd_type = .expect_absent, .shape = .locator },
+        .{ .head = "fill", .cmd_type = .fill, .shape = .locator_text },
+        .{ .head = "change", .cmd_type = .change, .shape = .locator_text },
+        .{ .head = "select-option", .cmd_type = .select_option, .shape = .locator_text },
+        .{ .head = "expect-text", .cmd_type = .expect_text, .shape = .locator_text },
+        .{ .head = "expect-value", .cmd_type = .expect_value, .shape = .locator_text },
+        .{ .head = "expect-checked", .cmd_type = .expect_checked, .shape = .locator_bool },
+        .{ .head = "expect-disabled", .cmd_type = .expect_disabled, .shape = .locator_bool },
+        .{ .head = "expect-updates", .cmd_type = .expect_updates, .shape = .locator_count },
+        .{ .head = "navigate", .cmd_type = .navigate, .shape = .text },
+        .{ .head = "expect-current-location", .cmd_type = .expect_current_location, .shape = .text },
+        .{ .head = "assert-current-location", .cmd_type = .expect_current_location, .shape = .text },
+        .{ .head = "expect-document-title", .cmd_type = .expect_document_title, .shape = .text },
+        .{ .head = "set-visibility", .cmd_type = .set_visibility, .shape = .symbol },
+        .{ .head = "set-online", .cmd_type = .set_online, .shape = .symbol },
+        .{ .head = "history-back", .cmd_type = .history_back, .shape = .none },
+        .{ .head = "history-forward", .cmd_type = .history_forward, .shape = .none },
+        .{ .head = "request-window-close", .cmd_type = .request_window_close, .shape = .none },
+        .{ .head = "mark-metrics", .cmd_type = .mark_metrics, .shape = .none },
+        .{ .head = "resolve-task", .cmd_type = .resolve_task, .shape = .key_value },
+        .{ .head = "resolve-stale-task", .cmd_type = .resolve_stale_task, .shape = .key_value },
+        .{ .head = "reject-task", .cmd_type = .reject_task, .shape = .key_value },
+        .{ .head = "expect-local-storage", .cmd_type = .expect_local_storage, .shape = .key_value },
+        .{ .head = "expect-session-storage", .cmd_type = .expect_session_storage, .shape = .key_value },
+        .{ .head = "expect-no-local-storage", .cmd_type = .expect_no_local_storage, .shape = .key },
+        .{ .head = "expect-no-session-storage", .cmd_type = .expect_no_session_storage, .shape = .key },
+        .{ .head = "expect-cleanup", .cmd_type = .expect_cleanup, .shape = .count_after_key },
+        .{ .head = "expect-pending-task", .cmd_type = .expect_pending_task, .shape = .count_after_key },
+        .{ .head = "expect-canceled-task", .cmd_type = .expect_canceled_task, .shape = .count_after_key },
+        .{ .head = "tick-interval", .cmd_type = .tick_interval, .shape = .interval },
+        .{ .head = "tick-interval-if-active", .cmd_type = .tick_interval_if_active, .shape = .interval },
+        .{ .head = "expect-interval", .cmd_type = .expect_interval, .shape = .interval_count },
+        .{ .head = "expect-metric-delta", .cmd_type = .expect_metric_delta, .shape = .metric_delta },
+        .{ .head = "expect-metric-delta-at-most", .cmd_type = .expect_metric_delta_at_most, .shape = .metric_delta },
+    };
+    for (forms) |form| {
+        if (!std.mem.eql(u8, head, form.head)) continue;
+        return switch (form.shape) {
+            .locator => locatorForm(allocator, form.cmd_type, args, line),
+            .locator_text => locatorTextForm(allocator, form.cmd_type, args, line),
+            .locator_bool => locatorBoolForm(allocator, form.cmd_type, args, line),
+            .locator_count => locatorCountForm(allocator, form.cmd_type, args, line),
+            .text => textForm(allocator, form.cmd_type, args, line),
+            .symbol => symbolForm(allocator, form.cmd_type, args, line),
+            .key_value => keyValueForm(allocator, form.cmd_type, args, line),
+            .key => keyForm(allocator, form.cmd_type, args, line),
+            .count_after_key => countAfterKeyForm(allocator, form.cmd_type, args, line),
+            .interval => intervalForm(form.cmd_type, args, line),
+            .interval_count => intervalCountForm(args, line),
+            .metric_delta => metricDeltaForm(allocator, form.cmd_type, args, line),
+            .none => if (args.len == 0) bare(form.cmd_type, line) else ParseError.InvalidFormat,
+        };
+    }
+    // The few forms whose shape is their own.
+    if (std.mem.eql(u8, head, "key-down")) {
+        if (args.len != 3) return ParseError.InvalidFormat;
+        var command = bare(.key_down, line);
+        command.locator = try locatorFromExpr(allocator, args[0]);
+        errdefer command.locator.deinit(allocator);
+        command.expected_text = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat);
+        errdefer allocator.free(command.expected_text.?);
+        command.expected_bool = try exprBool(args[2]);
+        return command;
+    } else if (std.mem.eql(u8, head, "shortcut")) {
+        if (args.len != 3) return ParseError.InvalidFormat;
+        const key = exprString(args[1]) orelse return ParseError.InvalidFormat;
+        const modifiers = try exprUnsigned(args[2]);
+        if (modifiers > std.math.maxInt(u32)) return ParseError.InvalidFormat;
+        const chord = signals.key_chord.parse(key, @intCast(modifiers)) catch return ParseError.InvalidFormat;
+        var command = bare(.shortcut, line);
+        command.locator = try locatorFromExpr(allocator, args[0]);
+        command.shortcut = chord;
+        return command;
+    } else if (std.mem.eql(u8, head, "custom-event")) {
+        if (args.len != 3) return ParseError.InvalidFormat;
+        var command = bare(.custom_event, line);
+        command.locator = try locatorFromExpr(allocator, args[0]);
+        errdefer command.locator.deinit(allocator);
+        command.task_name = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat);
+        errdefer allocator.free(command.task_name.?);
+        command.expected_text = try dupePlain(allocator, exprString(args[2]) orelse return ParseError.InvalidFormat);
+        return command;
+    } else if (std.mem.eql(u8, head, "expect-attr")) {
+        if (args.len != 3) return ParseError.InvalidFormat;
+        var command = bare(.expect_attr, line);
+        command.locator = try locatorFromExpr(allocator, args[0]);
+        errdefer command.locator.deinit(allocator);
+        command.expected_attr = try dupePlain(allocator, exprSymbol(args[1]) orelse exprString(args[1]) orelse return ParseError.InvalidFormat);
+        errdefer allocator.free(command.expected_attr.?);
+        command.expected_text = try dupePlain(allocator, exprString(args[2]) orelse return ParseError.InvalidFormat);
+        return command;
+    } else if (std.mem.eql(u8, head, "expect-no-attr")) {
+        if (args.len != 2) return ParseError.InvalidFormat;
+        var command = bare(.expect_no_attr, line);
+        command.locator = try locatorFromExpr(allocator, args[0]);
+        errdefer command.locator.deinit(allocator);
+        command.expected_attr = try dupePlain(allocator, exprSymbol(args[1]) orelse exprString(args[1]) orelse return ParseError.InvalidFormat);
+        return command;
+    } else if (std.mem.eql(u8, head, "expect-window-closed")) {
+        if (args.len != 1) return ParseError.InvalidFormat;
+        var command = bare(.expect_window_closed, line);
+        command.expected_bool = try exprBool(args[0]);
+        return command;
+    }
+    return ParseError.InvalidFormat;
+}
+
+fn locatorForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (args.len != 1) return ParseError.InvalidFormat;
+    var command = bare(cmd_type, line);
+    command.locator = try locatorFromExpr(allocator, args[0]);
+    return command;
+}
+
+fn locatorTextForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    var command = bare(cmd_type, line);
+    command.locator = try locatorFromExpr(allocator, args[0]);
+    errdefer command.locator.deinit(allocator);
+    command.expected_text = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat);
+    return command;
+}
+
+fn locatorBoolForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    var command = bare(cmd_type, line);
+    command.locator = try locatorFromExpr(allocator, args[0]);
+    errdefer command.locator.deinit(allocator);
+    command.expected_bool = try exprBool(args[1]);
+    return command;
+}
+
+fn locatorCountForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    var command = bare(cmd_type, line);
+    command.locator = try locatorFromExpr(allocator, args[0]);
+    errdefer command.locator.deinit(allocator);
+    command.expected_count = try exprUnsigned(args[1]);
+    return command;
+}
+
+fn textForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (args.len != 1) return ParseError.InvalidFormat;
+    var command = bare(cmd_type, line);
+    command.expected_text = try dupePlain(allocator, exprString(args[0]) orelse return ParseError.InvalidFormat);
+    return command;
+}
+
+/// A bare-word value such as `hidden` or `offline`; the host validates the
+/// vocabulary through `visibilitySnapshotFromSpecText` and its siblings.
+fn symbolForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (args.len != 1) return ParseError.InvalidFormat;
+    var command = bare(cmd_type, line);
+    command.expected_text = try dupePlain(allocator, exprSymbol(args[0]) orelse return ParseError.InvalidFormat);
+    return command;
+}
+
+fn keyValueForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    var command = bare(cmd_type, line);
+    command.task_name = try dupePlain(allocator, exprString(args[0]) orelse return ParseError.InvalidFormat);
+    errdefer allocator.free(command.task_name.?);
+    command.expected_text = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat);
+    return command;
+}
+
+fn keyForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (args.len != 1) return ParseError.InvalidFormat;
+    var command = bare(cmd_type, line);
+    command.task_name = try dupePlain(allocator, exprString(args[0]) orelse return ParseError.InvalidFormat);
+    return command;
+}
+
+fn countAfterKeyForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    var command = bare(cmd_type, line);
+    command.task_name = try dupePlain(allocator, exprString(args[0]) orelse return ParseError.InvalidFormat);
+    errdefer allocator.free(command.task_name.?);
+    command.expected_count = try exprUnsigned(args[1]);
+    return command;
+}
+
+fn intervalForm(cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (args.len != 1) return ParseError.InvalidFormat;
+    var command = bare(cmd_type, line);
+    command.interval_ms = try exprUnsigned(args[0]);
+    return command;
+}
+
+fn intervalCountForm(args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    var command = bare(.expect_interval, line);
+    command.interval_ms = try exprUnsigned(args[0]);
+    command.expected_count = try exprUnsigned(args[1]);
+    return command;
+}
+
+fn metricDeltaForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    var command = bare(cmd_type, line);
+    command.expected_text = try dupePlain(allocator, exprSymbol(args[0]) orelse return ParseError.InvalidFormat);
+    errdefer allocator.free(command.expected_text.?);
+    command.expected_metric_delta = try exprInteger(args[1]);
+    return command;
+}
+
+fn exprInteger(expr: sexpr.Expr) ParseError!i64 {
+    return switch (expr.value) {
         .atom => |atom| switch (atom) {
-            .symbol => |value| writer.writeAll(value) catch return ParseError.OutOfMemory,
-            .string => |value| try writeLegacyQuoted(writer, value),
-            .integer => |value| writer.print("{d}", .{value}) catch return ParseError.OutOfMemory,
-            .boolean => |value| writer.writeAll(if (value) "true" else "false") catch return ParseError.OutOfMemory,
+            .integer => |value| value,
+            else => ParseError.InvalidFormat,
         },
-    }
-}
-
-fn writeLegacyLocator(writer: anytype, expr: sexpr.Expr) ParseError!void {
-    const items = exprList(expr) orelse return ParseError.InvalidFormat;
-    if (items.len == 0) return ParseError.InvalidFormat;
-    const kind = exprSymbol(items[0]) orelse return ParseError.InvalidFormat;
-    if (std.mem.eql(u8, kind, "role")) {
-        if (items.len != 4 or !exprSymbolEql(items[2], ":name")) return ParseError.InvalidFormat;
-        const role = exprSymbol(items[1]) orelse exprString(items[1]) orelse return ParseError.InvalidFormat;
-        const name = exprString(items[3]) orelse return ParseError.InvalidFormat;
-        writer.writeAll("role:") catch return ParseError.OutOfMemory;
-        writer.writeAll(role) catch return ParseError.OutOfMemory;
-        writer.writeAll(" name:") catch return ParseError.OutOfMemory;
-        try writeLegacyQuoted(writer, name);
-        return;
-    }
-    if (items.len != 2) return ParseError.InvalidFormat;
-    const value = exprString(items[1]) orelse return ParseError.InvalidFormat;
-    if (std.mem.eql(u8, kind, "label")) {
-        writer.writeAll("label:") catch return ParseError.OutOfMemory;
-    } else if (std.mem.eql(u8, kind, "text")) {
-        writer.writeAll("text:") catch return ParseError.OutOfMemory;
-    } else if (std.mem.eql(u8, kind, "test-id")) {
-        writer.writeAll("test_id:") catch return ParseError.OutOfMemory;
-    } else {
-        return ParseError.InvalidFormat;
-    }
-    try writeLegacyQuoted(writer, value);
-}
-
-fn writeLegacyQuoted(writer: anytype, value: []const u8) ParseError!void {
-    writer.writeByte('"') catch return ParseError.OutOfMemory;
-    for (value) |byte| {
-        switch (byte) {
-            '\n' => writer.writeAll("\\n") catch return ParseError.OutOfMemory,
-            '\r' => writer.writeAll("\\r") catch return ParseError.OutOfMemory,
-            '\t' => writer.writeAll("\\t") catch return ParseError.OutOfMemory,
-            '\\' => writer.writeAll("\\\\") catch return ParseError.OutOfMemory,
-            '"' => writer.writeAll("\\\"") catch return ParseError.OutOfMemory,
-            else => writer.writeByte(byte) catch return ParseError.OutOfMemory,
-        }
-    }
-    writer.writeByte('"') catch return ParseError.OutOfMemory;
+        else => ParseError.InvalidFormat,
+    };
 }
 
 fn exprList(expr: sexpr.Expr) ?[]const sexpr.Expr {
@@ -1259,130 +1070,201 @@ test "S-expression spec parser rejects executable setup and empty steps" {
     );
 }
 
-test "all checked-in S-expression specs parse" {
+/// The checked-in canonical decoding of every spec in the repository.
+/// Regenerate deliberately with `SIGNALS_UPDATE_SPEC_GOLDEN=1 zig build test`
+/// and review the diff: a line that changed is a spec whose meaning changed.
+const spec_golden_path = "test/spec-decode.golden";
+
+test "all checked-in specs decode to the committed golden" {
     const io = std.Io.Threaded.global_single_threaded.io();
-    var count: usize = 0;
+    const allocator = std.testing.allocator;
+    var paths: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit(allocator);
+    }
     for ([_][]const u8{ "examples-web", "examples-gui", "test/gui" }) |directory| {
         const examples = try std.Io.Dir.cwd().openDir(io, directory, .{ .iterate = true });
         defer examples.close(io);
-        var walker = try examples.walk(std.testing.allocator);
+        var walker = try examples.walk(allocator);
         defer walker.deinit();
         while (try walker.next(io)) |entry| {
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".scm")) continue;
-            const path = try std.fs.path.join(std.testing.allocator, &.{ directory, entry.path });
-            defer std.testing.allocator.free(path);
-            var parsed = parseTestSpecFile(std.testing.allocator, path) catch |err| {
-                std.debug.print("failed to parse {s}: {s}\n", .{ path, @errorName(err) });
-                return err;
-            };
-            parsed.deinit(std.testing.allocator);
-            count += 1;
+            try paths.append(allocator, try std.fs.path.join(allocator, &.{ directory, entry.path }));
         }
     }
-    try std.testing.expect(count > 100);
+    // Directory walk order is not a contract; the golden is.
+    std.mem.sort([]u8, paths.items, {}, struct {
+        fn lessThan(_: void, a: []u8, b: []u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+    try std.testing.expect(paths.items.len > 100);
+
+    var canonical: std.Io.Writer.Allocating = .init(allocator);
+    defer canonical.deinit();
+    for (paths.items) |path| {
+        var parsed = parseTestSpecFile(allocator, path) catch |err| {
+            std.debug.print("failed to parse {s}: {s}\n", .{ path, @errorName(err) });
+            return err;
+        };
+        defer parsed.deinit(allocator);
+        try canonical.writer.print("== {s}\n", .{path});
+        try writeCanonical(&canonical.writer, parsed);
+    }
+    const actual = canonical.written();
+
+    if (std.process.Environ.getPosix(std.testing.environ, "SIGNALS_UPDATE_SPEC_GOLDEN") != null) {
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = spec_golden_path, .data = actual });
+        return;
+    }
+    const expected = std.Io.Dir.cwd().readFileAlloc(io, spec_golden_path, allocator, .limited(16 * 1024 * 1024)) catch |err| {
+        std.debug.print("cannot read {s} ({s}); regenerate with SIGNALS_UPDATE_SPEC_GOLDEN=1 zig build test\n", .{ spec_golden_path, @errorName(err) });
+        return err;
+    };
+    defer allocator.free(expected);
+    if (!std.mem.eql(u8, expected, actual)) {
+        // Name the first differing line so the reviewer knows which spec moved.
+        var expected_lines = std.mem.splitScalar(u8, expected, '\n');
+        var actual_lines = std.mem.splitScalar(u8, actual, '\n');
+        var line: usize = 1;
+        while (true) : (line += 1) {
+            const want = expected_lines.next();
+            const got = actual_lines.next();
+            if (want == null and got == null) break;
+            if (want == null or got == null or !std.mem.eql(u8, want.?, got.?)) {
+                std.debug.print("{s}:{d}: spec decoding changed\n  golden: {s}\n  now:    {s}\nIf the change is intended, regenerate with SIGNALS_UPDATE_SPEC_GOLDEN=1 zig build test and review the diff.\n", .{ spec_golden_path, line, want orelse "<end>", got orelse "<end>" });
+                break;
+            }
+        }
+        return error.SpecDecodingChanged;
+    }
+}
+
+test "the window step vocabulary the GUI host decodes is exactly the tags it needs" {
+    // Every window-only step must be in the list the Rust host decodes, and
+    // every listed tag must exist, so a renamed tag fails here and in the Rust
+    // twin of this test rather than at run time as "no meaning against a window".
+    inline for (std.meta.tags(SpecCommandType)) |tag| {
+        var listed = false;
+        for (window_step_tags) |name| listed = listed or std.mem.eql(u8, name, @tagName(tag));
+        if (isWindowOnly(tag)) try std.testing.expect(listed);
+    }
+    for (window_step_tags) |name| {
+        try std.testing.expect(std.meta.stringToEnum(SpecCommandType, name) != null);
+    }
+}
+
+test "the canonical form spells every field and escapes text" {
+    const spec = try parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" :window \"800x600\" :choose (\"a b\") (steps (type (label \"Note\") \"x\\ny\") (expect-count \"row-\" 2)))");
+    defer spec.deinit(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeCanonical(&out.writer, spec);
+    try std.testing.expectEqualStrings(
+        "scenario \"s\" window=800x600 assets=none choose=[\"a b\"] diagnostic=none on=[]\n" ++
+            "  1: type_text locator=label label=\"Note\" expected=\"x\\ny\"\n" ++
+            "  1: expect_count locator=none expected=\"row-\" count=2\n",
+        out.written(),
+    );
 }
 
 test "spec parser parses actions and assertions" {
-    const content =
-        \\click role:button name:"Save"
-        \\real_click role:button name:"Save"
-        \\fill label:"Email" "a@example.com"
-        \\focus label:"Email"
-        \\blur label:"Email"
-        \\change label:"Email" "changed@example.com"
-        \\select_option label:"Plan" "growth"
-        \\composition_start label:"Email"
-        \\composition_end label:"Email"
-        \\custom_event test_id:"chart" "chart-select" "now | 1,200 rpm"
-        \\expect_attr test_id:"status" data-state "ready"
-        \\expect_no_attr label:"Email" aria-invalid
-        \\tick_interval 250
-        \\tick_interval_if_active 250
-        \\expect_interval 250 1
-        \\set_initial_location "/services/api?tab=logs#tail"
-        \\set_initial_visibility hidden
-        \\set_initial_online offline
-        \\seed_local_storage "checkout:draft" "saved"
-        \\seed_session_storage "checkout:flash" "shown"
-        \\navigate "/services/web?tab=deploys#events"
-        \\set_visibility visible
-        \\set_online online
-        \\history_back
-        \\history_forward
-        \\expect_current_location "/services/web?tab=deploys#events"
-        \\assert_current_location "/services/web?tab=deploys#events"
-        \\expect_document_title "Service Ops Center"
-        \\expect_local_storage "checkout:draft" "saved"
-        \\expect_session_storage "checkout:flash" "shown"
-        \\expect_no_local_storage "checkout:missing"
-        \\expect_no_session_storage "checkout:missing"
-    ;
-    const commands = try parseTestSpec(std.testing.allocator, content);
-    defer freeSpecCommands(std.testing.allocator, commands);
+    const spec = try parseSExprTestSpec(std.testing.allocator,
+        \\(test "actions"
+        \\  (setup
+        \\    (initial-location "/services/api?tab=logs#tail")
+        \\    (initial-visibility hidden)
+        \\    (initial-online offline)
+        \\    (local-storage "checkout:draft" "saved")
+        \\    (session-storage "checkout:flash" "shown"))
+        \\  (steps
+        \\    (click (role button :name "Save"))
+        \\    (real-click (role button :name "Save"))
+        \\    (fill (label "Email") "a@example.com")
+        \\    (focus (label "Email"))
+        \\    (blur (label "Email"))
+        \\    (change (label "Email") "changed@example.com")
+        \\    (select-option (label "Plan") "growth")
+        \\    (composition-start (label "Email"))
+        \\    (composition-end (label "Email"))
+        \\    (custom-event (test-id "chart") "chart-select" "now | 1,200 rpm")
+        \\    (expect-attr (test-id "status") data-state "ready")
+        \\    (expect-no-attr (label "Email") aria-invalid)
+        \\    (tick-interval 250)
+        \\    (tick-interval-if-active 250)
+        \\    (expect-interval 250 1)
+        \\    (navigate "/services/web?tab=deploys#events")
+        \\    (set-visibility visible)
+        \\    (set-online online)
+        \\    (history-back)
+        \\    (history-forward)
+        \\    (expect-current-location "/services/web?tab=deploys#events")
+        \\    (assert-current-location "/services/web?tab=deploys#events")
+        \\    (expect-document-title "Service Ops Center")
+        \\    (expect-local-storage "checkout:draft" "saved")
+        \\    (expect-session-storage "checkout:flash" "shown")
+        \\    (expect-no-local-storage "checkout:missing")
+        \\    (expect-no-session-storage "checkout:missing")))
+    );
+    defer spec.deinit(std.testing.allocator);
+    const commands = spec.commands;
 
     try std.testing.expectEqual(@as(usize, 32), commands.len);
-    try std.testing.expectEqual(SpecCommandType.click, commands[0].cmd_type);
-    try std.testing.expectEqual(LocatorKind.role_name, commands[0].locator.kind);
-    try std.testing.expectEqualStrings("button", commands[0].locator.role.?);
-    try std.testing.expectEqualStrings("Save", commands[0].locator.name.?);
-    try std.testing.expectEqual(SpecCommandType.real_click, commands[1].cmd_type);
-    try std.testing.expectEqualStrings("a@example.com", commands[2].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.focus, commands[3].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.blur, commands[4].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.change, commands[5].cmd_type);
-    try std.testing.expectEqualStrings("changed@example.com", commands[5].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.select_option, commands[6].cmd_type);
-    try std.testing.expectEqualStrings("growth", commands[6].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.composition_start, commands[7].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.composition_end, commands[8].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.custom_event, commands[9].cmd_type);
-    try std.testing.expectEqual(LocatorKind.test_id, commands[9].locator.kind);
-    try std.testing.expectEqualStrings("chart", commands[9].locator.test_id.?);
-    try std.testing.expectEqualStrings("chart-select", commands[9].task_name.?);
-    try std.testing.expectEqualStrings("now | 1,200 rpm", commands[9].expected_text.?);
-    try std.testing.expectEqualStrings("data-state", commands[10].expected_attr.?);
-    try std.testing.expectEqualStrings("ready", commands[10].expected_text.?);
-    try std.testing.expectEqualStrings("aria-invalid", commands[11].expected_attr.?);
-    try std.testing.expectEqual(@as(?u64, 250), commands[12].interval_ms);
-    try std.testing.expectEqual(SpecCommandType.tick_interval_if_active, commands[13].cmd_type);
-    try std.testing.expectEqual(@as(?u64, 250), commands[13].interval_ms);
-    try std.testing.expectEqual(@as(?u64, 1), commands[14].expected_count);
-    try std.testing.expectEqual(SpecCommandType.set_initial_location, commands[15].cmd_type);
-    try std.testing.expectEqualStrings("/services/api?tab=logs#tail", commands[15].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.set_initial_visibility, commands[16].cmd_type);
-    try std.testing.expectEqualStrings("hidden", commands[16].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.set_initial_online, commands[17].cmd_type);
-    try std.testing.expectEqualStrings("offline", commands[17].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.seed_local_storage, commands[18].cmd_type);
-    try std.testing.expectEqualStrings("checkout:draft", commands[18].task_name.?);
-    try std.testing.expectEqualStrings("saved", commands[18].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.seed_session_storage, commands[19].cmd_type);
-    try std.testing.expectEqualStrings("checkout:flash", commands[19].task_name.?);
-    try std.testing.expectEqualStrings("shown", commands[19].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.set_initial_location, commands[0].cmd_type);
+    try std.testing.expectEqualStrings("/services/api?tab=logs#tail", commands[0].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.set_initial_visibility, commands[1].cmd_type);
+    try std.testing.expectEqualStrings("hidden", commands[1].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.set_initial_online, commands[2].cmd_type);
+    try std.testing.expectEqualStrings("offline", commands[2].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.seed_local_storage, commands[3].cmd_type);
+    try std.testing.expectEqualStrings("checkout:draft", commands[3].task_name.?);
+    try std.testing.expectEqualStrings("saved", commands[3].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.seed_session_storage, commands[4].cmd_type);
+    try std.testing.expectEqualStrings("checkout:flash", commands[4].task_name.?);
+    try std.testing.expectEqualStrings("shown", commands[4].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.click, commands[5].cmd_type);
+    try std.testing.expectEqual(LocatorKind.role_name, commands[5].locator.kind);
+    try std.testing.expectEqualStrings("button", commands[5].locator.role.?);
+    try std.testing.expectEqualStrings("Save", commands[5].locator.name.?);
+    try std.testing.expectEqual(SpecCommandType.real_click, commands[6].cmd_type);
+    try std.testing.expectEqualStrings("a@example.com", commands[7].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.focus, commands[8].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.blur, commands[9].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.change, commands[10].cmd_type);
+    try std.testing.expectEqualStrings("changed@example.com", commands[10].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.select_option, commands[11].cmd_type);
+    try std.testing.expectEqualStrings("growth", commands[11].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.composition_start, commands[12].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.composition_end, commands[13].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.custom_event, commands[14].cmd_type);
+    try std.testing.expectEqualStrings("chart", commands[14].locator.test_id.?);
+    try std.testing.expectEqualStrings("chart-select", commands[14].task_name.?);
+    try std.testing.expectEqualStrings("now | 1,200 rpm", commands[14].expected_text.?);
+    try std.testing.expectEqualStrings("data-state", commands[15].expected_attr.?);
+    try std.testing.expectEqualStrings("ready", commands[15].expected_text.?);
+    try std.testing.expectEqualStrings("aria-invalid", commands[16].expected_attr.?);
+    try std.testing.expectEqual(@as(?u64, 250), commands[17].interval_ms);
+    try std.testing.expectEqual(SpecCommandType.tick_interval_if_active, commands[18].cmd_type);
+    try std.testing.expectEqual(@as(?u64, 250), commands[18].interval_ms);
+    try std.testing.expectEqual(@as(?u64, 1), commands[19].expected_count);
+    try std.testing.expectEqual(@as(?u64, 250), commands[19].interval_ms);
     try std.testing.expectEqual(SpecCommandType.navigate, commands[20].cmd_type);
     try std.testing.expectEqualStrings("/services/web?tab=deploys#events", commands[20].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.set_visibility, commands[21].cmd_type);
     try std.testing.expectEqualStrings("visible", commands[21].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.set_online, commands[22].cmd_type);
     try std.testing.expectEqualStrings("online", commands[22].expected_text.?);
     try std.testing.expectEqual(SpecCommandType.history_back, commands[23].cmd_type);
     try std.testing.expectEqual(SpecCommandType.history_forward, commands[24].cmd_type);
     try std.testing.expectEqual(SpecCommandType.expect_current_location, commands[25].cmd_type);
-    try std.testing.expectEqualStrings("/services/web?tab=deploys#events", commands[25].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.assert_current_location, commands[26].cmd_type);
-    try std.testing.expectEqualStrings("/services/web?tab=deploys#events", commands[26].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.expect_document_title, commands[27].cmd_type);
+    // `assert-current-location` is the older spelling of the same assertion.
+    try std.testing.expectEqual(SpecCommandType.expect_current_location, commands[26].cmd_type);
     try std.testing.expectEqualStrings("Service Ops Center", commands[27].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.expect_local_storage, commands[28].cmd_type);
     try std.testing.expectEqualStrings("checkout:draft", commands[28].task_name.?);
     try std.testing.expectEqualStrings("saved", commands[28].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.expect_session_storage, commands[29].cmd_type);
     try std.testing.expectEqualStrings("checkout:flash", commands[29].task_name.?);
-    try std.testing.expectEqualStrings("shown", commands[29].expected_text.?);
     try std.testing.expectEqual(SpecCommandType.expect_no_local_storage, commands[30].cmd_type);
     try std.testing.expectEqualStrings("checkout:missing", commands[30].task_name.?);
     try std.testing.expectEqual(SpecCommandType.expect_no_session_storage, commands[31].cmd_type);
-    try std.testing.expectEqualStrings("checkout:missing", commands[31].task_name.?);
 }
 
 test "spec parser parses browser environment value text" {
@@ -1403,68 +1285,52 @@ test "spec parser parses browser environment value text" {
 }
 
 test "spec parser parses async cleanup metrics and boolean commands" {
-    const content =
-        \\# parser fixtures should keep native specs honest
-        \\key_down role:textbox name:"Search" "Enter" true
-        \\expect_checked label:"Enabled" false
-        \\expect_disabled test_id:"submit" true
-        \\resolve_task "fetch user" "hello\n\"world\"\\"
-        \\resolve_stale_task "fetch user" "late"
-        \\reject_task "fetch user" "bad\trequest"
-        \\expect_cleanup "fetch user" 2
-        \\expect_pending_task "fetch user" 1
-        \\expect_canceled_task "fetch user" 1
-        \\mark_metrics
-        \\expect_metric_delta closure_releases -1
-        \\expect_metric_delta_at_most host_retained_alloc_delta 0
-    ;
-    const commands = try parseTestSpec(std.testing.allocator, content);
-    defer freeSpecCommands(std.testing.allocator, commands);
+    const spec = try parseSExprTestSpec(std.testing.allocator,
+        \\(test "async"
+        \\  ; parser fixtures should keep native specs honest
+        \\  (steps
+        \\    (key-down (role textbox :name "Search") "Enter" true)
+        \\    (expect-checked (label "Enabled") false)
+        \\    (expect-disabled (test-id "submit") true)
+        \\    (resolve-task "fetch user" "hello\n\"world\"\\")
+        \\    (resolve-stale-task "fetch user" "late")
+        \\    (reject-task "fetch user" "bad\trequest")
+        \\    (expect-cleanup "fetch user" 2)
+        \\    (expect-pending-task "fetch user" 1)
+        \\    (expect-canceled-task "fetch user" 1)
+        \\    (mark-metrics)
+        \\    (expect-metric-delta closure_releases -1)
+        \\    (expect-metric-delta-at-most host_retained_alloc_delta 0)))
+    );
+    defer spec.deinit(std.testing.allocator);
+    const commands = spec.commands;
 
     try std.testing.expectEqual(@as(usize, 12), commands.len);
-
     try std.testing.expectEqual(SpecCommandType.key_down, commands[0].cmd_type);
-    try std.testing.expectEqual(@as(usize, 2), commands[0].line_num);
-    try std.testing.expectEqual(LocatorKind.role_name, commands[0].locator.kind);
+    try std.testing.expectEqual(@as(usize, 4), commands[0].line_num);
     try std.testing.expectEqualStrings("textbox", commands[0].locator.role.?);
     try std.testing.expectEqualStrings("Search", commands[0].locator.name.?);
     try std.testing.expectEqualStrings("Enter", commands[0].expected_text.?);
     try std.testing.expectEqual(@as(?bool, true), commands[0].expected_bool);
-
     try std.testing.expectEqual(SpecCommandType.expect_checked, commands[1].cmd_type);
-    try std.testing.expectEqual(LocatorKind.label, commands[1].locator.kind);
     try std.testing.expectEqualStrings("Enabled", commands[1].locator.label.?);
     try std.testing.expectEqual(@as(?bool, false), commands[1].expected_bool);
-
     try std.testing.expectEqual(SpecCommandType.expect_disabled, commands[2].cmd_type);
-    try std.testing.expectEqual(LocatorKind.test_id, commands[2].locator.kind);
     try std.testing.expectEqualStrings("submit", commands[2].locator.test_id.?);
     try std.testing.expectEqual(@as(?bool, true), commands[2].expected_bool);
-
     try std.testing.expectEqual(SpecCommandType.resolve_task, commands[3].cmd_type);
     try std.testing.expectEqualStrings("fetch user", commands[3].task_name.?);
     try std.testing.expectEqualStrings("hello\n\"world\"\\", commands[3].expected_text.?);
-
     try std.testing.expectEqual(SpecCommandType.resolve_stale_task, commands[4].cmd_type);
-    try std.testing.expectEqualStrings("fetch user", commands[4].task_name.?);
     try std.testing.expectEqualStrings("late", commands[4].expected_text.?);
-
     try std.testing.expectEqual(SpecCommandType.reject_task, commands[5].cmd_type);
-    try std.testing.expectEqualStrings("fetch user", commands[5].task_name.?);
     try std.testing.expectEqualStrings("bad\trequest", commands[5].expected_text.?);
-
     try std.testing.expectEqual(SpecCommandType.expect_cleanup, commands[6].cmd_type);
     try std.testing.expectEqualStrings("fetch user", commands[6].task_name.?);
     try std.testing.expectEqual(@as(?u64, 2), commands[6].expected_count);
-
     try std.testing.expectEqual(SpecCommandType.expect_pending_task, commands[7].cmd_type);
-    try std.testing.expectEqualStrings("fetch user", commands[7].task_name.?);
     try std.testing.expectEqual(@as(?u64, 1), commands[7].expected_count);
-
     try std.testing.expectEqual(SpecCommandType.expect_canceled_task, commands[8].cmd_type);
-    try std.testing.expectEqualStrings("fetch user", commands[8].task_name.?);
-    try std.testing.expectEqual(@as(?u64, 1), commands[8].expected_count);
-
     try std.testing.expectEqual(SpecCommandType.mark_metrics, commands[9].cmd_type);
     try std.testing.expectEqual(SpecCommandType.expect_metric_delta, commands[10].cmd_type);
     try std.testing.expectEqualStrings("closure_releases", commands[10].expected_text.?);
@@ -1475,85 +1341,82 @@ test "spec parser parses async cleanup metrics and boolean commands" {
 }
 
 test "spec parser parses pointer form and visibility commands" {
-    const content =
-        \\pointer_down test_id:"drag-handle"
-        \\pointer_up test_id:"drag-handle"
-        \\pointer_enter text:"Drop zone"
-        \\pointer_leave text:"Drop zone"
-        \\submit role:button name:"Save"
-        \\check label:"Enabled"
-        \\uncheck label:"Enabled"
-        \\expect_text test_id:"status" "Ready"
-        \\expect_visible role:button name:"Save"
-        \\expect_absent text:"Loading"
-        \\expect_value label:"Email" "a@example.com"
-        \\expect_updates test_id:"status" 3
-    ;
-    const commands = try parseTestSpec(std.testing.allocator, content);
-    defer freeSpecCommands(std.testing.allocator, commands);
+    const spec = try parseSExprTestSpec(std.testing.allocator,
+        \\(test "pointer" (steps
+        \\  (pointer-down (test-id "drag-handle"))
+        \\  (pointer-up (test-id "drag-handle"))
+        \\  (pointer-enter (text "Drop zone"))
+        \\  (pointer-leave (text "Drop zone"))
+        \\  (submit (role button :name "Save"))
+        \\  (check (label "Enabled"))
+        \\  (uncheck (label "Enabled"))
+        \\  (expect-text (test-id "status") "Ready")
+        \\  (expect-visible (role button :name "Save"))
+        \\  (expect-absent (text "Loading"))
+        \\  (expect-value (label "Email") "a@example.com")
+        \\  (expect-updates (test-id "status") 3)))
+    );
+    defer spec.deinit(std.testing.allocator);
+    const commands = spec.commands;
 
     try std.testing.expectEqual(@as(usize, 12), commands.len);
     try std.testing.expectEqual(SpecCommandType.pointer_down, commands[0].cmd_type);
     try std.testing.expectEqualStrings("drag-handle", commands[0].locator.test_id.?);
     try std.testing.expectEqual(SpecCommandType.pointer_up, commands[1].cmd_type);
-    try std.testing.expectEqualStrings("drag-handle", commands[1].locator.test_id.?);
     try std.testing.expectEqual(SpecCommandType.pointer_enter, commands[2].cmd_type);
     try std.testing.expectEqualStrings("Drop zone", commands[2].locator.text.?);
     try std.testing.expectEqual(SpecCommandType.pointer_leave, commands[3].cmd_type);
-    try std.testing.expectEqualStrings("Drop zone", commands[3].locator.text.?);
     try std.testing.expectEqual(SpecCommandType.submit, commands[4].cmd_type);
-    try std.testing.expectEqualStrings("button", commands[4].locator.role.?);
     try std.testing.expectEqualStrings("Save", commands[4].locator.name.?);
     try std.testing.expectEqual(SpecCommandType.check, commands[5].cmd_type);
-    try std.testing.expectEqualStrings("Enabled", commands[5].locator.label.?);
     try std.testing.expectEqual(SpecCommandType.uncheck, commands[6].cmd_type);
     try std.testing.expectEqualStrings("Enabled", commands[6].locator.label.?);
     try std.testing.expectEqual(SpecCommandType.expect_text, commands[7].cmd_type);
-    try std.testing.expectEqualStrings("status", commands[7].locator.test_id.?);
     try std.testing.expectEqualStrings("Ready", commands[7].expected_text.?);
     try std.testing.expectEqual(SpecCommandType.expect_visible, commands[8].cmd_type);
-    try std.testing.expectEqualStrings("button", commands[8].locator.role.?);
-    try std.testing.expectEqualStrings("Save", commands[8].locator.name.?);
     try std.testing.expectEqual(SpecCommandType.expect_absent, commands[9].cmd_type);
     try std.testing.expectEqualStrings("Loading", commands[9].locator.text.?);
     try std.testing.expectEqual(SpecCommandType.expect_value, commands[10].cmd_type);
-    try std.testing.expectEqualStrings("Email", commands[10].locator.label.?);
     try std.testing.expectEqualStrings("a@example.com", commands[10].expected_text.?);
     try std.testing.expectEqual(SpecCommandType.expect_updates, commands[11].cmd_type);
-    try std.testing.expectEqualStrings("status", commands[11].locator.test_id.?);
     try std.testing.expectEqual(@as(?u64, 3), commands[11].expected_count);
 }
 
 test "spec parser rejects malformed commands" {
-    try std.testing.expectError(ParseError.InvalidFormat, parseBoolToken("maybe"));
     try std.testing.expectError(ParseError.InvalidFormat, locationSnapshotFromSpecText("services/api"));
     try std.testing.expectError(ParseError.InvalidFormat, visibilitySnapshotFromSpecText("maybe"));
     try std.testing.expectError(ParseError.InvalidFormat, onlineSnapshotFromSpecText("maybe"));
-    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "click missing_locator"));
-    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "custom_event test_id:\"chart\" \"chart-select\""));
-    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "custom_event test_id:\"chart\" chart-select \"detail\""));
-    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "resolve_stale_task \"fetch user\""));
-    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "expect_canceled_task \"fetch user\" nope"));
-    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "expect_canceled_task fetch 1"));
-}
-
-test "splitTrailingQuoted skips escaped quotes" {
-    const split = try splitTrailingQuoted("test_id:\"greeting\" \"he said \\\"hi\\\"\"");
-    try std.testing.expectEqualStrings("test_id:\"greeting\"", split.head);
-    try std.testing.expectEqualStrings("he said \\\"hi\\\"", split.quoted);
-
-    const unescaped = try dupeUnescapedQuoted(std.testing.allocator, split.quoted);
-    defer std.testing.allocator.free(unescaped);
-    try std.testing.expectEqualStrings("he said \"hi\"", unescaped);
+    for ([_][]const u8{
+        "(click missing_locator)",
+        "(click (role button))",
+        "(click (test-id status))",
+        "(custom-event (test-id \"chart\") \"chart-select\")",
+        "(custom-event (test-id \"chart\") chart-select \"detail\")",
+        "(resolve-stale-task \"fetch user\")",
+        "(expect-canceled-task \"fetch user\" nope)",
+        "(expect-canceled-task fetch 1)",
+        "(expect-checked (label \"x\") maybe)",
+        "(tick-interval -5)",
+        "(expect-metric-delta \"rows\" 1)",
+        "(history-back now)",
+        "(wiggle (test-id \"x\"))",
+        "(initial-online offline)",
+    }) |step| {
+        const source = try std.fmt.allocPrint(std.testing.allocator, "(test \"t\" (steps {s}))", .{step});
+        defer std.testing.allocator.free(source);
+        try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, source));
+    }
 }
 
 test "spec parser validates exact native shortcut keys and modifiers" {
-    const commands = try parseTestSpec(std.testing.allocator,
-        \\shortcut test_id:"editor" "s" 1
-        \\shortcut test_id:"editor" "s" 3
-        \\shortcut test_id:"editor" "Escape" 0
+    const spec = try parseSExprTestSpec(std.testing.allocator,
+        \\(test "shortcuts" (steps
+        \\  (shortcut (test-id "editor") "s" 1)
+        \\  (shortcut (test-id "editor") "s" 3)
+        \\  (shortcut (test-id "editor") "Escape" 0)))
     );
-    defer freeSpecCommands(std.testing.allocator, commands);
+    defer spec.deinit(std.testing.allocator);
+    const commands = spec.commands;
     try std.testing.expectEqual(@as(usize, 3), commands.len);
     try std.testing.expectEqual(SpecCommandType.shortcut, commands[0].cmd_type);
     try std.testing.expectEqualStrings("editor", commands[0].locator.test_id.?);
@@ -1561,13 +1424,15 @@ test "spec parser validates exact native shortcut keys and modifiers" {
     try std.testing.expect(commands[1].shortcut.?.eql(try signals.key_chord.parse("s", 3)));
     try std.testing.expect(commands[2].shortcut.?.eql(try signals.key_chord.parse("Escape", 0)));
     for ([_][]const u8{
-        "shortcut test_id:\"editor\" \"S\" 1",
-        "shortcut test_id:\"editor\" \"ctrl-s\" 1",
-        "shortcut test_id:\"editor\" \"s\" 16",
-        "shortcut test_id:\"editor\" \"s\" -1",
-        "shortcut test_id:\"editor\" \"s\" true",
-    }) |invalid| {
-        try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, invalid));
+        "(shortcut (test-id \"editor\") \"S\" 1)",
+        "(shortcut (test-id \"editor\") \"ctrl-s\" 1)",
+        "(shortcut (test-id \"editor\") \"s\" 16)",
+        "(shortcut (test-id \"editor\") \"s\" -1)",
+        "(shortcut (test-id \"editor\") \"s\" true)",
+    }) |step| {
+        const source = try std.fmt.allocPrint(std.testing.allocator, "(test \"t\" (steps {s}))", .{step});
+        defer std.testing.allocator.free(source);
+        try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, source));
     }
 }
 
@@ -1630,8 +1495,8 @@ test "window close requests and assertions decode without locators" {
     defer spec.deinit(std.testing.allocator);
     try std.testing.expectEqual(SpecCommandType.request_window_close, spec.commands[0].cmd_type);
     try std.testing.expectEqual(false, spec.commands[1].expected_bool.?);
-    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "request_window_close extra"));
-    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "expect_window_closed yes"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (request-window-close extra)))"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (expect-window-closed yes)))"));
 }
 
 fn parseExtendedFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {

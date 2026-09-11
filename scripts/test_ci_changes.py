@@ -33,9 +33,15 @@ class ChangeSelectionTests(unittest.TestCase):
         for path in ("crates/gpui-host/src/lib.rs", "platform-gui/main.roc"):
             self.assertEqual(self.selected([path]), set())
 
-    def test_shared_engine_uses_web_and_dedicated_gui_host_validation(self):
-        for path in ("src/signals/engine.zig", "platform-shared/Signal.roc"):
-            self.assertEqual(self.selected([path]), WEB)
+    def test_shared_engine_runs_web_and_gui_specs(self):
+        # The GUI job is the only one that runs GUI specs and window scenarios
+        # through the engine, so an engine change must select it as well.
+        for path in ("src/signals/engine.zig", "platform-shared/Signal.roc", "src/native_host.zig"):
+            self.assertEqual(self.selected([path]), WEB | {"gui"}, path)
+
+    def test_spec_machinery_runs_every_area(self):
+        for path in ("src/spec/spec_parser.zig", "src/sim_dom.zig", "protocol/native-protocol.json"):
+            self.assertEqual(self.selected([path]), AREAS, path)
 
     def test_gui_apps_and_specs_use_the_reviewed_prebuilt_host(self):
         self.assertEqual(self.selected(["test/gui/task/main.roc", "examples-gui/counter/main.roc"]), {"gui"})
