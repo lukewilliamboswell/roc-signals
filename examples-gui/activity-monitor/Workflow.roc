@@ -6,44 +6,74 @@ import pf.Ui
 import LogReader
 import Session
 
-## Every native step runs as one `Files` call inside an action's effect,
-## against the phase as it is after the change committed: entering Choosing
-## opens the log chooser and waits for its answer, entering Reading reads one
-## chunk with `LogReader.read!`, and caught-up files use a scoped timer to
-## re-enter Reading.
+## Every native step is the effect of the handler that asked for it: opening a
+## log runs the chooser, which blocks until the user answers, and then drains
+## the chosen file; resuming, retrying, and polling drain from the accepted
+## cursor. A drain reads consecutive chunks while the file has more, up to
+## `drain_chunks` per effect, and commits them together; a caught-up file is
+## polled by a scoped timer that exists only while the session waits on it.
 Workflow := [].{
-	bindings : Ui.State(Session.Accepted) -> List(Elem)
-	bindings = |model| [
-		Action.on_change(
-			model.read(|value| value.session.phase),
-			|phase| match phase {
-				Session.Phase.Choosing | Session.Phase.Reading(_) => Action.then([], |current| advance!(model, current))
-				_ => Action.none
+	drain_chunks = 64
+
+	## Polls the followed file every 500 ms while the session is waiting for
+	## more of it. The timer's scope is keyed on the accepted cursor, so each
+	## accepted read restarts the wait.
+	poll : Ui.State(Session.Accepted) -> Elem
+	poll = |model| Ui.switch(
+		model.read(
+			|value| match (value.session.phase, value.session.source) {
+				(Session.Phase.Waiting, Session.Source.Log(request)) => Poll(request)
+				_ => NoPoll
 			},
 		),
-		Ui.when(model.read(|value| value.session.phase == Session.Phase.Waiting), || Action.every(500, |_| Action.update([model.write(|value| { ..value, session: Session.read_next(value.session) })])), || Elem.text("")),
-	]
+		|case| match case {
+			Poll(request) => Action.every(500, |_| Action.then([model.write(|value| { ..value, session: Session.read_next(value.session) })], |_| drain!(model, request)))
+			NoPoll => Elem.text("")
+		},
+	)
 
-	## Runs the chooser or read the current phase asks for; a phase that moved
-	## on runs nothing.
-	advance! : Ui.State(Session.Accepted), Session.Phase => Action(Session.Phase)
-	advance! = |model, phase| match phase {
-		Session.Phase.Choosing => match Files.choose_file!() {
-			Ok(choice) => Action.update([model.write(|value| { ..value, session: Session.chosen(value.session, choice) })])
-			Err(error) => failed(model, error)
-		}
-		Session.Phase.Reading(request) => match LogReader.read!(request) {
-			Ok(chunk) => Action.update([model.write(|value| Session.accept(value.session, value.history, chunk))])
-			Err(error) => failed(model, error)
-		}
+	## Opens the chooser and drains the chosen log from its start.
+	open! : Ui.State(Session.Accepted) => Action(a)
+	open! = |model| match Files.choose_file!() {
+		Err(error) => failed(model, error)
+		Ok(Files.Choice.Canceled) => Action.update([model.write(|value| { ..value, session: Session.chosen(value.session, Files.Choice.Canceled) })])
+		Ok(Files.Choice.Chosen(path)) => Action.then(
+			[model.write(|value| { ..value, session: Session.chosen(value.session, Files.Choice.Chosen(path)) })],
+			|_| drain!(model, { path, position: LogReader.Position.Start }),
+		)
+	}
+
+	## Drains the read the session's phase asks for, after a handler moved it
+	## into `Reading`.
+	advance! : Ui.State(Session.Accepted), Session.State => Action(a)
+	advance! = |model, state| match state.phase {
+		Session.Phase.Reading(request) => drain!(model, request)
 		_ => Action.none
 	}
 
-	## The chooser dialog dismisses itself; every other phase pauses.
-	cancel : Ui.State(Session.Accepted), Session.Phase -> Action(a)
-	cancel = |model, phase| match phase {
-		Session.Phase.Choosing => Action.none
-		_ => Action.update([model.write(|value| { ..value, session: Session.pause(value.session) })])
+	drain! : Ui.State(Session.Accepted), Session.Request => Action(a)
+	drain! = |model, request| match read_chunks!(request, []) {
+		Ok(chunks) => Action.update([model.write(|value| Session.accept_all(value.session, value.history, chunks))])
+		Err(error) => failed(model, error)
+	}
+
+	## A failure after some chunks were read keeps them; the next poll meets
+	## the failure again from the accepted cursor.
+	read_chunks! : Session.Request, List(LogReader.Chunk) => Try(List(LogReader.Chunk), Files.Error)
+	read_chunks! = |request, chunks| match LogReader.read!(request) {
+		Err(error) => if chunks.is_empty() {
+			Err(error)
+		} else {
+			Ok(chunks)
+		}
+		Ok(chunk) => {
+			collected = chunks.append(chunk)
+			if chunk.state == LogReader.State.More and collected.len() < drain_chunks {
+				read_chunks!({ path: chunk.path, position: LogReader.Position.After(chunk.cursor) }, collected)
+			} else {
+				Ok(collected)
+			}
+		}
 	}
 
 	failed : Ui.State(Session.Accepted), Files.Error -> Action(a)

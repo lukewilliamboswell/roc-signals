@@ -327,13 +327,17 @@ the write starts, the window keeps rendering and handling input while the
 write runs, and the result enters the graph only as the next action, applied
 on the UI thread. Every effect runs on its own worker thread, so a slow one
 never delays another, and results apply in the order effects complete rather
-than the order they started. An effect whose owning scope is disposed before
-it runs is dropped, and one whose scope is disposed while it runs has its
+than the order they started. An effect belongs to the innermost scope still
+alive after its changes commit, so a dialog button whose changes close the
+dialog still gets its effect run and its result applied to the states outside.
+An effect whose scope is disposed by something else while it runs has its
 result discarded. When the same handler can fire again before its earlier
 effect finishes, decide in state which result wins: either do not start a
-second operation while one is running, as the phase machines in the examples
-do, or carry a request counter in the reads and have the result's reducer
-ignore a stale one. Prefer a named top-level
+second operation while one is running, as the examples' `Busy` phases do, or
+carry a request counter in the reads and have the result's reducer ignore a
+stale one. An effect can return another `then`, so a chooser followed by a
+read is two effects with a commit between them, each snapshotting the
+handler's reads again. Prefer a named top-level
 function for the effect and pass it the state handles it writes, so it
 captures nothing. `Action.on_change`, `Action.on_change_initial`,
 `Action.on_mount`, and `Action.every` bind actions to signal changes, mount,

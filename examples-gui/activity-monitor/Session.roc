@@ -53,6 +53,29 @@ Session := [].{
 		None => state
 	}
 
+	## Accepts the chunks one drain read in order. A drain whose read the user
+	## paused meanwhile is discarded, so the accepted cursor never moves past
+	## what the session showed; a refused line stops the drain there. A drain
+	## that stopped with more of the file unread leaves the session waiting,
+	## so the next poll continues from the accepted cursor.
+	accept_all : State, Feed.History, List(LogReader.Chunk) -> Accepted
+	accept_all = |state, history, chunks| match (state.phase, chunks.first()) {
+		(Reading(active), Ok(first)) if active.path == first.path => {
+			accepted = chunks.fold(
+				{ session: state, history },
+				|current, chunk| match current.session.phase {
+					Reading(_) => accept(current.session, current.history, chunk)
+					_ => current
+				},
+			)
+			match accepted.session.phase {
+				Reading(_) => { ..accepted, session: { ..accepted.session, phase: Waiting } }
+				_ => accepted
+			}
+		}
+		_ => { session: state, history }
+	}
+
 	accept : State, Feed.History, LogReader.Chunk -> Accepted
 	accept = |state, history, chunk| {
 		request = match state.phase {

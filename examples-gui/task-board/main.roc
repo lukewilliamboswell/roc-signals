@@ -72,9 +72,15 @@ History : { past : List(BoardSnapshot), future : List(BoardSnapshot) }
 
 Save : { text : Str, snapshot : BoardSnapshot }
 
-Phase := [Idle, ConfirmOpen, ChoosingOpen, Reading(Str), ChoosingSave(Save), Writing({ path : Str, save : Save })].{
+Operation := [Opening, Saving].{
 	is_eq : _
 }
+
+Phase := [Idle, ConfirmOpen, Busy(Operation)].{
+	is_eq : _
+}
+
+Destination := [Known(Str), Chosen]
 
 Close := [KeepEditing, Confirm, Saving, Closing].{
 	is_eq : _
@@ -792,7 +798,7 @@ history_message = |handles, redo| Action.run(
 
 can_edit : Phase -> Bool
 can_edit = |phase| match phase {
-	Phase.Idle | Phase.ChoosingSave(_) | Phase.Writing(_) => True
+	Phase.Idle | Phase.Busy(Operation.Saving) => True
 	_ => False
 }
 
@@ -802,7 +808,7 @@ dirty = |context| match context.document.baseline {
 	Some(saved) => context.board.planned != saved.planned or context.board.progress != saved.progress or context.board.complete != saved.complete
 }
 
-DocumentActions : { open : Event.Handler, save : Event.Handler, save_as : Event.Handler, cancel : Event.Handler }
+DocumentActions : { open : Event.Handler, save : Event.Handler, save_as : Event.Handler, cancel : Event.Handler, discard_and_open : Event.Handler }
 
 document_toolbar : Handles, DocumentActions -> Elem
 document_toolbar = |handles, actions| {
@@ -870,10 +876,8 @@ document_toolbar = |handles, actions| {
 											"Saved"
 										}
 										Phase.ConfirmOpen => "Waiting for confirmation"
-										Phase.ChoosingOpen => "Choose a board document"
-										Phase.Reading(_) => "Opening board…"
-										Phase.ChoosingSave(_) => "Choose a save destination"
-										Phase.Writing(_) => "Saving board snapshot…"
+										Phase.Busy(Operation.Opening) => "Opening board…"
+										Phase.Busy(Operation.Saving) => "Saving board snapshot…"
 									},
 								),
 							),
@@ -897,12 +901,11 @@ document_toolbar = |handles, actions| {
 						Elem.heading("Replace unsaved board?"),
 						"Save your board first to keep these changes. Opening succeeds only after the new file is completely validated.",
 						Elem.button("Keep editing", actions.cancel),
-						Elem.button("Discard and open", handles.document.update(|doc| { ..doc, phase: Phase.ChoosingOpen })),
+						Elem.button("Discard and open", actions.discard_and_open),
 					],
 				),
 				|| Elem.text(""),
 			),
-			Ui.when(handles.document.read(|doc| doc.phase != Phase.Idle and doc.phase != Phase.ConfirmOpen), || Elem.button("Cancel operation", actions.cancel), || Elem.text("")),
 			Elem.col(
 				{ test_id: "asset-status", font_size: 13, fg: Rgb(0xF09A93) },
 				[Elem.text_s(handles.asset_problem.signal())],
@@ -912,33 +915,23 @@ document_toolbar = |handles, actions| {
 	)
 }
 
-failed_file : Handles, Files.Error -> Action(a)
-failed_file = |handles, error| Action.update([handles.document.write(
-	|doc| {
-		..doc,
-		phase: Phase.Idle,
-		problem: match error {
-			Files.Error.Canceled => "Operation canceled; the current board is unchanged."
-			_ => Files.error_text(error)
-		},
-	},
-)])
-
-chosen : Handles, Try(Files.Choice, Files.Error) -> Action(a)
-chosen = |handles, result| match result {
-	Err(error) => failed_file(handles, error)
-	Ok(Files.Choice.Canceled) => failed_file(handles, Files.Error.Canceled)
-	Ok(Files.Choice.Chosen(path)) => Action.update([handles.document.write(
+## A failed or canceled operation returns to `Idle` with its problem shown. A
+## save that was closing the window reopens the close dialog instead, so the
+## problem appears where the user was.
+failed_file : Handles, Files.Error, Bool -> Action(a)
+failed_file = |handles, error, close_after| Action.update([
+	handles.document.write(
 		|doc| {
 			..doc,
-			phase: match doc.phase {
-				Phase.ChoosingOpen => Phase.Reading(path)
-				Phase.ChoosingSave(save) => Phase.Writing({ path, save })
-				_ => doc.phase
+			phase: Phase.Idle,
+			problem: match error {
+				Files.Error.Canceled => "Operation canceled; the current board is unchanged."
+				_ => Files.error_text(error)
 			},
 		},
-	)])
-}
+	),
+	handles.close.write(|intent| if close_after and intent == Close.Saving { Close.Confirm } else { intent }),
+])
 
 load_document : Handles, Files.TextFile -> Action(a)
 load_document = |handles, file| match Codec.decode(file.text) {
@@ -977,41 +970,46 @@ load_document = |handles, file| match Codec.decode(file.text) {
 	}
 }
 
-## Choosing, reading, writing, and asset verification each run as one `Files`
-## call inside an effect, against the phase as it is after the change
-## committed. A chooser blocks that effect until the user answers.
 document_bindings : Handles -> List(Elem)
 document_bindings = |handles| [
 	Action.on_mount(|| Action.then([], |_| verify_assets!(handles))),
-	Action.on_change(
-		handles.document.read(|doc| doc.phase),
-		|phase| match phase {
-			Phase.ChoosingOpen | Phase.ChoosingSave(_) | Phase.Reading(_) | Phase.Writing(_) => Action.then([], |current| transfer!(handles, current))
-			_ => Action.none
-		},
-	),
 ]
 
-## Runs the chooser, read, or write the current phase asks for; a phase that
-## moved on runs nothing.
-transfer! : Handles, Phase => Action(Phase)
-transfer! = |handles, phase| match phase {
-	Phase.ChoosingOpen => chosen(handles, Files.choose_file!())
-	Phase.ChoosingSave(_) => chosen(handles, Files.choose_save_path!({ directory: Home, suggested_name: "My project.board.json" }))
-	Phase.Reading(path) => match Files.read_text!(path) {
+## The whole open flow is one effect started by the handler that entered
+## `Busy(Opening)`: the chooser blocks it until the user answers, then the
+## chosen document is read and validated before anything on the board changes.
+open! : Handles => Action(a)
+open! = |handles| match Files.choose_file!() {
+	Err(error) => failed_file(handles, error, False)
+	Ok(Files.Choice.Canceled) => failed_file(handles, Files.Error.Canceled, False)
+	Ok(Files.Choice.Chosen(path)) => match Files.read_text!(path) {
 		Ok(file) => load_document(handles, file)
-		Err(error) => failed_file(handles, error)
+		Err(error) => failed_file(handles, error, False)
 	}
-	Phase.Writing(write) => match Files.write_text!({ path: write.path, text: write.save.text }) {
-		Ok(result) => Action.update([handles.document.write(
-			|doc| match doc.phase {
-				Phase.Writing(pending) if pending.path == result.path => { ..doc, path: Some(result.path), baseline: Some(pending.save.snapshot), phase: Phase.Idle, problem: "" }
-				_ => doc
-			},
-		)])
-		Err(error) => failed_file(handles, error)
+}
+
+## Writes a save the handler already validated, choosing the destination
+## first when the board has no path yet or the user asked for one. A save
+## started from the close dialog closes the window once it succeeds, unless
+## the user chose to keep the window open while it ran; a failed one reopens
+## the close dialog with the problem.
+write! : Handles, Destination, Save, Bool => Action(a)
+write! = |handles, destination, save, close_after| {
+	path = match destination {
+		Known(known) => known
+		Chosen => match Files.choose_save_path!({ directory: Home, suggested_name: "My project.board.json" }) {
+			Err(error) => return failed_file(handles, error, close_after)
+			Ok(Files.Choice.Canceled) => return failed_file(handles, Files.Error.Canceled, close_after)
+			Ok(Files.Choice.Chosen(chosen)) => chosen
+		}
 	}
-	_ => Action.none
+	match Files.write_text!({ path, text: save.text }) {
+		Ok(result) => Action.update([
+			handles.document.write(|doc| { ..doc, path: Some(result.path), baseline: Some(save.snapshot), phase: Phase.Idle, problem: "" }),
+			handles.close.write(|intent| if close_after and intent == Close.Saving { Close.Closing } else { intent }),
+		])
+		Err(error) => failed_file(handles, error, close_after)
+	}
 }
 
 verify_assets! : Handles => Action({})
@@ -1086,17 +1084,18 @@ save_document = |handles, context, next, options| {
 		Ok(_) => {}
 	}
 	save = { text, snapshot: context.board }
-	phase = match context.document.path {
-		Some(path) if !options.save_as => Phase.Writing({ path, save })
-		_ => Phase.ChoosingSave(save)
+	destination = match context.document.path {
+		Some(path) if !options.save_as => Known(path)
+		_ => Chosen
 	}
-	writes = [handles.document.set({ ..context.document, phase, problem: "" })]
-	Action.update(
+	writes = [handles.document.set({ ..context.document, phase: Phase.Busy(Operation.Saving), problem: "" })]
+	Action.then(
 		if options.close_after {
 			writes.append(handles.close.set(Close.Saving))
 		} else {
 			writes
 		},
+		|_| write!(handles, destination, save, options.close_after),
 	)
 }
 
@@ -1140,20 +1139,6 @@ close_dialog = |handles| {
 					Elem.heading("Saving your board…"),
 					"The window stays open until the submitted board is saved.",
 					Elem.button("Keep window open", keep),
-					Action.on_change(
-						handles.context,
-						|context| if context.document.phase == Phase.Idle {
-							Action.update([handles.close.set(
-								if dirty(context) {
-									Close.Confirm
-								} else {
-									Close.Closing
-								},
-							)])
-						} else {
-							Action.none
-						},
-					),
 				],
 			),
 			|| Elem.text(""),
@@ -1169,24 +1154,27 @@ document_actions = |handles| {
 		handles.context,
 		|context| if context.document.phase != Phase.Idle {
 			Action.none
+		} else if dirty(context) {
+			Action.update([handles.document.set({ ..context.document, phase: Phase.ConfirmOpen, problem: "" })])
 		} else {
-			Action.update([handles.document.set({
-				..context.document,
-				phase: if dirty(context) {
-					Phase.ConfirmOpen
-				} else {
-					Phase.ChoosingOpen
-				},
-				problem: "",
-			})])
+			Action.then([handles.document.set({ ..context.document, phase: Phase.Busy(Operation.Opening), problem: "" })], |_| open!(handles))
+		},
+	)
+	discard_and_open = Action.run(
+		handles.document.signal(),
+		|doc| if doc.phase == Phase.ConfirmOpen {
+			Action.then([handles.document.set({ ..doc, phase: Phase.Busy(Operation.Opening), problem: "" })], |_| open!(handles))
+		} else {
+			Action.none
 		},
 	)
 	cancel = Action.run(
 		handles.document.signal(),
-		|doc| match doc.phase {
-			Phase.ChoosingOpen | Phase.ChoosingSave(_) | Phase.Reading(_) | Phase.Writing(_) => Action.none
-			_ => Action.update([handles.document.set({ ..doc, phase: Phase.Idle })])
+		|doc| if doc.phase == Phase.ConfirmOpen {
+			Action.update([handles.document.set({ ..doc, phase: Phase.Idle })])
+		} else {
+			Action.none
 		},
 	)
-	{ open, save: save_message(False), save_as: save_message(True), cancel }
+	{ open, save: save_message(False), save_as: save_message(True), cancel, discard_and_open }
 }

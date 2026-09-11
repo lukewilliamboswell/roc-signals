@@ -55,8 +55,9 @@ still visits the complete changed document. GPUI retains responsibility for
 native shaping, caret interaction, and IME behavior.
 
 `Session.roc` holds the pure document operation state machine. `Workflow.roc`
-observes only its phase: each phase runs one `Files` call inside an action's
-effect, and a chooser blocks that effect until the user answers. The native
+holds the effects the handlers start: the handler that moves the session into
+`Busy` runs the chooser, read, or write as its effect, and a chooser blocks
+that effect until the user answers. The native
 semantic specs stub chooser outcomes and file results to check dismissal,
 failures, repeat saves, and snapshot ownership deterministically. Filesystem worker tests and actual GPUI interaction tests
 cover the native boundaries separately.

@@ -146,12 +146,15 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							active_bg: Rgb(0x265D89),
 						},
 						Action.run(
-							model.signal(),
-							|value| Action.update([
-								model.set({ ..value, session: Session.choose(value.session) }),
-								running.set(False),
-								errors_only.set(False),
-							]),
+							session,
+							|_| Action.then(
+								[
+									model.write(|value| { ..value, session: Session.choose(value.session) }),
+									running.set(False),
+									errors_only.set(False),
+								],
+								|_| Workflow.open!(model),
+							),
 						),
 					),
 					Elem.action_button(
@@ -171,8 +174,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 					Elem.action_button({
 						caption: Signal.const("Retry read"),
 						enabled: session.map(|state| state.phase == Session.Phase.Paused and state.retry != None),
-					}, model.update(|value| { ..value, session: Session.retry_read(value.session) })),
-					Elem.action_button({ caption: Signal.const("Cancel operation"), enabled: busy }, Action.run(session, |state| Workflow.cancel(model, state.phase))),
+					}, Action.run(session, |_| Action.then([model.write(|value| { ..value, session: Session.retry_read(value.session) })], |state| Workflow.advance!(model, state)))),
 				],
 			),
 			Elem.col({ test_id: "activity-status", font_size: 13, fg: Rgb(0xA9BFCC) }, [Elem.text_s(session.map(|state| state.notice))]),
@@ -220,10 +222,10 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 							},
 							Action.run(
 								session,
-								|state| if state.phase == Session.Phase.Paused {
-									Action.update([model.write(|value| { ..value, session: Session.read_next(value.session) })])
-								} else {
-									Workflow.cancel(model, state.phase)
+								|state| match state.phase {
+									Session.Phase.Paused => Action.then([model.write(|value| { ..value, session: Session.read_next(value.session) })], |current| Workflow.advance!(model, current))
+									Session.Phase.Choosing => Action.none
+									_ => Action.update([model.write(|value| { ..value, session: Session.pause(value.session) })])
 								},
 							),
 						),
@@ -341,6 +343,7 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 				|| Action.every(500, |_| append()),
 				|| Elem.text(""),
 			),
-		].concat(Workflow.bindings(model)),
+			Workflow.poll(model),
+		],
 	)
 }

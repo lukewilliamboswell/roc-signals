@@ -5,9 +5,11 @@ simulated replay to explore the interface without a file. Open log starts at
 the beginning and drains existing data in sequential 64 KiB reads. Once caught
 up, a scoped 500 ms timer polls for appended bytes. The log reader is this
 app's own `LogReader` module: each read is one `Files.stat!` and one
-`Files.read_bytes!` inside an effect, and the cursor it keeps carries the
-file's identity so a replaced or truncated file restarts history. Pausing
-disposes the polling timer.
+`Files.read_bytes!`, a drain reads up to 64 consecutive chunks inside the
+effect of the handler or timer tick that asked for it, and the cursor it keeps
+carries the file's identity so a replaced or truncated file restarts history.
+The polling timer exists only while the session waits on a caught-up file, so
+pausing disposes it.
 
 Each newline-delimited record gets a monotonic sequence identity. Plain text
 uses the `TEXT` label, without guessing severity from message contents; the

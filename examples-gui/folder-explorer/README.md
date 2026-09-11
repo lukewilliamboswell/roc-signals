@@ -29,8 +29,9 @@ also work through ordinary Tab and Enter/Space navigation. The result list uses
 Directory observations use `Files.list_directory!` and its
 10,000-entry/four-MiB aggregate-path bounds. Concurrent filesystem changes can
 refuse an entire listing. The chooser, listing, preview, and launch each run
-as one `Files` call inside an action's effect; the chooser blocks that effect
-until the user answers. The external application resolves a launched pathname
+as one `Files` call in the effect of the handler that asked for it; the
+chooser blocks that effect until the user answers, and the folder it names is
+listed by the effect that follows. The external application resolves a launched pathname
 under its own access policy.
 
 Filtering, ordering, and complete directory replacements are explicit operations

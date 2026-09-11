@@ -16999,23 +16999,41 @@ pub fn Engine(comptime Ctx: type) type {
         /// Applies a `Then` command: its changes commit now, and its effect is
         /// queued with an independently retained reference to the declared
         /// reads of the handler, sink, or effect whose command this is. The host
-        /// runs queued effects after the turn settles.
+        /// runs queued effects after the turn settles. The reads are cloned
+        /// before the commit because the changes may retire the scope that ran
+        /// the command, such as a dialog whose button closes it; the effect
+        /// then belongs to the nearest surviving ancestor, where every state it
+        /// can still write resolves.
         pub fn tryThenCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, cmd: erased_calls.ThenCmd) CollectionError!render.Counts {
             if (comptime !@hasDecl(Ctx, "runsEffects")) @panic("Then commands are unsupported by this host");
             const origin = self.effect_origin orelse @panic("a Then command needs declared reads; bind it through an action, a change sink, or Action.on_mount");
             const allocator = Ctx.allocator(ctx);
             try self.pending_effects.ensureUnusedCapacity(allocator, 1);
+            var reads = origin.cloneRetained(allocator, &self.pending_roc_metrics);
+            errdefer self.releaseEffectReads(ctx, &reads);
             const counts = try self.tryUpdateChangeCommands(ctx, roc_host, owner_scope_id, cmd.changes.items());
             abi.increfErasedCallable(cmd.effect, 1);
             self.pending_roc_metrics.bump(.closure_retains, 1);
             self.pending_effects.appendAssumeCapacity(.{
                 .id = self.next_effect_id,
-                .owner_scope_id = owner_scope_id,
+                .owner_scope_id = self.nearestActiveScope(owner_scope_id),
                 .effect = cmd.effect,
-                .reads = origin.cloneRetained(allocator, &self.pending_roc_metrics),
+                .reads = reads,
             });
             self.next_effect_id += 1;
             return counts;
+        }
+
+        /// The innermost scope at or above `scope_id` that is still active.
+        /// The root scope never retires, so the walk always ends.
+        fn nearestActiveScope(self: *Self, scope_id: ids.ScopeId) ids.ScopeId {
+            var current = scope_id;
+            while (true) {
+                if (current.index() >= self.scopes.items.len) @panic("command owner referenced an unknown scope");
+                const scope = self.scopes.items[current.index()];
+                if (scope.lifecycle.isActive()) return current;
+                current = scope.parent_scope_id orelse @panic("command owner's root scope is inactive");
+            }
         }
 
         /// Hands the host the oldest queued effect, transferring ownership of

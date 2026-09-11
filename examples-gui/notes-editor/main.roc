@@ -27,9 +27,9 @@ main = || Ui.state(
 			ready = session.read(Session.can_start)
 			phase = session.read(|state| state.phase)
 			revert_ready = view.map(|value| Session.can_start(value.state) and Document.is_dirty({ draft: Session.draft(value.state, value.body), baseline: value.state.baseline }))
-			save = session.update_with(body, |state, text| Session.begin_save({ state, draft: Session.draft(state, text), save_as: False }))
-			save_as = session.update_with(body, |state, text| Session.begin_save({ state, draft: Session.draft(state, text), save_as: True }))
-			open = session.update_with(body, |state, text| Session.begin_open({ state, draft: Session.draft(state, text) }))
+			save = Action.run(view, |_| Action.then([session.write(Session.begin_save)], |current| Workflow.save!(session, current, False)))
+			save_as = Action.run(view, |_| Action.then([session.write(Session.begin_save)], |current| Workflow.save!(session, current, True)))
+			open = Action.run(view, |{ state, body: text }| Action.then([session.write(|_| Session.begin_open({ state, draft: Session.draft(state, text) }))], |current| Workflow.open!(session, body, current.state.phase)))
 			new = Action.run(
 				view,
 				|{ state, body: text }| {
@@ -184,16 +184,6 @@ main = || Ui.state(
 									Ui.when(
 										phase.map(
 											|value| match value {
-												Session.Phase.ChoosingOpen | Session.Phase.ChoosingSave(_) | Session.Phase.Reading(_) | Session.Phase.Writing(_) => True
-												_ => False
-											},
-										),
-										|| Elem.button("Cancel operation", cancel),
-										|| Elem.text(""),
-									),
-									Ui.when(
-										phase.map(
-											|value| match value {
 												Session.Phase.ConfirmDiscard(_) => True
 												_ => False
 											},
@@ -221,7 +211,7 @@ main = || Ui.state(
 																session.signal(),
 																|state| match state.phase {
 																	Session.Phase.ConfirmDiscard(Session.Destination.NewDocument) => Action.update([session.set(Session.new_document(state)), body.set("")])
-																	Session.Phase.ConfirmDiscard(Session.Destination.OpenDocument) => Action.update([session.set({ ..state, phase: Session.Phase.ChoosingOpen })])
+																	Session.Phase.ConfirmDiscard(Session.Destination.OpenDocument) => Action.then([session.write(Session.confirm_open)], |current| Workflow.open!(session, body, current.phase))
 																	Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument) => Action.update([session.set({ ..Session.cancel(state), document_generation: Session.next_generation(state) }), body.set(state.baseline.body)])
 																	_ => Action.none
 																},
@@ -249,7 +239,7 @@ main = || Ui.state(
 													[
 														Elem.button("Keep editing", session.update(Session.cancel)),
 														Elem.button("Discard and close", session.update(|state| { ..state, close: Session.CloseState.AllowClose })),
-														Elem.button("Save and close", session.update_with(body, Session.save_and_close)),
+														Elem.button("Save and close", Action.run(view, |_| Action.then([session.write(Session.save_and_close)], |current| Workflow.save!(session, current, False)))),
 													],
 												),
 											],
@@ -258,7 +248,7 @@ main = || Ui.state(
 									),
 								],
 							),
-						].concat(Workflow.bindings(session, body)),
+						],
 					),
 				],
 			)

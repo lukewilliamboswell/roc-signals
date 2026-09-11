@@ -7,6 +7,7 @@ import pf.Files
 import "assets/manifest.json" as manifest_json : Str
 import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
+import pf.Event
 import pf.Gui exposing [Px]
 import pf.Rows
 import pf.Signal
@@ -82,7 +83,10 @@ entry_row = |row, handles, selected, ready| {
 					bg: Rgb(0x1B2A33),
 					overflow_x: Clip,
 				},
-				Action.run(row.signal(), |entry| Action.update([handles.model.write(|state| Session.activate(state, entry))])),
+				Action.run(
+					{ entry: row.signal(), state: handles.model.signal() }.Signal,
+					|reads| Action.then([handles.model.write(|state| Session.activate(state, reads.entry))], |current| advance!(handles.model, |snapshot| snapshot.state, current)),
+				),
 			),
 			Elem.row(
 				{
@@ -179,8 +183,8 @@ inspect_view = |handles| {
 						padding: 8,
 						radius: 6,
 						bg: Rgb(0x2E6FA3),
-					}, Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.preview_selected)]))),
-					Elem.action_button({ caption: Signal.const("Open in app"), enabled: can_open }, Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.open_selected)]))),
+					}, step(handles, Session.preview_selected)),
+					Elem.action_button({ caption: Signal.const("Open in app"), enabled: can_open }, step(handles, Session.open_selected)),
 				],
 			),
 			Elem.col(
@@ -236,30 +240,31 @@ inspect_view = |handles| {
 	)
 }
 
-## Every phase but Idle runs one `Files` call in an effect against the phase
-## as it is after the change committed; the folder chooser blocks that effect
-## until the user answers.
 workflow : Handles -> List(Elem)
 workflow = |handles| [
 	Action.on_mount(|| Action.then([], |_| verify_assets!(handles.asset_problem))),
-	Action.on_change(
-		handles.model.read(|state| state.phase),
-		|phase| match phase {
-			Idle => Action.none
-			_ => Action.then([], |current| advance!(handles.model, current))
-		},
-	),
 ]
 
-## Runs the chooser or file operation the current phase asks for; a phase
-## that moved on runs nothing.
-advance! : Ui.State(Session.State), Session.Phase => Action(Session.Phase)
-advance! = |model, phase| match phase {
-	Choosing => settle(model, Files.choose_directory!(), Session.chosen)
+## A handler that commits one session transition and then runs whatever
+## operation the state it reached asks for.
+step : Handles, (Session.State -> Session.State) -> Event.Handler
+step = |handles, change| Action.run(handles.model.signal(), |_| Action.then([handles.model.write(change)], |current| advance!(handles.model, |state| state, current)))
+
+## Runs the `Files` call the session's phase asks for, as the effect of the
+## handler that entered it. The folder chooser blocks until the user answers,
+## and the folder it names is listed by a second effect after the choice
+## commits. `state_of` finds the session in the handler's reads, which each
+## commit snapshots again.
+advance! : Ui.State(Session.State), (reads -> Session.State), reads => Action(reads)
+advance! = |model, state_of, reads| match state_of(reads).phase {
+	Idle => Action.none
+	Choosing => match Files.choose_directory!() {
+		Ok(choice) => Action.then([model.write(|state| Session.chosen(state, choice))], |next| advance!(model, state_of, next))
+		Err(error) => Action.update([model.write(|state| Session.failed(state, error))])
+	}
 	Listing(visit) => settle(model, Files.list_directory!(Session.path(visit.destination)), Session.loaded)
 	Previewing(path) => settle(model, Files.read_preview!(path), Session.previewed)
 	Opening(path) => settle(model, Files.open_path!(path), |state, _| Session.opened(state, path))
-	_ => Action.none
 }
 
 settle : Ui.State(Session.State), Try(a, Files.Error), (Session.State, a -> Session.State) -> Action(reads)
@@ -290,11 +295,11 @@ explorer_view = |handles| {
 		},
 	)
 	total = dataset.map(|entries| Explorer.summary(Rows.to_list(entries)))
-	choose_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.begin_choose)]))
-	refresh_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.refresh)]))
-	back_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.backward)]))
-	forward_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.forward)]))
-	up_action = Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.up)]))
+	choose_action = step(handles, Session.begin_choose)
+	refresh_action = step(handles, Session.refresh)
+	back_action = step(handles, Session.backward)
+	forward_action = step(handles, Session.forward)
+	up_action = step(handles, Session.up)
 	crumbs = source.map(|location| Rows.from_list(Session.breadcrumbs(location), |crumb| crumb.path) ?? crash "Breadcrumb paths must be unique")
 	Elem.col(
 		{
@@ -337,7 +342,7 @@ explorer_view = |handles| {
 						hover_bg: Rgb(0x3A80B8),
 						active_bg: Rgb(0x265D89),
 					}, choose_action),
-					Elem.action_button({ caption: Signal.const("Use sample"), enabled: ready }, Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.load_sample)]))),
+					Elem.action_button({ caption: Signal.const("Use sample"), enabled: ready }, step(handles, Session.load_sample)),
 					# Retry is a rare-phase control: it renders only in the phase
 					# where it applies instead of resting disabled.
 					Ui.when(
@@ -345,7 +350,7 @@ explorer_view = |handles| {
 						|| Elem.action_button({
 							caption: Signal.const("Retry"),
 							enabled: model.map(|state| state.phase == Idle and state.retry != NoRetry),
-						}, Action.run(Signal.const({}), |_| Action.update([handles.model.write(Session.retry_last)]))),
+						}, step(handles, Session.retry_last)),
 						|| Elem.text(""),
 					),
 				],
@@ -365,7 +370,10 @@ explorer_view = |handles| {
 									"Go to ${row.key()}"
 								},
 							},
-							Action.run(row.signal(), |crumb| Action.update([handles.model.write(|state| Session.navigate(state, crumb.path))])),
+							Action.run(
+								{ crumb: row.signal(), state: handles.model.signal() }.Signal,
+								|reads| Action.then([handles.model.write(|state| Session.navigate(state, reads.crumb.path))], |current| advance!(handles.model, |snapshot| snapshot.state, current)),
+							),
 						),
 					),
 				],

@@ -1,56 +1,62 @@
 import pf.Action exposing [Action]
-import pf.Elem exposing [Elem]
 import pf.Files
-import pf.Gui
-import pf.Signal
 import pf.Ui
 import Session
 
-## Choosing, reading, and writing each run as one `Files` call inside an
-## effect, against the phase as it is after the change committed. A chooser
-## blocks that effect until the user answers.
+## Each document operation is one effect started by the handler that began
+## it: opening chooses a file and reads it, saving chooses a destination when
+## it needs one and writes the draft it was given. A chooser blocks the effect
+## until the user answers, and an operation the session did not start runs
+## nothing.
 Workflow := [].{
-	## Phase is the only request dependency. Editing during Writing never
-	## restarts or supersedes the immutable snapshot already being saved.
-	bindings : Ui.State(Session.State), Ui.State(Str) -> List(Elem)
-	bindings = |session, body| [
-		Action.on_change(
-			session.read(|state| state.phase),
-			|phase| match phase {
-				Session.Phase.Idle | Session.Phase.ConfirmDiscard(_) => Action.none
-				_ => Action.then([], |current| transfer!(session, body, current))
-			},
-		),
-	]
+	View : { state : Session.State, body : Str }
 
-	## Runs the chooser, read, or write the current phase asks for; a phase
-	## that moved on runs nothing.
-	transfer! : Ui.State(Session.State), Ui.State(Str), Session.Phase => Action(Session.Phase)
-	transfer! = |session, body, phase| match phase {
-		Session.Phase.ChoosingOpen => chosen(session, Files.choose_file!())
-		Session.Phase.ChoosingSave(choice) => {
-			directory = match choice.previous_path {
-				None => Home
-				Some(path) => At(parent_path(path))
-			}
-			suggested_name = match choice.previous_path {
-				None => "Untitled note.txt"
-				Some(path) => Session.file_name(path)
-			}
-			chosen(session, Files.choose_save_path!({ directory, suggested_name }))
+	open! : Ui.State(Session.State), Ui.State(Str), Session.Phase => Action(reads)
+	open! = |session, body, phase| {
+		if phase != Busy(Opening) {
+			return Action.none
 		}
-		Session.Phase.Reading(path) => match Files.read_text!(path) {
-			Ok(file) => Action.update([
-				body.set(file.text),
-				session.set(Session.from_file(file)),
-			])
+		match Files.choose_file!() {
 			Err(error) => failed(session, error)
+			Ok(Files.Choice.Canceled) => Action.update([session.write(Session.cancel)])
+			Ok(Files.Choice.Chosen(path)) => match Files.read_text!(path) {
+				Ok(file) => Action.update([
+					body.set(file.text),
+					session.write(|state| Session.loaded(state, file)),
+				])
+				Err(error) => failed(session, error)
+			}
 		}
-		Session.Phase.Writing(write) => match Files.write_text!({ path: write.path, text: write.document.body }) {
-			Ok(result) => Action.update([session.write(|state| Session.written(state, result.path))])
+	}
+
+	## Saves the body the view held when the save began; the destination is
+	## the document's path unless one must be chosen.
+	save! : Ui.State(Session.State), View, Bool => Action(View)
+	save! = |session, view, save_as| {
+		if view.state.phase != Busy(Saving) {
+			return Action.none
+		}
+		destination = match view.state.path {
+			Some(path) if !save_as => Ok(Files.Choice.Chosen(path))
+			_ => Files.choose_save_path!({
+				directory: match view.state.path {
+					None => Home
+					Some(path) => At(parent_path(path))
+				},
+				suggested_name: match view.state.path {
+					None => "Untitled note.txt"
+					Some(path) => Session.file_name(path)
+				},
+			})
+		}
+		match destination {
 			Err(error) => failed(session, error)
+			Ok(Files.Choice.Canceled) => Action.update([session.write(Session.cancel)])
+			Ok(Files.Choice.Chosen(path)) => match Files.write_text!({ path, text: view.body }) {
+				Ok(_) => Action.update([session.write(|state| Session.written(state, { path, body: view.body }))])
+				Err(error) => failed(session, error)
+			}
 		}
-		_ => Action.none
 	}
 
 	## A confirmation dialog is dismissed in state; a chooser dialog dismisses
@@ -72,16 +78,6 @@ Workflow := [].{
 		}
 	}
 
-	chosen : Ui.State(Session.State), Try(Files.Choice, Files.Error) -> Action(a)
-	chosen = |session, result| match result {
-		Ok(Files.Choice.Canceled) => Action.update([session.write(Session.cancel)])
-		Ok(Files.Choice.Chosen(path)) => Action.update([session.write(|state| Session.choose_path(state, path))])
-		Err(error) => failed(session, error)
-	}
-
 	failed : Ui.State(Session.State), Files.Error -> Action(a)
-	failed = |session, error| match error {
-		Files.Error.Canceled => Action.update([session.write(Session.cancel)])
-		_ => Action.update([session.write(|state| Session.failed(state, Files.error_text(error)))])
-	}
+	failed = |session, error| Action.update([session.write(|state| Session.failed(state, Files.error_text(error)))])
 }
