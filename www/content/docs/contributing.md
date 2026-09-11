@@ -1395,10 +1395,13 @@ elsewhere. It runs and its failure is reported, but it does not fail the run —
 and a diagnostic that starts passing *does* fail the run, so a fix cannot leave
 a stale exclusion behind. Never weaken an assertion to make a scenario pass;
 state the reason in the script and let it run as a diagnostic instead. A
-defect that only one system shows — the host's own window frame is drawn only
-where the compositor delegates decorations — carries `# diagnostic-on: linux`
-(or `macos`, `windows`, comma-separated) after its reason, and is an ordinary
-check on every system not named.
+defect that only some runs show carries `# diagnostic-on:` after its reason,
+naming systems (`linux`, `macos`, `windows`) or the window frame the run saw
+(`client-frame` where the compositor delegated decorations and the host drew
+its own title bar, as a Wayland desktop does; `server-frame` otherwise, as
+Weston on Xvfb and macOS do). The report records which frame a run had, so a
+frame scope is judged after the run; the scenario is an ordinary check
+wherever nothing named matches.
 
 Window captures are implemented for macOS only. On Linux the driver runs the
 scripts without captures; the scripts themselves, including `expect-onscreen`,

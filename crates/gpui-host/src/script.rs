@@ -536,9 +536,14 @@ pub(crate) fn frame_json(frame: &[Control]) -> String {
 }
 
 /// Renders the whole run — steps, snapshots and any failure — as one report.
+/// Serializes a run's evidence. `client_frame` records whether the host drew
+/// its own window frame inside the window: a compositor that delegates
+/// decorations leaves the application less room than one that does not, so a
+/// layout finding can depend on it, and the driver needs to know which it saw.
 pub(crate) fn report_json(
     name: &str,
     size: (f32, f32),
+    client_frame: bool,
     snapshots: &[(String, String)],
     failure: Option<&str>,
 ) -> String {
@@ -546,9 +551,10 @@ pub(crate) fn report_json(
     escape(name, &mut out);
     let _ = write!(
         out,
-        ",\"window\":[{:.0},{:.0}],\"passed\":{}",
+        ",\"window\":[{:.0},{:.0}],\"frame\":\"{}\",\"passed\":{}",
         size.0,
         size.1,
+        if client_frame { "client" } else { "server" },
         failure.is_none()
     );
     if let Some(failure) = failure {
@@ -736,8 +742,9 @@ mod tests {
         let frame = vec![control("quote", "a \"quoted\" \\ line\n")];
         let json = frame_json(&frame);
         assert!(json.contains(r#""a \"quoted\" \\ line\n""#), "{json}");
-        let report = report_json("notes", (360., 240.), &[("initial".into(), json)], Some("boom"));
+        let report = report_json("notes", (360., 240.), true, &[("initial".into(), json)], Some("boom"));
         assert!(report.contains(r#""passed":false"#), "{report}");
+        assert!(report.contains(r#""frame":"client""#), "{report}");
         assert!(report.contains(r#""failure":"boom""#), "{report}");
         assert!(report.contains(r#""window":[360,240]"#), "{report}");
     }

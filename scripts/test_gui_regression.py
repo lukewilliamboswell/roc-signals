@@ -97,7 +97,7 @@ class ScenarioTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, -11, "", "PASS: follow\n")
 
             with patch.object(gui_regression.subprocess, "run", fake_run):
-                passed, detail = gui_regression.run_scenario(
+                passed, detail, _ = gui_regression.run_scenario(
                     root / "app", scenario, artifacts, capture=False)
             self.assertFalse(passed)
             self.assertIn("signal 11", detail)
@@ -110,11 +110,27 @@ class ScenarioTests(unittest.TestCase):
                          "# diagnostic: GUI-35. The Linux frame takes 48 pixels.\n"
                          "# diagnostic-on: linux\nexpect-onscreen #Increment\n")
             on_linux = gui_regression.Scenario(root / "counter", path, system="Linux")
-            self.assertEqual(on_linux.diagnostic, "GUI-35. The Linux frame takes 48 pixels.")
+            self.assertEqual(on_linux.diagnostic_for(None),
+                             "GUI-35. The Linux frame takes 48 pixels.")
             on_mac = gui_regression.Scenario(root / "counter", path, system="Darwin")
-            self.assertIsNone(on_mac.diagnostic)
+            self.assertIsNone(on_mac.diagnostic_for("client"))
             on_windows = gui_regression.Scenario(root / "counter", path, system="Windows")
-            self.assertIsNone(on_windows.diagnostic)
+            self.assertIsNone(on_windows.diagnostic_for("server"))
+
+    def test_a_diagnostic_scoped_to_the_window_frame_is_judged_from_the_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = write(root, "counter", "minimum", "# size: 360x240\n"
+                         "# diagnostic: GUI-35. The host frame takes 48 pixels.\n"
+                         "# diagnostic-on: client-frame\nexpect-onscreen #Increment\n")
+            scenario = gui_regression.Scenario(root / "counter", path, system="Linux")
+            self.assertEqual(scenario.diagnostic_for("client"),
+                             "GUI-35. The host frame takes 48 pixels.")
+            self.assertIsNone(scenario.diagnostic_for("server"))
+            self.assertIsNone(scenario.diagnostic_for(None))
+            unscoped = write(root, "counter", "plain", "# diagnostic: GUI-03.\nexpect-text 1\n")
+            self.assertEqual(gui_regression.Scenario(root / "counter", unscoped).diagnostic_for(None),
+                             "GUI-03.")
 
     def test_a_diagnostic_scope_must_name_known_systems_and_a_diagnostic(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -1461,9 +1461,12 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                         .timer(Duration::from_millis(150))
                         .await;
                 }
-                let final_frame = window
+                let (final_frame, client_frame) = window
                     .update(cx, |runtime, window, cx| {
-                        script::frame_json(&control_frame(runtime, window, cx))
+                        (
+                            script::frame_json(&control_frame(runtime, window, cx)),
+                            matches!(window.window_decorations(), Decorations::Client { .. }),
+                        )
                     })
                     .expect("the scripted window closed early");
                 snapshots.push(("final".into(), final_frame));
@@ -1479,7 +1482,13 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                     // surface for a path only the harness ever uses.
                     std::fs::write(
                         report,
-                        script::report_json(&name, window_size, &snapshots, failure.as_deref()),
+                        script::report_json(
+                            &name,
+                            window_size,
+                            client_frame,
+                            &snapshots,
+                            failure.as_deref(),
+                        ),
                     )
                     .unwrap_or_else(|error| {
                         panic!("cannot write {}: {error}", report.display())

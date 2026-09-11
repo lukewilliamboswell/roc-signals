@@ -62,7 +62,7 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 | GUI-32 | P1 | Explorer: Preview text and Open in app are inert for real Windows folders | Windows reproduction; works on Linux | Explorer + host hit-testing/effects |
 | GUI-33 | P2 | Windows file-service edge cases: reparse points, sharing violations, separators | Source; unverified; UNC decided 2026-09-11 | Windows file worker |
 | GUI-34 | P1 | Re-verify on Windows the items closed on macOS | Windows evidence predates the fixes | Windows validation |
-| GUI-35 | P2 | Linux: the host's own frame takes 48 pixels of the 360×240 minimum, so Counter's buttons are laid out below the window | Linux regression bounds at 360x240 | GPUI host window frame; window minimum |
+| GUI-35 | P2 | Client-side frame: the host's own frame takes 48 pixels of the 360×240 minimum, so Counter's buttons are laid out below the window | Linux desktop regression bounds at 360x240; passes under Weston | GPUI host window frame; window minimum |
 
 ## Correctness and operability
 
@@ -142,7 +142,8 @@ Linux, 2026-09-11: all 29 scenarios ran on a Linux desktop Wayland session with
 the debug host and the 2026-09-04 nightly compiler. Twenty-eight pass; the one
 failure is the counter's minimum-window layout, which is a genuine Linux
 finding (GUI-35) rather than a script defect, and now runs as a diagnostic
-scoped to Linux with `# diagnostic-on:`. Two scenarios added that day open a
+scoped to the client-side frame with `# diagnostic-on:`; under Weston in CI it
+passes, and the driver knows which frame it saw from the report. Two scenarios added that day open a
 real file and a real folder through the workers by way of `# choose:` and leave
 through the window's own close request (see GUI-29 and GUI-32). The run was
 on the desktop compositor, not under the Weston-on-Xvfb arrangement
@@ -537,7 +538,7 @@ junctions, mount points) with the reparse tag; give sharing violations their
 own error text and a Retry hint in Activity; normalize separators at the
 boundary. Cover each with a fixture that a Windows CI job actually runs.
 
-### GUI-35 — The Linux frame consumes the window minimum
+### GUI-35 — The client-side frame consumes the window minimum
 
 Where the compositor delegates decorations, the host draws its own frame: a
 36-pixel title bar and a 6-pixel inset on every edge
@@ -548,13 +549,16 @@ the Counter's button row is recorded at y 228–276, below the window, while the
 same scenario passes on macOS, whose title bar sits outside the content bounds.
 `window_min_size` is fixed at open time and GPUI 0.2.2 offers no way to raise
 it once the decoration mode is known, so the declared 360×240 minimum means
-different content areas on different systems.
+different content areas under different compositors: the same Linux scenario
+passes in CI under Weston on Xvfb, which keeps decorations server-side, so the
+scenario's diagnostic is scoped to `client-frame` and judged from the frame
+the report records rather than from the operating system.
 
 Acceptance: make the minimum mean the same content area everywhere. Either
 add the frame's chrome to the minimum and the requested size where the host
 will draw it (the decoration mode is negotiated after open, so this may need a
 resize once it is known), or shrink the frame. Then promote
-`counter/minimum-window-layout` back to an ordinary check on Linux. Keep
+`counter/minimum-window-layout` back to an ordinary check under every frame. Keep
 window policy in the host; the Counter's own layout is already as small as its
 content allows.
 
