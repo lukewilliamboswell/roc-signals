@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// Exercise real linked Roc code: a write turn followed by an observer task turn.
+// Exercise real linked Roc code: a write turn followed by effect admission.
 // Fatal containment must discard the entire host call, including earlier seals.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { SignalsRuntime, instantiateSignalsBytes } from "../../www/static/signals.mjs";
+import { createBoundedEffectRunner } from "../../www/static/bounded_effect_runner.mjs";
 import { findByText, findNode, fireEvent, installDomDouble } from "./dom_double.mjs";
 
 const bytes = await readFile(process.argv[2] ?? ".test-out/coordinated-writes.wasm");
@@ -14,14 +15,19 @@ async function run(failureNumber) {
   const host = instance.exports;
   const root = installDomDouble();
   const errors = [];
-  const requests = [];
+  let effectsRun = 0;
   const runtime = new SignalsRuntime(host, root, {
     onError: (error) => errors.push(error),
-    taskHandler: (request) => {
-      requests.push(request);
-      return new Promise(() => {});
-    },
   });
+  const runEffect = createBoundedEffectRunner({
+    stack_pointer: host.__stack_pointer,
+    stack_top: host.roc_ui_effect_stack_top,
+    stack_bottom: host.roc_ui_effect_stack_bottom,
+    set_limits: host.__set_stack_limits,
+    set_main: host.roc_ui_effect_stack_main,
+    run: host.roc_ui_effect_run,
+  });
+  runtime.runEffect = token => { effectsRun++; return runEffect(token); };
   runtime.mount();
   await settle();
   const original = root.textContent;
@@ -34,14 +40,16 @@ async function run(failureNumber) {
     // Real DOM dispatch reports listener exceptions; the DOM double rethrows.
     if (failureNumber === 0 || !errors.includes(error)) throw error;
   }
-  await settle();
+  // Sweep this synchronous publication transaction, not later independently
+  // committed effect turns. Read its allocation count before the pump runs.
   const attempts = host.roc_ui_debug_allocation_attempts();
+  await settle();
   if (failureNumber === 0) {
     assert.deepEqual(errors, []);
     assert.equal(host.roc_ui_is_poisoned(), 0);
     assert.equal(findNode(root, (node) => node.getAttribute?.("data-testid") === "pair").textContent, "B:A");
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].request, "B:A");
+    assert.equal(effectsRun, 1);
+    assert.equal(findNode(root, (node) => node.getAttribute?.("data-testid") === "observed").textContent, "B:A");
     runtime.unmount();
     return attempts;
   }
@@ -49,7 +57,7 @@ async function run(failureNumber) {
   assert.equal(errors.length, 1, `allocation ${failureNumber} did not report exactly one fatal error`);
   assert.ok(runtime.lastHostError().length > 0);
   assert.equal(root.textContent, original, `allocation ${failureNumber} exposed a partial DOM update`);
-  assert.equal(requests.length, 0, `allocation ${failureNumber} executed an unpublished task`);
+  assert.equal(effectsRun, 0, `allocation ${failureNumber} executed an unpublished effect`);
   assert.equal(host.roc_ui_command_buffer_len(), 0);
   assert.equal(host.roc_ui_string_buffer_len(), 0);
   assert.equal(host.roc_ui_dynamic_buffer_len(), 0);

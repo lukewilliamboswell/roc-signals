@@ -475,7 +475,7 @@ def run_coordinated_writes_wasm_faults(roc_bin: str) -> None:
     wasm = output / "app.wasm"
     run([roc_bin, "build", "--target=wasm32", "--opt=size", "--no-cache", f"--output={wasm}", app])
     instrument_wasm(wasm)
-    run(["node", "scripts/browser/coordinated_writes_faults.mjs", wasm])
+    run(["node", "--no-maglev", "--experimental-wasm-jspi", "scripts/browser/coordinated_writes_faults.mjs", wasm])
 
 
 def should_run_hosted(mode: str) -> bool:

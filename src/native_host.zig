@@ -3836,9 +3836,9 @@ comptime {
         @export(&hostDbg, .{ .name = "roc_dbg", .visibility = .hidden });
         @export(&hostEnvVar, .{ .name = "roc_env_var", .visibility = .hidden });
         @export(&hostHttpSend, .{ .name = "roc_http_send", .visibility = .hidden });
-        // The hosted Files and Http primitives are the native GUI platform's:
-        // they call into the Rust host, which the web examples' native build
-        // does not link, so only the GUI engine exports them.
+        // HTTP is shared: display-free web specs use service stubs, while live
+        // GUI effects call the Rust adapter. Files remain GUI-only and require
+        // exports only from that platform's engine build.
         if (gpui_spike) {
             @export(&hostFilesChooseFile, .{ .name = "roc_files_choose_file", .visibility = .hidden });
             @export(&hostFilesChooseDirectory, .{ .name = "roc_files_choose_directory", .visibility = .hidden });

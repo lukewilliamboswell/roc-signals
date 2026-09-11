@@ -774,7 +774,7 @@ mount an artifact with telemetry summarization:
 
 ```sh
 python3 scripts/test.py wasm --keep-output
-node scripts/browser/mount_wasm_example.mjs .test-out/wasm/package-explorer.wasm package-explorer --telemetry-summary
+node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs .test-out/wasm/package-explorer.wasm package-explorer --telemetry-summary
 ```
 
 Repeat the mount command for each public wasm app when refreshing a public-app

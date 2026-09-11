@@ -104,6 +104,12 @@ For structured bodies, first handle `Str.from_utf8(Http.response_body(response))
 then parse the text with a declared JSON type. Keep transport errors, decoding
 errors, and domain validation separate.
 
+Conduit's `Api.roc` contains `shield_escapes` and `restore_text`, a narrow
+workaround for an upstream JSON escape limitation. It is not a general JSON
+decoder and does not cover all legal escaped input. Before adapting it, test
+representative quotes, backslashes, newlines, and Unicode escapes against the
+pinned compiler. Keep compiler workarounds separate from domain decoding.
+
 ### Browser boundary
 
 The runtime supplies method, headers, body, and an abort signal to Fetch and

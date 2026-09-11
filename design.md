@@ -380,7 +380,7 @@ flowchart LR
     Wasm --> Wire["atomic command and payload buffers<br/>in linear memory"]
     Wire --> JS["JavaScript decoder and executor"]
     JS --> Browser["browser DOM and resources"]
-    Browser -->|"events · timers · task results"| JS
+    Browser -->|"events · timers · service responses"| JS
     JS -->|"validated integer and byte payloads"| Wasm
 ```
 
@@ -519,13 +519,13 @@ explicit replacement is a reducer that ignores that value. The continuation
 runs only after its batch commits and receives a fresh post-commit snapshot
 of its declared reads — or, when that commit retired the read states, the
 snapshot its handler observed — and returns the next action, which the
-engine applies the same way — so a chain that waited on an effect never
-writes a value captured before the effect ran, and effectful code can
-neither observe nor mutate mid-turn state. The native platform ships this contract, and the browser
-platform adopts the same model as its end state: its executor consumes the
-same queued-thunk contract, with only the execution substrate open
-(*Open Questions*), and the declared task vocabulary is interim browser
-surface until that port lands.
+engine applies the same way. Reducers therefore run against current state;
+this does not make a captured response current or prevent an application from
+explicitly replacing state with it. Rejecting an obsolete response remains
+application race policy. Effectful code can neither observe nor mutate
+mid-turn state. Both platforms use this contract.
+Their executors consume the same prepared thunks; execution substrate and
+deployment constraints do not change the action laws.
 
 An action may coordinate several independently owned sources. All declared
 reads observe the same settled pre-action snapshot. Its write set contains at
@@ -604,14 +604,13 @@ must not be serialized as a key or used to encode action occurrences.
 - **Action** — the unit of event handling: an atomic batch of state-change
   reducers, optionally followed by one effectful continuation the engine runs
   after the batch commits with a settled snapshot of the action's declared
-  reads. Shipped as the native platform's handler vocabulary; see *Values,
+  reads. Shared by both platforms; see *Values,
   Actions, and Coordinated State*.
 - **Cmd** — the typed unit an action, lifecycle hook, or signal-change sink
   hands the engine. On every platform it carries atomic state-change batches
-  and an action's effectful continuation (shipped natively, arriving with
-  the browser port); on the browser it also carries outbound service
+  and an action's effectful continuation; on the browser it also carries outbound service
   requests — navigate history, set the title, write or remove storage, send
-  a message to an attached widget, and interim task starts — whose results
+  a message to an attached widget — whose results
   re-enter the graph through the same propagation queue as a click.
 - **Sub(a)** — a typed, inbound, long-lived source declared by structure and
   owned by the scope that declares it: browser timers, browser environment values
@@ -619,14 +618,13 @@ must not be serialized as a key or used to encode action occurrences.
   are diffed by stable descriptor identity, started when their scope is
   created, and stopped when it is disposed. Inbound payloads use the shared
   boundary schema vocabulary, and any retained source value or callback uses
-  the same capability-owned `HostValue` model as events and tasks.
+  the same capability-owned `HostValue` model as events and effect snapshots.
 - **Effect registry** — the typed table, built at ingestion from the
   descriptor tree, that maps each declared `Cmd` kind and `Sub` kind to its
   host route and to the capability that decodes its result. Routing is by
   dense registry id, never by a string convention. The registry is the
-  routing contract for subscriptions, widgets, and the browser's interim
-  task vocabulary; hosted effectful functions route directly and have no
-  task routes.
+  routing contract for subscriptions and widgets; hosted effectful functions
+  route directly and are not entries in a task registry.
 
 ## Identity: Construction-Site Within Explicit Scopes
 
@@ -646,7 +644,7 @@ address is an internal alias token, never an application key, source-code
 location, or promise of identity across mounts.
 
 Signal alias identity is the address of the boxed callable the signal already
-needs for evaluation: initializers identify constants, state, tasks, and
+needs for evaluation: initializers identify constants, state, and
 intervals; transforms identify derived signals; browser sources use their
 `from_payload` transforms. The descriptor carries this pointer as both the
 record's identity and its evaluator, and ingestion asserts that they agree. Cloned signal descriptors therefore share a record, while two
@@ -657,7 +655,7 @@ selected/unselected initializers, and output capability, while every row remains
 an ordinary independently cached graph record registered under its exact key.
 Persistent and transaction-local composite indexes are separate from the
 callable-only indexes used by other signals and effects. Callable addresses are lookup keys only; the host
-still owns separate dense node, active-graph, task-request, interval, and DOM ids.
+still owns separate dense node, active-graph, effect-occurrence, interval, and DOM ids.
 
 - Within a scope, structural sites are numbered in deterministic descriptor
   traversal order. A construction site is a declaration in that scope, not a
@@ -707,7 +705,7 @@ still owns separate dense node, active-graph, task-request, interval, and DOM id
 | Reorder a surviving key within one site | Preserve its scope, state, and active work | Move existing nodes; preserve editing interaction |
 | Insert or remove another key | Preserve unaffected row scopes | Splice only affected rows |
 | Update an item without changing its key | Preserve its row scope; propagate the item value | Update affected sinks and nested structure |
-| Remove a key, including filtering it out | Dispose that row's state and stop its subscriptions and timers; a native effect it started survives and reparents (*Requests, effects, and cancellation*) | Detach its subtree |
+| Remove a key, including filtering it out | Dispose that row's state and stop its subscriptions and timers; an admitted effect it started survives and reparents (*Requests, effects, and cancellation*) | Detach its subtree |
 | Reinsert a previously committed removal | Create a new row lifetime, even with the same key | Build new structure |
 | Remove and reinsert within one unpublished Rows edit batch | Preserve the slot and row scope if the final generation retains the key | Reconcile only the final generation |
 | Change an item's key | End the old row lifetime and create a new one | Remove and insert |
@@ -791,7 +789,7 @@ Two rules keep this invariant honest:
 A thunk that *reads* an erased value is not enough. The host does not only read
 these values — it **owns their lifecycle**. After `roc_ui_init` the host owns the
 mutable runtime graph: state cells, source caches, derived-signal caches, keyed
-collection generations, pending task payloads, and sink values. Those cells are
+collection generations, effect snapshots, and sink values. Those cells are
 replaced during propagation, pruned when unchanged, cloned for non-consuming
 reads, and destroyed when a scope is disposed or the app unmounts. At each of
 those moments the host is the only code that knows a particular value is now
@@ -831,8 +829,8 @@ CapabilityHandle := {
 - **Reads, reducers, and row operations are edge-specific extensions**, not part
   of the universal trio. A signal-backed text edge owns a
   `{ capability, read : HostValue -> Str }` record; a `Ui.when` condition owns a
-  `{ capability, read : HostValue -> Bool }` record; a task request read and an
-  event reducer carry their operation the same way; `Ui.each` owns one ops
+  `{ capability, read : HostValue -> Bool }` record; an event reducer carries
+  its operation the same way; `Ui.each` owns one ops
   record containing its `Rows`/item capabilities plus `describe`,
   `copy_snapshot`, `copy_delta`, `compare_slots`, `clone_item`, and `row`.
   These records are carried by the edge that needs them, never invented by the
@@ -846,7 +844,7 @@ CapabilityHandle := {
 
 ### Immutable `Rows` generations and preallocated sinks
 
-`Rows(item)` is an opaque, ordinary Roc value: it can live in state, task
+`Rows(item)` is an opaque, ordinary Roc value: it can live in state, effect
 results, records, and derived signals. It owns `key_of`, cached exact keys, and
 stable generational slot ids, and publishes either a full snapshot or a
 normalized delta from its immediate parent. `Rows.is_eq` compares a private
@@ -959,7 +957,7 @@ capability bridges the two.
 ## App-Facing API
 
 The app sees `Signal(a)`, `Ui.Row(a)` with exact UTF-8 identity, `Elem`,
-task/effect helpers, and a small set of polymorphic functions. It never sees
+action/effect helpers, and a small set of polymorphic functions. It never sees
 host ids, host-private key hashes, `NodeValue`, or lifecycle tokens. The API is
 shared for signals, actions, and scope ownership. Rendering and services are
 platform-specific: `platform-web` exposes `Html` and browser services;
@@ -1053,13 +1051,10 @@ carries follows the executing host — the browser's `fetch` defaults, or the
 native host's HTTP client performing the request to completion inside an
 effect; the platform does not grow a policy surface one host cannot honour.
 
-On the browser platform, `Signal.task_source` is platform-internal plumbing
-beneath `Signal.fake_task` and `Http`, and task and subscription kinds are
-registered in the typed effect registry at ingestion; there is no string-named
-task convention and no generic public effect registry for apps to reach into.
-The native platform has no task routes: task-style helpers are browser
-surface, and their visibility through shared module copies on the native
-platform is an artifact to remove, not a supported contract.
+Hosted effects on both platforms are reached through `Action` continuations,
+not registered task kinds or string-named routes. Applications cannot reach
+into a generic effect registry. Scoped subscriptions remain explicit graph
+descriptors; they do not provide a second mechanism for executing HTTP.
 
 `Signal.clone_expr`, `Signal.to_expr`, and `Signal.from_expr` are
 platform-private descriptor plumbing shared by `Html` and `Ui`. They are not
@@ -1136,8 +1131,8 @@ Native window closure may be governed by one explicit root-owned declaration;
 without it, native close requests close the window immediately. A
 close request enters the ordinary unit-event graph; the committed app decision
 cancels it, holds it pending, or permits closure. Async work completes through
-its ordinary settlement — a browser task result, or a native effect's returned
-action committing — before the app may permit closure. The native adapter
+the effect's returned action committing before the app may permit closure.
+The native adapter
 retains at most one pending request, owned by the exact rendered registration
 lifetime and binding; replacement, disposal, or rebinding cancels an undecided
 request. Once permission commits, closure is a decided effect owned by the window
@@ -1196,8 +1191,7 @@ typed through the boundary schema vocabulary, and routed by a dense id from the
 effect registry:
 
 - **`Cmd` (outbound).** A typed request the host serializes into the command
-  stream. Tasks carry a request id for settlement and cancellation; widget
-  messages carry the target element id and a boundary value.
+  stream. Widget messages carry the target element id and a boundary value.
 - **`Sub(a)` (inbound).** A typed long-lived source. `Ui.subscribe(sub, initial)`
   declares it in the current scope and yields a `Signal(a)`; the host starts
   the bridge when the scope is created and stops it when the scope is
@@ -1467,10 +1461,10 @@ case requiring a generic door back into Roc — the host already holds the point
 to the exact builder for that exact construction site.
 
 Each signal record retains only its evaluator closure; its lookup identity is
-derived from that owned callable rather than retained separately. Pending tasks
-and active intervals take an additional callable ref while their lifecycle entry
-can outlive the descriptor or record that supplied the pointer. Every owner drops
-its ref via `decrefErasedCallable` when the record, request, or interval is removed.
+derived from that owned callable rather than retained separately. Prepared effects
+own their thunks and declared-read references independently of the initiating
+descriptor. Active intervals likewise retain the callable references required
+by their lifetime. Each owner releases its references when that ownership ends.
 
 ## The Engine: Host-Agnostic Reactive Core
 
@@ -1498,7 +1492,7 @@ lookup; all boxes remain part of the one `Engine(Ctx)` ownership domain.
 
 ```mermaid
 flowchart TB
-    Ingress["ingress<br/>mount · event · source update · task result"] --> Tx["transaction coordinator"]
+    Ingress["ingress<br/>mount · event · source update · effect result"] --> Tx["transaction coordinator"]
 
     subgraph Model["committed model"]
         Identity["identity tables<br/>node · rendered element · construction site"]
@@ -1515,7 +1509,7 @@ flowchart TB
     end
 
     subgraph Services["host-facing services"]
-        Effects["effect lifecycle<br/>effects · tasks · timers · declared host-backed sources"]
+        Effects["effect lifecycle<br/>effects · timers · declared host-backed sources"]
         Render["render cache and minimal diff"]
         Sink["transactional command sink"]
         Safety["limits · metrics · bounded diagnostics · poison"]
@@ -1704,8 +1698,8 @@ Memory evidence separates steady-state live bytes, retained capacity, and peak
 transaction bytes, including old/candidate generations and command buffers.
 Plateaus after repeated bounded work do not excuse an excessive high-water mark.
 Work and resource budgets must also bound accepted queue contents and consecutive
-effect-triggered turns; for native effects that coverage is a follow-up
-refinement (*Requests, effects, and cancellation*). Atomic publication alone is not a responsiveness policy;
+effect-triggered turns on both hosts (*Requests, effects, and cancellation*).
+Atomic publication alone is not a responsiveness policy;
 future yielding must preserve settled observation boundaries and action order.
 
 ### Propagation algorithm (push-based, glitch-free, value-pruned)
@@ -1747,7 +1741,7 @@ change or a key-set change:
 - dispose scopes for removed branches/keys: remove their ids from active indexes
   and adjacency, call `decrefErasedCallable` on each retained closure (Roc
   reclaims captured environments), release capability-owned state/source values,
-  run any `Ui.on_cleanup` task, and detach the rendered subtree through `sink()`,
+  run any `Ui.on_cleanup` hook, and detach the rendered subtree through `sink()`,
 - reorder list rows by moving rendered nodes, never rebuilding surviving rows.
 
 Dense id tables are allowed to keep their backing arrays, but inactive slots are
@@ -1804,7 +1798,7 @@ The engine never touches a DOM or GPUI entity directly. It writes to a `sink()` 
 supplies. The command set is the typed, host-independent vocabulary:
 `ResetDom`, `CreateElement`, `CreateText`, `AppendChild`, `RemoveNode`,
 `MoveBefore`, `SetText`, `SetValue`, `SetChecked`, `SetDisabled`, `SetRole`,
-`SetLabel`, `SetTestId`, `SetClass`, pointer-event binds, timer/task commands,
+`SetLabel`, `SetTestId`, `SetClass`, pointer-event binds, timer commands,
 and event bind/clear operations. The browser wire also has an `Extended` fixed
 record whose operands point at a dynamic byte record for less common operations
 such as arbitrary text attributes. The shared command vocabulary, command
@@ -1918,7 +1912,7 @@ the performance objective remains open until the remaining cost is understood.
 
 ## Glitch Freedom, Ordering, and Async
 
-One engine orders external actions, source notifications, timer ticks, and task
+One engine orders external actions, source notifications, timer ticks, and effect
 results. Graph ranks are established at ingestion and maintained for structural
 changes. Glitch freedom means each settled observation sees a coherent source
 write set; it is not merely an ordering property of one diamond.
@@ -1968,22 +1962,7 @@ page executing an unbounded synchronous loop.
 
 ### Requests, effects, and cancellation
 
-On the browser platform, task requests carry nonwrapping instance-local
-request identity tied to an owning scope and source. Dispatch uses the dense
-effect-registry route; labels are diagnostic only. Each task kind declares
-whether requests supersede earlier work, queue, or run independently. A queue
-requires explicit capacity, reservation, refusal, release, cancellation, and
-shutdown semantics. Disposal invalidates the request before releasing its
-scope and emits host cancellation. A result accepted and committed before
-cancellation remains part of history; a queued or later result for the
-canceled request cannot update state. Recognized stale settlements release
-their payload exactly once without resurrecting the scope. Malformed payloads
-and invalid protocol identities remain contract errors. Cancellation of
-transport does not promise that a remote side effect was undone. This task
-vocabulary is the browser's declared surface until its action executor lands
-(*Open Questions*).
-
-Native effects follow a different lifetime law: an effect belongs to the
+Both platforms follow the same lifetime law: an effect belongs to the
 intent that started it, not to the scope that rendered the control. Disposing
 the owning scope neither cancels nor orphans a queued or running effect; the
 effect reparents to the nearest surviving ancestor scope, and only tearing
@@ -2005,9 +1984,8 @@ constraints the shipped model already enforces; their numbers live with the
 evidence and the boundary documents, not here.
 
 Subscriptions use the same declared ownership and input ordering. Application
-task and effect failures are typed values, including cancellation where a
-task's public contract exposes it. Contract violations and poisoned instances
-are diagnostics, not fabricated task or effect results.
+effect failures are typed values. Contract violations and poisoned instances
+are diagnostics, not fabricated service results.
 
 ## Native Semantic Host Specifics
 
@@ -2049,12 +2027,14 @@ supported operating systems, packaging inputs, and release evidence belong in
 
 The GUI boundary exchanges validated primitive records, integer identities,
 and UTF-8 bytes. The [native protocol manifest](protocol/native-protocol.json)
-owns the presentation, effect, and timer versions, scalar field and task-kind
+owns the presentation and timer versions, scalar field
 tables, and native node layout. Generated Zig, Rust, Roc, and documentation
 artifacts must agree with it. The
 [native boundary contract](docs/native-gui-protocol.md) owns exact encodings,
 export signatures, limits, and compatibility checks. Presentation and service
-record versions and sizes are checked before mount; incompatible statically
+record versions and sizes must be checked before mount; the effect handoff
+requires the same explicit compatibility protection, not an implicit ABI
+agreement. Incompatible statically
 linked parts must be rebuilt together. Native protocol changes do not implicitly
 change the browser wire.
 
@@ -2164,8 +2144,8 @@ thunk to its own worker thread, posting the completed result back to the UI
 thread. The action the closure returns is applied like any other command, in
 completion order, with the same reads as origin, so a chain keeps
 snapshotting the same signals. Result lifetime and per-write application
-follow *Requests, effects, and cancellation*. The browser host rejects the
-kind until its executor exists (*Open Questions*).
+follow *Requests, effects, and cancellation*. The browser executor consumes
+the same prepared-thunk contract through its asynchronous host boundary.
 
 `Files`, `Http`, and `Env` are hosted effectful functions callable only
 inside such a continuation: choosers, stat, byte read and write, rename,
@@ -2284,7 +2264,7 @@ digests as ordinary platform Roc over the read primitives, inside an effect
 like any other Files use. It reports integrity outcomes as
 typed data; a verification result does not freeze a subsequently mutable file.
 Image decoding and retained resource caches must also have explicit lifetime and
-memory bounds, rather than borrowing the task queue's bound as proof of theirs.
+memory bounds, rather than treating effect admission limits as proof of theirs.
 
 Font families are inherited text presentation. Embedded fonts are one bounded
 startup declaration at the root, with at most eight fonts, eight MiB of decoded
@@ -2385,7 +2365,7 @@ of three lifetime domains, and a value never moves between them by implication:
   batch. It remains readable until the browser acknowledges or clears it and is
   never also used as the next transaction's writable staging area.
 
-Every mount, event, timer tick, task result, browser-source update, and unmount is
+Every mount, event, timer tick, effect result, browser-source update, and unmount is
 a **host transaction** with prepare, mutate, and publish phases. Preparation
 validates sizes with overflow-safe arithmetic and reserves every capacity that
 can be derived before mutation. It may evaluate Roc readers and transforms whose
@@ -2578,22 +2558,21 @@ memory/startup cost is unacceptable (see *Non-Goals* and *Open Questions*).
 
 ### Async in the browser
 
-Effect results are sources. Timers/`Signal.interval` start when their declaring
-scope becomes live; JS runs the
-real `setInterval(period_ms)` keyed by `token` and calls `roc_ui_timer(token)`
-each tick. Tasks declare a request with a registry kind id and request payload;
-the host assigns a `request_id`, JS routes the request by its kind id to the
-matching bridge, and on settle calls `roc_ui_resolve(request_id, ptr, len, ok)`,
-which the host folds into `[Loading, Done, Failed]`. Browser HTTP tasks are the
-registered kind whose bridge performs `fetch`.
-Disposing a scope cancels in-flight requests (host-emitted cancel → JS
-`AbortController` / `clearInterval`) and runs `Ui.on_cleanup`. All results enter
-the one propagation model; JS drains batches serially and defers reentrant input.
+Effect completions return actions to the shared engine; they are not a second
+source or task scheduler. The browser executor takes prepared thunks from the
+engine, runs their hosted calls, and delivers completed actions in completion
+order. The engine owns read snapshots, state commits, propagation, and scope
+reparenting. JavaScript supplies primitive HTTP execution and applies the
+engine's already-decided render commands.
 
-This task bridge is the interim browser effect surface: the browser ports to
-the shared action and effect model, after which hosted effectful functions
-replace registered task kinds while timers, browser sources, and widget
-attachments keep this declared boundary (*Open Questions*).
+Timers/`Signal.interval` start when their declaring scope becomes live. JS runs
+`setInterval(period_ms)` keyed by `token` and calls `roc_ui_timer(token)` each
+tick. Scope disposal clears its timers and runs `Ui.on_cleanup`; it does not
+cancel admitted effects. Instance shutdown invalidates effect delivery and
+shuts down its browser service registrations. Transport cancellation never
+promises to undo an external side effect. All returned actions and timer ticks
+enter the same propagation model; JS drains batches serially and defers
+reentrant input.
 
 HTTP request policy comes from browser `fetch` defaults except for the
 fields the Roc request envelope carries. The runtime passes method, headers,
@@ -2601,9 +2580,10 @@ body, timeout, and an abort signal; it does not set `credentials`, `redirect`,
 `mode`, `cache`, or referrer policy. Therefore credentials default to
 same-origin, redirects default to follow, and CORS remains normal browser CORS.
 HTTP statuses are materialized as responses. Rejected fetches, including CORS
-denials and network failures, become `HttpError.Network`; runtime timeouts
-become `HttpError.Timeout`; and scope disposal or request replacement becomes
-`HttpError.Canceled`.
+denials and network failures, become `Http.Error.Network`; runtime timeouts
+become `Http.Error.Timeout`. Scope disposal does not cancel admitted requests,
+and newer requests do not implicitly replace older ones. Application reducers
+decide which completed results remain relevant.
 
 Browser location is another host-backed source. `Browser.location()` is seeded
 from the per-mount startup snapshot before `roc_ui_mount`, and the JS runtime
@@ -2755,10 +2735,10 @@ than passing silently:
   cross-container reorder, `data-grid` row create/remove, `field-notes`
   cleanup, `task-latest-wins` stale-result handling, and the generated
   `large-each-*` fixtures carry `expect_metric_delta` blocks that bound work and
-  prove no retained closure, allocation, row, or stale-task leak across the
+  prove no retained closure, allocation, row, or effect-result leak across the
   relevant cycle.
 - **Real-event and async fanout assertions in maintained apps** should keep
-  bounding `derived_calls_into_roc`, task lifecycle metrics,
+  bounding `derived_calls_into_roc`, effect ownership metrics,
   and row counters so shared-signal amplification is pinned on the live path.
 - **A reorder host test at large N** that fails if reorder degrades from
   moves-only to whole-site re-collect.
@@ -2783,16 +2763,14 @@ than passing silently:
 These are unresolved mechanism choices within the contracts above, not
 exceptions to them. Public spellings and delivery steps belong in issues.
 
-- **Browser effect substrate.** Both platforms share one action and effect
-  model; coordinated state-change batches are already shared, and the
-  browser executor will consume the same queued-thunk contract the native
-  host does and must preserve the observable laws — settled read snapshots,
-  completion-order application, effects surviving scope disposal. The open
-  mechanism question is only the substrate that runs an effect's blocking
-  hosted calls off the UI thread — worker execution over shared memory, or
-  stack suspension around them — and the deployment constraints that choice
-  imposes. The task vocabulary is interim browser surface until the port
-  lands.
+- **Browser executor deployment.** Stack suspension through JSPI preserves
+  blocking hosted-call syntax without blocking the browser event loop while
+  waiting for a service. It does not move ordinary Roc computation off the
+  JavaScript thread. Stack isolation, overflow containment, shutdown, and
+  supported-browser deployment must be verified for this substrate. Any future
+  worker executor must preserve the same settled snapshots, completion-order
+  application, and scope-independent admitted-effect lifetime; it is not a
+  reason to introduce another application effect model.
 - **Controlled inputs / focus / IME / selection.** Whether the guarded
   `SetValue` rule plus explicit descriptors is sufficient for focused masking
   and selection-preserving normalization, or whether a first-class
@@ -2830,26 +2808,21 @@ surface. Native applications use the same `Signal`, `Ui`, `Rows`, and opaque
 `Elem` contracts with the `Gui` controls and `Files` services described in
 *Native GUI Host and Desktop Boundary*. The exact native public signatures live
 with [Elem](platform-gui/Elem.roc), [Gui](platform-gui/Gui.roc),
-[Action](platform-gui/Action.roc), [Files](platform-gui/Files.roc),
+[Action](platform-shared/Action.roc), [Files](platform-gui/Files.roc),
 [Http](platform-gui/Http.roc), [Env](platform-gui/Env.roc), and the
 [native reference](www/content/docs/reference.md#native-actions); the
 [native guide](www/content/docs/native-gui.md) supplies composition examples.
 Neither the `Html` nor the browser-service signatures below imply GUI support.
-The task-style effect helpers below (`Task`, `TaskStatus`, `Signal.fake_task`,
-`Signal.from_task`, `Signal.fold_task`, `Signal.start_str`, `Signal.cleanup`)
-are interim browser surface until the port to the shared action and effect
-model lands (*Open Questions*), as are the task-starting `Http` helpers
-(`request_task`, `start`, `get`, `get_text_task`, `get_text`); the
-`roc-lang/http` request and response values they share persist. The interim
-helpers are part of neither the native contract nor the end state.
+`Action` is shared by both platforms. HTTP is called inside an action's
+effectful continuation and uses the `roc-lang/http` request and response
+values; it does not construct a reactive task or a loading-state source.
 
 ```roc
 # Opaque to the app:
 Signal(a)
 Rows(item)
 Elem
-Task(a, err)
-TaskStatus(a, err)
+Action(a)        # state changes and effect continuations over declared reads
 Cmd              # produced and consumed by helpers; not a public id surface
 Cleanup          # produced and consumed by helpers; not a public id surface
 
@@ -2871,11 +2844,14 @@ Ui.Row.select : Ui.Row(item), Signal.Keyed(value) -> Signal(value)
 # Named multi-signal composition should use Roc record-builder syntax:
 # { first: first_signal, last: last_signal, active: active_signal }.Signal
 
-# Async / effects as sources (same propagation path as user events)
-Signal.fake_task : Str, (Str -> a), (Str -> err) -> Task(a, err)
-Signal.from_task : Task(a, err) -> Signal([Loading, Done(a), Failed(err)])
-Signal.fold_task : Task(a, err), b, (a -> b), (err -> b) -> Signal(b)
-Signal.start_str : Task(a, err), Str -> Cmd
+# Actions, hosted effects, and scoped timers
+Action.none : Action(a)
+Action.update : List(Ui.StateWrite) -> Action(a)
+Action.then : List(Ui.StateWrite), (a => Action(a)) -> Action(a)
+Action.run : Signal(a), (a -> Action(a)) -> Handler
+Action.on_change : Signal(a), (a -> Action(a)) -> Elem
+Action.on_change_initial : Signal(a), (a -> Action(a)) -> Elem
+Action.every : U64, Signal(a), (a -> Action(a)) -> Elem
 Signal.cleanup : Str -> Cleanup
 Signal.interval : U64 -> Signal(U64)  # period ms -> tick count
 Ui.on_change : Signal(a), (a -> Cmd) -> Elem  # sink: fires a Cmd when value changes
@@ -2949,8 +2925,8 @@ Html.on_change : Handler -> Attr
 Html.on_composition_start : Handler -> Attr
 Html.on_composition_end : Handler -> Attr
 
-# Package-aligned HTTP tasks
-HttpError := [Network(Str), Timeout, Canceled, Unsupported(Str), ResponseMaterialization(Str)]
+# Package-aligned hosted HTTP
+Http.Error := [InvalidRequest(Str), Network(Str), Timeout, TooLarge(Str), Status(U16), InvalidUtf8, Unavailable(Str)]
 Request        # `roc-lang/http` request value
 Response       # `roc-lang/http` response value
 Method         # `roc-lang/http` method value
@@ -2961,12 +2937,9 @@ Http.method_put : Method
 Http.method_delete : Method
 Http.method_patch : Method
 Http.method_unknown : Str -> Method
-Http.request_task : Str -> Task(Response, HttpError)
-Http.start : Task(Response, HttpError), Request -> Cmd
-Http.get : Task(Response, HttpError), Str -> Cmd
-Http.get_text_task : Str -> Task(Str, Str)
-Http.get_text : Task(Str, Str), Str -> Cmd
-Http.error_text : HttpError -> Str
+Http.send! : Request => Try(Response, Http.Error)
+Http.get! : Str => Try(Response, Http.Error)
+Http.get_text! : Str => Try(Str, Http.Error)
 Http.request_from_method : Method -> Request
 Http.request_method : Request -> Method
 Http.request_method_str : Request -> Str
@@ -3090,7 +3063,9 @@ roc_ui_mount() -> void          // host runs roc_ui_init, ingests, emits initial
 roc_ui_event(event_id, payload_kind, payload_ptr, payload_len, bool_value) -> u32
                                 // DOM-response bits; static-policy handlers return zero
 roc_ui_timer(token) -> void                 // drive interval/timer source
-roc_ui_resolve(request_id, ptr, len, failed) -> void   // async result
+roc_ui_effect_next() -> u32                 // transfer the next prepared occurrence to the executor
+roc_ui_effect_run(token) -> void            // execute its thunk on the selected effect stack
+roc_ui_effect_complete(token) -> void       // commit the returned action through the engine
 roc_ui_unmount() -> void        // dispose all scopes, drop descriptor, free retained closures
 
 roc_alloc / roc_dealloc / roc_realloc        // marshalling
@@ -3131,7 +3106,7 @@ error, not a compatibility shim.
 The host appends fixed-width records to `roc_ui_command_buffer_*`: six little
 endian `u32` words (`op`, then five integer operands). Hot operations fit
 entirely in those operands. Free-form text for hot string ops (`CreateElement`,
-`CreateText`, `SetText`, `SetValue`, task name/request) is stored in
+`CreateText`, `SetText`, `SetValue`) is stored in
 `roc_ui_string_buffer_*`, and fixed records carry `(offset, len)` slices into
 that buffer. JS never decodes a `RocStr` header, tag union, list layout, or Roc
 payload to infer meaning.
@@ -3200,7 +3175,7 @@ text attributes from `Html.attr`, `Html.attr_s`, and `Html.attr_maybe_s`. The
 Roc descriptor makes the custom path explicit with `Node.field_custom` plus a
 `name` field on text attrs; fixed text fields must carry an empty name.
 `SetText`, `SetValue`, bool fields, fixed click/input/check/pointer event binds,
-timers, and tasks remain fixed records when they can be represented without
+timers remain fixed records when they can be represented without
 policy/delivery/payload expansion. General named events, and fixed events that
 need the expanded shape, use `BindEvent`/`ClearEvent`, carrying the event name,
 listener option bits derived from typed policy, delivery
@@ -3293,8 +3268,8 @@ public suite is:
   server-confirmed write paths.
 
 Focused internal fixtures carry narrow canaries that should not become broad
-catalog pressure: duplicate-key diagnostics, task
-superseding and UTF-8 task ownership, browser environment commands/sources,
+catalog pressure: duplicate-key diagnostics, application-owned latest-wins
+policy and UTF-8 effect-result ownership, browser environment commands/sources,
 initial-aware signal-change commands, markdown-to-`Elem` structure and link
 safety, controlled input reconciliation, textarea, number, select, radio,
 checkbox, submit/reset default actions, optional text attrs, validation

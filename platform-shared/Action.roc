@@ -11,8 +11,8 @@ import Ui
 ## snapshotted when the event fires and again, freshly, before each effect.
 ##
 ## Every state change is a reducer applied at its own commit against the value
-## the state holds then, so a chain that waited on an effect never writes a
-## value it captured before the effect ran. The type parameter is the type of
+## the state holds then. Explicit replacements can still contain an old
+## response; rejecting obsolete responses is application policy. The type parameter is the type of
 ## the declared reads, which is also what each effect receives.
 Action(a) := [Action(Node.Cmd)].{
 
@@ -36,7 +36,7 @@ Action(a) := [Action(Node.Cmd)].{
 		# so nothing here has to capture a capability: with a capture-free
 		# effect this closure is itself capture-free. Decoding the snapshot
 		# touches host-owned values, so it happens on the UI thread; the thunk
-		# it returns holds plain Roc values and runs on the effect worker.
+		# it returns holds plain Roc values and runs through the host's effect executor.
 		prepare_effect! : HostValue, HostValue.CapabilityHandle => Box((() => Node.Cmd))
 		prepare_effect! = |snapshot_hv, capability| {
 			snapshot : a

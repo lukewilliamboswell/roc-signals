@@ -315,8 +315,9 @@ reads are snapshotted when the event fires. There are two kinds of action:
 
 A state change is `state.write(f)`, a reducer applied to the value the state
 holds when the batch commits, or `state.set(value)` for a value that does not
-depend on the old one. Because reducers run at commit, a chain that waited on
-an effect never writes a value captured before the effect ran.
+depend on the old one. Reducers run against current state at commit. An explicit
+replacement can still contain an obsolete response, so latest-wins behavior
+requires an application check such as a request generation.
 
 ```roc
 save! : Ui.State(Status), Str => Action(Str)
@@ -354,7 +355,9 @@ function for the effect and pass it the state handles it writes, so it
 captures nothing. `Action.on_change`, `Action.on_change_initial`,
 `Action.on_mount`, and `Action.every` bind actions to signal changes, mount,
 and scoped intervals; `Action.every` takes the reads its action and effect
-see at each tick, and a change to those reads between ticks does not run it. The browser platform does not run `then` effects.
+see at each tick, and a change to those reads between ticks does not run it.
+The browser platform shares these action laws; its executor suspends hosted
+HTTP calls through JSPI rather than running each effect on a native worker.
 
 ## Example coverage
 

@@ -273,13 +273,15 @@ when comparing:
   `.test-out/size/<label>/` and rebinds each fixture there, so concurrent
   builds cannot overwrite each other's measurement input.
 
-`test/size/baseline.json` is the committed reproduction of the historical
-baseline, and `test/size/budgets.toml` holds explicit raw and gzip budgets
-derived from it with 1% headroom. `python3 scripts/test.py size` fails when a
+`test/size/baseline.json` preserves the historical measurement;
+`test/size/effect-model-baseline.json` records the accepted production
+effect-model measurement. `test/size/budgets.toml` identifies the measurement
+revision used for its explicit raw and gzip budgets, with 1% headroom.
+`python3 scripts/test.py size` fails when a
 fixture exceeds its budget. After an accepted change, regenerate the budgets
 from the new report with `--write-budgets` and review the diff; never bless a
-larger artifact automatically, and never derive budgets from an instrumented
-or profiler build.
+larger artifact automatically. Mandatory production stack checks belong in
+the measured artifact; diagnostic instrumentation and profiler builds do not.
 
 `--symbols` additionally builds the host object with `-Dstrip=false` and
 records repeated helper families (names collapsed over generic arguments and
