@@ -3,55 +3,9 @@ name: GUI host link inputs
 # Publishes host-owned archives after native tests of the extracted candidates.
 # External dependency inputs have their own release and verification policies.
 
+# Runner intent and build modes: www/content/docs/contributing.md#ci-intent-and-runner-matrix
+
 on:
-  pull_request:
-    paths:
-      - .github/workflows/gui-hosts.yml
-      - .github/actions/setup-toolchain/**
-      - src/native_host.zig
-      - src/signals/**
-      - crates/gpui-host/**
-      - build.zig
-      - build.zig.zon
-      - Cargo.toml
-      - Cargo.lock
-      - scripts/build_gui.py
-      - scripts/audit_windows_archive.py
-      - scripts/build_glibc.py
-      - scripts/build_windows_gnu_runtime.py
-      - scripts/build_windows_system_imports.py
-      - scripts/compiler_pins.py
-      - scripts/prepare_dependencies.py
-      - scripts/toolchain.py
-      - scripts/windows_runtime_validation.py
-      - scripts/windows_system_imports.py
-      - scripts/windows_gnu_build.py
-      - scripts/windows_gnu_coff.py
-      - scripts/windows_fxc_inventory.ps1
-      - scripts/test_windows_gnu_candidate.py
-      - scripts/test_windows_gnu_coff.py
-      - .cargo/config.toml
-      - scripts/test_freetype_boundary.py
-      - scripts/cargo_build_evidence.py
-      - scripts/host_build_identity.py
-      - scripts/test_host_build_identity.py
-      - scripts/host_notice_payload.py
-      - scripts/prepare_gui_host_release.py
-      - scripts/test_host_notice_payload.py
-      - scripts/gui_host_artifacts.py
-      - scripts/test_gui_host_artifacts.py
-      - scripts/rust_license_inventory.py
-      - scripts/test_rust_license_inventory.py
-      - scripts/toolchain_license_inventory.py
-      - scripts/test_toolchain_license_inventory.py
-      - dependencies/gui-host-notices/**
-      - scripts/release_dependencies.py
-      - scripts/release_gui_hosts.py
-      - scripts/dependency_artifacts.py
-      - scripts/dependency_archive.py
-      - LICENSE
-      - .gitattributes
-      - .gitignore
   workflow_dispatch:
     inputs:
       release_tag:
@@ -77,8 +31,8 @@ env:
   GH_TOKEN: ${{ github.token }}
 
 concurrency:
-  group: gui-hosts-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: gui-hosts-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -88,11 +42,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # PRs validate all native hosts; a release builds only its selected targets.
+        # Release validation builds only the selected native targets.
         include: >-
-          ${{ fromJSON(github.event_name != 'workflow_dispatch'
-            && '[{"os":"windows-2025","target":"x64mingw"},{"os":"ubuntu-24.04","target":"x64glibc"},{"os":"macos-15","target":"arm64mac"}]'
-            || inputs.release_targets == 'x64glibc'
+          ${{ fromJSON(inputs.release_targets == 'x64glibc'
             && '[{"os":"ubuntu-24.04","target":"x64glibc"}]'
             || inputs.release_targets == 'arm64mac'
             && '[{"os":"macos-15","target":"arm64mac"}]'
@@ -151,7 +103,7 @@ jobs:
           cache-workspace-crates: false
           cache-bin: false
           env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH DEVELOPER_DIR TOOLCHAINS
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build the optimized host and its link inputs
         env:
           RUSTUP_TOOLCHAIN: 1.95.0
@@ -160,6 +112,23 @@ jobs:
           python scripts/prepare_platforms.py
           python scripts/build_gui.py --cargo-evidence "$RUNNER_TEMP/cargo-evidence"
           python scripts/prepare_gui_host_release.py --target "${{ matrix.target }}" --cargo-evidence "$RUNNER_TEMP/cargo-evidence" --output host-candidate --roc roc
+      - name: Audit Windows archive dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m unittest discover -s scripts -p 'test_windows_archive_audit.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/windows-import-audit"
+          python scripts/audit_windows_archive.py platform-gui/targets/x64mingw/libsignals_gpui_host.a > "$env:RUNNER_TEMP/windows-import-audit/host.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/audit_windows_archive.py platform-gui/targets/x64mingw/libengine.a > "$env:RUNNER_TEMP/windows-import-audit/engine.json"
+      - name: Upload Windows dependency review evidence
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-import-audit
+          path: ${{ runner.temp }}/windows-import-audit
+          if-no-files-found: error
       - name: Inventory the macOS archives' external references
         # A failed application link names only the first twenty missing
         # symbols; the full inventory says what the interface catalog lacks.

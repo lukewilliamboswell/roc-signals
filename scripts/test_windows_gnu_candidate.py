@@ -82,10 +82,12 @@ class CandidateTests(unittest.TestCase):
                     patch.object(prepare_dependencies, 'install_windows_gnu', return_value={}), \
                     patch.object(prepare_dependencies, 'verified_windows_gnu', side_effect=lambda: nullcontext(root)), \
                     patch.object(prepare_dependencies, 'windows_gnu_inventory', return_value={}), \
-                    patch.object(windows_gnu_build, 'execute', side_effect=execute), \
+                    patch.object(windows_gnu_build, 'execute', side_effect=execute) as build, \
                     patch.object(windows_gnu_coff, 'normalize', side_effect=normalize) as transform:
                 build_gui.build_windows(False, 2, None)
-                build_gui.build_windows(False, 2, None)
+                build_gui.build_windows(True, 2, None)
+                self.assertEqual([call.kwargs['debug'] for call in build.call_args_list], [False, True])
+                self.assertTrue(all(not call.kwargs['capture_evidence'] for call in build.call_args_list))
                 before = {p.name: p.read_bytes() for p in destination.iterdir()}
                 def fail(source, output, inventory, zig):
                     output.write_bytes(b'partial')

@@ -68,7 +68,8 @@ def build(debug=False, jobs=2, cargo_evidence=None):
         linux_dependencies['artifacts'].update(unwind_dependencies['artifacts'])
         keyboard_dependencies = install_xkbcommon(ROOT / 'platform-gui/targets/x64glibc')
         linux_dependencies['artifacts'].update(keyboard_dependencies['artifacts'])
-    subprocess.run(['zig', 'build', 'build-gui-engine'], cwd=ROOT, check=True)
+    subprocess.run(['zig', 'build', 'build-gui-engine',
+                    '-Doptimize=' + ('Debug' if debug else 'ReleaseFast')], cwd=ROOT, check=True)
     dest = ROOT / 'platform-gui/targets' / target
     dest.mkdir(parents=True, exist_ok=True)
     rust_name = 'libsignals_gpui_host.a'
@@ -146,7 +147,7 @@ def finish_evidence(target, destination, evidence_root, fingerprint):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--debug', action='store_true', help='Use the faster development Rust build')
+    parser.add_argument('--debug', action='store_true', help='Use development builds for both Rust and Zig')
     parser.add_argument('--jobs', type=int, default=2, help='Concurrent Cargo build jobs (default: 2)')
     parser.add_argument('--cargo-evidence', type=Path, help='New directory for exact Cargo release evidence')
     args = parser.parse_args()

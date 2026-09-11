@@ -29,9 +29,9 @@ class ChangeSelectionTests(unittest.TestCase):
                      ".github/workflows/ci.yml", "new-component/fixture.md", "dependencies.lock.json"):
             self.assertEqual(self.selected([path]), AREAS, path)
 
-    def test_host_sources_are_left_to_the_dedicated_producer(self):
+    def test_gui_host_and_platform_sources_select_native_gui_checks(self):
         for path in ("crates/gpui-host/src/lib.rs", "platform-gui/main.roc"):
-            self.assertEqual(self.selected([path]), set())
+            self.assertEqual(self.selected([path]), {"gui"})
 
     def test_shared_engine_runs_web_and_gui_specs(self):
         # The GUI job is the only one that runs GUI specs and window scenarios

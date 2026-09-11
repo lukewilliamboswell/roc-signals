@@ -1,5 +1,7 @@
 name: CI
 
+# Runner intent and build modes: www/content/docs/contributing.md#ci-intent-and-runner-matrix
+
 on:
   workflow_dispatch:
     inputs:
@@ -66,11 +68,14 @@ jobs:
     timeout-minutes: 45
     env:
       GUI_HOST_LOCK: gui-host.lock.json
+      RUSTUP_TOOLCHAIN: 1.95.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
+      - name: Install the GUI host Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
       - name: Install GUI runtime dependencies
         run: |
           sudo apt-get update
@@ -78,6 +83,14 @@ jobs:
           # itself, which it does when the lock predates a host change.
           sudo apt-get install -y libfreetype6 libxkbcommon0 libxkbcommon-x11-0 \
             libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - name: Restore compiled Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: gui-dev
+          cache-workspace-crates: false
+          cache-bin: false
+          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH DEVELOPER_DIR TOOLCHAINS
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Verify GUI discovery and applications
         run: python3 scripts/minici gui
       - name: Open GUI examples with software Vulkan
@@ -102,6 +115,7 @@ jobs:
     timeout-minutes: 60
     env:
       GUI_HOST_LOCK: gui-host.lock.json
+      RUSTUP_TOOLCHAIN: 1.95.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -117,48 +131,16 @@ jobs:
           # unconditionally keeps the two paths from diverging silently.
           rustup toolchain install 1.95.0 --profile minimal
           rustup target add --toolchain 1.95.0 x86_64-pc-windows-gnullvm
+      - name: Restore compiled Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: gui-dev
+          cache-workspace-crates: false
+          cache-bin: false
+          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH DEVELOPER_DIR TOOLCHAINS
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Verify GUI discovery and applications
         run: python scripts/minici gui
-      - name: Diagnose the Windows teardown crash
-        if: failure()
-        timeout-minutes: 5
-        run: |
-          $executable = ".test-out/gui/folder-explorer.exe"
-          if (!(Test-Path $executable)) { exit 0 }
-          & "C:/Program Files/LLVM/bin/lldb.exe" --batch `
-            -o "run" `
-            -k "thread backtrace all" `
-            -k "register read" `
-            -k "disassemble --frame --count 40" `
-            -k "image list -o -f" `
-            -- $executable --host-run-spec-json --host-entropy-seed 0 examples-gui/folder-explorer/specs/windows-paths.scm
-      - name: Preserve the Windows crash executable
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: windows-folder-explorer-crash
-          path: |
-            .test-out/gui/folder-explorer.exe
-            .test-out/gui/folder-explorer.pdb
-          retention-days: 7
-      - name: Record Windows archive dependency declarations
-        run: |
-          python -m unittest discover -s scripts -p 'test_windows_archive_audit.py'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/windows-import-audit"
-          python scripts/audit_windows_archive.py platform-gui/targets/x64mingw/libsignals_gpui_host.a > "$env:RUNNER_TEMP/windows-import-audit/host.json"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python scripts/audit_windows_archive.py platform-gui/targets/x64mingw/libengine.a > "$env:RUNNER_TEMP/windows-import-audit/engine.json"
-      - name: Upload Windows dependency review evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: windows-import-audit
-          path: ${{ runner.temp }}/windows-import-audit
-          if-no-files-found: error
-      - name: Verify Windows dependency admission and bundle the built host
-        run: |
-          python -m unittest scripts/test_prepare_dependencies.py scripts/test_dependency_artifacts.py
-          python scripts/bundle_platforms.py --package gui --no-build --output-dir "$env:RUNNER_TEMP/gui-candidate"
 
   gui-macos:
     needs: changes
@@ -168,22 +150,24 @@ jobs:
     timeout-minutes: 60
     env:
       GUI_HOST_LOCK: gui-host.lock.json
+      RUSTUP_TOOLCHAIN: 1.95.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
+      - name: Install the GUI host Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Restore compiled Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: gui-dev
+          cache-workspace-crates: false
+          cache-bin: false
+          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH DEVELOPER_DIR TOOLCHAINS
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Verify GUI applications with separate archives
         run: python3 scripts/minici gui
-      - name: Build and validate the optimized macOS bundle
-        run: |
-          if ! python3 -c "import sys; sys.path.insert(0, 'scripts'); from pathlib import Path; from gui_host_artifacts import lock_matches_sources; sys.exit(0 if lock_matches_sources(Path('gui-host.lock.json')) else 1)"; then
-            echo "The host lock does not describe this checkout, so there is no released"
-            echo "archive to bundle; the previous step built the host from source instead."
-            exit 0
-          fi
-          python3 scripts/bundle_platforms.py --package gui --no-build --output-dir "$RUNNER_TEMP/macos-bundle"
-          python3 scripts/check_macos_interfaces.py --bundle "$RUNNER_TEMP/macos-bundle"
 
   platform-source:
     name: Platform source

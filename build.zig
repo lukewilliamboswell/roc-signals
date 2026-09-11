@@ -103,7 +103,9 @@ pub fn build(b: *std.Build) void {
         b.resolveTargetQuery(.{ .cpu_arch = native_target.result.cpu.arch, .os_tag = .windows, .abi = .gnu })
     else
         native_target;
-    const gpui_host = buildNativeHostLib(b, gpui_target, .ReleaseSafe, gpui_options.createModule(), true);
+    // Ordinary GUI checks use Debug; the release builder explicitly requests
+    // ReleaseFast. Keep this target on the shared optimization selector.
+    const gpui_host = buildNativeHostLib(b, gpui_target, optimize, gpui_options.createModule(), true);
     gpui_host.bundle_compiler_rt = !gpui_windows;
     const gpui_install = b.addInstallFile(gpui_host.getEmittedBin(), "gui/libengine.a");
     b.step("build-gui-engine", "Build the experimental GPUI native bridge").dependOn(&gpui_install.step);

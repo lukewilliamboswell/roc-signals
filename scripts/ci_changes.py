@@ -30,11 +30,8 @@ def classify(paths):
     selected = set()
     for path in paths:
         if path.startswith(("platform-shared/", "src/signals/")):
-            # The dedicated GUI-host producer rebuilds and validates its exact
-            # candidate for shared engine changes, but only the GUI job runs the
-            # GUI specs and window scenarios through that engine. Ordinary GUI
-            # CI prefers the reviewed host release, and builds the host from
-            # source when the lock does not describe the checkout.
+            # Shared semantics run through both platform suites. GUI CI reuses
+            # matching released hosts and otherwise builds the current sources.
             selected.update(SHARED)
             selected.add("gui")
         elif path.startswith(("src/spec/", "src/sim_dom", "protocol/")):
@@ -42,8 +39,7 @@ def classify(paths):
             # shared by every spec on every host.
             selected.update(AREAS)
         elif path.startswith(("platform-gui/", "crates/gpui-host/")):
-            # Host source and platform packaging are covered by gui-hosts.yml.
-            continue
+            selected.add("gui")
         elif path.startswith(("examples-gui/", "test/gui/")):
             selected.add("gui")
         elif path.startswith("src/native_host"):
