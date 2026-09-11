@@ -964,8 +964,15 @@ Put each independent case in its own `*.scm` file under the app's
 fresh app process. A file's head form says which host runs it: a `(test ...)`
 runs on the display-free host, a `(scenario ...)` against a real window (see
 [Window scenarios](#window-scenarios) below). Keep pre-mount state in an optional `(setup ...)` form;
-setup accepts only `initial-location`, `initial-visibility`, `initial-online`,
-`local-storage`, and `session-storage`.
+setup accepts `initial-location`, `initial-visibility`, `initial-online`,
+`local-storage`, `session-storage`, `manual-effects`, and the same scripted
+Files and HTTP answers accepted in test steps. Scenarios deliberately reject
+setup and scripted answers because they exercise live host effects.
+
+The typed step model is also the source of `test/spec-steps.json`, which records
+the capability and payload fields of every step accepted by the window host.
+Run `zig build spec-manifest` after intentionally changing that vocabulary and
+review the generated diff. Ordinary `zig build test` rejects uncommitted drift.
 
 ### Writing specs that do not rot
 

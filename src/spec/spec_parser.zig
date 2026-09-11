@@ -83,22 +83,18 @@ pub const SpecCommandType = enum {
     close,
 };
 
-/// Whether a step exists only for a scenario driven against a real window.
-pub fn isWindowOnly(cmd_type: SpecCommandType) bool {
-    return switch (cmd_type) {
-        .wait, .type_text, .key, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot, .close => true,
-        else => false,
+/// Which built-in host can execute a step. This is the single admission table
+/// used by parsing and by the generated window-step manifest.
+pub const StepCapability = enum { semantic, window, both };
+
+/// Returns the built-in host capability required by a step.
+pub fn stepCapability(kind: SpecCommandType) StepCapability {
+    return switch (kind) {
+        .wait, .type_text, .key, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot, .close => .window,
+        .click, .focus, .shortcut, .expect_visible, .expect_absent, .expect_text, .expect_value, .expect_disabled => .both,
+        else => .semantic,
     };
 }
-
-/// The window-only steps the GUI host decodes by tag name. The Rust decoder
-/// carries the same list; a test on each side pins the two together, because
-/// the tag names cross the ABI as strings and nothing else checks them.
-pub const window_step_tags = [_][]const u8{
-    "wait",           "click",         "focus",           "type_text",      "key",             "shortcut",
-    "expect_visible", "expect_absent", "expect_text",     "expect_value",   "expect_disabled", "expect_selected",
-    "expect_focused", "expect_count",  "expect_onscreen", "expect_history", "snapshot",        "close",
-};
 
 /// Writes a parsed spec in one deterministic line per command, every field
 /// spelled out. This is what a spec *means* to the runner, independent of how
@@ -616,7 +612,7 @@ pub fn parseSExprTestSpecFrom(allocator: std.mem.Allocator, content: []const u8,
             }
         }
     } else {
-        for (commands.items) |cmd| if (isWindowOnly(cmd.kind())) return ParseError.InvalidFormat;
+        for (commands.items) |cmd| if (stepCapability(cmd.kind()) == .window) return ParseError.InvalidFormat;
     }
 
     return .{
@@ -1335,28 +1331,45 @@ test "all checked-in specs decode to the committed golden" {
 /// The window steps and their argument names and types, reflected from the
 /// `Step` union the way the scenario ABI publishes them. The Rust decoder's
 /// tests read this file, so a renamed tag or payload field is caught on both
-/// sides. Regenerated with the decode golden.
-const spec_steps_path = "test/spec-steps.manifest";
+/// sides. Regenerate it deliberately with `zig build spec-manifest`.
+const spec_steps_path = "test/spec-steps.json";
 
-fn writeStepManifest(writer: *std.Io.Writer) std.Io.Writer.Error!void {
+/// Writes the machine-readable contract for every step accepted by a window
+/// host, derived from the typed union and the central capability table.
+pub fn writeStepManifest(writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    try writer.writeAll("[\n");
+    var first_step = true;
     inline for (std.meta.fields(Step)) |field| {
         const tag = @field(SpecCommandType, field.name);
-        if (comptime (isWindowOnly(tag) or tag == .click or tag == .focus or tag == .shortcut or tag == .expect_visible or tag == .expect_absent or tag == .expect_text or tag == .expect_value or tag == .expect_disabled)) {
-            try writer.writeAll(field.name);
-            try writeArgManifest(writer, field.type, "value");
-            try writer.writeByte('\n');
+        if (comptime stepCapability(tag) != .semantic) {
+            if (!first_step) try writer.writeAll(",\n");
+            first_step = false;
+            try writer.print("  {{\"kind\":\"{s}\",\"capability\":\"{s}\",\"args\":[", .{ field.name, @tagName(stepCapability(tag)) });
+            var first_arg = true;
+            try writeArgManifest(writer, field.type, "value", &first_arg);
+            try writer.writeAll("]}");
         }
     }
+    try writer.writeAll("\n]\n");
 }
 
-fn writeArgManifest(writer: *std.Io.Writer, comptime T: type, comptime name: []const u8) std.Io.Writer.Error!void {
+fn writeArgManifest(writer: *std.Io.Writer, comptime T: type, comptime name: []const u8, first: *bool) std.Io.Writer.Error!void {
     if (T == void or T == Locator) return;
-    if (T == []const u8) return writer.print(" {s}:text", .{name});
-    if (T == u64) return writer.print(" {s}:unsigned", .{name});
-    if (T == i64) return writer.print(" {s}:signed", .{name});
-    if (T == bool) return writer.print(" {s}:boolean", .{name});
-    if (T == signals.key_chord.Chord) return writer.writeAll(" key:unsigned modifiers:unsigned");
-    inline for (std.meta.fields(T)) |field| try writeArgManifest(writer, field.type, field.name);
+    if (T == signals.key_chord.Chord) {
+        try writeManifestArg(writer, "key", "unsigned", first);
+        return writeManifestArg(writer, "modifiers", "unsigned", first);
+    }
+    if (T == []const u8) return writeManifestArg(writer, name, "text", first);
+    if (T == u64) return writeManifestArg(writer, name, "unsigned", first);
+    if (T == i64) return writeManifestArg(writer, name, "signed", first);
+    if (T == bool) return writeManifestArg(writer, name, "boolean", first);
+    inline for (std.meta.fields(T)) |field| try writeArgManifest(writer, field.type, field.name, first);
+}
+
+fn writeManifestArg(writer: *std.Io.Writer, comptime name: []const u8, comptime kind: []const u8, first: *bool) std.Io.Writer.Error!void {
+    if (!first.*) try writer.writeByte(',');
+    first.* = false;
+    try writer.print("{{\"name\":\"{s}\",\"type\":\"{s}\"}}", .{ name, kind });
 }
 
 test "the published window steps match the committed manifest" {
@@ -1364,7 +1377,7 @@ test "the published window steps match the committed manifest" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     try writeStepManifest(&out.writer);
-    if (std.process.Environ.getPosix(std.testing.environ, "SIGNALS_UPDATE_SPEC_GOLDEN") != null) {
+    if (std.process.Environ.getPosix(std.testing.environ, "SIGNALS_UPDATE_SPEC_MANIFEST") != null) {
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = spec_steps_path, .data = out.written() });
         return;
     }
@@ -1373,18 +1386,10 @@ test "the published window steps match the committed manifest" {
     try std.testing.expectEqualStrings(expected, out.written());
 }
 
-test "the window step vocabulary the GUI host decodes is exactly the tags it needs" {
-    // Every window-only step must be in the list the Rust host decodes, and
-    // every listed tag must exist, so a renamed tag fails here and in the Rust
-    // twin of this test rather than at run time as "no meaning against a window".
-    inline for (std.meta.tags(SpecCommandType)) |tag| {
-        var listed = false;
-        for (window_step_tags) |name| listed = listed or std.mem.eql(u8, name, @tagName(tag));
-        if (isWindowOnly(tag)) try std.testing.expect(listed);
-    }
-    for (window_step_tags) |name| {
-        try std.testing.expect(std.meta.stringToEnum(SpecCommandType, name) != null);
-    }
+test "step capability classifies both built-in hosts from one table" {
+    try std.testing.expectEqual(StepCapability.semantic, stepCapability(.fill));
+    try std.testing.expectEqual(StepCapability.window, stepCapability(.type_text));
+    try std.testing.expectEqual(StepCapability.both, stepCapability(.click));
 }
 
 test "the canonical form spells every field and escapes text" {

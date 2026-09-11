@@ -666,40 +666,42 @@ mod tests {
     }
 
     /// The window-step vocabulary and arguments the engine publishes, as
-    /// `test/spec-steps.manifest` records them from the Zig union by reflection.
+    /// `test/spec-steps.json` records them from the Zig union by reflection.
     /// Reading the file here ties the argument names this decoder asks for to
     /// the names the engine emits: a renamed tag or payload field fails here
     /// rather than at run time as a step with no meaning.
-    fn published_steps() -> Vec<(String, Vec<(String, String)>)> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/spec-steps.manifest");
+    #[derive(serde::Deserialize)]
+    struct PublishedStep {
+        kind: String,
+        capability: String,
+        args: Vec<PublishedArg>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct PublishedArg {
+        name: String,
+        #[serde(rename = "type")]
+        kind: String,
+    }
+
+    fn published_steps() -> Vec<PublishedStep> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/spec-steps.json");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-        // One line per step: `kind name:type name:type ...`.
-        text.lines()
-            .filter(|line| !line.is_empty())
-            .map(|line| {
-                let mut words = line.split(' ');
-                let kind = words.next().unwrap().to_string();
-                let args = words
-                    .map(|word| {
-                        let (name, arg_type) = word.split_once(':').unwrap();
-                        (name.to_string(), arg_type.to_string())
-                    })
-                    .collect();
-                (kind, args)
-            })
-            .collect()
+        serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("cannot decode {}: {error}", path.display()))
     }
 
     #[test]
     fn every_published_window_step_decodes_with_the_arguments_the_engine_emits() {
         let steps = published_steps();
         assert!(steps.len() >= 18, "{steps:?}");
-        for (kind, args) in steps {
+        for PublishedStep { kind, capability, args } in steps {
+            assert!(capability == "window" || capability == "both", "{kind}: {capability}");
             let mut generic = command(&kind);
             generic.locator_kind = "test_id".into();
             generic.test_id = "x".into();
-            for (name, arg_type) in args {
+            for PublishedArg { name, kind: arg_type } in args {
                 let value = match arg_type.as_str() {
                     "text" => Arg::Text("x".into()),
                     "unsigned" => Arg::Unsigned(115),

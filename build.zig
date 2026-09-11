@@ -85,6 +85,7 @@ pub fn build(b: *std.Build) void {
     const run_check_test_wiring_step = b.step("run-check-test-wiring", "Check Zig test wiring");
     const run_fmt_zig_step = b.step("run-fmt-zig", "Format Zig code");
     const run_test_zig_step = b.step("run-test-zig", "Run Zig unit tests");
+    const spec_manifest_step = b.step("spec-manifest", "Regenerate the reflected SCM step manifest");
     const run_test_browser_step = b.step("run-test-browser", "Run browser JavaScript contract tests");
     const build_coverage_tests_step = b.step("build-coverage-tests", "Build native host coverage test binaries");
     const run_coverage_native_host_step = b.step("run-coverage-native-host", "Run native host and signals tests with kcov coverage");
@@ -163,6 +164,15 @@ pub fn build(b: *std.Build) void {
     });
     const run_host_test = b.addRunArtifact(host_test);
     if (b.args) |args| run_host_test.addArgs(args);
+
+    const manifest_test = b.addTest(.{
+        .name = "signals_spec_manifest",
+        .root_module = createNativeHostModule(b, native_target, optimize, build_options_module),
+        .filters = &.{"the published window steps match the committed manifest"},
+    });
+    const update_manifest = b.addRunArtifact(manifest_test);
+    update_manifest.setEnvironmentVariable("SIGNALS_UPDATE_SPEC_MANIFEST", "1");
+    spec_manifest_step.dependOn(&update_manifest.step);
 
     run_test_zig_step.dependOn(&run_shared_test.step);
     run_test_zig_step.dependOn(&run_host_test.step);
