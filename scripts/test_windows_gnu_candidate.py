@@ -22,6 +22,10 @@ class CandidateTests(unittest.TestCase):
         self.assertTrue(any("ProgramFiles(x86)" in item for item in missing))
         self.assertTrue(any("rustup on PATH" in item for item in missing))
         self.assertTrue(any("gh" in item for item in missing))
+        inventory = windows_gnu_build.missing_prerequisites(
+            "inventory", which=lambda name: None, exists=lambda path: False,
+            environ={}, output=lambda args: outputs[args[1]])
+        self.assertEqual(len(inventory), 2, inventory)
 
     def test_a_present_toolchain_still_needs_its_target_and_sdk(self):
         outputs = {"toolchain": "1.95.0-x86_64-pc-windows-msvc\n", "target": "x86_64-pc-windows-msvc\n"}

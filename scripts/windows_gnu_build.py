@@ -64,7 +64,7 @@ def run(args, env=None, output=None):
     return subprocess.run(args, cwd=ROOT, env=env, check=True, stdout=output)
 
 
-def missing_prerequisites(which=shutil.which, exists=None, environ=None, output=None):
+def missing_prerequisites(mode="build", which=shutil.which, exists=None, environ=None, output=None):
     """Names every Windows build prerequisite that is absent, with what it is for.
 
     The builder used to discover each of these by failing part-way through:
@@ -72,6 +72,9 @@ def missing_prerequisites(which=shutil.which, exists=None, environ=None, output=
     that does not exist, a missing toolchain as a version mismatch after the
     tool copies had already been made. A contributor reading the contributing
     page saw only the toolchain listed. Probe them all up front instead.
+
+    An inventory run stops after recording the SDK tools, so it needs only
+    `pwsh` and the SDK; the toolchain and `gh` are build prerequisites.
     """
     exists = exists or (lambda path: Path(path).exists())
     environ = os.environ if environ is None else environ
@@ -89,6 +92,8 @@ def missing_prerequisites(which=shutil.which, exists=None, environ=None, output=
         for tool in ("fxc.exe", "d3dcompiler_47.dll"):
             if not exists(sdk / tool):
                 missing.append(f"{sdk / tool}: the Windows SDK {SDK} shader compiler pair")
+    if mode != "build":
+        return missing
     if which("rustup") is None:
         missing.append("rustup on PATH: the build pins the 1.95.0 toolchain through it")
     else:
@@ -112,7 +117,7 @@ def execute(mode, output, *, jobs=2, cargo_target=None, debug=False, capture_evi
         raise ValueError("release evidence requires an optimized build and positive jobs")
     if sys.platform != "win32":
         raise ValueError("native Windows is required for GPUI release shader compilation")
-    missing = missing_prerequisites()
+    missing = missing_prerequisites(mode)
     if missing:
         raise SystemExit("Windows host build prerequisites are missing:\n"
                          + "".join(f"  - {item}\n" for item in missing)

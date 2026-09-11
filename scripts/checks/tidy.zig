@@ -187,6 +187,13 @@ fn shouldCheckFile(path: []const u8) bool {
     if (std.mem.startsWith(u8, repo_path, "test/fuzzing/corpus/") and
         !std.mem.endsWith(u8, repo_path, ".md")) return false;
 
+    // GUI scenario fixtures are exact bytes a real file worker reads back: a
+    // preview fixture without a trailing newline, or with CRLF endings, is
+    // the case the scenario exists to check. Each fixture directory's own
+    // .gitattributes keeps those bytes; the scripts beside them stay checked.
+    if (std.mem.startsWith(u8, repo_path, "examples-gui/") and
+        std.mem.indexOf(u8, repo_path, "/regression/fixtures/") != null) return false;
+
     const skipped_extensions = [_][]const u8{
         ".a",       ".lib", ".o",   ".obj", ".wasm", ".png", ".jpg", ".jpeg", ".gif", ".webp",
         ".tar.zst", ".gz",  ".zip", ".pyc",
