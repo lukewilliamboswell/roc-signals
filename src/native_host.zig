@@ -2436,14 +2436,16 @@ fn hostRealloc(ptr: *anyopaque, new_length: usize, alignment: usize) callconv(.c
 
 /// Libc's environment block. It is declared here rather than through `std.c`
 /// so the musl hosts, which resolve libc only when the application links,
-/// can still reference it.
+/// can still reference it. Darwin does not export `environ` from a shared
+/// library image, so it is reached through `_NSGetEnviron` there.
 extern var environ: [*:null]?[*:0]u8;
+extern fn _NSGetEnviron() *[*:null]?[*:0]u8;
 
 /// The running process's environment as the standard library's handle. Windows
 /// reads the live block; POSIX targets view libc's `environ` in place.
 fn processEnviron() std.process.Environ {
     if (comptime std.process.Environ.Block == std.process.Environ.GlobalBlock) return .{ .block = .global };
-    const c_environ = environ;
+    const c_environ = if (comptime builtin.os.tag.isDarwin()) _NSGetEnviron().* else environ;
     var count: usize = 0;
     while (c_environ[count] != null) : (count += 1) {}
     return .{ .block = .{ .slice = c_environ[0..count :null] } };
