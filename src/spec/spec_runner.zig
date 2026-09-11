@@ -48,8 +48,8 @@ fn writeLocatorFailureForCtx(comptime Ctx: type, line_num: usize, message: []con
 /// rendered", so say what actually happened and point at the fix.
 fn writeLocatorMiss(comptime Ctx: type, line_num: usize, locator: spec_parser.Locator) void {
     var buf: [512]u8 = undefined;
-    const msg = switch (locator.kind) {
-        .text => std.fmt.bufPrint(
+    const msg = switch (locator) {
+        .text => |expected| std.fmt.bufPrint(
             &buf,
             "TEST FAILED at line {d}: no element has text \"{s}\"\n" ++
                 "  A text: locator matches on content, so a changed value looks like a\n" ++
@@ -57,7 +57,7 @@ fn writeLocatorMiss(comptime Ctx: type, line_num: usize, locator: spec_parser.Lo
                 "    (expect-text (test-id \"...\") \"{s}\")\n" ++
                 "  To see what did render, assert a wrong value on the container:\n" ++
                 "    (expect-text (role region :name \"...\") \"PROBE\")\n",
-            .{ line_num, locator.text orelse "", locator.text orelse "" },
+            .{ line_num, expected, expected },
         ) catch "TEST FAILED\n",
         else => std.fmt.bufPrint(
             &buf,

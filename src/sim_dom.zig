@@ -303,26 +303,21 @@ pub fn matchesLocator(elem: *const Element, locator: spec_parser.Locator) bool {
 
 /// Matches an element against a semantic locator rather than a positional DOM index.
 pub fn matchesLocatorWithAccessibleName(elem: *const Element, locator: spec_parser.Locator, accessible_name: []const u8) bool {
-    return switch (locator.kind) {
+    return switch (locator) {
         .none => false,
-        .role_name => blk: {
+        .role_name => |expected| blk: {
             const role = implicitRole(elem) orelse break :blk false;
-            const expected_role = locator.role orelse break :blk false;
-            const expected_name = locator.name orelse break :blk false;
-            break :blk std.mem.eql(u8, role, expected_role) and std.mem.eql(u8, accessible_name, expected_name);
+            break :blk std.mem.eql(u8, role, expected.role) and std.mem.eql(u8, accessible_name, expected.name);
         },
-        .label => blk: {
-            const expected = locator.label orelse break :blk false;
+        .label => |expected| blk: {
             const label = elem.label orelse break :blk false;
             break :blk std.mem.eql(u8, label, expected);
         },
-        .text => blk: {
-            const expected = locator.text orelse break :blk false;
+        .text => |expected| blk: {
             const text = elem.text orelse break :blk false;
             break :blk std.mem.eql(u8, text, expected);
         },
-        .test_id => blk: {
-            const expected = locator.test_id orelse break :blk false;
+        .test_id => |expected| blk: {
             const test_id = elem.test_id orelse break :blk false;
             break :blk std.mem.eql(u8, test_id, expected);
         },
@@ -889,19 +884,9 @@ test "simulated DOM matches spec locators" {
     elem.text = try allocator.dupe(u8, "Save");
     elem.test_id = try allocator.dupe(u8, "save-button");
 
-    try std.testing.expect(matchesLocator(&elem, .{
-        .kind = .role_name,
-        .role = "button",
-        .name = "Save",
-    }));
-    try std.testing.expect(matchesLocator(&elem, .{
-        .kind = .test_id,
-        .test_id = "save-button",
-    }));
-    try std.testing.expect(!matchesLocator(&elem, .{
-        .kind = .text,
-        .text = "Cancel",
-    }));
+    try std.testing.expect(matchesLocator(&elem, .{ .role_name = .{ .role = "button", .name = "Save" } }));
+    try std.testing.expect(matchesLocator(&elem, .{ .test_id = "save-button" }));
+    try std.testing.expect(!matchesLocator(&elem, .{ .text = "Cancel" }));
 }
 
 test "simulated DOM locator helpers cover implicit roles and name fallbacks" {
@@ -913,18 +898,10 @@ test "simulated DOM locator helpers cover implicit roles and name fallbacks" {
     heading.text = try allocator.dupe(u8, "Overview");
 
     try std.testing.expectEqualStrings("heading", implicitRole(&heading).?);
-    try std.testing.expect(matchesLocator(&heading, .{
-        .kind = .role_name,
-        .role = "heading",
-        .name = "Overview",
-    }));
+    try std.testing.expect(matchesLocator(&heading, .{ .role_name = .{ .role = "heading", .name = "Overview" } }));
     allocator.free(heading.text.?);
     heading.text = null;
-    try std.testing.expect(matchesLocatorWithAccessibleName(&heading, .{
-        .kind = .role_name,
-        .role = "heading",
-        .name = "Overview",
-    }, "Overview"));
+    try std.testing.expect(matchesLocatorWithAccessibleName(&heading, .{ .role_name = .{ .role = "heading", .name = "Overview" } }, "Overview"));
 
     const section_tag = try allocator.dupe(u8, "section");
     var section = Element.init(5, section_tag);
@@ -932,10 +909,7 @@ test "simulated DOM locator helpers cover implicit roles and name fallbacks" {
     section.label = try allocator.dupe(u8, "Settings");
 
     try std.testing.expectEqualStrings("region", implicitRole(&section).?);
-    try std.testing.expect(matchesLocator(&section, .{
-        .kind = .label,
-        .label = "Settings",
-    }));
+    try std.testing.expect(matchesLocator(&section, .{ .label = "Settings" }));
 
     const input_tag = try allocator.dupe(u8, "input");
     var input = Element.init(6, input_tag);
@@ -949,11 +923,7 @@ test "simulated DOM locator helpers cover implicit roles and name fallbacks" {
     var dialog = Element.init(8, dialog_tag);
     defer dialog.deinit(allocator);
     dialog.label = try allocator.dupe(u8, "Confirm changes");
-    try std.testing.expect(matchesLocator(&dialog, .{
-        .kind = .role_name,
-        .role = "dialog",
-        .name = "Confirm changes",
-    }));
+    try std.testing.expect(matchesLocator(&dialog, .{ .role_name = .{ .role = "dialog", .name = "Confirm changes" } }));
 
     const div_tag = try allocator.dupe(u8, "div");
     var empty = Element.init(7, div_tag);

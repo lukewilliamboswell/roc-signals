@@ -217,8 +217,17 @@ fn writeHttpStub(writer: *std.Io.Writer, stub: http_fixtures.Stub) std.Io.Writer
 /// The flat view of a step the canonical form and the scenario ABI both
 /// spell: one slot per kind of value, so a step's payload is legible without
 /// knowing its type. The typed union is the model; this is its projection.
+pub const LegacyLocator = struct {
+    kind: LocatorKind = .none,
+    role: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    label: ?[]const u8 = null,
+    text: ?[]const u8 = null,
+    test_id: ?[]const u8 = null,
+};
+
 pub const LegacyView = struct {
-    locator: Locator = .{ .kind = .none },
+    locator: LegacyLocator = .{},
     task: ?[]const u8 = null,
     file_stub: ?file_fixtures.Stub = null,
     http_stub: ?http_fixtures.Stub = null,
@@ -234,15 +243,15 @@ pub const LegacyView = struct {
 /// Projects a typed step onto the flat view. Every string here borrows the step.
 pub fn legacyView(step: Step) LegacyView {
     return switch (step) {
-        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .focus, .blur, .composition_start, .composition_end, .submit, .check, .uncheck, .expect_visible, .expect_absent, .expect_onscreen, .expect_focused => |target| .{ .locator = target },
-        .change, .select_option, .fill, .expect_text, .expect_value, .type_text => |args| .{ .locator = args.target, .expected = args.text },
-        .expect_checked, .expect_disabled, .expect_selected => |args| .{ .locator = args.target, .boolean = args.expected },
-        .expect_updates, .expect_history => |args| .{ .locator = args.target, .count = args.count },
-        .key_down => |args| .{ .locator = args.target, .expected = args.key, .boolean = args.shift },
-        .shortcut => |args| .{ .locator = args.target, .shortcut = args.chord },
-        .custom_event => |args| .{ .locator = args.target, .task = args.name, .expected = args.detail },
-        .expect_attr => |args| .{ .locator = args.target, .attr = args.name, .expected = args.value },
-        .expect_no_attr => |args| .{ .locator = args.target, .attr = args.name },
+        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .focus, .blur, .composition_start, .composition_end, .submit, .check, .uncheck, .expect_visible, .expect_absent, .expect_onscreen, .expect_focused => |target| .{ .locator = target.legacy() },
+        .change, .select_option, .fill, .expect_text, .expect_value, .type_text => |args| .{ .locator = args.target.legacy(), .expected = args.text },
+        .expect_checked, .expect_disabled, .expect_selected => |args| .{ .locator = args.target.legacy(), .boolean = args.expected },
+        .expect_updates, .expect_history => |args| .{ .locator = args.target.legacy(), .count = args.count },
+        .key_down => |args| .{ .locator = args.target.legacy(), .expected = args.key, .boolean = args.shift },
+        .shortcut => |args| .{ .locator = args.target.legacy(), .shortcut = args.chord },
+        .custom_event => |args| .{ .locator = args.target.legacy(), .task = args.name, .expected = args.detail },
+        .expect_attr => |args| .{ .locator = args.target.legacy(), .attr = args.name, .expected = args.value },
+        .expect_no_attr => |args| .{ .locator = args.target.legacy(), .attr = args.name },
         .stub_file_result, .seed_file_result => |args| .{ .task = args.label, .file_stub = args.stub },
         .stub_http_result, .seed_http_result => |args| .{ .task = args.label, .http_stub = args.stub },
         .tick_interval, .tick_interval_if_active, .wait => |period| .{ .interval = period },
@@ -322,25 +331,42 @@ pub const LocatorKind = enum {
     test_id,
 };
 
-pub const Locator = struct {
-    kind: LocatorKind,
-    role: ?[]const u8 = null,
-    name: ?[]const u8 = null,
-    label: ?[]const u8 = null,
-    text: ?[]const u8 = null,
-    test_id: ?[]const u8 = null,
+pub const RoleName = struct { role: []const u8, name: []const u8 };
+
+/// A semantic locator with exactly the payload its kind requires. Impossible
+/// combinations such as a label locator carrying a test id cannot be built.
+pub const Locator = union(LocatorKind) {
+    none: void,
+    role_name: RoleName,
+    label: []const u8,
+    text: []const u8,
+    test_id: []const u8,
 
     fn deinit(self: Locator, allocator: std.mem.Allocator) void {
-        if (self.role) |value| allocator.free(value);
-        if (self.name) |value| allocator.free(value);
-        if (self.label) |value| allocator.free(value);
-        if (self.text) |value| allocator.free(value);
-        if (self.test_id) |value| allocator.free(value);
+        switch (self) {
+            .none => {},
+            .role_name => |value| {
+                allocator.free(value.role);
+                allocator.free(value.name);
+            },
+            .label, .text, .test_id => |value| allocator.free(value),
+        }
+    }
+
+    /// Projects the typed locator only at the raw cross-language boundary.
+    pub fn legacy(self: Locator) LegacyLocator {
+        return switch (self) {
+            .none => .{},
+            .role_name => |value| .{ .kind = .role_name, .role = value.role, .name = value.name },
+            .label => |value| .{ .kind = .label, .label = value },
+            .text => |value| .{ .kind = .text, .text = value },
+            .test_id => |value| .{ .kind = .test_id, .test_id = value },
+        };
     }
 };
 
 fn emptyLocator() Locator {
-    return .{ .kind = .none };
+    return .none;
 }
 
 pub const LocatorText = struct { target: Locator, text: []const u8 };
@@ -982,13 +1008,13 @@ fn locatorFromExpr(allocator: std.mem.Allocator, expr: sexpr.Expr) ParseError!Lo
         const name = exprString(items[3]) orelse return ParseError.InvalidFormat;
         const role_copy = try dupePlain(allocator, role);
         errdefer allocator.free(role_copy);
-        return .{ .kind = .role_name, .role = role_copy, .name = try dupePlain(allocator, name) };
+        return .{ .role_name = .{ .role = role_copy, .name = try dupePlain(allocator, name) } };
     }
     if (items.len != 2) return ParseError.InvalidFormat;
     const value = exprString(items[1]) orelse return ParseError.InvalidFormat;
-    if (std.mem.eql(u8, kind, "label")) return .{ .kind = .label, .label = try dupePlain(allocator, value) };
-    if (std.mem.eql(u8, kind, "text")) return .{ .kind = .text, .text = try dupePlain(allocator, value) };
-    if (std.mem.eql(u8, kind, "test-id")) return .{ .kind = .test_id, .test_id = try dupePlain(allocator, value) };
+    if (std.mem.eql(u8, kind, "label")) return .{ .label = try dupePlain(allocator, value) };
+    if (std.mem.eql(u8, kind, "text")) return .{ .text = try dupePlain(allocator, value) };
+    if (std.mem.eql(u8, kind, "test-id")) return .{ .test_id = try dupePlain(allocator, value) };
     return ParseError.InvalidFormat;
 }
 

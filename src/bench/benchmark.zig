@@ -296,7 +296,7 @@ pub fn Runner(comptime Ctx: type) type {
 }
 
 test "commandIsAction recognizes only mutating commands" {
-    const none: spec_parser.Locator = .{ .kind = .none };
+    const none: spec_parser.Locator = .none;
     try std.testing.expect(commandIsAction(.{ .step = .{ .click = none }, .line_num = 1 }));
     try std.testing.expect(commandIsAction(.{ .step = .{ .focus = none }, .line_num = 2 }));
     try std.testing.expect(commandIsAction(.{ .step = .{ .navigate = "/" }, .line_num = 3 }));

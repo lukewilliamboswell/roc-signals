@@ -1965,7 +1965,7 @@ const HostEnv = struct {
     }
 
     fn matchesLocator(self: *HostEnv, elem: *const DomElement, locator: Locator) error{OutOfMemory}!bool {
-        if (locator.kind != .role_name or sim_dom.accessibleName(elem).len != 0) {
+        if (std.meta.activeTag(locator) != .role_name or sim_dom.accessibleName(elem).len != 0) {
             return sim_dom.matchesLocator(elem, locator);
         }
 
