@@ -694,7 +694,13 @@ const HostActiveStructuralSignalKind = engine.HostActiveStructuralSignalKind;
 const HostDirtyStructuralSignal = engine.HostDirtyStructuralSignal;
 const HostKeyedRowDiffResult = engine.HostKeyedRowDiffResult;
 
-pub const std_options = crash_handlers.std_options;
+pub const std_options: std.Options = blk: {
+    var options = crash_handlers.std_options;
+    // The Windows fault handler installed by main needs tracing enabled to
+    // report the call stack, rather than only the access-violation address.
+    options.allow_stack_tracing = builtin.os.tag == .windows;
+    break :blk options;
+};
 pub const panic = crash_handlers.panic;
 
 fn writeStderr(bytes: []const u8) void {
