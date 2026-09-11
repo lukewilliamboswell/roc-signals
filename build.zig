@@ -561,7 +561,10 @@ fn buildNativeHostLib(
         .linkage = .static,
         .root_module = createNativeHostModule(b, target, optimize, build_options),
     });
-    host_lib.root_module.strip = optimize != .Debug and !profile;
+    // Windows keeps its symbols for now: a spec that passes and then dies
+    // with an access violation at teardown is only diagnosable from the
+    // trace the fault handler prints, and a stripped host cannot print one.
+    host_lib.root_module.strip = optimize != .Debug and !profile and target.result.os.tag != .windows;
     host_lib.root_module.pic = true;
     host_lib.bundle_compiler_rt = true;
     host_lib.link_function_sections = true;
