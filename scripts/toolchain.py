@@ -65,11 +65,11 @@ def development_pin(root: Path = ROOT) -> str:
 def validate_roots(root: Path = ROOT) -> str:
     config = json.loads((root / ".github/roc-nightly.json").read_text())
     expected = {"platform-web/main.roc", "platform-gui/main.roc"}
-    for directory in ("examples-web", "examples-gui"):
+    for directory in ("examples-web", "examples-gui", "test/wasm"):
         expected.update(path.relative_to(root).as_posix()
                         for path in (root / directory).rglob("main.roc"))
     if set(config["compiler_roots"]) != expected:
-        raise ValueError("compiler_roots must select both platforms and every web and GUI example")
+        raise ValueError("compiler_roots must select both platforms, every web and GUI example, and every linked Wasm fixture")
     if (root / ".roc-version").exists():
         raise ValueError("remove competing .roc-version authority")
     return version(discover(local_sources(root, config["compiler_roots"])))
