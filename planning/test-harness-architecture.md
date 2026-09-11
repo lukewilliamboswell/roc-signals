@@ -62,6 +62,7 @@ Each phase is one reviewable PR series, leaves CI green, and names its proof. Or
 - Refactor the runner switch into `dispatch(comptime Ctx, host, roc_host, step) StepOutcome` with typed `unsupported` outcomes.
 - `src/bench/benchmark.zig` calls `spec_runner.dispatch` with a `BenchmarkCtx {capabilities.measured = true}`; delete its duplicated click/pointer/key logic and `BenchmarkDomElement`.
 - Proof: `zig build test`; `test.py bench` CSV byte-compared on a sample.
+- Status 2026-09-11: the contract module and capability groups landed (`src/spec/ctx.zig`, applied to `SpecRunnerCtx`). The benchmark step merge is deferred: the benchmark's measured dispatch threads a stats record through every step, so sharing the runner's dispatch needs the measurement hook redesigned first. It stays on this phase's list.
 
 ### Phase 4 — Manifest-driven task schemas
 - `protocol/native-protocol.json` schema 2: per task kind `codec`, `request[]`, `result {ok[], err[]}`, `fixture` alias, `rules[]`, `hosts[]`. `generate_protocol.py` validation fails on a kind without shapes.
