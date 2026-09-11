@@ -25,9 +25,10 @@ Action(a) := [Action(Node.Cmd)].{
 
 	## Apply these changes atomically, then run `effect` after that commit with
 	## a fresh snapshot of the declared reads, then continue with the action it
-	## returns. The effect runs on the UI thread and may call `!` functions;
-	## keep it short or it blocks rendering until it returns. Effects whose
-	## owning scope is disposed before they run are dropped.
+	## returns. The effect may call `!` functions and runs on its own worker
+	## thread, so it never blocks rendering. Disposing the owning scope does
+	## not cancel it: the effect reparents to the nearest live scope, and its
+	## result applies to the states that still exist.
 	then : List(Ui.StateWrite), (a => Action(a)) -> Action(a)
 	then = |changes, effect!| {
 		# The engine hands back the snapshot and the capability that validates it,

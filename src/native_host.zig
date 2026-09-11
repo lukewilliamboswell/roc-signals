@@ -494,7 +494,9 @@ const NativeCtx = struct {
     /// Native-only scalar fields publish through the typed prepared DOM view.
     pub const native_presentation = true;
     pub const Handle = *HostEnv;
-    /// The native host runs `Then` effects on the UI thread after each turn.
+    /// The native host runs `Then` effects as each turn settles: the live
+    /// host on its own worker threads, the spec host to completion on the
+    /// spot.
     pub const runsEffects = true;
 
     /// Has Roc turn an effect closure and its reads snapshot into the thunk a
