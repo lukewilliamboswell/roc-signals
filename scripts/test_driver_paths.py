@@ -58,6 +58,24 @@ class OutputDirectoryTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "already exists"):
                 test_driver.create_test_output(output)
 
+    def test_native_wrapper_places_binaries_in_the_current_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(test_driver, "TEST_OUT", Path(directory)), \
+                patch.object(test_driver, "rewrite_examples_for_platform"), \
+                patch.object(test_driver, "run_native_specs") as run_native:
+            test_driver.run_local_native_specs(
+                "roc",
+                (),
+                jobs=None,
+                spec_filters=(),
+                shard=None,
+                fail_fast=False,
+                spec_timeout=30.0,
+                ledger=object(),
+            )
+
+        self.assertEqual(run_native.call_args.kwargs["bin_dir"], Path(directory) / "bin")
+
 
 class EffectContractTests(unittest.TestCase):
     def test_fault_campaign_enables_jspi(self) -> None:
