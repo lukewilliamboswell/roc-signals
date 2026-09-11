@@ -5,42 +5,44 @@
 # Increasing a budget is a deliberate, reviewed decision: explain the cause
 # (compiler upgrade, accepted feature cost) in the pull request. Never
 # regenerate this file automatically to bless a larger artifact, and never
-# derive it from an instrumented or profiler build.
+# derive it from a diagnostic or profiler build. Mandatory production stack
+# checks are included. The accepted effect-model baseline is recorded in
+# test/size/effect-model-baseline.json; PR #106 documents the feature cost.
 #
 # Regenerate after an accepted change with:
 #   python3 scripts/wasm_size.py --write-budgets .test-out/size/<label>/report.json
 
 [baseline]
-revision = "2e3d484d830bca20ff4da0f5c1c6d6f680cac714"
+revision = "8d46bf99ac51308b097a16e0716cfe6321fe5b70"
 roc = "Roc compiler version nightly-2026-09-04-c125b82"
 zig = "0.16.0"
 compression = "node-zlib"
 headroom_percent = 1
 
 [fixtures.static-text]
-raw = 757661  # measured 750160
-gzip = 286649  # measured 283811
+raw = 860256  # measured 851739
+gzip = 317348  # measured 314206
 
 [fixtures.counter]
-raw = 765125  # measured 757550
-gzip = 289631  # measured 286764
+raw = 867899  # measured 859306
+gzip = 320286  # measured 317115
 
 [fixtures.branch-replacement]
-raw = 772367  # measured 764720
-gzip = 291683  # measured 288796
+raw = 875569  # measured 866900
+gzip = 322363  # measured 319172
 
 [fixtures.keyed-row-edits]
-raw = 1465080  # measured 1450575
-gzip = 512268  # measured 507197
+raw = 1493234  # measured 1478450
+gzip = 516174  # measured 511064
 
 [fixtures.two-row-types]
-raw = 1472364  # measured 1457787
-gzip = 507411  # measured 502388
+raw = 1501601  # measured 1486734
+gzip = 511725  # measured 506659
 
 [fixtures.js-framework-benchmark]
-raw = 1472355  # measured 1457778
-gzip = 515080  # measured 509981
+raw = 1501236  # measured 1486373
+gzip = 519329  # measured 514188
 
 [fixtures.recipe-scaler]
-raw = 1314360  # measured 1301347
-gzip = 461238  # measured 456672
+raw = 1343320  # measured 1330020
+gzip = 465024  # measured 460420
