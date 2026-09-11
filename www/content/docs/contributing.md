@@ -352,7 +352,7 @@ python3 scripts/build_macos_stubs.py \
   --output /tmp/macos-interfaces-candidate
 ```
 
-`dependencies.lock.json` selects `deps-macos-interfaces-20260910.1` by exact
+`dependencies.lock.json` selects an immutable `deps-macos-interfaces-<version>` release by exact
 archive size and SHA-256. Ordinary GUI tests and `bundle_platforms.py` stage its
 exact TBDs, catalog, provenance statement, manifest, and dependency receipt;
 they never invoke the generator. Admission validates the catalog bundled in the
