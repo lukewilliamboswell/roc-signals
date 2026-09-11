@@ -49,21 +49,24 @@ MACOS_INTERFACES = "macos-interfaces-macos-sysroot"
 @contextmanager
 def verified_macos_interfaces(lock=LOCK, cache=CACHE):
     """Admit the reviewed project-authored interfaces used only by final linking."""
-    from build_macos_stubs import CATALOG, read_catalog
+    from build_macos_stubs import validate_catalog
     with tempfile.TemporaryDirectory(prefix="signals-verified-macos-interfaces-") as temporary:
         destination = Path(temporary) / "inputs"
         materialize(lock, (MACOS_INTERFACES,), cache, destination)
         tree = destination / MACOS_INTERFACES
         manifest = json.loads((tree / "dependency.json").read_text())
         target = tree / "targets/macos-sysroot"
-        expected = {"targets/macos-sysroot/" + item["path"] for item in read_catalog()["libraries"]}
+        # The lock selects the reviewed release. The checkout's catalog is the
+        # recipe for the next release and may advance before that release is
+        # published; it must not relabel or invalidate the selected bytes.
+        catalog = (target / "interfaces.json").read_bytes()
+        released_catalog = validate_catalog(json.loads(catalog))
+        expected = {"targets/macos-sysroot/" + item["path"] for item in released_catalog["libraries"]}
         expected.update({"targets/macos-sysroot/interfaces.json", "targets/macos-sysroot/manifest.json",
                          "targets/macos-sysroot/PROVENANCE.md"})
-        catalog = (ROOT / CATALOG.relative_to(ROOT)).read_bytes()
         if (set(manifest["files"]) != expected
-                or manifest.get("catalog_sha256") != hashlib.sha256(catalog).hexdigest()
-                or (target / "interfaces.json").read_bytes() != catalog):
-            raise ValueError("macOS interface release differs from the reviewed catalog or inventory")
+                or manifest.get("catalog_sha256") != hashlib.sha256(catalog).hexdigest()):
+            raise ValueError("macOS interface release differs from its catalog or inventory")
         yield destination
 
 

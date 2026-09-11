@@ -619,6 +619,19 @@
           ]
         },
         {
+          "name": "_CFEqual",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/CF/blob/dc54c6bb1c1e5e0b9486c1d26dd5bef110b20bf3/CFBase.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "CFEqual",
+              "line": 595,
+              "revision": "dc54c6bb1c1e5e0b9486c1d26dd5bef110b20bf3",
+              "response_sha256": "99113f53a6724fc5fb07c8ec5791dc6b1f459c2a12113486b69f22c1099a55a1"
+            }
+          ]
+        },
+        {
           "name": "_CFGetTypeID",
           "sources": [
             {
@@ -904,6 +917,19 @@
               "evidence_kind": "exact_C_identifier",
               "retrieved_at": "2026-09-09T10:05:18.435586+00:00",
               "response_sha256": "02a244dd0b68f4caa91633214817a7eb6b99b2ffe7be5115ed10257b11bba265"
+            }
+          ]
+        },
+        {
+          "name": "_kCFBooleanFalse",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/CF/blob/dc54c6bb1c1e5e0b9486c1d26dd5bef110b20bf3/CFNumber.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "kCFBooleanFalse",
+              "line": 41,
+              "revision": "dc54c6bb1c1e5e0b9486c1d26dd5bef110b20bf3",
+              "response_sha256": "5db6fc331db5b9d8834f89b230946bd613e6651eee1c738bd6baee7127e0f2c5"
             }
           ]
         },
@@ -2894,6 +2920,32 @@
       ],
       "symbols": [
         {
+          "name": "_SecCertificateCopyData",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/Security/blob/db15acbe6a7f257a859ad9a3bb86097bfe0679d9/trust/headers/SecCertificate.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "SecCertificateCopyData",
+              "line": 80,
+              "revision": "db15acbe6a7f257a859ad9a3bb86097bfe0679d9",
+              "response_sha256": "d0cf8a0df9b1d76751148416cfa29e1822d327bce16603f16738ffd5a0d0a231"
+            }
+          ]
+        },
+        {
+          "name": "_SecCopyErrorMessageString",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/Security/blob/db15acbe6a7f257a859ad9a3bb86097bfe0679d9/base/SecBase.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "SecCopyErrorMessageString",
+              "line": 244,
+              "revision": "db15acbe6a7f257a859ad9a3bb86097bfe0679d9",
+              "response_sha256": "a2e2c53dfdc6ebcbfd5c81e351b636de10eb78614f79407049cbbe19eccd872e"
+            }
+          ]
+        },
+        {
           "name": "_SecItemAdd",
           "sources": [
             {
@@ -2958,6 +3010,32 @@
               "evidence_kind": "exact_C_identifier",
               "retrieved_at": "2026-09-09T10:07:11.117896+00:00",
               "response_sha256": "add78eaefbbe8f0d3d9503c938b37b3e41df3a7e34099c26fb04e05df8103712"
+            }
+          ]
+        },
+        {
+          "name": "_SecTrustSettingsCopyCertificates",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/Security/blob/db15acbe6a7f257a859ad9a3bb86097bfe0679d9/trust/headers/SecTrustSettings.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "SecTrustSettingsCopyCertificates",
+              "line": 279,
+              "revision": "db15acbe6a7f257a859ad9a3bb86097bfe0679d9",
+              "response_sha256": "c0db29964d3e219e1b48b50a34e66c02965f100141e1d5468d70e8d8595b102e"
+            }
+          ]
+        },
+        {
+          "name": "_SecTrustSettingsCopyTrustSettings",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/Security/blob/db15acbe6a7f257a859ad9a3bb86097bfe0679d9/trust/headers/SecTrustSettings.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "SecTrustSettingsCopyTrustSettings",
+              "line": 245,
+              "revision": "db15acbe6a7f257a859ad9a3bb86097bfe0679d9",
+              "response_sha256": "c0db29964d3e219e1b48b50a34e66c02965f100141e1d5468d70e8d8595b102e"
             }
           ]
         },
@@ -3091,7 +3169,125 @@
         "https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/OSX_Technology_Overview/SystemFrameworks/SystemFrameworks.html",
         "https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPFrameworks/Concepts/FrameworkAnatomy.html"
       ],
-      "symbols": [],
+      "symbols": [
+        {
+          "name": "_SCDynamicStoreCopyProxies",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/configd/blob/585b7f2fca293f4642d21d15c5daf187f63c4796/SystemConfiguration.fproj/SCDynamicStoreCopySpecific.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "SCDynamicStoreCopyProxies",
+              "line": 127,
+              "revision": "585b7f2fca293f4642d21d15c5daf187f63c4796",
+              "response_sha256": "84eb6c567d8186f23ebbd6fa38f6c601971d28f9a6562a4d9fade6b90c319770"
+            }
+          ]
+        },
+        {
+          "name": "_SCDynamicStoreCreateWithOptions",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/configd/blob/585b7f2fca293f4642d21d15c5daf187f63c4796/SystemConfiguration.fproj/SCDynamicStore.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "SCDynamicStoreCreateWithOptions",
+              "line": 153,
+              "revision": "585b7f2fca293f4642d21d15c5daf187f63c4796",
+              "response_sha256": "5799eb3d2c82476aa1c6f574295f3e20b265ab8e5fda59f82f70be0b81ec5f86"
+            }
+          ]
+        },
+        {
+          "name": "_kSCDynamicStoreUseSessionKeys",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/configd/blob/585b7f2fca293f4642d21d15c5daf187f63c4796/SystemConfiguration.fproj/SCDynamicStore.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "kSCDynamicStoreUseSessionKeys",
+              "line": 175,
+              "revision": "585b7f2fca293f4642d21d15c5daf187f63c4796",
+              "response_sha256": "5799eb3d2c82476aa1c6f574295f3e20b265ab8e5fda59f82f70be0b81ec5f86"
+            }
+          ]
+        },
+        {
+          "name": "_kSCPropNetProxiesHTTPEnable",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/configd/blob/585b7f2fca293f4642d21d15c5daf187f63c4796/SystemConfiguration.fproj/SCSchemaDefinitions.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "kSCPropNetProxiesHTTPEnable",
+              "line": 2059,
+              "revision": "585b7f2fca293f4642d21d15c5daf187f63c4796",
+              "response_sha256": "99b162fadbba4bffe55fc77f57ab20dfe49e0bb2907d33fcacd59eb6dbfd1b2b"
+            }
+          ]
+        },
+        {
+          "name": "_kSCPropNetProxiesHTTPPort",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/configd/blob/585b7f2fca293f4642d21d15c5daf187f63c4796/SystemConfiguration.fproj/SCSchemaDefinitions.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "kSCPropNetProxiesHTTPPort",
+              "line": 2066,
+              "revision": "585b7f2fca293f4642d21d15c5daf187f63c4796",
+              "response_sha256": "99b162fadbba4bffe55fc77f57ab20dfe49e0bb2907d33fcacd59eb6dbfd1b2b"
+            }
+          ]
+        },
+        {
+          "name": "_kSCPropNetProxiesHTTPProxy",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/configd/blob/585b7f2fca293f4642d21d15c5daf187f63c4796/SystemConfiguration.fproj/SCSchemaDefinitions.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "kSCPropNetProxiesHTTPProxy",
+              "line": 2073,
+              "revision": "585b7f2fca293f4642d21d15c5daf187f63c4796",
+              "response_sha256": "99b162fadbba4bffe55fc77f57ab20dfe49e0bb2907d33fcacd59eb6dbfd1b2b"
+            }
+          ]
+        },
+        {
+          "name": "_kSCPropNetProxiesHTTPSEnable",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/configd/blob/585b7f2fca293f4642d21d15c5daf187f63c4796/SystemConfiguration.fproj/SCSchemaDefinitions.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "kSCPropNetProxiesHTTPSEnable",
+              "line": 2087,
+              "revision": "585b7f2fca293f4642d21d15c5daf187f63c4796",
+              "response_sha256": "99b162fadbba4bffe55fc77f57ab20dfe49e0bb2907d33fcacd59eb6dbfd1b2b"
+            }
+          ]
+        },
+        {
+          "name": "_kSCPropNetProxiesHTTPSPort",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/configd/blob/585b7f2fca293f4642d21d15c5daf187f63c4796/SystemConfiguration.fproj/SCSchemaDefinitions.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "kSCPropNetProxiesHTTPSPort",
+              "line": 2094,
+              "revision": "585b7f2fca293f4642d21d15c5daf187f63c4796",
+              "response_sha256": "99b162fadbba4bffe55fc77f57ab20dfe49e0bb2907d33fcacd59eb6dbfd1b2b"
+            }
+          ]
+        },
+        {
+          "name": "_kSCPropNetProxiesHTTPSProxy",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/configd/blob/585b7f2fca293f4642d21d15c5daf187f63c4796/SystemConfiguration.fproj/SCSchemaDefinitions.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "kSCPropNetProxiesHTTPSProxy",
+              "line": 2101,
+              "revision": "585b7f2fca293f4642d21d15c5daf187f63c4796",
+              "response_sha256": "99b162fadbba4bffe55fc77f57ab20dfe49e0bb2907d33fcacd59eb6dbfd1b2b"
+            }
+          ]
+        }
+      ],
       "load_requirement": "Explicit platform framework load for GPUI, including Objective-C runtime lookup"
     },
     {
@@ -4779,6 +4975,19 @@
           ]
         },
         {
+          "name": "_gai_strerror",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/Libinfo/blob/39b70c515baee5b609e7e91693edbd934b6845a1/lookup.subproj/netdb.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "gai_strerror",
+              "line": 270,
+              "revision": "39b70c515baee5b609e7e91693edbd934b6845a1",
+              "response_sha256": "390119ad68b7867984474b5273abbe405383a3c8a93effd0a3d07a60ce47a20e"
+            }
+          ]
+        },
+        {
           "name": "_getaddrinfo",
           "sources": [
             {
@@ -4810,6 +5019,19 @@
           ]
         },
         {
+          "name": "_getentropy",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/man/man2/getentropy.2",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "getentropy",
+              "line": 20,
+              "revision": "f6217f891ac0bb64f3d375211650a4c1ff8ca1ea",
+              "response_sha256": "b65a58e1dbcafe16e59f23b8d7770d8b83f5be2e8aa3a235b5f6af44cc0b8118"
+            }
+          ]
+        },
+        {
           "name": "_getenv",
           "sources": [
             {
@@ -4832,6 +5054,19 @@
               "evidence_kind": "exact_function_name_in_manpage_synopsis",
               "retrieved_at": "2026-09-09T10:07:34.284741+00:00",
               "response_sha256": "211f670541d86a5b2139f64e6d1ff949c3c9b508e9f0bd12d36ea78625768cbc"
+            }
+          ]
+        },
+        {
+          "name": "_getpeername",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/socket.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "getpeername",
+              "line": 789,
+              "revision": "f6217f891ac0bb64f3d375211650a4c1ff8ca1ea",
+              "response_sha256": "38e9e2b003df33b5cc924b57c20a85ec082c90a41efe21cfb07d9258db2451d4"
             }
           ]
         },
@@ -4863,6 +5098,19 @@
               "evidence_kind": "exact_function_name_in_manpage_synopsis",
               "retrieved_at": "2026-09-09T10:07:00.273853+00:00",
               "response_sha256": "0b2da6c65621bac26471841b6218530796b24cb730737a142361519749c8b2c0"
+            }
+          ]
+        },
+        {
+          "name": "_getsockopt",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/socket.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "getsockopt",
+              "line": 793,
+              "revision": "f6217f891ac0bb64f3d375211650a4c1ff8ca1ea",
+              "response_sha256": "38e9e2b003df33b5cc924b57c20a85ec082c90a41efe21cfb07d9258db2451d4"
             }
           ]
         },
@@ -5858,6 +6106,19 @@
           ]
         },
         {
+          "name": "_pthread_join",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/libpthread/blob/42d026df5b07825070f60134b980a1ec2552dfee/include/pthread/pthread.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "pthread_join",
+              "line": 146,
+              "revision": "42d026df5b07825070f60134b980a1ec2552dfee",
+              "response_sha256": "c14ac88c6c17f6eaea94ecd5a6fed5bb2a509cc154be43bfea44e6a4430468ca"
+            }
+          ]
+        },
+        {
           "name": "_pthread_kill",
           "sources": [
             {
@@ -6760,6 +7021,19 @@
               "evidence_kind": "exact_function_name_in_manpage_synopsis",
               "retrieved_at": "2026-09-09T10:07:32.612478+00:00",
               "response_sha256": "f7b3f0df40400c4054a09c42d012014fb94d242ad16db4b1256068f04caddcc9"
+            }
+          ]
+        },
+        {
+          "name": "_sysctlbyname",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/sysctl.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "sysctlbyname",
+              "line": 1509,
+              "revision": "f6217f891ac0bb64f3d375211650a4c1ff8ca1ea",
+              "response_sha256": "adbdc68ccd8e8dece9c1914fd056c48e421d343d5d6d93553ef33473f5688dda"
             }
           ]
         },
