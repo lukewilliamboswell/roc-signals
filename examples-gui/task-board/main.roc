@@ -262,6 +262,13 @@ visible_rows = |rows, query|
 		Rows.replace_all(rows, Rows.to_list(rows).keep_if(|task| Board.matches(task, query))) ?? crash "Filtering cannot introduce duplicate task keys"
 	}
 
+## Column summaries read as prose, so one task is "1 task".
+task_count_text : U64 -> Str
+task_count_text = |count| if count == 1 { "1 task" } else { "${count.to_str()} tasks" }
+
+expect task_count_text(1) == "1 task"
+expect task_count_text(0) == "0 tasks" and task_count_text(12) == "12 tasks"
+
 task_card : Ui.Row(Board.Task), Board.Column, Handles, Signal.Signal(Str) -> Elem
 task_card = |row, column, handles, selected| {
 	key = row.key()
@@ -352,7 +359,7 @@ column_view = |handles, column, selected| {
 			Gui.heading(column.to_str()),
 			Gui.column(
 				[Gui.style({ font_size: 13, foreground: Rgb(0xA9BFCC) })],
-				[Gui.text_s(rows.map(|items| "${Rows.len(items).to_str()} tasks"))],
+				[Gui.text_s(rows.map(|items| task_count_text(Rows.len(items))))],
 			),
 			Ui.each(visible, |row| task_card(row, column, handles, selected)),
 			# Trailing so the hidden branch's empty text costs no gap slot

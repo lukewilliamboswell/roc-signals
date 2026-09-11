@@ -78,6 +78,10 @@ pub(crate) enum Action {
     ExpectHistory(Locator, usize),
     /// Record the rendered tree under a name, for evidence rather than assertion.
     Snapshot(String),
+    /// Close the window through the platform's ordinary close path. It must be
+    /// the last step: the runtime is gone once the window is, so nothing after
+    /// it could be observed.
+    Close,
 }
 
 /// A parsed step, keeping its source line so a failure can be located.
@@ -109,6 +113,16 @@ pub(crate) fn parse(source: &str) -> Result<Vec<Step>, String> {
     }
     if steps.is_empty() {
         return Err("a script must contain at least one step".into());
+    }
+    if let Some(position) = steps
+        .iter()
+        .position(|step| step.action == Action::Close)
+        .filter(|position| position + 1 != steps.len())
+    {
+        return Err(format!(
+            "line {}: close must be the last step",
+            steps[position].line
+        ));
     }
     Ok(steps)
 }
@@ -185,6 +199,10 @@ fn parse_action(verb: &str, rest: &str) -> Result<Action, String> {
                 .map_err(|_| format!("expect-history expects a count, got {depth:?}"))?;
             Ok(Action::ExpectHistory(locator, depth))
         }
+        "close" => rest
+            .is_empty()
+            .then_some(Action::Close)
+            .ok_or_else(|| "close takes no arguments".to_string()),
         "snapshot" => (!rest.is_empty())
             .then(|| Action::Snapshot(rest.to_string()))
             .ok_or_else(|| "snapshot expects a name".into()),
@@ -518,9 +536,14 @@ pub(crate) fn frame_json(frame: &[Control]) -> String {
 }
 
 /// Renders the whole run — steps, snapshots and any failure — as one report.
+/// Serializes a run's evidence. `client_frame` records whether the host drew
+/// its own window frame inside the window: a compositor that delegates
+/// decorations leaves the application less room than one that does not, so a
+/// layout finding can depend on it, and the driver needs to know which it saw.
 pub(crate) fn report_json(
     name: &str,
     size: (f32, f32),
+    client_frame: bool,
     snapshots: &[(String, String)],
     failure: Option<&str>,
 ) -> String {
@@ -528,9 +551,10 @@ pub(crate) fn report_json(
     escape(name, &mut out);
     let _ = write!(
         out,
-        ",\"window\":[{:.0},{:.0}],\"passed\":{}",
+        ",\"window\":[{:.0},{:.0}],\"frame\":\"{}\",\"passed\":{}",
         size.0,
         size.1,
+        if client_frame { "client" } else { "server" },
         failure.is_none()
     );
     if let Some(failure) = failure {
@@ -605,6 +629,15 @@ mod tests {
         assert!(parse("click #ok\nwiggle #ok\n").unwrap_err().contains("line 2"));
         assert!(parse("wait soon").unwrap_err().contains("milliseconds"));
         assert!(parse("# only a comment\n").is_err());
+    }
+
+    #[test]
+    fn close_ends_a_script_and_nothing_may_follow_it() {
+        let steps = parse("click Open\nwait 4000\nclose\n").expect("valid script");
+        assert_eq!(steps[2].action, Action::Close);
+        let error = parse("close\nexpect-text Gone\n").unwrap_err();
+        assert!(error.contains("line 1") && error.contains("last step"), "{error}");
+        assert!(parse("close now\n").unwrap_err().contains("no arguments"));
     }
 
     #[test]
@@ -709,8 +742,9 @@ mod tests {
         let frame = vec![control("quote", "a \"quoted\" \\ line\n")];
         let json = frame_json(&frame);
         assert!(json.contains(r#""a \"quoted\" \\ line\n""#), "{json}");
-        let report = report_json("notes", (360., 240.), &[("initial".into(), json)], Some("boom"));
+        let report = report_json("notes", (360., 240.), true, &[("initial".into(), json)], Some("boom"));
         assert!(report.contains(r#""passed":false"#), "{report}");
+        assert!(report.contains(r#""frame":"client""#), "{report}");
         assert!(report.contains(r#""failure":"boom""#), "{report}");
         assert!(report.contains(r#""window":[360,240]"#), "{report}");
     }

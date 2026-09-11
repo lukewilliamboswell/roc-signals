@@ -1237,6 +1237,13 @@ Microsoft-signed FXC/compiler DLL pair from SDK 10.0.26100.0, file version
 10.0.26100.8249. It checks the actual loaded compiler DLL and committed hashes;
 ambient `GPUI_FXC_PATH` cannot override release shader tooling. Optimized builds
 compile GPUI shaders before packaging; development builds compile them at runtime.
+A local Windows host build needs PowerShell 7 (`pwsh`) on `PATH`, the SDK
+10.0.26100.0 `fxc.exe` and `d3dcompiler_47.dll` under `ProgramFiles(x86)`, the
+`1.95.0` toolchain with its `x86_64-pc-windows-gnullvm` target, and an
+authenticated `gh`; `python scripts/build_gui.py --debug` checks all of them
+before compiling and names every one that is missing. Without them, verify
+against the released host instead:
+`GUI_HOST_LOCK=gui-host.lock.json python scripts/test.py gui`.
 
 Windows host builds verify and reuse both independently signed dependencies in
 `dependencies.lock.json`: complete per-DLL import archives and GNU CRT inputs.
@@ -1343,6 +1350,21 @@ control's laid-out bounds. `expect-onscreen` means *visible without scrolling*;
 the host's window-scroll fallback means a failure is a usability finding rather
 than a proof that nothing can reach the control.
 
+A native file or folder dialog cannot be driven from a script. A scenario that
+needs a real file names it in its front matter, `# choose: <path relative to
+the example>`, once per chooser in the order the script opens them; the driver
+passes each as `--host-choose` and the host hands it to the next chooser instead
+of prompting, after the same path validation the dialog's own answer receives.
+Everything past the chooser — the listing, preview, log-follow or open worker —
+is the real one, which is what separates these scenarios from the specs that
+resolve the worker's result by name. The `close` step, which must be last,
+leaves through the window's own close request the way the frame's close button
+does: an application with unsaved work may answer with a dialog and keep the
+window. The report is written before the window goes, so the driver also reads
+the process exit status; a crash during teardown is reported as the failure
+even when every assertion passed. `activity-monitor/follow-and-close` and
+`folder-explorer/real-folder-preview` are the scenarios built on this.
+
 Every run writes a JSON report of every observation under
 `.test-out/gui-regression/<app>/`, and on macOS also photographs the
 application's own window in the state the script finished in — including the
@@ -1372,7 +1394,14 @@ A script whose front matter carries `# diagnostic:` documents a defect owned
 elsewhere. It runs and its failure is reported, but it does not fail the run —
 and a diagnostic that starts passing *does* fail the run, so a fix cannot leave
 a stale exclusion behind. Never weaken an assertion to make a scenario pass;
-state the reason in the script and let it run as a diagnostic instead.
+state the reason in the script and let it run as a diagnostic instead. A
+defect that only some runs show carries `# diagnostic-on:` after its reason,
+naming systems (`linux`, `macos`, `windows`) or the window frame the run saw
+(`client-frame` where the host drew its own title bar and insets, which it
+does when the compositor delegated decorations and the window is not
+fullscreen, as on a Wayland desktop; `server-frame` otherwise, as on macOS). The report records which frame a run had, so a
+frame scope is judged after the run; the scenario is an ordinary check
+wherever nothing named matches.
 
 Window captures are implemented for macOS only. On Linux the driver runs the
 scripts without captures; the scripts themselves, including `expect-onscreen`,

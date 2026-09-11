@@ -20,6 +20,16 @@ GUI-25 on. Its findings for items since closed on macOS are collected under
 GUI-34, which is the honest state of those: fixed and unverified there rather
 than fixed everywhere. Windows notes under other items say "Windows:" explicitly.
 
+Linux pass, 2026-09-11, on a Wayland desktop with the debug host and the
+2026-09-04 nightly compiler: the full GUI suite and all 29 scripted scenarios
+were executed there for the first time. Neither Windows P1 that could be
+scripted reproduces on Linux (GUI-29 exits cleanly, GUI-32 previews), the
+`Home` resolution (GUI-27), UNC refusal (GUI-33), Notes line endings (GUI-28),
+plural copy (GUI-18), the Windows build prerequisite check (GUI-31) and the
+documentation corrections (GUI-22) landed as source changes verified on Linux,
+and one Linux-only finding was added (GUI-35). Items with a Windows-only
+symptom stay open until the Windows run in GUI-34 happens.
+
 A passing suite does not establish that the examples are usable at the supported
 window sizes, and a fix executed on one system is not a fix on the others.
 
@@ -34,24 +44,25 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 | --- | --- | --- | --- | --- |
 | GUI-10 | P2 | Explorer: fit the inspector beside the list at the 360-pixel minimum width | Regression bounds at 360x600 | Explorer layout; GUI style protocol |
 | GUI-13 | P2 | Give cards and event rows coherent activation and selection | Screenshots + source | Examples + GUI interaction API |
-| GUI-16 | P2 | Extend desktop regression coverage to Linux and richer environments | Executed on macOS only | GUI tests/tooling |
+| GUI-16 | P2 | Extend desktop regression coverage to Windows and richer environments | Executed on macOS and Linux | GUI tests/tooling |
 | GUI-18 | P2 | Make toolbars, inspectors, and tabular content easier to scan | Screenshots; design | Board/Explorer/Activity views |
 | GUI-19 | P2 | Review minimal typography/alignment/truncation capabilities | Source; design | Public GUI style protocol |
 | GUI-20 | P2 | Make shortcut and keyboard behavior discoverable and platform-appropriate | Source; cross-OS validation needed | Examples + native keyboard tests |
 | GUI-21 | P3 | Make the teaching examples smaller and more idiomatic | Source | Example structure |
-| GUI-22 | P3 | Correct maintained docs and small presentation-copy defects | Source + screenshots | Example/reference docs |
+| GUI-22 | P3 | Correct maintained docs and small presentation-copy defects | Source + screenshots; launcher, coverage and `python3` copy fixed 2026-09-11 | Example/reference docs |
 | GUI-23 | P3 | Finish the remaining application-controlled chrome/theming surface | Source; design | GUI/GPUI boundary |
 | GUI-24 | P3 | Optional visual refinements, after operability | Design | Examples + narrowly justified API work |
 | GUI-25 | P2 | Windows: window chrome, title bar theme, and icon | Windows screenshots + source | GPUI host window creation |
 | GUI-26 | P2 | Windows: dark-theme host scrollbars are the only small-window fallback | Windows screenshots | Host scroll fallback; feeds GUI-10/23 |
-| GUI-27 | P1 | Windows: `Home` directory is unresolvable, so Board Save and first Notes Save As never open a dialog | Windows reproduction + source | Files boundary + Board/Notes |
-| GUI-28 | P2 | Notes: CRLF, BOM, and paste line-ending handling | Windows reproduction + file bytes | Notes + native input |
-| GUI-29 | P1 | Activity: closing the window while following a log crashes the process | Windows reproduction + WinDbg stack | GPUI host file/timer lifecycle |
+| GUI-27 | P1 | Windows: `Home` directory is unresolvable, so Board Save and first Notes Save As never open a dialog | Windows reproduction + source; host fix landed 2026-09-11, unverified on Windows | Files boundary + Board/Notes |
+| GUI-28 | P2 | Notes: CRLF, BOM, and paste line-ending handling | Windows reproduction + file bytes; policy landed 2026-09-11, round trip unverified on Windows/macOS | Notes + native input |
+| GUI-29 | P1 | Activity: closing the window while following a log crashes the process | Windows reproduction + WinDbg stack; exits cleanly on Linux | GPUI host file/timer lifecycle |
 | GUI-30 | P3 | Windows: native dialog defaults (filters, start folder, titles) | Windows screenshots | Files boundary + examples |
-| GUI-31 | P2 | Windows contributor workflow: local host build, docs, and spec fixtures | Local build failure + source | Scripts/docs/fixtures |
-| GUI-32 | P1 | Explorer: Preview text and Open in app are inert for real Windows folders | Windows reproduction | Explorer + host hit-testing/effects |
-| GUI-33 | P2 | Windows file-service edge cases: UNC, reparse points, sharing violations | Source; unverified | Windows file worker |
+| GUI-31 | P2 | Windows contributor workflow: local host build, docs, and spec fixtures | Local build failure + source; prerequisite check landed 2026-09-11 | Scripts/docs/fixtures |
+| GUI-32 | P1 | Explorer: Preview text and Open in app are inert for real Windows folders | Windows reproduction; works on Linux | Explorer + host hit-testing/effects |
+| GUI-33 | P2 | Windows file-service edge cases: reparse points, sharing violations, separators | Source; unverified; UNC decided 2026-09-11 | Windows file worker |
 | GUI-34 | P1 | Re-verify on Windows the items closed on macOS | Windows evidence predates the fixes | Windows validation |
+| GUI-35 | P2 | Client-side frame: the host's own frame takes 48 pixels of the 360×240 minimum, so Counter's buttons are laid out below the window | Linux desktop regression bounds at 360x240; passes under Weston | GPUI host window frame; window minimum |
 
 ## Correctness and operability
 
@@ -127,11 +138,20 @@ arranges the private display each system needs, reusing the smoke checks' Weston
 compositor on Linux, and Linux CI runs it after `gui-smoke` and keeps the JSON
 reports on failure. Only the window captures remain macOS-only.
 
-Remaining: the scenarios have not yet been executed on Linux or Windows by
-anyone — CI wiring is not the same as a green run. Window
-captures are macOS-only; the scripts themselves need running under the Linux
-Xvfb/Weston environment `gui_smoke.py --wayland` provides, and wiring into CI
-alongside it. Representative scaling and font environments are not covered:
+Linux, 2026-09-11: all 29 scenarios ran on a Linux desktop Wayland session with
+the debug host and the 2026-09-04 nightly compiler. Twenty-eight pass; the one
+failure is the counter's minimum-window layout, which is a genuine Linux
+finding (GUI-35) rather than a script defect, and now runs as a diagnostic
+scoped to the client-side frame with `# diagnostic-on:`; under Weston in CI it
+passes, and the driver knows which frame it saw from the report. Two scenarios added that day open a
+real file and a real folder through the workers by way of `# choose:` and leave
+through the window's own close request (see GUI-29 and GUI-32). The run was
+on the desktop compositor, not under the Weston-on-Xvfb arrangement
+`scripts/minici gui-scenarios` uses in CI; that path is still unexecuted here.
+
+Remaining: the scenarios have not been executed on Windows by anyone, and the
+Linux CI arrangement has not been run locally. Window captures are macOS-only.
+Representative scaling and font environments are not covered:
 scenarios run at the default scale factor with the host's own font selection.
 Real OS keyboard, pointer, IME and window-manager behaviour is still not
 exercised — the scripts dispatch through GPUI's key dispatch inside the
@@ -148,8 +168,9 @@ Breadcrumbs are adjacent buttons without clear hierarchy separators.
 
 Acceptance: label aligned data columns, lay out inspector metadata separately
 from content, distinguish page/section headings, consolidate quiet status and
-help, and give breadcrumbs a clear path hierarchy. Add correct singular/plural
-copy (`1 tasks`, `1 words` are visible in this review). Use existing style
+help, and give breadcrumbs a clear path hierarchy. Singular/plural copy is
+done: Board columns, the Explorer listing notice and the Notes summary all
+read `1 task`, `1 entry loaded.` and `1 word` (2026-09-11). Use existing style
 capabilities first; retain semantic labels and the honest sample/replay notices.
 Check long values and narrow sizes, not just seeded text. A strict “one accent
 per screen” rule is a design option, not a correctness requirement.
@@ -205,8 +226,9 @@ native accessibility output instead of treating semantic-spec labels as proof.
 
 Board `main.roc` is 1,130 lines and nests fourteen `Ui.state` constructions;
 document workflow, history, and view composition are hard to review together.
-Theme modules and manifest validation are duplicated. Keyed Rows still calls
-its invariant failures “spike” errors.
+Theme modules and manifest validation are duplicated. (Keyed Rows' invariant
+failures now say what was violated rather than calling themselves “spike”
+errors, 2026-09-11.)
 
 Acceptance: extract cohesive History/Document/Workflow/view helpers while
 keeping sources granular and ownership obvious. Do not collapse independent
@@ -228,6 +250,12 @@ users to run `python3`, which is usually the Store stub there.
 [native-gui.md](../www/content/docs/native-gui.md) says native CI "confirmed
 rendering for every app"; that is the two-second `--smoke` render count, not
 a check of any Windows file operation, chrome, or dialog.
+
+Fixed 2026-09-11: the launcher is named per operating system in the reference
+and the protocol document, the native GUI page says what the smoke check
+counts and what has and has not been run per system, and the three READMEs
+point Windows readers at `python`. The Explorer README's Linux-only and 64-pixel
+claims had already been corrected. What remains is the standing rule below.
 
 Acceptance: synchronize examples, public references, platform modules, specs,
 and contributor commands when fixing each item. Clearly distinguish supported
@@ -338,14 +366,20 @@ Board documents therefore cannot be created at all from a normal Windows
 launch. With Git Bash's `HOME` the dialog opens in the profile root, not
 Documents ([dialog](gui-examples-review/2026-09-10-windows/board-win-save-as-dialog.png)).
 
-Acceptance: resolve the typed home/documents directory per platform inside the
-Files boundary (`USERPROFILE` or the known-folder API on Windows, `HOME`
-elsewhere) and keep `Unavailable` for genuine failures only. Decide whether
-`Home` should mean the profile root or Documents and document it in the
-protocol reference. Make the apps survive `Unavailable` by falling back to the
-dialog's own default folder instead of refusing the workflow. Cover this with
-a native spec once fixtures can express a Windows directory (GUI-31), and run
-the GUI smoke on Windows without `HOME`.
+Landed 2026-09-11, on Linux: the host resolves `Home` from `HOME` on Linux and
+macOS and from `USERPROFILE`, then `HOMEDRIVE` plus `HOMEPATH`, on Windows;
+`Unavailable` now means the environment names no directory at all. `Home` is
+the profile root on every system, and the protocol reference, module docs and
+public reference say so. The resolver is unit-tested with a Windows-shaped
+environment, but the Windows build has not been run without `HOME` since.
+
+Remaining: run Board Save As and Notes' first Save As on Windows from a
+shortcut or Explorer launch and confirm the dialog opens in the profile root.
+The apps still refuse the workflow on a genuine `Unavailable` rather than
+falling back to the dialog's own default folder; that fallback needs a way to
+ask the platform for a dialog without an initial directory, which the current
+save-chooser request does not have. Cover the resolution with a native spec once
+fixtures can express a Windows directory (GUI-31).
 
 ### GUI-28 — Notes line endings and BOM
 
@@ -361,13 +395,19 @@ each CRLF into two spaces. CRLF rendering showed no stray glyph in these
 captures; caret math past `\r` was not measured. Activity's line stream
 already handles CRLF correctly and needs no change.
 
-Acceptance: choose a document line-ending policy (preserve the file's
-dominant ending on save, or normalize on load and write back one ending) and
-strip or preserve a BOM deliberately; state it in the Notes README. Test load,
-edit, paste from a CRLF source, save, and round-trip on all three OSes, with
-the footer counts and native undo agreeing with the visible text. Keep the
-policy in the application or the typed Files boundary, not in the host's
-generic input.
+Policy chosen and landed 2026-09-11, in the application: a file is decoded on
+load (leading BOM removed, CRLF to LF, the majority ending and the mark
+remembered on the session) and encoded on save with that spelling, after
+normalizing any pasted CRLF, so the editor, the counts and native undo see one
+character per line end and a CRLF file round-trips as CRLF. The Notes README
+states it; `line-endings.scm` and Document expectations cover decode, counts
+and encode. The host's generic input is untouched, so its single-line paste
+still turns CRLF into two spaces (Board and Explorer fields), which is a
+separate, minor item.
+
+Remaining: the round trip has been exercised through fixtures on Linux only.
+Open a CRLF file, edit, paste from a CRLF source and save on Windows and macOS
+and compare the bytes.
 
 ### GUI-29 — Activity Monitor crashes on close while following a log
 
@@ -383,12 +423,20 @@ the attested host carries no symbols, so frames are module offsets. The
 symptom points at teardown ordering between the polling task/timer and the
 runtime it reports into, not at the Roc application.
 
-Acceptance: reproduce under a symbolized debug host on Windows and on Linux
-(same runtime code; only observed on Windows so far), then fix the ownership
-so that pending file-follow work cannot touch a dropped runtime. Add a host
-test that closes the window with an active follow task, and a GUI smoke
-variant (`--smoke-timers` plus a real log fixture) that exits through the
-normal close path on all three CI targets.
+Linux, 2026-09-11: `activity-monitor/follow-and-close` opens the real
+`regression/fixtures/events.log` through the worker, follows it for four
+seconds (eight polls), and closes the window through the host's own close
+request; the process exits cleanly under Wayland with the debug host. The
+scenario is an ordinary check, and the driver now fails a scenario whose
+process dies after writing its report, so the Windows crash would be caught
+by `scripts/minici gui-scenarios` there rather than only by hand. That run has
+not happened yet.
+
+Acceptance: reproduce under a symbolized debug host on Windows (the same
+runtime code exits cleanly on Linux), then fix the ownership so that pending
+file-follow work cannot touch a dropped runtime. Add a host test that closes
+the window with an active follow task; the scripted scenario is the
+normal-close-path check on all three CI targets.
 
 ### GUI-30 — Native dialog defaults on Windows
 
@@ -423,10 +471,13 @@ that inject `/tmp` have not all been revisited, and the Windows CI job still
 does not exercise this section. The Rust request-codec tests also hard-code `/tmp`
 where `ABSOLUTE_DIRECTORY` exists for that purpose.
 
-Acceptance: fail fast with a clear message listing missing Windows build
-prerequisites, or accept Windows PowerShell 5.1 where `pwsh` is only used for
-`Get-AuthenticodeSignature`; document the host-lock path as the supported
-local verification route. Teach `validPath` platform-shaped absolute paths
+Done 2026-09-11 (not run on Windows): `windows_gnu_build.py` probes `pwsh`,
+the SDK pair, the pinned toolchain and target, and `gh` before compiling and
+names every missing one, pointing at the host-lock route; the contributing page
+lists the same prerequisites; the Rust request-codec tests spell their paths
+through `ABSOLUTE_DIRECTORY`.
+
+Acceptance for the rest: teach `validPath` platform-shaped absolute paths
 (drive, UNC, POSIX) behind an explicit fixture platform tag, port the Linux
 diagnostics to real Windows shapes, and extend the smoke to exercise one real
 file operation per OS. This is the tooling half of GUI-16.
@@ -450,11 +501,18 @@ never reaches the button or the action is dropped before the update is
 undetermined. Tab from the list moves focus to the toolbar's Up, not to the
 details buttons.
 
-Acceptance: reproduce with `--host-trace-engine` and a native spec that
-selects a `Folder` source entry and invokes the preview action, on Linux as
-well as Windows. Fix the dispatch or state gap, then verify a CRLF preview
-renders in the read-only preview and that Open in app reports the
-`rundll32` launch honestly (an unassociated extension still returns success).
+Linux, 2026-09-11: not reproduced. `folder-explorer/real-folder-preview`
+chooses the real `regression/fixtures/project` folder through the worker,
+selects `note.txt`, and Preview text loads it; the CRLF fixture `crlf.txt`
+previews with its `\r\n` endings intact in the read-only editor. The maintained
+`preview-open.scm` spec already selects a `Folder` source entry and invokes the
+preview action, and it passes on Windows too, so whatever is wrong there is in
+the presentation layer or the Windows worker, not in the session model.
+
+Acceptance: run the scenario on Windows with `--host-trace-engine` to see
+whether the click reaches the engine at all. Fix the dispatch or worker gap,
+then verify that Open in app reports the `rundll32` launch honestly (an
+unassociated extension still returns success).
 
 ### GUI-33 — Windows file-service edge cases
 
@@ -469,11 +527,40 @@ matters for tailing a log a Win32 writer holds without `FILE_SHARE_READ`;
 listed entry paths inherit the separator spelling of the requested root; and
 an executable on a UNC share yields an unusable default assets root.
 
-Acceptance: decide UNC support explicitly and make both validators agree;
-distinguish symbolic links from other reparse points (cloud placeholders,
+Decided 2026-09-11: UNC and device paths are unsupported. The Windows worker
+walks names below a drive's volume root only, and `validate_path` now refuses
+the same prefixes when a path is chosen, so a network-share pick fails at the
+chooser with `InvalidPath` and its reason; the module docs and public reference
+say so. Unit-tested with Windows spellings, not yet run on Windows.
+
+Acceptance for the rest: distinguish symbolic links from other reparse points (cloud placeholders,
 junctions, mount points) with the reparse tag; give sharing violations their
 own error text and a Retry hint in Activity; normalize separators at the
 boundary. Cover each with a fixture that a Windows CI job actually runs.
+
+### GUI-35 — The client-side frame consumes the window minimum
+
+Where the compositor delegates decorations, the host draws its own frame: a
+36-pixel title bar and a 6-pixel inset on every edge
+([window_frame.rs](../crates/gpui-host/src/window_frame.rs)). GPUI adds the
+inset to the requested bounds, so a `--host-window-size 360x240` window is
+372×252 on Wayland and the application is laid out in 360×204. At that height
+the Counter's button row is recorded at y 228–276, below the window, while the
+same scenario passes on macOS, whose title bar sits outside the content bounds.
+`window_min_size` is fixed at open time and GPUI 0.2.2 offers no way to raise
+it once the decoration mode is known, so the declared 360×240 minimum means
+different content areas under different compositors: the same Linux scenario
+passes in CI under Weston on Xvfb, which keeps decorations server-side, so the
+scenario's diagnostic is scoped to `client-frame` and judged from the frame
+the report records rather than from the operating system.
+
+Acceptance: make the minimum mean the same content area everywhere. Either
+add the frame's chrome to the minimum and the requested size where the host
+will draw it (the decoration mode is negotiated after open, so this may need a
+resize once it is known), or shrink the frame. Then promote
+`counter/minimum-window-layout` back to an ordinary check under every frame. Keep
+window policy in the host; the Counter's own layout is already as small as its
+content allows.
 
 ### GUI-34 — Re-verify the closed items on Windows
 
@@ -515,10 +602,12 @@ remain manual for now.
 
 ## Delivery sequence
 
-1. Fix the Windows P1s: GUI-29 (crash on close while following a log),
-   GUI-27 (`Home` unresolvable), and GUI-32 (inert preview and open).
-2. Re-verify the closed items on Windows (GUI-34) and add GUI-16 regressions
-   alongside each fix, not only at the end.
+1. Run on Windows what has been fixed or scripted since the Windows review:
+   the `follow-and-close` and `real-folder-preview` scenarios (GUI-29,
+   GUI-32), Save As without `HOME` (GUI-27), and the closed items (GUI-34).
+   Anything that still fails there gets its symbolized reproduction next.
+2. Add GUI-16 regressions alongside each fix, not only at the end; run the
+   Linux CI arrangement locally once.
 3. Apply current-API layout/readability fixes (GUI-10/11, GUI-13, GUI-18); use evidence
    from them to scope GUI-19/20/23.
 4. Finish structure/docs and optional polish (GUI-21/22/24), then recapture the

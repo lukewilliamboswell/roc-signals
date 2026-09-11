@@ -995,6 +995,9 @@ struct HostArgs {
     script: Option<String>,
     script_report: Option<String>,
     script_hold: bool,
+    /// Paths a scripted run hands to the file and folder choosers, in order,
+    /// instead of opening native dialogs a script cannot drive.
+    choices: Vec<String>,
     window_size: Option<(f32, f32)>,
 }
 
@@ -1067,6 +1070,9 @@ fn parse_host_args(args: &[String]) -> Result<HostArgs, String> {
             "--host-script-report" => {
                 parsed.script_report = Some(value(args, &mut i, &arg, 1)?.to_string());
             }
+            "--host-choose" => {
+                parsed.choices.push(value(args, &mut i, &arg, 1)?.to_string());
+            }
             "--host-smoke-drop" => {
                 let source = value(args, &mut i, &arg, 2)?.to_string();
                 let target = value(args, &mut i, &arg, 2)?.to_string();
@@ -1089,6 +1095,9 @@ fn parse_host_args(args: &[String]) -> Result<HostArgs, String> {
             }
         }
         i += 1;
+    }
+    if !parsed.choices.is_empty() && parsed.script.is_none() {
+        return Err("Error: --host-choose answers choosers only under --host-script".into());
     }
     Ok(parsed)
 }
@@ -1188,6 +1197,9 @@ struct Deferred {
     keystrokes: Vec<Keystroke>,
     /// Evidence the step produced.
     snapshot: Option<(String, String)>,
+    /// Whether the application allowed the window to close; a document that
+    /// asked first keeps the window, and its dialog, open.
+    close: bool,
 }
 
 #[cfg(not(test))]
@@ -1263,6 +1275,12 @@ fn perform(
                 ..Deferred::default()
             })
         }
+        script::Action::Close => Ok(Deferred {
+            // The same admission the frame's own close button uses: an
+            // application with unsaved work may answer with a dialog instead.
+            close: runtime.native_close_requested(cx),
+            ..Deferred::default()
+        }),
         script::Action::Key(keystroke) => {
             let parsed = Keystroke::parse(keystroke)
                 .map_err(|error| format!("{keystroke:?} is not a keystroke: {error:?}"))?;
@@ -1310,6 +1328,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
     // photograph the state the script left behind — including the state a
     // failing assertion stopped at, which is the evidence worth keeping.
     let script_hold = host.script_hold;
+    let choices: Vec<std::path::PathBuf> = host.choices.iter().map(Into::into).collect();
     let script = script_path.as_ref().map(|path| {
         let source = std::fs::read_to_string(path)
             .unwrap_or_else(|error| panic!("cannot read script {}: {error}", path.display()));
@@ -1347,6 +1366,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                     cx.new(|cx| {
                         let mut runtime = Runtime::new(!smoke || smoke_timers, cx);
                         runtime.trace_engine = trace_engine;
+                        runtime.effects.answer_choosers(choices);
                         runtime
                     })
                 },
@@ -1366,6 +1386,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                     .await;
                 let mut snapshots: Vec<(String, String)> = Vec::new();
                 let mut failure: Option<String> = None;
+                let mut closing = false;
                 for step in &steps {
                     if let script::Action::Wait(milliseconds) = step.action {
                         cx.background_executor()
@@ -1404,6 +1425,15 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                     if let Some(snapshot) = deferred.snapshot {
                         snapshots.push(snapshot);
                     }
+                    if deferred.close {
+                        // Closing is the last step, and the runtime it would be
+                        // observed through goes with the window. Keep the frame
+                        // the window showed as it closed, then leave through the
+                        // same path a person's close does; the process exit
+                        // status is the evidence of what teardown did.
+                        closing = true;
+                        break;
+                    }
                     // Focus changes and keystrokes reach the window without the
                     // runtime lease held: they run the application's own
                     // listeners, which update the runtime themselves.
@@ -1431,19 +1461,38 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                         .timer(Duration::from_millis(150))
                         .await;
                 }
-                let final_frame = window
+                let (final_frame, client_frame) = window
                     .update(cx, |runtime, window, cx| {
-                        script::frame_json(&control_frame(runtime, window, cx))
+                        (
+                            script::frame_json(&control_frame(runtime, window, cx)),
+                            // The frame is drawn only when the compositor
+                            // delegated decorations and the window is not
+                            // fullscreen, exactly the test window_frame makes.
+                            !window.is_fullscreen()
+                                && matches!(window.window_decorations(), Decorations::Client { .. }),
+                        )
                     })
                     .expect("the scripted window closed early");
                 snapshots.push(("final".into(), final_frame));
+                let close_window = |cx: &mut gpui::AsyncApp| {
+                    let handle: AnyWindowHandle = window.into();
+                    handle
+                        .update(cx, |_, window, _| window.remove_window())
+                        .expect("the scripted window closed early");
+                };
                 if let Some(report) = &script_report {
                     // The harness owns the artifact directory: creating it here
                     // would add a directory-creation syscall to the macOS link
                     // surface for a path only the harness ever uses.
                     std::fs::write(
                         report,
-                        script::report_json(&name, window_size, &snapshots, failure.as_deref()),
+                        script::report_json(
+                            &name,
+                            window_size,
+                            client_frame,
+                            &snapshots,
+                            failure.as_deref(),
+                        ),
                     )
                     .unwrap_or_else(|error| {
                         panic!("cannot write {}: {error}", report.display())
@@ -1457,6 +1506,13 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                         window_size.0 as u32,
                         window_size.1 as u32
                     ),
+                }
+                if closing {
+                    // Removing the last window quits the application from its
+                    // own close handler; the run's exit status then reports
+                    // whatever follow-up work outlives the runtime.
+                    close_window(cx);
+                    return;
                 }
                 if script_hold {
                     return;
@@ -1640,11 +1696,21 @@ mod tests {
             "--host-script-report",
             "r.json",
             "--host-script-hold",
+            "--host-choose",
+            "/logs/events.log",
+            "--host-choose",
+            "/project",
             "--host-trace-engine",
             "--host-window-size",
             "800x600",
         ])
         .expect("a complete host command line parses");
+        assert_eq!(parsed.choices, vec!["/logs/events.log", "/project"]);
+        assert!(
+            host_args(&["--host-choose", "/project"])
+                .unwrap_err()
+                .contains("--host-script")
+        );
         assert!(parsed.smoke && parsed.smoke_timers && parsed.script_hold && parsed.trace_engine);
         assert_eq!(parsed.click.as_deref(), Some("Increment"));
         assert_eq!(

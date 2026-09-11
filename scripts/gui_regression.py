@@ -30,12 +30,26 @@ from build_gui import executable_name
 from gui_suite import ROOT, examples
 
 DEFAULT_SIZE = "1200x820"
+SYSTEMS = {"linux": "Linux", "macos": "Darwin", "windows": "Windows"}
+# A finding can belong to how the window was framed rather than to a system:
+# the host draws its own frame only where the compositor delegates decorations,
+# which a Wayland desktop does and Weston on Xvfb does not. The report says
+# which frame the run saw, so this scope is judged after the run.
+FRAMES = ("client-frame", "server-frame")
+
+
+def current_system(system: str | None = None) -> str:
+    """The `# diagnostic-on:` name of this system, or of the platform name given."""
+    import platform
+
+    name = system or platform.system()
+    return next((key for key, value in SYSTEMS.items() if value == name), name.lower())
 
 
 class Scenario:
     """One script, its window size, assets root, and any open defect it documents."""
 
-    def __init__(self, app: Path, path: Path):
+    def __init__(self, app: Path, path: Path, system: str | None = None):
         self.app = app
         self.path = path
         self.name = path.stem
@@ -44,7 +58,16 @@ class Scenario:
         # about damaged assets names a prepared root instead, because a script
         # cannot damage the working tree and put it back.
         self.assets = app / "assets"
+        # A native dialog cannot be driven from a script, so a scenario that
+        # needs a real file or folder names it up front; the host hands each
+        # path to the next chooser in order instead of prompting.
+        self.choices = []
         self.diagnostic = None
+        # A defect the host's chrome causes on one system, or under one window
+        # frame, is not a defect elsewhere, and a diagnostic that passes fails
+        # the run; naming the scope keeps the scenario an ordinary check
+        # everywhere else.
+        self.diagnostic_on = None
         note = []
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.startswith("#"):
@@ -56,14 +79,47 @@ class Scenario:
                 self.assets = app / comment[len("assets:"):].strip()
                 if not self.assets.is_dir():
                     raise SystemExit(f"{path}: '# assets:' names no directory: {self.assets}")
+            elif comment.startswith("choose:"):
+                choice = app / comment[len("choose:"):].strip()
+                if not choice.exists():
+                    raise SystemExit(f"{path}: '# choose:' names nothing on disk: {choice}")
+                self.choices.append(choice)
+            elif comment.startswith("diagnostic-on:"):
+                scope = {word.strip().lower()
+                         for word in comment[len("diagnostic-on:"):].split(",") if word.strip()}
+                unknown = scope - set(SYSTEMS) - set(FRAMES)
+                if not scope or unknown:
+                    raise SystemExit(f"{path}: '# diagnostic-on:' expects some of "
+                                     f"{', '.join((*SYSTEMS, *FRAMES))}, got "
+                                     f"{sorted(unknown) or 'nothing'}")
+                self.diagnostic_on = scope
             elif comment.startswith("diagnostic:"):
                 note = [comment[len("diagnostic:"):].strip()]
             elif note:
                 note.append(comment)
+        if self.diagnostic_on is not None and not note:
+            raise SystemExit(f"{path}: '# diagnostic-on:' needs a '# diagnostic:' to scope")
         if note:
             self.diagnostic = " ".join(word for word in note if word)
+        self.system = current_system(system)
         if "x" not in self.size.lower():
             raise SystemExit(f"{path}: '# size:' expects WIDTHxHEIGHT")
+
+    def diagnostic_for(self, frame: str | None) -> str | None:
+        """The defect this run documents, if its scope covers this system and frame.
+
+        A scope names systems, frames, or both; the scenario is a diagnostic
+        when any named one matches, and an ordinary check otherwise.
+        """
+        if self.diagnostic is None:
+            return None
+        if self.diagnostic_on is None:
+            return self.diagnostic
+        if self.system in self.diagnostic_on:
+            return self.diagnostic
+        if frame is not None and f"{frame}-frame" in self.diagnostic_on:
+            return self.diagnostic
+        return None
 
     def __str__(self) -> str:
         return f"{self.app.name}/{self.name}"
@@ -98,12 +154,14 @@ def arguments_for(scenario: Scenario, report: Path) -> list[str]:
                  "--host-script-report", str(report.resolve())]
     if scenario.assets.is_dir():
         arguments += ["--host-assets-root", str(scenario.assets.resolve())]
+    for choice in scenario.choices:
+        arguments += ["--host-choose", str(choice.resolve())]
     return arguments
 
 
 def run_scenario(executable: Path, scenario: Scenario, artifacts: Path,
-                 capture: bool, environment=None) -> tuple[bool, str]:
-    """Runs one scenario, returning whether it passed and what it reported."""
+                 capture: bool, environment=None) -> tuple[bool, str, str | None]:
+    """Runs one scenario: whether it passed, what it reported, and which frame it saw."""
     report = artifacts / f"{scenario.name}.json"
     report.parent.mkdir(parents=True, exist_ok=True)
     report.unlink(missing_ok=True)
@@ -119,14 +177,31 @@ def run_scenario(executable: Path, scenario: Scenario, artifacts: Path,
     else:
         command = [str(executable.resolve()), "--host-window-size", scenario.size, *arguments]
         print("==> " + " ".join(command), flush=True)
-        subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=180, env=environment)
+        completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", timeout=180, env=environment)
+        # A scenario that closes its window leaves the report first and then
+        # the process; a crash in that teardown is only visible here, as an
+        # exit the report knows nothing about. Status 1 is the host's own
+        # verdict on a failed step, and the report carries that failure.
+        if completed.returncode not in (0, 1):
+            return False, exit_failure(completed), None
     if not report.is_file():
-        return False, "the application exited without writing a report"
+        return False, "the application exited without writing a report", None
     import json
 
     observed = json.loads(report.read_text(encoding="utf-8"))
-    return bool(observed["passed"]), observed.get("failure", "")
+    return bool(observed["passed"]), observed.get("failure", ""), observed.get("frame")
+
+
+def exit_failure(completed: subprocess.CompletedProcess) -> str:
+    """Describes an abnormal exit, keeping the host's own last words when it left any."""
+    status = completed.returncode
+    if status < 0:
+        detail = f"the application died from signal {-status}"
+    else:
+        detail = f"the application exited with status {status}"
+    tail = [line for line in (completed.stderr or "").splitlines() if line.strip()][-3:]
+    return detail + (": " + " | ".join(tail) if tail else "")
 
 
 def run(directory: Path, artifacts: Path, patterns=(), capture=True,
@@ -145,9 +220,10 @@ def run(directory: Path, artifacts: Path, patterns=(), capture=True,
             raise SystemExit(f"build the GUI examples first: {executable} is missing")
         destination = artifacts / scenario.app.name
         print(f"\n--- {scenario} at {scenario.size}", flush=True)
-        passed, failure = run_scenario(executable, scenario, destination, capture,
-                                       environment)
-        if scenario.diagnostic is None:
+        passed, failure, *frame = run_scenario(executable, scenario, destination, capture,
+                                               environment)
+        diagnostic = scenario.diagnostic_for(frame[0] if frame else None)
+        if diagnostic is None:
             print("    " + ("passed" if passed else f"FAILED: {failure}"), flush=True)
             if not passed:
                 failures.append(f"{scenario}: {failure}")

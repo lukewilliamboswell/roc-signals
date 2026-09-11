@@ -106,7 +106,8 @@ fn status_error(status: NTSTATUS) -> io::Error {
 
 /// Splits an absolute drive path into its NT volume root and plain components.
 /// Relative, `..`, device, UNC, and NUL-containing paths are refused so the
-/// walk below only ever opens names relative to an already owned directory.
+/// walk below only ever opens names relative to an already owned directory;
+/// `effects::validate_path` refuses the same prefixes when a path is chosen.
 fn path_parts(path: &str) -> Result<(String, Vec<&OsStr>), FileError> {
     if path.len() > MAX_PATH_BYTES {
         return Err(FileError::InvalidPath(

@@ -7,10 +7,10 @@ import pf.Signal
 import pf.Ui
 
 initial_rows : Rows.Rows(Str)
-initial_rows = Rows.from_list(["Alpha", "Beta", "Gamma"], |key| key) ?? crash "duplicate spike key"
+initial_rows = Rows.from_list(["Alpha", "Beta", "Gamma"], |key| key) ?? crash "initial rows must have distinct keys"
 
 move_first : Rows.Rows(Str) -> Rows.Rows(Str)
-move_first = |rows| Rows.apply(rows, [MoveRange({ from: 0, count: 1, to: 2 })]) ?? crash "invalid spike move"
+move_first = |rows| Rows.apply(rows, [MoveRange({ from: 0, count: 1, to: 2 })]) ?? crash "moving the first row must be a valid range"
 
 row_view : Ui.Row(Str), Ui.State(Str) -> Elem
 row_view = |row, selected| {

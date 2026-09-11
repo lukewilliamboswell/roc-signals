@@ -190,8 +190,9 @@ file_start = |kind, task, fields| {
 
 ## Native file dialogs and bounded background filesystem work. Paths are absolute
 ## UTF-8 strings of at most 4096 bytes, spelled by the operating system the host
-## runs on: a Windows worker returns drive-rooted or UNC paths written with
-## backslashes. Derive any parent, name, root, or breadcrumb through
+## runs on: a Windows worker returns drive-rooted paths written with
+## backslashes, and refuses a UNC or device path with InvalidPath as soon as it
+## is chosen. Derive any parent, name, root, or breadcrumb through
 ## `Files.parse_path` and the `Files.Path` queries rather than by splitting a
 ## path string on one separator. Every completion uses the shared task
 ## signal and scope lifetime. At most 16 native operations, including canceled
@@ -395,7 +396,9 @@ Files := [].{
 	choose_directory = |task| file_start(Node.TaskKind.ChooseDirectory, task, [])
 
 	## Ask for a save path at the user's home or an absolute initial directory.
-	## Home returns Unavailable if the native environment has no UTF-8 HOME value.
+	## Home is the native user's profile root: HOME on Linux and macOS, USERPROFILE
+	## (or HOMEDRIVE and HOMEPATH) on Windows. It returns Unavailable only when the
+	## environment names no UTF-8 directory at all.
 	## The suggestion is one nonempty file name of at most 255 UTF-8 bytes.
 	choose_save_path : Signal.Task(Choice, Error), { directory : [Home, At(Str)], suggested_name : Str } -> Node.Cmd
 	choose_save_path = |task, options| {

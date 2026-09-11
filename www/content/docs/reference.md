@@ -109,11 +109,14 @@ Commands start or supersede work for that declared task.
 | `read_log_task(label)` | `read_log(task, { path, position })` | `LogChunk` |
 
 `Choice` is `[Chosen(Str), Canceled]`. The save chooser's `directory` is
-`Home` or `At(absolute_path)`. `Home` resolves the native user's home directory;
-a missing or non-UTF-8 environment value returns `Unavailable`. Scan entries
+`Home` or `At(absolute_path)`. `Home` resolves the native user's profile root (`HOME` on
+Linux and macOS, `USERPROFILE` on Windows); only an environment that names no
+UTF-8 directory at all returns `Unavailable`. Scan entries
 have `{ path, kind, bytes }`; kinds are `File`, `Directory`, `SymbolicLink`, and
 `Other`. Paths are absolute UTF-8 in the operating system's own spelling, so a
-Windows worker returns drive-rooted or UNC paths written with backslashes. Byte
+Windows worker returns drive-rooted paths written with backslashes. UNC and
+device paths are refused with `InvalidPath` when they are chosen, not at the
+first read: the Windows worker walks names below a drive's volume root only. Byte
 counts describe regular files.
 
 `Files.parse_path(text)` recognizes one path by shape and returns a `Files.Path`
@@ -129,9 +132,11 @@ is wrong on whichever operating system the application was not written for.
 `list_directory` returns only direct children, with the scan entry and aggregate
 path bounds. `read_preview` returns at most 64 KiB of UTF-8 and reports omitted
 bytes with `truncated`. Invalid internal text is refused; a code point cut by the
-prefix bound is excluded. `open_path` requests the desktop's associated application
-through `gio open`; success confirms the launch, not the external application's
-lifetime. Cancellation cannot undo a handoff. The external application owns its
+prefix bound is excluded. `open_path` requests the desktop's associated application:
+the Unix file service, which macOS builds also use, hands the path to `gio open`,
+and the Windows service hands it to `rundll32.exe url.dll,FileProtocolHandler`.
+Success confirms the launch, not the external application's lifetime, and an
+unassociated extension on Windows still counts as a launch. Cancellation cannot undo a handoff. The external application owns its
 subsequent pathname access policy.
 
 `LogPosition` is `Start`, `End`, or `After({ device, inode, offset })` (all `U64`).
