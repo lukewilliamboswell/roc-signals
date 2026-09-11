@@ -89,6 +89,89 @@ pub fn isWindowOnly(cmd_type: SpecCommandType) bool {
     };
 }
 
+/// The window-only steps the GUI host decodes by tag name. The Rust decoder
+/// carries the same list; a test on each side pins the two together, because
+/// the tag names cross the ABI as strings and nothing else checks them.
+pub const window_step_tags = [_][]const u8{
+    "wait",           "click",         "focus",           "type_text",      "key",             "shortcut",
+    "expect_visible", "expect_absent", "expect_text",     "expect_value",   "expect_disabled", "expect_selected",
+    "expect_focused", "expect_count",  "expect_onscreen", "expect_history", "snapshot",        "close",
+};
+
+/// Writes a parsed spec in one deterministic line per command, every field
+/// spelled out. This is what a spec *means* to the runner, independent of how
+/// it was spelled, and the checked-in golden of every spec's canonical form is
+/// the proof that a parser change changed nothing: the same spec must produce
+/// the same command sequence.
+pub fn writeCanonical(writer: *std.Io.Writer, spec: ParsedTestSpec) std.Io.Writer.Error!void {
+    try writer.print("{s} ", .{if (spec.scenario != null) "scenario" else "test"});
+    try writeQuoted(writer, spec.name);
+    if (spec.scenario) |header| {
+        try writer.print(" window={d}x{d}", .{ header.window_width, header.window_height });
+        try writer.writeAll(" assets=");
+        try writeOptionalQuoted(writer, header.assets);
+        try writer.writeAll(" choose=[");
+        for (header.choices, 0..) |choice, index| {
+            if (index > 0) try writer.writeByte(' ');
+            try writeQuoted(writer, choice);
+        }
+        try writer.writeAll("] diagnostic=");
+        try writeOptionalQuoted(writer, header.diagnostic);
+        try writer.writeAll(" on=[");
+        for (header.on, 0..) |token, index| {
+            if (index > 0) try writer.writeByte(' ');
+            try writer.writeAll(token);
+        }
+        try writer.writeByte(']');
+    }
+    try writer.writeByte('\n');
+    for (spec.commands) |cmd| {
+        try writer.print("  {d}: {s}", .{ cmd.line_num, @tagName(cmd.cmd_type) });
+        try writer.print(" locator={s}", .{@tagName(cmd.locator.kind)});
+        try writeField(writer, "role", cmd.locator.role);
+        try writeField(writer, "name", cmd.locator.name);
+        try writeField(writer, "label", cmd.locator.label);
+        try writeField(writer, "text", cmd.locator.text);
+        try writeField(writer, "test_id", cmd.locator.test_id);
+        try writeField(writer, "task", cmd.task_name);
+        if (cmd.expected_task_kinds != 0) try writer.print(" kinds={x}", .{cmd.expected_task_kinds});
+        try writeField(writer, "attr", cmd.expected_attr);
+        if (cmd.interval_ms) |value| try writer.print(" interval={d}", .{value});
+        if (cmd.shortcut) |chord| try writer.print(" shortcut={d}+{d}", .{ chord.key, chord.modifiers });
+        try writeField(writer, "expected", cmd.expected_text);
+        if (cmd.expected_count) |value| try writer.print(" count={d}", .{value});
+        if (cmd.expected_metric_delta) |value| try writer.print(" delta={d}", .{value});
+        if (cmd.expected_bool) |value| try writer.print(" bool={}", .{value});
+        try writer.writeByte('\n');
+    }
+}
+
+fn writeField(writer: *std.Io.Writer, name: []const u8, value: ?[]const u8) std.Io.Writer.Error!void {
+    if (value) |text| {
+        try writer.print(" {s}=", .{name});
+        try writeQuoted(writer, text);
+    }
+}
+
+fn writeOptionalQuoted(writer: *std.Io.Writer, value: ?[]const u8) std.Io.Writer.Error!void {
+    if (value) |text| try writeQuoted(writer, text) else try writer.writeAll("none");
+}
+
+/// Quotes with the same escapes the reader accepts, so a golden line is
+/// unambiguous even for text holding quotes, backslashes, or line ends.
+fn writeQuoted(writer: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!void {
+    try writer.writeByte('"');
+    for (text) |byte| switch (byte) {
+        '"' => try writer.writeAll("\\\""),
+        '\\' => try writer.writeAll("\\\\"),
+        '\n' => try writer.writeAll("\\n"),
+        '\r' => try writer.writeAll("\\r"),
+        '\t' => try writer.writeAll("\\t"),
+        else => try writer.writeByte(byte),
+    };
+    try writer.writeByte('"');
+}
+
 /// The header of a `(scenario ...)`: what the window run needs before its
 /// first step. Everything here used to be script front matter read by the
 /// Python driver; the host owns it now so that one parser decides.
@@ -1259,27 +1342,103 @@ test "S-expression spec parser rejects executable setup and empty steps" {
     );
 }
 
-test "all checked-in S-expression specs parse" {
+/// The checked-in canonical decoding of every spec in the repository.
+/// Regenerate deliberately with `SIGNALS_UPDATE_SPEC_GOLDEN=1 zig build test`
+/// and review the diff: a line that changed is a spec whose meaning changed.
+const spec_golden_path = "test/spec-decode.golden";
+
+test "all checked-in specs decode to the committed golden" {
     const io = std.Io.Threaded.global_single_threaded.io();
-    var count: usize = 0;
+    const allocator = std.testing.allocator;
+    var paths: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit(allocator);
+    }
     for ([_][]const u8{ "examples-web", "examples-gui", "test/gui" }) |directory| {
         const examples = try std.Io.Dir.cwd().openDir(io, directory, .{ .iterate = true });
         defer examples.close(io);
-        var walker = try examples.walk(std.testing.allocator);
+        var walker = try examples.walk(allocator);
         defer walker.deinit();
         while (try walker.next(io)) |entry| {
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".scm")) continue;
-            const path = try std.fs.path.join(std.testing.allocator, &.{ directory, entry.path });
-            defer std.testing.allocator.free(path);
-            var parsed = parseTestSpecFile(std.testing.allocator, path) catch |err| {
-                std.debug.print("failed to parse {s}: {s}\n", .{ path, @errorName(err) });
-                return err;
-            };
-            parsed.deinit(std.testing.allocator);
-            count += 1;
+            try paths.append(allocator, try std.fs.path.join(allocator, &.{ directory, entry.path }));
         }
     }
-    try std.testing.expect(count > 100);
+    // Directory walk order is not a contract; the golden is.
+    std.mem.sort([]u8, paths.items, {}, struct {
+        fn lessThan(_: void, a: []u8, b: []u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+    try std.testing.expect(paths.items.len > 100);
+
+    var canonical: std.Io.Writer.Allocating = .init(allocator);
+    defer canonical.deinit();
+    for (paths.items) |path| {
+        var parsed = parseTestSpecFile(allocator, path) catch |err| {
+            std.debug.print("failed to parse {s}: {s}\n", .{ path, @errorName(err) });
+            return err;
+        };
+        defer parsed.deinit(allocator);
+        try canonical.writer.print("== {s}\n", .{path});
+        try writeCanonical(&canonical.writer, parsed);
+    }
+    const actual = canonical.written();
+
+    if (std.process.Environ.getPosix(std.testing.environ, "SIGNALS_UPDATE_SPEC_GOLDEN") != null) {
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = spec_golden_path, .data = actual });
+        return;
+    }
+    const expected = std.Io.Dir.cwd().readFileAlloc(io, spec_golden_path, allocator, .limited(16 * 1024 * 1024)) catch |err| {
+        std.debug.print("cannot read {s} ({s}); regenerate with SIGNALS_UPDATE_SPEC_GOLDEN=1 zig build test\n", .{ spec_golden_path, @errorName(err) });
+        return err;
+    };
+    defer allocator.free(expected);
+    if (!std.mem.eql(u8, expected, actual)) {
+        // Name the first differing line so the reviewer knows which spec moved.
+        var expected_lines = std.mem.splitScalar(u8, expected, '\n');
+        var actual_lines = std.mem.splitScalar(u8, actual, '\n');
+        var line: usize = 1;
+        while (true) : (line += 1) {
+            const want = expected_lines.next();
+            const got = actual_lines.next();
+            if (want == null and got == null) break;
+            if (want == null or got == null or !std.mem.eql(u8, want.?, got.?)) {
+                std.debug.print("{s}:{d}: spec decoding changed\n  golden: {s}\n  now:    {s}\nIf the change is intended, regenerate with SIGNALS_UPDATE_SPEC_GOLDEN=1 zig build test and review the diff.\n", .{ spec_golden_path, line, want orelse "<end>", got orelse "<end>" });
+                break;
+            }
+        }
+        return error.SpecDecodingChanged;
+    }
+}
+
+test "the window step vocabulary the GUI host decodes is exactly the tags it needs" {
+    // Every window-only step must be in the list the Rust host decodes, and
+    // every listed tag must exist, so a renamed tag fails here and in the Rust
+    // twin of this test rather than at run time as "no meaning against a window".
+    inline for (std.meta.tags(SpecCommandType)) |tag| {
+        var listed = false;
+        for (window_step_tags) |name| listed = listed or std.mem.eql(u8, name, @tagName(tag));
+        if (isWindowOnly(tag)) try std.testing.expect(listed);
+    }
+    for (window_step_tags) |name| {
+        try std.testing.expect(std.meta.stringToEnum(SpecCommandType, name) != null);
+    }
+}
+
+test "the canonical form spells every field and escapes text" {
+    const spec = try parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" :window \"800x600\" :choose (\"a b\") (steps (type (label \"Note\") \"x\\ny\") (expect-count \"row-\" 2)))");
+    defer spec.deinit(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeCanonical(&out.writer, spec);
+    try std.testing.expectEqualStrings(
+        "scenario \"s\" window=800x600 assets=none choose=[\"a b\"] diagnostic=none on=[]\n" ++
+            "  1: type_text locator=label label=\"Note\" expected=\"x\\ny\"\n" ++
+            "  1: expect_count locator=none expected=\"row-\" count=2\n",
+        out.written(),
+    );
 }
 
 test "spec parser parses actions and assertions" {
