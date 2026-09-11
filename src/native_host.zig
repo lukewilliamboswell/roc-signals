@@ -3267,10 +3267,12 @@ fn runEffectJob(job: *EffectJob) void {
 /// Hands the effects queued by the turns that just committed, oldest first,
 /// to workers. Each thunk was prepared by Roc when its `Then` committed. The
 /// live host runs every thunk on its own worker, so effects overlap and their
-/// results apply as they complete; the spec host runs each on a worker thread
-/// it joins at once, so specs stay deterministic while still exercising the
-/// cross-thread path. An effect that queues further effects extends the same
-/// drain.
+/// results apply as they complete; the spec host runs each to completion on
+/// the spot, so specs stay deterministic. The spec host does not spawn a
+/// thread for this: the Roc linker for macOS resolves only the symbols the
+/// platform's own host needs, and `pthread_join` is not among them, so a
+/// joined worker here failed every macOS application link. An effect that
+/// queues further effects extends the same drain.
 fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
     while (host.engine.takeNextPendingEffect()) |taken| {
         var effect = taken;
@@ -3280,8 +3282,7 @@ fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
         if (Gpui.live) {
             Gpui.queueEffectJob(job);
         } else {
-            const worker = std.Thread.spawn(.{}, runEffectJob, .{job}) catch failHost("effect worker thread failed to start");
-            worker.join();
+            runEffectJob(job);
             completeEffectJob(host, roc_host, job);
         }
     }
