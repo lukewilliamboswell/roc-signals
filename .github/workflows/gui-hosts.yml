@@ -160,6 +160,21 @@ jobs:
           python scripts/prepare_platforms.py
           python scripts/build_gui.py --cargo-evidence "$RUNNER_TEMP/cargo-evidence"
           python scripts/prepare_gui_host_release.py --target "${{ matrix.target }}" --cargo-evidence "$RUNNER_TEMP/cargo-evidence" --output host-candidate --roc roc
+      - name: Inventory the macOS archives' external references
+        # A failed application link names only the first twenty missing
+        # symbols; the full inventory says what the interface catalog lacks.
+        if: failure() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/macos-link-audit"
+          python scripts/audit_macos_archive.py platform-gui/targets/${{ matrix.target }}/libsignals_gpui_host.a platform-gui/targets/${{ matrix.target }}/libengine.a --output "$RUNNER_TEMP/macos-link-audit/inventory.json"
+      - name: Upload the macOS link audit
+        if: failure() && runner.os == 'macOS'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: macos-link-audit
+          path: ${{ runner.temp }}/macos-link-audit
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: gui-host-${{ matrix.target }}

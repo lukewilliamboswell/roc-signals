@@ -46,7 +46,7 @@ main : () -> Elem
 main = || Ui.state(
 	Idle,
 	|status| {
-		reads = Signal.const("HOME")
+		reads = Signal.const("PATH")
 		Elem.col(
 			{ test_id: "action-fixture" },
 			[

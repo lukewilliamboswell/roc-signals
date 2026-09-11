@@ -2,7 +2,7 @@
   (steps
     (expect-text (text "Idle") "Idle")
     (click (role button :name "Succeed"))
-    (expect-text (text "Done: HOME is set") "Done: HOME is set")
+    (expect-text (text "Done: PATH is set") "Done: PATH is set")
     (click (role button :name "Fail"))
     (expect-text (text "Failed: boom") "Failed: boom")
     (click (role button :name "Reset"))
@@ -11,6 +11,6 @@
     (click (role button :name "Write"))
     (expect-text (text "Done: read hello file") "Done: read hello file")
     (click (role button :name "Succeed"))
-    (expect-text (text "Done: HOME is set") "Done: HOME is set")
+    (expect-text (text "Done: PATH is set") "Done: PATH is set")
   )
 )

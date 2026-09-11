@@ -532,6 +532,10 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // macOS puts the temporary directory behind a symlink (`/var` is
+        // `/private/var`), which the primitives refuse to follow; the tests
+        // want the real path.
+        let dir = std::fs::canonicalize(&dir).unwrap();
         dir.to_str().unwrap().to_owned()
     }
 
