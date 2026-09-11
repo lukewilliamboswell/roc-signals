@@ -273,12 +273,15 @@ job and rejects any stale callback. Native transactions reserve at most 256 live
 or newly declared timers. Activity Monitor uses a 500 ms interval whose scope is
 present only while replay is running or a followed log is waiting for more data.
 
-`pf.Files` provides native file, directory, and save-path choosers, UTF-8
-reads, atomic text writes, recursive scans, direct-child directory listings,
-bounded previews, incremental log reads, associated-application launches, and
-asset verification as effectful functions (`Files.choose_file!`,
-`Files.read_text!`, `Files.write_text!`, ...) that return `Try(value, Error)`.
-Call them from an action's effect. A chooser shows its dialog on the UI thread
+`pf.Files` provides the host's file primitives as effectful functions that
+return `Try(value, Error)`: choosers, metadata, byte reads and writes, rename,
+remove, flush, directory listing, and launching a file in its associated
+application. On top of them the module offers conveniences written in Roc,
+`read_text!`, `write_text!`, `read_preview!`, `scan!`, and `verify_assets!`,
+and anything more specific is app code built the same way; the activity
+monitor's `LogReader` module, which follows a growing log and notices rotation
+through `stat!` and `read_bytes!`, is the example. Call them from an action's
+effect. A chooser shows its dialog on the UI thread
 and blocks the effect until the user answers, so the code after the call can
 use the choice directly; the window keeps rendering and other effects keep
 running meanwhile. A dismissed chooser returns

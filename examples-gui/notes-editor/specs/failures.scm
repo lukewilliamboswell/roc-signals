@@ -14,7 +14,6 @@
     (expect-text (test-id "note-status") "Unsaved changes")
     (expect-text (test-id "note-problem") "Permission denied: destination")
     (stub-file-choice "notes-save-path" (chosen "/tmp/Ideas café.txt"))
-    (stub-file-write "notes-write" :path "/tmp/Ideas café.txt" :bytes 16)
     (shortcut (test-id "notes-editor") "s" 1)
     (expect-text (test-id "note-problem") "")
     (expect-text (test-id "note-status") "No changes")

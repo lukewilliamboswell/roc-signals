@@ -233,9 +233,9 @@ Session := [].{
 		_ => state
 	}
 
-	opened : State, Files.Opened -> State
-	opened = |state, result| match state.phase {
-		Opening(value) if value == result.path => { ..state, phase: Idle, notice: "Opened ${result.path} in its associated application." }
+	opened : State, Str -> State
+	opened = |state, path| match state.phase {
+		Opening(value) if value == path => { ..state, phase: Idle, notice: "Opened ${path} in its associated application." }
 		_ => crash "A launch result arrived outside its matching operation"
 	}
 

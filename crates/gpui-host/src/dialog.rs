@@ -349,7 +349,6 @@ mod tests {
             trace_engine: false,
             unfocused_keys: None,
             engine: Engine::test_boundary(),
-            effects: crate::effects::Manager::default(),
             dialogs: Dialogs::default(),
             window_lifecycle: crate::window_lifecycle::Lifecycle::default(),
             nodes: HashMap::new(),

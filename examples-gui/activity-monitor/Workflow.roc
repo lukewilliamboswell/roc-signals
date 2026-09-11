@@ -3,12 +3,13 @@ import pf.Elem exposing [Elem]
 import pf.Files
 import pf.Signal
 import pf.Ui
+import LogReader
 import Session
 
 ## Every native step runs as one `Files` call inside an action's effect,
 ## against the phase as it is after the change committed: entering Choosing
 ## opens the log chooser and waits for its answer, entering Reading reads one
-## chunk with `Files.read_log!`, and caught-up files use a scoped timer to
+## chunk with `LogReader.read!`, and caught-up files use a scoped timer to
 ## re-enter Reading.
 Workflow := [].{
 	bindings : Ui.State(Session.Accepted) -> List(Elem)
@@ -31,7 +32,7 @@ Workflow := [].{
 			Ok(choice) => Action.update([model.write(|value| { ..value, session: Session.chosen(value.session, choice) })])
 			Err(error) => failed(model, error)
 		}
-		Session.Phase.Reading(request) => match Files.read_log!(request) {
+		Session.Phase.Reading(request) => match LogReader.read!(request) {
 			Ok(chunk) => Action.update([model.write(|value| Session.accept(value.session, value.history, chunk))])
 			Err(error) => failed(model, error)
 		}

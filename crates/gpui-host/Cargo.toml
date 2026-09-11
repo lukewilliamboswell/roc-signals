@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-sha2 = "0.10"
 unicode-segmentation = "1"
 # The HTTP client is GPUI's own fork of reqwest with the feature set GPUI's
 # http client already enables, so the locked dependency graph does not change.

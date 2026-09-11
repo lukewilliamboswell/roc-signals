@@ -91,71 +91,56 @@ calling convention so maintained examples can use their pinned release.
 
 ## Native Files
 
-Import `pf.Files` with `platform-gui`. Every operation is an effectful
-function that runs inside an action's effect and returns `Try(value, Error)`:
+Import `pf.Files` with `platform-gui`. The host provides a small set of
+primitives; everything else in the module is ordinary Roc built on them, and
+an app can build its own conveniences the same way. Every function is
+effectful, runs inside an action's effect, and returns `Try(value, Error)`.
+
+Primitives:
 
 | Function | Successful value |
 | --- | --- |
 | `choose_file!()` | `Choice` |
 | `choose_directory!()` | `Choice` |
 | `choose_save_path!({ directory, suggested_name })` | `Choice` |
-| `read_text!(path)` | `{ path, text }` |
-| `write_text!({ path, text })` | `{ path, bytes }` |
-| `scan!(root)` | `{ root, entries }` |
+| `stat!(path)` | `{ kind, bytes, device, inode }` |
+| `read_bytes!({ path, offset, max_bytes })` | `{ bytes, size }` |
+| `write_bytes!({ path, bytes })` | `{}` |
+| `rename!({ from, to })` | `{}` |
+| `remove!(path)` | `{}` |
+| `sync!(path)` | `{}` |
 | `list_directory!(path)` | `{ path, entries }` |
-| `open_path!(path)` | `{ path }` |
-| `read_preview!(path)` | `{ path, text, truncated }` |
-| `read_log!({ path, position })` | `LogChunk` |
-| `verify_assets!(entries)` | `List(AssetCheck)` |
+| `open_path!(path)` | `{}` |
+| `assets_root!()` | `Str` |
 
-The choosers show their dialog on the UI thread and block the calling effect
-until the user answers; other effects keep running.
+Conveniences written in Roc:
+
+| Function | Successful value |
+| --- | --- |
+| `read_text!(path)` | `{ path, text }`, at most 1 MiB of UTF-8 |
+| `write_text!({ path, text })` | `{ path, bytes }`, through a temporary sibling, a flush, and a rename |
+| `read_preview!(path)` | `{ path, text, truncated }`, a UTF-8 prefix of at most 64 KiB |
+| `scan!(root)` | `{ root, entries }`, recursive within 10,000 entries, 64 levels, and 4 MiB of paths |
+| `verify_assets!(entries)` | `List(AssetCheck)`, each manifest entry hashed with `Crypto.SHA256` under the assets root |
 
 `Choice` is `[Chosen(Str), Canceled]`. The save chooser's `directory` is
-`Home` or `At(absolute_path)`. `Home` resolves the native user's home directory;
-a missing or non-UTF-8 environment value returns `Unavailable`. Scan entries
-have `{ path, kind, bytes }`; kinds are `File`, `Directory`, `SymbolicLink`, and
-`Other`. Paths are absolute UTF-8. Byte counts describe regular files.
+`Home` or `At(absolute_path)`; `Home` resolves the native user's home
+directory, and a missing or non-UTF-8 value returns `Unavailable`. `Kind` is
+`File`, `Directory`, `SymbolicLink`, or `Other`. `stat!` never follows a
+symbolic link, and `read_bytes!` refuses anything but a regular file. `device`
+and `inode` identify a file across renames, which is how the activity
+monitor's log reader notices rotation. Paths are absolute UTF-8 of at most
+4,096 bytes. `open_path!` requests the desktop's associated application
+through `gio open`; success confirms the launch, not the application's
+lifetime. Writes replace a regular file's contents in place; `write_text!`
+that fails before its rename leaves the destination untouched.
 
-`list_directory` returns only direct children, with the scan entry and aggregate
-path bounds. `read_preview` returns at most 64 KiB of UTF-8 and reports omitted
-bytes with `truncated`. Invalid internal text is refused; a code point cut by the
-prefix bound is excluded. `open_path` requests the desktop's associated application
-through `gio open`; success confirms the launch, not the external application's
-lifetime. Cancellation cannot undo a handoff. The external application owns its
-subsequent pathname access policy.
-
-`LogPosition` is `Start`, `End`, or `After({ device, inode, offset })` (all `U64`).
-`LogChunk` contains `{ path, text, cursor, change, state }`. Each stateless request
-returns at most 64 KiB; `LogChange` is `Initial`, `Continued`, `Rotated`, or
-`Truncated`, and `LogState` is `More`, `AtEnd`, or `PartialUtf8`. Rotation or an
-observed shrink restarts at zero. Incomplete UTF-8 remains unread for retry;
-invalid bytes are errors. Applications assemble partial lines and bound history.
-`End` seeds EOF after checking its terminal code point, refusing an incomplete
-endpoint; skipped history is not validated. Same-inode truncate-and-regrow between
-observations cannot be distinguished from continuation.
-
-Dismissing a chooser produces `Ok(Choice.Canceled)`; `Error.Canceled` is
-reserved for work the host abandoned. `Files.error_text(error)` formats errors
-for display. Other errors are
-`NotFound`, `PermissionDenied`, `InvalidUtf8`, `InvalidPath`, `ResourceLimit`,
-`Io`, and `Unavailable`, each with a diagnostic string. Diagnostic text is bounded
-at 4,096 UTF-8 bytes and ends with ` [truncated]` when detail was omitted; the error
-case remains unchanged. Save suggestions must be single nonempty file names of
-at most 255 UTF-8 bytes.
-
-The native host retains at most 16 operations. Saturation returns
-`ResourceLimit`. Paths
-are at most 4,096 bytes; text reads and writes are at most 1 MiB. A scan returns
-one complete metadata result of at most 10,000 entries, 64 levels, and 4 MiB of
-paths including the root. Concurrent filesystem changes can fail a scan. Symlinks
-are reported without traversal. Limits reject the operation
-rather than truncating scan/list results. The preview and incremental-log reads
-report their explicit prefix boundaries. Writes replace the destination through a temporary
-sibling and rename.
-Replacement is atomic, but parent-directory power-loss durability is not
-guaranteed. Failed temporary cleanup returns `Io` and may leave the file behind.
-
+`Error` is `[Canceled, NotFound(Str), PermissionDenied(Str), InvalidUtf8(Str),
+InvalidPath(Str), ResourceLimit(Str), Io(Str), Unavailable(Str)]`. The host
+never produces `Canceled`; it is for apps that treat a dismissed chooser as a
+failure, which instead arrives as `Ok(Choice.Canceled)`.
+`Files.error_text(error)` formats errors for display, and diagnostic detail is
+bounded at 4,096 UTF-8 bytes.
 
 ## Native Actions
 

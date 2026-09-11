@@ -1,373 +1,373 @@
 {
-  "schema_version": 1,
-  "comment": "Single authority for the native GUI protocol tables. Edit this file, then run `python3 scripts/generate_protocol.py` to regenerate the committed Zig, Rust, Roc, and docs artifacts. `docs/native-gui-protocol.md` documents the add-a-field procedure.",
-  "protocol_version": 10,
-  "timer_version": 1,
-  "custom_text_field_id": 7,
-  "custom_bool_field_id": 3,
-  "text_fields": [
-    {
-      "id": 1,
-      "name": "text",
-      "native": false,
-      "browser_op": "set_text",
-      "doc": "Element text content."
-    },
-    {
-      "id": 2,
-      "name": "role",
-      "native": false,
-      "browser_op": "set_role",
-      "doc": "Semantic role string."
-    },
-    {
-      "id": 3,
-      "name": "label",
-      "native": false,
-      "browser_op": "set_label",
-      "doc": "Visible caption and semantic name."
-    },
-    {
-      "id": 4,
-      "name": "test_id",
-      "native": false,
-      "browser_op": "set_test_id",
-      "doc": "Stable test selector identity."
-    },
-    {
-      "id": 5,
-      "name": "value",
-      "native": false,
-      "browser_op": "set_value",
-      "doc": "Controlled input value."
-    },
-    {
-      "id": 6,
-      "name": "class",
-      "native": false,
-      "browser_op": "set_class",
-      "doc": "CSS class list for browser presentation."
-    },
-    {
-      "id": 8,
-      "name": "native_style",
-      "native": true,
-      "roc_const": "native_style_field",
-      "doc": "Versioned native presentation record; never encoded on the browser wire."
-    },
-    {
-      "id": 9,
-      "name": "native_viewport",
-      "native": true,
-      "roc_const": "native_viewport_field",
-      "doc": "Fixed-row virtual list record `1,row_height,follow_tail`."
-    },
-    {
-      "id": 10,
-      "name": "native_drag_key",
-      "native": true,
-      "roc_const": "native_drag_key_field",
-      "doc": "Bounded application key exposed by an internal drag source."
-    },
-    {
-      "id": 11,
-      "name": "native_window_close",
-      "native": true,
-      "roc_const": "native_window_close_field",
-      "doc": "Window close policy: `keep-open`, `await-decision`, or `close`."
-    },
-    {
-      "id": 12,
-      "name": "native_placeholder",
-      "native": true,
-      "roc_const": "native_placeholder_field",
-      "doc": "Static empty-field hint text shown while a controlled field is empty."
-    },
-    {
-      "id": 13,
-      "name": "native_image_source",
-      "native": true,
-      "roc_const": "native_image_source_field",
-      "doc": "Relative image source resolved against the process-wide assets root."
-    },
-    {
-      "id": 14,
-      "name": "native_font_family",
-      "native": true,
-      "roc_const": "native_font_family_field",
-      "doc": "Static font family joined into the element's inherited text style."
-    },
-    {
-      "id": 15,
-      "name": "native_fonts",
-      "native": true,
-      "roc_const": "native_fonts_field",
-      "doc": "Versioned embedded-font registration declaration; registered once at startup."
-    }
-  ],
-  "bool_fields": [
-    {
-      "id": 1,
-      "name": "checked",
-      "native": false,
-      "browser_op": "set_checked",
-      "doc": "Checkbox checked state."
-    },
-    {
-      "id": 2,
-      "name": "disabled",
-      "native": false,
-      "browser_op": "set_disabled",
-      "roc_const": "disabled_field",
-      "doc": "Disables input while retaining native identity."
-    },
-    {
-      "id": 4,
-      "name": "selected",
-      "native": true,
-      "roc_const": "selected_field",
-      "doc": "Native selected presentation, independent of checkbox state."
-    },
-    {
-      "id": 5,
-      "name": "native_drop_target",
-      "native": true,
-      "roc_const": "native_drop_target_field",
-      "doc": "Marks an internal drop target that must bind a string-detail drop event."
-    }
-  ],
-  "task_kinds": [
-    {
-      "id": 0,
-      "name": "external",
-      "doc": "App-declared external task; the only route the browser host accepts."
-    },
-    {
-      "id": 1,
-      "name": "choose_file",
-      "doc": "Native file chooser dialog."
-    },
-    {
-      "id": 2,
-      "name": "choose_directory",
-      "doc": "Native directory chooser dialog."
-    },
-    {
-      "id": 3,
-      "name": "choose_save_path",
-      "doc": "Native save-path chooser with location kind, directory, and suggested name."
-    },
-    {
-      "id": 4,
-      "name": "read_text",
-      "doc": "Bounded UTF-8 text read of one absolute path."
-    },
-    {
-      "id": 5,
-      "name": "write_text",
-      "doc": "Atomic bounded UTF-8 text write of one absolute path."
-    },
-    {
-      "id": 6,
-      "name": "scan_directory",
-      "doc": "Bounded recursive directory metadata scan."
-    },
-    {
-      "id": 7,
-      "name": "list_directory",
-      "doc": "Bounded direct-children directory listing."
-    },
-    {
-      "id": 8,
-      "name": "open_path",
-      "doc": "Hand one regular file to its associated application."
-    },
-    {
-      "id": 9,
-      "name": "read_preview",
-      "doc": "Bounded UTF-8 prefix read with an explicit truncation marker."
-    },
-    {
-      "id": 10,
-      "name": "read_log",
-      "doc": "Cursor-driven bounded log chunk read with rotation detection."
-    },
-    {
-      "id": 11,
-      "name": "verify_assets",
-      "doc": "Hash a bounded manifest of relative assets against expected SHA-256 digests."
-    }
-  ],
-  "raw_node": {
-    "comment": "Field order is ABI: Zig writes and Rust reads this extern record byte-for-byte. Types: u64, usize, slice (pointer+length borrowed UTF-8), style (18 u32 presentation record), viewport (2 u32 record).",
-    "fields": [
-      {
-        "name": "id",
-        "type": "u64",
-        "doc": "Committed element id."
-      },
-      {
-        "name": "active",
-        "type": "u64",
-        "doc": "Nonzero while the element is mounted."
-      },
-      {
-        "name": "parent",
-        "type": "u64",
-        "doc": "Committed parent element id, zero for the root."
-      },
-      {
-        "name": "tag",
-        "type": "slice",
-        "doc": "Element tag string."
-      },
-      {
-        "name": "text",
-        "type": "slice",
-        "doc": "Text content (text field 1)."
-      },
-      {
-        "name": "value",
-        "type": "slice",
-        "doc": "Controlled input value (text field 5)."
-      },
-      {
-        "name": "label",
-        "type": "slice",
-        "doc": "Caption and semantic name (text field 3)."
-      },
-      {
-        "name": "role",
-        "type": "slice",
-        "doc": "Semantic role (text field 2)."
-      },
-      {
-        "name": "test_id",
-        "type": "slice",
-        "doc": "Test selector identity (text field 4)."
-      },
-      {
-        "name": "class",
-        "type": "slice",
-        "doc": "Class list (text field 6)."
-      },
-      {
-        "name": "placeholder",
-        "type": "slice",
-        "doc": "Empty-field hint (text field 12)."
-      },
-      {
-        "name": "image_source",
-        "type": "slice",
-        "doc": "Relative image source (text field 13)."
-      },
-      {
-        "name": "font_family",
-        "type": "slice",
-        "doc": "Inherited font family (text field 14)."
-      },
-      {
-        "name": "fonts",
-        "type": "slice",
-        "doc": "Embedded font declaration (text field 15)."
-      },
-      {
-        "name": "child_count",
-        "type": "usize",
-        "doc": "Committed child count; children are read through signals_child_at."
-      },
-      {
-        "name": "click",
-        "type": "u64",
-        "doc": "Bound click event id, zero when unbound."
-      },
-      {
-        "name": "input",
-        "type": "u64",
-        "doc": "Bound input event id, zero when unbound."
-      },
-      {
-        "name": "check",
-        "type": "u64",
-        "doc": "Bound check event id, zero when unbound."
-      },
-      {
-        "name": "checked",
-        "type": "u64",
-        "doc": "Checked state word (bool field 1)."
-      },
-      {
-        "name": "disabled",
-        "type": "u64",
-        "doc": "Disabled state word (bool field 2)."
-      },
-      {
-        "name": "selected",
-        "type": "u64",
-        "doc": "Selected presentation word (bool field 4)."
-      },
-      {
-        "name": "style_present",
-        "type": "u64",
-        "doc": "Nonzero when the style record is populated (text field 8)."
-      },
-      {
-        "name": "style",
-        "type": "style",
-        "doc": "Validated native presentation record (text field 8)."
-      },
-      {
-        "name": "viewport",
-        "type": "viewport",
-        "doc": "Validated virtual-list record (text field 9), zeroed when absent."
-      },
-      {
-        "name": "lifetime",
-        "type": "u64",
-        "doc": "Checked lifetime counter advanced on descriptor retirement."
-      },
-      {
-        "name": "drag_key",
-        "type": "slice",
-        "doc": "Internal drag source key (text field 10)."
-      },
-      {
-        "name": "drop",
-        "type": "u64",
-        "doc": "Bound drop event id for an active drop target, zero otherwise (bool field 5)."
-      },
-      {
-        "name": "close_requested",
-        "type": "u64",
-        "doc": "Bound close-requested event id for a registered window (text field 11)."
-      },
-      {
-        "name": "close_policy",
-        "type": "u64",
-        "doc": "Close-decision word: 0 unregistered, KeepOpen=1, AwaitDecision=2, Close=3."
-      }
-    ]
+ "schema_version": 1,
+ "comment": "Single authority for the native GUI protocol tables. Edit this file, then run `python3 scripts/generate_protocol.py` to regenerate the committed Zig, Rust, Roc, and docs artifacts. `docs/native-gui-protocol.md` documents the add-a-field procedure.",
+ "protocol_version": 10,
+ "timer_version": 1,
+ "custom_text_field_id": 7,
+ "custom_bool_field_id": 3,
+ "text_fields": [
+  {
+   "id": 1,
+   "name": "text",
+   "native": false,
+   "browser_op": "set_text",
+   "doc": "Element text content."
   },
-  "version_history": [
-    {
-      "version": 10,
-      "summary": "Extends the presentation record to style version 2 with hover and active background slots (18 u32 style record); style version 1 records are no longer accepted."
-    },
-    {
-      "version": 9,
-      "summary": "Adds the explicit image-source text slot together with the font-family and embedded-font declaration slots to the node layout."
-    },
-    {
-      "version": 8,
-      "summary": "Adds the placeholder text slot to the node layout."
-    },
-    {
-      "version": 7,
-      "summary": "Adds explicit event-detail dispatch to `signals_dispatch`."
-    },
-    {
-      "version": 6,
-      "summary": "Adds the close-request event ID and close-decision word to the node layout."
-    }
+  {
+   "id": 2,
+   "name": "role",
+   "native": false,
+   "browser_op": "set_role",
+   "doc": "Semantic role string."
+  },
+  {
+   "id": 3,
+   "name": "label",
+   "native": false,
+   "browser_op": "set_label",
+   "doc": "Visible caption and semantic name."
+  },
+  {
+   "id": 4,
+   "name": "test_id",
+   "native": false,
+   "browser_op": "set_test_id",
+   "doc": "Stable test selector identity."
+  },
+  {
+   "id": 5,
+   "name": "value",
+   "native": false,
+   "browser_op": "set_value",
+   "doc": "Controlled input value."
+  },
+  {
+   "id": 6,
+   "name": "class",
+   "native": false,
+   "browser_op": "set_class",
+   "doc": "CSS class list for browser presentation."
+  },
+  {
+   "id": 8,
+   "name": "native_style",
+   "native": true,
+   "roc_const": "native_style_field",
+   "doc": "Versioned native presentation record; never encoded on the browser wire."
+  },
+  {
+   "id": 9,
+   "name": "native_viewport",
+   "native": true,
+   "roc_const": "native_viewport_field",
+   "doc": "Fixed-row virtual list record `1,row_height,follow_tail`."
+  },
+  {
+   "id": 10,
+   "name": "native_drag_key",
+   "native": true,
+   "roc_const": "native_drag_key_field",
+   "doc": "Bounded application key exposed by an internal drag source."
+  },
+  {
+   "id": 11,
+   "name": "native_window_close",
+   "native": true,
+   "roc_const": "native_window_close_field",
+   "doc": "Window close policy: `keep-open`, `await-decision`, or `close`."
+  },
+  {
+   "id": 12,
+   "name": "native_placeholder",
+   "native": true,
+   "roc_const": "native_placeholder_field",
+   "doc": "Static empty-field hint text shown while a controlled field is empty."
+  },
+  {
+   "id": 13,
+   "name": "native_image_source",
+   "native": true,
+   "roc_const": "native_image_source_field",
+   "doc": "Relative image source resolved against the process-wide assets root."
+  },
+  {
+   "id": 14,
+   "name": "native_font_family",
+   "native": true,
+   "roc_const": "native_font_family_field",
+   "doc": "Static font family joined into the element's inherited text style."
+  },
+  {
+   "id": 15,
+   "name": "native_fonts",
+   "native": true,
+   "roc_const": "native_fonts_field",
+   "doc": "Versioned embedded-font registration declaration; registered once at startup."
+  }
+ ],
+ "bool_fields": [
+  {
+   "id": 1,
+   "name": "checked",
+   "native": false,
+   "browser_op": "set_checked",
+   "doc": "Checkbox checked state."
+  },
+  {
+   "id": 2,
+   "name": "disabled",
+   "native": false,
+   "browser_op": "set_disabled",
+   "roc_const": "disabled_field",
+   "doc": "Disables input while retaining native identity."
+  },
+  {
+   "id": 4,
+   "name": "selected",
+   "native": true,
+   "roc_const": "selected_field",
+   "doc": "Native selected presentation, independent of checkbox state."
+  },
+  {
+   "id": 5,
+   "name": "native_drop_target",
+   "native": true,
+   "roc_const": "native_drop_target_field",
+   "doc": "Marks an internal drop target that must bind a string-detail drop event."
+  }
+ ],
+ "task_kinds": [
+  {
+   "id": 0,
+   "name": "external",
+   "doc": "App-declared external task; the only route the browser host accepts."
+  },
+  {
+   "id": 1,
+   "name": "choose_file",
+   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
+  },
+  {
+   "id": 2,
+   "name": "choose_directory",
+   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
+  },
+  {
+   "id": 3,
+   "name": "choose_save_path",
+   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
+  },
+  {
+   "id": 4,
+   "name": "read_text",
+   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
+  },
+  {
+   "id": 5,
+   "name": "write_text",
+   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
+  },
+  {
+   "id": 6,
+   "name": "scan_directory",
+   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
+  },
+  {
+   "id": 7,
+   "name": "list_directory",
+   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
+  },
+  {
+   "id": 8,
+   "name": "open_path",
+   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
+  },
+  {
+   "id": 9,
+   "name": "read_preview",
+   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
+  },
+  {
+   "id": 10,
+   "name": "read_log",
+   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
+  },
+  {
+   "id": 11,
+   "name": "verify_assets",
+   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
+  }
+ ],
+ "raw_node": {
+  "comment": "Field order is ABI: Zig writes and Rust reads this extern record byte-for-byte. Types: u64, usize, slice (pointer+length borrowed UTF-8), style (18 u32 presentation record), viewport (2 u32 record).",
+  "fields": [
+   {
+    "name": "id",
+    "type": "u64",
+    "doc": "Committed element id."
+   },
+   {
+    "name": "active",
+    "type": "u64",
+    "doc": "Nonzero while the element is mounted."
+   },
+   {
+    "name": "parent",
+    "type": "u64",
+    "doc": "Committed parent element id, zero for the root."
+   },
+   {
+    "name": "tag",
+    "type": "slice",
+    "doc": "Element tag string."
+   },
+   {
+    "name": "text",
+    "type": "slice",
+    "doc": "Text content (text field 1)."
+   },
+   {
+    "name": "value",
+    "type": "slice",
+    "doc": "Controlled input value (text field 5)."
+   },
+   {
+    "name": "label",
+    "type": "slice",
+    "doc": "Caption and semantic name (text field 3)."
+   },
+   {
+    "name": "role",
+    "type": "slice",
+    "doc": "Semantic role (text field 2)."
+   },
+   {
+    "name": "test_id",
+    "type": "slice",
+    "doc": "Test selector identity (text field 4)."
+   },
+   {
+    "name": "class",
+    "type": "slice",
+    "doc": "Class list (text field 6)."
+   },
+   {
+    "name": "placeholder",
+    "type": "slice",
+    "doc": "Empty-field hint (text field 12)."
+   },
+   {
+    "name": "image_source",
+    "type": "slice",
+    "doc": "Relative image source (text field 13)."
+   },
+   {
+    "name": "font_family",
+    "type": "slice",
+    "doc": "Inherited font family (text field 14)."
+   },
+   {
+    "name": "fonts",
+    "type": "slice",
+    "doc": "Embedded font declaration (text field 15)."
+   },
+   {
+    "name": "child_count",
+    "type": "usize",
+    "doc": "Committed child count; children are read through signals_child_at."
+   },
+   {
+    "name": "click",
+    "type": "u64",
+    "doc": "Bound click event id, zero when unbound."
+   },
+   {
+    "name": "input",
+    "type": "u64",
+    "doc": "Bound input event id, zero when unbound."
+   },
+   {
+    "name": "check",
+    "type": "u64",
+    "doc": "Bound check event id, zero when unbound."
+   },
+   {
+    "name": "checked",
+    "type": "u64",
+    "doc": "Checked state word (bool field 1)."
+   },
+   {
+    "name": "disabled",
+    "type": "u64",
+    "doc": "Disabled state word (bool field 2)."
+   },
+   {
+    "name": "selected",
+    "type": "u64",
+    "doc": "Selected presentation word (bool field 4)."
+   },
+   {
+    "name": "style_present",
+    "type": "u64",
+    "doc": "Nonzero when the style record is populated (text field 8)."
+   },
+   {
+    "name": "style",
+    "type": "style",
+    "doc": "Validated native presentation record (text field 8)."
+   },
+   {
+    "name": "viewport",
+    "type": "viewport",
+    "doc": "Validated virtual-list record (text field 9), zeroed when absent."
+   },
+   {
+    "name": "lifetime",
+    "type": "u64",
+    "doc": "Checked lifetime counter advanced on descriptor retirement."
+   },
+   {
+    "name": "drag_key",
+    "type": "slice",
+    "doc": "Internal drag source key (text field 10)."
+   },
+   {
+    "name": "drop",
+    "type": "u64",
+    "doc": "Bound drop event id for an active drop target, zero otherwise (bool field 5)."
+   },
+   {
+    "name": "close_requested",
+    "type": "u64",
+    "doc": "Bound close-requested event id for a registered window (text field 11)."
+   },
+   {
+    "name": "close_policy",
+    "type": "u64",
+    "doc": "Close-decision word: 0 unregistered, KeepOpen=1, AwaitDecision=2, Close=3."
+   }
   ]
+ },
+ "version_history": [
+  {
+   "version": 10,
+   "summary": "Extends the presentation record to style version 2 with hover and active background slots (18 u32 style record); style version 1 records are no longer accepted."
+  },
+  {
+   "version": 9,
+   "summary": "Adds the explicit image-source text slot together with the font-family and embedded-font declaration slots to the node layout."
+  },
+  {
+   "version": 8,
+   "summary": "Adds the placeholder text slot to the node layout."
+  },
+  {
+   "version": 7,
+   "summary": "Adds explicit event-detail dispatch to `signals_dispatch`."
+  },
+  {
+   "version": 6,
+   "summary": "Adds the close-request event ID and close-decision word to the node layout."
+  }
+ ]
 }

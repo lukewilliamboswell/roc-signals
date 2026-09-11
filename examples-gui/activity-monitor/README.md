@@ -3,8 +3,11 @@
 Follow a UTF-8 plain-text log on this computer, or use the explicitly labeled
 simulated replay to explore the interface without a file. Open log starts at
 the beginning and drains existing data in sequential 64 KiB reads. Once caught
-up, a scoped 500 ms timer polls for appended bytes. Each read runs as one
-synchronous call inside an effect; pausing disposes the polling timer.
+up, a scoped 500 ms timer polls for appended bytes. The log reader is this
+app's own `LogReader` module: each read is one `Files.stat!` and one
+`Files.read_bytes!` inside an effect, and the cursor it keeps carries the
+file's identity so a replaced or truncated file restarts history. Pausing
+disposes the polling timer.
 
 Each newline-delimited record gets a monotonic sequence identity. Plain text
 uses the `TEXT` label, without guessing severity from message contents; the
@@ -46,6 +49,7 @@ directly, so the repository carries exactly one copy of the font.
 
 Run `scripts/test.py gui` with the pinned Roc compiler, as described in the
 contributor guide. The semantic journeys exercise replay, chunk assembly,
-sequential reads, error retry, rotation and
-truncation. They stub Files results; focused native file tests exercise
-actual IO and the GPUI adapter tests exercise native interaction.
+sequential reads, error retry, rotation and truncation. They stub the file
+primitives underneath the log reader, so its rotation and truncation logic
+runs for real under test; focused native file tests exercise actual IO and
+the GPUI adapter tests exercise native interaction.

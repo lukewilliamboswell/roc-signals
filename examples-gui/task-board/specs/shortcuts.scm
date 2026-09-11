@@ -6,7 +6,6 @@
   (shortcut (test-id "launch-board") "z" 3)
   (expect-value (label "Task title") "Shortcut edit")
   (stub-file-choice "board-save-path" (chosen "/tmp/shortcuts.board.json"))
-  (stub-file-write "board-write" :path "/tmp/shortcuts.board.json" :bytes 1)
   (shortcut (test-id "launch-board") "s" 1)
   (stub-file-choice "board-save-path" (canceled))
   (shortcut (test-id "launch-board") "s" 3)

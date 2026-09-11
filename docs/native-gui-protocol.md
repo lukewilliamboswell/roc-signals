@@ -57,17 +57,17 @@ Scalar boolean fields:
 | Id | Kind | Purpose |
 | --- | --- | --- |
 | 0 | `external` | App-declared external task; the only route the browser host accepts. |
-| 1 | `choose_file` | Native file chooser dialog. |
-| 2 | `choose_directory` | Native directory chooser dialog. |
-| 3 | `choose_save_path` | Native save-path chooser with location kind, directory, and suggested name. |
-| 4 | `read_text` | Bounded UTF-8 text read of one absolute path. |
-| 5 | `write_text` | Atomic bounded UTF-8 text write of one absolute path. |
-| 6 | `scan_directory` | Bounded recursive directory metadata scan. |
-| 7 | `list_directory` | Bounded direct-children directory listing. |
-| 8 | `open_path` | Hand one regular file to its associated application. |
-| 9 | `read_preview` | Bounded UTF-8 prefix read with an explicit truncation marker. |
-| 10 | `read_log` | Cursor-driven bounded log chunk read with rotation detection. |
-| 11 | `verify_assets` | Hash a bounded manifest of relative assets against expected SHA-256 digests. |
+| 1 | `choose_file` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 2 | `choose_directory` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 3 | `choose_save_path` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 4 | `read_text` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 5 | `write_text` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 6 | `scan_directory` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 7 | `list_directory` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 8 | `open_path` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 9 | `read_preview` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 10 | `read_log` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
+| 11 | `verify_assets` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
 
 <!-- END GENERATED PROTOCOL TABLES -->
 
@@ -346,26 +346,28 @@ This is presentation policy, not a second timer, observer, or reactive graph.
 
 ## Native Files
 
-`Files` exposes native choosers, reads, writes, scans, directory listings,
-previews, incremental log reads, associated-application launches, and asset
-verification as hosted effectful functions. Each call runs to completion on
-the effect worker that made it and returns a typed result; nothing is queued,
-tracked, or canceled by the engine. `Node.TaskKind` is the closed route number
-a call carries to the host; the generated task-kind table above is the
-authoritative numbering. The browser platform has no `Files` and rejects
-non-external task routes before command publication.
+`Files` exposes the host's file primitives as hosted effectful functions:
+three choosers, `stat`, `read_bytes`, `write_bytes`, `rename`, `remove`,
+`sync`, `list_directory`, `open_path`, and `assets_root`. Each call runs to
+completion on the effect worker that made it and returns a typed result;
+nothing is queued, tracked, or canceled by the engine. Everything the platform
+offers above those primitives, text reads and atomic text writes, previews,
+recursive scans, and asset verification, is Roc code in the `Files` module,
+and the activity monitor's log reader is Roc code in that app. The route
+numbers in `Node.TaskKind` remain only for the engine's own tasks; the native
+platform routes nothing through them.
 
-Each function is its own hosted entry point with the argument and result
-types the glue generates from its Roc signature: `roc_files_read_text` takes a
-Roc string and returns `Try(TextFile, Error)` as an extern tag union, and so
-on. The Zig host releases the owned arguments and builds the result value
-directly. In a live window the work happens in Rust, which returns plain C
-structs, buffers with a pointer and length, that the host copies into Roc
-values and releases through the matching `signals_*_release`. The spec host
-answers the same calls from declared `stub-file-*` results instead and never
-touches the filesystem. No Roc value, callable, layout, or pointer leaves the
-worker that made the call, and nothing crosses either boundary encoded as
-text.
+Each primitive is its own hosted entry point with the argument and result
+types the glue generates from its Roc signature: `roc_files_read_bytes` takes
+`{ path, offset, max_bytes }` and returns `Try({ bytes, size }, Error)` as an
+extern tag union, and so on. The Zig host releases the owned arguments and
+builds the result value directly. In a live window the work happens in Rust,
+which returns plain C structs, buffers with a pointer and length, that the
+host copies into Roc values and releases through the matching
+`signals_*_release`. The spec host answers the same calls from declared
+`stub-file-*` results instead and never touches the filesystem. No Roc value,
+callable, layout, or pointer leaves the worker that made the call, and nothing
+crosses either boundary encoded as text.
 
 Choosers need the windowing event loop. The worker posts the request to the UI
 thread's mailbox and blocks on a reply channel; the UI thread shows the desktop
@@ -374,34 +376,32 @@ own workers meanwhile. The pinned GPUI API provides no handle for closing an
 already open dialog, so a chooser settles only when the user does. Closing the
 window while a chooser is open answers the waiting worker with `Unavailable`.
 
-Entry kinds are `File`, `Directory`, `SymbolicLink`, and `Other`. A user
-dismissing a dialog is `Ok(Choice.Canceled)`; `Error.Canceled` is reserved for
-work the host abandoned. Errors are `NotFound`, `PermissionDenied`,
-`InvalidUtf8`, `InvalidPath`, `ResourceLimit`, `Io`, and `Unavailable`, each
-with diagnostic detail of at most **4096 UTF-8 bytes**, including an explicit
-` [truncated]` suffix when detail was omitted. Error cases remain unchanged;
-paths, text, and metadata results are never truncated.
+Every path component is opened relative to an owned directory handle without
+following symbolic links or reparse points, so a substituted link cannot
+redirect an operation. `stat` reports the entry itself, never a link target;
+`read_bytes`, `write_bytes`, and `sync` refuse anything but a regular file;
+`rename` replaces only a regular file at its destination; `remove` unlinks a
+file, a link itself, or an empty directory. Entry kinds are `File`,
+`Directory`, `SymbolicLink`, and `Other`. `list_directory` returns direct
+children sorted by path within the same 10,000-entry and four-MiB
+aggregate-path bounds as a recursive scan, refusing the whole result on
+overflow. `open_path` validates one regular file, passes its absolute pathname
+to `gio open` without a shell, discards launcher output, and reports
+`Unavailable` on launch failure or a 30-second deadline; the associated
+application then resolves the path under its own access policy. A user
+dismissing a dialog is `Ok(Choice.Canceled)`; the host never produces
+`Error.Canceled`. Errors are `NotFound`, `PermissionDenied`, `InvalidUtf8`,
+`InvalidPath`, `ResourceLimit`, `Io`, and `Unavailable`, each with diagnostic
+detail of at most **4096 UTF-8 bytes**, including an explicit ` [truncated]`
+suffix when detail was omitted.
 
 `choose_save_path` takes `{directory: [Home, At(Str)], suggested_name: Str}`.
 `Home` resolves the native environment's UTF-8 `HOME`; a missing or non-UTF-8 value
 returns `Unavailable`. `At` supplies an explicit initial directory. Both paths
-must be absolute and valid. In the private request record `home` requires an
-empty directory frame; `at` carries the supplied path. No empty-path convention
-is exposed to applications. Suggested names must be a single nonempty file name
-of at most **255 UTF-8 bytes**; invalid names return `InvalidPath`.
-
-Paths are absolute UTF-8, at most **4096 bytes**; invalid paths and unsupported
-traversal return typed errors. Text reads and writes are bounded at **1 MiB**.
-Scans return one complete metadata result of at most **10,000 entries**, **64
-levels**, and **4 MiB of paths including the root**. They observe the filesystem
-over time; concurrent changes may fail the scan. Symlinks and other entries are reported
-without traversal. Limits refuse the entire operation instead of truncating it.
-Writes create a temporary sibling, write and synchronize the immutable submitted
-text, and rename it into place. This guarantees atomic replacement; the parent
-directory is not synchronized, so power-loss durability is not guaranteed.
-Failure before commit attempts to remove the temporary file; failed cleanup
-returns `Io` and may leave that file behind.
-
+must be absolute and valid. Suggested names must be a single nonempty file name
+of at most **255 UTF-8 bytes**; invalid names return `InvalidPath`. Paths are
+absolute UTF-8, at most **4096 bytes**; invalid paths and unsupported traversal
+return typed errors.
 
 ## Native timers
 
@@ -427,64 +427,6 @@ inventing elapsed-time values or merging queued ticks. Long waits are split into
 day-sized executor waits to avoid overflowing native clock arithmetic. Normal
 smoke checks disable clocks for deterministic assertions; `--smoke-timers`
 enables real timer delivery and waits 1.2 seconds after the requested action.
-
-### Asset verification
-
-`VerifyAssets` requests carry a canonical asset count of 1 to **256**, then a
-relative name of 1 to **1024 UTF-8 bytes** and a 64-character lowercase hex
-SHA-256 digest per asset; the Rust request decoder rejects any other shape. The worker hashes each named file under the committed assets root
-through the same no-follow primitives as every Files read, bounded at
-**32 MiB** per asset. Results are `count` followed by `name, status` pairs in
-manifest order; statuses are `ok`, `missing` (also covering symlinked or
-special files), and `mismatch`. A traversing name, an unreadable file, or an
-asset above the byte bound fails the whole verification with its typed error.
-Apps ingest `assets/manifest.json` at compile time and verify it once from a
-mount effect; specs answer it deterministically with a `stub-file-assets`
-result.
-
-### Directory navigation, previews, associated applications, and logs
-
-`ListDirectory` returns `path, count` followed by the same entry triples as a
-recursive scan. It observes only direct children, under the same 10,000-entry,
-four-MiB aggregate-path, UTF-8 and no-follow rules. It refuses the complete result
-on overflow or observation failure. Existing recursive scan semantics are unchanged.
-
-`OpenPath` returns `path` once `gio open` accepts the launch. The worker validates
-one regular file through no-follow handles, then passes the absolute pathname as
-an argument, without a shell. The associated application subsequently resolves
-that path under its own access policy; the host does not promise a stable file
-snapshot across that external handoff. Launcher output is discarded and the
-launcher is killed and reaped on cancellation or a 30-second deadline. Launch
-failures/deadlines are typed `Unavailable`; cancellation cannot undo a completed
-handoff or close the independently owned application.
-
-`ReadPreview` returns `path, text, truncated` (`true`/`false`). It reads at most
-64 KiB plus one lookahead byte, returns at most 64 KiB of complete UTF-8, and
-reports omitted bytes explicitly. An incomplete code point cut by the prefix
-bound is left out. Invalid internal UTF-8, or an incomplete code point at the end
-of a complete file, returns `InvalidUtf8`. Content beyond the prefix is not validated.
-
-`ReadLog` returns `path, text, device, inode, offset, change, state`. All cursor
-integers are canonical unsigned 64-bit decimals. `start` and `end` requests carry
-zero device/inode/offset; `after` carries the application's previous cursor.
-Position tags and cursor fields are validated before command publication.
-The result changes are `initial`, `continued`, `rotated`, `truncated`; states are
-`more`, `at-end`, `partial-utf8`. The worker opens a regular file independently
-for every request, retains no cursor or descriptor between results, reads at
-most 64 KiB plus one lookahead byte, and advances only through complete UTF-8.
-An incomplete endpoint remains unread with `partial-utf8`; an invalid internal
-sequence returns `InvalidUtf8`. `more` means unread bytes were observed; the app
-may request the next bounded chunk. Chunks may split lines, so applications own
-bounded partial-line assembly and history.
-
-A different device/inode restarts at offset zero with `rotated`; observed size
-below the previous offset restarts with `truncated`. Same-inode truncation and
-regrowth between observations cannot be detected. Concurrent writes are bounded
-observations, not snapshots. `start` reads history; `end` returns an empty chunk
-at EOF after validating its terminal code point (up to four bytes). An incomplete
-or invalid EOF code point refuses `end` with `InvalidUtf8`; skipped history is
-not validated. All routes use the existing 16-operation reservations, shared
-scope cancellation, stale-result rejection, and typed failure delivery.
 
 ## Adding a protocol field
 

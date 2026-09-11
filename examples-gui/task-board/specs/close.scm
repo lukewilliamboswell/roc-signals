@@ -14,7 +14,6 @@
   (expect-window-closed false)
   (expect-visible (test-id "board-close"))
   (stub-file-choice "board-save-path" (chosen "/tmp/board.json"))
-  (stub-file-write "board-write" :path "/tmp/board.json" :bytes 1)
   (click (role button :name "Save and close"))
   (expect-window-closed true)
  ))

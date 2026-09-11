@@ -943,7 +943,7 @@ Supported assertions:
 
 ### Readable native file fixtures
 
-The `Files` functions run synchronously inside an effect, so their results
+The `Files` primitives run synchronously inside an effect, so their results
 are declared ahead of time with `stub-file-*` forms, either in `setup` for
 mount-time effects or in `steps` before the step that triggers the call. A
 stub is a typed value the spec host hands back exactly as a real call would:
@@ -955,27 +955,35 @@ stub is a typed value the spec host hands back exactly as a real call would:
 (expect-value (label "Note text") "First line\nSecond line: λ")
 ```
 
-Each stub answers one call. A read, write, directory, preview, log, or launch
-stub is consumed by the first call of its kind whose path matches; a choice or
-assets stub answers the next chooser or verification; a `stub-file-reject`
-answers the next `Files` call of any kind, so declare it after any choice stub
-the same step needs. A call with no matching stub returns `Unavailable` naming
-the missing stub. The stub vocabulary mirrors the native services:
+Each stub answers one primitive call. A stat, read, directory, or launch stub
+is consumed by the first call of its kind whose path matches; a choice stub
+answers the next chooser; a `stub-file-reject` answers the next call of any
+kind, so declare it after any choice stub the same step needs. Writes,
+renames, removals, and flushes succeed without a stub and fail only when a
+reject stub is the next stub declared. A call with no matching stub returns
+`Unavailable` naming the missing stub.
+
+The conveniences are Roc code, so a spec stubs the primitives underneath
+them: `read_text!` is one read; `read_preview!` is one read whose `:size` may
+exceed its text to report truncation; `write_text!` needs no stub; `scan!` is
+one directory stub per folder it descends into; and `verify_assets!` is one
+read per manifest entry under `/assets`, the spec host's assets root, where
+`:file` supplies the bytes of a real asset relative to the spec's folder. The
+activity monitor's log reader is one stat plus one read per chunk. The
+vocabulary is:
 
 ```lisp
 (stub-file-choice "save-path" (canceled))
 (stub-file-choice "save-path" (chosen "/tmp/project.board.json"))
+(stub-file-stat "log" :path "/tmp/app.log" :kind file :bytes 6 :device 1 :inode 2)
 (stub-file-read "read" :path "/tmp/note.txt" :text "Contents")
-(stub-file-write "write" :path "/tmp/note.txt" :bytes 8)
-(stub-file-reject "read" :kind permission-denied :detail "/tmp/note.txt")
+(stub-file-read "tail" :path "/tmp/app.log" :text "Ready\n" :offset 6 :size 12)
+(stub-file-read "asset" :path "/assets/avatars/maya.png" :file "../assets/avatars/maya.png")
 (stub-file-directory "folder" :path "/tmp" :entries
   ((file "/tmp/readme.txt" 123) (directory "/tmp/project" 0)
    (symbolic-link "/tmp/latest" 12) (other "/tmp/socket" 0)))
-(stub-file-preview "preview" :path "/tmp/readme.txt" :text "First page" :truncated true)
 (stub-file-open "launch" :path "/tmp/readme.txt")
-(stub-file-log "tail" :path "/tmp/app.log" :text "Ready\n"
-  :device 7 :inode 13 :offset 6 :change initial :state at-end)
-(stub-file-assets "verify" :entries ((ok "avatars/maya.png") (missing "avatars/jon.png")))
+(stub-file-reject "read" :kind permission-denied :detail "/tmp/note.txt")
 ```
 
 The hosted `Http` functions are stubbed the same way. A response stub answers
@@ -990,22 +998,19 @@ URL. Error kinds are `invalid-request`, `network`, `timeout`, `too-large`, and
 (stub-http-reject "feed" :kind timeout :detail "")
 ```
 
-Log changes are `initial`, `continued`, `rotated`, or `truncated`; states are
-`more`, `at-end`, or `partial-utf8`. Cursor numbers and directory file sizes are
-canonical unsigned decimal U64 values, including values above signed I64's
-maximum. Signs, leading zeros, quoted numbers, and overflow are refused. Preview
-and log text are bounded to 64 KiB. Direct directory fixtures accept up to
-10,000 entries and four MiB of combined root/entry path bytes. Directory fixtures
-answer `list_directory!`, not recursive scans; preview, log, and launch
-fixtures each answer their corresponding service.
+A read's `:size` and `:offset` and a stat's `:bytes`, `:device`, and `:inode`
+are canonical unsigned decimal U64 values, including values above signed
+I64's maximum. Signs, leading zeros, quoted numbers, and overflow are refused.
+Directory stubs accept up to 10,000 entries and four MiB of combined
+root/entry path bytes.
 
-Fields may appear in any order; each documented field is required exactly once. Choice tags
-are `chosen` and `canceled`. Error kinds are `canceled`, `not-found`,
-`permission-denied`, `invalid-utf8`, `invalid-path`, `resource-limit`, `io`, and
-`unavailable`; canceled errors require empty detail. Paths must be absolute,
-valid UTF-8, and at most 4096 bytes. Read text and write byte counts have the
-native one-MiB bound, and error detail is bounded to 4096 UTF-8 bytes. Unknown
-fields, duplicate fields, invalid types, and oversized values reject the spec.
+Fields may appear in any order; each documented field is required exactly
+once unless marked optional. Choice tags are `chosen` and `canceled`. Error
+kinds are `not-found`, `permission-denied`, `invalid-utf8`, `invalid-path`,
+`resource-limit`, `io`, and `unavailable`. Paths must be absolute, valid
+UTF-8, and at most 4096 bytes; read text is bounded at 32 MiB and error detail
+at 4096 UTF-8 bytes. Unknown fields, duplicate fields, invalid types, and
+oversized values reject the spec.
 
 These stubs simulate results and perform no filesystem IO. They establish
 application response and state behavior; real filesystem and native chooser

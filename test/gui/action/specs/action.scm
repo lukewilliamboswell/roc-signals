@@ -7,7 +7,6 @@
     (expect-text (text "Failed: boom") "Failed: boom")
     (click (role button :name "Reset"))
     (expect-text (text "Idle") "Idle")
-    (stub-file-write "write" :path "/tmp/roc-signals-action-fixture.txt" :bytes 10)
     (stub-file-read "read" :path "/tmp/roc-signals-action-fixture.txt" :text "hello file")
     (click (role button :name "Write"))
     (expect-text (text "Done: read hello file") "Done: read hello file")

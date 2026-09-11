@@ -2483,26 +2483,47 @@ fn hostFilesChooseSavePath(args: abi.FilesChoose_save_pathArgs) callconv(.c) abi
     return services.choose(roc_host, .save_path, directory, home, holder.suggested_name.asSlice());
 }
 
-fn hostFilesReadText(path: abi.RocStr) callconv(.c) abi.FilesRead_textResult {
+fn hostFilesStat(path: abi.RocStr) callconv(.c) abi.FilesStatResult {
     const roc_host = currentRocHost();
     defer path.decref(roc_host);
-    if (!Gpui.live) return services.stubReadText(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, path.asSlice());
-    return services.readText(roc_host, path.asSlice());
+    if (!Gpui.live) return services.stubStat(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, path.asSlice());
+    return services.stat(roc_host, path.asSlice());
 }
 
-fn hostFilesWriteText(args: abi.FilesWrite_textArgs) callconv(.c) abi.FilesWrite_textResult {
+fn hostFilesReadBytes(args: abi.FilesRead_bytesArgs) callconv(.c) abi.FilesRead_bytesResult {
     const roc_host = currentRocHost();
     defer args.decref(roc_host);
-    if (!Gpui.live) return services.stubWriteText(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, args.path.asSlice());
-    return services.writeText(roc_host, args.path.asSlice(), args.text.asSlice());
+    if (!Gpui.live) return services.stubReadBytes(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, args.path.asSlice(), args.offset, args.max_bytes);
+    return services.readBytes(roc_host, args.path.asSlice(), args.offset, args.max_bytes);
 }
 
-fn hostFilesScan(root: abi.RocStr) callconv(.c) abi.FilesScanResult {
+fn hostFilesWriteBytes(args: abi.FilesWrite_bytesArgs) callconv(.c) services.UnitResult {
     const roc_host = currentRocHost();
-    defer root.decref(roc_host);
-    const host = currentHost();
-    if (!Gpui.live) return services.stubScan(host.hostAllocator(), &host.file_stubs, roc_host, root.asSlice());
-    return services.scan(roc_host, host.hostAllocator(), root.asSlice());
+    defer args.decref(roc_host);
+    if (!Gpui.live) return services.stubUnit(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host);
+    const bytes: []const u8 = if (args.bytes.elements_ptr) |ptr| ptr[0..args.bytes.length] else "";
+    return services.writeBytes(roc_host, args.path.asSlice(), bytes);
+}
+
+fn hostFilesRename(args: abi.FilesRenameArgs) callconv(.c) services.UnitResult {
+    const roc_host = currentRocHost();
+    defer args.decref(roc_host);
+    if (!Gpui.live) return services.stubUnit(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host);
+    return services.rename(roc_host, args.from.asSlice(), args.to.asSlice());
+}
+
+fn hostFilesRemove(path: abi.RocStr) callconv(.c) services.UnitResult {
+    const roc_host = currentRocHost();
+    defer path.decref(roc_host);
+    if (!Gpui.live) return services.stubUnit(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host);
+    return services.remove(roc_host, path.asSlice());
+}
+
+fn hostFilesSync(path: abi.RocStr) callconv(.c) services.UnitResult {
+    const roc_host = currentRocHost();
+    defer path.decref(roc_host);
+    if (!Gpui.live) return services.stubUnit(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host);
+    return services.sync(roc_host, path.asSlice());
 }
 
 fn hostFilesListDirectory(path: abi.RocStr) callconv(.c) abi.FilesList_directoryResult {
@@ -2513,38 +2534,17 @@ fn hostFilesListDirectory(path: abi.RocStr) callconv(.c) abi.FilesList_directory
     return services.listDirectory(roc_host, host.hostAllocator(), path.asSlice());
 }
 
-fn hostFilesOpenPath(path: abi.RocStr) callconv(.c) abi.FilesOpen_pathResult {
+fn hostFilesOpenPath(path: abi.RocStr) callconv(.c) services.UnitResult {
     const roc_host = currentRocHost();
     defer path.decref(roc_host);
     if (!Gpui.live) return services.stubOpenPath(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, path.asSlice());
     return services.openPath(roc_host, path.asSlice());
 }
 
-fn hostFilesReadPreview(path: abi.RocStr) callconv(.c) abi.FilesRead_previewResult {
+fn hostFilesAssetsRoot() callconv(.c) abi.RocStr {
     const roc_host = currentRocHost();
-    defer path.decref(roc_host);
-    if (!Gpui.live) return services.stubReadPreview(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, path.asSlice());
-    return services.readPreview(roc_host, path.asSlice());
-}
-
-fn hostFilesReadLog(args: abi.FilesRead_logArgs) callconv(.c) abi.FilesRead_logResult {
-    const roc_host = currentRocHost();
-    defer args.decref(roc_host);
-    if (!Gpui.live) return services.stubReadLog(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, args.path.asSlice());
-    return services.readLog(roc_host, args.path.asSlice(), args.position);
-}
-
-fn hostFilesVerifyAssets(entries: @FieldType(abi.FilesVerify_assetsArgs, "arg0")) callconv(.c) abi.FilesVerify_assetsResult {
-    const roc_host = currentRocHost();
-    defer abi.decrefListOf__AnonStruct_7ef14d5b382b23ae(entries, roc_host);
-    const host = currentHost();
-    if (!Gpui.live) return services.stubVerifyAssets(host.hostAllocator(), &host.file_stubs, roc_host);
-    const gpa = host.hostAllocator();
-    const items = if (entries.elements_ptr) |ptr| ptr[0..entries.length] else &.{};
-    const inputs = gpa.alloc(services.AssetEntry, items.len) catch @panic("out of memory");
-    defer gpa.free(inputs);
-    for (items, 0..) |*item, index| inputs[index] = .{ .name = item.name.asSlice(), .sha256 = item.sha256.asSlice() };
-    return services.verifyAssets(roc_host, gpa, inputs);
+    if (!Gpui.live) return abi.RocStr.fromSlice(services.spec_assets_root, roc_host);
+    return services.assetsRoot(roc_host);
 }
 
 fn hostHttpSend(request: abi.Request) callconv(.c) abi.HttpSendResult {
@@ -4075,14 +4075,15 @@ comptime {
         @export(&hostFilesChooseFile, .{ .name = "roc_files_choose_file", .visibility = .hidden });
         @export(&hostFilesChooseDirectory, .{ .name = "roc_files_choose_directory", .visibility = .hidden });
         @export(&hostFilesChooseSavePath, .{ .name = "roc_files_choose_save_path", .visibility = .hidden });
-        @export(&hostFilesReadText, .{ .name = "roc_files_read_text", .visibility = .hidden });
-        @export(&hostFilesWriteText, .{ .name = "roc_files_write_text", .visibility = .hidden });
-        @export(&hostFilesScan, .{ .name = "roc_files_scan", .visibility = .hidden });
+        @export(&hostFilesStat, .{ .name = "roc_files_stat", .visibility = .hidden });
+        @export(&hostFilesReadBytes, .{ .name = "roc_files_read_bytes", .visibility = .hidden });
+        @export(&hostFilesWriteBytes, .{ .name = "roc_files_write_bytes", .visibility = .hidden });
+        @export(&hostFilesRename, .{ .name = "roc_files_rename", .visibility = .hidden });
+        @export(&hostFilesRemove, .{ .name = "roc_files_remove", .visibility = .hidden });
+        @export(&hostFilesSync, .{ .name = "roc_files_sync", .visibility = .hidden });
         @export(&hostFilesListDirectory, .{ .name = "roc_files_list_directory", .visibility = .hidden });
         @export(&hostFilesOpenPath, .{ .name = "roc_files_open_path", .visibility = .hidden });
-        @export(&hostFilesReadPreview, .{ .name = "roc_files_read_preview", .visibility = .hidden });
-        @export(&hostFilesReadLog, .{ .name = "roc_files_read_log", .visibility = .hidden });
-        @export(&hostFilesVerifyAssets, .{ .name = "roc_files_verify_assets", .visibility = .hidden });
+        @export(&hostFilesAssetsRoot, .{ .name = "roc_files_assets_root", .visibility = .hidden });
         @export(&hostHttpSend, .{ .name = "roc_http_send", .visibility = .hidden });
         @export(&hostExpectFailed, .{ .name = "roc_expect_failed", .visibility = .hidden });
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });

@@ -7,10 +7,8 @@
 //! Replacement goes through a same-directory temporary and a handle-relative
 //! `FileRenameInfoEx` rename, which needs Windows 10 version 1607 or later.
 use super::{
-    CHUNK_BYTES, DirectoryListing, Entry, FileError, Kind, LogChange, LogChunk, LogCursor,
-    LogPosition, LogState, MAX_CHUNK_BYTES, MAX_PATH_BYTES, MAX_SCAN_DEPTH, MAX_SCAN_ENTRIES,
-    MAX_SCAN_PATH_BYTES, MAX_TEXT_BYTES, Opened, Preview, Scan, TEMP_SERIAL, TextFile, Written,
-    bounded_detail, canceled, read_chunk, utf8_prefix,
+    CHUNK_BYTES, DirectoryListing, Entry, FileError, Kind, MAX_PATH_BYTES, MAX_SCAN_DEPTH,
+    MAX_SCAN_ENTRIES, MAX_SCAN_PATH_BYTES, Metadata, bounded_detail, canceled, read_chunk,
 };
 use std::{
     ffi::{OsStr, c_void},
@@ -27,9 +25,9 @@ use windows_sys::{
     Wdk::{
         Foundation::OBJECT_ATTRIBUTES,
         Storage::FileSystem::{
-            FILE_CREATE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_DELETE,
+            FILE_DIRECTORY_FILE, FILE_DISPOSITION_DELETE,
             FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS,
-            FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
+            FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
             FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
             FILE_SYNCHRONOUS_IO_NONALERT, FileDispositionInformationEx, FileRenameInformationEx,
             NtCreateFile, NtSetInformationFile,
@@ -334,247 +332,10 @@ fn regular_file(path: &str, cancel: &AtomicBool) -> Result<(File, Stat), FileErr
     Ok((File::from(handle), stat))
 }
 
-/// Reads one regular UTF-8 file, checking cancellation between bounded chunks.
-/// Reparse points (including parent components) and devices are refused.
-/// Reads one regular file's complete bytes up to the caller's bound, checking
-/// cancellation between chunks. Symbolic links (including parent components)
-/// and special files are refused exactly like read_text.
-pub fn read_bytes(path: &str, cancel: &AtomicBool, max: usize) -> Result<Vec<u8>, FileError> {
-    let (mut file, stat) = regular_file(path, cancel)?;
-    if stat.size > max as i64 {
-        return Err(FileError::ResourceLimit(path.into()));
-    }
-    let mut bytes = Vec::new();
-    let mut chunk = [0u8; CHUNK_BYTES];
-    loop {
-        canceled(cancel)?;
-        let count = file
-            .read(&mut chunk)
-            .map_err(|error| win32_error(path, error))?;
-        if count == 0 {
-            break;
-        }
-        if bytes.len() + count > max {
-            return Err(FileError::ResourceLimit(path.into()));
-        }
-        bytes
-            .try_reserve(count)
-            .map_err(|_| FileError::ResourceLimit(path.into()))?;
-        bytes.extend_from_slice(&chunk[..count]);
-    }
-    canceled(cancel)?;
-    Ok(bytes)
-}
 
-pub fn read_text(path: &str, cancel: &AtomicBool) -> Result<TextFile, FileError> {
-    let (mut file, stat) = regular_file(path, cancel)?;
-    if stat.size > MAX_TEXT_BYTES as i64 {
-        return Err(FileError::ResourceLimit(path.into()));
-    }
-    let mut bytes = Vec::new();
-    let mut chunk = [0u8; CHUNK_BYTES];
-    loop {
-        canceled(cancel)?;
-        let count = file
-            .read(&mut chunk)
-            .map_err(|error| win32_error(path, error))?;
-        if count == 0 {
-            break;
-        }
-        if bytes.len() + count > MAX_TEXT_BYTES {
-            return Err(FileError::ResourceLimit(path.into()));
-        }
-        bytes
-            .try_reserve(count)
-            .map_err(|_| FileError::ResourceLimit(path.into()))?;
-        bytes.extend_from_slice(&chunk[..count]);
-    }
-    canceled(cancel)?;
-    let text = String::from_utf8(bytes).map_err(|_| FileError::InvalidUtf8(path.into()))?;
-    Ok(TextFile {
-        path: path.into(),
-        text,
-    })
-}
 
-struct Temporary {
-    file: File,
-    armed: bool,
-}
-impl Temporary {
-    /// Marks the still-open temporary for deletion when its handle closes.
-    fn cleanup(&mut self) -> io::Result<()> {
-        if !self.armed {
-            return Ok(());
-        }
-        let disposition = FILE_DISPOSITION_INFORMATION_EX {
-            Flags: FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS,
-        };
-        // The handle is live, was opened with DELETE access, and the block is
-        // exactly the fixed-size structure.
-        set_information(
-            self.file.as_raw_handle(),
-            FileDispositionInformationEx,
-            (&raw const disposition).cast(),
-            std::mem::size_of::<FILE_DISPOSITION_INFORMATION_EX>(),
-        )?;
-        self.armed = false;
-        Ok(())
-    }
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        // Normal refusal explicitly reports cleanup errors. This fallback also
-        // releases the name if a test callback unwinds before normal cleanup.
-        let _ = self.cleanup();
-    }
-}
 
-/// Atomically replaces one regular file through a same-directory private temp.
-/// Existing file attributes (read-only excepted) are carried over; new files
-/// are ordinary. Cancellation is checked before rename, which is the commit
-/// point: once it succeeds the operation returns Written, even if cancellation
-/// races afterward. The file is flushed before rename; the parent directory is
-/// not, so this guarantees atomic replacement rather than power-loss
-/// durability. Failed temporary cleanup is reported as Io and can leave the
-/// temporary name behind. A blocked call keeps its worker reservation until it
-/// returns.
-pub fn write_text(
-    path: &str,
-    text: &str,
-    cancel: &AtomicBool,
-    request_id: u64,
-) -> Result<Written, FileError> {
-    write_text_before_commit(path, text, cancel, request_id, || {})
-}
 
-// The private commit seam makes cancellation and path-race tests deterministic;
-// production supplies a no-op and every operation still uses the same worker.
-fn write_text_before_commit(
-    path: &str,
-    text: &str,
-    cancel: &AtomicBool,
-    request_id: u64,
-    before_commit: impl FnOnce(),
-) -> Result<Written, FileError> {
-    let (root, parts) = path_parts(path)?;
-    if text.len() > MAX_TEXT_BYTES {
-        return Err(FileError::ResourceLimit(path.into()));
-    }
-    let (name, parents) = parts
-        .split_last()
-        .ok_or_else(|| FileError::InvalidPath(path.into()))?;
-    let parent = directory(&root, parents, path, cancel)?;
-    let destination = name_units(name, path)?;
-    let existing = match open_at(
-        parent.as_raw_handle(),
-        &destination,
-        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        FILE_OPEN,
-        0,
-        0,
-        path,
-    ) {
-        Ok(handle) => {
-            let stat = handle_stat(&handle, path)?;
-            if kind(stat.attributes) != Kind::File {
-                return Err(FileError::InvalidPath(path.into()));
-            }
-            Some(stat.attributes)
-        }
-        Err(FileError::NotFound(_)) => None,
-        Err(error) => return Err(error),
-    };
-    let mut created = None;
-    for _ in 0..32 {
-        canceled(cancel)?;
-        let serial = TEMP_SERIAL.fetch_add(1, Ordering::Relaxed);
-        let temporary = format!(
-            ".roc-signals-{}-{request_id}-{serial}.tmp",
-            std::process::id()
-        );
-        let temporary = name_units(OsStr::new(&temporary), path)?;
-        // Capture the code before formatting any diagnostic so only an
-        // existing name is retried.
-        match nt_open(
-            parent.as_raw_handle(),
-            &temporary,
-            FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
-            FILE_CREATE,
-            FILE_NON_DIRECTORY_FILE,
-            FILE_ATTRIBUTE_NORMAL,
-        ) {
-            Ok(handle) => {
-                created = Some(handle);
-                break;
-            }
-            Err(error)
-                if matches!(
-                    error.raw_os_error().map(|code| code as u32),
-                    Some(ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS)
-                ) => {}
-            Err(error) => return Err(win32_error(path, error)),
-        }
-    }
-    let handle = created.ok_or_else(|| FileError::ResourceLimit(path.into()))?;
-    let mut temporary = Temporary {
-        file: File::from(handle),
-        armed: true,
-    };
-    let result = (|| {
-        for chunk in text.as_bytes().chunks(CHUNK_BYTES) {
-            canceled(cancel)?;
-            temporary
-                .file
-                .write_all(chunk)
-                .map_err(|error| win32_error(path, error))?;
-        }
-        canceled(cancel)?;
-        if let Some(attributes) = existing {
-            let basic = FILE_BASIC_INFO {
-                CreationTime: 0,
-                LastAccessTime: 0,
-                LastWriteTime: 0,
-                ChangeTime: 0,
-                FileAttributes: attributes
-                    & !(FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY),
-            };
-            // SAFETY: the temporary is a live regular file owned by this request.
-            if unsafe {
-                SetFileInformationByHandle(
-                    temporary.file.as_raw_handle(),
-                    FileBasicInfo,
-                    (&raw const basic).cast(),
-                    std::mem::size_of::<FILE_BASIC_INFO>() as u32,
-                )
-            } == 0
-            {
-                return Err(win32_error(path, io::Error::last_os_error()));
-            }
-        }
-        temporary
-            .file
-            .sync_all()
-            .map_err(|error| win32_error(path, error))?;
-        before_commit();
-        canceled(cancel)?;
-        rename_over(&temporary.file, parent.as_raw_handle(), &destination, path)?;
-        temporary.armed = false;
-        Ok(Written {
-            path: path.into(),
-            bytes: text.len() as u64,
-        })
-    })();
-    if let Err(error) = result {
-        if let Err(cleanup) = temporary.cleanup() {
-            return Err(FileError::Io(bounded_detail(format!(
-                "temporary save cleanup failed: {cleanup}; previous failure: {error:?}"
-            ))));
-        }
-        return Err(error);
-    }
-    result
-}
 
 fn set_information(
     handle: HANDLE,
@@ -779,27 +540,6 @@ fn scan_directory(
     Ok(())
 }
 
-/// Recursively observes at most 10,000 entries and 64 directory levels.
-/// Reparse points are reported without traversal; any invalid text, race, or
-/// exceeded bound refuses the complete result. Returned paths are sorted for
-/// stable display.
-pub fn scan(root: &str, cancel: &AtomicBool) -> Result<Scan, FileError> {
-    let (volume, parts) = path_parts(root)?;
-    let directory = directory(&volume, &parts, root, cancel)?;
-    let mut budget = ScanBudget {
-        entries: Vec::new(),
-        path_bytes: root.len(),
-    };
-    scan_directory(&directory, root, 0, cancel, &mut budget, true)?;
-    canceled(cancel)?;
-    budget
-        .entries
-        .sort_unstable_by(|left, right| left.path.cmp(&right.path));
-    Ok(Scan {
-        root: root.into(),
-        entries: budget.entries,
-    })
-}
 
 /// Lists only direct children through one owned no-follow directory handle.
 /// The whole observation is refused above 10,000 entries or four MiB of paths;
@@ -823,25 +563,6 @@ pub fn list_directory(path: &str, cancel: &AtomicBool) -> Result<DirectoryListin
     })
 }
 
-/// Reads a UTF-8 prefix of at most 64 KiB, reporting omitted bytes explicitly.
-/// A code point cut by the prefix bound is excluded; invalid UTF-8 inside the
-/// prefix or an incomplete terminal code point in a complete file is refused.
-pub fn read_preview(path: &str, cancel: &AtomicBool) -> Result<Preview, FileError> {
-    let (mut file, _) = regular_file(path, cancel)?;
-    let mut bytes = read_chunk(&mut file, path, cancel, MAX_CHUNK_BYTES + 1, win32_error)?;
-    let truncated = bytes.len() > MAX_CHUNK_BYTES;
-    bytes.truncate(MAX_CHUNK_BYTES);
-    let valid = utf8_prefix(&bytes, path)?;
-    if !truncated && valid != bytes.len() {
-        return Err(FileError::InvalidUtf8(path.into()));
-    }
-    bytes.truncate(valid);
-    Ok(Preview {
-        path: path.into(),
-        text: String::from_utf8(bytes).unwrap(),
-        truncated,
-    })
-}
 
 /// The opaque log cursor identity: the volume serial and the low 64 bits of
 /// the 128-bit file identifier, which is the complete identifier on NTFS.
@@ -851,95 +572,6 @@ fn log_identity(stat: &Stat) -> (u64, u64) {
     (stat.id.volume, u64::from_le_bytes(low))
 }
 
-/// Reads at most 64 KiB from a caller-owned cursor; the host retains no file or
-/// cursor between requests. A changed volume/file identity restarts at zero as
-/// Rotated; a shorter file restarts as Truncated. Same-identity truncate-and-
-/// regrow between observations cannot be distinguished. Start reads history;
-/// End seeds EOF after validating its terminal code point (not the skipped
-/// history). An incomplete or invalid EOF code point refuses End with
-/// InvalidUtf8. Only complete UTF-8 is consumed, so a partial terminal code
-/// point is retried from the returned offset. Invalid bytes refuse the request.
-/// Line assembly is the caller's bounded responsibility, and concurrent writes
-/// are observations, not snapshots. Cancellation closes the request's
-/// independently owned file.
-pub fn read_log(
-    path: &str,
-    position: LogPosition,
-    cancel: &AtomicBool,
-) -> Result<LogChunk, FileError> {
-    let (mut file, stat) = regular_file(path, cancel)?;
-    let size = u64::try_from(stat.size).map_err(|_| FileError::InvalidPath(path.into()))?;
-    let (device, inode) = log_identity(&stat);
-    let mut cursor = LogCursor {
-        device,
-        inode,
-        offset: 0,
-    };
-    let change = match position {
-        LogPosition::Start => LogChange::Initial,
-        LogPosition::End => {
-            cursor.offset = size;
-            LogChange::Initial
-        }
-        LogPosition::After(previous)
-            if previous.device != cursor.device || previous.inode != cursor.inode =>
-        {
-            LogChange::Rotated
-        }
-        LogPosition::After(previous) if previous.offset > size => LogChange::Truncated,
-        LogPosition::After(previous) => {
-            cursor.offset = previous.offset;
-            LogChange::Continued
-        }
-    };
-    if matches!(position, LogPosition::End) {
-        // End skips history, but must not seed a continuation in the middle of
-        // a code point. Four trailing bytes contain any complete UTF-8 endpoint.
-        file.seek(SeekFrom::Start(size.saturating_sub(4)))
-            .map_err(|error| win32_error(path, error))?;
-        let tail = read_chunk(&mut file, path, cancel, size.min(4) as usize, win32_error)?;
-        if !tail.is_empty() {
-            let mut start = tail.len() - 1;
-            while start > 0 && tail[start] & 0xc0 == 0x80 {
-                start -= 1;
-            }
-            std::str::from_utf8(&tail[start..]).map_err(|_| FileError::InvalidUtf8(path.into()))?;
-        }
-        canceled(cancel)?;
-        return Ok(LogChunk {
-            path: path.into(),
-            text: String::new(),
-            cursor,
-            change,
-            state: LogState::AtEnd,
-        });
-    }
-    file.seek(SeekFrom::Start(cursor.offset))
-        .map_err(|error| win32_error(path, error))?;
-    let mut bytes = read_chunk(&mut file, path, cancel, MAX_CHUNK_BYTES + 1, win32_error)?;
-    let more = bytes.len() > MAX_CHUNK_BYTES;
-    bytes.truncate(MAX_CHUNK_BYTES);
-    let valid = utf8_prefix(&bytes, path)?;
-    let state = if more {
-        LogState::More
-    } else if valid != bytes.len() {
-        LogState::PartialUtf8
-    } else {
-        LogState::AtEnd
-    };
-    bytes.truncate(valid);
-    cursor.offset = cursor
-        .offset
-        .checked_add(valid as u64)
-        .ok_or_else(|| FileError::ResourceLimit(path.into()))?;
-    Ok(LogChunk {
-        path: path.into(),
-        text: String::from_utf8(bytes).unwrap(),
-        cursor,
-        change,
-        state,
-    })
-}
 
 /// Requests the shell's associated application through the file protocol
 /// handler that ships with Windows. Success means the shell accepted the
@@ -948,7 +580,7 @@ pub fn read_log(
 /// The path is validated through no-follow handles first; the external
 /// application subsequently resolves that path and owns its own access policy.
 /// Launcher stdout/stderr are never retained.
-pub fn open_path(path: &str, cancel: &AtomicBool) -> Result<Opened, FileError> {
+pub fn open_path(path: &str, cancel: &AtomicBool) -> Result<(), FileError> {
     open_path_with_launcher(
         path,
         cancel,
@@ -962,7 +594,7 @@ fn open_path_with_launcher(
     cancel: &AtomicBool,
     launcher: &OsStr,
     arguments: &[&OsStr],
-) -> Result<Opened, FileError> {
+) -> Result<(), FileError> {
     use std::{
         process::{Command, Stdio},
         time::{Duration, Instant},
@@ -982,7 +614,7 @@ fn open_path_with_launcher(
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(Opened { path: path.into() }),
+            Ok(Some(status)) if status.success() => return Ok(()),
             Ok(Some(status)) => {
                 return Err(FileError::Unavailable(format!(
                     "desktop file launcher exited with {status}"
@@ -1012,394 +644,178 @@ fn open_path_with_launcher(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use windows_sys::Win32::Foundation::ERROR_PRIVILEGE_NOT_HELD;
 
-    struct Directory(std::path::PathBuf);
-    impl Directory {
-        fn new() -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "signals-file-test-{}-{}",
-                std::process::id(),
-                TEMP_SERIAL.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&root).unwrap();
-            // Strip the verbatim prefix canonicalize adds; apps pass drive paths.
-            let canonical = root.canonicalize().unwrap();
-            let text = canonical.to_str().unwrap();
-            Self(text.strip_prefix(r"\\?\").unwrap_or(text).into())
-        }
-        fn path(&self, name: &str) -> String {
-            self.0.join(name).to_str().unwrap().into()
-        }
-        fn root(&self) -> &str {
-            self.0.to_str().unwrap()
-        }
-        fn names(&self) -> Vec<String> {
-            let mut names: Vec<_> = fs::read_dir(&self.0)
-                .unwrap()
-                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-                .collect();
-            names.sort();
-            names
-        }
+/// Metadata of the entry at a path, never following a reparse point.
+pub fn stat(path: &str, cancel: &AtomicBool) -> Result<Metadata, FileError> {
+    let (root, parts) = path_parts(path)?;
+    let (name, parents) = parts
+        .split_last()
+        .ok_or_else(|| FileError::InvalidPath(path.into()))?;
+    let parent = directory(&root, parents, path, cancel)?;
+    let name = name_units(name, path)?;
+    let handle = open_at(
+        parent.as_raw_handle(),
+        &name,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        0,
+        0,
+        path,
+    )?;
+    let stat = handle_stat(&handle, path)?;
+    let (device, inode) = log_identity(&stat);
+    Ok(Metadata {
+        kind: kind(stat.attributes),
+        size: stat.size.max(0) as u64,
+        device,
+        inode,
+    })
+}
+
+/// Reads at most `max` bytes of a regular file from `offset`, with the size
+/// the file reported when it was opened.
+pub fn read_at(
+    path: &str,
+    offset: u64,
+    max: usize,
+    cancel: &AtomicBool,
+) -> Result<(Vec<u8>, u64), FileError> {
+    let (mut file, stat) = regular_file(path, cancel)?;
+    let size = stat.size.max(0) as u64;
+    if offset >= size {
+        return Ok((Vec::new(), size));
     }
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            fs::remove_dir_all(&self.0).unwrap();
-        }
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| win32_error(path, error))?;
+    let count = max.min((size - offset).min(usize::MAX as u64) as usize);
+    let bytes = read_chunk(&mut file, path, cancel, count, win32_error)?;
+    Ok((bytes, size))
+}
+
+/// Creates or replaces a regular file with the bytes, refusing reparse points
+/// and devices at the destination.
+pub fn write_bytes(path: &str, bytes: &[u8], cancel: &AtomicBool) -> Result<(), FileError> {
+    let (root, parts) = path_parts(path)?;
+    let (name, parents) = parts
+        .split_last()
+        .ok_or_else(|| FileError::InvalidPath(path.into()))?;
+    let parent = directory(&root, parents, path, cancel)?;
+    let name = name_units(name, path)?;
+    let handle = open_at(
+        parent.as_raw_handle(),
+        &name,
+        FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN_IF,
+        FILE_NON_DIRECTORY_FILE,
+        FILE_ATTRIBUTE_NORMAL,
+        path,
+    )?;
+    let stat = handle_stat(&handle, path)?;
+    if kind(stat.attributes) != Kind::File {
+        return Err(FileError::InvalidPath(path.into()));
     }
-    fn active() -> AtomicBool {
-        AtomicBool::new(false)
+    let mut file = File::from(handle);
+    file.set_len(0).map_err(|error| win32_error(path, error))?;
+    for chunk in bytes.chunks(CHUNK_BYTES) {
+        canceled(cancel)?;
+        file.write_all(chunk)
+            .map_err(|error| win32_error(path, error))?;
     }
-    /// Symbolic links need a privilege or Developer Mode; junctions and a
-    /// missing privilege both count as "skip", never as a pass.
-    fn symlink_dir(target: &str, link: &str) -> bool {
-        match std::os::windows::fs::symlink_dir(target, link) {
-            Ok(()) => true,
-            Err(error)
-                if error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD as i32)
-                    || error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
-            {
-                eprintln!("skipping symlink assertions: {error}");
-                false
+    Ok(())
+}
+
+/// Renames an entry, replacing a regular file at the destination through a
+/// handle-relative rename that never follows a reparse point.
+pub fn rename(from: &str, to: &str, cancel: &AtomicBool) -> Result<(), FileError> {
+    let (from_root, from_parts) = path_parts(from)?;
+    let (from_name, from_parents) = from_parts
+        .split_last()
+        .ok_or_else(|| FileError::InvalidPath(from.into()))?;
+    let (to_root, to_parts) = path_parts(to)?;
+    let (to_name, to_parents) = to_parts
+        .split_last()
+        .ok_or_else(|| FileError::InvalidPath(to.into()))?;
+    let from_dir = directory(&from_root, from_parents, from, cancel)?;
+    let to_dir = directory(&to_root, to_parents, to, cancel)?;
+    let to_units = name_units(to_name, to)?;
+    match open_at(
+        to_dir.as_raw_handle(),
+        &to_units,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        0,
+        0,
+        to,
+    ) {
+        Ok(existing) => {
+            if kind(handle_stat(&existing, to)?.attributes) != Kind::File {
+                return Err(FileError::InvalidPath(to.into()));
             }
-            Err(error) => panic!("{error}"),
         }
+        Err(FileError::NotFound(_)) => {}
+        Err(error) => return Err(error),
     }
+    let source = open_at(
+        from_dir.as_raw_handle(),
+        &name_units(from_name, from)?,
+        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        0,
+        0,
+        from,
+    )?;
+    canceled(cancel)?;
+    rename_over(&File::from(source), to_dir.as_raw_handle(), &to_units, from)
+}
 
-    #[test]
-    fn utf8_save_replaces_snapshot_atomically_and_preserves_attributes() {
-        let dir = Directory::new();
-        let path = dir.path("café.txt");
-        let text = "First line\nSecond 🦀 café\n";
-        let result = write_text(&path, text, &active(), 1).unwrap();
-        assert_eq!(result.bytes, text.len() as u64);
-        assert_eq!(read_text(&path, &active()).unwrap().text, text);
-        write_text(&path, "", &active(), 2).unwrap();
-        assert_eq!(read_text(&path, &active()).unwrap().text, "");
-        assert_eq!(dir.names(), vec!["café.txt"]);
-        // A forward-slash drive path is the same file.
-        let slashed = path.replace('\\', "/");
-        assert_eq!(read_text(&slashed, &active()).unwrap().text, "");
-    }
+/// Removes a regular file, a reparse point itself, or an empty directory.
+pub fn remove(path: &str, cancel: &AtomicBool) -> Result<(), FileError> {
+    let (root, parts) = path_parts(path)?;
+    let (name, parents) = parts
+        .split_last()
+        .ok_or_else(|| FileError::InvalidPath(path.into()))?;
+    let parent = directory(&root, parents, path, cancel)?;
+    let handle = open_at(
+        parent.as_raw_handle(),
+        &name_units(name, path)?,
+        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        0,
+        0,
+        path,
+    )?;
+    let disposition = FILE_DISPOSITION_INFORMATION_EX {
+        Flags: FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS,
+    };
+    set_information(
+        handle.as_raw_handle(),
+        FileDispositionInformationEx,
+        (&raw const disposition).cast(),
+        std::mem::size_of::<FILE_DISPOSITION_INFORMATION_EX>(),
+    )
+    .map_err(|error| win32_error(path, error))
+}
 
-    #[test]
-    fn canceled_save_before_commit_preserves_previous_bytes_and_cleans_temporary() {
-        let dir = Directory::new();
-        let path = dir.path("draft.txt");
-        fs::write(&path, "original").unwrap();
-        let cancel = active();
-        assert_eq!(
-            write_text_before_commit(&path, &"x".repeat(CHUNK_BYTES * 2), &cancel, 3, || cancel
-                .store(true, Ordering::Release)),
-            Err(FileError::Canceled)
-        );
-        assert_eq!(fs::read_to_string(&path).unwrap(), "original");
-        assert_eq!(dir.names(), vec!["draft.txt"]);
-        assert_eq!(read_text(&path, &cancel), Err(FileError::Canceled));
-        assert_eq!(scan(dir.root(), &cancel), Err(FileError::Canceled));
-        assert_eq!(
-            write_text(&path, "next", &cancel, 4),
-            Err(FileError::Canceled)
-        );
-        cancel.store(false, Ordering::Release);
-        write_text(&path, "retry", &cancel, 5).unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "retry");
+/// Flushes a regular file's contents and metadata to durable storage.
+pub fn sync(path: &str, cancel: &AtomicBool) -> Result<(), FileError> {
+    let (root, parts) = path_parts(path)?;
+    let (name, parents) = parts
+        .split_last()
+        .ok_or_else(|| FileError::InvalidPath(path.into()))?;
+    let parent = directory(&root, parents, path, cancel)?;
+    let handle = open_at(
+        parent.as_raw_handle(),
+        &name_units(name, path)?,
+        FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+        0,
+        path,
+    )?;
+    if kind(handle_stat(&handle, path)?.attributes) != Kind::File {
+        return Err(FileError::InvalidPath(path.into()));
     }
-
-    #[test]
-    fn rename_refusal_cleans_temporary_and_preserves_the_new_destination() {
-        let dir = Directory::new();
-        let path = dir.path("draft.txt");
-        fs::write(&path, "original").unwrap();
-        // Replacing a directory entry with a file is refused at the commit point.
-        let result = write_text_before_commit(&path, "next", &active(), 6, || {
-            fs::remove_file(&path).unwrap();
-            fs::create_dir(&path).unwrap();
-        });
-        assert!(
-            matches!(
-                result,
-                Err(FileError::InvalidPath(_) | FileError::PermissionDenied(_) | FileError::Io(_))
-            ),
-            "{result:?}"
-        );
-        assert!(fs::metadata(&path).unwrap().is_dir());
-        assert_eq!(dir.names(), vec!["draft.txt"]);
-    }
-
-    #[test]
-    fn no_follow_handles_resist_parent_and_destination_link_replacement() {
-        let dir = Directory::new();
-        fs::create_dir(dir.path("real")).unwrap();
-        fs::write(dir.path("real\\secret.txt"), "secret").unwrap();
-        if !symlink_dir(&dir.path("real"), &dir.path("link")) {
-            return;
-        }
-        assert!(matches!(
-            read_text(&dir.path("link\\secret.txt"), &active()),
-            Err(FileError::InvalidPath(_))
-        ));
-        assert!(matches!(
-            write_text(&dir.path("link\\secret.txt"), "x", &active(), 7),
-            Err(FileError::InvalidPath(_))
-        ));
-        assert_eq!(
-            fs::read_to_string(dir.path("real\\secret.txt")).unwrap(),
-            "secret"
-        );
-        let scanned = scan(dir.root(), &active()).unwrap();
-        let link = scanned
-            .entries
-            .iter()
-            .find(|entry| entry.path.ends_with("link"))
-            .unwrap();
-        assert_eq!(link.kind, Kind::SymbolicLink);
-        assert!(
-            !scanned
-                .entries
-                .iter()
-                .any(|entry| entry.path.contains("link\\"))
-        );
-        // Windows refuses to rename a directory while a handle is open on it,
-        // so a validated parent cannot be swapped for a link before commit; the
-        // save lands in the directory that was opened.
-        let path = dir.path("real\\draft.txt");
-        write_text_before_commit(&path, "draft", &active(), 8, || {
-            let error = fs::rename(dir.path("real"), dir.path("moved")).unwrap_err();
-            assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
-        })
-        .unwrap();
-        assert_eq!(
-            fs::read_to_string(dir.path("real\\draft.txt")).unwrap(),
-            "draft"
-        );
-    }
-
-    #[test]
-    fn listing_reports_direct_children_only() {
-        let dir = Directory::new();
-        fs::create_dir_all(dir.path("b\\inner")).unwrap();
-        fs::write(dir.path("b\\inner\\file.txt"), "12345").unwrap();
-        fs::write(dir.path("a.txt"), "xy").unwrap();
-        let listing = list_directory(dir.root(), &active()).unwrap();
-        let listed: Vec<_> = listing
-            .entries
-            .iter()
-            .map(|entry| {
-                (
-                    entry.path.strip_prefix(dir.root()).unwrap().to_string(),
-                    entry.kind,
-                    entry.bytes,
-                )
-            })
-            .collect();
-        assert_eq!(
-            listed,
-            vec![
-                ("\\a.txt".to_string(), Kind::File, 2),
-                ("\\b".to_string(), Kind::Directory, 0),
-            ]
-        );
-        assert!(matches!(
-            list_directory(&dir.path("a.txt"), &active()),
-            Err(FileError::InvalidPath(_))
-        ));
-    }
-
-    #[test]
-    fn preview_bounds_text_and_excludes_a_cut_code_point() {
-        let dir = Directory::new();
-        let path = dir.path("preview.txt");
-        fs::write(&path, format!("{}λtail", "x".repeat(MAX_CHUNK_BYTES - 1))).unwrap();
-        let preview = read_preview(&path, &active()).unwrap();
-        assert!(preview.truncated);
-        assert_eq!(preview.text.len(), MAX_CHUNK_BYTES - 1);
-        fs::write(&path, "short λ").unwrap();
-        let preview = read_preview(&path, &active()).unwrap();
-        assert!(!preview.truncated);
-        assert_eq!(preview.text, "short λ");
-        fs::write(&path, [b'a', 0xce]).unwrap();
-        assert!(matches!(
-            read_preview(&path, &active()),
-            Err(FileError::InvalidUtf8(_))
-        ));
-    }
-
-    #[test]
-    fn log_cursor_continues_detects_rotation_and_truncation() {
-        let dir = Directory::new();
-        let path = dir.path("app.log");
-        fs::write(&path, "one\n").unwrap();
-        let first = read_log(&path, LogPosition::Start, &active()).unwrap();
-        assert_eq!(
-            (first.text.as_str(), first.change, first.state),
-            ("one\n", LogChange::Initial, LogState::AtEnd)
-        );
-        fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap()
-            .write_all("two\n".as_bytes())
-            .unwrap();
-        let second = read_log(&path, LogPosition::After(first.cursor), &active()).unwrap();
-        assert_eq!(
-            (second.text.as_str(), second.change),
-            ("two\n", LogChange::Continued)
-        );
-        assert_eq!(second.cursor.offset, 8);
-        fs::write(&path, "x").unwrap();
-        let truncated = read_log(&path, LogPosition::After(second.cursor), &active()).unwrap();
-        assert_eq!(
-            (truncated.text.as_str(), truncated.change),
-            ("x", LogChange::Truncated)
-        );
-        let rotated_cursor = LogCursor {
-            inode: second.cursor.inode ^ 1,
-            ..second.cursor
-        };
-        let rotated = read_log(&path, LogPosition::After(rotated_cursor), &active()).unwrap();
-        assert_eq!(
-            (rotated.text.as_str(), rotated.change),
-            ("x", LogChange::Rotated)
-        );
-        fs::write(&path, "tail λ").unwrap();
-        let end = read_log(&path, LogPosition::End, &active()).unwrap();
-        assert_eq!(
-            (end.text.as_str(), end.cursor.offset, end.state),
-            ("", 7, LogState::AtEnd)
-        );
-        fs::write(&path, [b'a', 0xce]).unwrap();
-        assert!(matches!(
-            read_log(&path, LogPosition::End, &active()),
-            Err(FileError::InvalidUtf8(_))
-        ));
-        let partial = read_log(&path, LogPosition::Start, &active()).unwrap();
-        assert_eq!(
-            (partial.text.as_str(), partial.cursor.offset, partial.state),
-            ("a", 1, LogState::PartialUtf8)
-        );
-    }
-
-    #[test]
-    fn open_path_reports_launcher_outcomes() {
-        let dir = Directory::new();
-        let path = dir.path("open.txt");
-        fs::write(&path, "x").unwrap();
-        let system = std::env::var("SystemRoot").unwrap();
-        let cmd = format!("{system}\\System32\\cmd.exe");
-        open_path_with_launcher(
-            &path,
-            &active(),
-            OsStr::new(&cmd),
-            &[OsStr::new("/c"), OsStr::new("exit 0 &&")],
-        )
-        .unwrap();
-        assert!(matches!(
-            open_path_with_launcher(
-                &path,
-                &active(),
-                OsStr::new(&cmd),
-                &[OsStr::new("/c"), OsStr::new("exit 3 &&")]
-            ),
-            Err(FileError::Unavailable(_))
-        ));
-        assert!(matches!(
-            open_path_with_launcher(&path, &active(), OsStr::new("missing-launcher.exe"), &[]),
-            Err(FileError::Unavailable(_))
-        ));
-        let cancel = active();
-        cancel.store(true, Ordering::Release);
-        assert_eq!(open_path(&path, &cancel), Err(FileError::Canceled));
-        assert!(matches!(
-            open_path(&dir.path("missing.txt"), &active()),
-            Err(FileError::NotFound(_))
-        ));
-    }
-
-    #[test]
-    fn scan_reports_nested_entries_sorted_with_sizes_and_kinds() {
-        let dir = Directory::new();
-        fs::create_dir_all(dir.path("b\\inner")).unwrap();
-        fs::write(dir.path("b\\inner\\file.txt"), "12345").unwrap();
-        fs::write(dir.path("a.txt"), "").unwrap();
-        let scanned = scan(dir.root(), &active()).unwrap();
-        let listed: Vec<_> = scanned
-            .entries
-            .iter()
-            .map(|entry| {
-                (
-                    entry.path.strip_prefix(dir.root()).unwrap().to_string(),
-                    entry.kind,
-                    entry.bytes,
-                )
-            })
-            .collect();
-        assert_eq!(
-            listed,
-            vec![
-                ("\\a.txt".to_string(), Kind::File, 0),
-                ("\\b".to_string(), Kind::Directory, 0),
-                ("\\b\\inner".to_string(), Kind::Directory, 0),
-                ("\\b\\inner\\file.txt".to_string(), Kind::File, 5),
-            ]
-        );
-        assert!(matches!(
-            scan(&dir.path("a.txt"), &active()),
-            Err(FileError::InvalidPath(_))
-        ));
-        assert!(matches!(
-            scan(&dir.path("missing"), &active()),
-            Err(FileError::NotFound(_))
-        ));
-    }
-
-    #[test]
-    fn text_limits_and_invalid_paths_refuse_without_partial_writes() {
-        let dir = Directory::new();
-        let path = dir.path("draft.txt");
-        fs::write(&path, "kept").unwrap();
-        let oversized = "x".repeat(MAX_TEXT_BYTES + 1);
-        assert!(matches!(
-            write_text(&path, &oversized, &active(), 9),
-            Err(FileError::ResourceLimit(_))
-        ));
-        fs::write(dir.path("big.txt"), &oversized).unwrap();
-        assert!(matches!(
-            read_text(&dir.path("big.txt"), &active()),
-            Err(FileError::ResourceLimit(_))
-        ));
-        fs::write(dir.path("latin1.txt"), [0xE9u8]).unwrap();
-        assert!(matches!(
-            read_text(&dir.path("latin1.txt"), &active()),
-            Err(FileError::InvalidUtf8(_))
-        ));
-        for invalid in [
-            "relative\\draft.txt".to_string(),
-            dir.path("..\\draft.txt"),
-            dir.path("nul\0name"),
-            format!("\\\\server\\share\\{}", "draft.txt"),
-            format!("{}\\{}", dir.root(), "x".repeat(MAX_PATH_BYTES)),
-        ] {
-            let Err(FileError::InvalidPath(message)) = write_text(&invalid, "x", &active(), 10)
-            else {
-                panic!("invalid path accepted: {invalid:?}")
-            };
-            assert!(message.len() <= super::super::MAX_ERROR_DETAIL_BYTES);
-        }
-        assert_eq!(fs::read_to_string(&path).unwrap(), "kept");
-        assert!(matches!(
-            read_text(&dir.path("missing.txt"), &active()),
-            Err(FileError::NotFound(_))
-        ));
-        let directory_read = read_text(dir.root(), &active());
-        assert!(
-            matches!(directory_read, Err(FileError::InvalidPath(_))),
-            "{directory_read:?}"
-        );
-    }
+    File::from(handle)
+        .sync_all()
+        .map_err(|error| win32_error(path, error))
 }

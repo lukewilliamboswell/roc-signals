@@ -4,7 +4,7 @@
     (stub-file-directory "folder-list" :path "/tmp/project" :entries ((file "/tmp/project/note.txt" 70000) (symbolic-link "/tmp/project/link" 4)))
     (click (role button :name "Choose folder"))
     (click (role button :name "/tmp/project/note.txt"))
-    (stub-file-preview "file-preview" :path "/tmp/project/note.txt" :text "First line\nλ" :truncated true)
+    (stub-file-read "file-preview" :path "/tmp/project/note.txt" :text "First line\nλ" :size 70000)
     (click (role button :name "Preview text"))
     (expect-value (label "Text preview") "First line\nλ")
     (expect-visible (text "Preview: /tmp/project/note.txt · truncated"))

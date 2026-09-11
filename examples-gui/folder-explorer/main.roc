@@ -258,7 +258,7 @@ advance! = |model, phase| match phase {
 	Choosing => settle(model, Files.choose_directory!(), Session.chosen)
 	Listing(visit) => settle(model, Files.list_directory!(Session.path(visit.destination)), Session.loaded)
 	Previewing(path) => settle(model, Files.read_preview!(path), Session.previewed)
-	Opening(path) => settle(model, Files.open_path!(path), Session.opened)
+	Opening(path) => settle(model, Files.open_path!(path), |state, _| Session.opened(state, path))
 	_ => Action.none
 }
 

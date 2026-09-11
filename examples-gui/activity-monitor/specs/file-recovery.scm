@@ -1,9 +1,11 @@
 (test "Pausing, failing, and retrying log reads preserves accepted history"
   (steps
     (stub-file-choice "activity-open" (chosen "/tmp/events.log"))
-    (stub-file-log "activity-read" :path "/tmp/events.log" :text "first\n" :device 1 :inode 2 :offset 6 :change initial :state at-end)
+    (stub-file-stat "activity-read" :path "/tmp/events.log" :kind file :bytes 6 :device 1 :inode 2)
+    (stub-file-read "activity-read" :path "/tmp/events.log" :text "first\n" :size 6)
     (click (role button :name "Open log…"))
-    (stub-file-log "activity-read" :path "/tmp/events.log" :text "" :device 1 :inode 2 :offset 6 :change continued :state at-end)
+    (stub-file-stat "activity-read" :path "/tmp/events.log" :kind file :bytes 6 :device 1 :inode 2)
+    (stub-file-read "activity-read" :path "/tmp/events.log" :text "" :offset 6 :size 6)
     (tick-interval 500)
     (click (role button :name "Pause following"))
     (expect-interval 500 0)
@@ -12,7 +14,8 @@
     (click (role button :name "Resume following"))
     (expect-visible (test-id "event-1"))
     (expect-disabled (role button :name "Retry read") false)
-    (stub-file-log "activity-read" :path "/tmp/events.log" :text "second\n" :device 1 :inode 2 :offset 13 :change continued :state at-end)
+    (stub-file-stat "activity-read" :path "/tmp/events.log" :kind file :bytes 13 :device 1 :inode 2)
+    (stub-file-read "activity-read" :path "/tmp/events.log" :text "second\n" :offset 6 :size 13)
     (click (role button :name "Retry read"))
     (expect-visible (test-id "event-2"))
     (expect-visible (text "Retained: 2 / 1000"))

@@ -1,7 +1,6 @@
 (test "Saving retains an exact board snapshot while later edits remain dirty"
  (steps
   (stub-file-choice "board-save-path" (chosen "/tmp/project.board.json"))
-  (stub-file-write "board-write" :path "/tmp/project.board.json" :bytes 1)
   (click (role button :name "Save"))
   (expect-text (test-id "board-status") "Saved")
   (expect-text (test-id "board-path") "/tmp/project.board.json")

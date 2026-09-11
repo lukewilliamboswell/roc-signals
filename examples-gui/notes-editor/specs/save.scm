@@ -2,7 +2,6 @@
   (steps
     (fill (label "Note text") "First revision")
     (stub-file-choice "notes-save-path" (chosen "/tmp/Ideas café.txt"))
-    (stub-file-write "notes-write" :path "/tmp/Ideas café.txt" :bytes 14)
     (shortcut (test-id "notes-editor") "s" 1)
     (expect-text (test-id "document-name") "Ideas café.txt")
     (expect-value (label "Note text") "First revision")
@@ -15,7 +14,6 @@
     (expect-value (label "Note text") "First revision")
     (expect-text (test-id "note-status") "No changes")
     (fill (label "Note text") "Second revision")
-    (stub-file-write "notes-write" :path "/tmp/Ideas café.txt" :bytes 15)
     (shortcut (test-id "notes-editor") "s" 1)
     (expect-value (label "Note text") "Second revision")
     (expect-text (test-id "note-status") "No changes")

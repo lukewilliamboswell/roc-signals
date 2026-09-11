@@ -4,16 +4,15 @@
 //! copies into Roc values. Choosers are the one kind that waits for the UI
 //! thread to show a dialog.
 use crate::{
-    Runtime,
-    assets::{self, AssetStatus},
-    file_io::{self, FileError, Kind, LogChange, LogCursor, LogPosition, LogState},
+    Runtime, assets,
+    file_io::{self, FileError, Kind},
     workers,
 };
 use gpui::{Context, PathPromptOptions};
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::AtomicBool,
         mpsc,
     },
 };
@@ -23,7 +22,7 @@ use std::{
 #[repr(C)]
 pub(crate) struct Bytes {
     ptr: *mut u8,
-    len: usize,
+    pub(crate) len: usize,
     cap: usize,
 }
 
@@ -70,33 +69,6 @@ pub(crate) struct FileEntriesOut {
     cap: usize,
 }
 
-#[repr(C)]
-pub(crate) struct AssetEntryIn {
-    name_ptr: *const u8,
-    name_len: usize,
-    sha_ptr: *const u8,
-    sha_len: usize,
-}
-
-#[repr(C)]
-pub(crate) struct AssetResultOut {
-    name: Bytes,
-    status: u32,
-}
-
-#[repr(C)]
-pub(crate) struct AssetResultsOut {
-    ptr: *mut AssetResultOut,
-    len: usize,
-    cap: usize,
-}
-
-#[repr(C)]
-pub(crate) struct LogCursorOut {
-    device: u64,
-    inode: u64,
-    offset: u64,
-}
 
 /// Every operation reports failure through the same struct; the kind numbers
 /// are the ones `native_services.zig` maps onto the Roc `Files.Error` tags.
@@ -149,11 +121,6 @@ fn entries_out(entries: Vec<file_io::Entry>) -> FileEntriesOut {
     result
 }
 
-/// Identities for write requests, which name their temporary files.
-fn next_request_id() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 62);
-    NEXT.fetch_add(1, Ordering::Relaxed)
-}
 
 fn deliver<T>(result: Result<T, FileError>, err: *mut FilesErrorOut, on_ok: impl FnOnce(T)) -> u32 {
     match result {
@@ -168,56 +135,114 @@ fn deliver<T>(result: Result<T, FileError>, err: *mut FilesErrorOut, on_ok: impl
     }
 }
 
+#[repr(C)]
+pub(crate) struct StatOut {
+    kind: u32,
+    size: u64,
+    device: u64,
+    inode: u64,
+}
+
+fn kind_out(kind: Kind) -> u32 {
+    match kind {
+        Kind::File => 0,
+        Kind::Directory => 1,
+        Kind::SymbolicLink => 2,
+        Kind::Other => 3,
+    }
+}
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn signals_files_read_text(
+pub unsafe extern "C" fn signals_files_stat(
     path: *const u8,
     path_len: usize,
-    out_path: *mut Bytes,
-    out_text: *mut Bytes,
+    out: *mut StatOut,
     err: *mut FilesErrorOut,
 ) -> u32 {
     let result = unsafe { text(path, path_len, "path") }
-        .and_then(|path| file_io::read_text(path, &AtomicBool::new(false)));
-    deliver(result, err, |file| unsafe {
-        out_path.write(Bytes::from_string(file.path));
-        out_text.write(Bytes::from_string(file.text));
+        .and_then(|path| file_io::stat(path, &AtomicBool::new(false)));
+    deliver(result, err, |meta| unsafe {
+        out.write(StatOut {
+            kind: kind_out(meta.kind),
+            size: meta.size,
+            device: meta.device,
+            inode: meta.inode,
+        });
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn signals_files_write_text(
+pub unsafe extern "C" fn signals_files_read_bytes(
     path: *const u8,
     path_len: usize,
-    text_ptr: *const u8,
-    text_len: usize,
-    out_path: *mut Bytes,
-    out_bytes: *mut u64,
+    offset: u64,
+    max_bytes: u64,
+    out_bytes: *mut Bytes,
+    out_size: *mut u64,
     err: *mut FilesErrorOut,
 ) -> u32 {
-    let result = unsafe { text(path, path_len, "path") }.and_then(|path| {
-        let body = unsafe { text(text_ptr, text_len, "text") }?;
-        file_io::write_text(path, body, &AtomicBool::new(false), next_request_id())
-    });
-    deliver(result, err, |written| unsafe {
-        out_path.write(Bytes::from_string(written.path));
-        out_bytes.write(written.bytes);
+    let max = max_bytes.min(usize::MAX as u64) as usize;
+    let result = unsafe { text(path, path_len, "path") }
+        .and_then(|path| file_io::read_at(path, offset, max, &AtomicBool::new(false)));
+    deliver(result, err, |(bytes, size)| unsafe {
+        out_bytes.write(Bytes::from_vec(bytes));
+        out_size.write(size);
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn signals_files_scan(
-    root: *const u8,
-    root_len: usize,
-    out_root: *mut Bytes,
-    out_entries: *mut FileEntriesOut,
+pub unsafe extern "C" fn signals_files_write_bytes(
+    path: *const u8,
+    path_len: usize,
+    bytes: *const u8,
+    bytes_len: usize,
     err: *mut FilesErrorOut,
 ) -> u32 {
-    let result = unsafe { text(root, root_len, "root") }
-        .and_then(|root| file_io::scan(root, &AtomicBool::new(false)));
-    deliver(result, err, |scan| unsafe {
-        out_root.write(Bytes::from_string(scan.root));
-        out_entries.write(entries_out(scan.entries));
-    })
+    let content: &[u8] = if bytes_len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(bytes, bytes_len) }
+    };
+    let result = unsafe { text(path, path_len, "path") }
+        .and_then(|path| file_io::write_bytes(path, content, &AtomicBool::new(false)));
+    deliver(result, err, |()| {})
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_rename(
+    from: *const u8,
+    from_len: usize,
+    to: *const u8,
+    to_len: usize,
+    err: *mut FilesErrorOut,
+) -> u32 {
+    let result = unsafe { text(from, from_len, "from") }.and_then(|from| {
+        let to = unsafe { text(to, to_len, "to") }?;
+        file_io::rename(from, to, &AtomicBool::new(false))
+    });
+    deliver(result, err, |()| {})
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_remove(
+    path: *const u8,
+    path_len: usize,
+    err: *mut FilesErrorOut,
+) -> u32 {
+    let result = unsafe { text(path, path_len, "path") }
+        .and_then(|path| file_io::remove(path, &AtomicBool::new(false)));
+    deliver(result, err, |()| {})
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_files_sync(
+    path: *const u8,
+    path_len: usize,
+    err: *mut FilesErrorOut,
+) -> u32 {
+    let result = unsafe { text(path, path_len, "path") }
+        .and_then(|path| file_io::sync(path, &AtomicBool::new(false)));
+    deliver(result, err, |()| {})
 }
 
 #[unsafe(no_mangle)]
@@ -240,138 +265,18 @@ pub unsafe extern "C" fn signals_files_list_directory(
 pub unsafe extern "C" fn signals_files_open_path(
     path: *const u8,
     path_len: usize,
-    out_path: *mut Bytes,
     err: *mut FilesErrorOut,
 ) -> u32 {
     let result = unsafe { text(path, path_len, "path") }
         .and_then(|path| file_io::open_path(path, &AtomicBool::new(false)));
-    deliver(result, err, |opened| unsafe {
-        out_path.write(Bytes::from_string(opened.path));
-    })
+    deliver(result, err, |_| {})
 }
 
+/// The folder relative asset sources resolve against, as the host was launched.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn signals_files_read_preview(
-    path: *const u8,
-    path_len: usize,
-    out_path: *mut Bytes,
-    out_text: *mut Bytes,
-    out_truncated: *mut u32,
-    err: *mut FilesErrorOut,
-) -> u32 {
-    let result = unsafe { text(path, path_len, "path") }
-        .and_then(|path| file_io::read_preview(path, &AtomicBool::new(false)));
-    deliver(result, err, |preview| unsafe {
-        out_path.write(Bytes::from_string(preview.path));
-        out_text.write(Bytes::from_string(preview.text));
-        out_truncated.write(u32::from(preview.truncated));
-    })
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn signals_files_read_log(
-    path: *const u8,
-    path_len: usize,
-    position: u32,
-    device: u64,
-    inode: u64,
-    offset: u64,
-    out_path: *mut Bytes,
-    out_text: *mut Bytes,
-    out_cursor: *mut LogCursorOut,
-    out_change: *mut u32,
-    out_state: *mut u32,
-    err: *mut FilesErrorOut,
-) -> u32 {
-    let position = match position {
-        0 => LogPosition::Start,
-        1 => LogPosition::End,
-        _ => LogPosition::After(LogCursor {
-            device,
-            inode,
-            offset,
-        }),
-    };
-    let result = unsafe { text(path, path_len, "path") }
-        .and_then(|path| file_io::read_log(path, position, &AtomicBool::new(false)));
-    deliver(result, err, |chunk| unsafe {
-        out_path.write(Bytes::from_string(chunk.path));
-        out_text.write(Bytes::from_string(chunk.text));
-        out_cursor.write(LogCursorOut {
-            device: chunk.cursor.device,
-            inode: chunk.cursor.inode,
-            offset: chunk.cursor.offset,
-        });
-        out_change.write(match chunk.change {
-            LogChange::Initial => 0,
-            LogChange::Continued => 1,
-            LogChange::Rotated => 2,
-            LogChange::Truncated => 3,
-        });
-        out_state.write(match chunk.state {
-            LogState::More => 0,
-            LogState::AtEnd => 1,
-            LogState::PartialUtf8 => 2,
-        });
-    })
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn signals_files_verify_assets(
-    entries: *const AssetEntryIn,
-    count: usize,
-    out: *mut AssetResultsOut,
-    err: *mut FilesErrorOut,
-) -> u32 {
-    let decoded = (|| {
-        if count == 0 || count > assets::MAX_MANIFEST_ASSETS {
-            return Err(FileError::InvalidPath(
-                "asset manifests contain 1 to 256 entries".into(),
-            ));
-        }
-        let inputs = unsafe { std::slice::from_raw_parts(entries, count) };
-        let mut manifest = Vec::with_capacity(count);
-        for input in inputs {
-            let name = unsafe { text(input.name_ptr, input.name_len, "asset name") }?;
-            if name.is_empty() || name.len() > assets::MAX_SOURCE_BYTES {
-                return Err(FileError::InvalidPath(
-                    "asset names contain 1 to 1024 UTF-8 bytes".into(),
-                ));
-            }
-            let digest = unsafe { text(input.sha_ptr, input.sha_len, "asset digest") }?;
-            let hex = digest.len() == 64
-                && digest
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-            if !hex {
-                return Err(FileError::InvalidPath(
-                    "asset digests are 64 lowercase hex characters".into(),
-                ));
-            }
-            manifest.push((name.to_owned(), digest.to_owned()));
-        }
-        assets::verify(&manifest, &AtomicBool::new(false))
-    })();
-    deliver(decoded, err, |report| {
-        let mut results: Vec<AssetResultOut> = report
-            .into_iter()
-            .map(|(name, status)| AssetResultOut {
-                name: Bytes::from_string(name),
-                status: match status {
-                    AssetStatus::Ok => 0,
-                    AssetStatus::Missing => 1,
-                    AssetStatus::Mismatch => 2,
-                },
-            })
-            .collect();
-        let value = AssetResultsOut {
-            ptr: results.as_mut_ptr(),
-            len: results.len(),
-            cap: results.capacity(),
-        };
-        std::mem::forget(results);
-        unsafe { out.write(value) };
-    })
+pub unsafe extern "C" fn signals_files_assets_root(out: *mut Bytes) {
+    let root = assets::root().to_string_lossy().into_owned();
+    unsafe { out.write(Bytes::from_string(root)) };
 }
 
 /// Shows a chooser for a waiting worker and answers it with the chosen path,
@@ -441,15 +346,6 @@ pub unsafe extern "C" fn signals_file_entries_release(entries: FileEntriesOut) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn signals_asset_results_release(results: AssetResultsOut) {
-    if results.ptr.is_null() {
-        return;
-    }
-    for result in unsafe { Vec::from_raw_parts(results.ptr, results.len, results.cap) } {
-        unsafe { result.name.release() };
-    }
-}
 
 enum Chooser {
     File,
@@ -608,5 +504,6 @@ mod tests {
         let first = unsafe { &*entries.ptr };
         assert_eq!((first.kind, first.bytes), (2, 7));
         unsafe { signals_file_entries_release(entries) };
+        assert_eq!(kind_out(Kind::Other), 3);
     }
 }
