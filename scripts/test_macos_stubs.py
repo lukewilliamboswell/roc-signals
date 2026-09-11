@@ -87,7 +87,7 @@ class MacosInterfacesTests(unittest.TestCase):
                          'project-generated-macos-interfaces')
 
 
-    def test_http_check_consumes_archive_with_fresh_cache_for_every_example(self):
+    def test_http_check_consumes_archive_with_fresh_cache_for_examples_and_fixtures(self):
         import check_macos_interfaces as check
         import gui_suite
         import spec_driver
@@ -116,8 +116,10 @@ class MacosInterfacesTests(unittest.TestCase):
              patch.object(spec_driver, 'run_suite', return_value=[SimpleNamespace(passed=True)]), \
              patch.object(spec_driver, 'print_summary'):
             result = check.check_bundle(output, 'roc')
-        self.assertEqual(calls, [app.name for app in gui_suite.examples()])
-        self.assertEqual(len(result['examples']), 6)
+        self.assertEqual(calls, [app.name for app in gui_suite.examples() + gui_suite.fixtures()])
+        for fixture in gui_suite.fixtures():
+            self.assertIn('fixture-' + fixture.name, result['examples'])
+        self.assertEqual(len(result['examples']), len(calls))
 
     def test_final_link_validation_rejects_interface_mutation_without_writing_proof(self):
         import check_macos_interfaces as check
@@ -145,7 +147,7 @@ class MacosInterfacesTests(unittest.TestCase):
     def test_committed_catalog_has_reviewed_provider_structure(self):
         catalog = stubs.read_catalog()
         self.assertEqual(len(catalog['libraries']), 19)
-        self.assertEqual(sum(len(library['symbols']) for library in catalog['libraries']), 406)
+        self.assertEqual(sum(len(library['symbols']) for library in catalog['libraries']), 427)
         for library in catalog['libraries']:
             if library['name'].startswith('lib'):
                 self.assertEqual(library['path'], 'usr/lib/' + library['name'] + '.tbd')

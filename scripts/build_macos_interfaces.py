@@ -59,6 +59,10 @@ def check_candidate(archive, host_lock, roc, *, root=ROOT):
     from host_build_identity import HOST_FILES
     from prepare_platforms import prepare_platform
     import check_macos_interfaces
+    from gui_host_artifacts import lock_matches_sources
+
+    if not lock_matches_sources(host_lock, root):
+        raise ValueError("interface validation requires sources matching the selected host release")
 
     with tempfile.TemporaryDirectory(prefix="signals-macos-interfaces-") as temporary:
         stage = Path(temporary)
@@ -88,8 +92,10 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--host-lock", type=Path)
     parser.add_argument("--roc", default="roc")
+    parser.add_argument("--host-source", type=Path, default=ROOT,
+                        help="clean checkout matching the selected host release for final-link validation")
     args = parser.parse_args()
     archive = build(args.output.resolve())
     if args.host_lock is not None:
-        check_candidate(archive, args.host_lock.resolve(), args.roc)
+        check_candidate(archive, args.host_lock.resolve(), args.roc, root=args.host_source.resolve())
     print(archive)
