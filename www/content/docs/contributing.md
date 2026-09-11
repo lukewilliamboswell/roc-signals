@@ -1237,6 +1237,13 @@ Microsoft-signed FXC/compiler DLL pair from SDK 10.0.26100.0, file version
 10.0.26100.8249. It checks the actual loaded compiler DLL and committed hashes;
 ambient `GPUI_FXC_PATH` cannot override release shader tooling. Optimized builds
 compile GPUI shaders before packaging; development builds compile them at runtime.
+A local Windows host build needs PowerShell 7 (`pwsh`) on `PATH`, the SDK
+10.0.26100.0 `fxc.exe` and `d3dcompiler_47.dll` under `ProgramFiles(x86)`, the
+`1.95.0` toolchain with its `x86_64-pc-windows-gnullvm` target, and an
+authenticated `gh`; `python scripts/build_gui.py --debug` checks all of them
+before compiling and names every one that is missing. Without them, verify
+against the released host instead:
+`GUI_HOST_LOCK=gui-host.lock.json python scripts/test.py gui`.
 
 Windows host builds verify and reuse both independently signed dependencies in
 `dependencies.lock.json`: complete per-DLL import archives and GNU CRT inputs.

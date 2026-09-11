@@ -448,10 +448,13 @@ that inject `/tmp` have not all been revisited, and the Windows CI job still
 does not exercise this section. The Rust request-codec tests also hard-code `/tmp`
 where `ABSOLUTE_DIRECTORY` exists for that purpose.
 
-Acceptance: fail fast with a clear message listing missing Windows build
-prerequisites, or accept Windows PowerShell 5.1 where `pwsh` is only used for
-`Get-AuthenticodeSignature`; document the host-lock path as the supported
-local verification route. Teach `validPath` platform-shaped absolute paths
+Done 2026-09-11 (not run on Windows): `windows_gnu_build.py` probes `pwsh`,
+the SDK pair, the pinned toolchain and target, and `gh` before compiling and
+names every missing one, pointing at the host-lock route; the contributing page
+lists the same prerequisites; the Rust request-codec tests spell their paths
+through `ABSOLUTE_DIRECTORY`.
+
+Acceptance for the rest: teach `validPath` platform-shaped absolute paths
 (drive, UNC, POSIX) behind an explicit fixture platform tag, port the Linux
 diagnostics to real Windows shapes, and extend the smoke to exercise one real
 file operation per OS. This is the tooling half of GUI-16.

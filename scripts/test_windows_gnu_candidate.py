@@ -12,6 +12,33 @@ from windows_gnu_build import compiler_args, identity, verify
 
 
 class CandidateTests(unittest.TestCase):
+    def test_prerequisites_are_all_named_up_front(self):
+        outputs = {"toolchain": "stable-x86_64-pc-windows-msvc (default)\n", "target": ""}
+        missing = windows_gnu_build.missing_prerequisites(
+            which=lambda name: None, exists=lambda path: False,
+            environ={}, output=lambda args: outputs[args[1]])
+        self.assertEqual(len(missing), 4, missing)
+        self.assertTrue(any("pwsh" in item for item in missing))
+        self.assertTrue(any("ProgramFiles(x86)" in item for item in missing))
+        self.assertTrue(any("rustup on PATH" in item for item in missing))
+        self.assertTrue(any("gh" in item for item in missing))
+
+    def test_a_present_toolchain_still_needs_its_target_and_sdk(self):
+        outputs = {"toolchain": "1.95.0-x86_64-pc-windows-msvc\n", "target": "x86_64-pc-windows-msvc\n"}
+        missing = windows_gnu_build.missing_prerequisites(
+            which=lambda name: "C:\\tools\\" + name, exists=lambda path: path.name == "fxc.exe",
+            environ={"ProgramFiles(x86)": "C:\\Program Files (x86)"},
+            output=lambda args: outputs[args[1]])
+        self.assertEqual(len(missing), 2, missing)
+        self.assertTrue(any("d3dcompiler_47.dll" in item for item in missing))
+        self.assertTrue(any(windows_gnu_build.TRIPLE in item for item in missing))
+        outputs["target"] = windows_gnu_build.TRIPLE + "\n"
+        complete = windows_gnu_build.missing_prerequisites(
+            which=lambda name: "C:\\tools\\" + name, exists=lambda path: True,
+            environ={"ProgramFiles(x86)": "C:\\Program Files (x86)"},
+            output=lambda args: outputs[args[1]])
+        self.assertEqual(complete, [])
+
     def test_tool_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'fxc.exe'
