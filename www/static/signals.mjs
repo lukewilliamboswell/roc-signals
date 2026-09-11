@@ -31,8 +31,6 @@ export const Op = Object.freeze({
   clearEvent: 17,
   startInterval: 18,
   cancelInterval: 19,
-  startTask: 20,
-  cancelTask: 21,
   setClass: 22,
   bindPointerDown: 23,
   bindPointerUp: 24,
@@ -46,10 +44,10 @@ export const Op = Object.freeze({
   setDocumentTitle: 32,
 });
 
-// Version 14: create_element.d selects HTML (0) or SVG (1) explicitly.
-// Namespace and text-node classification are engine decisions, not DOM inference.
+// Version 15 replaces task commands and roc_ui_resolve with hosted effects.
+// Retired opcodes 20 and 21 remain invalid; they must not be reused.
 export const Protocol = Object.freeze({
-  version: 14,
+  version: 15,
 });
 
 export const ProtocolFeature = Object.freeze({
@@ -111,8 +109,6 @@ const opNames = Object.freeze({
   [Op.clearEvent]: "clear_event",
   [Op.startInterval]: "start_interval",
   [Op.cancelInterval]: "cancel_interval",
-  [Op.startTask]: "start_task",
-  [Op.cancelTask]: "cancel_task",
   [Op.setClass]: "set_class",
   [Op.bindPointerDown]: "bind_pointer_down",
   [Op.bindPointerUp]: "bind_pointer_up",
@@ -308,318 +304,9 @@ const pointerProbeEvents = Object.freeze([
   "pointerleave",
 ]);
 
-export const HttpTask = Object.freeze({
-  namePrefix: "http:send:",
-});
-export const HttpTextTask = HttpTask;
-
 const textDecoder = new TextDecoder();
 const dynamicTextDecoder = new TextDecoder("utf-8", { fatal: true });
 const textEncoder = new TextEncoder();
-
-const HttpPayloadVersion = Object.freeze({
-  request: "roc-http-request-v1",
-  response: "roc-http-response-v1",
-  error: "roc-http-error-v1",
-});
-
-export function encodeHttpRequestPayload({ method = "GET", uri = "", timeoutMs = null, headers = [], body = [] } = {}) {
-  const fields = [
-    HttpPayloadVersion.request,
-    encodeHttpString(method),
-    encodeHttpString(uri),
-    timeoutMs === null || timeoutMs === undefined ? "-" : String(timeoutMs),
-    String(headers.length),
-  ];
-  for (const [headerName, headerValue] of headers) {
-    fields.push(encodeHttpString(String(headerName)));
-    fields.push(encodeHttpString(String(headerValue)));
-  }
-  fields.push(encodeHttpBytes(bytesFrom(body)));
-  return fields.join("\n");
-}
-
-export function decodeHttpRequestPayload(payload) {
-  const lines = String(payload).split("\n");
-  const reader = createHttpPayloadReader(lines, HttpPayloadVersion.request, "request");
-  const method = decodeHttpString(reader.read("method"), "method");
-  const uri = decodeHttpString(reader.read("uri"), "uri");
-  const timeoutField = reader.read("timeout");
-  const timeoutMs = timeoutField === "-" ? null : parseHttpInteger(timeoutField, "timeout");
-  const headerCount = parseHttpInteger(reader.read("header count"), "header count");
-  const headers = [];
-  for (let index = 0; index < headerCount; index += 1) {
-    headers.push([
-      decodeHttpString(reader.read("header name"), "header name"),
-      decodeHttpString(reader.read("header value"), "header value"),
-    ]);
-  }
-  const body = decodeHttpBytes(reader.read("body"), "body");
-  reader.done();
-  return { method, uri, timeoutMs, headers, body };
-}
-
-export function encodeHttpResponsePayload({ status = 200, headers = [], body = [] } = {}) {
-  const fields = [HttpPayloadVersion.response, String(status), String(headers.length)];
-  for (const [headerName, headerValue] of headers) {
-    fields.push(encodeHttpString(String(headerName)));
-    fields.push(encodeHttpString(String(headerValue)));
-  }
-  fields.push(encodeHttpBytes(bytesFrom(body)));
-  return fields.join("\n");
-}
-
-export function decodeHttpResponsePayload(payload) {
-  const lines = String(payload).split("\n");
-  const reader = createHttpPayloadReader(lines, HttpPayloadVersion.response, "response");
-  const status = parseHttpInteger(reader.read("status"), "status");
-  const headerCount = parseHttpInteger(reader.read("header count"), "header count");
-  const headers = [];
-  for (let index = 0; index < headerCount; index += 1) {
-    headers.push([
-      decodeHttpString(reader.read("header name"), "header name"),
-      decodeHttpString(reader.read("header value"), "header value"),
-    ]);
-  }
-  const body = decodeHttpBytes(reader.read("body"), "body");
-  reader.done();
-  return { status, headers, body };
-}
-
-export function encodeHttpErrorPayload(code, message = "") {
-  return [HttpPayloadVersion.error, code, encodeHttpString(String(message))].join("\n");
-}
-
-export async function httpFetchTaskHandler({ name, request, signal, fetchImpl = globalThis.fetch }) {
-  if (!name.startsWith(HttpTask.namePrefix)) {
-    return null;
-  }
-  if (typeof fetchImpl !== "function") {
-    throw new Error(encodeHttpErrorPayload("unsupported", "fetch is not available"));
-  }
-
-  let decoded;
-  try {
-    decoded = decodeHttpRequestPayload(request);
-  } catch (err) {
-    throw new Error(encodeHttpErrorPayload("unsupported", err?.message ?? err));
-  }
-
-  let timedOut = false;
-  const controller = new AbortController();
-  const relayAbort = () => controller.abort();
-  if (signal?.aborted) {
-    relayAbort();
-  } else {
-    signal?.addEventListener?.("abort", relayAbort, { once: true });
-  }
-
-  const timeoutId =
-    decoded.timeoutMs === null
-      ? null
-      : setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-        }, decoded.timeoutMs);
-
-  try {
-    const response = await fetchImpl(decoded.uri, {
-      method: decoded.method,
-      headers: decoded.headers,
-      body: decoded.body.length === 0 ? undefined : decoded.body,
-      signal: controller.signal,
-    });
-    const body = new Uint8Array(await response.arrayBuffer());
-    const headers = [...response.headers.entries()];
-    return encodeHttpResponsePayload({ status: response.status, headers, body });
-  } catch (err) {
-    if (timedOut) {
-      throw new Error(encodeHttpErrorPayload("timeout", ""));
-    }
-    if (controller.signal.aborted || err?.name === "AbortError") {
-      throw new Error(encodeHttpErrorPayload("canceled", ""));
-    }
-    throw new Error(encodeHttpErrorPayload("network", err?.message ?? err));
-  } finally {
-    if (timeoutId !== null) {
-      clearTimeout(timeoutId);
-    }
-    signal?.removeEventListener?.("abort", relayAbort);
-  }
-}
-
-export function createHttpTaskRouter(routes) {
-  const entries = Object.entries(routes).map(([key, handler]) => {
-    const [method, ...uriParts] = key.trim().split(/\s+/);
-    const uri = uriParts.join(" ");
-    if (!method || !uri || typeof handler !== "function") {
-      throw new Error(`invalid HTTP task route: ${key}`);
-    }
-    return { method: method.toUpperCase(), uri, handler };
-  });
-  const routeByKey = new Map(entries.map((entry) => [`${entry.method} ${entry.uri}`, entry]));
-  const knownUris = new Set(entries.map((entry) => entry.uri));
-
-  return function httpTaskRouter({ name, request, signal, requestId }) {
-    if (!name.startsWith(HttpTask.namePrefix)) {
-      return null;
-    }
-
-    let decoded;
-    try {
-      decoded = decodeHttpRequestPayload(request);
-    } catch (err) {
-      throw httpTaskError("unsupported", err?.message ?? err);
-    }
-
-    const method = decoded.method.toUpperCase();
-    const route = routeByKey.get(`${method} ${decoded.uri}`);
-    if (!route) {
-      if (knownUris.has(decoded.uri)) {
-        throw httpTaskError("unsupported", `unsupported HTTP method ${decoded.method} for ${decoded.uri}`);
-      }
-      return null;
-    }
-
-    const routeRequest = {
-      method: decoded.method,
-      uri: decoded.uri,
-      headers: decoded.headers,
-      body: decoded.body,
-      bodyText: () => dynamicTextDecoder.decode(decoded.body),
-      timeoutMs: decoded.timeoutMs,
-      signal,
-      name,
-      requestId,
-    };
-
-    try {
-      const result = route.handler(routeRequest);
-      if (result && typeof result.then === "function") {
-        return Promise.resolve(result).catch((err) => {
-          throw normalizeHttpRouterError(err);
-        });
-      }
-      return result;
-    } catch (err) {
-      throw normalizeHttpRouterError(err);
-    }
-  };
-}
-
-export function httpJsonResponse(value, { status = 200, headers = [] } = {}) {
-  return httpTextResponse(JSON.stringify(value), {
-    status,
-    contentType: "application/json; charset=utf-8",
-    headers,
-  });
-}
-
-export function httpTextResponse(
-  text,
-  { status = 200, contentType = "text/plain; charset=utf-8", headers = [] } = {},
-) {
-  return encodeHttpResponsePayload({
-    status,
-    headers: [["content-type", contentType], ...headers],
-    body: textEncoder.encode(String(text)),
-  });
-}
-
-export function httpTaskError(code, message = "") {
-  return new Error(encodeHttpErrorPayload(code, message));
-}
-
-export function httpHeaderValue(headers, targetName) {
-  const target = String(targetName).toLowerCase();
-  for (const [name, value] of headers) {
-    if (String(name).toLowerCase() === target) {
-      return String(value);
-    }
-  }
-  return "";
-}
-
-function normalizeHttpRouterError(err) {
-  const message = String(err?.message ?? err);
-  if (message.startsWith(HttpPayloadVersion.error)) {
-    return err instanceof Error ? err : new Error(message);
-  }
-  return httpTaskError("unsupported", message);
-}
-
-function bytesFrom(value) {
-  if (value instanceof Uint8Array) {
-    return value;
-  }
-  if (typeof value === "string") {
-    return textEncoder.encode(value);
-  }
-  return Uint8Array.from(value);
-}
-
-function encodeHttpString(value) {
-  return encodeHttpBytes(textEncoder.encode(value));
-}
-
-function decodeHttpString(field, label) {
-  try {
-    return dynamicTextDecoder.decode(decodeHttpBytes(field, label));
-  } catch (err) {
-    throw new Error(`malformed HTTP payload ${label}: invalid UTF-8`);
-  }
-}
-
-function encodeHttpBytes(bytes) {
-  return [...bytes].map((byte) => String(byte)).join(",");
-}
-
-function decodeHttpBytes(field, label) {
-  if (field === "") {
-    return new Uint8Array();
-  }
-  return Uint8Array.from(
-    field.split(",").map((part) => {
-      const byte = Number(part);
-      if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
-        throw new Error(`malformed HTTP payload ${label}: invalid byte`);
-      }
-      return byte;
-    }),
-  );
-}
-
-function parseHttpInteger(field, label) {
-  const value = Number(field);
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`malformed HTTP payload ${label}: invalid integer`);
-  }
-  return value;
-}
-
-function createHttpPayloadReader(lines, expectedVersion, label) {
-  let index = 0;
-  const read = (fieldLabel) => {
-    if (index >= lines.length) {
-      throw new Error(`malformed HTTP ${label} payload: missing ${fieldLabel}`);
-    }
-    const value = lines[index];
-    index += 1;
-    return value;
-  };
-  const version = read("version");
-  if (version !== expectedVersion) {
-    throw new Error(`malformed HTTP ${label} payload: wrong version`);
-  }
-  return {
-    read,
-    done() {
-      if (index !== lines.length) {
-        throw new Error(`malformed HTTP ${label} payload: trailing fields`);
-      }
-    },
-  };
-}
 
 function storageForArea(options, area) {
   if (area === StorageArea.local) {
@@ -709,9 +396,9 @@ export async function instantiateSignalsWasm(url, options = {}) {
   return instance;
 }
 
-export async function mountSignalsApp({ wasmUrl, root, taskHandler, fetchImpl, onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget, crypto }) {
+export async function mountSignalsApp({ wasmUrl, root, fetchImpl, onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget, crypto }) {
   const instance = await instantiateSignalsWasm(wasmUrl, { telemetry, localStorage, sessionStorage, storage, fetchImpl });
-  const runtime = new SignalsRuntime(instance.exports, root, { taskHandler, onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget, crypto });
+  const runtime = new SignalsRuntime(instance.exports, root, { onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget, crypto });
   runtime.mount();
   return runtime;
 }
@@ -728,9 +415,6 @@ export class SignalsRuntime {
     this.controlledInputs = new Map();
     this.pendingSelectValues = new Map();
     this.intervals = new Map();
-    this.tasks = new Map();
-    this.issuedTasks = new Map();
-    this.taskHandler = options.taskHandler ?? null;
     this.location = options.location ?? globalThis.location;
     this.history = options.history ?? globalThis.history;
     this.localStorage = options.localStorage ?? options.storage?.localStorage ?? globalThis.localStorage;
@@ -1299,51 +983,6 @@ export class SignalsRuntime {
     this.applyPendingCommands(`timer:${token}`);
   }
 
-  resolveTask(requestId, value, failed = false) {
-    this.assertUsable();
-    const task = this.tasks.get(requestId);
-    const issuedTask = this.issuedTasks.get(requestId);
-    if (!task && !issuedTask) {
-      this.emitTelemetry("unknown_task_resolution", { requestId, failed: failed !== false });
-      throw this.runtimeError(new Error(`task result had no matching pending request: ${requestId}`));
-    }
-    if (!task) {
-      this.emitTelemetry("ignored_task_resolution", {
-        requestId,
-        name: issuedTask.name,
-        request: issuedTask.request,
-        failed: failed !== false,
-        reason: "not_pending",
-      });
-    }
-    const bytes = textEncoder.encode(value);
-    const ptr = this.allocatePayload(bytes.length);
-    try {
-      this.views.u8.set(bytes, ptr);
-      if (task) {
-        this.emitTelemetry("task_resolution", {
-          requestId,
-          name: task.name,
-          request: task.request,
-          failed: failed !== false,
-          payloadLen: bytes.length,
-        });
-      }
-      this.emitTelemetry("host_call", {
-        call: "resolve_task",
-        requestId,
-        failed: failed !== false,
-        payloadLen: bytes.length,
-      });
-      this.views.callHost(this.exports.roc_ui_resolve, requestId, ptr, bytes.length, failed ? 1 : 0);
-    } catch (err) {
-      throw this.poisonAfterHostFailure(err);
-    } finally {
-      this.views.callHost(this.exports.roc_dealloc, ptr, 1);
-    }
-    this.tasks.delete(requestId);
-    this.applyPendingCommands(`resolve:${requestId}`);
-  }
 
   runtimeError(err) {
     const hostMessage = this.lastHostError();
@@ -1774,17 +1413,6 @@ export class SignalsRuntime {
         this.cancelInterval(record.a);
         return;
 
-      case Op.startTask:
-        this.startTask(
-          record.a,
-          this.readString(record.b, record.c),
-          this.readString(record.d, record.e),
-        );
-        return;
-
-      case Op.cancelTask:
-        this.cancelTask(record.a);
-        return;
 
       case Op.pushState:
         this.applyNavigationCommand("push", this.readString(record.a, record.b));
@@ -2528,64 +2156,10 @@ export class SignalsRuntime {
     this.intervals.delete(token);
   }
 
-  startTask(requestId, name, request) {
-    this.cancelTask(requestId);
-    const controller = new AbortController();
-    this.tasks.set(requestId, { name, request, controller });
-    this.issuedTasks.set(requestId, { name, request });
-    this.emitTelemetry("start_task", { requestId, name, request });
-    if (!this.taskHandler) {
-      return;
-    }
-
-    let handled;
-    try {
-      handled = this.taskHandler({ requestId, name, request, signal: controller.signal });
-    } catch (err) {
-      handled = Promise.reject(err);
-    }
-    if (handled === null || handled === undefined) {
-      return;
-    }
-
-    Promise.resolve(handled).then(
-      (value) => {
-        try {
-          this.resolveTask(requestId, String(value), false);
-        } catch (err) {
-          this.reportError(err);
-        }
-      },
-      (err) => {
-        try {
-          this.resolveTask(requestId, String(err?.message ?? err), true);
-        } catch (resolveErr) {
-          this.reportError(resolveErr);
-        }
-      },
-    );
-  }
-
-  cancelTask(requestId) {
-    const task = this.tasks.get(requestId);
-    if (!task) {
-      return;
-    }
-    task.controller.abort();
-    this.tasks.delete(requestId);
-    this.emitTelemetry("cancel_task", {
-      requestId,
-      name: task.name,
-      request: task.request,
-    });
-  }
 
   clearAsyncResources() {
     for (const token of [...this.intervals.keys()]) {
       this.cancelInterval(token);
-    }
-    for (const requestId of [...this.tasks.keys()]) {
-      this.cancelTask(requestId);
     }
   }
 
@@ -2647,7 +2221,6 @@ export class SignalsRuntime {
       domNodes: this.nodes.size,
       eventListeners: this.eventCleanups.size,
       intervals: this.intervals.size,
-      tasks: this.tasks.size,
     });
     this.clearAsyncResources();
     this.cleanupBehaviors();
@@ -2775,16 +2348,6 @@ export class SignalsRuntime {
       case Op.cancelInterval:
         return { op, token: record.a };
 
-      case Op.startTask:
-        return {
-          op,
-          requestId: record.a,
-          name: this.readString(record.b, record.c),
-          request: this.readString(record.d, record.e),
-        };
-
-      case Op.cancelTask:
-        return { op, requestId: record.a };
 
       case Op.pushState:
       case Op.replaceState:

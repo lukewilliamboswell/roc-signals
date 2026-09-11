@@ -587,7 +587,7 @@ import { mountSignalsApp } from "./signals.mjs";
 const runtime = await mountSignalsApp({
   wasmUrl,        // required
   root,           // required: a DOM element
-  taskHandler,    // optional: intercept HTTP tasks
+  fetchImpl,      // optional: Fetch-compatible implementation for hosted HTTP effects
   behaviors,      // optional: { name: { attach(el, ctx) -> cleanup, update(el, attrName, ctx) } }
   telemetry,      // optional: runtime event callback
   onError,        // optional
@@ -596,9 +596,18 @@ const runtime = await mountSignalsApp({
 runtime.unmount();
 ```
 
-Also exported: `instantiateSignalsWasm`, `instantiateSignalsBytes`,
-`createHttpTaskRouter`, `httpJsonResponse`, `httpTextResponse`,
-`httpTaskError`, `httpHeaderValue`.
+Also exported: `instantiateSignalsWasm`, `instantiateSignalsBytes`.
+
+The browser wire protocol is version 15. Deploy the Wasm application and
+`signals.mjs` together: the runtime rejects a mismatched host before mounting.
+Version 15 removes task command opcodes 20 and 21 and the
+`roc_ui_resolve` export. Rebuild older applications; there is no task-transport
+compatibility adapter. Hosted HTTP effects require WebAssembly JSPI support.
+
+HTTP effects use ordinary requests and responses through `fetchImpl` (default:
+the browser's `fetch`). The retired string-envelope codecs and task router are
+not part of this API. Each admitted effect runs independently; request races
+are resolved by the application's state reducers.
 
 One WebAssembly instance per mount.
 

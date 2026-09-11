@@ -12,7 +12,6 @@ const ids = @import("ids.zig");
 
 pub const ElemId = ids.ElemId;
 pub const EventId = ids.EventId;
-pub const TaskRequestId = ids.TaskRequestId;
 pub const IntervalToken = ids.IntervalToken;
 
 pub const TextField = render.TextField;
@@ -278,16 +277,6 @@ pub fn DomSink(comptime Host: type) type {
             self.host.sinkCancelInterval(token);
         }
 
-        /// Starts bounded asynchronous host work for an engine-issued task request.
-        pub fn startTask(self: @This(), request_id: TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8) void {
-            self.host.sinkStartTask(request_id, kind, task_name, request);
-        }
-
-        /// Cancels host work for a task request retired by engine lifecycle policy.
-        pub fn cancelTask(self: @This(), request_id: TaskRequestId) void {
-            self.host.sinkCancelTask(request_id);
-        }
-
         /// Applies an engine-issued browser-history command without deriving routing semantics.
         pub fn navigate(self: @This(), kind: NavigationKind, location: LocationSnapshot) void {
             self.host.sinkNavigate(kind, location);
@@ -376,8 +365,8 @@ test "DomSink forwards every render seam method to the host" {
     const TestHost = struct {
         seen: u32 = 0,
         last_event_descriptor: BoundaryPayloadDescriptor = BoundaryPayloadDescriptor.init(.unit, .none),
-        last_task_name: []const u8 = "",
-        last_task_request: []const u8 = "",
+        last_command_kind: []const u8 = "",
+        last_command_value: []const u8 = "",
         last_dynamic_value: []const u8 = "",
         last_children_len: usize = 0,
         last_debug_children_len: usize = 0,
@@ -480,54 +469,42 @@ test "DomSink forwards every render seam method to the host" {
             self.mark(13);
         }
 
-        /// Adapts the shared engine's start task command to this host without re-deciding reactive meaning.
-        pub fn sinkStartTask(self: *@This(), _: TaskRequestId, _: boundary.TaskKind, task_name: []const u8, request: []const u8) void {
-            self.mark(14);
-            self.last_task_name = task_name;
-            self.last_task_request = request;
-        }
-
-        /// Adapts the shared engine's cancel task command to this host without re-deciding reactive meaning.
-        pub fn sinkCancelTask(self: *@This(), _: TaskRequestId) void {
-            self.mark(15);
-        }
-
         /// Adapts the shared engine's navigate command to this host without re-deciding reactive meaning.
         pub fn sinkNavigate(self: *@This(), kind: NavigationKind, location: LocationSnapshot) void {
             self.mark(19);
-            self.last_task_name = switch (kind) {
+            self.last_command_kind = switch (kind) {
                 .push => "push",
                 .replace => "replace",
             };
-            self.last_task_request = location.path;
+            self.last_command_value = location.path;
         }
 
         /// Adapts the shared engine's set document title command to this host without re-deciding reactive meaning.
         pub fn sinkSetDocumentTitle(self: *@This(), title: []const u8) void {
             self.mark(22);
-            self.last_task_name = "title";
-            self.last_task_request = title;
+            self.last_command_kind = "title";
+            self.last_command_value = title;
         }
 
         /// Adapts the shared engine's set storage text command to this host without re-deciding reactive meaning.
         pub fn sinkSetStorageText(self: *@This(), area: StorageArea, key: []const u8, value: []const u8) void {
             self.mark(20);
-            self.last_task_name = switch (area) {
+            self.last_command_kind = switch (area) {
                 .local => "local",
                 .session => "session",
             };
-            self.last_task_request = key;
+            self.last_command_value = key;
             self.last_dynamic_value = value;
         }
 
         /// Adapts the shared engine's remove storage command to this host without re-deciding reactive meaning.
         pub fn sinkRemoveStorage(self: *@This(), area: StorageArea, key: []const u8) void {
             self.mark(21);
-            self.last_task_name = switch (area) {
+            self.last_command_kind = switch (area) {
                 .local => "local",
                 .session => "session",
             };
-            self.last_task_request = key;
+            self.last_command_value = key;
         }
 
         /// Adapts the shared engine's debug assert node command to this host without re-deciding reactive meaning.
@@ -566,14 +543,14 @@ test "DomSink forwards every render seam method to the host" {
     sink.clearEvent(elem, .{ .named = "keydown" });
     sink.startInterval(IntervalToken.fromRaw(8), 1000);
     sink.cancelInterval(IntervalToken.fromRaw(8));
-    sink.startTask(TaskRequestId.fromRaw(9), .external, "lookup", "roc");
-    sink.cancelTask(TaskRequestId.fromRaw(9));
+    sink.setDocumentTitle("Checkout");
     sink.setStorageText(.local, "checkout:draft", "saved");
     sink.removeStorage(.session, "checkout:flash");
     sink.navigate(.replace, .{ .path = "/done", .query = "tab=1", .hash = "tail" });
     sink.debugAssertNode(elem, true, "div", ids.root_elem, &children, EventId.fromRaw(7), null, null, null, null, null, null);
 
-    try std.testing.expectEqual((@as(u32, 1) << 22) - 1, host.seen);
+    const retired_task_bits = (@as(u32, 1) << 14) | (@as(u32, 1) << 15);
+    try std.testing.expectEqual(((@as(u32, 1) << 23) - 1) & ~retired_task_bits, host.seen);
     try std.testing.expectEqual(@as(usize, 2), host.last_children_len);
     try std.testing.expectEqual(@as(usize, 2), host.last_debug_children_len);
     try std.testing.expectEqual(BoundaryPayloadDescriptor.init(.bytes, .record_key_shift), host.last_event_descriptor);
@@ -581,7 +558,7 @@ test "DomSink forwards every render seam method to the host" {
     try std.testing.expect(host.saw_named_bind);
     try std.testing.expect(host.saw_fixed_clear);
     try std.testing.expect(host.saw_named_clear);
-    try std.testing.expectEqualStrings("replace", host.last_task_name);
-    try std.testing.expectEqualStrings("/done", host.last_task_request);
+    try std.testing.expectEqualStrings("replace", host.last_command_kind);
+    try std.testing.expectEqualStrings("/done", host.last_command_value);
     try std.testing.expectEqualStrings("saved", host.last_dynamic_value);
 }

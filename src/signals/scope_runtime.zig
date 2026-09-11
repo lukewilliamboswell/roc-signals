@@ -303,7 +303,6 @@ fn disposeSubtreeImpl(comptime Row: type, scopes: []scope_tree.Scope(Row), scope
 
     hooks.deactivateNodeIdentities(scope_id);
     hooks.appendCleanupEvents(scope_id);
-    hooks.cancelPendingTasks(scope_id);
     hooks.deactivateDomIdentities(scope_id);
 
     const scope = &scopes[scope_id.index()];
@@ -415,7 +414,6 @@ const TestRow = struct {
 const TestDisposeHooks = struct {
     node_deactivations: shared_buffer.List(semantic_ids.ScopeId) = .empty,
     cleanup_events: shared_buffer.List(semantic_ids.ScopeId) = .empty,
-    task_cancellations: shared_buffer.List(semantic_ids.ScopeId) = .empty,
     dom_deactivations: shared_buffer.List(semantic_ids.ScopeId) = .empty,
     removed_rows: shared_buffer.List(u64) = .empty,
     removed_handles: shared_buffer.List(row_handles.RowHandleId) = .empty,
@@ -425,7 +423,6 @@ const TestDisposeHooks = struct {
     fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.node_deactivations.deinit(allocator);
         self.cleanup_events.deinit(allocator);
-        self.task_cancellations.deinit(allocator);
         self.dom_deactivations.deinit(allocator);
         self.removed_rows.deinit(allocator);
         self.removed_handles.deinit(allocator);
@@ -439,11 +436,6 @@ const TestDisposeHooks = struct {
     /// Appends cleanup events using capacity that must already satisfy the caller's transaction contract.
     pub fn appendCleanupEvents(self: *@This(), scope_id: semantic_ids.ScopeId) void {
         self.cleanup_events.append(std.testing.allocator, scope_id) catch @panic("out of memory");
-    }
-
-    /// Cancels pending tasks and releases its bounded host-retained work.
-    pub fn cancelPendingTasks(self: *@This(), scope_id: semantic_ids.ScopeId) void {
-        self.task_cancellations.append(std.testing.allocator, scope_id) catch @panic("out of memory");
     }
 
     /// Retires dom identities so disposed scope identity cannot be routed again.

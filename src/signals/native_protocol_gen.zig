@@ -114,35 +114,6 @@ pub const native_text_field_count: usize = 8;
 /// Scalar boolean fields consumed only by the native presentation adapter.
 pub const native_bool_field_count: usize = 3;
 
-/// Closed task service routes. Names remain diagnostics; native hosts dispatch
-/// only this value, and browser hosts reject native service requests.
-pub const TaskKind = enum(u32) {
-    /// App-declared external task; the only route the browser host accepts.
-    external = 0,
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    choose_file = 1,
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    choose_directory = 2,
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    choose_save_path = 3,
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    read_text = 4,
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    write_text = 5,
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    scan_directory = 6,
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    list_directory = 7,
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    open_path = 8,
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    read_preview = 9,
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    read_log = 10,
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    verify_assets = 11,
-};
-
 /// The extern node record served through `signals_read_changed`. Zig and Rust
 /// declare this layout from the same manifest order, so the field order is ABI;
 /// `signals_node_size` and the host-side size assertion pin the layout.

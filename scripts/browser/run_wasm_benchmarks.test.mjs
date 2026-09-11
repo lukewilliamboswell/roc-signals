@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { CASES, DEFAULT_METADATA, parityFacts } from "./run_wasm_benchmarks.mjs";
 import { RUNTIME_METRIC_FIELDS } from "./wasm_benchmark_metrics.mjs";
-import { OPCODE_NAMES } from "./wasm_benchmark_runtime.mjs";
+import { OPCODE_NAMES, OPCODE_NAME_BY_ID } from "./wasm_benchmark_runtime.mjs";
 
 function captureBlock(source, start, end) {
   const from = source.indexOf(start);
@@ -47,7 +47,7 @@ test("production/diagnostic parity leaves allocator-dependent page capacity out 
 });
 
 test("opcode columns are a stable complete protocol registry", () => {
-  assert.equal(OPCODE_NAMES.length, 32);
+  assert.equal(OPCODE_NAMES.length, 30);
   assert.equal(new Set(OPCODE_NAMES).size, OPCODE_NAMES.length);
   assert.deepEqual(OPCODE_NAMES.slice(0, 4), ["reset_dom", "create_element", "create_text", "append_child"]);
   assert.equal(OPCODE_NAMES.at(-1), "set_document_title");
@@ -65,6 +65,9 @@ test("JavaScript opcode registry exactly follows the authoritative Zig wire enum
   const block = captureBlock(source, "pub const Op = enum(u32) {", "};");
   const authoritative = [...block.matchAll(/^\s*([a-z][a-z0-9_]*)\s*=\s*\d+,/gm)].map((match) => match[1]);
   assert.deepEqual(OPCODE_NAMES, authoritative);
+  const wireEntries = [...block.matchAll(/^\s*([a-z][a-z0-9_]*)\s*=\s*(\d+),/gm)]
+    .map((match) => [Number(match[2]), match[1]]);
+  assert.deepEqual([...OPCODE_NAME_BY_ID], wireEntries);
 });
 
 test("JavaScript metrics schema exactly follows authoritative shared RuntimeMetrics order", async () => {

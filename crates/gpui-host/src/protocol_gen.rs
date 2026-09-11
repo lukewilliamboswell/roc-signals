@@ -12,35 +12,6 @@ pub const PROTOCOL_VERSION: u32 = 12;
 /// Version of the separate native timer boundary.
 pub const TIMER_VERSION: u32 = 1;
 
-/// Closed service routes for hosted `Files` requests.
-#[allow(dead_code)]
-pub mod task_kind {
-    /// App-declared external task; the only route the browser host accepts.
-    pub const EXTERNAL: u32 = 0;
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    pub const CHOOSE_FILE: u32 = 1;
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    pub const CHOOSE_DIRECTORY: u32 = 2;
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    pub const CHOOSE_SAVE_PATH: u32 = 3;
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    pub const READ_TEXT: u32 = 4;
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    pub const WRITE_TEXT: u32 = 5;
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    pub const SCAN_DIRECTORY: u32 = 6;
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    pub const LIST_DIRECTORY: u32 = 7;
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    pub const OPEN_PATH: u32 = 8;
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    pub const READ_PREVIEW: u32 = 9;
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    pub const READ_LOG: u32 = 10;
-    /// Reserved; the native platform serves this through a hosted `Files` function, not a task route.
-    pub const VERIFY_ASSETS: u32 = 11;
-}
-
 /// The extern node record read through `signals_read_changed`. Zig and Rust
 /// declare this layout from the same manifest order, so the field order is ABI;
 /// the `signals_node_size` assertion in `bridge::Engine::open` pins the layout.

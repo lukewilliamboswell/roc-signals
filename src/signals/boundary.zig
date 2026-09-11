@@ -2,9 +2,6 @@
 
 const std = @import("std");
 
-/// Closed task service routes, declared by the generated protocol tables.
-pub const TaskKind = @import("native_protocol_gen.zig").TaskKind;
-
 /// Host boundary payload kind ids. These are the ABI-level containers that cross
 /// from JS/native into the retained Roc reducer; richer schemas may still encode
 /// through bytes when Roc owns the final typed decoding.

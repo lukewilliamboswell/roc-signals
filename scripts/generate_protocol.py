@@ -63,9 +63,6 @@ def validate(manifest: dict) -> None:
         if not fields:
             raise SystemExit(f"protocol manifest is missing {table}")
         validate_fields(table, fields, reserved_id=manifest.get(custom_key))
-    validate_fields("task_kinds", manifest.get("task_kinds", []), reserved_id=None, require_scope=False)
-    if manifest["task_kinds"][0]["id"] != 0 or manifest["task_kinds"][0]["name"] != "external":
-        raise SystemExit("task kind 0 must remain the external route")
     fields = manifest.get("raw_node", {}).get("fields")
     if not fields:
         raise SystemExit("protocol manifest is missing raw_node.fields")
@@ -185,14 +182,6 @@ def render_zig(manifest: dict) -> str:
     out("/// Scalar boolean fields consumed only by the native presentation adapter.")
     out(f"pub const native_bool_field_count: usize = {len(natives(bool_fields))};")
     out("")
-    out("/// Closed task service routes. Names remain diagnostics; native hosts dispatch")
-    out("/// only this value, and browser hosts reject native service requests.")
-    out("pub const TaskKind = enum(u32) {")
-    for kind in manifest["task_kinds"]:
-        out(f"    /// {kind['doc']}")
-        out(f"    {kind['name']} = {kind['id']},")
-    out("};")
-    out("")
     out("/// The extern node record served through `signals_read_changed`. Zig and Rust")
     out("/// declare this layout from the same manifest order, so the field order is ABI;")
     out("/// `signals_node_size` and the host-side size assertion pin the layout.")
@@ -222,14 +211,6 @@ def render_rust(manifest: dict) -> str:
     out("")
     out("/// Version of the separate native timer boundary.")
     out(f"pub const TIMER_VERSION: u32 = {manifest['timer_version']};")
-    out("")
-    out("/// Closed service routes for hosted `Files` requests.")
-    out("#[allow(dead_code)]")
-    out("pub mod task_kind {")
-    for kind in manifest["task_kinds"]:
-        out(f"    /// {kind['doc']}")
-        out(f"    pub const {kind['name'].upper()}: u32 = {kind['id']};")
-    out("}")
     out("")
     out("/// The extern node record read through `signals_read_changed`. Zig and Rust")
     out("/// declare this layout from the same manifest order, so the field order is ABI;")
@@ -287,13 +268,6 @@ def render_docs_section(manifest: dict) -> str:
         scope = "native" if field["native"] else f"browser (`{field['browser_op']}`)"
         out(f"| {field['id']} | `{field['name']}` | {scope} | {field['doc']} |")
     out(f"| {manifest['custom_bool_field_id']} | - | shared | Reserved marker for named custom boolean attributes. |")
-    out("")
-    out("`Node.TaskKind` is an explicit closed route:")
-    out("")
-    out("| Id | Kind | Purpose |")
-    out("| --- | --- | --- |")
-    for kind in manifest["task_kinds"]:
-        out(f"| {kind['id']} | `{kind['name']}` | {kind['doc']} |")
     out("")
     out(DOCS_END)
     return "\n".join(lines)

@@ -130,7 +130,6 @@ pub const HostSignalSelectRecord = signal_records.SelectRecord;
 pub const HostSignalMapRecord = signal_records.MapRecord;
 pub const HostSignalMap2Record = signal_records.Map2Record;
 pub const HostSignalCombineRecord = signal_records.CombineRecord;
-pub const HostSignalTaskSourceRecord = signal_records.TaskSourceRecord;
 pub const HostSignalIntervalSourceRecord = signal_records.IntervalSourceRecord;
 pub const HostSignalLocationSourceRecord = signal_records.LocationSourceRecord;
 pub const HostSignalEntropySeedSourceRecord = signal_records.EntropySeedSourceRecord;
@@ -172,12 +171,6 @@ const HostPendingOnChangeCommand = struct {
 const HostDeferredStorageEffect = struct {
     area: boundary.StorageArea,
     key: []u8,
-};
-
-pub const TaskResolutionClass = enum {
-    pending,
-    superseded,
-    unknown,
 };
 
 /// Formats each duplicate key diagnostic into caller-provided bounded diagnostic storage.
@@ -325,7 +318,6 @@ pub const HostActiveEventDesc = struct {
     handler: descriptor_stream.EventHandler,
 };
 
-pub const HostPendingTask = effects_runtime.PendingTask;
 pub const HostActiveInterval = effects_runtime.ActiveInterval;
 pub const HostCleanupEvents = effects_runtime.CleanupEvents;
 pub const deinitCleanupEvents = effects_runtime.deinitCleanupEvents;
@@ -803,7 +795,6 @@ pub fn Engine(comptime Ctx: type) type {
         selectors: selector_runtime.Registry(HostSignalRecord) = .{},
         render_cache: render_cache_mod.Cache(Ctx) = .{},
         positions: ?structural_positions.Positions = null,
-        pending_tasks: shared_buffer.List(HostPendingTask) = .empty,
         /// Effects accepted by committed `Then` commands, in start order, until
         /// the host runs them once the turn has settled.
         pending_effects: shared_buffer.List(PendingEffect) = .empty,
@@ -818,7 +809,6 @@ pub fn Engine(comptime Ctx: type) type {
         applying_effect_result: bool = false,
         active_intervals: effects_runtime.IntervalRegistry = .empty,
         cleanup_events: HostCleanupEvents = .empty,
-        next_task_request_id: u64 = 1,
         next_interval_token: u64 = 1,
         next_elem_id: u64 = 0,
         roc_host: ?*abi.RocHost = null,
@@ -2659,11 +2649,6 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
-            /// Performs cancel pending tasks inside the shared engine while preserving transaction and changed-set invariants.
-            pub fn cancelPendingTasks(self: *@This(), scope_id: ids.ScopeId) void {
-                self.engine.cancelPendingTasksInScopeSubtree(self.ctx, scope_id.raw());
-            }
-
             /// Performs deactivate dom identities inside the shared engine while preserving transaction and changed-set invariants.
             pub fn deactivateDomIdentities(self: *@This(), scope_id: ids.ScopeId) void {
                 var ordinal: u64 = 0;
@@ -3090,13 +3075,6 @@ pub fn Engine(comptime Ctx: type) type {
             self.pending_roc_metrics = metrics;
         }
 
-        /// Performs note stale task resolution ignored inside the shared engine while preserving transaction and changed-set invariants.
-        pub fn noteStaleTaskResolutionIgnored(self: *Self) void {
-            var metrics = self.pending_roc_metrics;
-            metrics.bump(.stale_task_results_ignored, 1);
-            self.pending_roc_metrics = metrics;
-        }
-
         /// Performs deinit render cache inside the shared engine while preserving transaction and changed-set invariants.
         pub fn deinitRenderCache(self: *Self, ctx: Ctx.Handle) void {
             self.render_cache.deinit(ctx);
@@ -3499,13 +3477,6 @@ pub fn Engine(comptime Ctx: type) type {
             return effects_runtime.cleanupEventCount(self.cleanup_events.items, name);
         }
 
-        /// Returns active task record by token from the maintained active-runtime indexes.
-        pub fn activeTaskRecordByToken(self: *Self, token: HostSignalToken) ?*HostSignalRecord {
-            const record = self.active_stream.signalRecordByToken(token) orelse return null;
-            if (self.activeSignalRecordId(record) == null) return null;
-            return if (record.taskSource() != null) record else null;
-        }
-
         /// Returns active interval record count by period from the maintained active-runtime indexes.
         pub fn activeIntervalRecordCountByPeriod(self: *const Self, period_ms: u64) u64 {
             return effects_runtime.activeIntervalRecordCountByPeriod(self.active_signal_graph.items, period_ms);
@@ -3521,27 +3492,6 @@ pub fn Engine(comptime Ctx: type) type {
         /// Returns active interval source token by runtime token from the maintained active-runtime indexes.
         pub fn activeIntervalSourceTokenByRuntimeToken(self: *Self, token: u64) ?HostSignalToken {
             return effects_runtime.activeIntervalSourceTokenByRuntimeToken(&self.active_intervals, ids.IntervalToken.fromRaw(token));
-        }
-
-        /// Resolves pending task count by name from the bounded task registry without scanning unrelated work.
-        pub fn pendingTaskCountByName(self: *const Self, name: []const u8) u64 {
-            return effects_runtime.pendingTaskCountByName(self.pending_tasks.items, name);
-        }
-
-        /// Resolves pending task index by request id from the bounded task registry without scanning unrelated work.
-        pub fn pendingTaskIndexByRequestId(self: *Self, request_id: ids.TaskRequestId) ?usize {
-            return effects_runtime.pendingTaskIndexByRequestId(self.pending_tasks.items, request_id);
-        }
-
-        /// Performs classify task resolution inside the shared engine while preserving transaction and changed-set invariants.
-        pub fn classifyTaskResolution(self: *Self, request_id: ids.TaskRequestId) TaskResolutionClass {
-            if (self.pendingTaskIndexByRequestId(request_id) != null) return .pending;
-            // Any previously issued, no-longer-pending id is benign here. That
-            // deliberately covers both canceled/superseded async work and double
-            // resolves of already-completed tasks; hosts should reject ids that
-            // were never issued before calling into the engine.
-            if (request_id.raw() != 0 and request_id.raw() < self.next_task_request_id) return .superseded;
-            return .unknown;
         }
 
         /// Returns dense source ids for the validated event route without rediscovering dependencies.
@@ -4391,41 +4341,6 @@ pub fn Engine(comptime Ctx: type) type {
                 stream.appendEach(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.node_id, items, desc.ops);
                 stream.eaches.items[stream.eaches.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
-        }
-
-        /// Performs deinit pending task inside the shared engine while preserving transaction and changed-set invariants.
-        pub fn deinitPendingTask(self: *Self, ctx: Ctx.Handle, task: *HostPendingTask) void {
-            effects_runtime.deinitPendingTask(Ctx.allocator(ctx), self.roc_host.?, task);
-        }
-
-        /// Performs cancel pending task inside the shared engine while preserving transaction and changed-set invariants.
-        pub fn cancelPendingTask(self: *Self, ctx: Ctx.Handle, task: *HostPendingTask) void {
-            effects_runtime.cancelPendingTask(Ctx, ctx, Ctx.allocator(ctx), self.roc_host.?, task);
-        }
-
-        /// Clears pending tasks while retaining bounded storage where the type promises reuse.
-        pub fn clearPendingTasks(self: *Self, ctx: Ctx.Handle) void {
-            effects_runtime.clearPendingTasks(Ctx, ctx, Ctx.allocator(ctx), &self.pending_tasks, self.roc_host);
-            self.clearPendingEffects(ctx);
-        }
-
-        /// Performs cancel pending tasks by task token inside the shared engine while preserving transaction and changed-set invariants.
-        pub fn cancelPendingTasksByTaskToken(self: *Self, ctx: Ctx.Handle, task_token: HostSignalToken) void {
-            effects_runtime.cancelPendingTasksByTaskToken(Ctx, ctx, Ctx.allocator(ctx), &self.pending_tasks, self.roc_host, task_token);
-        }
-
-        /// Performs cancel pending tasks in scope subtree inside the shared engine while preserving transaction and changed-set invariants.
-        pub fn cancelPendingTasksInScopeSubtree(self: *Self, ctx: Ctx.Handle, scope_id: u64) void {
-            const ScopeLookup = struct {
-                engine: *Self,
-
-                /// Performs descendant or self inside the shared engine while preserving transaction and changed-set invariants.
-                pub fn descendantOrSelf(self_lookup: *@This(), task_scope_id: ids.ScopeId, root_scope_id: ids.ScopeId) bool {
-                    return self_lookup.engine.scopeIsDescendantOrSelf(task_scope_id.raw(), root_scope_id.raw()) catch @panic("scope descriptor referenced an unknown parent scope");
-                }
-            };
-            var scope_lookup = ScopeLookup{ .engine = self };
-            effects_runtime.cancelPendingTasksInScopeSubtree(Ctx, ctx, Ctx.allocator(ctx), &self.pending_tasks, self.roc_host, ids.ScopeId.fromRaw(scope_id), &scope_lookup);
         }
 
         /// Appends cleanup event using capacity that must already satisfy the caller's transaction contract.
@@ -7539,84 +7454,27 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         const PreparedEffectRetirements = struct {
-            task_indexes_descending: []usize = &.{},
-            retired_tasks: shared_buffer.List(HostPendingTask) = .empty,
             cleanup_names: shared_buffer.List([]const u8) = .empty,
 
-            fn descending(_: void, left: usize, right: usize) bool {
-                return left > right;
-            }
-
-            fn prepare(engine: *Self, allocator: std.mem.Allocator, target_scopes: []const bool, cleanup_indexes: []const usize) CollectionError!@This() {
+            fn prepare(engine: *Self, allocator: std.mem.Allocator, cleanup_indexes: []const usize) CollectionError!@This() {
                 var self: @This() = .{};
                 errdefer self.deinit(allocator, null);
-                var task_count: usize = 0;
-                for (engine.pending_tasks.items) |task| {
-                    if (task.owner_scope_id.index() >= target_scopes.len) return error.ResourceLimit;
-                    if (target_scopes[task.owner_scope_id.index()]) task_count = std.math.add(usize, task_count, 1) catch return error.ResourceLimit;
-                }
-                self.task_indexes_descending = allocator.alloc(usize, task_count) catch return error.OutOfMemory;
-                var write: usize = 0;
-                for (engine.pending_tasks.items, 0..) |task, index| if (target_scopes[task.owner_scope_id.index()]) {
-                    self.task_indexes_descending[write] = index;
-                    write += 1;
-                };
-                std.mem.sort(usize, self.task_indexes_descending, {}, descending);
-                self.retired_tasks.ensureUnusedCapacity(allocator, task_count) catch return error.OutOfMemory;
-                self.cleanup_names.ensureTotalCapacity(allocator, cleanup_indexes.len) catch return error.OutOfMemory;
+                try self.cleanup_names.ensureTotalCapacity(allocator, cleanup_indexes.len);
                 for (cleanup_indexes) |cleanup_index| {
                     if (cleanup_index >= engine.active_stream.cleanups.items.len) return error.ResourceLimit;
-                    const name = allocator.dupe(u8, engine.active_stream.cleanups.items[cleanup_index].name) catch return error.OutOfMemory;
+                    const name = try allocator.dupe(u8, engine.active_stream.cleanups.items[cleanup_index].name);
                     self.cleanup_names.appendAssumeCapacity(name);
                 }
-                engine.cleanup_events.ensureUnusedCapacity(allocator, self.cleanup_names.items.len) catch return error.OutOfMemory;
+                try engine.cleanup_events.ensureUnusedCapacity(allocator, self.cleanup_names.items.len);
                 return self;
             }
 
-            fn prepareScopeIds(engine: *Self, allocator: std.mem.Allocator, scope_ids: []const ids.ScopeId, cleanup_indexes: []const usize) CollectionError!@This() {
-                var target_scopes = std.AutoHashMapUnmanaged(u64, void).empty;
-                defer target_scopes.deinit(allocator);
-                target_scopes.ensureTotalCapacity(allocator, std.math.cast(u32, scope_ids.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                for (scope_ids) |scope_id| target_scopes.putAssumeCapacity(scope_id.raw(), {});
-
-                var self: @This() = .{};
-                errdefer self.deinit(allocator, null);
-                var task_count: usize = 0;
-                for (engine.pending_tasks.items) |task| if (target_scopes.contains(task.owner_scope_id.raw())) {
-                    task_count = std.math.add(usize, task_count, 1) catch return error.ResourceLimit;
-                };
-                self.task_indexes_descending = allocator.alloc(usize, task_count) catch return error.OutOfMemory;
-                var write: usize = 0;
-                for (engine.pending_tasks.items, 0..) |task, index| if (target_scopes.contains(task.owner_scope_id.raw())) {
-                    self.task_indexes_descending[write] = index;
-                    write += 1;
-                };
-                std.mem.sort(usize, self.task_indexes_descending, {}, descending);
-                self.retired_tasks.ensureUnusedCapacity(allocator, task_count) catch return error.OutOfMemory;
-                self.cleanup_names.ensureTotalCapacity(allocator, cleanup_indexes.len) catch return error.OutOfMemory;
-                for (cleanup_indexes) |cleanup_index| {
-                    if (cleanup_index >= engine.active_stream.cleanups.items.len) return error.ResourceLimit;
-                    const name = allocator.dupe(u8, engine.active_stream.cleanups.items[cleanup_index].name) catch return error.OutOfMemory;
-                    self.cleanup_names.appendAssumeCapacity(name);
-                }
-                engine.cleanup_events.ensureUnusedCapacity(allocator, self.cleanup_names.items.len) catch return error.OutOfMemory;
-                return self;
-            }
-
-            fn apply(self: *@This(), engine: *Self, ctx: Ctx.Handle) void {
-                for (self.task_indexes_descending) |index| {
-                    const task = effects_runtime.removePendingTaskAt(&engine.pending_tasks, index);
-                    Ctx.sink(ctx).cancelTask(task.request_id);
-                    self.retired_tasks.appendAssumeCapacity(task);
-                }
+            fn apply(self: *@This(), engine: *Self, _: Ctx.Handle) void {
                 engine.cleanup_events.appendSliceAssumeCapacity(self.cleanup_names.items);
                 self.cleanup_names.items.len = 0;
             }
 
-            fn deinit(self: *@This(), allocator: std.mem.Allocator, roc_host: ?*abi.RocHost) void {
-                allocator.free(self.task_indexes_descending);
-                if (roc_host) |host| for (self.retired_tasks.items) |*task| effects_runtime.deinitPendingTask(allocator, host, task);
-                self.retired_tasks.deinit(allocator);
+            fn deinit(self: *@This(), allocator: std.mem.Allocator, _: ?*abi.RocHost) void {
                 for (self.cleanup_names.items) |name| allocator.free(name);
                 self.cleanup_names.deinit(allocator);
                 self.* = undefined;
@@ -7666,7 +7524,7 @@ pub fn Engine(comptime Ctx: type) type {
                         cleanup_indexes.append(allocator, lifecycle.index) catch return error.OutOfMemory;
                     };
                 };
-                self.effects = try PreparedEffectRetirements.prepare(engine, allocator, target_scopes, cleanup_indexes.items);
+                self.effects = try PreparedEffectRetirements.prepare(engine, allocator, cleanup_indexes.items);
                 self.retired_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
                 return self;
             }
@@ -7682,11 +7540,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const retirement_scope_ids = self.targets.?.scope_retirement.?.scope_ids;
                 var exact_identities = try PreparedIdentityRetirements.prepareExactRemoval(engine, allocator, retirement_scope_ids, removal);
                 errdefer exact_identities.deinit(allocator);
-                const retired_scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
-                defer allocator.free(retired_scopes);
-                @memset(retired_scopes, false);
-                for (retirement_scope_ids) |scope_id| retired_scopes[scope_id.index()] = true;
-                var exact_effects = try PreparedEffectRetirements.prepare(engine, allocator, retired_scopes, removal.node_indexes.cleanup_indexes.items);
+                var exact_effects = try PreparedEffectRetirements.prepare(engine, allocator, removal.node_indexes.cleanup_indexes.items);
                 errdefer exact_effects.deinit(allocator, null);
                 self.identities.?.deinit(allocator);
                 self.identities = exact_identities;
@@ -9614,7 +9468,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer if (plan.row_retirement) |*retirement_plan| retirement_plan.deinit(allocator);
                 plan.retired_stable_generations.ensureTotalCapacity(allocator, plan.row_retirement.?.rows.len) catch return error.OutOfMemory;
                 errdefer plan.retired_stable_generations.deinit(allocator);
-                plan.effects_retirement = try PreparedEffectRetirements.prepareScopeIds(engine, allocator, retirement_scope_ids, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
+                plan.effects_retirement = try PreparedEffectRetirements.prepare(engine, allocator, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
                 errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
                 plan.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
                 errdefer plan.retired_scope_steps.deinit(allocator);
@@ -9837,11 +9691,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer if (self.row_retirement) |*retirement| retirement.deinit(allocator);
                 self.retired_stable_generations.ensureTotalCapacity(allocator, self.row_retirement.?.rows.len) catch return error.OutOfMemory;
                 errdefer self.retired_stable_generations.deinit(allocator);
-                const retired_scopes = allocator.alloc(bool, self.engine.scopes.items.len) catch return error.OutOfMemory;
-                defer allocator.free(retired_scopes);
-                @memset(retired_scopes, false);
-                for (retirement_scope_ids) |scope_id| retired_scopes[scope_id.index()] = true;
-                self.effects_retirement = try PreparedEffectRetirements.prepare(self.engine, allocator, retired_scopes, self.removal.?.removal.node_indexes.cleanup_indexes.items);
+                self.effects_retirement = try PreparedEffectRetirements.prepare(self.engine, allocator, self.removal.?.removal.node_indexes.cleanup_indexes.items);
                 errdefer if (self.effects_retirement) |*effects| effects.deinit(allocator, null);
                 self.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
                 errdefer self.retired_scope_steps.deinit(allocator);
@@ -10492,7 +10342,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
                 plan.removal = try structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes);
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
-                plan.effects_retirement = try PreparedEffectRetirements.prepare(engine_ptr, allocator, plan.target_scopes, plan.removal.?.node_indexes.cleanup_indexes.items);
+                plan.effects_retirement = try PreparedEffectRetirements.prepare(engine_ptr, allocator, plan.removal.?.node_indexes.cleanup_indexes.items);
                 errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
                 const state_retirement = try PreparedStateRetirementIndexes.prepare(engine_ptr, allocator, plan.removal.?.node_indexes.state_indexes.items);
                 plan.state_cell_indexes = state_retirement.indexes_descending;
@@ -12898,9 +12748,6 @@ pub fn Engine(comptime Ctx: type) type {
                     values.deinit(allocator);
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
-                .task_source => |*payload| {
-                    return self.evalEffectSourceInitial(ctx, roc_host, &payload.cached_value, payload.initial, payload.cap);
-                },
                 .interval_source => |*payload| {
                     return self.evalEffectSourceInitial(ctx, roc_host, &payload.cached_value, payload.initial, payload.cap);
                 },
@@ -13242,13 +13089,6 @@ pub fn Engine(comptime Ctx: type) type {
                     const value = self.materializeEachRowItem(ctx, roc_host, payload);
                     return self.rememberDirtySignalResult(record, dirty_generation, self.updateDirtySignalExprCache(ctx, roc_host, &payload.cached_value, value, payload.cap));
                 },
-                .task_source => |*payload| {
-                    debugPhase(ctx, .eval_dirty_task_source);
-                    return self.rememberDirtySignalResult(record, dirty_generation, .{
-                        .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                        .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
-                    });
-                },
                 .interval_source => |*payload| {
                     debugPhase(ctx, .eval_dirty_interval_source);
                     return self.rememberDirtySignalResult(record, dirty_generation, .{
@@ -13379,7 +13219,6 @@ pub fn Engine(comptime Ctx: type) type {
                     values.deinit(allocator);
                     break :blk self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &payload.cached_value, value, payload.cap);
                 },
-                .task_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = false },
                 .interval_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = false },
                 .entropy_seed_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = false },
                 .location_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = false },
@@ -15562,26 +15401,6 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Appends pending task using capacity that must already satisfy the caller's transaction contract.
-        pub fn appendPendingTask(self: *Self, ctx: Ctx.Handle, owner_scope_id: ids.ScopeId, task_token: HostSignalToken, task_name: []const u8, request: []const u8) ids.TaskRequestId {
-            return ids.TaskRequestId.fromRaw(effects_runtime.appendPendingTask(Ctx.allocator(ctx), &self.pending_tasks, &self.next_task_request_id, self.roc_host.?, owner_scope_id, task_token, task_name, request));
-        }
-
-        /// Resolves pending task index by name from the bounded task registry without scanning unrelated work.
-        pub fn pendingTaskIndexByName(self: *Self, name: []const u8) ?usize {
-            return effects_runtime.pendingTaskIndexByName(self.pending_tasks.items, name);
-        }
-
-        /// Removes pending task at and releases the ownership attached to that live entry.
-        pub fn removePendingTaskAt(self: *Self, index: usize) HostPendingTask {
-            return effects_runtime.removePendingTaskAt(&self.pending_tasks, index);
-        }
-
-        /// Returns active task record by name from the maintained active-runtime indexes.
-        pub fn activeTaskRecordByName(self: *Self, name: []const u8) ?*HostSignalRecord {
-            return effects_runtime.activeTaskRecordByName(self.active_signal_graph.items, name);
-        }
-
         /// Returns active interval record by period from the maintained active-runtime indexes.
         pub fn activeIntervalRecordByPeriod(self: *Self, period_ms: u64) ?*HostSignalRecord {
             return effects_runtime.activeIntervalRecordByPeriod(self.active_signal_graph.items, period_ms);
@@ -15743,39 +15562,6 @@ pub fn Engine(comptime Ctx: type) type {
             };
         }
 
-        /// Prepares a task-source update while retaining its pending registry
-        /// entry until the allocation-free transaction commit.
-        pub fn tryDispatchTaskSourceValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, request_id: ids.TaskRequestId, record: *HostSignalRecord, value: HostValue) CollectionError!render.Counts {
-            const cap = record.requireTaskSource().cap;
-            const pending_index = self.pendingTaskIndexByRequestId(request_id) orelse {
-                callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
-                return error.InvalidDescriptor;
-            };
-            if (self.pending_tasks.items[pending_index].task_token != record.token().?) {
-                callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
-                return error.InvalidDescriptor;
-            }
-            const transaction = try PreparedSourceTransaction.prepare(self, ctx, roc_host, record, value) orelse {
-                var pending = self.removePendingTaskAt(pending_index);
-                if (comptime @hasDecl(Ctx, "noteTaskResolved")) Ctx.noteTaskResolved(ctx, request_id.raw());
-                self.deinitPendingTask(ctx, &pending);
-                return .{};
-            };
-            defer transaction.deinit();
-            transaction.pending_task_request_id = request_id.raw();
-            transaction.pending_task_token = record.token().?;
-            var metrics = self.pending_roc_metrics;
-            metrics.bump(.dirty_source_roots, transaction.root_count);
-            self.pending_roc_metrics = metrics;
-            return transaction.commit();
-        }
-
-        /// Publishes a task result or terminates if recoverable host preparation
-        /// cannot complete at this infallible host entrypoint.
-        pub fn dispatchTaskSourceValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, request_id: ids.TaskRequestId, record: *HostSignalRecord, value: HostValue) render.Counts {
-            return self.tryDispatchTaskSourceValue(ctx, roc_host, request_id, record, value) catch @panic("failed to prepare atomic task settlement");
-        }
-
         const PreparedSourceTransaction = struct {
             const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
             const PreparedStateUpdate = struct {
@@ -15890,8 +15676,6 @@ pub fn Engine(comptime Ctx: type) type {
             root_count: u64,
             caches: signal_records.PreparedCacheUpdates,
             state_update: ?PreparedStateWrites = null,
-            pending_task_request_id: ?u64 = null,
-            pending_task_token: ?HostSignalToken = null,
             changed_record_ids: []u64,
             render_splice: ?render_cache_mod.PreparedRenderSplice(Ctx) = null,
             structural_changes: []HostDirtyStructuralSignal = &.{},
@@ -16434,26 +16218,6 @@ pub fn Engine(comptime Ctx: type) type {
                 return plan;
             }
 
-            fn retirementDownstream(self: *const @This()) ?*PreparedStructuralDownstream {
-                if (self.composite_structural) |composite| return composite.downstream;
-                if (self.composite_rows) |composite| return composite.downstream;
-                return self.structural_downstream;
-            }
-
-            fn taskRetirementCount(self: *const @This()) usize {
-                const downstream = self.retirementDownstream() orelse return 0;
-                const effects = downstream.effects_retirement orelse return 0;
-                return effects.task_indexes_descending.len;
-            }
-
-            fn retiresScope(self: *const @This(), scope_id: ids.ScopeId) bool {
-                const downstream = self.retirementDownstream() orelse return false;
-                const targets = downstream.targets orelse return false;
-                const retirement = targets.scope_retirement orelse return false;
-                for (retirement.scope_ids) |retired| if (retired == scope_id) return true;
-                return false;
-            }
-
             fn commit(self: *@This()) render.Counts {
                 return self.commitWithPublication({}, struct {
                     fn publish(_: void) void {}
@@ -16461,7 +16225,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             // The joined publication is already fully prepared. Run it after
-            // structural retirement (whose task indexes must remain stable)
+            // structural retirement
             // and before observers or mount commands can start another turn.
             fn commitWithPublication(self: *@This(), publication: anytype, comptime publish: fn (@TypeOf(publication)) void) render.Counts {
                 const allocator = Ctx.allocator(self.host_ctx);
@@ -16559,18 +16323,8 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn commitSourceCaches(self: *@This()) void {
-                const pending_index = if (self.pending_task_request_id) |request_id| blk: {
-                    const index = self.engine.pendingTaskIndexByRequestId(ids.TaskRequestId.fromRaw(request_id)) orelse @panic("prepared task settlement disappeared before commit");
-                    if (self.engine.pending_tasks.items[index].task_token != self.pending_task_token.?) @panic("prepared task settlement changed source token before commit");
-                    break :blk index;
-                } else null;
                 if (self.state_update) |*update| update.commit(self.engine);
                 self.engine.commitPreparedDirtySignalCaches(&self.caches);
-                if (self.pending_task_request_id) |request_id| {
-                    var pending = self.engine.removePendingTaskAt(pending_index.?);
-                    if (comptime @hasDecl(Ctx, "noteTaskResolved")) Ctx.noteTaskResolved(self.host_ctx, request_id);
-                    self.engine.deinitPendingTask(self.host_ctx, &pending);
-                }
                 self.engine.dirty_signal_generation = self.generation;
                 self.engine.identity_reuse_barrier = self.generation;
                 self.engine.recordDispatch();
@@ -16964,7 +16718,10 @@ pub fn Engine(comptime Ctx: type) type {
             reads.deinit(Ctx.allocator(ctx), ctx, roc_host, &self.pending_roc_metrics);
         }
 
-        fn clearPendingEffects(self: *Self, ctx: Ctx.Handle) void {
+        /// Releases queued effect closures and tracked reads at host teardown.
+        /// The host must finish or abandon its running calls before releasing
+        /// these retained references; this is not scope-driven cancellation.
+        pub fn clearEffects(self: *Self, ctx: Ctx.Handle) void {
             for (self.pending_effects.items) |*effect| self.releasePendingEffect(ctx, effect);
             self.pending_effects.items.len = 0;
             self.pending_effects.deinit(Ctx.allocator(ctx));
@@ -17255,7 +17012,6 @@ const VerifyCtxHost = struct {
     allocator: std.mem.Allocator,
     render_batch: render.TransactionalBatch = .{},
     state_capability: HostValueCapability = std.mem.zeroes(HostValueCapability),
-    cancelled_tasks: usize = 0,
 
     /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(_: *@This(), value: HostValue) HostValue {
@@ -17330,12 +17086,6 @@ const VerifySink = struct {
     pub fn startInterval(_: VerifySink, _: ids.IntervalToken, _: u64) void {}
     /// Cancels the host registration for an interval whose owning scope is no longer active.
     pub fn cancelInterval(_: VerifySink, _: ids.IntervalToken) void {}
-    /// Starts bounded asynchronous host work for an engine-issued task request.
-    pub fn startTask(_: VerifySink, _: ids.TaskRequestId, _: boundary.TaskKind, _: []const u8, _: []const u8) void {}
-    /// Cancels host work for a task request retired by engine lifecycle policy.
-    pub fn cancelTask(self: VerifySink, _: ids.TaskRequestId) void {
-        self.ctx.cancelled_tasks += 1;
-    }
     /// Applies an engine-issued storage write without deriving storage semantics.
     pub fn setStorageText(_: VerifySink, _: boundary.StorageArea, _: []const u8, _: []const u8) void {}
     /// Applies an engine-issued storage removal without deriving storage semantics.
@@ -17906,7 +17656,6 @@ fn deinitVerifyStaticEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost) voi
 }
 
 fn deinitVerifyStateEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, roc_host: *abi.RocHost) void {
-    effects_runtime.clearPendingTasks(VerifyCtx, ctx, ctx.allocator, &engine.pending_tasks, roc_host);
     effects_runtime.deinitCleanupEvents(ctx.allocator, &engine.cleanup_events);
     for (engine.states.items) |*state| if (state.isActive()) state.retire(ctx, roc_host, &engine.pending_roc_metrics);
     engine.states.deinit(ctx.allocator);
@@ -18825,19 +18574,14 @@ test "staged evaluation reads a source settled by the enclosing transaction" {
     const cap = HostValueCapability{ .clone = callable, .drop = callable, .eq = eq_callable };
     var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
     var engine = Engine(VerifyCtx).init();
-    var source = HostSignalRecord{ .ref_count = 1, .payload = .{ .task_source = .{
-        .name = "search",
-        .payload_cap = cap,
+    var source = HostSignalRecord{ .ref_count = 1, .payload = .{ .interval_source = .{
+        .period_ms = 100,
         .initial = .fromAbi(callable),
-        .done = .fromAbi(callable),
-        .failed = .fromAbi(callable),
-        .canceled = .fromAbi(callable),
-        .refused = .fromAbi(callable),
+        .tick = .fromAbi(callable),
         .cap = cap,
-        .reset_on_start = false,
         .cached_value = .{ .present = HostValueCell.initRetained(HostValue.fromRaw(1), cap, &engine.pending_roc_metrics) },
     } } };
-    defer source.payload.task_source.cached_value.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
+    defer source.payload.interval_source.cached_value.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
     var mapped = HostSignalRecord{ .ref_count = 1, .payload = .{ .map = .{
         .input = &source,
         .transform = .fromAbi(callable),
@@ -18846,11 +18590,11 @@ test "staged evaluation reads a source settled by the enclosing transaction" {
     } } };
     defer mapped.payload.map.cached_value.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
 
-    // The transaction settled the task: its value is staged in the overlay
+    // The transaction updated the source: its value is staged in the overlay
     // while the committed slot still holds the previous value.
     var overlay = try signal_records.PreparedCacheUpdates.init(ctx.allocator, 2);
     defer overlay.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
-    overlay.stageAssumeCapacity(&source.payload.task_source.cached_value, HostValue.fromRaw(2), cap, &engine.pending_roc_metrics);
+    overlay.stageAssumeCapacity(&source.payload.interval_source.cached_value, HostValue.fromRaw(2), cap, &engine.pending_roc_metrics);
 
     // A branch mounted outside any transaction still reads the committed value.
     try std.testing.expectEqual(HostValue.fromRaw(1), engine.evalHostSignalRecordStaged(&ctx, &roc_host, &source, &.{}, null));
@@ -18865,7 +18609,7 @@ test "staged evaluation reads a source settled by the enclosing transaction" {
     overlay.stageAssumeCapacity(&mapped.payload.map.cached_value, HostValue.fromRaw(7), cap, &engine.pending_roc_metrics);
     try std.testing.expectEqual(HostValue.fromRaw(7), engine.evalHostSignalRecordStaged(&ctx, &roc_host, &mapped, &.{}, &overlay));
     try std.testing.expectEqual(derived_calls_before + 1, engine.pending_roc_metrics.derived_calls_into_roc);
-    try std.testing.expectEqual(HostValue.fromRaw(1), source.payload.task_source.cached_value.present.value);
+    try std.testing.expectEqual(HostValue.fromRaw(1), source.payload.interval_source.cached_value.present.value);
 }
 
 test "static root counts nested signal attribute records" {
@@ -19804,7 +19548,6 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expect(plan.target_scopes[@intCast(plan.retired_scope_id)]);
                 try std.testing.expectEqualSlices(ids.ScopeId, &.{ retired_row_scope_id, ids.ScopeId.fromRaw(plan.retired_scope_id) }, plan.scope_retirement.?.scope_ids);
                 try std.testing.expectEqual(@as(usize, 1), plan.row_retirement.?.rows.len);
-                try std.testing.expectEqual(@as(usize, 0), plan.effects_retirement.?.task_indexes_descending.len);
                 try std.testing.expectEqual(@as(usize, 1), plan.effects_retirement.?.cleanup_names.items.len);
                 try std.testing.expectEqualStrings("branch-cleanup-new", plan.effects_retirement.?.cleanup_names.items[0]);
                 try std.testing.expectEqual(@as(usize, 4), plan.sink_edits.?.text.len);
@@ -20278,8 +20021,6 @@ test "aggregate branch collection sweeps allocation failures without publication
                 engine.active_structural_signal_routes.deinit(ctx.allocator);
                 ctx.render_batch.deinit(ctx.allocator);
                 engine.deinitRenderCache(&ctx);
-                effects_runtime.clearPendingTasks(VerifyCtx, &ctx, ctx.allocator, &engine.pending_tasks, &roc_host);
-                engine.pending_tasks.deinit(ctx.allocator);
                 effects_runtime.deinitCleanupEvents(ctx.allocator, &engine.cleanup_events);
                 for (engine.states.items) |*state| if (state.isActive()) state.retire(&ctx, &roc_host, &engine.pending_roc_metrics);
                 engine.states.deinit(ctx.allocator);
@@ -20311,7 +20052,6 @@ test "aggregate branch collection sweeps allocation failures without publication
             const second_site = engine.active_stream.scope_sites.items[engine.active_stream.nodeDescriptorIndex(second_when.node_id).?.scope_sites.when.get().?];
             const first_old = (try engine.activeWhenBranchScopeId(first_site.scope_id, first_site.ordinal, .true_branch)).?;
             const second_old = (try engine.activeWhenBranchScopeId(second_site.scope_id, second_site.ordinal, .true_branch)).?;
-            _ = engine.appendPendingTask(&ctx, first_old, fixture.first_true_callable.?, "retired-branch-task", "request");
             const old_graph_len = engine.active_signal_graph.items.len;
             const old_first_record = engine.active_stream.signal_text_nodes.items[0].signal.record;
             const old_second_record = engine.active_stream.signal_text_nodes.items[1].signal.record;
@@ -20346,20 +20086,16 @@ test "aggregate branch collection sweeps allocation failures without publication
                     try std.testing.expectEqual(error.OutOfMemory, err);
                     try std.testing.expectEqualSlices(ids.ElemId, old_root_children, engine.render_cache.nodes.items[1].children.items);
                     try std.testing.expectEqual(old_graph_len, engine.active_signal_graph.items.len);
-                    try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
-                    try std.testing.expectEqual(@as(usize, 0), ctx.cancelled_tasks);
                     for (dirty_changes) |change| try std.testing.expect(change.pending_when_cache != null);
                     const attempts = fault.attempts;
                     fault.configure(null);
                     const retry_counts = (try engine.tryApplyPreparedDirtyWhenSet(&ctx, &roc_host, &.{}, dirty_changes)).?;
                     try std.testing.expect(retry_counts.total != 0);
                     for (dirty_changes) |change| try std.testing.expect(change.pending_when_cache == null);
-                    try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
                     return attempts;
                 };
                 try std.testing.expect(maybe_counts.?.total != 0);
                 for (dirty_changes) |change| try std.testing.expect(change.pending_when_cache == null);
-                try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
                 return fault.attempts;
             }
 
@@ -20374,8 +20110,6 @@ test "aggregate branch collection sweeps allocation failures without publication
                 try std.testing.expectEqual(old_render_len, engine.active_stream.render_nodes.items.len);
                 try std.testing.expect(engine.scopes.items[first_old.index()].lifecycle.isActive());
                 try std.testing.expect(engine.scopes.items[second_old.index()].lifecycle.isActive());
-                try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
-                try std.testing.expectEqual(@as(usize, 0), ctx.cancelled_tasks);
                 try std.testing.expectEqualSlices(ids.ElemId, old_root_children, engine.render_cache.nodes.items[1].children.items);
                 try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
                 try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.published.commands.len());
@@ -20429,8 +20163,6 @@ test "aggregate branch collection sweeps allocation failures without publication
             try std.testing.expect(engine.scopes.items[@intCast(first_new_scope)].lifecycle.isActive());
             try std.testing.expect(engine.scopes.items[@intCast(second_new_scope)].lifecycle.isActive());
             try std.testing.expectEqual(@as(usize, 2), engine.active_stream.signal_text_nodes.items.len);
-            try std.testing.expectEqual(@as(usize, 0), engine.pending_tasks.items.len);
-            try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
             try std.testing.expectEqual(old_graph_len, engine.active_signal_graph.items.len);
             try std.testing.expectEqual(@as(?u64, null), old_first_record.active_graph_id);
             try std.testing.expectEqual(@as(?u64, null), old_second_record.active_graph_id);
@@ -20494,8 +20226,6 @@ test "nested live when transaction subsumes inner change atomically" {
                 engine.active_structural_signal_routes.deinit(ctx.allocator);
                 ctx.render_batch.deinit(ctx.allocator);
                 engine.deinitRenderCache(&ctx);
-                effects_runtime.clearPendingTasks(VerifyCtx, &ctx, ctx.allocator, &engine.pending_tasks, &roc_host);
-                engine.pending_tasks.deinit(ctx.allocator);
                 effects_runtime.deinitCleanupEvents(ctx.allocator, &engine.cleanup_events);
                 for (engine.states.items) |*state| if (state.isActive()) state.retire(&ctx, &roc_host, &engine.pending_roc_metrics);
                 engine.states.deinit(ctx.allocator);
@@ -20524,7 +20254,6 @@ test "nested live when transaction subsumes inner change atomically" {
             const outer_old = (try engine.activeWhenBranchScopeId(outer_site.scope_id, outer_site.ordinal, .true_branch)).?;
             const inner_old = (try engine.activeWhenBranchScopeId(inner_site.scope_id, inner_site.ordinal, .true_branch)).?;
             try std.testing.expect(try engine.scopeIsDescendantOrSelf(inner_old.raw(), outer_old.raw()));
-            _ = engine.appendPendingTask(&ctx, inner_old, fixture.first_true_callable.?, "nested-task", "request");
             const old_graph_len = engine.active_signal_graph.items.len;
             const old_inner_record = engine.active_stream.signal_text_nodes.items[0].signal.record;
             const old_inner_id = old_inner_record.active_graph_id.?;
@@ -20542,8 +20271,6 @@ test "nested live when transaction subsumes inner change atomically" {
                 try std.testing.expectEqual(old_graph_len, engine.active_signal_graph.items.len);
                 try std.testing.expectEqual(@as(?u64, old_inner_id), old_inner_record.active_graph_id);
                 try std.testing.expectEqualSlices(ids.ElemId, old_children, engine.render_cache.nodes.items[1].children.items);
-                try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
-                try std.testing.expectEqual(@as(usize, 0), ctx.cancelled_tasks);
                 for (changes) |change| try std.testing.expect(change.pending_when_cache != null);
                 const attempts = fault.attempts;
                 fault.configure(null);
@@ -20566,8 +20293,6 @@ test "nested live when transaction subsumes inner change atomically" {
             try std.testing.expectEqual(@as(u64, 1), active_graph.rank(HostSignalRecord, engine.active_signal_graph.items, next_id));
             try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(next_id)].len());
             try std.testing.expect(next_record.active_use_count != 0);
-            try std.testing.expectEqual(@as(usize, 0), engine.pending_tasks.items.len);
-            try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
             ctx.render_batch.publish();
             try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
             var found_outer_result = false;

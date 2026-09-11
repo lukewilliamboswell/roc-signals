@@ -60,21 +60,6 @@ const WasmCtx = struct {
     pub const RegistryOps = hv.RegistryOps();
     pub const Metrics = if (build_options.wasm_benchmark) engine.RuntimeMetrics else engine.NoMetrics;
     pub const Sink = WasmSink;
-    pub const TaskPublication = render.TransactionalBatch.TaskPublication;
-
-    /// Reserves the engine-selected cancellation records and complete task
-    /// payload before the engine changes live request membership.
-    pub fn prepareTaskPublication(_: Handle, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8, cancellation_count: usize) render.PreflightError!TaskPublication {
-        if (kind != .external) failHostWithFmt("native task service is unsupported by the browser host", .{});
-        return command_batch.prepareTaskStart(WasmCtx.allocator(.{}), request_id, task_name, request, cancellation_count);
-    }
-
-    pub const TaskCancellationPublication = render.TransactionalBatch.TaskCancellationPublication;
-
-    /// Reserves cancellation records before the terminal source value commits.
-    pub fn prepareTaskCancellation(_: Handle, count: usize) render.PreflightError!TaskCancellationPublication {
-        return command_batch.prepareTaskCancellation(WasmCtx.allocator(.{}), count);
-    }
 
     /// Creates the host's zeroed metric accumulator for a new engine operation.
     pub fn zeroMetrics() Metrics {
@@ -263,20 +248,6 @@ const WasmSink = struct {
     /// Cancels the host registration for an interval whose owning scope is no longer active.
     pub fn cancelInterval(_: WasmSink, token: ids.IntervalToken) void {
         appendCommand(.cancel_interval, toU32(token.raw()), 0, 0, 0, 0);
-    }
-
-    /// Starts bounded asynchronous host work for an engine-issued task request.
-    pub fn startTask(_: WasmSink, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8) void {
-        if (kind != .external) failHostWithFmt("native task service is unsupported by the browser host", .{});
-        command_batch.appendTaskStart(allocator(), request_id, task_name, request) catch |err| switch (err) {
-            error.OutOfMemory => failHostWith("out of memory while preparing task publication"),
-            error.ResourceLimit => failHostWith("task publication exceeded Wasm wire resource limit"),
-        };
-    }
-
-    /// Cancels host work for a task request retired by engine lifecycle policy.
-    pub fn cancelTask(_: WasmSink, request_id: ids.TaskRequestId) void {
-        appendCommand(.cancel_task, toU32(request_id.raw()), 0, 0, 0, 0);
     }
 
     /// Applies an engine-issued browser-history command without deriving routing semantics.
@@ -1366,42 +1337,6 @@ fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     _ = shared_engine.dispatchStateValue(ctx, &roc_host, target_node_id.raw(), next, state_cap);
 }
 
-fn resolveTask(request_id: ids.TaskRequestId, payload_text: []const u8, failed: bool) void {
-    const previous_phase = roc_allocation_phase;
-    defer roc_allocation_phase = previous_phase;
-    const ctx = WasmCtx{};
-    const pending_index = switch (shared_engine.classifyTaskResolution(request_id)) {
-        .pending => shared_engine.pendingTaskIndexByRequestId(request_id).?,
-        .superseded => {
-            shared_engine.noteStaleTaskResolutionIgnored();
-            return;
-        },
-        .unknown => failHostWith("task result had no matching pending request"),
-    };
-    const pending = shared_engine.pending_tasks.items[pending_index];
-
-    const record = shared_engine.activeTaskRecordByToken(pending.task_token) orelse failHostWith("task result matched no active task source");
-    const task_payload = switch (record.payload) {
-        .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .select, .keyed_select, .combine, .row_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
-    };
-    if (record.token().? != pending.task_token) failHostWith("task result matched a pending request for a different task source");
-
-    roc_allocation_phase = .task_payload;
-    const payload = hostValueStr(payload_text);
-    setHostValueCapability(payload, task_payload.payload_cap);
-    const payload_take_epoch = hostValueTakeEpoch();
-
-    roc_allocation_phase = .task_transform;
-    const next = if (failed)
-        callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.failed.toAbi(), payload)
-    else
-        callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.done.toAbi(), payload);
-    assertHostValueTakenAfter(payload, payload_take_epoch);
-    roc_allocation_phase = .task_dispatch;
-    _ = shared_engine.dispatchTaskSourceValue(ctx, &roc_host, pending.request_id, record, next);
-}
-
 fn tickInterval(token: ids.IntervalToken) void {
     const ctx = WasmCtx{};
     _ = shared_engine.tickIntervalSourceByRuntimeToken(ctx, &roc_host, token.raw());
@@ -1459,9 +1394,7 @@ fn clearActiveRuntime() void {
     shared_engine.active_events.deinit(a);
     shared_engine.active_events = .empty;
 
-    shared_engine.clearPendingTasks(ctx);
-    shared_engine.pending_tasks.deinit(a);
-    shared_engine.pending_tasks = .empty;
+    shared_engine.clearEffects(ctx);
 
     shared_engine.clearActiveIntervals(ctx);
     shared_engine.active_intervals.deinit(a);
@@ -2365,17 +2298,6 @@ export fn roc_ui_timer(token: u32) callconv(.c) void {
     beginHostCall();
     beginCommandTransaction();
     tickInterval(ids.IntervalToken.fromRaw(token));
-    publishCommandTransaction();
-}
-
-export fn roc_ui_resolve(request_id: u32, payload_ptr: usize, payload_len: usize, failed: u32) callconv(.c) void {
-    beginHostCall();
-    beginCommandTransaction();
-    resolveTask(
-        ids.TaskRequestId.fromRaw(request_id),
-        (@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len],
-        failed != 0,
-    );
     publishCommandTransaction();
 }
 

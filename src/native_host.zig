@@ -73,93 +73,6 @@ const RenderEventKind = render.EventKind;
 const CommandCounts = render.Counts;
 const HostScopeBranch = scope_tree.Branch;
 
-const NativeTaskCancellationPublication = struct {
-    /// All observation storage was reserved before source propagation committed.
-    pub fn beginCommit(_: *@This()) void {}
-    /// Cancellation sink calls already transferred each retired observation.
-    pub fn commit(_: *@This()) void {}
-    /// Uncommitted cancellation owns no additional payload or registration.
-    pub fn deinit(_: *@This()) void {}
-};
-
-/// The engine's task starts are observations here: the GUI platform runs its
-/// native work as effects. These observations remain for the legacy engine
-/// task tests while the shared task transport is being removed.
-const NativeTaskPublication = struct {
-    host: *HostEnv,
-    record: ?NativeTaskRecord = null,
-    request_id: ids.TaskRequestId,
-
-    fn prepare(host: *HostEnv, request_id: ids.TaskRequestId, _: boundary.TaskKind, task_name: []const u8, _: []const u8, cancellation_count: usize) error{ OutOfMemory, ResourceLimit }!NativeTaskPublication {
-        const allocator = host.hostAllocator();
-        const name = try allocator.dupe(u8, task_name);
-        errdefer allocator.free(name);
-        try host.started_tasks.ensureUnusedCapacity(allocator, 1);
-        try host.canceled_tasks.ensureUnusedCapacity(allocator, cancellation_count);
-        return .{ .host = host, .request_id = request_id, .record = .{ .request_id = request_id, .name = name } };
-    }
-
-    /// Transfers a prepared observation to the host without allocation.
-    /// It stays until resolution, cancellation before dispatch, or teardown.
-    pub fn commit(self: *NativeTaskPublication) void {
-        self.host.started_tasks.appendAssumeCapacity(self.record orelse @panic("task publication committed twice"));
-        self.record = null;
-    }
-
-    /// Native observations have no wire seal to reopen; all storage remains
-    /// reserved while the shared engine commits the Loading transition.
-    pub fn beginCommit(_: *NativeTaskPublication) void {}
-
-    /// Records the accepted start and immediate cancellation selected when
-    /// the same prepared transition disposes the request's owning scope.
-    pub fn commitRetired(self: *NativeTaskPublication) void {
-        self.commit();
-        self.host.recordCanceledTask(self.request_id);
-    }
-
-    /// Releases an unpublished name without recording a task start or cancel.
-    pub fn deinit(self: *NativeTaskPublication) void {
-        if (self.record) |record| self.host.hostAllocator().free(record.name);
-        self.record = null;
-    }
-};
-
-test "native task publication refuses without changing old requests and commits without allocation" {
-    // Name copy, started-table storage, and cancellation-table storage are
-    // independent refusal points when the observation tables are empty.
-    for (1..4) |failure_number| {
-        var host = HostEnv.init();
-        defer {
-            host.deinitTaskRecords();
-            std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("task publication leaked");
-        }
-        host.configureAllocationFailure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), .external, "load", "request", 1));
-        try std.testing.expectEqual(@as(usize, 1), host.allocation_fault.?.induced_failures);
-        try std.testing.expectEqual(@as(usize, 0), host.started_tasks.items.len);
-        try std.testing.expectEqual(@as(usize, 0), host.canceled_tasks.items.len);
-        host.configureAllocationFailure(null);
-        host.recordStartedTask(ids.TaskRequestId.fromRaw(10), "old");
-        var abandoned = try NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), .external, "new", "request", 1);
-        host.configureAllocationFailure(1);
-        abandoned.deinit();
-        try std.testing.expectEqualStrings("old", host.started_tasks.items[0].name);
-        try std.testing.expectEqual(@as(usize, 0), host.canceled_tasks.items.len);
-        try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
-        host.configureAllocationFailure(null);
-        var replacement = try NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), .external, "new", "request", 1);
-        defer replacement.deinit();
-        host.configureAllocationFailure(1);
-        host.recordCanceledTask(ids.TaskRequestId.fromRaw(10));
-        replacement.commit();
-        try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
-        try std.testing.expectEqual(@as(usize, 1), host.started_tasks.items.len);
-        try std.testing.expectEqualStrings("new", host.started_tasks.items[0].name);
-        try std.testing.expectEqual(@as(usize, 1), host.canceled_tasks.items.len);
-        try std.testing.expectEqualStrings("old", host.canceled_tasks.items[0].name);
-    }
-}
-
 const NativeRenderPublication = struct {
     /// `OutOfMemory`: the host allocator refused; `ResourceLimit`: a count exceeded its arithmetic bound;
     /// `InvalidRenderTopology`: the splice names a DOM node the simulated tree does not hold.
@@ -509,19 +422,6 @@ const NativeCtx = struct {
     pub const Metrics = RuntimeMetrics;
     pub const Sink = render_sink.DomSink(HostEnv);
     pub const RenderPublication = NativeRenderPublication;
-    pub const TaskPublication = NativeTaskPublication;
-    pub const TaskCancellationPublication = NativeTaskCancellationPublication;
-
-    /// Reserves cancellation observations without changing live tasks.
-    pub fn prepareTaskCancellation(ctx: Handle, count: usize) std.mem.Allocator.Error!TaskCancellationPublication {
-        try ctx.canceled_tasks.ensureUnusedCapacity(ctx.hostAllocator(), count);
-        return .{};
-    }
-
-    /// Engine task starts are observations with no transport bound.
-    pub fn canAdmitTask(_: Handle, _: boundary.TaskKind, _: usize) bool {
-        return true;
-    }
 
     /// Marks an infallible command call for the recoverable-only native sweep.
     /// Actual exhaustion still terminates the process. Linked-Wasm fault tests
@@ -535,13 +435,6 @@ const NativeCtx = struct {
     pub fn leaveFatalCommandBoundary(ctx: Handle) void {
         std.debug.assert(ctx.fatal_command_depth > 0);
         ctx.fatal_command_depth -= 1;
-    }
-
-    /// Reserves task observations before the engine replaces live requests.
-    /// Cancellation reuses each old request's owned name; only the new start
-    /// needs a copy. No observation is appended during preparation.
-    pub fn prepareTaskPublication(ctx: Handle, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8, cancellation_count: usize) error{ OutOfMemory, ResourceLimit }!TaskPublication {
-        return TaskPublication.prepare(ctx, request_id, kind, task_name, request, cancellation_count);
     }
 
     /// Creates the host's zeroed metric accumulator for a new engine operation.
@@ -579,13 +472,6 @@ const NativeCtx = struct {
         ctx.debug_phase = phase;
     }
 
-    /// Provides debug inactive task for native semantic observation without duplicating engine behavior.
-    pub fn debugInactiveTask(_: Handle, name: []const u8) void {
-        writeStderr("inactive StartTask name=");
-        writeStderr(name);
-        writeStderr("\n");
-    }
-
     /// Terminates the current host instance with a bounded diagnostic.
     pub fn failWithMessage(_: Handle, message: []const u8) noreturn {
         failHost(message);
@@ -614,11 +500,6 @@ const NativeCtx = struct {
     /// Replaces a state source value and enters the ordinary dirty-propagation path.
     pub fn updateStateValue(ctx: Handle, roc_host: *abi.RocHost, node_id: u64, value: HostValue) bool {
         return ctx.updateStateValue(roc_host, ids.NodeId.fromRaw(node_id), value);
-    }
-
-    /// Marks a task request settled when its prepared source transaction commits.
-    pub fn noteTaskResolved(ctx: Handle, request_id: u64) void {
-        ctx.noteTaskResolved(ids.TaskRequestId.fromRaw(request_id));
     }
 
     /// Materializes the deterministic native entropy seed through the source's owning capability.
@@ -673,7 +554,6 @@ const EventExtractionPlanKind = engine.EventExtractionPlanKind;
 const BoundaryPayloadDescriptor = engine.BoundaryPayloadDescriptor;
 const SignalKind = engine.SignalKind;
 const HostActiveEventDesc = engine.HostActiveEventDesc;
-const HostPendingTask = engine.HostPendingTask;
 
 const HostSignalCacheSlot = engine.HostSignalCacheSlot;
 
@@ -786,11 +666,6 @@ const TestState = struct {
             .commands_allocator = null,
         };
     }
-};
-
-const NativeTaskRecord = struct {
-    request_id: ids.TaskRequestId,
-    name: []const u8,
 };
 
 const NativeLocation = struct {
@@ -1022,12 +897,10 @@ const HostEnv = struct {
     // Manual spec execution leaves prepared effects owned by the engine until
     // a test explicitly advances them. The live GUI never enables this mode.
     spec_manual_effects: bool = false,
-    started_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     /// Spec-declared results for the synchronous `Files` primitives, consumed
     /// oldest first as requests arrive; only the display-free spec host uses them.
     file_stubs: services.FileStubs = .empty,
     http_stubs: services.HttpStubs = .empty,
-    canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
     location_index: usize = 0,
     entropy_seed: u32 = default_native_entropy_seed,
@@ -1126,7 +999,7 @@ const HostEnv = struct {
         self.http_stubs.append(gpa, copy) catch @panic("out of memory");
     }
 
-    fn deinitTaskRecords(self: *HostEnv) void {
+    fn deinitServiceStubs(self: *HostEnv) void {
         const allocator = self.hostAllocator();
         for (self.file_stubs.items) |stub| stub.deinit(allocator);
         self.file_stubs.deinit(allocator);
@@ -1134,64 +1007,6 @@ const HostEnv = struct {
         for (self.http_stubs.items) |stub| stub.deinit(allocator);
         self.http_stubs.deinit(allocator);
         self.http_stubs = .empty;
-        for (self.started_tasks.items) |record| {
-            allocator.free(record.name);
-        }
-        self.started_tasks.deinit(allocator);
-        self.started_tasks = .empty;
-        for (self.canceled_tasks.items) |record| {
-            allocator.free(record.name);
-        }
-        self.canceled_tasks.deinit(allocator);
-        self.canceled_tasks = .empty;
-    }
-
-    fn recordStartedTask(self: *HostEnv, request_id: ids.TaskRequestId, task_name: []const u8) void {
-        const allocator = self.hostAllocator();
-        const task_name_copy = allocator.dupe(u8, task_name) catch @panic("out of memory");
-        self.started_tasks.append(allocator, .{
-            .request_id = request_id,
-            .name = task_name_copy,
-        }) catch {
-            allocator.free(task_name_copy);
-            @panic("out of memory");
-        };
-    }
-
-    fn takeStartedTask(self: *HostEnv, request_id: ids.TaskRequestId) ?NativeTaskRecord {
-        for (self.started_tasks.items, 0..) |record, index| {
-            if (record.request_id == request_id) return self.started_tasks.swapRemove(index);
-        }
-        return null;
-    }
-
-    fn noteTaskResolved(self: *HostEnv, request_id: ids.TaskRequestId) void {
-        if (self.takeStartedTask(request_id)) |record| {
-            self.hostAllocator().free(record.name);
-        }
-    }
-
-    fn recordCanceledTask(self: *HostEnv, request_id: ids.TaskRequestId) void {
-        const record = self.takeStartedTask(request_id) orelse return;
-        self.canceled_tasks.append(self.hostAllocator(), record) catch {
-            self.hostAllocator().free(record.name);
-            @panic("out of memory");
-        };
-    }
-
-    fn takeCanceledTaskByName(self: *HostEnv, name: []const u8) ?NativeTaskRecord {
-        for (self.canceled_tasks.items, 0..) |record, index| {
-            if (std.mem.eql(u8, record.name, name)) return self.canceled_tasks.swapRemove(index);
-        }
-        return null;
-    }
-
-    fn canceledTaskCountByName(self: *const HostEnv, name: []const u8) u64 {
-        var count: u64 = 0;
-        for (self.canceled_tasks.items) |record| {
-            if (std.mem.eql(u8, record.name, name)) count += 1;
-        }
-        return count;
     }
 
     inline fn hostMetricBytes(bytes: usize) u64 {
@@ -1329,16 +1144,6 @@ const HostEnv = struct {
     /// Adapts the shared engine's cancel interval command to this host without re-deciding reactive meaning.
     pub fn sinkCancelInterval(_: *HostEnv, token: ids.IntervalToken) void {
         if (gpui_spike and Gpui.live) Gpui.timers.cancel(token.raw());
-    }
-
-    /// Adapts the shared engine's start task command to this host without re-deciding reactive meaning.
-    pub fn sinkStartTask(self: *HostEnv, request_id: ids.TaskRequestId, _: boundary.TaskKind, task_name: []const u8, _: []const u8) void {
-        self.recordStartedTask(request_id, task_name);
-    }
-
-    /// Adapts the shared engine's cancel task command to this host without re-deciding reactive meaning.
-    pub fn sinkCancelTask(self: *HostEnv, request_id: ids.TaskRequestId) void {
-        self.recordCanceledTask(request_id);
     }
 
     /// Adapts the shared engine's navigate command to this host without re-deciding reactive meaning.
@@ -1956,14 +1761,6 @@ const HostEnv = struct {
         self.engine.recordDispatch();
     }
 
-    fn deinitPendingTask(self: *HostEnv, task: *HostPendingTask) void {
-        return self.engine.deinitPendingTask(self, task);
-    }
-
-    fn clearPendingTasks(self: *HostEnv) void {
-        self.engine.clearPendingTasks(self);
-    }
-
     fn clearStates(self: *HostEnv) void {
         self.engine.clearStates(self) catch |err| {
             failRocHostRequiredError(err, "state table cannot release values without a Roc host");
@@ -2080,9 +1877,8 @@ const HostEnv = struct {
         self.clearActiveEvents();
         self.engine.active_events.deinit(allocator);
 
-        self.clearPendingTasks();
-        self.engine.pending_tasks.deinit(allocator);
-        self.deinitTaskRecords();
+        self.engine.clearEffects(self);
+        self.deinitServiceStubs();
 
         engine.deinitCleanupEvents(allocator, &self.engine.cleanup_events);
 
@@ -2899,55 +2695,6 @@ fn updateDirtySignalCache(host: *HostEnv, roc_host: *abi.RocHost, cache_slot: *H
     const cap = testHostValueCapability(roc_host);
     defer cap.decref(roc_host);
     return host.engine.updateDirtySignalCache(host, roc_host, cache_slot, value, cap);
-}
-
-fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
-    return tryResolvePendingTask(host, roc_host, name, payload_text, failed) catch |err| {
-        if (err != error.OutOfMemory or !host.recoverSelectedOutOfMemory()) failPreparedStateDispatch(err);
-        // The refused transaction consumed its proposal but retained the
-        // pending request. Re-decode the borrowed settlement for a fresh owner.
-        return tryResolvePendingTask(host, roc_host, name, payload_text, failed) catch |retry_err| failPreparedStateDispatch(retry_err);
-    };
-}
-
-fn tryResolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, payload_text: []const u8, failed: bool) HostEngine.CollectionError!CommandCounts {
-    const pending_index = host.engine.pendingTaskIndexByName(name) orelse failHost("fake task result had no matching pending request");
-    return tryResolvePendingTaskAt(host, roc_host, pending_index, payload_text, failed);
-}
-
-fn tryResolvePendingTaskAt(host: *HostEnv, roc_host: *abi.RocHost, pending_index: usize, payload_text: []const u8, failed: bool) HostEngine.CollectionError!CommandCounts {
-    const pending = host.engine.pending_tasks.items[pending_index];
-
-    const record = host.engine.activeTaskRecordByToken(pending.task_token) orelse failHost("fake task result matched no active task source");
-    const task_payload = switch (record.payload) {
-        .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .select, .keyed_select, .combine, .row_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
-    };
-    if (record.token().? != pending.task_token) {
-        failHost("fake task result matched a pending request for a different task source");
-    }
-
-    const payload_value = hostValueStrWithCapability(host, roc_host, payload_text, task_payload.payload_cap);
-    const payload_take_epoch = host.hostValueTakeEpoch();
-    const next = if (failed)
-        callHostValueToHostValueWithCapability(host, roc_host, task_payload.payload_cap, task_payload.failed.toAbi(), payload_value)
-    else
-        callHostValueToHostValueWithCapability(host, roc_host, task_payload.payload_cap, task_payload.done.toAbi(), payload_value);
-    host.assertHostValueTakenAfter(payload_value, payload_take_epoch);
-    return host.engine.tryDispatchTaskSourceValue(host, roc_host, pending.request_id, record, next);
-}
-
-fn resolveStalePendingTask(host: *HostEnv, name: []const u8, _: []const u8, _: bool) CommandCounts {
-    const record = host.takeCanceledTaskByName(name) orelse failHost("fake stale task result had no matching canceled request");
-    defer host.hostAllocator().free(record.name);
-    switch (host.engine.classifyTaskResolution(record.request_id)) {
-        .pending => failHost("fake stale task result still matched a pending request"),
-        .superseded => {
-            host.engine.noteStaleTaskResolutionIgnored();
-            return .{};
-        },
-        .unknown => failHost("fake stale task result matched an unknown request"),
-    }
 }
 
 fn tickIntervalSource(host: *HostEnv, roc_host: *abi.RocHost, period_ms: u64) CommandCounts {
@@ -4967,7 +4714,7 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
             const payload = testHostValueUnit();
             host.configureAllocationFailure(1);
             _ = signals.retained_values.callHostValueHostValueHostValueToHostValueWithCapabilities(NativeCtx, &host, &roc_host, cap, cap, cap, reducer, current, current, payload);
-        } else if (std.mem.eql(u8, mode, "task_callback")) {
+        } else if (std.mem.eql(u8, mode, "source_callback")) {
             const cap = testHostValueCapability(&roc_host);
             const transform = writeTestErasedCallable(TestErasedI64Capture, &roc_host, &testStableStrHostValueCallable, &testErasedCallableOnDrop, .{ .amount = 0 });
             const payload = testHostValueI64(1);
@@ -4981,7 +4728,7 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
         .{ .mode = "alloc", .diagnostic = "HOST ERROR: Roc allocation failed\n" },
         .{ .mode = "realloc", .diagnostic = "HOST ERROR: Roc reallocation failed\n" },
         .{ .mode = "event_callback", .diagnostic = "HOST ERROR: Roc allocation failed\n" },
-        .{ .mode = "task_callback", .diagnostic = "HOST ERROR: Roc allocation failed\n" },
+        .{ .mode = "source_callback", .diagnostic = "HOST ERROR: Roc allocation failed\n" },
     }) |case| {
         var environment = try std.testing.environ.createMap(std.testing.allocator);
         defer environment.deinit();
@@ -5203,24 +4950,6 @@ test "native drag publication rejects incomplete handlers without exposing metad
     host.configureAllocationFailure(null);
 }
 
-test "native task retired during publication owns one cancellation and no pending start" {
-    var host = HostEnv.init();
-    defer {
-        host.deinitTaskRecords();
-        std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("retired task leaked");
-    }
-    var publication = try NativeTaskPublication.prepare(&host, ids.TaskRequestId.fromRaw(11), .external, "retired", "request", 1);
-    defer publication.deinit();
-    try std.testing.expectEqual(@as(usize, 0), host.started_tasks.items.len);
-    try std.testing.expectEqual(@as(usize, 0), host.canceled_tasks.items.len);
-    host.configureAllocationFailure(1);
-    publication.commitRetired();
-    try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
-    try std.testing.expectEqual(@as(usize, 0), host.started_tasks.items.len);
-    try std.testing.expectEqual(@as(usize, 1), host.canceled_tasks.items.len);
-    try std.testing.expectEqualStrings("retired", host.canceled_tasks.items[0].name);
-}
-
 test "native prepared render publication applies sparse child moves atomically" {
     var host = HostEnv.init();
     var roc_host = makeSignalsRocHost(&host);
@@ -5349,10 +5078,6 @@ const TestBinderInitialCapture = extern struct {
 
 const TestCapabilityCloneCapture = extern struct {
     split: abi.RocErasedCallable,
-};
-
-const TestTaskPayloadCapture = extern struct {
-    payload_cap: HostValueCapability,
 };
 
 const TestPayloadTransformCapture = extern struct {
@@ -6181,16 +5906,6 @@ fn testDropHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]cons
     testDropHostValue(roc_host, call_args.arg0);
 }
 
-fn testConsumeTaskPayloadStrCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
-    const host = hostFromRocHost(roc_host);
-    const capture = testCapturePtrAs(TestTaskPayloadCapture, capture_ptr);
-    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
-    const box = host.takeHostValueWithCapability(HostValue.fromRaw(call_args.arg0), hv.retainHostValueCapability(capture.payload_cap));
-    const value = host.storeHostValueWithRetainedCapability(box, capture.payload_cap);
-    if (host_fixtures) host.setTestHostValueKind(value, .str);
-    writeTestErasedResult(HostValue, ret, value);
-}
-
 fn testPayloadChecksumHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     const host = hostFromRocHost(roc_host);
     const capture = testCapturePtrAs(TestPayloadTransformCapture, capture_ptr);
@@ -6363,56 +6078,6 @@ fn expectHostValueI64(value: HostValue, expected: i64) error{TestExpectedEqual}!
     testDropHostValue(roc_host, value);
 }
 
-fn expectCachedTaskSourceText(roc_host: *abi.RocHost, record: *HostSignalRecord, expected: []const u8) error{TestExpectedEqual}!void {
-    const task_payload = switch (record.payload) {
-        .task_source => |payload| payload,
-        else => unreachable,
-    };
-    const cached = switch (task_payload.cached_value) {
-        .present => |cell| cell,
-        .absent => return error.TestExpectedEqual,
-    };
-    const text = testReadHostValueStr(roc_host, cached.value);
-    try std.testing.expectEqualStrings(expected, text.asSlice());
-}
-
-fn makeTestConsumingTaskSourceRecord(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8) *HostSignalRecord {
-    const allocator = host.hostAllocator();
-    const payload_cap = testHostValueCapability(roc_host);
-    const capture = TestTaskPayloadCapture{ .payload_cap = payload_cap };
-    const initial = writeTestErasedCallable(
-        TestErasedI64Capture,
-        roc_host,
-        &testStableStrHostValueCallable,
-        null,
-        .{ .amount = 0 },
-    );
-    abi.increfErasedCallable(initial, 2);
-    return HostSignalRecord.init(allocator, .{ .task_source = .{
-        .name = allocator.dupe(u8, name) catch @panic("out of memory"),
-        .payload_cap = payload_cap,
-        .initial = .fromAbi(initial),
-        .canceled = .fromAbi(initial),
-        .refused = .fromAbi(initial),
-        .done = .fromAbi(writeTestErasedCallable(
-            TestTaskPayloadCapture,
-            roc_host,
-            &testConsumeTaskPayloadStrCallable,
-            &testErasedCallableOnDrop,
-            capture,
-        )),
-        .failed = .fromAbi(writeTestErasedCallable(
-            TestTaskPayloadCapture,
-            roc_host,
-            &testConsumeTaskPayloadStrCallable,
-            &testErasedCallableOnDrop,
-            capture,
-        )),
-        .cap = testHostValueCapability(roc_host),
-        .reset_on_start = false,
-    } });
-}
-
 test "signals host invokes erased HostValue thunks with ABI argument layouts" {
     test_erased_callable_drop_count = 0;
 
@@ -6505,36 +6170,6 @@ test "signals host invokes erased HostValue thunks with ABI argument layouts" {
     try std.testing.expectEqual(@as(u64, 48), test_erased_callable_drop_count);
 }
 
-test "signals host task result callbacks consume heap string payloads" {
-    test_erased_callable_drop_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-
-    const record = makeTestConsumingTaskSourceRecord(&host, &roc_host, "lookup");
-    host.engine.retainActiveSignalRecord(&host, record);
-    host.engine.active_stream.rememberSignalRecord(host.hostAllocator(), record);
-    defer {
-        host.engine.clearActiveSignalGraph(&host);
-        record.release(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
-        host.deinit();
-        _ = host.gpa.deinit();
-    }
-
-    const success_payload = "successful task payload that is intentionally longer than the Roc small string limit";
-    _ = host.engine.appendPendingTask(&host, ids.ScopeId.fromRaw(0), record.token().?, "lookup", "/api/test");
-    _ = resolvePendingTask(&host, &roc_host, "lookup", success_payload, false);
-    try expectCachedTaskSourceText(&roc_host, record, success_payload);
-    try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
-
-    const failed_payload = "failed task payload that is intentionally longer than the Roc small string limit";
-    _ = host.engine.appendPendingTask(&host, ids.ScopeId.fromRaw(0), record.token().?, "lookup", "/api/test");
-    _ = resolvePendingTask(&host, &roc_host, "lookup", failed_payload, true);
-    try expectCachedTaskSourceText(&roc_host, record, failed_payload);
-    try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
-}
-
 test "heap string source settlement sweeps host OOM and preserves cached ownership" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {
@@ -6592,66 +6227,6 @@ test "heap string source settlement sweeps host OOM and preserves cached ownersh
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
-}
-
-test "native task resolution uses the pending source token when active names repeat" {
-    test_erased_callable_drop_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-
-    const first = makeTestConsumingTaskSourceRecord(&host, &roc_host, "favorite");
-    const second = makeTestConsumingTaskSourceRecord(&host, &roc_host, "favorite");
-    host.engine.retainActiveSignalRecord(&host, first);
-    host.engine.retainActiveSignalRecord(&host, second);
-    host.engine.active_stream.rememberSignalRecord(host.hostAllocator(), first);
-    host.engine.active_stream.rememberSignalRecord(host.hostAllocator(), second);
-    defer {
-        host.engine.clearActiveSignalGraph(&host);
-        first.release(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
-        second.release(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
-        host.deinit();
-        _ = host.gpa.deinit();
-    }
-
-    const second_token = second.token().?;
-    _ = host.engine.appendPendingTask(&host, ids.ScopeId.fromRaw(0), second_token, "favorite", "/api/favorite");
-    _ = resolvePendingTask(&host, &roc_host, "favorite", "second result", false);
-
-    try expectCachedTaskSourceText(&roc_host, second, "second result");
-    switch (first.requireTaskSource().cached_value) {
-        .absent => {},
-        .present => return error.TestUnexpectedResult,
-    }
-}
-
-test "signals host classifies superseded task results" {
-    test_erased_callable_drop_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-
-    const record = makeTestConsumingTaskSourceRecord(&host, &roc_host, "lookup");
-    defer {
-        record.release(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
-        host.deinit();
-        _ = host.gpa.deinit();
-    }
-
-    const task_token = record.token().?;
-    const request_id = host.engine.appendPendingTask(&host, ids.ScopeId.fromRaw(0), task_token, "lookup", "/api/first");
-
-    try std.testing.expectEqual(engine.TaskResolutionClass.pending, host.engine.classifyTaskResolution(request_id));
-    host.engine.cancelPendingTasksByTaskToken(&host, task_token);
-    try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
-    try std.testing.expectEqual(engine.TaskResolutionClass.superseded, host.engine.classifyTaskResolution(request_id));
-    try std.testing.expectEqual(engine.TaskResolutionClass.unknown, host.engine.classifyTaskResolution(ids.TaskRequestId.fromRaw(host.engine.next_task_request_id + 10)));
-
-    const stale_start = host.engine.pending_roc_metrics.stale_task_results_ignored;
-    host.engine.noteStaleTaskResolutionIgnored();
-    try std.testing.expectEqual(stale_start + 1, host.engine.pending_roc_metrics.stale_task_results_ignored);
 }
 
 test "signals host interval sources tick by period and runtime token" {
@@ -12145,7 +11720,8 @@ const HostPlateauSnapshot = struct {
     active_change_signal_routes_len: usize,
     active_structural_signal_routes_len: usize,
     active_intervals_len: usize,
-    pending_tasks_len: usize,
+    pending_effects_len: usize,
+    running_effects_len: usize,
     dirty_queue_seen_capacity: usize,
     dirty_queue_pending_capacity: usize,
     dirty_queue_ordered_capacity: usize,
@@ -12183,7 +11759,8 @@ const HostPlateauSnapshot = struct {
             .active_change_signal_routes_len = current.engine.active_change_signal_routes.items.len,
             .active_structural_signal_routes_len = current.engine.active_structural_signal_routes.items.len,
             .active_intervals_len = current.engine.active_intervals.entries.items.len,
-            .pending_tasks_len = current.engine.pending_tasks.items.len,
+            .pending_effects_len = current.engine.pending_effects.items.len,
+            .running_effects_len = current.engine.running_effects.items.len,
             .dirty_queue_seen_capacity = dirty_queue.seen_generations.capacity,
             .dirty_queue_pending_capacity = dirty_queue.pending_record_ids.capacity,
             .dirty_queue_ordered_capacity = dirty_queue.ordered_record_ids.capacity,

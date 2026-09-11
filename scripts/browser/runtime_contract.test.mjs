@@ -13,14 +13,9 @@ import {
   StorageArea,
   SignalsRuntime,
   VisibilityBoundarySchema,
-  decodeHttpRequestPayload,
-  decodeHttpResponsePayload,
   encodeBoundarySchemaPayloadBytes,
   encodeStoragePayloadBytes,
-  encodeHttpRequestPayload,
-  encodeHttpResponsePayload,
   entropySeedFromCrypto,
-  httpFetchTaskHandler,
   locationSnapshotFromHref,
   onlineSnapshotFromNavigator,
   visibilitySnapshotFromDocument,
@@ -149,8 +144,6 @@ class MockHost {
     this.dispatches = [];
     this.eventPayloadKinds = new Map();
     this.timers = [];
-    this.resolutions = [];
-    this.resolveTrapMessage = null;
     this.unmountTrapMessage = null;
     this.mountScript = [];
     this.eventResponses = new Map();
@@ -252,18 +245,6 @@ class MockHost {
         this.timers.push(token);
         const respond = this.timerResponses.get(token);
         this.writeCommands(respond ? respond(token) : []);
-      },
-      roc_ui_resolve: (requestId, ptr, len, failed) => {
-        this.resolutions.push({
-          requestId,
-          payload: decoder.decode(new Uint8Array(this.memory.buffer, ptr, len)),
-          failed: failed !== 0,
-        });
-        if (this.resolveTrapMessage !== null) {
-          this.writeLastError(this.resolveTrapMessage);
-          throw new WebAssembly.RuntimeError("unreachable");
-        }
-        this.writeCommands([]);
       },
       roc_ui_event: (eventId, payloadKind, ptr, len, boolValue) => {
         const trapMessage = this.eventTrapMessages.get(eventId);
@@ -628,7 +609,6 @@ function createStorageDouble(initial = {}) {
 
 function mountWith(mountScript, options = {}) {
   const {
-    taskHandler,
     onError,
     telemetry,
     behaviors,
@@ -650,7 +630,6 @@ function mountWith(mountScript, options = {}) {
   host.mountScript = mountScript;
   const root = installDomDouble();
   const runtime = new SignalsRuntime(host.exports, root, {
-    taskHandler,
     onError,
     telemetry,
     behaviors,
@@ -753,6 +732,10 @@ test("controlled input policy clears pending write when user typed it", () => {
 });
 
 test("protocol checks reject incompatible wasm exports", () => {
+  assert.throws(
+    () => new SignalsRuntime(new MockHost({ protocolVersion: 14 }).exports, installDomDouble()),
+    /wire protocol version mismatch/,
+  );
   assert.throws(
     () => new SignalsRuntime(new MockHost({ protocolVersion: Protocol.version + 1 }).exports, installDomDouble()),
     /wire protocol version mismatch/,
@@ -2493,7 +2476,6 @@ test("fatal wasm trap poisons runtime detaches resources and rejects re-entry", 
   assert.equal(runtime.lastCommands.length, 0);
   assert.equal(runtime.eventCleanups.size, 0);
   assert.equal(runtime.intervals.size, 0);
-  assert.equal(runtime.tasks.size, 0);
   assert.equal(host.deallocCalls.length, deallocsBefore + 1);
   assert.equal(input.value, "still visible");
 
@@ -3027,322 +3009,17 @@ test("timer commands register intervals and timer ticks re-enter wasm", () => {
   }
 });
 
-test("task commands marshal request and resolve payloads by request id", () => {
-  const telemetry = [];
-  const { host, runtime } = mountWith([
-    { op: Op.resetDom },
-    { op: Op.startTask, a: 5, strings: ["lookup", "roc"] },
-  ], { telemetry: (entry) => telemetry.push(entry) });
 
-  assert.deepEqual(
-    [...runtime.tasks.entries()].map(([requestId, task]) => ({
-      requestId,
-      name: task.name,
-      request: task.request,
-      aborted: task.controller.signal.aborted,
-    })),
-    [{ requestId: 5, name: "lookup", request: "roc", aborted: false }],
-  );
 
-  runtime.resolveTask(5, "Roc result");
-  assert.deepEqual(host.resolutions, [
-    { requestId: 5, payload: "Roc result", failed: false },
-  ]);
-  assert.equal(runtime.tasks.has(5), false);
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "start_task" &&
-        entry.requestId === 5 &&
-        entry.name === "lookup" &&
-        entry.request === "roc",
-    ),
-  );
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "task_resolution" &&
-        entry.requestId === 5 &&
-        entry.name === "lookup" &&
-        entry.request === "roc" &&
-        entry.failed === false &&
-        entry.payloadLen === "Roc result".length,
-    ),
-  );
 
-  runtime.applyCommand({ op: Op.startTask, a: 6, b: 0, c: 6, d: 6, e: 3 });
-  runtime.applyCommand({ op: Op.cancelTask, a: 6, b: 0, c: 0, d: 0, e: 0 });
-  assert.equal(runtime.tasks.has(6), false);
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "cancel_task" &&
-        entry.requestId === 6 &&
-        entry.name === "lookup" &&
-        entry.request === "roc",
-    ),
-  );
+test("retired task opcodes are rejected instead of starting host work", () => {
+  for (const op of [20, 21]) {
+    assert.throws(
+      () => mountWith([{ op: Op.resetDom }, { op, a: 5 }]),
+      new RegExp(`unknown render op ${op}`),
+    );
+  }
 });
-
-test("stale manual task resolutions reach host classification with telemetry", () => {
-  const telemetry = [];
-  const { host, runtime } = mountWith([{ op: Op.resetDom }], {
-    telemetry: (entry) => telemetry.push(entry),
-  });
-
-  runtime.startTask(404, "lookup", "old");
-  runtime.cancelTask(404);
-  runtime.resolveTask(404, "late payload");
-
-  assert.deepEqual(host.resolutions, [
-    { requestId: 404, payload: "late payload", failed: false },
-  ]);
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "ignored_task_resolution" &&
-        entry.requestId === 404 &&
-        entry.name === "lookup" &&
-        entry.failed === false,
-    ),
-  );
-});
-
-test("never-issued manual task resolutions fail loudly", () => {
-  const telemetry = [];
-  const { host, runtime } = mountWith([{ op: Op.resetDom }], {
-    telemetry: (entry) => telemetry.push(entry),
-  });
-
-  assert.throws(() => runtime.resolveTask(404, "late payload"), /task result had no matching pending request: 404/);
-  assert.deepEqual(host.resolutions, []);
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "unknown_task_resolution" &&
-        entry.requestId === 404 &&
-        entry.failed === false,
-    ),
-  );
-});
-
-test("task cancellation aborts stale async settlement and keeps fresh request current", async () => {
-  const deferred = [];
-  const telemetry = [];
-  const { host, runtime } = mountWith([{ op: Op.resetDom }], {
-    telemetry: (entry) => telemetry.push(entry),
-    taskHandler: ({ requestId, signal }) =>
-      new Promise((resolve) => {
-        deferred.push({ requestId, signal, resolve });
-      }),
-  });
-
-  runtime.startTask(10, "lookup", "old");
-  runtime.cancelTask(10);
-  runtime.startTask(11, "lookup", "fresh");
-
-  assert.equal(deferred[0].signal.aborted, true);
-  assert.equal(deferred[1].signal.aborted, false);
-
-  deferred[0].resolve("stale");
-  deferred[1].resolve("ready");
-  await Promise.resolve();
-  await Promise.resolve();
-
-  assert.deepEqual(host.resolutions, [
-    { requestId: 10, payload: "stale", failed: false },
-    { requestId: 11, payload: "ready", failed: false },
-  ]);
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "ignored_task_resolution" &&
-        entry.requestId === 10 &&
-        entry.name === "lookup" &&
-        entry.failed === false,
-    ),
-  );
-});
-
-test("task handler rejections resolve through the task failure path", async () => {
-  const telemetry = [];
-  const { host } = mountWith(
-    [
-      { op: Op.resetDom },
-      { op: Op.startTask, a: 8, strings: ["lookup", "roc"] },
-    ],
-    {
-      telemetry: (entry) => telemetry.push(entry),
-      taskHandler: () => Promise.reject(new Error("offline")),
-    },
-  );
-
-  await Promise.resolve();
-  await Promise.resolve();
-
-  assert.deepEqual(host.resolutions, [
-    { requestId: 8, payload: "offline", failed: true },
-  ]);
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "task_resolution" &&
-        entry.requestId === 8 &&
-        entry.name === "lookup" &&
-        entry.request === "roc" &&
-        entry.failed === true &&
-        entry.payloadLen === "offline".length,
-    ),
-  );
-});
-
-test("async task resolution traps report onError without retrying as task failure", async () => {
-  const errors = [];
-  const { host } = mountWith(
-    [
-      { op: Op.resetDom },
-      { op: Op.startTask, a: 9, strings: ["lookup", "roc"] },
-    ],
-    {
-      taskHandler: () => Promise.resolve("ready payload"),
-      onError: (err) => errors.push(err),
-    },
-  );
-  host.resolveTrapMessage = "roc_ui_resolve trapped while applying task result";
-
-  await Promise.resolve();
-  await Promise.resolve();
-
-  assert.deepEqual(host.resolutions, [
-    { requestId: 9, payload: "ready payload", failed: false },
-  ]);
-  assert.equal(errors.length, 1);
-  assert.match(errors[0].message, /roc_ui_resolve trapped while applying task result/);
-});
-
-test("HTTP request payload codec preserves method URI timeout headers and body bytes", () => {
-  const body = new Uint8Array([0, 82, 255]);
-  const payload = encodeHttpRequestPayload({
-    method: "PATCH",
-    uri: "/api/items/42",
-    timeoutMs: 250,
-    headers: [
-      ["x-mode", "test"],
-      ["x-mode", "again"],
-    ],
-    body,
-  });
-
-  assert.deepEqual(decodeHttpRequestPayload(payload), {
-    method: "PATCH",
-    uri: "/api/items/42",
-    timeoutMs: 250,
-    headers: [
-      ["x-mode", "test"],
-      ["x-mode", "again"],
-    ],
-    body,
-  });
-});
-
-test("HTTP response payload codec preserves status duplicate headers and body bytes", () => {
-  const body = new Uint8Array([1, 2, 3, 255]);
-  const payload = encodeHttpResponsePayload({
-    status: 202,
-    headers: [
-      ["set-cookie", "a=1"],
-      ["set-cookie", "b=2"],
-      ["x-trace", "first"],
-      ["x-trace", "second"],
-    ],
-    body,
-  });
-
-  assert.deepEqual(decodeHttpResponsePayload(payload), {
-    status: 202,
-    headers: [
-      ["set-cookie", "a=1"],
-      ["set-cookie", "b=2"],
-      ["x-trace", "first"],
-      ["x-trace", "second"],
-    ],
-    body,
-  });
-});
-
-test("HTTP fetch task handler maps request envelopes to fetch response envelopes", async () => {
-  const calls = [];
-  const payload = encodeHttpRequestPayload({
-    method: "POST",
-    uri: "/api/widgets",
-    timeoutMs: 500,
-    headers: [["content-type", "text/plain"]],
-    body: "hello",
-  });
-  const value = await httpFetchTaskHandler({
-    name: "http:send:widgets",
-    request: payload,
-    signal: new AbortController().signal,
-    fetchImpl: async (url, options) => {
-      calls.push({
-        url,
-        method: options.method,
-        headers: options.headers,
-        body: [...options.body],
-        hasSignal: options.signal instanceof AbortSignal,
-        optionKeys: Object.keys(options).sort(),
-      });
-      return {
-        status: 201,
-        headers: {
-          entries: () =>
-            [
-              ["content-type", "text/plain"],
-              ["x-reply", "ok"],
-              ["x-reply", "again"],
-            ][Symbol.iterator](),
-        },
-        arrayBuffer: async () => textBytes("created").buffer,
-      };
-    },
-  });
-
-  assert.deepEqual(calls, [
-    {
-      url: "/api/widgets",
-      method: "POST",
-      headers: [["content-type", "text/plain"]],
-      body: [...textBytes("hello")],
-      hasSignal: true,
-      optionKeys: ["body", "headers", "method", "signal"],
-    },
-  ]);
-  assert.deepEqual(decodeHttpResponsePayload(value), {
-    status: 201,
-    headers: [
-      ["content-type", "text/plain"],
-      ["x-reply", "ok"],
-      ["x-reply", "again"],
-    ],
-    body: textBytes("created"),
-  });
-});
-
-test("HTTP fetch task handler reports network failures as HTTP error envelopes", async () => {
-  await assert.rejects(
-    () =>
-      httpFetchTaskHandler({
-        name: "http:send:widgets",
-        request: encodeHttpRequestPayload({ uri: "/api/widgets" }),
-        signal: new AbortController().signal,
-        fetchImpl: async () => {
-          throw new Error("offline");
-        },
-      }),
-    /roc-http-error-v1\nnetwork/,
-  );
-});
-
 
 function textBytes(value) {
   return new TextEncoder().encode(value);
