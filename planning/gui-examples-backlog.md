@@ -20,6 +20,16 @@ GUI-25 on. Its findings for items since closed on macOS are collected under
 GUI-34, which is the honest state of those: fixed and unverified there rather
 than fixed everywhere. Windows notes under other items say "Windows:" explicitly.
 
+Linux pass, 2026-09-11, on a Wayland desktop with the debug host and the
+2026-09-04 nightly compiler: the full GUI suite and all 29 scripted scenarios
+were executed there for the first time. Neither Windows P1 that could be
+scripted reproduces on Linux (GUI-29 exits cleanly, GUI-32 previews), the
+`Home` resolution (GUI-27), UNC refusal (GUI-33), Notes line endings (GUI-28),
+plural copy (GUI-18), the Windows build prerequisite check (GUI-31) and the
+documentation corrections (GUI-22) landed as source changes verified on Linux,
+and one Linux-only finding was added (GUI-35). Items with a Windows-only
+symptom stay open until the Windows run in GUI-34 happens.
+
 A passing suite does not establish that the examples are usable at the supported
 window sizes, and a fix executed on one system is not a fix on the others.
 
@@ -39,18 +49,18 @@ usability, or maintainability; P3 = refinement. **All items below are open.**
 | GUI-19 | P2 | Review minimal typography/alignment/truncation capabilities | Source; design | Public GUI style protocol |
 | GUI-20 | P2 | Make shortcut and keyboard behavior discoverable and platform-appropriate | Source; cross-OS validation needed | Examples + native keyboard tests |
 | GUI-21 | P3 | Make the teaching examples smaller and more idiomatic | Source | Example structure |
-| GUI-22 | P3 | Correct maintained docs and small presentation-copy defects | Source + screenshots | Example/reference docs |
+| GUI-22 | P3 | Correct maintained docs and small presentation-copy defects | Source + screenshots; launcher, coverage and `python3` copy fixed 2026-09-11 | Example/reference docs |
 | GUI-23 | P3 | Finish the remaining application-controlled chrome/theming surface | Source; design | GUI/GPUI boundary |
 | GUI-24 | P3 | Optional visual refinements, after operability | Design | Examples + narrowly justified API work |
 | GUI-25 | P2 | Windows: window chrome, title bar theme, and icon | Windows screenshots + source | GPUI host window creation |
 | GUI-26 | P2 | Windows: dark-theme host scrollbars are the only small-window fallback | Windows screenshots | Host scroll fallback; feeds GUI-10/23 |
 | GUI-27 | P1 | Windows: `Home` directory is unresolvable, so Board Save and first Notes Save As never open a dialog | Windows reproduction + source; host fix landed 2026-09-11, unverified on Windows | Files boundary + Board/Notes |
-| GUI-28 | P2 | Notes: CRLF, BOM, and paste line-ending handling | Windows reproduction + file bytes | Notes + native input |
+| GUI-28 | P2 | Notes: CRLF, BOM, and paste line-ending handling | Windows reproduction + file bytes; policy landed 2026-09-11, round trip unverified on Windows/macOS | Notes + native input |
 | GUI-29 | P1 | Activity: closing the window while following a log crashes the process | Windows reproduction + WinDbg stack; exits cleanly on Linux | GPUI host file/timer lifecycle |
 | GUI-30 | P3 | Windows: native dialog defaults (filters, start folder, titles) | Windows screenshots | Files boundary + examples |
-| GUI-31 | P2 | Windows contributor workflow: local host build, docs, and spec fixtures | Local build failure + source | Scripts/docs/fixtures |
+| GUI-31 | P2 | Windows contributor workflow: local host build, docs, and spec fixtures | Local build failure + source; prerequisite check landed 2026-09-11 | Scripts/docs/fixtures |
 | GUI-32 | P1 | Explorer: Preview text and Open in app are inert for real Windows folders | Windows reproduction; works on Linux | Explorer + host hit-testing/effects |
-| GUI-33 | P2 | Windows file-service edge cases: UNC, reparse points, sharing violations | Source; unverified | Windows file worker |
+| GUI-33 | P2 | Windows file-service edge cases: reparse points, sharing violations, separators | Source; unverified; UNC decided 2026-09-11 | Windows file worker |
 | GUI-34 | P1 | Re-verify on Windows the items closed on macOS | Windows evidence predates the fixes | Windows validation |
 | GUI-35 | P2 | Linux: the host's own frame takes 48 pixels of the 360×240 minimum, so Counter's buttons are laid out below the window | Linux regression bounds at 360x240 | GPUI host window frame; window minimum |
 
@@ -239,6 +249,12 @@ users to run `python3`, which is usually the Store stub there.
 [native-gui.md](../www/content/docs/native-gui.md) says native CI "confirmed
 rendering for every app"; that is the two-second `--smoke` render count, not
 a check of any Windows file operation, chrome, or dialog.
+
+Fixed 2026-09-11: the launcher is named per operating system in the reference
+and the protocol document, the native GUI page says what the smoke check
+counts and what has and has not been run per system, and the three READMEs
+point Windows readers at `python`. The Explorer README's Linux-only and 64-pixel
+claims had already been corrected. What remains is the standing rule below.
 
 Acceptance: synchronize examples, public references, platform modules, specs,
 and contributor commands when fixing each item. Clearly distinguish supported
@@ -582,10 +598,12 @@ remain manual for now.
 
 ## Delivery sequence
 
-1. Fix the Windows P1s: GUI-29 (crash on close while following a log),
-   GUI-27 (`Home` unresolvable), and GUI-32 (inert preview and open).
-2. Re-verify the closed items on Windows (GUI-34) and add GUI-16 regressions
-   alongside each fix, not only at the end.
+1. Run on Windows what has been fixed or scripted since the Windows review:
+   the `follow-and-close` and `real-folder-preview` scenarios (GUI-29,
+   GUI-32), Save As without `HOME` (GUI-27), and the closed items (GUI-34).
+   Anything that still fails there gets its symbolized reproduction next.
+2. Add GUI-16 regressions alongside each fix, not only at the end; run the
+   Linux CI arrangement locally once.
 3. Apply current-API layout/readability fixes (GUI-10/11, GUI-13, GUI-18); use evidence
    from them to scope GUI-19/20/23.
 4. Finish structure/docs and optional polish (GUI-21/22/24), then recapture the
