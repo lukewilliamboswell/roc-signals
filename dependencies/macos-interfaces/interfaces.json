@@ -5357,6 +5357,24 @@
           ]
         },
         {
+          "name": "_malloc_size",
+          "sources": [
+            {
+              "url": "https://github.com/apple-oss-distributions/libmalloc/blob/c49dafa25f1efe8607701ae6014a663ad2ee437f/include/malloc/malloc.h",
+              "evidence_kind": "public_open_source_identifier",
+              "identifier": "malloc_size",
+              "line": 457,
+              "revision": "c49dafa25f1efe8607701ae6014a663ad2ee437f",
+              "source_license": "APSL-2.0",
+              "response_sha256": "43f0e117c173f3460bb4883ff32af34266bab0cc1b57f9e845f26fcaea3fb65b"
+            },
+            {
+              "url": "https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/malloc_size.3.html",
+              "evidence_kind": "exact_function_name_in_manpage_synopsis"
+            }
+          ]
+        },
+        {
           "name": "_memcmp",
           "sources": [
             {
