@@ -1465,7 +1465,11 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                     .update(cx, |runtime, window, cx| {
                         (
                             script::frame_json(&control_frame(runtime, window, cx)),
-                            matches!(window.window_decorations(), Decorations::Client { .. }),
+                            // The frame is drawn only when the compositor
+                            // delegated decorations and the window is not
+                            // fullscreen, exactly the test window_frame makes.
+                            !window.is_fullscreen()
+                                && matches!(window.window_decorations(), Decorations::Client { .. }),
                         )
                     })
                     .expect("the scripted window closed early");
