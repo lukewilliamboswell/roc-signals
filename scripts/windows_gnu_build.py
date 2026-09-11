@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 
 from cargo_build_evidence import derive
@@ -61,7 +62,11 @@ def clean_commit():
 
 
 def run(args, env=None, output=None):
-    return subprocess.run(args, cwd=ROOT, env=env, check=True, stdout=output)
+    print('==> ' + ' '.join(map(str, args)), flush=True)
+    started = time.monotonic()
+    result = subprocess.run(args, cwd=ROOT, env=env, check=True, stdout=output)
+    print(f'==> completed in {time.monotonic() - started:.1f}s', flush=True)
+    return result
 
 
 def missing_prerequisites(mode="build", which=shutil.which, exists=None, environ=None, output=None):
@@ -202,6 +207,7 @@ def execute(mode, output, *, jobs=2, cargo_target=None, debug=False, capture_evi
     (output / "Cargo.lock").write_bytes(lock)
     run([sys.executable, "scripts/prepare_platforms.py"], env)
     run([str(zig), "build", "build-gui-engine", "-Dtarget=x86_64-windows-gnu",
+         "-Doptimize=" + ("Debug" if debug else "ReleaseFast"),
          "--prefix", str(output / "zig-out")], env)
     payload = output / "payload"
     payload.mkdir()

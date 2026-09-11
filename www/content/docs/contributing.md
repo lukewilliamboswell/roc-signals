@@ -50,6 +50,65 @@ its header there. Public web dependency URLs remain unchanged during these updat
 selected roots and installed compiler. The nightly bot advances those pins while
 preserving release URLs and automatically merges only a passing pin-only PR.
 
+## CI intent and runner matrix
+
+Use this section as the runner contract when changing CI. Keep workflow names,
+build commands, change selection, and this matrix consistent. A job's operating
+system identifies the boundary it can test; it does not select a release build.
+
+| Workflow / job | When and purpose | Artifact and build mode | Evidence |
+| --- | --- | --- | --- |
+| `CI` / Hosted source tests | Affected PRs; all main pushes and manual CI runs | Current web/shared sources; development native checks, ReleaseSmall Wasm hosts and size-optimized Roc Wasm apps | Zig and JS contracts, Roc checks/tests, fuzz corpus replay, Wasm builds, native specs, size budgets |
+| `CI` / Native GUI jobs | Affected PRs; all main pushes and manual CI runs | Matching `gui-host.lock.json` release, otherwise current Rust dev + Zig Debug host; Roc dev apps | GUI checks/tests, all application and fixture specs; Rust adapter tests when building from source |
+| `CI` / Documentation and site | Affected PRs; all main pushes and manual CI runs | Current documentation and templates | Zola validation |
+| `GUI host link inputs` | Explicit dispatch; validate and optionally publish independent host outputs | Rust release + Zig ReleaseFast; selected native targets | Exact archive application tests, build/tool/source/license evidence, Windows archive audit |
+| `Web host inputs` | Explicit dispatch; validate and optionally publish independent host outputs | Complete web host set from current sources; final package uses Zig ReleaseSmall | Native/Wasm application checks and host archive packaging |
+| `Combined platform release candidate` | Explicit dispatch; validate or publish the assembled product | Exact locked host and dependency releases | Both packages served from fresh caches and tested on Linux, macOS, Windows |
+
+The intended profile policy is Debug for ordinary native development,
+ReleaseFast for native GUI releases, and ReleaseSmall for web packages.
+ReleaseSafe is for optimized checks that retain Zig's runtime safety checks,
+such as fuzzing. Application boundary validation must remain active in every
+mode; `std.debug.assert` is not a production contract check.
+
+The hosted source gate retains production-mode Wasm builds and size budgets,
+plus Debug/ReleaseSmall effect-stack checks. The current Roc Wasm backend
+requires `--opt=size` (see `UPSTREAM_COMPILER_BUGS.md`), and the Wasm integration
+suite builds a temporary ReleaseSmall web bundle to stay within the compiler's
+package-size limit. This is a documented exception to development-only PR builds;
+it does not publish a release candidate. Full fault, benchmark, and coverage
+campaigns remain explicit local suites. Dependency
+producer workflows have their own recipe-specific triggers and probes; an
+ordinary host or app edit does not rebuild third-party libraries.
+
+The native GUI jobs share the same selection and build policy, with these
+explicit OS differences:
+
+| Runner | Application host | Rust adapter tests on source fallback | Desktop integration in ordinary CI |
+| --- | --- | --- | --- |
+| Linux x86_64 | GNU/glibc Rust target + Zig GNU/Linux engine | Native Rust target | All example render smoke checks and scripted scenarios under Weston/Xvfb/software Vulkan |
+| macOS arm64 | Native Rust target + Zig macOS engine | Native Rust target | Semantic specs only; desktop checks remain available locally and release smoke tests validate packaged rendering |
+| Windows x86_64 | Rust `x86_64-pc-windows-gnullvm` + Zig Windows GNU engine | MSVC native target | Semantic specs only; release smoke tests validate packaged rendering |
+
+Windows' MSVC test binary is a Rust adapter test, not the distributable host.
+The Roc-linked semantic specs exercise the GNU application ABI. Cargo therefore
+builds two dependency sets on a cold Windows runner; the ordinary dependency
+cache reduces repeat work without treating cached workspace code as a released
+host. Do not describe these jobs as identical desktop coverage. A passing
+semantic spec does not establish pointer, keyboard, dialog, GPU, or accessibility
+behavior on that OS.
+
+Host producers run only by explicit dispatch. Dispatching on a branch validates
+a candidate without publication; publishing requires `main` and the release
+workflow's remaining gates. Ordinary CI never collects temporary debugger
+artifacts or creates GUI release bundles. Add a focused regression test or an
+explicit investigation workflow when diagnosing a failure.
+
+`test_ci_changes.py` protects job selection; `test_dependency_workflow_filters.py`
+protects the ordinary/release split and dependency producer triggers. The GUI
+build tests protect dev versus release mode selection. Keep the checks tied to
+these behavioral boundaries rather than copying entire workflow files into tests.
+
 ## Pre-commit CI check
 
 Run the mini-CI entry point before committing:
@@ -239,17 +298,17 @@ Roc app executables built during tests are written under `.test-out/` by
 
 ### Web host inputs
 
-The `Web host inputs` workflow builds the four native web spec hosts and the
-Wasm browser host only when their actual Zig sources or build recipe change. It
-tests native and Wasm application paths, then packages five target-confined
-archives under one immutable `deps-web-hosts-<version>` release. Each archive
+The manually dispatched `Web host inputs` workflow builds the four native web
+spec hosts and the Wasm browser host for an independent host release. Ordinary
+pull requests do not run this producer. It tests native and Wasm application
+paths, then packages five target-confined archives under one immutable `deps-web-hosts-<version>` release. Each archive
 and its reviewed lock entry records both its exact SHA-256 and the shared narrow
 host-input fingerprint. Application modules, examples, platform API files,
 documentation, and release packaging do not change that fingerprint.
 
-Ordinary CI and combined platform releases consume `web-host.lock.json`; they
-do not compile these hosts. GitHub attestations remain available for external
-provenance inspection, while ordinary admission uses the reviewed content
+Combined platform releases consume `web-host.lock.json`. Ordinary source checks
+build the hosts needed by their selected suites; they do not produce release
+archives. GitHub attestations remain available for external provenance inspection, while ordinary admission uses the reviewed content
 hashes without calling an attestation service. The independently released musl
 startup objects and libc archives remain final linker inputs rather than web
 host outputs.
@@ -386,7 +445,7 @@ Publication uses a fresh `deps-windows-system-imports-<version>` tag on `main`
 after both build and native jobs pass. This package does not yet replace existing
 Windows consumer inputs or provide CRT implementations.
 
-GUI CI caches compiled Cargo dependencies using the lockfile, Rust environment,
+Ordinary GUI CI caches compiled Cargo dependencies using the lockfile, Rust environment,
 and runner image identity. Only successful pushes to `main` save the cache;
 pull requests restore it without publishing entries. Workspace host code remains
 outside that dependency cache and is rebuilt from the current checkout. This is
@@ -395,7 +454,8 @@ Published-download checks continue to use fresh Roc caches.
 
 Pull-request CI selects affected jobs from the complete merge-base diff using
 `scripts/ci_changes.py`. GUI-only changes run the native GUI jobs; web changes
-run browser/native checks, published examples, and release archive checks.
+run browser/native source checks. Published-example and release archive checks
+belong to explicit release validation.
 Known documentation paths run the site check. Shared engine changes, build
 infrastructure, compiler/dependency locks, and unknown paths select every area.
 Renames count at both their old and new paths. Main-branch pushes and manual
@@ -741,7 +801,7 @@ Archives and `bundles.json` default to `.test-out/bundles`, with separate `web/`
 and `gui/` directories. `BUNDLE_OUT_DIR` or `--output-dir` changes that root.
 `--package web` and `--package gui` select one platform and put its archive
 directly in the output directory. `--no-build` reuses prepared hosts;
-`--debug-gui` selects a faster development Rust build. Use the default optimized
+`--debug-gui` selects development Rust and Zig builds. Use the default optimized
 GUI build for distributable archives. A fat GUI archive containing every native
 target exceeds the compiler's default 100 MiB expanded transitive package budget;
 local-file platform builds passing does not establish that a URL-bound bundle
@@ -1439,9 +1499,25 @@ roc build examples-gui/counter/main.roc --output=.test-out/Counter
 ```
 
 `python3 scripts/test.py gui --roc-bin /path/to/pinned/roc --keep-output`
-checks the compiler identity, prepares shared sources, builds the development
-GUI host, runs focused GPUI adapter/editor tests, then `roc check` and `roc test` for each registered GUI app and internal fixture under `test/gui/`,
-builds fresh executables, and runs their native semantic specs without a display.
+checks the compiler identity and prepares shared sources. With `GUI_HOST_LOCK`,
+it reuses the reviewed host when its input fingerprint matches; otherwise it
+builds the current Rust host in dev mode and the Zig engine in Debug mode, then
+runs focused GPUI adapter/editor tests. It runs `roc check` and `roc test` for
+each registered GUI app and internal fixture under `test/gui/`, builds fresh
+executables, and runs their native semantic specs without a display.
+Roc checks, tests, and application builds use the dev backend. Optimized Zig
+and Rust host builds, Cargo release evidence, archive audits, and exact bundle
+validation belong to the manually dispatched host and combined release workflows.
+`python3 scripts/build_gui.py --debug` selects Rust dev and Zig Debug together;
+without `--debug`, the release builder explicitly selects Rust release and Zig
+ReleaseFast. Direct `zig build build-gui-engine` uses Zig's default Debug mode,
+with `-Doptimize=ReleaseFast` for release builds and `-Doptimize=ReleaseSafe`
+for explicit checked optimized validation.
+Windows keeps the GNU application ABI and native MSVC Rust unit tests; their
+separate dependency builds use the ordinary GUI dependency cache. A cold cache
+still incurs both builds. The Windows builder logs commands and elapsed times
+so engine compilation is visible in CI logs.
+
 The manifest at `examples-gui/examples.toml` must list every app directory, and
 each app must have specs. Every GUI check must pass; this suite has no known-failure
 allowlist. `--spec-filter`, `--shard`, `--jobs`, and `--fail-fast` also apply.
@@ -1498,9 +1574,9 @@ startup objects and complete corresponding source/license inventories. The Rust
 host still depends on its build environment's glibc ABI; the pinned link inputs
 do not establish compatibility with older Linux distributions.
 
-The `GUI host link inputs` workflow (`gui-hosts.yml`) builds native candidates
-and runs all GUI application specs with the pinned Roc compiler against their
-extracted archives. Candidate tests populate empty target directories from the
+The manually dispatched `GUI host link inputs` workflow (`gui-hosts.yml`) builds
+optimized native candidates and runs all GUI application specs with the pinned
+Roc compiler against their extracted archives. Candidate tests populate empty target directories from the
 independently verified Linux or Windows releases; development target copies are
 not admitted as dependency evidence. All native producers capture the actual Cargo build
 stream, filtered metadata, and unchanged lock with `build_gui.py --cargo-evidence`.

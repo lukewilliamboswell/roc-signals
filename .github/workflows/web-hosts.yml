@@ -1,23 +1,8 @@
 name: Web host inputs
 
+# Runner intent and build modes: www/content/docs/contributing.md#ci-intent-and-runner-matrix
+
 on:
-  pull_request:
-    paths:
-      - .github/workflows/web-hosts.yml
-      - .github/actions/setup-toolchain/**
-      - src/native_host.zig
-      - src/wasm_host.zig
-      - src/signals/**
-      - build.zig
-      - build.zig.zon
-      - scripts/web_host_artifacts.py
-      - scripts/test_web_host_artifacts.py
-      - scripts/release_web_hosts.py
-      - scripts/dependency_archive.py
-      - scripts/dependency_artifacts.py
-      - scripts/release_dependencies.py
-      - scripts/test_dependency_artifacts.py
-      - LICENSE
   workflow_dispatch:
     inputs:
       release_tag:
@@ -29,8 +14,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: web-hosts-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: web-hosts-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:

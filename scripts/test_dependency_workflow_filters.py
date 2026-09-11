@@ -61,33 +61,25 @@ def script_inputs(jobs):
 
 
 class DependencyWorkflowFilterTests(unittest.TestCase):
-    def test_gui_host_fingerprint_inputs_trigger_the_producer(self):
-        from host_build_identity import SOURCE_PATHS
+    def test_host_release_producers_require_explicit_dispatch(self):
+        for name in ("gui-hosts.yml", "web-hosts.yml"):
+            with self.subTest(workflow=name):
+                text = (ROOT / ".github/workflows" / name).read_text()
+                triggers = text.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+                self.assertIn("  workflow_dispatch:", triggers)
+                self.assertNotIn("  pull_request:", triggers)
+                self.assertNotIn("  push:", triggers)
+                self.assertIn("github.ref == 'refs/heads/main'", text)
 
-        text = (ROOT / ".github/workflows/gui-hosts.yml").read_text()
-        section = text.split("    paths:\n", 1)[1].split("  workflow_dispatch:", 1)[0]
-        paths = {line.removeprefix("      - ") for line in section.splitlines() if line.strip()}
-
-        def covered(path):
-            return path in paths or any(entry.endswith("/**") and path.startswith(entry[:-3])
-                                        for entry in paths)
-
-        for path in SOURCE_PATHS:
-            with self.subTest(path=path):
-                self.assertTrue(covered(path), f"GUI host fingerprint input does not trigger producer: {path}")
-
-    def test_web_host_fingerprint_inputs_trigger_only_the_web_host_producer(self):
-        from web_host_artifacts import SOURCE_PATHS
-
-        text = (ROOT / ".github/workflows/web-hosts.yml").read_text()
-        section = text.split("    paths:\n", 1)[1].split("  workflow_dispatch:", 1)[0]
-        paths = {line.removeprefix("      - ") for line in section.splitlines() if line.strip()}
-        for path in SOURCE_PATHS:
-            covered = path in paths or any(entry.endswith("/**") and path.startswith(entry[:-3]) for entry in paths)
-            with self.subTest(path=path):
-                self.assertTrue(covered, f"web host input does not trigger its producer: {path}")
-        for unrelated in ("platform-web/main.roc", "examples-web/counter/main.roc", "design.md"):
-            self.assertFalse(unrelated in paths)
+    def test_ordinary_gui_ci_excludes_release_and_crash_investigation_work(self):
+        text = (ROOT / ".github/workflows/ci.yml").read_text()
+        gui = text.split("  gui:\n", 1)[1].split("  platform-source:\n", 1)[0]
+        for command in ("lldb", "bundle_platforms.py", "audit_windows_archive.py",
+                        "check_macos_interfaces.py", "--release", "--cargo-evidence"):
+            with self.subTest(command=command):
+                self.assertNotIn(command, gui)
+        self.assertEqual(gui.count("shared-key: gui-dev"), 3)
+        self.assertEqual(gui.count("cache-workspace-crates: false"), 3)
 
     def test_all_executed_scripts_and_transitive_imports_trigger_their_workflow(self):
         for name in WORKFLOWS:
