@@ -27,12 +27,9 @@ pub fn nowNs() u64 {
     return @intCast(@max(ns, 0));
 }
 
-/// Classifies whether a spec command mutates app state and therefore belongs in benchmark replay.
-pub fn commandIsAction(cmd: spec_parser.SpecCommand) bool {
-    return switch (cmd.step) {
-        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .focus, .blur, .change, .select_option, .custom_event, .composition_start, .composition_end, .submit, .fill, .check, .uncheck, .tick_interval, .tick_interval_if_active, .navigate, .set_visibility, .set_online, .history_back, .history_forward => true,
-        else => false,
-    };
+/// Returns whether a command is an operational step that benchmark replay must execute.
+pub fn shouldReplayOperation(cmd: spec_parser.SpecCommand) bool {
+    return spec_parser.stepRole(cmd.kind()) == .operation;
 }
 
 fn writeStdout(bytes: []const u8) void {
@@ -218,7 +215,7 @@ pub fn Runner(comptime Ctx: type) type {
             for (commands) |cmd| {
                 if (cmd.kind() == .mark_metrics) {
                     measurement_started = true;
-                } else if (commandIsAction(cmd)) {
+                } else if (shouldReplayOperation(cmd)) {
                     if (measurement_started) {
                         runActionCommandMeasured(&host, &roc_host, cmd, stats);
                     } else {
@@ -259,14 +256,14 @@ pub fn Runner(comptime Ctx: type) type {
     };
 }
 
-test "commandIsAction recognizes only mutating commands" {
+test "benchmark replay derives operational steps from the shared command role" {
     const none: spec_parser.Locator = .none;
-    try std.testing.expect(commandIsAction(.{ .step = .{ .click = none }, .line_num = 1 }));
-    try std.testing.expect(commandIsAction(.{ .step = .{ .focus = none }, .line_num = 2 }));
-    try std.testing.expect(commandIsAction(.{ .step = .{ .navigate = "/" }, .line_num = 3 }));
-    try std.testing.expect(commandIsAction(.{ .step = .{ .set_visibility = "hidden" }, .line_num = 4 }));
-    try std.testing.expect(commandIsAction(.{ .step = .{ .custom_event = .{ .target = none, .name = "n", .detail = "" } }, .line_num = 5 }));
-    try std.testing.expect(!commandIsAction(.{ .step = .{ .expect_text = .{ .target = none, .text = "" } }, .line_num = 6 }));
-    try std.testing.expect(!commandIsAction(.{ .step = .mark_metrics, .line_num = 7 }));
-    try std.testing.expect(!commandIsAction(.{ .step = .{ .expect_metric_delta = .{ .metric = "m", .delta = 0 } }, .line_num = 8 }));
+    try std.testing.expect(shouldReplayOperation(.{ .step = .{ .click = none }, .line_num = 1 }));
+    try std.testing.expect(shouldReplayOperation(.{ .step = .{ .focus = none }, .line_num = 2 }));
+    try std.testing.expect(shouldReplayOperation(.{ .step = .{ .navigate = "/" }, .line_num = 3 }));
+    try std.testing.expect(shouldReplayOperation(.{ .step = .{ .set_visibility = "hidden" }, .line_num = 4 }));
+    try std.testing.expect(shouldReplayOperation(.{ .step = .{ .custom_event = .{ .target = none, .name = "n", .detail = "" } }, .line_num = 5 }));
+    try std.testing.expect(shouldReplayOperation(.{ .step = .{ .run_effect = 1 }, .line_num = 6 }));
+    try std.testing.expect(!shouldReplayOperation(.{ .step = .{ .expect_text = .{ .target = none, .text = "" } }, .line_num = 7 }));
+    try std.testing.expect(!shouldReplayOperation(.{ .step = .mark_metrics, .line_num = 8 }));
 }

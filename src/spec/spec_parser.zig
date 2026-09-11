@@ -87,6 +87,33 @@ pub const SpecCommandType = enum {
 /// used by parsing and by the generated window-step manifest.
 pub const StepCapability = enum { semantic, window, both };
 
+/// The lifecycle role of a command in a complete spec execution.
+///
+/// This is deliberately exhaustive: adding vocabulary requires declaring how
+/// runners sequence it instead of silently dropping the new command.
+pub const StepRole = enum { setup, operation, assertion, measurement_boundary };
+
+/// Returns the execution role that every runner must preserve for this step.
+pub fn stepRole(kind: SpecCommandType) StepRole {
+    return switch (kind) {
+        .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result, .manual_effects => .setup,
+
+        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .shortcut, .request_window_close, .focus, .blur, .change, .select_option, .composition_start, .composition_end, .custom_event, .submit, .fill, .check, .uncheck, .stub_file_result, .stub_http_result, .run_effect, .tick_interval, .tick_interval_if_active, .navigate, .set_visibility, .set_online, .history_back, .history_forward, .wait, .type_text, .key, .close => .operation,
+
+        .expect_window_closed, .expect_text, .expect_visible, .expect_absent, .expect_value, .expect_attr, .expect_no_attr, .expect_checked, .expect_disabled, .expect_updates, .expect_pending_effects, .expect_cleanup, .expect_interval, .expect_current_location, .expect_document_title, .expect_local_storage, .expect_session_storage, .expect_no_local_storage, .expect_no_session_storage, .expect_metric_delta, .expect_metric_delta_at_most, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot => .assertion,
+
+        .mark_metrics => .measurement_boundary,
+    };
+}
+
+test "step roles distinguish ordered fixtures from setup and assertions" {
+    try std.testing.expectEqual(StepRole.setup, stepRole(.seed_http_result));
+    try std.testing.expectEqual(StepRole.operation, stepRole(.stub_http_result));
+    try std.testing.expectEqual(StepRole.operation, stepRole(.run_effect));
+    try std.testing.expectEqual(StepRole.assertion, stepRole(.expect_pending_effects));
+    try std.testing.expectEqual(StepRole.measurement_boundary, stepRole(.mark_metrics));
+}
+
 /// Returns the built-in host capability required by a step.
 pub fn stepCapability(kind: SpecCommandType) StepCapability {
     return switch (kind) {
