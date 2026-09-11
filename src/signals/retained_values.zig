@@ -11,7 +11,6 @@ pub const HostValueCapability = hv.HostValueCapabilityHandle;
 pub const HostTextRead = abi.HostValueTextReadHandle;
 pub const HostBoolRead = abi.HostValueBoolReadHandle;
 pub const HostEventReducer = abi.HostValueEventReducerHandle;
-pub const HostTaskRequestRead = abi.HostValueTaskRequestReadHandle;
 pub const HostEachOps = abi.ElemEachOps;
 pub const HostWhenOps = abi.ElemWhenOps;
 /// Non-null erased-callable pointer used as signal graph identity.

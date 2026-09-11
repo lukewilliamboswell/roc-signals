@@ -21,12 +21,6 @@ HostValue := [HostValue(U64)].{
 		read : Box((HostValue -> Bool)),
 	}
 
-	## Task request reader paired with the capability that validates the value.
-	TaskRequestReadHandle := {
-		capability : CapabilityHandle,
-		read : Box((HostValue -> Str)),
-	}
-
 	## Event reducer paired with the read-state and payload capabilities it expects.
 	EventReducerHandle := {
 		capability : CapabilityHandle,

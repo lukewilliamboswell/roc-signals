@@ -1084,7 +1084,7 @@ fn rememberStorageDeclaration(area: boundary.StorageArea, key: []const u8) void 
 
 fn discoverStorageSignalExpr(expr: abi.NodeSignalExpr) void {
     switch (abi_view.SignalExpr.fromAbi(expr)) {
-        .ref, .const_value, .row_source, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source => {},
+        .ref, .const_value, .row_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source => {},
         .map => |payload| discoverStorageSignalExpr(payload.input.*),
         .select => |payload| discoverStorageSignalExpr(payload.input.*),
         .keyed_select => |payload| discoverStorageSignalExpr(payload.input.*),

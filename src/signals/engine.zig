@@ -105,7 +105,6 @@ pub const HostValueCapability = retained_values.HostValueCapability;
 pub const HostTextRead = retained_values.HostTextRead;
 pub const HostBoolRead = retained_values.HostBoolRead;
 pub const HostEventReducer = retained_values.HostEventReducer;
-pub const HostTaskRequestRead = retained_values.HostTaskRequestRead;
 pub const HostEachOps = retained_values.HostEachOps;
 pub const HostWhenOps = retained_values.HostWhenOps;
 pub const HostSignalToken = retained_values.HostSignalToken;
@@ -3899,7 +3898,6 @@ pub fn Engine(comptime Ctx: type) type {
                 .map2 => |payload| record.token() == payload.token.callable,
                 .select => |payload| record.token() == payload.token.callable,
                 .combine => |payload| record.token() == payload.token.callable,
-                .task_source => |payload| record.token() == payload.token.callable,
                 .interval_source => |payload| record.token() == payload.token.callable,
                 .entropy_seed_source => |payload| record.token() == payload.token.callable,
                 .location_source => |payload| record.token() == payload.token.callable,
@@ -4089,27 +4087,6 @@ pub fn Engine(comptime Ctx: type) type {
                         .children = children,
                         .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
-                    } });
-                    try binding.remember(record);
-                    break :blk record;
-                },
-                .task_source => |payload| blk: {
-                    const token = payload.token.callable;
-                    if (try binding.retainExisting(token, .task_source)) |record| {
-                        break :blk record;
-                    }
-
-                    const record = try binding.init(.{ .task_source = .{
-                        .name = try allocator.dupe(u8, payload.name.asSlice()),
-                        .kind = payload.kind,
-                        .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
-                        .initial = retainHostCallable(payload.initial, &self.pending_roc_metrics),
-                        .done = retainHostCallable(payload.done, &self.pending_roc_metrics),
-                        .failed = retainHostCallable(payload.failed, &self.pending_roc_metrics),
-                        .canceled = retainHostCallable(payload.canceled, &self.pending_roc_metrics),
-                        .refused = retainHostCallable(payload.refused, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
-                        .reset_on_start = payload.reset_on_start,
                     } });
                     try binding.remember(record);
                     break :blk record;
@@ -6853,7 +6830,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         fn countSignalExprRecords(expr: abi.NodeSignalExpr) CollectionError!usize {
             return switch (abi_view.SignalExpr.fromAbi(expr)) {
-                .ref, .const_value, .row_source, .task_source, .interval_source, .entropy_seed_source, .location_source, .visibility_source, .online_source, .storage_source => 1,
+                .ref, .const_value, .row_source, .interval_source, .entropy_seed_source, .location_source, .visibility_source, .online_source, .storage_source => 1,
                 .map => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
                 .select => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
                 .keyed_select => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
@@ -16780,139 +16757,6 @@ pub fn Engine(comptime Ctx: type) type {
             return self.dispatchCurrentStorageSources(ctx, roc_host, area, key);
         }
 
-        /// Performs start task command inside the shared engine while preserving transaction and changed-set invariants.
-        pub fn startTaskCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, cmd: erased_calls.StartTaskCmd) render.Counts {
-            return self.tryStartTaskCommand(ctx, roc_host, owner_scope_id, cmd) catch @panic("failed to prepare task start");
-        }
-
-        /// Prepares the request, Loading propagation, and host publication
-        /// before changing live requests. Preparation failure preserves the prior
-        /// request and source value; host-capacity refusal instead publishes the
-        /// declaration's terminal error. A Loading transition retiring the owner emits
-        /// the accepted start and cancellation without leaving a live request.
-        pub fn tryStartTaskCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, cmd: erased_calls.StartTaskCmd) CollectionError!render.Counts {
-            const task_token = retained_values.hostSignalTokenFromCallable(cmd.task_token);
-            const record = self.activeTaskRecordByToken(task_token) orelse {
-                if (self.activeTaskRecordByName(cmd.task_name.asSlice()) != null) {
-                    @panic("StartTask token did not match the active task source with the same name");
-                }
-                if (comptime @hasDecl(Ctx, "debugInactiveTask")) {
-                    Ctx.debugInactiveTask(ctx, cmd.task_name.asSlice());
-                }
-                @panic("StartTask referenced a task source that is not active");
-            };
-            const task_payload = record.requireTaskSource();
-            if (!std.mem.eql(u8, task_payload.name, cmd.task_name.asSlice())) {
-                @panic("StartTask task name does not match the referenced task source");
-            }
-
-            const request_value = erased_calls.callValueInitThunk(roc_host, cmd.request_init);
-            defer callHostValueToUnitWithCapability(ctx, roc_host, cmd.request_read.capability, hv.hostValueCapabilityDrop(cmd.request_read.capability), request_value);
-            const request = callHostValueToStrWithCapability(ctx, roc_host, cmd.request_read.capability, cmd.request_read.read, request_value);
-            defer request.decref(roc_host);
-            if (comptime @hasDecl(Ctx, "canAdmitTask")) {
-                if (!Ctx.canAdmitTask(ctx, task_payload.kind, request.asSlice().len)) return self.tryRefuseTaskCommand(ctx, roc_host, .{ .task_token = cmd.task_token });
-            }
-
-            var pending = try effects_runtime.PreparedPendingTask.prepare(Ctx.allocator(ctx), &self.pending_tasks, self.next_task_request_id, owner_scope_id, task_token, cmd.task_name.asSlice(), request.asSlice(), task_payload.kind);
-            defer pending.deinit(Ctx.allocator(ctx), roc_host);
-            const loading_transaction = if (task_payload.reset_on_start) blk: {
-                const loading = erased_calls.callValueInitThunk(roc_host, task_payload.initial.toAbi());
-                break :blk try PreparedSourceTransaction.prepare(self, ctx, roc_host, record, loading);
-            } else null;
-            defer if (loading_transaction) |transaction| transaction.deinit();
-            const owner_retired = if (loading_transaction) |transaction| transaction.retiresScope(owner_scope_id) else false;
-            var cancellation_count: usize = 0;
-            for (self.pending_tasks.items) |task| if (task.task_token == task_token) {
-                cancellation_count += 1;
-            };
-            if (loading_transaction) |transaction| cancellation_count = std.math.add(usize, cancellation_count, transaction.taskRetirementCount()) catch return error.ResourceLimit;
-            cancellation_count = std.math.add(usize, cancellation_count, @intFromBool(owner_retired)) catch return error.ResourceLimit;
-            var publication = if (comptime @hasDecl(Ctx, "TaskPublication")) try Ctx.prepareTaskPublication(ctx, pending.task.?.request_id, task_payload.kind, cmd.task_name.asSlice(), request.asSlice(), cancellation_count) else {};
-            defer if (comptime @hasDecl(Ctx, "TaskPublication")) publication.deinit();
-            const Commit = struct {
-                engine: *Self,
-                ctx: Ctx.Handle,
-                roc_host: *abi.RocHost,
-                pending: *effects_runtime.PreparedPendingTask,
-                publication: *@TypeOf(publication),
-                owner_retired: bool,
-
-                fn publish(state: *@This()) void {
-                    const task = state.pending.task.?;
-                    if (comptime @hasDecl(Ctx, "TaskPublication")) state.publication.beginCommit();
-                    state.engine.cancelPendingTasksByTaskToken(state.ctx, task.task_token);
-                    if (state.owner_retired) {
-                        var retired = state.pending.commitRetired(&state.engine.next_task_request_id);
-                        defer effects_runtime.deinitPendingTask(Ctx.allocator(state.ctx), state.roc_host, &retired);
-                        if (comptime @hasDecl(Ctx, "TaskPublication")) state.publication.commitRetired() else {
-                            Ctx.sink(state.ctx).startTask(retired.request_id, retired.kind, retired.task_name, retired.request);
-                            Ctx.sink(state.ctx).cancelTask(retired.request_id);
-                        }
-                    } else {
-                        const request_id = state.pending.commit(&state.engine.pending_tasks, &state.engine.next_task_request_id);
-                        if (comptime @hasDecl(Ctx, "TaskPublication")) state.publication.commit() else Ctx.sink(state.ctx).startTask(request_id, task.kind, task.task_name, task.request);
-                    }
-                }
-            };
-            var commit = Commit{ .engine = self, .ctx = ctx, .roc_host = roc_host, .pending = &pending, .publication = &publication, .owner_retired = owner_retired };
-            if (loading_transaction) |transaction| {
-                self.pending_roc_metrics.bump(.dirty_source_roots, 1);
-                return transaction.commitWithPublication(&commit, Commit.publish);
-            }
-            Commit.publish(&commit);
-            return .{};
-        }
-
-        /// Prepares the declaration-owned terminal value and cancellation
-        /// publication together. Refusal keeps the active request and cached
-        /// value unchanged; commit retires the request before running observers.
-        pub fn tryCancelTaskCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, cmd: erased_calls.CancelTaskCmd) CollectionError!render.Counts {
-            return self.trySettleTaskControl(ctx, roc_host, cmd, false);
-        }
-
-        /// Publishes the declared capacity-refusal error when the host cannot
-        /// admit a new request. Any older request is superseded in the same
-        /// transaction, so its late completion cannot overwrite the refusal.
-        pub fn tryRefuseTaskCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, cmd: erased_calls.CancelTaskCmd) CollectionError!render.Counts {
-            return self.trySettleTaskControl(ctx, roc_host, cmd, true);
-        }
-
-        fn trySettleTaskControl(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, cmd: erased_calls.CancelTaskCmd, refused: bool) CollectionError!render.Counts {
-            const task_token = retained_values.hostSignalTokenFromCallable(cmd.task_token);
-            const record = self.activeTaskRecordByToken(task_token) orelse return error.InvalidDescriptor;
-            var cancellation_count: usize = 0;
-            for (self.pending_tasks.items) |task| if (task.task_token == task_token) {
-                cancellation_count += 1;
-            };
-            if (cancellation_count == 0 and !refused) return .{};
-            const task = record.requireTaskSource();
-            const canceled = erased_calls.callValueInitThunk(roc_host, (if (refused) task.refused else task.canceled).toAbi());
-            const transaction = try PreparedSourceTransaction.prepare(self, ctx, roc_host, record, canceled);
-            defer if (transaction) |value| value.deinit();
-            if (transaction) |value| cancellation_count = std.math.add(usize, cancellation_count, value.taskRetirementCount()) catch return error.ResourceLimit;
-            var publication = if (comptime @hasDecl(Ctx, "TaskCancellationPublication")) try Ctx.prepareTaskCancellation(ctx, cancellation_count) else {};
-            defer if (comptime @hasDecl(Ctx, "TaskCancellationPublication")) publication.deinit();
-            const Commit = struct {
-                engine: *Self,
-                ctx: Ctx.Handle,
-                token: HostSignalToken,
-                publication: *@TypeOf(publication),
-                fn publish(state: *@This()) void {
-                    if (comptime @hasDecl(Ctx, "TaskCancellationPublication")) state.publication.beginCommit();
-                    state.engine.cancelPendingTasksByTaskToken(state.ctx, state.token);
-                    if (comptime @hasDecl(Ctx, "TaskCancellationPublication")) state.publication.commit();
-                }
-            };
-            var commit = Commit{ .engine = self, .ctx = ctx, .token = task_token, .publication = &publication };
-            if (transaction) |value| {
-                self.pending_roc_metrics.bump(.dirty_source_roots, value.root_count);
-                return value.commitWithPublication(&commit, Commit.publish);
-            }
-            Commit.publish(&commit);
-            return .{};
-        }
-
         /// Performs update state command inside the shared engine while preserving transaction and changed-set invariants.
         pub fn updateStateCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: ids.ScopeId, cmd: erased_calls.UpdateStateCmd) render.Counts {
             return self.tryUpdateStateCommand(ctx, roc_host, owner_scope_id, cmd) catch @panic("failed to prepare state command transaction");
@@ -17177,8 +17021,6 @@ pub fn Engine(comptime Ctx: type) type {
                     break :blk self.navigateLocationCommand(ctx, roc_host, .replace, locationSnapshotFromCommandPayload(&payload));
                 },
                 .SetStorageText => self.setStorageTextCommand(ctx, roc_host, cmd.payload_set_storage_text()),
-                .StartTask => self.tryStartTaskCommand(ctx, roc_host, owner_scope_id, cmd.payload_start_task()),
-                .CancelTask => self.tryCancelTaskCommand(ctx, roc_host, cmd.payload_cancel_task()),
                 .SetDocumentTitle => self.setDocumentTitleCommand(ctx, cmd.payload_set_document_title()),
                 .UpdateState => self.tryUpdateStateCommand(ctx, roc_host, owner_scope_id, cmd.payload_update_state()),
                 .UpdateStates => self.tryUpdateStateCommands(ctx, roc_host, owner_scope_id, cmd.payload_update_states().items()),

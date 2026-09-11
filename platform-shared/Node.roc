@@ -32,30 +32,7 @@ Node := [].{
 		Action({ reads : Box(SignalExpr), payload_cap : HostValue.CapabilityHandle, to_cmd : Box((HostValue, HostValue -> Cmd)) }),
 	]
 
-	## Signal expression. `Ref` reads a binder's current value. Other variants are
-	## identified by their existing boxed initializer or transform thunk, so no
-	## separate identity allocation is required. The explicit identity field is
-	## retained in the ABI for now and contains the same allocation as the evaluator
-	## field. `TaskSource` and `IntervalSource` are host-owned effect sources whose
-	## results enter the same signal graph.
-	## Closed host service route. External tasks retain their explicitly installed
-	## host adapter; native file helpers select a fixed service without label routing.
-	TaskKind := [External, ChooseFile, ChooseDirectory, ChooseSavePath, ReadText, WriteText, ScanDirectory, ListDirectory, OpenPath, ReadPreview, ReadLog, VerifyAssets].{ is_eq : _ }
-
-	TaskSource : {
-		token : Box((() -> HostValue)),
-		name : Str,
-		kind : TaskKind,
-		cap : HostValue.CapabilityHandle,
-		payload_cap : HostValue.CapabilityHandle,
-		initial : Box((() -> HostValue)),
-		done : Box((HostValue -> HostValue)),
-		failed : Box((HostValue -> HostValue)),
-		canceled : Box((() -> HostValue)),
-		refused : Box((() -> HostValue)),
-		reset_on_start : Bool,
-	}
-
+	## A scope-owned timer whose ticks update an ordinary source in the graph.
 	IntervalSource : {
 		token : Box((() -> HostValue)),
 		period_ms : U64,
@@ -64,6 +41,11 @@ Node := [].{
 		tick : Box((HostValue -> HostValue)),
 	}
 
+	## Signal expression. `Ref` reads a binder's current value. Other variants are
+	## identified by their existing boxed initializer or transform thunk, so no
+	## separate identity allocation is required. The explicit identity field is
+	## retained in the ABI for now and contains the same allocation as the evaluator
+	## field. `IntervalSource` ticks enter the same graph as state changes.
 	SignalExpr := [
 		Ref(BinderRef),
 		ConstValue(Box((() -> HostValue)), Box((() -> HostValue)), HostValue.CapabilityHandle),
@@ -78,7 +60,6 @@ Node := [].{
 		Select(Box((() -> HostValue)), Box(SignalExpr), Str, HostValue.TextReadHandle, Box((() -> HostValue)), Box((() -> HostValue)), HostValue.CapabilityHandle),
 		OnlineSource(Box((HostValue -> HostValue)), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
 		Combine(Box((List(HostValue) -> HostValue)), List(SignalExpr), Box((List(HostValue) -> HostValue)), HostValue.CapabilityHandle),
-		TaskSource(TaskSource),
 		IntervalSource(IntervalSource),
 	]
 
@@ -107,15 +88,6 @@ Node := [].{
 		ReplaceState({ path : Str, query : Str, hash : Str }),
 		SetStorageText({ area : U64, key : Str, value : Str }),
 		RemoveStorage({ area : U64, key : Str }),
-		StartTask(
-			{
-				task_token : Box((() -> HostValue)),
-				task_name : Str,
-				request_init : Box((() -> HostValue)),
-				request_read : HostValue.TaskRequestReadHandle,
-			},
-		),
-		CancelTask({ task_token : Box((() -> HostValue)) }),
 		SetDocumentTitle({ title : Str }),
 		UpdateState(StateWrite),
 		UpdateStates(List(StateWrite)),
