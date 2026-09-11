@@ -44,13 +44,19 @@ class EffectContractTests(unittest.TestCase):
     def test_linked_contracts_build_each_fixture_before_running_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            with patch.object(test_driver, "TEST_OUT", output), patch.object(test_driver, "run") as run:
+            steps = []
+            with patch.object(test_driver, "TEST_OUT", output), \
+                    patch.object(test_driver, "run", side_effect=lambda command: steps.append(("run", command))) as run, \
+                    patch.object(test_driver, "instrument_wasm", side_effect=lambda path: steps.append(("instrument", path))):
                 test_driver.run_wasm_effect_contracts("selected-roc")
             commands = [call.args[0] for call in run.call_args_list]
             self.assertEqual(len(commands), 4)
             for index, fixture in enumerate(("action", "http")):
                 build, execute = commands[index * 2:index * 2 + 2]
                 wasm = output / "wasm-effects" / f"{fixture}.wasm"
+                self.assertEqual(steps[index * 3:index * 3 + 3], [
+                    ("run", build), ("instrument", wasm), ("run", execute),
+                ])
                 self.assertEqual(build[0], "selected-roc")
                 self.assertIn("--no-cache", build)
                 self.assertIn(f"--output={wasm}", build)
