@@ -60,7 +60,7 @@ class ManifestValidationTests(unittest.TestCase):
 
     def test_missing_doc_is_rejected(self):
         bad = manifest()
-        bad["task_kinds"][2]["doc"] = ""
+        bad["text_fields"][2]["doc"] = ""
         with self.assertRaisesRegex(SystemExit, "missing a doc line"):
             gen.validate(bad)
 
@@ -70,11 +70,6 @@ class ManifestValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "version_history must start"):
             gen.validate(bad)
 
-    def test_external_task_route_is_pinned_to_zero(self):
-        bad = manifest()
-        bad["task_kinds"][0]["id"] = max(kind["id"] for kind in bad["task_kinds"]) + 1
-        with self.assertRaisesRegex(SystemExit, "external route"):
-            gen.validate(bad)
 
 
 class RenderingTests(unittest.TestCase):
@@ -118,13 +113,11 @@ class RenderingTests(unittest.TestCase):
                     self.assertIn(f"{const} : Node.{kind}", section)
                     self.assertIn(f"{const} = {{ id: {field['id']} }}", section)
 
-    def test_docs_section_tables_cover_every_field_and_task(self):
+    def test_docs_section_tables_cover_every_field(self):
         data = manifest()
         section = gen.render_docs_section(data)
         for field in data["text_fields"] + data["bool_fields"]:
             self.assertIn(f"`{field['name']}`", section)
-        for kind in data["task_kinds"]:
-            self.assertIn(f"| {kind['id']} | `{kind['name']}` |", section)
 
     def test_committed_artifacts_are_current(self):
         for path, content in gen.render_all(gen.load_manifest()).items():

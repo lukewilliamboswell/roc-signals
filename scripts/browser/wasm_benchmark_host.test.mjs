@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { hostFixtureImports } from "./host_fixture_imports.mjs";
 
 import {
   readBenchmarkMetrics,
@@ -10,7 +11,7 @@ import {
 
 async function instantiate(path) {
   const bytes = await readFile(path);
-  return (await WebAssembly.instantiate(bytes, { env: { roc_ui_init: () => 0 } })).instance.exports;
+  return (await WebAssembly.instantiate(bytes, hostFixtureImports)).instance.exports;
 }
 
 test("linked benchmark host resets and reports exact Roc allocator traffic", async () => {

@@ -1,4 +1,4 @@
-app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst" }
+app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-09-04-c125b82" }
 
 # Support Inbox
 #
@@ -19,6 +19,8 @@ app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "https://github.com
 # summary counters, the send-button disabled state - is derived.
 
 import Inbox
+import pf.Action exposing [Action]
+import pf.Http
 import pf.Elem exposing [Elem]
 import pf.Html
 import pf.Rows
@@ -82,8 +84,10 @@ Sync := [Syncing, UpToDate, Failed(Str)].{
 
 ## A failed sync spells out the reason it failed in the status sentence.
 expect Sync.to_str(Sync.Failed("gateway timeout")) == "Failed — gateway timeout"
+
 ## The badge tone for a failure comes from the tag, not from its sentence.
 expect Sync.badge_class(Sync.Failed("gateway timeout")) == "badge badge-danger"
+
 ## A poll in flight is not an error, so it stays neutrally tinted.
 expect Sync.badge_class(Sync.Syncing) == "badge badge-neutral"
 
@@ -111,6 +115,7 @@ filter_label = |filter|
 
 ## The owner filter reads as a phrase, not as its wire value "mine".
 expect filter_label(Inbox.Filter.Mine) == "Assigned to me"
+
 ## The default filter is captioned "All".
 expect filter_label(Inbox.Filter.All) == "All"
 
@@ -283,6 +288,7 @@ send_state_label = |state|
 
 ## A message the poll has caught up with reads as delivered, not merely sent.
 expect send_state_label(Inbox.PendingState.Synced) == "Delivered"
+
 ## With nothing in flight the composer reports itself ready.
 expect send_state_label(Inbox.PendingState.Idle) == "Ready"
 
@@ -391,9 +397,9 @@ check_row : Elem, Str -> Elem
 check_row = |control, label| Html.div_c("check-row", [control, Html.text(label)])
 
 ## The polling scope. Mounting it starts the interval; unmounting it disposes
-## the interval, cancels any in-flight poll, and runs the named cleanup.
-## `inbox_task` is passed untyped because `Signal.Task` is not an exposed type.
-poller = |inbox_task| {
+## the interval and runs the named cleanup. Admitted effects remain independent.
+poller : Ui.State(SnapshotState) -> Elem
+poller = |inbox_state| {
 	ticks = Signal.interval(poll_period_ms)
 
 	Html.section(
@@ -404,7 +410,7 @@ poller = |inbox_task| {
 				ticks.map(|n| "Polls issued: ${n.to_str()}"),
 				[Html.test_id("poll-count"), Html.class_attr("hint numeric")],
 			),
-			Ui.on_change(ticks, |_| Signal.start_str(inbox_task, Inbox.Request.to_str(Inbox.Request.Poll))),
+			Action.on_change(Action.sampled(ticks, snapshot_reads(inbox_state, Signal.const("poll"))), |read| start_snapshot(inbox_state, read)),
 			Ui.on_cleanup(Signal.cleanup("inbox polling cleanup")),
 		],
 	)
@@ -423,7 +429,11 @@ stat = |label, value, id|
 	)
 
 main : () -> Elem
-main = || {
+main = || Ui.state({ generation: 0.U64, snapshot: Inbox.empty_snapshot, status: Sync.Syncing }, |inbox_state|
+	Ui.state({ generation: 0.U64, result: Inbox.SendResult.Idle }, |delivery| inbox_app(inbox_state, delivery)))
+
+inbox_app : Ui.State(SnapshotState), Ui.State(DeliveryState) -> Elem
+inbox_app = |inbox_state, delivery| {
 	Ui.state(
 		Inbox.Filter.All,
 		|filter| {
@@ -433,28 +443,12 @@ main = || {
 					Ui.state(
 						Inbox.initial_session,
 						|session| {
-							# Sync endpoint. `reset_on_start` is False so an in-flight
-							# poll does not blank the inbox while it is running.
-							inbox_task = Signal.task_source("inbox", Inbox.parse_snapshot, |err| err, False)
-
-							# Send endpoint. Both payloads are the client id, so the app
-							# can tell which optimistic message settled. Starting a send
-							# publishes Loading while the optimistic row is inserted in
-							# the same flush; the spec below guards that structural update.
-							send_task = Signal.task_source("send", |value| value, |err| err, True)
-
-							snapshot = Signal.fold_task(inbox_task, Inbox.empty_snapshot, |value| value, |_| Inbox.empty_snapshot)
-							sync_status =
-								Signal.fold_task(
-									inbox_task,
-									Sync.Syncing,
-									|_| Sync.UpToDate,
-									|err| Sync.Failed(err),
-								)
+							snapshot = inbox_state.signal().map(|current| current.snapshot)
+							sync_status = inbox_state.signal().map(|current| current.status)
 							# The two outcomes stay distinguishable as *tags*: nothing
 							# flattens the client id into a prefixed string only to be
 							# re-read by prefix downstream.
-							send_status = Signal.fold_task(send_task, Inbox.SendResult.Idle, |cid| Inbox.SendResult.Sent(cid), |cid| Inbox.SendResult.Failed(cid))
+							send_status = delivery.signal().map(|current| current.result)
 
 							# chain hop 1: snapshot -> its two projections
 							convs = snapshot.map(|value| value.convs)
@@ -568,7 +562,7 @@ main = || {
 																	),
 																	Ui.when(
 																		polling.signal(),
-																		|| poller(inbox_task),
+																		|| poller(inbox_state),
 																		|| Html.paragraph_attrs("Polling is paused.", [Html.test_id("poll-paused"), Html.class_attr("hint")]),
 																	),
 																],
@@ -616,12 +610,12 @@ main = || {
 													),
 													# The keyed list is rendered unconditionally and the empty
 													# note lives in its own `Ui.when`: a `Ui.when` whose true arm
-											# is a `Ui.each` leaves its rows in the DOM when it flips
+													# is a `Ui.each` leaves its rows in the DOM when it flips
 													# false on this platform build.
 													Html.div_c(
 														"grid gap-3",
 														[
-													Ui.each(Signal.map(thread, |rows_items| Rows.from_list(rows_items, |row| row.key) ?? crash "duplicate row key"), |each_row| message_row(each_row.key(), each_row.signal())),
+															Ui.each(Signal.map(thread, |rows_items| Rows.from_list(rows_items, |row| row.key) ?? crash "duplicate row key"), |each_row| message_row(each_row.key(), each_row.signal())),
 															Ui.when(
 																has_thread,
 																|| Html.div([Html.test_id("thread-nonempty")], []),
@@ -690,23 +684,19 @@ main = || {
 									),
 									# Load once on mount, and re-read a conversation the
 									# moment it is opened so its unread flags clear.
-									Ui.on_mount(|| Signal.start_str(inbox_task, Inbox.Request.to_str(Inbox.Request.Poll))),
-									Ui.on_change(
-										selected_sig,
-										|conv_id|
-											if conv_id == "" {
-												Signal.noop
+									Action.on_change_initial(Action.sampled(Signal.const({}), snapshot_reads(inbox_state, Signal.const("poll"))), |read| start_snapshot(inbox_state, read)),
+									Action.on_change(
+										Action.sampled(selected_sig, snapshot_reads(inbox_state, selected_sig)),
+										|read|
+											if read.request == "" {
+												Action.none
 											} else {
-												Signal.start_str(inbox_task, Inbox.Request.to_str(Inbox.Request.Read(conv_id)))
+												start_snapshot(inbox_state, { ..read, request: Inbox.Request.to_str(Inbox.Request.Read(read.request)) })
 											},
 									),
-									Ui.on_change(
-										send_req_sig,
-										|request|
-											match request {
-												NoSend => Signal.noop
-												Send(line) => Signal.start_str(send_task, line)
-											},
+									Action.on_change(
+										Action.sampled(send_req_sig, { request: send_req_sig, cid: session_sig.map(|current| current.last_cid), generation: delivery.signal().map(|current| current.generation) }.Signal),
+										|read| start_delivery(delivery, read),
 									),
 									Ui.on_cleanup(Signal.cleanup("support inbox cleanup")),
 								],
@@ -717,4 +707,82 @@ main = || {
 			)
 		},
 	)
+}
+
+SnapshotState : { generation : U64, snapshot : Inbox.Snapshot, status : Sync }
+
+SnapshotRead : { generation : U64, request : Str }
+
+snapshot_reads : Ui.State(SnapshotState), Signal.Signal(Str) -> Signal.Signal(SnapshotRead)
+snapshot_reads = |state, request_signal| { request: request_signal, generation: state.signal().map(|current| current.generation) }.Signal
+
+start_snapshot : Ui.State(SnapshotState), SnapshotRead -> Action(SnapshotRead)
+start_snapshot = |state, read| {
+	generation = read.generation + 1
+	Action.then([state.write(|current| { ..current, generation })], |_| fetch_snapshot!(state, read.request, generation))
+}
+
+fetch_snapshot! : Ui.State(SnapshotState), Str, U64 => Action(SnapshotRead)
+fetch_snapshot! = |state, body, generation| {
+	result = post_text!("/api/inbox", body)
+	Action.update([
+		state.write(
+			|current|
+				if current.generation != generation {
+					current
+				} else {
+					match result {
+						Ok(text) => { ..current, snapshot: Inbox.parse_snapshot(text), status: Sync.UpToDate }
+						Err(err) => { ..current, status: Sync.Failed(Str.inspect(err)) }
+					}
+				},
+		),
+	])
+}
+
+post_text! : Str, Str => Try(Str, Http.Error)
+post_text! = |uri, body| {
+	request = Http.request_from_method(Http.method_post) |> Http.with_uri(uri) |> Http.with_body(body.to_utf8())
+	response = Http.send!(request)?
+	status = Http.response_status(response)
+	if status < 200 or status >= 300 {
+		Err(Status(status))
+	} else {
+		text = Str.from_utf8(Http.response_body(response)) ? |_| InvalidUtf8
+		Ok(text)
+	}
+}
+
+DeliveryState : { generation : U64, result : Inbox.SendResult }
+
+DeliveryRead : { generation : U64, request : Inbox.SendRequest, cid : Str }
+
+start_delivery : Ui.State(DeliveryState), DeliveryRead -> Action(DeliveryRead)
+start_delivery = |state, read| match read.request {
+	NoSend => Action.none
+	Send(body) => {
+		generation = read.generation + 1
+		Action.then([state.write(|_current| { generation, result: Inbox.SendResult.Idle })], |_| deliver!(state, body, read.cid, generation))
+	}
+}
+
+deliver! : Ui.State(DeliveryState), Str, Str, U64 => Action(DeliveryRead)
+deliver! = |state, body, cid, generation| {
+	result = match post_text!("/api/inbox/send", body) {
+		Ok(echo) => if echo == cid {
+			Inbox.SendResult.Sent(cid)
+		} else {
+			Inbox.SendResult.Failed(cid)
+		}
+		Err(_) => Inbox.SendResult.Failed(cid)
+	}
+	Action.update([
+		state.write(
+			|current| if current.generation == generation {
+				{ ..current, result }
+			} else {
+				current
+			},
+		),
+	])
 }

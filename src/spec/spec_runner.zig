@@ -429,7 +429,7 @@ pub fn Runner(comptime Ctx: type) type {
                         metrics_mark = Ctx.lastRuntimeMetrics(host);
                     },
 
-                    .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result => {},
+                    .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result, .manual_effects => {},
 
                     .set_visibility => {
                         if (comptime !@hasDecl(Ctx, "setVisibility")) {
@@ -836,20 +836,6 @@ pub fn Runner(comptime Ctx: type) type {
                         if (!dispatchCheckedChangeEvent(Ctx, host, roc_host, elem, checked, cmd.line_num)) return 1;
                     },
 
-                    .resolve_task, .reject_task, .resolve_stale_task => {
-                        const task_name = cmd.task_name orelse {
-                            writeLocatorFailure(cmd.line_num, "task command had no task name");
-                            return 1;
-                        };
-                        const payload = cmd.expected_text orelse "";
-                        if (cmd.cmd_type == .resolve_stale_task) {
-                            _ = Ctx.resolveStalePendingTask(host, roc_host, task_name, payload, false);
-                        } else {
-                            _ = Ctx.resolvePendingTask(host, roc_host, task_name, payload, cmd.cmd_type == .reject_task);
-                        }
-                        Ctx.finishHostMetrics(host);
-                    },
-
                     .stub_file_result => {
                         if (comptime !@hasDecl(Ctx, "stubFileResult")) {
                             writeLocatorFailure(cmd.line_num, "file stubs are not supported by this runner");
@@ -864,6 +850,33 @@ pub fn Runner(comptime Ctx: type) type {
                             return 1;
                         }
                         Ctx.stubHttpResult(host, &(cmd.http_stub orelse unreachable));
+                    },
+                    .run_effect => {
+                        if (comptime @hasDecl(Ctx, "runSpecEffect")) {
+                            if (!Ctx.runSpecEffect(host, roc_host, cmd.expected_count.?)) {
+                                var buffer: [192]u8 = undefined;
+                                const message = std.fmt.bufPrint(&buffer, "effect occurrence {d} is not pending or manual mode is disabled", .{cmd.expected_count.?}) catch unreachable;
+                                writeLocatorFailure(cmd.line_num, message);
+                                return 1;
+                            }
+                        } else {
+                            writeLocatorFailure(cmd.line_num, "manual effects are not supported by this runner");
+                            return 1;
+                        }
+                    },
+                    .expect_pending_effects => {
+                        if (comptime @hasDecl(Ctx, "pendingEffectCount")) {
+                            const actual = Ctx.pendingEffectCount(host);
+                            if (actual != cmd.expected_count.?) {
+                                var buffer: [192]u8 = undefined;
+                                const message = std.fmt.bufPrint(&buffer, "expected {d} pending effects, got {d}", .{ cmd.expected_count.?, actual }) catch unreachable;
+                                writeLocatorFailure(cmd.line_num, message);
+                                return 1;
+                            }
+                        } else {
+                            writeLocatorFailure(cmd.line_num, "manual effects are not supported by this runner");
+                            return 1;
+                        }
                     },
 
                     .tick_interval => {
@@ -1026,30 +1039,6 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_pending_task => {
-                        const name = cmd.task_name orelse "";
-                        const expected = cmd.expected_count orelse 0;
-                        const actual = Ctx.pendingTaskCountByName(host, name);
-                        if (actual != expected) {
-                            var buf: [512]u8 = undefined;
-                            const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}:\n  Expected pending task \"{s}\": {d}\n  Got pending task count:       {d}\n", .{ cmd.line_num, name, expected, actual }) catch "TEST FAILED\n";
-                            Ctx.writeStderr(msg);
-                            return 1;
-                        }
-                    },
-
-                    .expect_canceled_task => {
-                        const name = cmd.task_name orelse "";
-                        const expected = cmd.expected_count orelse 0;
-                        const actual = Ctx.canceledTaskCountByName(host, name);
-                        if (actual != expected) {
-                            var buf: [512]u8 = undefined;
-                            const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}:\n  Expected canceled task \"{s}\": {d}\n  Got canceled task count:       {d}\n", .{ cmd.line_num, name, expected, actual }) catch "TEST FAILED\n";
-                            Ctx.writeStderr(msg);
-                            return 1;
-                        }
-                    },
-
                     .expect_interval => {
                         const period_ms = cmd.interval_ms orelse 0;
                         const expected = cmd.expected_count orelse 0;
@@ -1168,7 +1157,6 @@ pub fn Runner(comptime Ctx: type) type {
             if (std.mem.eql(u8, name, "closure_releases")) return u64MetricAsI64(metrics.closure_releases);
             if (std.mem.eql(u8, name, "render_indexes_refreshed")) return u64MetricAsI64(metrics.render_indexes_refreshed);
             if (std.mem.eql(u8, name, "signal_record_table_rebuilt")) return u64MetricAsI64(metrics.signal_record_table_rebuilt);
-            if (std.mem.eql(u8, name, "stale_task_results_ignored")) return u64MetricAsI64(metrics.stale_task_results_ignored);
             if (std.mem.eql(u8, name, "stream_nodes_scanned")) return u64MetricAsI64(metrics.stream_nodes_scanned);
             if (std.mem.eql(u8, name, "stream_nodes_scanned_apply")) return u64MetricAsI64(metrics.stream_nodes_scanned_apply);
             if (std.mem.eql(u8, name, "stream_nodes_scanned_children")) return u64MetricAsI64(metrics.stream_nodes_scanned_children);

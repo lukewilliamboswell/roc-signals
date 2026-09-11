@@ -1,4 +1,4 @@
-export const BENCHMARK_METRICS_SCHEMA_VERSION = 3;
+export const BENCHMARK_METRICS_SCHEMA_VERSION = 4;
 
 const ALLOCATION_FIELDS = [
   "alloc_calls",
@@ -30,7 +30,7 @@ export const RUNTIME_METRIC_FIELDS = [
   "rows_reused", "selector_members_dirtied", "scopes_created",
   "scopes_disposed", "set_checked", "set_disabled", "set_metadata",
   "set_text", "set_value", "signal_record_table_rebuilt",
-  "stale_task_results_ignored", "stream_nodes_scanned",
+  "stream_nodes_scanned",
   "stream_nodes_scanned_apply", "stream_nodes_scanned_children",
   "stream_nodes_scanned_dirty_scope", "stream_nodes_scanned_events",
   "stream_nodes_scanned_mounts", "stream_nodes_scanned_on_change",

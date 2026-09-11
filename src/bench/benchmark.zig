@@ -31,7 +31,7 @@ pub fn nowNs() u64 {
 /// Classifies whether a spec command mutates app state and therefore belongs in benchmark replay.
 pub fn commandIsAction(cmd: spec_parser.SpecCommand) bool {
     return switch (cmd.cmd_type) {
-        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .focus, .blur, .change, .select_option, .custom_event, .composition_start, .composition_end, .submit, .fill, .check, .uncheck, .resolve_task, .reject_task, .tick_interval, .tick_interval_if_active, .navigate, .set_visibility, .set_online, .history_back, .history_forward => true,
+        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .focus, .blur, .change, .select_option, .custom_event, .composition_start, .composition_end, .submit, .fill, .check, .uncheck, .tick_interval, .tick_interval_if_active, .navigate, .set_visibility, .set_online, .history_back, .history_forward => true,
         else => false,
     };
 }
@@ -402,17 +402,6 @@ pub fn Runner(comptime Ctx: type) type {
                     } else {
                         _ = Ctx.setElementCheckedIfChanged(elem, checked);
                     }
-                },
-
-                .resolve_task, .reject_task => {
-                    const task_name = cmd.task_name orelse Ctx.fail("benchmark task command had no task name");
-                    const payload = cmd.expected_text orelse "";
-                    const start_ns = nowNs();
-                    const counts = Ctx.resolvePendingTask(host, roc_host, task_name, payload, cmd.cmd_type == .reject_task);
-                    stats.dispatch_apply_ns += nowNs() - start_ns;
-                    stats.commands.addAll(counts);
-                    Ctx.finishHostMetrics(host);
-                    stats.actions += 1;
                 },
 
                 .tick_interval => {

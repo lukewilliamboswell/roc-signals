@@ -55,23 +55,6 @@ Scalar boolean fields:
 | 6 | `native_read_only` | native | Refuses user edits and edit history while the control stays available at full contrast and in tab order. |
 | 3 | - | shared | Reserved marker for named custom boolean attributes. |
 
-`Node.TaskKind` is an explicit closed route:
-
-| Id | Kind | Purpose |
-| --- | --- | --- |
-| 0 | `external` | App-declared external task; the only route the browser host accepts. |
-| 1 | `choose_file` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
-| 2 | `choose_directory` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
-| 3 | `choose_save_path` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
-| 4 | `read_text` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
-| 5 | `write_text` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
-| 6 | `scan_directory` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
-| 7 | `list_directory` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
-| 8 | `open_path` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
-| 9 | `read_preview` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
-| 10 | `read_log` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
-| 11 | `verify_assets` | Reserved; the native platform serves this through a hosted `Files` function, not a task route. |
-
 <!-- END GENERATED PROTOCOL TABLES -->
 
 Zig exports `signals_protocol_version` and `signals_node_size`; Rust checks
@@ -387,9 +370,8 @@ completion on the effect worker that made it and returns a typed result;
 nothing is queued, tracked, or canceled by the engine. Everything the platform
 offers above those primitives, text reads and atomic text writes, previews,
 recursive scans, and asset verification, is Roc code in the `Files` module,
-and the activity monitor's log reader is Roc code in that app. The route
-numbers in `Node.TaskKind` remain only for the engine's own tasks; the native
-platform routes nothing through them.
+and the activity monitor's log reader is Roc code in that app. There is no
+task-kind routing table: each primitive has its own typed hosted entry point.
 
 Each primitive is its own hosted entry point with the argument and result
 types the glue generates from its Roc signature: `roc_files_read_bytes` takes

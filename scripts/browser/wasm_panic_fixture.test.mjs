@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { hostFixtureImports } from "./host_fixture_imports.mjs";
 
 test("linked Wasm panic poisons the host and clears publication allocation-free", async () => {
   const bytes = await readFile(".test-out/oom/host-fixture.wasm");
-  const { instance } = await WebAssembly.instantiate(bytes, { env: { roc_ui_init: () => 0 } });
+  const { instance } = await WebAssembly.instantiate(bytes, hostFixtureImports);
   const host = instance.exports;
 
   assert.throws(() => host.roc_ui_debug_panic(), WebAssembly.RuntimeError);
@@ -26,7 +27,7 @@ test("linked Wasm panic poisons the host and clears publication allocation-free"
 
 async function instantiateHostFixture() {
   const bytes = await readFile(".test-out/oom/host-fixture.wasm");
-  return (await WebAssembly.instantiate(bytes, { env: { roc_ui_init: () => 0 } })).instance.exports;
+  return (await WebAssembly.instantiate(bytes, hostFixtureImports)).instance.exports;
 }
 
 function hostDiagnostic(host) {
@@ -132,7 +133,7 @@ test("populated linked Wasm unmount is allocation-free and idempotent", async ()
 
 test("bounded linked Wasm memory.grow exhaustion enters fatal containment", async () => {
   const bytes = await readFile(".test-out/oom/host-fixture-bounded.wasm");
-  const { instance } = await WebAssembly.instantiate(bytes, { env: { roc_ui_init: () => 0 } });
+  const { instance } = await WebAssembly.instantiate(bytes, hostFixtureImports);
   const host = instance.exports;
   const initialBytes = host.memory.buffer.byteLength;
 

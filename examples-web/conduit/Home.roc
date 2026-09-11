@@ -1,7 +1,6 @@
 ## Home page: banner, global feed with pagination and tag filtering, and the
-## popular-tags sidebar. Fetches are scope-owned: they start when this page
-## mounts and re-issue when the route's feed parameters change; leaving the
-## page disposes the scope and cancels anything in flight.
+## popular-tags sidebar. Results belong to the page scope. Admitted effects
+## finish independently; leaving the page retires their write targets.
 import Api
 import Feed
 import Nav
@@ -10,20 +9,26 @@ import Session
 import pf.Elem exposing [Elem]
 import pf.Html
 import pf.Rows
-import pf.Http
+import pf.Action exposing [Action]
 import pf.Signal
 import pf.Ui
 
 Home := {}.{
 	page : Signal.Signal(Route), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
-	page = |route, session, intent| {
+	page = |route, session, intent| Ui.state(Loading, |tags|
+		Ui.state({ generation: 0.U64, value: Loading }, |feed_result| page_with_tags(route, session, intent, tags, feed_result)))
+
+	FeedState : { generation : U64, value : Api.Remote(Api.FeedPage) }
+	FeedParams : { feed : Route.Feed, token : Str }
+	FeedRead : { params : Home.FeedParams, generation : U64 }
+
+	page_with_tags : Signal.Signal(Route), Signal.Signal(Session), Ui.State(Nav.RouteIntent), Ui.State(Api.Remote(List(Str))), Ui.State(Home.FeedState) -> Elem
+	page_with_tags = |route, session, intent, tags, feed_result| {
 		Ui.component(
 			|| {
-				feed_task = Http.request_task("feed")
-				tags_task = Http.get_text_task("tags")
-				feed_state = Api.response_state(feed_task).map(Api.decode_feed_response)
+				feed_state = feed_result.signal().map(|current| current.value)
 				tags_state : Signal.Signal(Api.Remote(List(Str)))
-				tags_state = Signal.fold_task(tags_task, Loading, Api.decode_tags, Api.request_failed)
+				tags_state = tags.signal()
 				feed = route.map(|value| Route.feed_of(value))
 				fetch_inputs = { feed: feed, session: session }.Signal
 				fetch_params = fetch_inputs.map(|value| { feed: value.feed, token: Session.token_of(value.session) })
@@ -34,8 +39,8 @@ Home := {}.{
 					"Home",
 					[Html.class_attr("pb-12")],
 					[
-						Ui.on_change_initial(fetch_params, |params| Http.start(feed_task, Api.feed_request(params.feed, params.token))),
-						Ui.on_mount(|| Http.get_text(tags_task, Api.tags_uri)),
+						Action.on_change_initial(Action.sampled(fetch_params, { params: fetch_params, generation: feed_result.signal().map(|current| current.generation) }.Signal), |read| start_feed(feed_result, read)),
+						Action.on_change_initial(Signal.const({}), |_| Action.then([], |_| load_tags!(tags))),
 						Html.div_c(
 							"bg-emerald-700 px-5 py-12 text-center text-white shadow-inner sm:py-16",
 							[
@@ -62,6 +67,40 @@ Home := {}.{
 				)
 			},
 		)
+	}
+
+	start_feed : Ui.State(Home.FeedState), Home.FeedRead -> Action(Home.FeedRead)
+	start_feed = |state, read| {
+		generation = read.generation + 1
+		Action.then([state.write(|_current| { generation, value: Loading })], |_| load_feed!(state, read.params, generation))
+	}
+
+	load_feed! : Ui.State(Home.FeedState), Home.FeedParams, U64 => Action(Home.FeedRead)
+	load_feed! = |state, params, generation| {
+		response = Api.send_response!(Api.feed_request(params.feed, params.token))
+		value = Api.decode_feed_response(response)
+		Action.update([
+			state.write(
+				|current| if current.generation == generation {
+					{ ..current, value }
+				} else {
+					current
+				},
+			),
+		])
+	}
+
+	load_tags! : Ui.State(Api.Remote(List(Str))) => Action({})
+	load_tags! = |tags| {
+		response = Api.send_response!(Api.get_request(Api.tags_uri, ""))
+		value = if !response.error.is_empty() {
+			Api.request_failed(response.error)
+		} else if response.status == 200 {
+			Api.decode_tags(response.body)
+		} else {
+			Failed("The server responded with status ${response.status.to_str()}.")
+		}
+		Action.update([tags.write(|_current| value)])
 	}
 
 	feed_heading : Route.Feed -> Str

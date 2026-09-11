@@ -1,5 +1,6 @@
 (test "Field notes — queueing while offline"
   (setup
+    (manual-effects)
     ; Field Notes: offline capture, outbox drain, rollback, and restore.
     ;
     ; Storage format is "id|slot|queued|rev|body" per note, notes joined by ";".
@@ -29,6 +30,6 @@
     (expect-text (test-id "outbox-count") "3")
     (expect-text (test-id "outbox-detail") "3 notes waiting to sync")
     (expect-text (test-id "syncing") "None")
-    (expect-pending-task "note-sync" 0)
+    (expect-pending-effects 0)
   )
 )

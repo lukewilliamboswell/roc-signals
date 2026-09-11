@@ -1,43 +1,39 @@
 (test "Package explorer — D. latest wins search and a stale result"
-  (setup
-    ; A. deep link
-
-    (initial-location "/packages/roc-json")
-  )
+  (setup (manual-effects))
   (steps
-    ; Given the state established by earlier scenarios
-    (click (role link :name "Back to search"))
-    (resolve-task "search" "roc-json|JSON codec for Roc;roc-http|HTTP client for Roc;roc-parser|Parser combinators for Roc")
+    ; Complete the initial search before testing overlapping queries.
+    (stub-http "search " :url "/api/packages/search?q=" :status 200 :body "roc-json|JSON codec for Roc;roc-http|HTTP client for Roc;roc-parser|Parser combinators for Roc")
+    (run-effect 1)
 
     ; D. latest wins search and a stale result
 
     (fill (label "Search packages") "js")
     (expect-value (label "Search packages") "js")
-    (expect-pending-task "search" 1)
+    (expect-pending-effects 1)
     (expect-text (test-id "search-status") "Search status: searching")
-    (expect-canceled-task "search" 0)
-    ; Typing again supersedes the first request: the old one is cancelled and only
-    ; the newest may land.
+    ; Typing again admits another effect; only its generation may publish.
     (fill (label "Search packages") "json")
-    (expect-pending-task "search" 1)
-    (expect-canceled-task "search" 1)
+    (expect-pending-effects 2)
     (mark-metrics)
-    (resolve-stale-task "search" "stale-package|This superseded payload must never render")
-    (expect-metric-delta stale_task_results_ignored 1)
+    (stub-http "older js search" :url "/api/packages/search?q=%6a%73" :status 200 :body "stale-package|This superseded payload must never render")
+    (run-effect 2)
+    (expect-metric-delta patches_emitted 0)
     (expect-text (test-id "search-status") "Search status: searching")
     (expect-absent (role link :name "Open stale-package"))
-    (expect-pending-task "search" 1)
+    (expect-pending-effects 1)
     ; One matching package: the singular boundary case.
-    (resolve-task "search" "roc-json|JSON codec for Roc")
-    (expect-pending-task "search" 0)
+    (stub-http "search json" :url "/api/packages/search?q=%6a%73%6f%6e" :status 200 :body "roc-json|JSON codec for Roc")
+    (run-effect 3)
+    (expect-pending-effects 0)
     (expect-text (test-id "search-status") "Search status: 1 package")
     (expect-text (test-id "context") "Context: search results (1 matches)")
     (expect-visible (role link :name "Open roc-json"))
     (expect-absent (role link :name "Open roc-http"))
     ; No matches: the empty branch of the list.
     (fill (label "Search packages") "zzzz")
-    (expect-pending-task "search" 1)
-    (resolve-task "search" "")
+    (expect-pending-effects 1)
+    (stub-http "search zzzz" :url "/api/packages/search?q=%7a%7a%7a%7a" :status 200 :body "")
+    (run-effect 4)
     (expect-text (test-id "search-status") "Search status: no packages match")
     (expect-text (test-id "search-empty") "No packages match this search.")
     (expect-text (test-id "context") "Context: search results (0 matches)")
@@ -45,9 +41,10 @@
     (expect-absent (role link :name "Open roc-json"))
     ; Failure path.
     (fill (label "Search packages") "boom")
-    (reject-task "search" "registry unreachable")
-    (expect-pending-task "search" 0)
-    (expect-text (test-id "search-status") "Search status: failed - registry unreachable")
+    (stub-http-reject "search timeout" :kind timeout :detail "")
+    (run-effect 5)
+    (expect-pending-effects 0)
+    (expect-text (test-id "search-status") "Search status: failed - Timeout")
     (expect-text (test-id "search-empty") "Search unavailable.")
     (expect-text (test-id "context") "Context: search results (0 matches)")
   )

@@ -89,8 +89,6 @@ pub fn verifySink(comptime Sink: type) void {
     verifyDeclFn("engine Sink", Sink, "clearEvent", .{ Sink, ids.ElemId, EventBindingKey }, void);
     verifyDeclFn("engine Sink", Sink, "startInterval", .{ Sink, ids.IntervalToken, u64 }, void);
     verifyDeclFn("engine Sink", Sink, "cancelInterval", .{ Sink, ids.IntervalToken }, void);
-    verifyDeclFn("engine Sink", Sink, "startTask", .{ Sink, ids.TaskRequestId, boundary.TaskKind, []const u8, []const u8 }, void);
-    verifyDeclFn("engine Sink", Sink, "cancelTask", .{ Sink, ids.TaskRequestId }, void);
     verifyDeclFn("engine Sink", Sink, "navigate", .{ Sink, NavigationKind, LocationSnapshot }, void);
     verifyDeclFn("engine Sink", Sink, "setDocumentTitle", .{ Sink, []const u8 }, void);
     verifyDeclFn("engine Sink", Sink, "debugAssertNode", .{ Sink, ids.ElemId, bool, ?[]const u8, ?ids.ElemId, []const ids.ElemId, ?ids.EventId, ?ids.EventId, ?ids.EventId, ?ids.EventId, ?ids.EventId, ?ids.EventId, ?ids.EventId }, void);
@@ -155,10 +153,6 @@ const VerifySink = struct {
     pub fn startInterval(_: VerifySink, _: ids.IntervalToken, _: u64) void {}
     /// Cancels the host registration for an interval whose owning scope is no longer active.
     pub fn cancelInterval(_: VerifySink, _: ids.IntervalToken) void {}
-    /// Starts bounded asynchronous host work for an engine-issued task request.
-    pub fn startTask(_: VerifySink, _: ids.TaskRequestId, _: boundary.TaskKind, _: []const u8, _: []const u8) void {}
-    /// Cancels host work for a task request retired by engine lifecycle policy.
-    pub fn cancelTask(_: VerifySink, _: ids.TaskRequestId) void {}
     /// Applies an engine-issued browser-history command without deriving routing semantics.
     pub fn navigate(_: VerifySink, _: NavigationKind, _: LocationSnapshot) void {}
     /// Applies the document title already selected by graph propagation.

@@ -21,6 +21,7 @@ import tempfile
 import zipfile
 
 import bundle_browser
+from instrument_wasm import instrument_wasm
 from build_gui import build_environment, executable_name, host_target
 from compiler_pins import read_pin, replace_pin
 from dependency_artifacts import read_lock
@@ -109,10 +110,10 @@ def write_examples(path: Path, pin: str, web_url: str, gui_url: str) -> None:
             page = (
                 '<!doctype html><meta charset="utf-8"><div id="app"></div>'
                 '<script type="module">\nimport { mountSignalsApp } from "../../browser/signals.mjs";\n'
-                'import { createPublicExampleTaskHandler } from "../../browser/example_tasks.mjs";\n'
+                'import { createPublicExampleFetch } from "../../browser/example_tasks.mjs";\n'
                 'import { serviceOpsBehaviors } from "../../browser/service_ops_charts.mjs";\n'
                 'await mountSignalsApp({ root: document.getElementById("app"), wasmUrl: "./app.wasm", '
-                'taskHandler: createPublicExampleTaskHandler(), behaviors: serviceOpsBehaviors });\n</script>\n'
+                'fetchImpl: createPublicExampleFetch(), behaviors: serviceOpsBehaviors });\n</script>\n'
             )
             zip_entry(archive, (example.source.parent / "index.html").as_posix(), page.encode())
         for app in gui_examples():
@@ -242,7 +243,8 @@ def check_web(roc: str, root: Path, output: Path) -> None:
         # TODO(upstream compiler bug 10): switch this routine smoke build to
         # --opt=dev once unit-state capability callbacks produce valid Wasm.
         roc_run(roc, "build", source, "--target=wasm32", "--opt=size", "--no-cache", f"--output={wasm}")
-        driver.run(["node", ROOT / "scripts/browser/mount_wasm_example.mjs", wasm,
+        instrument_wasm(wasm)
+        driver.run(["node", "--no-maglev", "--experimental-wasm-jspi", ROOT / "scripts/browser/mount_wasm_example.mjs", wasm,
                     example.slug, "--runtime-dir", root / "browser"])
         if target is None or not example.native or driver.should_skip_native_example(target, example):
             continue

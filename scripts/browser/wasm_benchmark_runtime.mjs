@@ -1,14 +1,17 @@
-import { SignalsRuntime } from "../../www/static/signals.mjs";
+import { Op, SignalsRuntime } from "../../www/static/signals.mjs";
 
 const PHASES = ["wasm_event_ns", "command_read_ns", "command_snapshot_ns", "command_execute_ns"];
 export const OPCODE_NAMES = [
   "reset_dom", "create_element", "create_text", "append_child", "remove_node", "move_before",
   "set_text", "set_value", "set_checked", "set_disabled", "set_role", "set_label", "set_test_id",
   "bind_click", "bind_input", "bind_check", "clear_event", "start_interval", "cancel_interval",
-  "start_task", "cancel_task", "set_class", "bind_pointer_down", "bind_pointer_up",
+  "set_class", "bind_pointer_down", "bind_pointer_up",
   "bind_pointer_enter", "bind_pointer_leave", "extended", "push_state", "replace_state",
   "set_storage_text", "remove_storage", "set_document_title",
 ];
+
+// Wire IDs have reserved gaps; column positions are not opcode numbers.
+export const OPCODE_NAME_BY_ID = new Map(Object.values(Op).map((id, index) => [id, OPCODE_NAMES[index]]));
 
 export class BenchmarkPhaseRecorder {
   constructor(clock = () => process.hrtime.bigint()) {
@@ -152,7 +155,7 @@ export class BenchmarkSignalsRuntime extends SignalsRuntime {
     work.fixed_string_bytes += this.exports.roc_ui_string_buffer_len();
     work.dynamic_bytes += this.exports.roc_ui_dynamic_buffer_len();
     for (const record of records) {
-      const name = OPCODE_NAMES[record.op - 1];
+      const name = OPCODE_NAME_BY_ID.get(record.op);
       if (name === undefined) throw new Error(`benchmark observed unknown command opcode ${record.op}`);
       work.opcode_counts[name] += 1;
     }

@@ -1,37 +1,30 @@
-(test "Task latest wins"
+(test "Effect latest wins"
+  (setup (manual-effects))
   (steps
-    ; Latest task request wins; stale completions are ignored.
-
-    (expect-visible (role heading :name "Task latest wins"))
-    (expect-text (text "Task status: loading") "Task status: loading")
-    (expect-pending-task "lookup" 1)
-    (expect-canceled-task "lookup" 0)
+    (expect-visible (role heading :name "Effect latest wins"))
+    (expect-text (test-id "status") "Loading")
+    (expect-pending-effects 1)
     (click (role button :name "Refresh"))
-    (expect-pending-task "lookup" 1)
-    (expect-canceled-task "lookup" 1)
-    (expect-text (text "Task status: loading") "Task status: loading")
-    (mark-metrics)
-    (resolve-stale-task "lookup" "stale result")
-    (expect-metric-delta stale_task_results_ignored 1)
-    (expect-pending-task "lookup" 1)
-    (expect-text (text "Task status: loading") "Task status: loading")
-    (resolve-task "lookup" "fresh result")
-    (expect-pending-task "lookup" 0)
-    (expect-text (text "Task status: done fresh result") "Task status: done fresh result")
+    (expect-pending-effects 2)
+    (stub-http "older request" :url "/api/latest/0" :status 200 :body "stale result")
+    (run-effect 1)
+    (expect-pending-effects 1)
+    (expect-text (test-id "status") "Loading")
+    (stub-http "newest request" :url "/api/latest/1" :status 200 :body "fresh result")
+    (run-effect 2)
+    (expect-text (test-id "status") "Done: fresh result")
 
-    ; Warm the completed -> loading -> completed path once. Its first pass can
-    ; grow bounded HostValue-registry and allocation-ledger capacity even when
-    ; all application-owned values are released.
+    ; Warm the transition before checking its retained-allocation plateau.
     (click (role button :name "Refresh"))
-    (resolve-task "lookup" "other result")
-    (expect-text (text "Task status: done other result") "Task status: done other result")
-
-    ; Repeating the same-sized transition must now release the previous task
-    ; payload and remain at the established retained allocation plateau.
+    (stub-http "warm transition" :url "/api/latest/2" :status 200 :body "other result")
+    (run-effect 3)
+    (expect-text (test-id "status") "Done: other result")
     (mark-metrics)
     (click (role button :name "Refresh"))
-    (resolve-task "lookup" "third result")
-    (expect-text (text "Task status: done third result") "Task status: done third result")
+    (stub-http "repeat transition" :url "/api/latest/3" :status 200 :body "third result")
+    (run-effect 4)
+    (expect-text (test-id "status") "Done: third result")
+    (expect-pending-effects 0)
     (expect-metric-delta retained_alloc_delta 0)
     (expect-metric-delta host_retained_bytes_delta 0)
   )

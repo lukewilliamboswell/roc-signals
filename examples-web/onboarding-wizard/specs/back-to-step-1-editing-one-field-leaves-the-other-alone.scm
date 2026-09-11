@@ -1,5 +1,6 @@
 (test "Onboarding wizard — back to step 1: editing one field leaves the other alone"
   (setup
+    (manual-effects)
     ; Onboarding Wizard
     ;
     ; The app mounts with a part-finished draft in local storage, so the "initial
@@ -28,10 +29,13 @@
     (click (role button :name "Next step"))
     (click (role button :name "Create workspace"))
     (click (role button :name "Create workspace"))
-    (resolve-stale-task "onboarding-submit" "stale-workspace")
-    (resolve-task "onboarding-submit" "acme-42")
+    (stub-http "submission" :url "/api/onboarding/submit-1" :status 200 :body "stale-workspace")
+    (run-effect 1)
+    (stub-http "submission" :url "/api/onboarding/submit-2" :status 200 :body "acme-42")
+    (run-effect 2)
     (click (role button :name "Create workspace"))
-    (reject-task "onboarding-submit" "region unavailable")
+    (stub-http-reject "submission failure" :kind timeout :detail "")
+    (run-effect 3)
 
     ; 11. back to step 1: editing one field leaves the other alone
 

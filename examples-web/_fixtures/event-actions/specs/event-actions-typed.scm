@@ -1,4 +1,5 @@
 (test "Typed actions preserve payloads and each accepted occurrence"
+  (setup (manual-effects))
   (steps
     (fill (label "Source") "café")
     (expect-text (test-id "result") "waiting")
@@ -15,6 +16,6 @@
     (custom-event (test-id "action-detail") "demo-detail" "package ready")
     (custom-event (test-id "action-detail") "demo-detail" "package ready")
     (expect-text (test-id "result") "waiting|text:café:hello 🌱|text:café:hello 🌱|checked:True|checked:False|key:Enter:True|detail:package ready|detail:package ready")
-    (expect-pending-task "action-ping" 0)
+    (expect-pending-effects 0)
   )
 )

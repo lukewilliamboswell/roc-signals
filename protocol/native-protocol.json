@@ -143,68 +143,6 @@
    "doc": "Refuses user edits and edit history while the control stays available at full contrast and in tab order."
   }
  ],
- "task_kinds": [
-  {
-   "id": 0,
-   "name": "external",
-   "doc": "App-declared external task; the only route the browser host accepts."
-  },
-  {
-   "id": 1,
-   "name": "choose_file",
-   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
-  },
-  {
-   "id": 2,
-   "name": "choose_directory",
-   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
-  },
-  {
-   "id": 3,
-   "name": "choose_save_path",
-   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
-  },
-  {
-   "id": 4,
-   "name": "read_text",
-   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
-  },
-  {
-   "id": 5,
-   "name": "write_text",
-   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
-  },
-  {
-   "id": 6,
-   "name": "scan_directory",
-   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
-  },
-  {
-   "id": 7,
-   "name": "list_directory",
-   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
-  },
-  {
-   "id": 8,
-   "name": "open_path",
-   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
-  },
-  {
-   "id": 9,
-   "name": "read_preview",
-   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
-  },
-  {
-   "id": 10,
-   "name": "read_log",
-   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
-  },
-  {
-   "id": 11,
-   "name": "verify_assets",
-   "doc": "Reserved; the native platform serves this through a hosted `Files` function, not a task route."
-  }
- ],
  "raw_node": {
   "comment": "Field order is ABI: Zig writes and Rust reads this extern record byte-for-byte. Types: u64, usize, slice (pointer+length borrowed UTF-8), style (18 u32 presentation record), viewport (2 u32 record).",
   "fields": [

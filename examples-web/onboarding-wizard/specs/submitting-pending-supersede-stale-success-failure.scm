@@ -1,5 +1,6 @@
 (test "Onboarding wizard — submitting: pending, supersede, stale, success, failure"
   (setup
+    (manual-effects)
     ; Onboarding Wizard
     ;
     ; The app mounts with a part-finished draft in local storage, so the "initial
@@ -30,19 +31,34 @@
     ; 10. submitting: pending, supersede, stale, success, failure
 
     (click (role button :name "Create workspace"))
-    (expect-pending-task "onboarding-submit" 1)
+    (expect-pending-effects 1)
     (expect-text (test-id "submit-status") "Creating workspace…")
-    ; Submitting again supersedes the in-flight request.
+    ; Both effects remain pending; the newer generation owns the displayed result.
     (click (role button :name "Create workspace"))
-    (expect-pending-task "onboarding-submit" 1)
-    (expect-canceled-task "onboarding-submit" 1)
-    (resolve-stale-task "onboarding-submit" "stale-workspace")
+    (expect-pending-effects 2)
+    (stub-http "submission" :url "/api/onboarding/submit-1" :status 200 :body "stale-workspace")
+    (run-effect 1)
     (expect-text (test-id "submit-status") "Creating workspace…")
-    (resolve-task "onboarding-submit" "acme-42")
+    (stub-http "submission" :url "/api/onboarding/submit-2" :status 200 :body "acme-42")
+    (run-effect 2)
     (expect-text (test-id "submit-status") "Workspace ready: acme-42")
     (click (role button :name "Create workspace"))
     (expect-text (test-id "submit-status") "Creating workspace…")
-    (reject-task "onboarding-submit" "region unavailable")
-    (expect-text (test-id "submit-status") "Submit failed: region unavailable")
+    (stub-http-reject "submission failure" :kind timeout :detail "")
+    (run-effect 3)
+    (expect-text (test-id "submit-status") "Submit failed: Timeout")
+    ; Reset invalidates the displayed submission without cancelling its effect.
+    (click (role button :name "Create workspace"))
+    (expect-pending-effects 1)
+    (click (role button :name "Start over"))
+    (expect-pending-effects 1)
+    (expect-text (test-id "progress-label") "Step 1 of 4 — Account")
+    (mark-metrics)
+    (stub-http "late submission" :url "/api/onboarding/submit-4" :status 200 :body "too-late")
+    (run-effect 4)
+    (expect-pending-effects 0)
+    (expect-metric-delta patches_emitted 0)
+    (expect-no-local-storage "onboarding:draft")
+    (expect-text (test-id "progress-label") "Step 1 of 4 — Account")
   )
 )

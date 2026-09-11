@@ -14,16 +14,11 @@
 //
 // Everything is seeded and in-memory: no clock, no randomness, so native and
 // JS assertions can rely on exact values. Unknown URIs return null so the
-// public example task-handler chain (and later a real-fetch fallback) can
-// take them.
+// public example fetch dispatcher can pass them to its normal fetch fallback.
 
-import {
-  decodeHttpRequestPayload,
-  HttpTask,
-  httpHeaderValue,
-  httpJsonResponse,
-  httpTaskError,
-} from "./signals.mjs";
+function httpJsonResponse(value, { status = 200 } = {}) {
+  return { status, body: JSON.stringify(value) };
+}
 
 const bodyDecoder = new TextDecoder();
 
@@ -158,7 +153,7 @@ export function createConduitBackend() {
 }
 
 function userByToken(backend, headers) {
-  const header = httpHeaderValue(headers, "authorization");
+  const header = new Headers(headers).get("authorization") ?? "";
   if (!header.startsWith("Token ")) {
     return null;
   }
@@ -696,50 +691,43 @@ function routeConduit(backend, { method, path, query, viewer, bodyText }) {
   return notFound();
 }
 
-export function createConduitTaskHandler({ backend = createConduitBackend(), latencyMs = 0 } = {}) {
-  return function conduitTaskHandler({ name, request, signal }) {
-    if (typeof name !== "string" || !name.startsWith(HttpTask.namePrefix)) {
-      return null;
-    }
-
-    let decoded;
-    try {
-      decoded = decodeHttpRequestPayload(request);
-    } catch (err) {
-      throw httpTaskError("unsupported", err?.message ?? err);
-    }
-
-    const [path, queryText = ""] = String(decoded.uri).split("?");
-    if (!isConduitPath(path)) {
-      return null;
-    }
-
-    const response = routeConduit(backend, {
-      method: decoded.method.toUpperCase(),
+// The deterministic service boundary uses ordinary HTTP fields, not task codecs.
+export function createConduitHandler({ backend = createConduitBackend(), latencyMs = 0 } = {}) {
+  return function conduitHandler({ method = "GET", uri, headers = [], body = [], signal }) {
+    const [path, queryText = ""] = String(uri).split("?");
+    if (!isConduitPath(path)) return null;
+    signal?.throwIfAborted();
+    const execute = () => routeConduit(backend, {
+      method: method.toUpperCase(),
       path,
       query: new URLSearchParams(queryText),
-      viewer: userByToken(backend, decoded.headers),
-      bodyText: bodyDecoder.decode(decoded.body),
+      viewer: userByToken(backend, headers),
+      bodyText: typeof body === "string" ? body : bodyDecoder.decode(new Uint8Array(body)),
     });
-
-    if (latencyMs <= 0) {
-      return response;
-    }
-
+    if (latencyMs <= 0) return execute();
     return new Promise((resolve, reject) => {
-      if (signal?.aborted) {
-        reject(httpTaskError("canceled"));
-        return;
-      }
-      const timer = setTimeout(() => resolve(response), latencyMs);
-      signal?.addEventListener?.(
-        "abort",
-        () => {
-          clearTimeout(timer);
-          reject(httpTaskError("canceled"));
-        },
-        { once: true },
-      );
+      const abort = () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", abort);
+        try { resolve(execute()); } catch (error) { reject(error); }
+      }, latencyMs);
+      signal?.addEventListener("abort", abort, { once: true });
     });
+  };
+}
+
+// Return null for unrelated routes so the caller can use its normal fetch.
+export function createConduitFetch(options = {}) {
+  const handle = createConduitHandler(options);
+  return function conduitFetch(uri, request = {}) {
+    const result = handle({ ...request, uri });
+    if (result === null) return null;
+    return Promise.resolve(result).then(({ status, body }) => new Response(body, {
+      status,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    }));
   };
 }

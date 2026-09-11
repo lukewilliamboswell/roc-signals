@@ -1,6 +1,6 @@
 +++
 title = "Testing"
-description = "Test app behaviour, control tasks and timers, and check update work with native specs."
+description = "Test app behaviour, control effects and timers, and check update work with native specs."
 weight = 9
 template = "page.html"
 +++
@@ -9,8 +9,44 @@ template = "page.html"
 
 Native specs run your app against a simulated DOM using the same reactive engine
 as the browser build. They let you check rendered values, state lifetime,
-requests, and update work. You control task results and timer ticks explicitly,
+requests, and update work. You control effect execution and timer ticks explicitly,
 so a test does not need a network connection or a delay to exercise those paths.
+
+## Controlling action effects
+
+Native specs normally execute prepared action effects synchronously. Add
+`(manual-effects)` to a test's `setup` to leave them queued instead. The engine
+still prepares each owned snapshot when its action commits.
+
+```scheme
+(setup (manual-effects))
+(steps
+  (expect-pending-effects 2)
+  (stub-http "second answer" :url "/api/search" :status 200 :body "new")
+  (run-effect 2)
+  (expect-pending-effects 1)
+  (stub-http "first answer" :url "/api/search" :status 200 :body "old")
+  (run-effect 1)
+  (expect-pending-effects 0))
+```
+
+This fragment assumes earlier mount or input actions admitted two effects.
+Occurrence IDs start at `1` in each fresh runtime and increase for every prepared
+effect, including chained effects. They are not queue positions or request keys:
+running `2` first does not rename `1`. Unknown or already-consumed IDs fail the
+spec. `run-effect` requires manual mode.
+
+Each selected effect runs its real Roc closure against the existing service
+stubs, then applies its returned action through normal engine propagation.
+Chained effects remain queued for another explicit step. Unexecuted effects
+remain owned by the engine and are released during teardown. Sorting, stale
+application generations, and scope disposal can therefore be tested with the
+same native structural-work assertions as other actions.
+
+Manual mode controls execution order, not suspension inside a closure. It does
+not simulate a network, run worker threads, or interleave events between two
+hosted calls in one closure. Browser suspension and memory-boundary tests cover
+those additional executor concerns.
 
 For a checkout-based app, build for your machine and run its specs:
 
@@ -139,47 +175,46 @@ compare a changing value. For a container without its own text, `expect-text`
 compares concatenated descendant text. `expect-visible` checks presence in the
 native model; it does not evaluate CSS visibility.
 
-## Tasks and timers
+## Races, timers, and cleanup
 
-Tasks and timers are driven by the spec, not by a clock. There is no sleeping
-and no polling.
+Use manual effects to exercise application race policy without a network or a
+simulated coroutine scheduler. For the maintained latest-wins fixture, the
+mount admits effect 1 and Refresh admits effect 2:
 
 ```lisp
-(expect-pending-task "form-submit" 1)
-(resolve-task "form-submit" "queued")
-(reject-task "lookup" "offline")
-(resolve-stale-task "lookup" "late")
-(expect-canceled-task "lookup" 1)
+(expect-pending-effects 1)
+(click (role button :name "Refresh"))
+(expect-pending-effects 2)
+(stub-http "older request" :url "/api/latest/0" :status 200 :body "stale result")
+(run-effect 1)
+(expect-text (test-id "status") "Loading")
+(stub-http "newest request" :url "/api/latest/1" :status 200 :body "fresh result")
+(run-effect 2)
+(expect-text (test-id "status") "Done: fresh result")
+(expect-pending-effects 0)
+```
 
+The app's generation guard rejects the older result; the engine still executes
+both admitted effects. A complementary test can run effect 2 first and effect 1
+last, then assert that the newer result remains visible. Stub labels explain the
+scenario to readers; they are not task names or effect identities.
+
+`expect-pending-effects` checks an absolute count. Assert visible outcomes as
+well: a pending count alone cannot prove that the app handled a result correctly.
+
+Timers and named scope cleanup remain explicit:
+
+```lisp
 (tick-interval 1000)
 (tick-interval-if-active 1000)
 (expect-interval 1000 1)
-
 (expect-cleanup "live search panel cleanup" 1)
 ```
 
-`resolve-stale-task` delivers a result for a canceled request. It requires a
-previous cancellation; without one the spec fails. For a search that starts a
-request on each changed input, check that the older result leaves the loading
-state intact:
-
-```lisp
-(fill (label "Search") "ro")
-(fill (label "Search") "roc")
-(resolve-stale-task "lookup" "results for ro")
-(expect-text (test-id "search-status") "Search status: loading")
-(resolve-task "lookup" "results for roc")
-(expect-text (test-id "search-results") "Results: results for roc")
-```
-
-`expect-pending-task` checks an absolute count, not a delta. To prove a second
-interaction did not start or replace a request, check both the pending count and
-`expect-canceled-task`.
-
-Task names come from `Signal.fake_task(name, ...)` or, for HTTP, from
-`Http.request_task(purpose)` — which registers as `http:send:<purpose>`.
-
-## Browser environment
+Disposing a scope cancels its interval registrations, but does not cancel
+admitted action effects. A disposal spec should run the outstanding effect and
+show that retired state destinations are not recreated while surviving state
+destinations can still update.
 
 Use setup values to test startup with a saved draft, a deep link, or an offline
 environment. For example, an app that leaves the initial URL and storage intact
@@ -250,7 +285,6 @@ Commonly useful metrics:
 | `scopes_created` / `scopes_disposed` | scope lifecycle |
 | `events_processed` | events dispatched into the graph |
 | `propagation_prunes` | propagations stopped by `is_eq` |
-| `stale_task_results_ignored` | superseded task results discarded |
 | `active_intervals_synced` | timer bookkeeping |
 | `retained_alloc_delta` | retained Roc allocations |
 | `host_retained_bytes_delta` | retained host bytes |
@@ -272,9 +306,10 @@ by construction — every item is examined — so the claim worth asserting ther
 not a small number but that identity survives: rows reused rather than rebuilt,
 and scopes disposed only for items that really left. Repeating an action that
 changes nothing belongs in the same specs as an equality no-op
-(`propagation_prunes`), and a disposed branch should be shown to cancel the
-timers and tasks it owned, with any late result refused
-(`stale_task_results_ignored`) rather than applied.
+(`propagation_prunes`). Show that a disposed branch cancels its timers and that
+outstanding effect results do not recreate its retired state. For latest-wins
+behavior, assert that the application's reducer preserves the newest result
+when an older effect runs later.
 
 `derived_calls_into_roc` counts derived evaluations, while `dirty_source_roots`
 counts changed sources. One source can wake many transforms. `propagation_prunes`

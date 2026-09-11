@@ -3,10 +3,6 @@
 pub const Phase = enum(u32) {
     idle = 0,
 
-    task_payload = 10,
-    task_transform = 20,
-    task_dispatch = 30,
-
     host_value_clone = 101,
     host_value_get_with_split = 103,
     host_value_take_with_split = 107,
@@ -39,7 +35,6 @@ pub const Phase = enum(u32) {
     eval_dirty_const_initialize = 402,
     eval_dirty_const_cached = 403,
     clone_cached_signal = 409,
-    eval_dirty_task_source = 410,
     eval_dirty_interval_source = 411,
     eval_dirty_location_source = 412,
     eval_dirty_storage_source = 413,

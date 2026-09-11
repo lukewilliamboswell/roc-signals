@@ -1,5 +1,7 @@
-app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst" }
+app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-09-04-c125b82" }
 
+import Load
+import pf.Action
 import Catalog
 import Route
 import pf.Browser
@@ -12,10 +14,9 @@ import pf.Ui
 # Package Explorer: search a registry, open a package, and watch three panels
 # load independently behind a URL that Back and Forward restore exactly.
 #
-# State is deliberately decomposed into two tiny source signals -- the search
-# query and the navigation intent -- plus one host-owned environment source,
-# `Browser.location()`. Nothing else is retained: results, panel phases,
-# counts, headings, and the document title are all derived.
+# State separates search and navigation controls from independently retained
+# HTTP results. Browser.location() supplies the route. Counts, headings, and
+# the document title are derived; result generations reject older responses.
 #
 # Signal-graph shapes on show:
 #
@@ -28,8 +29,8 @@ import pf.Ui
 #       route (from Browser.location) --+--> context line
 #       search result count ------------+
 #
-#   chain (4 hops from one task)
-#       search task -> search_view -> search_rows -> result_count -> context line
+#   chain (4 hops from one result)
+#       search state -> search_view -> search_rows -> result_count -> context line
 
 page_class = "grid gap-5"
 
@@ -249,39 +250,31 @@ deps_panel = |deps_view| {
 	)
 }
 
-start_panel = |task, id|
-	if id.is_empty() {
-		Signal.noop
-	} else {
-		Signal.start_str(task, id)
-	}
-
-## The three panel tasks are created inside this scope on purpose: when the
-## route leaves the package page the host disposes the scope and cancels every
-## request that has not settled yet.
+## Each panel owns its retained result inside the package-page scope.
+## Admitted effects survive navigation; writes to disposed state are skipped.
 package_page : Signal.Signal(Route), Ui.State(RouteIntent) -> Elem
-package_page = |route, intent| {
+package_page = |route, intent|
+	Ui.state({ generation: 0.U64, value: Catalog.detail_loading }, |detail|
+		Ui.state({ generation: 0.U64, value: Catalog.versions_loading }, |versions|
+			Ui.state({ generation: 0.U64, value: Catalog.deps_loading }, |deps|
+				package_panels(route, intent, detail, versions, deps))))
+
+package_panels : Signal.Signal(Route), Ui.State(RouteIntent), Ui.State(Load.State(Catalog.DetailView)), Ui.State(Load.State(Catalog.VersionsView)), Ui.State(Load.State(Catalog.DepsView)) -> Elem
+package_panels = |route, intent, detail, versions, deps| {
 	package_id = Signal.map(route, Route.package_id)
-
-	detail_task = Signal.fake_task("detail", |value| value, |err| err)
-	versions_task = Signal.fake_task("versions", |value| value, |err| err)
-	deps_task = Signal.fake_task("deps", |value| value, |err| err)
-
-	detail_view = Signal.fold_task(detail_task, Catalog.detail_loading, Catalog.detail_ready, Catalog.detail_failed)
-	versions_view = Signal.fold_task(versions_task, Catalog.versions_loading, Catalog.versions_ready, Catalog.versions_failed)
-	deps_view = Signal.fold_task(deps_task, Catalog.deps_loading, Catalog.deps_ready, Catalog.deps_failed)
+	detail_view = detail.signal().map(|current| current.value)
+	versions_view = versions.signal().map(|current| current.value)
+	deps_view = deps.signal().map(|current| current.value)
 
 	# Fan-in A: three independent panel phases feed one combined signal. Each
 	# input owns its own capability, which is exactly the case `Signal.combine`
 	# is for.
 	phases =
-		Signal.combine(
-			[
-				Signal.map(detail_view, |view| view.phase),
-				Signal.map(versions_view, |view| view.phase),
-				Signal.map(deps_view, |view| view.phase),
-			],
-		)
+		Signal.combine([
+			Signal.map(detail_view, |view| view.phase),
+			Signal.map(versions_view, |view| view.phase),
+			Signal.map(deps_view, |view| view.phase),
+		])
 	panel_summary = Signal.map(phases, Catalog.panel_summary)
 	settled = Signal.map(phases, Catalog.all_settled)
 
@@ -301,13 +294,34 @@ package_page = |route, intent| {
 			overview_panel(detail_view),
 			versions_panel(versions_view),
 			deps_panel(deps_view),
-			# Each panel starts its own request. The empty-id guard matters: when
-			# the route leaves this page the derived id briefly becomes "" before
-			# the host disposes the branch, and starting a request there would
-			# replace the very request we want to see cancelled.
-			Ui.on_change_initial(package_id, |id| start_panel(detail_task, id)),
-			Ui.on_change_initial(package_id, |id| start_panel(versions_task, id)),
-			Ui.on_change_initial(package_id, |id| start_panel(deps_task, id)),
+			# Snapshot each request with its panel's current generation.
+			Action.on_change_initial(
+				Action.sampled(package_id, { query: package_id, current: detail.signal() }.Signal),
+				|read|
+					if read.query.is_empty() {
+						Action.none
+					} else {
+						Load.start(detail, "detail", { loading: Catalog.detail_loading, ready: Catalog.detail_ready, failed: Catalog.detail_failed }, read)
+					},
+			),
+			Action.on_change_initial(
+				Action.sampled(package_id, { query: package_id, current: versions.signal() }.Signal),
+				|read|
+					if read.query.is_empty() {
+						Action.none
+					} else {
+						Load.start(versions, "versions", { loading: Catalog.versions_loading, ready: Catalog.versions_ready, failed: Catalog.versions_failed }, read)
+					},
+			),
+			Action.on_change_initial(
+				Action.sampled(package_id, { query: package_id, current: deps.signal() }.Signal),
+				|read|
+					if read.query.is_empty() {
+						Action.none
+					} else {
+						Load.start(deps, "deps", { loading: Catalog.deps_loading, ready: Catalog.deps_ready, failed: Catalog.deps_failed }, read)
+					},
+			),
 			Ui.on_cleanup(Signal.cleanup("package detail panels")),
 		],
 	)
@@ -317,7 +331,7 @@ package_page = |route, intent| {
 
 ## Four small source signals -- navigation intent, search query, list order,
 ## watched package -- plus one host-owned environment source. Everything the
-## page shows is derived from them.
+## page shows combines these controls with the independently retained results.
 main : () -> Elem
 main = ||
 	Ui.state(
@@ -338,27 +352,24 @@ main = ||
 	)
 
 app_shell : Handles -> Elem
-app_shell = |handles| {
+app_shell = |handles|
+	Ui.state({ generation: 0.U64, value: Catalog.search_loading }, |search| explorer(handles, search))
+
+explorer : Handles, Ui.State(Load.State(Catalog.SearchView)) -> Elem
+explorer = |handles, search| {
 	location = Browser.location()
 	route = Signal.map(location, Route.from_location)
 	is_package = Signal.map(route, Route.is_package)
 	document_title = Signal.map(route, Route.title)
 
-	search_task = Signal.fake_task("search", |value| value, |err| err)
-	search_view =
-		Signal.fold_task(
-			search_task,
-			Catalog.search_loading,
-			Catalog.search_ready,
-			Catalog.search_failed,
-		)
+	search_view = search.signal().map(|current| current.value)
 
-	# Chain: task -> view -> rows -> count -> context line.
+	# Chain: result state -> view -> rows -> count -> context line.
 	search_rows = Signal.map(search_view, |view| view.rows)
 	result_count = Signal.map(search_rows, |rows| rows.len())
 
 	# Fan-in C: server rows and the client-side order toggle. Reordering here
-	# never touches the task, so keyed rows keep their scopes.
+	# never starts an HTTP effect, so keyed rows keep their scopes.
 	ordered_rows = Signal.map2(search_rows, handles.reversed.signal(), Catalog.order_rows)
 
 	# Fan-in B: the route source and the search result count are completely
@@ -378,7 +389,7 @@ app_shell = |handles| {
 					},
 			),
 			Ui.on_change_initial(document_title, Browser.set_title),
-			Ui.on_change_initial(handles.query.signal(), |value| Signal.start_str(search_task, value)),
+			Action.on_change_initial(Action.sampled(handles.query.signal(), { query: handles.query.signal(), current: search.signal() }.Signal), |read| Load.start(search, "search", { loading: Catalog.search_loading, ready: Catalog.search_ready, failed: Catalog.search_failed }, read)),
 			hero(context_line),
 			Ui.when(
 				is_package,

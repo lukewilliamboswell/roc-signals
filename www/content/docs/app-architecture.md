@@ -124,51 +124,36 @@ A remote-data type makes request states explicit:
 Remote(a) : [Loading, Ready(a), Failed(Str)]
 ```
 
-Fold task results into this type near the request code, then render loading,
+Map effect results into this type near the request code, then render loading,
 success, and failure states. An exhaustive `match` checks those three cases.
 An empty list is still `Ready([])`, so decide separately how an empty result
 should appear. The type does not automatically supply an empty-state view.
 
-Put retry controls where the request-starting scope will survive the transition
-to Loading. Removing that scope cancels its request, even if the task-result
-signal remains available elsewhere.
+Own the result state at the lifetime the UI needs. An admitted effect survives
+removal of its initiating control, but its returned writes cannot recreate
+state destinations whose scopes have been disposed.
 
 ## Server-confirmed mutations
 
 Separate a value that should stay synchronized from an action a user requests.
-Filters can drive a fetch through `Ui.on_change_initial`. A Favorite or Submit
-button should use `Ui.action`, which runs once per accepted event even when its
-input values equal those from the previous event.
+Filters can drive a fetch through `Action.on_change_initial`. A Favorite or
+Submit button should use `Action.run`, which runs once per accepted event even
+when its declared reads equal those from the previous event.
 
-Conduit's article page uses this form for favorites:
+The handler returns `Action.then(changes, effect!)`. The effect sends the
+request with `Http.send!`, decodes the response, and returns an
+`Action.update` containing state reducers. Changing the article signal alone
+does not run the event handler. No serial counter is needed merely to make
+identical clicks distinct.
 
-```roc
-favorite_action = Ui.action(
-    { article: article_state, slug: slug, token: token }.Signal,
-    |request|
-        if request.slug.is_empty() {
-            Signal.noop
-        } else if article_favorited(request.article) {
-            Http.start(favorite_task, Api.delete_request(Api.favorite_uri(request.slug), request.token))
-        } else {
-            Http.start(favorite_task, Api.post_request(Api.favorite_uri(request.slug), "", request.token))
-        },
-)
-```
-
-The page binds this message to its favorite control and derives the displayed
-state from the response. Changing the article signal alone does not run the
-action. You do not need to increment a serial counter to make repeated clicks
-distinct. Some Conduit mutations still use that older pattern; it is not needed
-for new actions.
-
-Give independently active operations separate task sources. Starting a new
-request for the same task in the same owning scope replaces its pending request.
-Cancellation prevents a late response from updating that task, but it cannot
-undo a write the server has already performed.
+Race policy is separate from event identity. Every admitted effect runs
+independently. If newer requests supersede older ones, record a generation in
+state and check it in the result reducer against the current value. If every
+result matters, reduce every result instead. Neither policy can undo a write
+the server has already performed.
 
 When one action needs to replace several state sources together, return
-`Ui.update_states` with each state's `write` proposal. Derived values and
+`Action.update` with each state's `write` proposal. Derived values and
 observers then see the complete replacement. Do not use a chain of change
 observers to repair intermediate combinations of state.
 

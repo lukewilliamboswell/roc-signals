@@ -1,22 +1,37 @@
-import Node
-import Signal
 import http.Method
 import http.Request
 import http.Response
 
 ## HTTP request helpers backed by the pinned `roc-lang/http` package and the
-## Signals task runtime.
+## engine-scheduled action effects.
 Http := [].{
+	## Failures of a hosted request. HTTP status codes remain successful
+	## responses; text helpers report non-success status and invalid UTF-8.
+	Error := [InvalidRequest(Str), Network(Str), Timeout, TooLarge(Str), Status(U16), InvalidUtf8, Unavailable(Str)].{
+		is_eq : _
+	}
 
-	## Errors returned by platform HTTP task helpers.
-	HttpError := [
-		Network(Str),
-		Timeout,
-		Canceled,
-		ResourceLimit(Str),
-		Unsupported(Str),
-		ResponseMaterialization(Str),
-	]
+	## Performs one request inside an engine-scheduled action effect. Each call
+	## is a distinct occurrence and its result returns through that action.
+	send! : Request.Request => Try(Response.Response, Error)
+
+	## Performs a GET with a thirty-second timeout.
+	get! : Str => Try(Response.Response, Error)
+	get! = |uri| Http.send!(Request.from_method(GET).with_uri(uri).with_timeout(TimeoutMilliseconds(30000)))
+
+	## Reads a successful response as UTF-8, preserving status and decoding
+	## failures as typed errors rather than replacing bytes.
+	get_text! : Str => Try(Str, Error)
+	get_text! = |uri| {
+		response = get!(uri)?
+		status = Response.status(response)
+		if status < 200 or status >= 300 {
+			Err(Status(status))
+		} else {
+			text = Str.from_utf8(Response.body(response)) ? |_| InvalidUtf8
+			Ok(text)
+		}
+	}
 
 	## User-facing HTTP header shape.
 	Header : { name : Str, value : Str }
@@ -81,7 +96,8 @@ Http := [].{
 	## Set request body bytes.
 	with_body = Request.with_body
 
-	## Set request timeout.
+	## Set request timeout. The browser accepts durations through 2147483647
+	## milliseconds; larger durations return `InvalidRequest` when sent.
 	with_timeout_ms = |request, ms| Request.with_timeout(request, TimeoutMilliseconds(ms))
 
 	## Disable request timeout.
@@ -111,245 +127,4 @@ Http := [].{
 	## Set response body bytes.
 	response_with_body = Response.with_body
 
-	## Create a task for full HTTP request/response values.
-	request_task = |purpose|
-		Signal.task_source_with_eq(
-			{ name: "http:send:${purpose}", reset_on_start: False, canceled: || Canceled, refused: || ResourceLimit("too many pending requests") },
-			decode_response_payload,
-			decode_error_payload,
-			|_, _| False,
-			|_, _| False,
-		)
-
-	## Start a full HTTP request task.
-	start = |task, request| Signal.start_str(task, encode_request_payload(request))
-
-	## Create a task that decodes successful responses as text. Starting a new
-	## request on the same task cancels any older pending request; late results from
-	## canceled requests are ignored by the runtime.
-	get_text_task = |purpose|
-		Signal.task_source_with_eq(
-			{ name: "http:send:${purpose}", reset_on_start: False, canceled: || error_text(Canceled), refused: || error_text(ResourceLimit("too many pending requests")) },
-			decode_text_response_payload,
-			decode_error_text_payload,
-			|left, right| left == right,
-			|left, right| left == right,
-		)
-
-	## Start a `GET` request and decode a successful response body as text.
-	get_text = |task, uri| {
-		request =
-			Request.from_method(method_get)
-				.with_uri(uri)
-		Signal.start_str(task, encode_request_payload(request))
-	}
-
-	## Start a `GET` request and keep the full response value.
-	get = |task, uri|
-		start(
-			task,
-			Request.from_method(method_get)
-				.with_uri(uri),
-		)
-
-	## Convert an HTTP error to user-facing text.
-	error_text = |err|
-		match err {
-			Network(message) => "network: ${message}"
-			Timeout => "timeout"
-			Canceled => "canceled"
-			ResourceLimit(message) => "resource limit: ${message}"
-			Unsupported(message) => "unsupported request: ${message}"
-			ResponseMaterialization(message) => "response materialization: ${message}"
-		}
-
-	encode_request_payload = |request| {
-		headers = Request.headers(request)
-		base = [
-			"roc-http-request-v1",
-			encode_str(Request.method_str(request)),
-			encode_str(Request.uri(request)),
-			encode_timeout(Request.timeout(request)),
-			headers.len().to_str(),
-		]
-			request_fields =
-			headers.fold(
-				base,
-				|acc, (name, value)| acc.append(encode_str(name)).append(encode_str(value)),
-			)
-		fields = request_fields.append(encode_bytes(Request.body(request)))
-		Str.join_with(fields, "\n")
-	}
-
-	encode_response_payload = |response| {
-		headers = Response.headers(response)
-		base = [
-			"roc-http-response-v1",
-			Response.status(response).to_str(),
-			headers.len().to_str(),
-		]
-			response_fields =
-			headers.fold(
-				base,
-				|acc, (name, value)| acc.append(encode_str(name)).append(encode_str(value)),
-			)
-		fields = response_fields.append(encode_bytes(Response.body(response)))
-		Str.join_with(fields, "\n")
-	}
-
-	encode_error_payload = |err| {
-			(code, message) =
-			match err {
-				Network(detail) => ("network", detail)
-				Timeout => ("timeout", "")
-				Canceled => ("canceled", "")
-				ResourceLimit(detail) => ("resource-limit", detail)
-				Unsupported(detail) => ("unsupported", detail)
-				ResponseMaterialization(detail) => ("response-materialization", detail)
-			}
-
-		Str.join_with(["roc-http-error-v1", code, encode_str(message)], "\n")
-	}
-
-	decode_response_payload = |payload| {
-		reader0 = expect_version(payload.split_on("\n"), "roc-http-response-v1", "response")
-		status_line = read_line(reader0, "response status")
-		header_count_line = read_line(status_line.rest, "response header count")
-			status =
-			match U16.from_str(status_line.value) {
-				Ok(value) => value
-				Err(_) => {
-					crash "malformed HTTP response payload"
-				}
-			}
-		header_count = parse_u64(header_count_line.value, "response header count")
-		header_result = read_headers(header_count_line.rest, header_count, "response")
-		body_line = read_line(header_result.rest, "response body")
-
-		if !body_line.rest.is_empty() {
-			crash "malformed HTTP response payload: trailing fields"
-		}
-
-		Response.from_status(status)
-			.with_headers(header_result.headers)
-			.with_body(decode_bytes(body_line.value, "response body"))
-	}
-
-	decode_text_response_payload = |payload| {
-		response = decode_response_payload(payload)
-		match Str.from_utf8(Response.body(response)) {
-			Ok(text) => text
-			Err(_) => Str.from_utf8_lossy(Response.body(response))
-		}
-	}
-
-	decode_error_payload = |payload| {
-		reader0 = expect_version(payload.split_on("\n"), "roc-http-error-v1", "error")
-		code_line = read_line(reader0, "error code")
-		message_line = read_line(code_line.rest, "error message")
-
-		if !message_line.rest.is_empty() {
-			ResponseMaterialization("malformed HTTP error payload: trailing fields")
-		} else {
-			message = decode_str(message_line.value, "error message")
-			if code_line.value == "network" {
-				Network(message)
-			} else if code_line.value == "timeout" {
-				Timeout
-			} else if code_line.value == "canceled" {
-				Canceled
-			} else if code_line.value == "resource-limit" {
-				ResourceLimit(message)
-			} else if code_line.value == "unsupported" {
-				Unsupported(message)
-			} else if code_line.value == "response-materialization" {
-				ResponseMaterialization(message)
-			} else {
-				ResponseMaterialization("malformed HTTP error payload: unknown code")
-			}
-		}
-	}
-
-	decode_error_text_payload = |payload| error_text(decode_error_payload(payload))
-
-	encode_timeout = |timeout|
-		match timeout {
-			NoTimeout => "-"
-			TimeoutMilliseconds(ms) => ms.to_str()
-		}
-
-	encode_str = |text| encode_bytes(text.to_utf8())
-
-	encode_bytes = |bytes| {
-		parts = bytes.map(|byte| U8.to_u64(byte).to_str())
-		Str.join_with(parts, ",")
-	}
-
-	decode_str = |field, _label| {
-		bytes = decode_bytes(field, "bytes")
-		match Str.from_utf8(bytes) {
-			Ok(text) => text
-			Err(_) => {
-				crash "malformed HTTP payload"
-			}
-		}
-	}
-
-	decode_bytes = |field, _label| {
-		if field.is_empty() {
-			[]
-		} else {
-			field.split_on(",").map(
-				|part| {
-					match U8.from_str(part) {
-						Ok(byte) => byte
-						Err(_) => {
-							crash "malformed HTTP payload"
-						}
-					}
-				},
-			)
-		}
-	}
-
-	parse_u64 = |text, _label|
-		match U64.from_str(text) {
-			Ok(value) => value
-			Err(_) => {
-				crash "malformed HTTP payload"
-			}
-		}
-
-	read_headers = |lines, count, label| {
-		var $remaining = lines
-		var $headers = []
-		var $left = count
-
-		while $left > 0 {
-			name_line = read_line($remaining, "${label} header name")
-			value_line = read_line(name_line.rest, "${label} header value")
-			$headers = $headers.append((decode_str(name_line.value, "header name"), decode_str(value_line.value, "header value")))
-			$remaining = value_line.rest
-			$left = $left - 1
-		}
-
-		{ headers: $headers, rest: $remaining }
-	}
-
-	expect_version = |lines, expected, label| {
-		version = read_line(lines, "${label} version")
-		if version.value == expected {
-			version.rest
-		} else {
-			crash "malformed HTTP payload"
-		}
-	}
-
-	read_line = |lines, _label|
-		match lines.first() {
-			Ok(value) => { value, rest: lines.drop_first(1) }
-			Err(_) => {
-				crash "malformed HTTP payload"
-			}
-		}
 }

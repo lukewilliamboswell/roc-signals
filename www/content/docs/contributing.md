@@ -20,6 +20,8 @@ Install:
 - GitHub CLI (`gh`), authenticated for release operations and optional
   attestation inspection,
 - Node.js,
+- Binaryen's `wasm-opt` (every linked browser app requires the `--stack-check`
+  post-link pass; locally verified with version 116),
 - Zola,
 - the Tailwind CSS 3.4.17 standalone CLI (the site uses the v3 configuration),
 - Roc.
@@ -100,6 +102,24 @@ python3 scripts/test.py bench --native always
 python3 scripts/test.py size --roc-bin /path/to/roc
 ```
 
+The browser contracts include a Wasm effect-stack fixture in both Debug and
+ReleaseSmall modes. It checks overlapping suspensions, reverse-order completion,
+interleaved host calls, and memory growth. Run it alone with
+`zig build run-test-effect-stack`. This fixture requires Node with
+`--experimental-wasm-jspi` support (verified with Node 23.9.0); the build target
+passes the flag. It tests the suspension substrate, not the full Roc effect
+semantics.
+
+`python3 scripts/test.py browser` additionally builds the Roc action and HTTP
+fixtures with the selected compiler and runs them through the browser runtime.
+These linked tests cover fresh reads in effect chains, overlapping HTTP
+completions, UTF-8 response ownership, and shutdown/remount while work is pending.
+The `wasm` suite also runs the flight-search browser scenario after building that
+application. It checks that sorting does not refetch and that application-owned
+generations reject older completions in an A → B → A request sequence without
+canceling the earlier effects. Mount smoke tests wait for suspended-effect
+shutdown before asserting that retained host values have been released.
+
 `size` builds the ReleaseSmall browser host and the fixed fixture set in
 `test/size/fixtures.toml` as production Wasm, then fails if any fixture's raw
 or gzip size exceeds `test/size/budgets.toml`. It requires the selected
@@ -157,7 +177,7 @@ partial publication.
 The Wasm suite separately builds the coordinated-writes fixture with test-only
 allocator exports and sweeps every allocation in a write-plus-observer host call.
 It verifies poison, a bounded diagnostic, empty publication buffers, unchanged
-browser DOM, no unpublished task execution, detached event listeners, and
+browser DOM, no unpublished effect execution, detached event listeners, and
 allocation-free idempotent containment. Recovery uses a fresh instance. This
 linked-app fatal campaign complements native refusal/retry tests; it does not
 turn arbitrary native crashes into accepted outcomes. Roc-allocator fatal
@@ -1020,7 +1040,7 @@ the parser refuses a `resolve-file-*` fixture inside a scenario for that reason.
 
 A scenario shares `click`, `focus`, `shortcut`, `expect-visible`,
 `expect-absent`, `expect-text`, `expect-value` and `expect-disabled` with a
-test. Its own steps are `(wait ms)`, which lets timers, tasks and propagation
+test. Its own steps are `(wait ms)`, which lets timers, effects and propagation
 settle; `(type locator "text")`, which focuses an editor and types through the
 real key dispatch path (a scenario refuses `fill`, which sets a value without
 the keyboard); `(key "ctrl-s")`, one keystroke written the way GPUI writes
@@ -1160,9 +1180,7 @@ oversized values reject the spec.
 
 These stubs simulate results and perform no filesystem IO. They establish
 application response and state behavior; real filesystem and native chooser
-behavior need host tests and a native walkthrough. The raw `resolve-task`,
-`reject-task`, and `resolve-stale-task` commands settle engine tasks, which
-the browser platform still uses; no GUI example starts one. The Board and
+behavior need host tests and a native walkthrough. The Board and
 Notes journeys demonstrate save snapshots, failed loads, dismissed choosers,
 retries, and retained drafts.
 
@@ -1170,17 +1188,15 @@ A supplied result does not assert the request payload the app emitted. For
 example, resolving a write with `:bytes 14` does not prove that the app submitted
 those fourteen bytes. Test snapshot construction as pure application logic and
 check real submitted data through focused native IO workflows. The harness
-currently exposes pending/canceled counts, not request-body assertions.
+currently exposes pending effect counts, not request-body assertions.
 
 Supported async and lifecycle commands:
 
-- `(resolve-task "<task-name>" "<payload>")`
-- `(resolve-stale-task "<task-name>" "<payload>")`
-- `(reject-task "<task-name>" "<payload>")`
+- `(manual-effects)` (setup only)
+- `(expect-pending-effects <count>)`
+- `(run-effect <occurrence-id>)`
 - `(tick-interval <period-ms>)`, `(tick-interval-if-active <period-ms>)`
 - `(request-window-close)`, `(expect-window-closed true|false)` (native GUI lifecycle)
-- `(expect-pending-task "<task-name>" <count>)`
-- `(expect-canceled-task "<task-name>" <count>)`
 - `(expect-interval <period-ms> <count>)`
 - `(expect-cleanup "<cleanup-name>" <count>)`
 
@@ -1200,13 +1216,11 @@ Quoted values are unescaped (`\n`, `\t`, `\\`, `\"`) for every command that
 takes one, including `fill`, `change`, `select-option`, `key-down`, and the
 `expect-text` / `expect-value` / `expect-attr` comparison values.
 
-`expect-pending-task` asserts an absolute count, not a delta. To prove that an
-interaction did *not* start a request while another is in flight, assert that
-the count is unchanged and that `expect-canceled-task` is still 0.
-
-`resolve-stale-task` requires a previously canceled request for that task name;
-without one the host reports `fake stale task result had no matching canceled
-request`. Force a supersede first.
+`expect-pending-effects` asserts an absolute count, not a delta. In manual
+mode, `run-effect` executes one admitted occurrence's whole closure using the
+installed service stubs. Choose occurrence order to test stale results; the
+spec does not simulate suspension points inside an effect. The retired task
+settlement and pending/canceled-task commands are rejected.
 
 `real-click` dispatches `pointerdown -> pointerup -> click` through the
 simulated propagation path, including capture/bubble, `self`, and stop policy.
@@ -1224,7 +1238,7 @@ Common metric names include `dirty_source_roots`, `rows_reused`,
 `stream_nodes_scanned`, `stream_nodes_scanned_events`,
 `render_indexes_refreshed`, `active_intervals_synced`,
 `active_graph_records_rebuilt`, `signal_record_table_rebuilt`,
-`stale_task_results_ignored`, `retained_alloc_delta`,
+`retained_alloc_delta`,
 `host_retained_alloc_delta`, and `host_retained_bytes_delta`. The authoritative
 list lives in `src/spec/spec_runner.zig`.
 
@@ -1241,7 +1255,7 @@ bench gate. A built app binary also accepts benchmark flags directly:
 
 The host initializes a fresh app per iteration, applies the initial command
 batch, then replays commands classified as benchmark actions in
-`src/bench/benchmark.zig` (user actions, task results, and interval ticks).
+`src/bench/benchmark.zig` (user actions, browser-environment changes, and interval ticks).
 Expectation and metric assertion commands remain the semantic correctness suite
 used by `python3 scripts/test.py native`.
 

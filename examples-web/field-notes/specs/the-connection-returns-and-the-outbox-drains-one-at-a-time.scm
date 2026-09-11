@@ -1,5 +1,6 @@
 (test "Field notes — the connection returns and the outbox drains one at a time"
   (setup
+    (manual-effects)
     ; Field Notes: offline capture, outbox drain, rollback, and restore.
     ;
     ; Storage format is "id|slot|queued|rev|body" per note, notes joined by ";".
@@ -34,28 +35,31 @@
     (expect-attr (role region :name "Note s2") data-status "queued")
     (expect-attr (role region :name "Note s1") data-status "queued")
     (expect-attr (role region :name "Note n1") data-status "draft")
-    (expect-pending-task "note-sync" 1)
-    (resolve-task "note-sync" "n0#r7")
+    (expect-pending-effects 1)
+    (stub-http "sync n0#r7" :url "/api/notes/sync" :status 200 :body "n0#r7")
+    (run-effect 1)
     (expect-text (test-id "status-n0") "Synced")
     (expect-text (test-id "synced-count") "1")
     (expect-text (test-id "syncing") "s2")
     (expect-text (test-id "outbox-count") "2")
-    (expect-pending-task "note-sync" 1)
+    (expect-pending-effects 1)
     ; A failure rolls that note back to failed; its siblings are untouched and the
     ; queue keeps draining past it.
-    (reject-task "note-sync" "s2#r0")
+    (stub-http "failed sync s2#r0" :url "/api/notes/sync" :status 503 :body "temporarily unavailable")
+    (run-effect 2)
     (expect-text (test-id "status-s2") "Failed")
     (expect-attr (role region :name "Note s2") data-status "failed")
     (expect-text (test-id "failed-count") "1")
     (expect-text (test-id "status-n0") "Synced")
     (expect-text (test-id "syncing") "s1")
-    (expect-pending-task "note-sync" 1)
-    (resolve-task "note-sync" "s1#r0")
+    (expect-pending-effects 1)
+    (stub-http "sync s1#r0" :url "/api/notes/sync" :status 200 :body "s1#r0")
+    (run-effect 3)
     (expect-text (test-id "status-s1") "Synced")
     (expect-text (test-id "synced-count") "2")
     (expect-text (test-id "failed-count") "1")
     (expect-text (test-id "syncing") "None")
     (expect-text (test-id "outbox-count") "1")
-    (expect-pending-task "note-sync" 0)
+    (expect-pending-effects 0)
   )
 )

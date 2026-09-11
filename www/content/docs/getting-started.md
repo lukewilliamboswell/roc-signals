@@ -169,7 +169,7 @@ TEST FAILED at line 2: locator did not resolve to one element
 
 Specs locate elements the way a screen reader or a user would — by role,
 accessible name, label, or visible text — so they describe behaviour rather than
-DOM structure. They can also resolve tasks, tick timers, and assert work
+DOM structure. They can also run pending effects, tick timers, and assert work
 budgets. See [Testing](@/docs/testing.md).
 
 ## Run it in a browser
@@ -180,7 +180,14 @@ Your app is the same source either way; only the target changes.
 
 ```sh
 roc build --target=wasm32 --opt=size --output=/tmp/hello.wasm examples-web/hello/main.roc
+python3 scripts/instrument_wasm.py /tmp/hello.wasm
 ```
+
+The post-link step requires Binaryen's `wasm-opt` and Node. It adds the stack
+bounds checks required by the browser runtime; run it before deploying or
+hashing the module. It removes debug sections because the supported Binaryen
+version cannot rewrite the compiler's DWARF. The local server applies this step
+automatically.
 
 ### Drop it on this site
 

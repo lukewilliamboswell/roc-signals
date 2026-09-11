@@ -1,21 +1,15 @@
 (test "Support inbox — optimistic sending"
+  (setup (manual-effects))
   (steps
-    ; Given the state established by earlier scenarios
-    (resolve-task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|new|-")
-    (click (test-id "open-c1"))
-    (mark-metrics)
-    (click (test-id "open-c3"))
-    (resolve-stale-task "inbox" "c9|Stale conversation|Nobody|me#")
-    (click (test-id "open-c2"))
-    (resolve-task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-")
-    (change (label "Assigned to me") "mine")
-    (change (label "Unread") "unread")
-    (change (label "All") "all")
+    ; Load the inbox with no unread messages before opening the composer.
+    (stub-http "initial inbox" :url "/api/inbox" :status 200 :body "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-")
+    (run-effect 1)
 
     ; optimistic sending
 
     (click (test-id "open-c1"))
-    (resolve-task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-")
+    (stub-http "inbox snapshot" :url "/api/inbox" :status 200 :body "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-")
+    (run-effect 2)
     (expect-text (test-id "thread-title") "Card declined")
     (expect-disabled (role button :name "Send message") true)
     (fill (label "Message") "Refund issued")
@@ -24,7 +18,7 @@
     (mark-metrics)
     (click (role button :name "Send message"))
     (expect-value (label "Message") "")
-    (expect-pending-task "send" 1)
+    (expect-pending-effects 1)
     (expect-text (test-id "send-state") "Sending…")
     (expect-text (test-id "summary-conversations") "3")
     (expect-text (test-id "summary-unread") "0")
@@ -40,9 +34,10 @@
     ; by the newer server truth, and not duplicated by it either.
     (tick-interval 4000)
     (expect-text (test-id "poll-count") "Polls issued: 1")
-    (expect-pending-task "inbox" 1)
+    (expect-pending-effects 2)
     (mark-metrics)
-    (resolve-task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-")
+    (stub-http "inbox snapshot" :url "/api/inbox" :status 200 :body "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-")
+    (run-effect 4)
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
     (expect-visible (role region :name "Message p1"))
@@ -51,9 +46,10 @@
     (expect-text (test-id "summary-conversations") "3")
     (expect-text (test-id "summary-unread") "0")
     (expect-text (test-id "summary-sending") "1")
-    (expect-pending-task "send" 1)
-    (resolve-task "send" "p1")
-    (expect-pending-task "send" 0)
+    (expect-pending-effects 1)
+    (stub-http "send acknowledgment" :url "/api/inbox/send" :status 200 :body "p1")
+    (run-effect 3)
+    (expect-pending-effects 0)
     (expect-text (test-id "send-state") "Sent")
     (expect-text (test-id "mstate-p1") "sent")
     (expect-text (test-id "summary-conversations") "3")

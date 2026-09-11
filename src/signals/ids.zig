@@ -12,7 +12,6 @@ const Domain = enum {
     elem,
     scope,
     event,
-    task_request,
     interval,
     generation,
     site_ordinal,
@@ -58,9 +57,6 @@ pub const ScopeId = Identity(.scope, u64);
 
 /// Dense identity of an event route minted by the engine.
 pub const EventId = Identity(.event, u64);
-
-/// Dense identity of an in-flight task request minted by the engine.
-pub const TaskRequestId = Identity(.task_request, u64);
 
 /// Dense identity of an active interval registration minted by the engine.
 pub const IntervalToken = Identity(.interval, u64);
@@ -108,7 +104,7 @@ pub fn optionalEventRaw(event_id: ?EventId) ?u64 {
 test "semantic identities retain dense integer representation" {
     try std.testing.expect(NodeId != ElemId);
     try std.testing.expect(ScopeId != SiteOrdinal);
-    try std.testing.expect(EventId != TaskRequestId);
+    try std.testing.expect(EventId != IntervalToken);
     try std.testing.expectEqual(@sizeOf(u64), @sizeOf(NodeId));
     try std.testing.expectEqual(@alignOf(u64), @alignOf(NodeId));
     try std.testing.expectEqual(@as(u64, 42), NodeId.fromRaw(42).raw());

@@ -1,5 +1,6 @@
 app [main] { pf: platform "../../platform-web/main.roc" }
 
+import pf.Action
 import pf.Elem exposing [Elem]
 import pf.Html
 import pf.Http
@@ -9,28 +10,33 @@ import pf.Ui
 State : { body : Str, ready : Bool }
 
 fetch_row : Str, (Str -> Str) -> Elem
-fetch_row = |file, run| {
-	task = Http.request_task("probe-${file}")
-	state : Signal.Signal(State)
-	state =
-		Signal.fold_task(
-			task,
-			{ body: "", ready: False },
-			|response| { body: Str.from_utf8_lossy(Http.response_body(response)), ready: True },
-			|_err| { body: "", ready: True },
+fetch_row = |file, run| Ui.state(
+	{ body: "", ready: False },
+	|state| {
+		line = state.signal().map(
+			|s| if s.ready {
+				"${s.body} -> ${run(s.body)}"
+			} else {
+				"${file}: loading"
+			},
 		)
-	line = state.map(|s| if s.ready { "${s.body} -> ${run(s.body)}" } else { "${file}: loading" })
+		Html.div_c(
+			"grid gap-1",
+			[
+				Html.paragraph_s_c(line, "text-sm font-mono"),
+				Action.on_change_initial(Signal.const(file), |_| Action.then([], |name| fetch!(state, name))),
+			],
+		)
+	},
+)
 
-	Html.div_c(
-		"grid gap-1",
-		[
-			Html.paragraph_s_c(line, "text-sm font-mono"),
-			Ui.on_change_initial(
-				Signal.const(1),
-				|_| Http.start(task, Http.request_from_method(GET).with_uri("/probe/${file}")),
-			),
-		],
-	)
+fetch! : Ui.State(State), Str => Action(Str)
+fetch! = |state, file| {
+	body = match Http.get_text!("/probe/${file}") {
+		Ok(text) => text
+		Err(error) => crash Str.inspect(error)
+	}
+	Action.update([state.set({ body, ready: True })])
 }
 
 r11 : Str -> Str

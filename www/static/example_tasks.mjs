@@ -1,170 +1,20 @@
-import {
-  createHttpTaskRouter,
-  httpHeaderValue,
-  httpJsonResponse,
-  httpTaskError,
-  httpTextResponse,
-} from "./signals.mjs";
-import { createConduitTaskHandler } from "./conduit_backend.mjs";
+import { createConduitFetch } from "./conduit_backend.mjs";
 
-export function createPublicExampleTaskHandler() {
-  const opsBackend = createOpsBackend();
-  const conduitTaskHandler = createConduitTaskHandler();
-  // One backend instance per handler, so each mounted app gets its own scripted
-  // sequence starting at the beginning of the story.
-  // They are built on first use because the scripted payload tables below are
-  // module-level `const`s, and this factory also runs at module evaluation time.
-  let namedTaskHandlers = null;
-  const namedHandlers = () => {
-    if (namedTaskHandlers === null) {
-      namedTaskHandlers = [
-        createStatusPageBackend(),
-        createSupportInboxBackend(),
-        createFieldNotesBackend(),
-        createOnboardingBackend(),
-        createPackageExplorerBackend(),
-        createFlightSearchBackend(),
-      ];
-    }
-    return namedTaskHandlers;
-  };
-  return function publicExampleTaskHandler(args) {
-    const lookup = lookupTaskHandler(args);
-    if (lookup !== null && lookup !== undefined) {
-      return lookup;
-    }
-
-    for (const handler of namedHandlers()) {
-      const handled = handler(args);
-      if (handled !== null && handled !== undefined) {
-        return handled;
-      }
-    }
-
-    const apiConsole = apiRequestConsoleTaskHandler(args);
-    if (apiConsole !== null && apiConsole !== undefined) {
-      return apiConsole;
-    }
-
-    const conduit = conduitTaskHandler(args);
-    if (conduit !== null && conduit !== undefined) {
-      return conduit;
-    }
-
-    return opsApiTaskHandler(args, opsBackend);
-  };
-}
-
-export const publicExampleTaskHandler = createPublicExampleTaskHandler();
-
-export function createOpsBackend() {
+// Each mount owns its scripted sequence; requests in a different app cannot
+// advance this app's dashboard.
+function createOpsFetch() {
   let sequence = 0;
-  return {
-    nextSnapshot() {
-      sequence += 1;
-      return opsSnapshot(sequence);
-    },
+  const textViews = { summary: summaryText, traffic: trafficText, jobs: jobsText, alerts: alertsText, health: healthText };
+  return (uri, options = {}) => {
+    options.signal?.throwIfAborted();
+    if ((options.method ?? "GET") !== "GET") return new Response("method not allowed", { status: 405 });
+    const endpoint = String(uri).slice("/api/ops/".length);
+    if (endpoint !== "dashboard" && !Object.hasOwn(textViews, endpoint)) return new Response("not found", { status: 404 });
+    const snapshot = opsSnapshot(++sequence);
+    return endpoint === "dashboard"
+      ? Response.json(snapshot.fields)
+      : new Response(textViews[endpoint](snapshot), { headers: { "content-type": "text/plain; charset=utf-8" } });
   };
-}
-
-const defaultOpsBackend = createOpsBackend();
-const opsRouters = new WeakMap();
-
-export function opsApiTaskHandler({ name, request }, backend = defaultOpsBackend) {
-  return opsRouterFor(backend)({ name, request });
-}
-
-function opsRouterFor(backend) {
-  let router = opsRouters.get(backend);
-  if (router) {
-    return router;
-  }
-
-  router = createHttpTaskRouter({
-    "GET /api/ops/dashboard": () => {
-      const snapshot = backend.nextSnapshot();
-      return httpJsonResponse(snapshot.fields);
-    },
-    "GET /api/ops/summary": () => {
-      const snapshot = backend.nextSnapshot();
-      return httpTextResponse(summaryText(snapshot));
-    },
-    "GET /api/ops/traffic": () => {
-      const snapshot = backend.nextSnapshot();
-      return httpTextResponse(trafficText(snapshot));
-    },
-    "GET /api/ops/jobs": () => {
-      const snapshot = backend.nextSnapshot();
-      return httpTextResponse(jobsText(snapshot));
-    },
-    "GET /api/ops/alerts": () => {
-      const snapshot = backend.nextSnapshot();
-      return httpTextResponse(alertsText(snapshot));
-    },
-    "GET /api/ops/health": () => {
-      const snapshot = backend.nextSnapshot();
-      return httpTextResponse(healthText(snapshot));
-    },
-  });
-  opsRouters.set(backend, router);
-  return router;
-}
-
-const apiConsoleRouter = createHttpTaskRouter({
-  "POST /api/api-request-console": (req) => {
-    const scenario = httpHeaderValue(req.headers, "x-scenario") || "success";
-    if (scenario === "failure") {
-      throw httpTaskError("network", "offline");
-    }
-
-    const missing = scenario === "missing";
-    return httpJsonResponse(
-      missing
-        ? { status: "missing", message: "customer record was not found" }
-        : { status: "created", message: "customer-42 is ready" },
-      {
-        status: missing ? 404 : 201,
-        headers: [["x-result", missing ? "missing" : "ok"]],
-      },
-    );
-  },
-});
-
-export function apiRequestConsoleTaskHandler(args) {
-  return apiConsoleRouter(args);
-}
-
-export function lookupTaskHandler({ name, request, signal }) {
-  if (name !== "lookup") {
-    return null;
-  }
-
-  const query = String(request).trim();
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error("canceled"));
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      if (query.toLowerCase().includes("fail") || query.toLowerCase().includes("offline")) {
-        reject(new Error("offline search index"));
-      } else if (query === "") {
-        resolve("Type a search term to see matching actions");
-      } else {
-        resolve(`Top results for "${query}": docs, examples, and release notes`);
-      }
-    }, 80);
-
-    signal?.addEventListener?.(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new Error("canceled"));
-      },
-      { once: true },
-    );
-  });
 }
 
 function opsSnapshot(sequence) {
@@ -422,15 +272,12 @@ function twoDigits(value) {
   return String(value).padStart(2, "0");
 }
 
-// --- named task sources for the gallery examples ----------------------------
+// --- deterministic HTTP services for the gallery examples -------------------
 //
-// Several examples drive their async work through `Signal.task_source(name, …)`
-// rather than `Http`, so their requests arrive here under a bare name instead of
-// the `http:send:` prefix the routers above match. Under the native spec host a
-// spec script supplies each result; in the browser these handlers stand in for
-// that script.
+// Native specs supply service responses explicitly. In the browser these
+// fetch implementations provide the corresponding scripted examples.
 //
-// House rules, same as `createOpsBackend`: no `Math.random()`, no wall-clock
+// House rules, same as `createOpsFetch`: no `Math.random()`, no wall-clock
 // input. Each backend owns a small counter that advances once per request, and
 // the counter indexes a scripted progression so that successive polls tell a
 // story — healthy, degraded, an incident with updates, a failure, recovery —
@@ -440,9 +287,8 @@ function twoDigits(value) {
 // `specs/*.scm`, which are the ground truth the Roc parse functions were
 // written against.
 
-// Tasks resolve after a short delay so the Loading branch of every
-// `Signal.fold_task` is actually visible, and so a superseded request can be
-// cancelled while still in flight (latest-wins in package-explorer).
+// Responses settle after a short delay so loading state is visible. Each
+// occurrence completes independently unless the mount's abort signal fires.
 function settle(value, { signal, delayMs = 140 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -474,10 +320,8 @@ function stage(script, index) {
 
 // --- status-page -------------------------------------------------------------
 //
-// Names: "check:api", "check:web", "check:database", "check:notifications",
-// "incidents". Every request payload is the literal string "refresh"; the round
-// number comes from a per-name counter, so each service tells its own part of
-// the same story even though the five tasks are independent.
+// GET /api/status/{api,web,database,notifications,incidents}. A per-service
+// counter advances each script independently; each fetch is a new occurrence.
 //
 // Wire formats (see parse_check / parse_feed in examples-web/status-page/main.roc):
 //   check      "operational|99.98"          health | uptime percent
@@ -540,20 +384,22 @@ const statusFeed = [
   `${statusIncident42}10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Rolled back the deploy^11:05@Monitoring after rollback^11:30@Resolved, error rates back to baseline#${statusIncident51}11:10@Investigating a notification backlog^11:34@Resolved, backlog drained`,
 ];
 
-export function createStatusPageBackend() {
+function createStatusPageFetch() {
   const rounds = new Map();
-  return function statusPageTaskHandler({ name, signal }) {
-    const script = name === "incidents" ? statusFeed : statusChecks[name];
+  return function statusPageFetch(uri, { method = "GET", signal } = {}) {
+    if (method !== "GET") return new Response("method not allowed", { status: 405 });
+    const name = String(uri).slice("/api/status/".length);
+    const script = name === "incidents" ? statusFeed : statusChecks[`check:${name}`];
     if (!script) {
-      return null;
+      return new Response("unknown status service", { status: 404 });
     }
     const round = rounds.get(name) ?? 0;
-    rounds.set(name, round + 1);
+    rounds.set(name, Math.min(round + 1, script.length - 1));
     const entry = stage(script, round);
     if (entry && typeof entry === "object" && entry.fail) {
       return failWith(entry.fail, { signal });
     }
-    return settle(entry, { signal });
+    return settle(new Response(entry), { signal });
   };
 }
 
@@ -603,7 +449,7 @@ const inboxArrivals = [
   { id: "m6", conv: "c2", author: "customer", body: "Still broken after a reinstall", unread: true, cid: "-" },
 ];
 
-export function createSupportInboxBackend() {
+function createSupportInboxFetch() {
   const messages = inboxSeedMessages.map((message) => ({ ...message }));
   let polls = 0;
   let sends = 0;
@@ -616,9 +462,12 @@ export function createSupportInboxBackend() {
     return `${inboxConversations.join(";")}#${rows.join(";")}`;
   };
 
-  return function supportInboxTaskHandler({ name, request, signal }) {
-    if (name === "inbox") {
-      const text = String(request);
+  return async function supportInboxFetch(uri, options = {}) {
+    if ((options.method ?? "GET") !== "POST") return new Response("method not allowed", { status: 405 });
+    const { signal } = options;
+    const request = await new Response(options.body).text();
+    if (uri === "/api/inbox") {
+      const text = request;
       if (text.startsWith("read:")) {
         const conv = text.slice("read:".length);
         for (const message of messages) {
@@ -626,32 +475,31 @@ export function createSupportInboxBackend() {
             message.unread = false;
           }
         }
-        return settle(encode(), { signal });
+        return settle(new Response(encode()), { signal });
       }
 
-      polls += 1;
-      // The third poll fails on purpose: `reset_on_start = False` means the
-      // board keeps showing the last good snapshot while the status line
-      // reports the failure, and the next poll recovers.
+      if (text !== "poll") return new Response("invalid inbox request", { status: 400 });
+      polls = Math.min(polls + 1, inboxArrivals.length + 1);
+      // The third poll fails; the app retains its last successful snapshot.
       if (polls === 3) {
-        return failWith("sync gateway timed out", { signal });
+        return settle(new Response("sync gateway timed out", { status: 503 }), { signal });
       }
       const arrival = polls <= inboxArrivals.length ? inboxArrivals[polls - 1] : null;
       if (arrival && !messages.some((m) => m.id === arrival.id)) {
         messages.push({ ...arrival });
       }
-      return settle(encode(), { signal });
+      return settle(new Response(encode()), { signal });
     }
 
-    if (name !== "send") {
-      return null;
+    if (uri !== "/api/inbox/send") {
+      return new Response("unknown inbox endpoint", { status: 404 });
     }
 
     const [cid, conv, ...bodyParts] = String(request).split("|");
     const body = bodyParts.join("|");
     sends += 1;
     if (sends === 2 || body.toLowerCase().includes("fail")) {
-      return failWith("delivery service rejected the message", { signal });
+      return settle(new Response("delivery service rejected the message", { status: 503 }), { signal });
     }
     nextServerId += 1;
     messages.push({
@@ -664,57 +512,34 @@ export function createSupportInboxBackend() {
       // copy instead of showing the message twice.
       cid,
     });
-    return settle(cid, { signal });
+    return settle(new Response(cid), { signal });
   };
 }
 
 // --- field-notes -------------------------------------------------------------
 //
-// Name: "note-sync". The request is the note's settlement token, "<id>#<rev>",
-// and both the success and the failure payload must echo that same token back:
-// the app compares the settled token against the note's current token to decide
-// whether a row is synced, failed, or still outstanding.
+// POST /api/notes/sync carries the settlement token, "<id>#<rev>", as text.
+// Success echoes it. The calling effect retains its own token on failure.
 //
 // Every third sync request fails, so the outbox demonstrates a failed row and
 // the Retry button; retrying mints a new revision, which produces a new token
 // and (usually) a clean settlement on the next attempt.
-export function createFieldNotesBackend() {
+function createFieldNotesFetch() {
   let attempts = 0;
-  return function fieldNotesTaskHandler({ name, request, signal }) {
-    if (name !== "note-sync") {
-      return null;
-    }
-    attempts += 1;
-    const token = String(request);
-    if (attempts % 3 === 0) {
-      return failWith(token, { signal });
-    }
-    return settle(token, { signal });
-  };
-}
-
-// --- onboarding-wizard -------------------------------------------------------
-//
-// Name: "onboarding-submit", request "submit-<attempt>". The first attempt
-// fails so the failure branch of the submit status is reachable without any
-// special input; every later attempt creates the workspace.
-export function createOnboardingBackend() {
-  return function onboardingTaskHandler({ name, request, signal }) {
-    if (name !== "onboarding-submit") {
-      return null;
-    }
-    const attempt = Number.parseInt(String(request).replace("submit-", ""), 10) || 1;
-    if (attempt === 1) {
-      return failWith("workspace name already taken", { signal });
-    }
-    return settle(`acme-${40 + attempt}`, { signal });
+  return async function fieldNotesFetch(uri, options = {}) {
+    if ((options.method ?? "GET") !== "POST") return new Response("method not allowed", { status: 405 });
+    const token = await new Response(options.body).text();
+    const { signal } = options;
+    attempts = (attempts + 1) % 3;
+    if (attempts === 0) return settle(new Response("sync temporarily unavailable", { status: 503 }), { signal });
+    return settle(new Response(token), { signal });
   };
 }
 
 // --- package-explorer --------------------------------------------------------
 //
-// Names: "search" (request is the query text) and "detail" / "versions" /
-// "deps" (request is the package id). Wire formats, from Catalog.roc:
+// GET /api/packages/{search,detail,versions,deps}?q=<query-or-package-id>.
+// Wire formats, from Catalog.roc:
 //   search    "id|summary;id|summary"
 //   detail    "id|summary|license|downloads"
 //   versions  "version|released;version|released"
@@ -722,8 +547,7 @@ export function createOnboardingBackend() {
 // An empty payload is a legitimate answer everywhere.
 //
 // The registry is a fixed catalogue filtered by substring, so search is
-// deterministic and latest-wins cancellation is observable (a superseded
-// request rejects with "canceled" while in flight). A query containing
+// deterministic. Every request settles independently. A query containing
 // "offline" fails the search, and an unknown package id fails the detail panel
 // while versions and deps still answer — the point the example makes about
 // panels settling independently.
@@ -770,9 +594,12 @@ const packageCatalog = [
   },
 ];
 
-export function createPackageExplorerBackend() {
-  return function packageExplorerTaskHandler({ name, request, signal }) {
-    const text = String(request).trim();
+function createPackageExplorerFetch() {
+  return function packageExplorerFetch(uri, { method = "GET", signal } = {}) {
+    if (method !== "GET") return new Response("method not allowed", { status: 405 });
+    const url = new URL(String(uri), "https://example.invalid");
+    const name = url.pathname.slice("/api/packages/".length);
+    const text = (url.searchParams.get("q") ?? "").trim();
     if (name === "search") {
       if (text.toLowerCase().includes("offline")) {
         return failWith("registry unreachable", { signal });
@@ -784,11 +611,11 @@ export function createPackageExplorerBackend() {
           pkg.id.toLowerCase().includes(needle) ||
           pkg.summary.toLowerCase().includes(needle),
       );
-      return settle(rows.map((pkg) => `${pkg.id}|${pkg.summary}`).join(";"), { signal });
+      return settle(new Response(rows.map((pkg) => `${pkg.id}|${pkg.summary}`).join(";")), { signal });
     }
 
     if (name !== "detail" && name !== "versions" && name !== "deps") {
-      return null;
+      return new Response("unknown package endpoint", { status: 404 });
     }
 
     const pkg = packageCatalog.find((candidate) => candidate.id === text);
@@ -796,21 +623,21 @@ export function createPackageExplorerBackend() {
       if (name === "detail") {
         return failWith("overview service unavailable", { signal });
       }
-      return settle("", { signal });
+      return settle(new Response(""), { signal });
     }
     if (name === "detail") {
-      return settle(`${pkg.id}|${pkg.summary}|${pkg.license}|${pkg.downloads}`, { signal });
+      return settle(new Response(`${pkg.id}|${pkg.summary}|${pkg.license}|${pkg.downloads}`), { signal });
     }
     if (name === "versions") {
-      return settle(pkg.versions, { signal });
+      return settle(new Response(pkg.versions), { signal });
     }
-    return settle(pkg.deps, { signal });
+    return settle(new Response(pkg.deps), { signal });
   };
 }
 
 // --- flight-search -----------------------------------------------------------
 //
-// Name: "flight-search". The request is the fan-in of the six filter states:
+// HTTP path: "/api/flights/<request>". The request combines six filter states:
 // "<origin>-<destination>|<date>|<max stops>|<max price>|<airline>". Only the
 // route and date reach the server; stops, price and airline are applied locally
 // to the results already held, which is the point of the example.
@@ -840,15 +667,52 @@ function criteriaSeed(text) {
   return seed;
 }
 
-export function createFlightSearchBackend() {
-  return function flightSearchTaskHandler({ name, request, signal }) {
-    if (name !== "flight-search") {
-      return null;
+export function createPublicExampleFetch(fetchImpl = globalThis.fetch) {
+  const opsFetch = createOpsFetch();
+  const conduitFetch = createConduitFetch();
+  const statusPageFetch = createStatusPageFetch();
+  const packageExplorerFetch = createPackageExplorerFetch();
+  const fieldNotesFetch = createFieldNotesFetch();
+  const supportInboxFetch = createSupportInboxFetch();
+  return async function publicExampleFetch(uri, options = {}) {
+    const conduit = conduitFetch(uri, options);
+    if (conduit !== null) return conduit;
+    const { signal } = options;
+    // Small semantic fixtures use real hosted HTTP, just like gallery apps.
+    // Return ordinary responses; occurrence ordering belongs to the engine.
+    if (uri === "/api/state-command" || /^\/api\/latest\/(0|[1-9][0-9]*)$/.test(uri)) {
+      signal?.throwIfAborted();
+      if ((options.method ?? "GET") !== "GET") return new Response("method not allowed", { status: 405 });
+      return new Response(uri === "/api/state-command" ? "ready" : `result ${uri.slice("/api/latest/".length)}`);
     }
+    if (["/api/form-submit", "/api/action-ping", "/api/action-dispose"].includes(uri)) {
+      signal?.throwIfAborted();
+      if ((options.method ?? "GET") !== "POST") return new Response("method not allowed", { status: 405 });
+      if (uri === "/api/form-submit") return new Response("queued");
+      if (uri === "/api/action-dispose") return new Response("ready");
+      return new Response(options.body);
+    }
+    if (String(uri).startsWith("/api/ops/")) return opsFetch(uri, options);
+    if (String(uri).startsWith("/api/status/")) return statusPageFetch(uri, options);
+    if (String(uri).startsWith("/api/packages/")) return packageExplorerFetch(uri, options);
+    if (String(uri) === "/api/notes/sync") return fieldNotesFetch(uri, options);
+    if (String(uri) === "/api/inbox" || String(uri).startsWith("/api/inbox/")) return supportInboxFetch(String(uri), options);
+    if (String(uri).startsWith("/api/onboarding/")) {
+      if ((options.method ?? "GET") !== "GET") return new Response("method not allowed", { status: 405 });
+      const match = /^\/api\/onboarding\/submit-([1-9][0-9]*)$/.exec(String(uri));
+      if (!match) return new Response("invalid submission attempt", { status: 400 });
+      const attempt = BigInt(match[1]);
+      // A deterministic first-attempt conflict makes retry visible in the UI.
+      if (attempt === 1n) return settle(new Response("workspace name already taken", { status: 409 }), { signal });
+      return settle(new Response(`acme-${40n + attempt}`), { signal });
+    }
+    if (!String(uri).startsWith("/api/flights/")) return fetchImpl(uri, options);
+    if ((options.method ?? "GET") !== "GET") return new Response("method not allowed", { status: 405 });
+    const request = String(uri).slice("/api/flights/".length);
     const [route = "", date = ""] = String(request).split("|");
     const [origin = "", destination = ""] = route.split("-");
     if (origin !== "" && origin === destination) {
-      return failWith(`no route ${origin}-${destination}`, { signal });
+      return settle(new Response(`no route ${origin}-${destination}`, { status: 422 }), { signal });
     }
 
     const seed = criteriaSeed(`${route}|${date}`);
@@ -864,6 +728,6 @@ export function createFlightSearchBackend() {
         flight.price + priceShift,
       ].join(",");
     });
-    return settle(rows.join(";"), { signal });
+    return settle(new Response(rows.join(";")), { signal });
   };
 }

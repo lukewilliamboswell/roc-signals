@@ -428,20 +428,6 @@ pub const KeyedSelectIdentity = struct {
 
 pub const KeyedSelectRecord = SelectRecord;
 
-pub const TaskSourceRecord = struct {
-    name: []const u8,
-    kind: @import("boundary.zig").TaskKind = .external,
-    payload_cap: HostValueCapability,
-    initial: roles.Initializer,
-    done: roles.Transform,
-    failed: roles.Transform,
-    canceled: roles.Initializer,
-    refused: roles.Initializer,
-    cap: HostValueCapability,
-    reset_on_start: bool,
-    cached_value: CacheSlot = .absent,
-};
-
 pub const IntervalSourceRecord = struct {
     period_ms: u64,
     initial: roles.Initializer,
@@ -503,7 +489,6 @@ pub const Payload = union(enum) {
     select: SelectRecord,
     keyed_select: KeyedSelectRecord,
     combine: CombineRecord,
-    task_source: TaskSourceRecord,
     interval_source: IntervalSourceRecord,
     entropy_seed_source: EntropySeedSourceRecord,
     location_source: LocationSourceRecord,
@@ -514,7 +499,6 @@ pub const Payload = union(enum) {
 };
 
 pub const EffectSourceRef = union(enum) {
-    task: *TaskSourceRecord,
     interval: *IntervalSourceRecord,
     entropy_seed: *EntropySeedSourceRecord,
     location: *LocationSourceRecord,
@@ -526,7 +510,6 @@ pub const EffectSourceRef = union(enum) {
     /// Returns the retained cache slot owned by this signal record kind.
     pub fn cachedSlot(self: EffectSourceRef) *CacheSlot {
         return switch (self) {
-            .task => |payload| &payload.cached_value,
             .interval => |payload| &payload.cached_value,
             .entropy_seed => |payload| &payload.cached_value,
             .location => |payload| &payload.cached_value,
@@ -540,7 +523,6 @@ pub const EffectSourceRef = union(enum) {
     /// Returns the app-compiled capability that owns values crossing this edge.
     pub fn capability(self: EffectSourceRef) HostValueCapability {
         return switch (self) {
-            .task => |payload| payload.cap,
             .interval => |payload| payload.cap,
             .entropy_seed => |payload| payload.cap,
             .location => |payload| payload.cap,
@@ -603,19 +585,6 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             abi.decrefErasedCallable(payload.transform.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 1);
-        },
-        .task_source => |payload| {
-            var cached = payload.cached_value;
-            cached.deinit(ctx, roc_host, metrics);
-            allocator.free(payload.name);
-            releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
-            abi.decrefErasedCallable(payload.initial.toAbi(), roc_host);
-            abi.decrefErasedCallable(payload.done.toAbi(), roc_host);
-            abi.decrefErasedCallable(payload.failed.toAbi(), roc_host);
-            abi.decrefErasedCallable(payload.canceled.toAbi(), roc_host);
-            abi.decrefErasedCallable(payload.refused.toAbi(), roc_host);
-            releaseHostValueCapability(payload.cap, roc_host, metrics);
-            metrics.bump(.closure_releases, 5);
         },
         .interval_source => |payload| {
             var cached = payload.cached_value;
@@ -723,7 +692,6 @@ pub const Record = struct {
             .select => |payload| retained.hostSignalTokenFromCallable(payload.false_init.toAbi()),
             .keyed_select => null,
             .combine => |payload| retained.hostSignalTokenFromCallable(payload.transform.toAbi()),
-            .task_source => |payload| retained.hostSignalTokenFromCallable(payload.initial.toAbi()),
             .interval_source => |payload| retained.hostSignalTokenFromCallable(payload.initial.toAbi()),
             .entropy_seed_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload.toAbi()),
             .location_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload.toAbi()),
@@ -752,7 +720,6 @@ pub const Record = struct {
             .select => |*payload| &payload.cached_value,
             .keyed_select => |*payload| &payload.cached_value,
             .combine => |*payload| &payload.cached_value,
-            .task_source => |*payload| &payload.cached_value,
             .interval_source => |*payload| &payload.cached_value,
             .entropy_seed_source => |*payload| &payload.cached_value,
             .location_source => |*payload| &payload.cached_value,
@@ -773,7 +740,6 @@ pub const Record = struct {
             .select => |payload| payload.cap,
             .keyed_select => |payload| payload.cap,
             .combine => |payload| payload.cap,
-            .task_source => |payload| payload.cap,
             .interval_source => |payload| payload.cap,
             .entropy_seed_source => |payload| payload.cap,
             .location_source => |payload| payload.cap,
@@ -782,19 +748,6 @@ pub const Record = struct {
             .storage_source => |payload| payload.cap,
             .row_source => |payload| payload.cap,
         };
-    }
-
-    /// Returns the task source payload when this record has that exact kind.
-    pub fn taskSource(self: *Record) ?*TaskSourceRecord {
-        return switch (self.payload) {
-            .task_source => |*payload| payload,
-            else => null,
-        };
-    }
-
-    /// Returns the required task source payload or rejects an internal kind mismatch.
-    pub fn requireTaskSource(self: *Record) *TaskSourceRecord {
-        return self.taskSource() orelse @panic("signal record was not a task source");
     }
 
     /// Returns the interval source payload when this record has that exact kind.
@@ -865,7 +818,6 @@ pub const Record = struct {
     /// Returns the effect source payload when this record has that exact kind.
     pub fn effectSource(self: *Record) ?EffectSourceRef {
         return switch (self.payload) {
-            .task_source => |*payload| .{ .task = payload },
             .interval_source => |*payload| .{ .interval = payload },
             .entropy_seed_source => |*payload| .{ .entropy_seed = payload },
             .location_source => |*payload| .{ .location = payload },
@@ -921,7 +873,7 @@ pub const Binding = struct {
 pub fn walkTree(comptime Context: type, context: Context, record: *Record, comptime visit: fn (Context, *Record) void) void {
     visit(context, record);
     switch (record.payload) {
-        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
+        .ref, .const_value, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
         .map => |payload| walkTree(Context, context, payload.input, visit),
         .select, .keyed_select => |payload| walkTree(Context, context, payload.input, visit),
         .map2 => |payload| {
@@ -968,7 +920,7 @@ pub fn appendSignalRecordSourceNodeIdsFallible(allocator: std.mem.Allocator, sou
                 try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, child);
             }
         },
-        .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
+        .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
     }
 }
 

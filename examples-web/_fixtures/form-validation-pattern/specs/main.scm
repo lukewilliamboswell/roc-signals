@@ -1,4 +1,5 @@
 (test "Form validation pattern"
+  (setup (manual-effects))
   (steps
     ; Form validation pattern scenario
 
@@ -16,14 +17,14 @@
     (expect-text (text "Terms validation: ready.") "Terms validation: ready.")
     (expect-text (text "Submit status: idle") "Submit status: idle")
     (expect-disabled (role button :name "Send invite") true)
-    (expect-pending-task "form-submit" 0)
+    (expect-pending-effects 0)
     (submit (role form :name "Validation form"))
     (expect-attr (label "Invite email") aria-invalid "true")
     (expect-attr (label "Accept terms") aria-invalid "true")
     (expect-text (text "Email validation: enter an email address.") "Email validation: enter an email address.")
     (expect-text (text "Terms validation: accept terms to continue.") "Terms validation: accept terms to continue.")
     (expect-disabled (role button :name "Send invite") true)
-    (expect-pending-task "form-submit" 0)
+    (expect-pending-effects 0)
     (fill (label "Invite email") "ops@example.com")
     (expect-value (label "Invite email") "ops@example.com")
     (expect-no-attr (label "Invite email") aria-invalid)
@@ -36,11 +37,12 @@
     (expect-text (text "Terms validation: ready.") "Terms validation: ready.")
     (expect-disabled (role button :name "Send invite") false)
     (click (role button :name "Send invite"))
-    (expect-pending-task "form-submit" 1)
+    (expect-pending-effects 1)
     (expect-text (text "Submit status: sending") "Submit status: sending")
     (expect-disabled (role button :name "Send invite") true)
-    (resolve-task "form-submit" "queued")
-    (expect-pending-task "form-submit" 0)
+    (stub-http "invitation queued" :url "/api/form-submit" :status 200 :body "queued")
+    (run-effect 1)
+    (expect-pending-effects 0)
     (expect-text (text "Submit result: queued") "Submit result: queued")
     (expect-disabled (role button :name "Send invite") false)
   )

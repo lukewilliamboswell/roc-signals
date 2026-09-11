@@ -1,4 +1,5 @@
 (test "Support inbox — initial mount"
+  (setup (manual-effects))
   (steps
     ; initial mount
 
@@ -28,8 +29,7 @@
     (expect-checked (label "Poll for updates") true)
     (expect-disabled (role button :name "Send message") true)
     (expect-interval 4000 1)
-    (expect-pending-task "inbox" 1)
-    (expect-pending-task "send" 0)
+    (expect-pending-effects 1)
     (expect-cleanup "inbox polling cleanup" 0)
   )
 )

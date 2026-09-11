@@ -13,25 +13,13 @@ import {
   StorageArea,
   SignalsRuntime,
   VisibilityBoundarySchema,
-  decodeHttpRequestPayload,
-  decodeHttpResponsePayload,
   encodeBoundarySchemaPayloadBytes,
   encodeStoragePayloadBytes,
-  encodeHttpRequestPayload,
-  encodeHttpResponsePayload,
   entropySeedFromCrypto,
-  httpFetchTaskHandler,
   locationSnapshotFromHref,
   onlineSnapshotFromNavigator,
   visibilitySnapshotFromDocument,
 } from "../../www/static/signals.mjs";
-import {
-  apiRequestConsoleTaskHandler,
-  createOpsBackend,
-  lookupTaskHandler,
-  opsApiTaskHandler,
-  publicExampleTaskHandler,
-} from "../../www/static/example_tasks.mjs";
 import {
   applySetValue,
   beginComposition,
@@ -52,6 +40,24 @@ import {
 } from "./dom_double.mjs";
 
 const PAGE = 65536;
+test("a rejected effect prevents the pump from entering the next occurrence", async () => {
+  const host = new MockHost();
+  const errors = [];
+  const runtime = new SignalsRuntime(host.exports, installDomDouble(), { onError: error => errors.push(error) });
+  let entries = 0;
+  host.exports.roc_ui_last_error_ptr = () => { throw new Error("diagnostics re-entered a trapped effect stack"); };
+  const failure = new WebAssembly.RuntimeError("effect stack overflow");
+  runtime.runEffect = () => Promise.reject(failure);
+  runtime.mounted = true;
+  // Bound the broken implementation's synchronous loop so the regression
+  // fails an assertion instead of hanging the test runner.
+  host.exports.roc_ui_effect_next = () => ++entries <= 2 ? entries : 0;
+  runtime.scheduleEffects();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(entries, 1, "do not enter Wasm again before handling the trap");
+  assert.equal(runtime.failedError, failure);
+  assert.equal(errors.length, 1);
+});
 const CMD_BASE = 1024;
 const STR_BASE = 16384;
 const DYN_BASE = 24576;
@@ -156,8 +162,6 @@ class MockHost {
     this.dispatches = [];
     this.eventPayloadKinds = new Map();
     this.timers = [];
-    this.resolutions = [];
-    this.resolveTrapMessage = null;
     this.unmountTrapMessage = null;
     this.mountScript = [];
     this.eventResponses = new Map();
@@ -186,6 +190,14 @@ class MockHost {
     this.writeStorageDeclarationKeys();
 
     this.exports = {
+      __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 65536),
+      __set_stack_limits: () => {},
+      roc_ui_effect_next: () => 0,
+      roc_ui_effect_run: () => {},
+      roc_ui_effect_complete: () => {},
+      roc_ui_effect_stack_top: () => 65536,
+      roc_ui_effect_stack_bottom: () => 128,
+      roc_ui_effect_stack_main: () => {},
       memory: this.memory,
       roc_ui_protocol_version: () => this.protocolVersion,
       roc_ui_protocol_features: () => this.protocolFeatures,
@@ -259,18 +271,6 @@ class MockHost {
         this.timers.push(token);
         const respond = this.timerResponses.get(token);
         this.writeCommands(respond ? respond(token) : []);
-      },
-      roc_ui_resolve: (requestId, ptr, len, failed) => {
-        this.resolutions.push({
-          requestId,
-          payload: decoder.decode(new Uint8Array(this.memory.buffer, ptr, len)),
-          failed: failed !== 0,
-        });
-        if (this.resolveTrapMessage !== null) {
-          this.writeLastError(this.resolveTrapMessage);
-          throw new WebAssembly.RuntimeError("unreachable");
-        }
-        this.writeCommands([]);
       },
       roc_ui_event: (eventId, payloadKind, ptr, len, boolValue) => {
         const trapMessage = this.eventTrapMessages.get(eventId);
@@ -635,7 +635,6 @@ function createStorageDouble(initial = {}) {
 
 function mountWith(mountScript, options = {}) {
   const {
-    taskHandler,
     onError,
     telemetry,
     behaviors,
@@ -657,7 +656,6 @@ function mountWith(mountScript, options = {}) {
   host.mountScript = mountScript;
   const root = installDomDouble();
   const runtime = new SignalsRuntime(host.exports, root, {
-    taskHandler,
     onError,
     telemetry,
     behaviors,
@@ -760,6 +758,20 @@ test("controlled input policy clears pending write when user typed it", () => {
 });
 
 test("protocol checks reject incompatible wasm exports", () => {
+  for (const name of ["__set_stack_limits", "roc_ui_effect_stack_bottom", "roc_ui_effect_run"]) {
+    const unsafe = new MockHost();
+    delete unsafe.exports[name];
+    assert.throws(() => new SignalsRuntime(unsafe.exports, installDomDouble()),
+      new RegExp(`${name} is missing`));
+  }
+  const invalidStack = new MockHost();
+  invalidStack.exports.__stack_pointer = { value: 65536 };
+  assert.throws(() => new SignalsRuntime(invalidStack.exports, installDomDouble()),
+    /__stack_pointer must be a WebAssembly.Global/);
+  assert.throws(
+    () => new SignalsRuntime(new MockHost({ protocolVersion: 14 }).exports, installDomDouble()),
+    /wire protocol version mismatch/,
+  );
   assert.throws(
     () => new SignalsRuntime(new MockHost({ protocolVersion: Protocol.version + 1 }).exports, installDomDouble()),
     /wire protocol version mismatch/,
@@ -2500,7 +2512,6 @@ test("fatal wasm trap poisons runtime detaches resources and rejects re-entry", 
   assert.equal(runtime.lastCommands.length, 0);
   assert.equal(runtime.eventCleanups.size, 0);
   assert.equal(runtime.intervals.size, 0);
-  assert.equal(runtime.tasks.size, 0);
   assert.equal(host.deallocCalls.length, deallocsBefore + 1);
   assert.equal(input.value, "still visible");
 
@@ -3034,441 +3045,16 @@ test("timer commands register intervals and timer ticks re-enter wasm", () => {
   }
 });
 
-test("task commands marshal request and resolve payloads by request id", () => {
-  const telemetry = [];
-  const { host, runtime } = mountWith([
-    { op: Op.resetDom },
-    { op: Op.startTask, a: 5, strings: ["lookup", "roc"] },
-  ], { telemetry: (entry) => telemetry.push(entry) });
 
-  assert.deepEqual(
-    [...runtime.tasks.entries()].map(([requestId, task]) => ({
-      requestId,
-      name: task.name,
-      request: task.request,
-      aborted: task.controller.signal.aborted,
-    })),
-    [{ requestId: 5, name: "lookup", request: "roc", aborted: false }],
-  );
 
-  runtime.resolveTask(5, "Roc result");
-  assert.deepEqual(host.resolutions, [
-    { requestId: 5, payload: "Roc result", failed: false },
-  ]);
-  assert.equal(runtime.tasks.has(5), false);
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "start_task" &&
-        entry.requestId === 5 &&
-        entry.name === "lookup" &&
-        entry.request === "roc",
-    ),
-  );
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "task_resolution" &&
-        entry.requestId === 5 &&
-        entry.name === "lookup" &&
-        entry.request === "roc" &&
-        entry.failed === false &&
-        entry.payloadLen === "Roc result".length,
-    ),
-  );
 
-  runtime.applyCommand({ op: Op.startTask, a: 6, b: 0, c: 6, d: 6, e: 3 });
-  runtime.applyCommand({ op: Op.cancelTask, a: 6, b: 0, c: 0, d: 0, e: 0 });
-  assert.equal(runtime.tasks.has(6), false);
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "cancel_task" &&
-        entry.requestId === 6 &&
-        entry.name === "lookup" &&
-        entry.request === "roc",
-    ),
-  );
-});
-
-test("stale manual task resolutions reach host classification with telemetry", () => {
-  const telemetry = [];
-  const { host, runtime } = mountWith([{ op: Op.resetDom }], {
-    telemetry: (entry) => telemetry.push(entry),
-  });
-
-  runtime.startTask(404, "lookup", "old");
-  runtime.cancelTask(404);
-  runtime.resolveTask(404, "late payload");
-
-  assert.deepEqual(host.resolutions, [
-    { requestId: 404, payload: "late payload", failed: false },
-  ]);
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "ignored_task_resolution" &&
-        entry.requestId === 404 &&
-        entry.name === "lookup" &&
-        entry.failed === false,
-    ),
-  );
-});
-
-test("never-issued manual task resolutions fail loudly", () => {
-  const telemetry = [];
-  const { host, runtime } = mountWith([{ op: Op.resetDom }], {
-    telemetry: (entry) => telemetry.push(entry),
-  });
-
-  assert.throws(() => runtime.resolveTask(404, "late payload"), /task result had no matching pending request: 404/);
-  assert.deepEqual(host.resolutions, []);
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "unknown_task_resolution" &&
-        entry.requestId === 404 &&
-        entry.failed === false,
-    ),
-  );
-});
-
-test("task cancellation aborts stale async settlement and keeps fresh request current", async () => {
-  const deferred = [];
-  const telemetry = [];
-  const { host, runtime } = mountWith([{ op: Op.resetDom }], {
-    telemetry: (entry) => telemetry.push(entry),
-    taskHandler: ({ requestId, signal }) =>
-      new Promise((resolve) => {
-        deferred.push({ requestId, signal, resolve });
-      }),
-  });
-
-  runtime.startTask(10, "lookup", "old");
-  runtime.cancelTask(10);
-  runtime.startTask(11, "lookup", "fresh");
-
-  assert.equal(deferred[0].signal.aborted, true);
-  assert.equal(deferred[1].signal.aborted, false);
-
-  deferred[0].resolve("stale");
-  deferred[1].resolve("ready");
-  await Promise.resolve();
-  await Promise.resolve();
-
-  assert.deepEqual(host.resolutions, [
-    { requestId: 10, payload: "stale", failed: false },
-    { requestId: 11, payload: "ready", failed: false },
-  ]);
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "ignored_task_resolution" &&
-        entry.requestId === 10 &&
-        entry.name === "lookup" &&
-        entry.failed === false,
-    ),
-  );
-});
-
-test("task handler rejections resolve through the task failure path", async () => {
-  const telemetry = [];
-  const { host } = mountWith(
-    [
-      { op: Op.resetDom },
-      { op: Op.startTask, a: 8, strings: ["lookup", "roc"] },
-    ],
-    {
-      telemetry: (entry) => telemetry.push(entry),
-      taskHandler: () => Promise.reject(new Error("offline")),
-    },
-  );
-
-  await Promise.resolve();
-  await Promise.resolve();
-
-  assert.deepEqual(host.resolutions, [
-    { requestId: 8, payload: "offline", failed: true },
-  ]);
-  assert.ok(
-    telemetry.some(
-      (entry) =>
-        entry.kind === "task_resolution" &&
-        entry.requestId === 8 &&
-        entry.name === "lookup" &&
-        entry.request === "roc" &&
-        entry.failed === true &&
-        entry.payloadLen === "offline".length,
-    ),
-  );
-});
-
-test("async task resolution traps report onError without retrying as task failure", async () => {
-  const errors = [];
-  const { host } = mountWith(
-    [
-      { op: Op.resetDom },
-      { op: Op.startTask, a: 9, strings: ["lookup", "roc"] },
-    ],
-    {
-      taskHandler: () => Promise.resolve("ready payload"),
-      onError: (err) => errors.push(err),
-    },
-  );
-  host.resolveTrapMessage = "roc_ui_resolve trapped while applying task result";
-
-  await Promise.resolve();
-  await Promise.resolve();
-
-  assert.deepEqual(host.resolutions, [
-    { requestId: 9, payload: "ready payload", failed: false },
-  ]);
-  assert.equal(errors.length, 1);
-  assert.match(errors[0].message, /roc_ui_resolve trapped while applying task result/);
-});
-
-test("HTTP request payload codec preserves method URI timeout headers and body bytes", () => {
-  const body = new Uint8Array([0, 82, 255]);
-  const payload = encodeHttpRequestPayload({
-    method: "PATCH",
-    uri: "/api/items/42",
-    timeoutMs: 250,
-    headers: [
-      ["x-mode", "test"],
-      ["x-mode", "again"],
-    ],
-    body,
-  });
-
-  assert.deepEqual(decodeHttpRequestPayload(payload), {
-    method: "PATCH",
-    uri: "/api/items/42",
-    timeoutMs: 250,
-    headers: [
-      ["x-mode", "test"],
-      ["x-mode", "again"],
-    ],
-    body,
-  });
-});
-
-test("HTTP response payload codec preserves status duplicate headers and body bytes", () => {
-  const body = new Uint8Array([1, 2, 3, 255]);
-  const payload = encodeHttpResponsePayload({
-    status: 202,
-    headers: [
-      ["set-cookie", "a=1"],
-      ["set-cookie", "b=2"],
-      ["x-trace", "first"],
-      ["x-trace", "second"],
-    ],
-    body,
-  });
-
-  assert.deepEqual(decodeHttpResponsePayload(payload), {
-    status: 202,
-    headers: [
-      ["set-cookie", "a=1"],
-      ["set-cookie", "b=2"],
-      ["x-trace", "first"],
-      ["x-trace", "second"],
-    ],
-    body,
-  });
-});
-
-test("HTTP fetch task handler maps request envelopes to fetch response envelopes", async () => {
-  const calls = [];
-  const payload = encodeHttpRequestPayload({
-    method: "POST",
-    uri: "/api/widgets",
-    timeoutMs: 500,
-    headers: [["content-type", "text/plain"]],
-    body: "hello",
-  });
-  const value = await httpFetchTaskHandler({
-    name: "http:send:widgets",
-    request: payload,
-    signal: new AbortController().signal,
-    fetchImpl: async (url, options) => {
-      calls.push({
-        url,
-        method: options.method,
-        headers: options.headers,
-        body: [...options.body],
-        hasSignal: options.signal instanceof AbortSignal,
-        optionKeys: Object.keys(options).sort(),
-      });
-      return {
-        status: 201,
-        headers: {
-          entries: () =>
-            [
-              ["content-type", "text/plain"],
-              ["x-reply", "ok"],
-              ["x-reply", "again"],
-            ][Symbol.iterator](),
-        },
-        arrayBuffer: async () => textBytes("created").buffer,
-      };
-    },
-  });
-
-  assert.deepEqual(calls, [
-    {
-      url: "/api/widgets",
-      method: "POST",
-      headers: [["content-type", "text/plain"]],
-      body: [...textBytes("hello")],
-      hasSignal: true,
-      optionKeys: ["body", "headers", "method", "signal"],
-    },
-  ]);
-  assert.deepEqual(decodeHttpResponsePayload(value), {
-    status: 201,
-    headers: [
-      ["content-type", "text/plain"],
-      ["x-reply", "ok"],
-      ["x-reply", "again"],
-    ],
-    body: textBytes("created"),
-  });
-});
-
-test("HTTP fetch task handler reports network failures as HTTP error envelopes", async () => {
-  await assert.rejects(
-    () =>
-      httpFetchTaskHandler({
-        name: "http:send:widgets",
-        request: encodeHttpRequestPayload({ uri: "/api/widgets" }),
-        signal: new AbortController().signal,
-        fetchImpl: async () => {
-          throw new Error("offline");
-        },
-      }),
-    /roc-http-error-v1\nnetwork/,
-  );
-});
-
-test("ops API task handler serves changing documented endpoints", async () => {
-  assert.equal(opsApiTaskHandler({ name: "lookup", request: "roc" }), null);
-
-  const backend = createOpsBackend();
-  const value = await opsApiTaskHandler({
-    name: "http:send:summary",
-    request: encodeHttpRequestPayload({ method: "GET", uri: "/api/ops/summary" }),
-  }, backend);
-  const response = decodeHttpResponsePayload(value);
-  assert.equal(response.status, 200);
-  assert.deepEqual(response.headers, [["content-type", "text/plain; charset=utf-8"]]);
-  assert.match(new TextDecoder().decode(response.body), /Overall:/);
-  assert.match(new TextDecoder().decode(response.body), /Traffic:/);
-
-  const firstDashboard = await opsApiTaskHandler({
-    name: "http:send:dashboard",
-    request: encodeHttpRequestPayload({ method: "GET", uri: "/api/ops/dashboard" }),
-  }, backend);
-  const secondDashboard = await opsApiTaskHandler({
-    name: "http:send:dashboard",
-    request: encodeHttpRequestPayload({ method: "GET", uri: "/api/ops/dashboard" }),
-  }, backend);
-  assert.notEqual(
-    new TextDecoder().decode(decodeHttpResponsePayload(firstDashboard).body),
-    new TextDecoder().decode(decodeHttpResponsePayload(secondDashboard).body),
-  );
-
-  assert.equal(
-    opsApiTaskHandler({
-      name: "http:send:private",
-      request: encodeHttpRequestPayload({ method: "GET", uri: "/api/private" }),
-    }),
-    null,
-  );
-
-  assert.throws(
-    () =>
-      opsApiTaskHandler({
-        name: "http:send:dashboard",
-        request: encodeHttpRequestPayload({ method: "POST", uri: "/api/ops/dashboard" }),
-      }),
-    /roc-http-error-v1\nunsupported/,
-  );
-});
-
-test("API request console task handler serves deterministic POST scenarios", async () => {
-  const success = await apiRequestConsoleTaskHandler({
-    name: "http:send:api-request-console",
-    request: encodeHttpRequestPayload({
-      method: "POST",
-      uri: "/api/api-request-console",
-      headers: [["x-scenario", "success"]],
-      body: '{"lookup":"customer-42"}',
-    }),
-  });
-  const successResponse = decodeHttpResponsePayload(success);
-  assert.equal(successResponse.status, 201);
-  assert.deepEqual(successResponse.headers, [
-    ["content-type", "application/json; charset=utf-8"],
-    ["x-result", "ok"],
-  ]);
-  assert.match(new TextDecoder().decode(successResponse.body), /customer-42/);
-
-  const missing = await apiRequestConsoleTaskHandler({
-    name: "http:send:api-request-console",
-    request: encodeHttpRequestPayload({
-      method: "POST",
-      uri: "/api/api-request-console",
-      headers: [["x-scenario", "missing"]],
-    }),
-  });
-  assert.equal(decodeHttpResponsePayload(missing).status, 404);
-
-  assert.throws(
-    () =>
-      apiRequestConsoleTaskHandler({
-        name: "http:send:api-request-console",
-        request: encodeHttpRequestPayload({
-          method: "POST",
-          uri: "/api/api-request-console",
-          headers: [["x-scenario", "failure"]],
-        }),
-      }),
-    /roc-http-error-v1\nnetwork/,
-  );
-});
-
-test("public example task handler combines ops, API console, and lookup tasks", async () => {
-  const lookup = await lookupTaskHandler({
-    name: "lookup",
-    request: "roc",
-    signal: new AbortController().signal,
-  });
-  assert.match(lookup, /Top results for "roc"/);
-
-  await assert.rejects(
-    () =>
-      lookupTaskHandler({
-        name: "lookup",
-        request: "fail",
-        signal: new AbortController().signal,
-      }),
-    /offline search index/,
-  );
-
-  const api = await publicExampleTaskHandler({
-    name: "http:send:api-request-console",
-    request: encodeHttpRequestPayload({
-      method: "POST",
-      uri: "/api/api-request-console",
-    }),
-  });
-  assert.equal(decodeHttpResponsePayload(api).status, 201);
-
-  const ops = await publicExampleTaskHandler({
-    name: "http:send:summary",
-    request: encodeHttpRequestPayload({ method: "GET", uri: "/api/ops/summary" }),
-  });
-  assert.match(new TextDecoder().decode(decodeHttpResponsePayload(ops).body), /Overall:/);
+test("retired task opcodes are rejected instead of starting host work", () => {
+  for (const op of [20, 21]) {
+    assert.throws(
+      () => mountWith([{ op: Op.resetDom }, { op, a: 5 }]),
+      new RegExp(`unknown render op ${op}`),
+    );
+  }
 });
 
 function textBytes(value) {

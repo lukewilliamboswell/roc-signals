@@ -1,7 +1,9 @@
 (test "Support inbox — selecting a conversation"
+  (setup (manual-effects))
   (steps
     ; Given the state established by earlier scenarios
-    (resolve-task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|new|-")
+    (stub-http "initial inbox" :url "/api/inbox" :status 200 :body "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|new|-")
+    (run-effect 1)
 
     ; selecting a conversation
 
@@ -15,6 +17,6 @@
     (expect-text (test-id "body-m1") "My card was declined")
     (expect-text (test-id "body-m2") "Looking into it now")
     (expect-text (test-id "mstate-m1") "delivered")
-    (expect-pending-task "inbox" 1)
+    (expect-pending-effects 1)
   )
 )

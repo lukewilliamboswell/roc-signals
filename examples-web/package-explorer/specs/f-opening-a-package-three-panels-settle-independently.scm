@@ -1,34 +1,9 @@
 (test "Package explorer — F. opening a package: three panels settle independently"
-  (setup
-    ; A. deep link
-
-    (initial-location "/packages/roc-json")
-  )
+  (setup (manual-effects))
   (steps
-    ; Given the state established by earlier scenarios
-    (click (role link :name "Back to search"))
-    (resolve-task "search" "roc-json|JSON codec for Roc;roc-http|HTTP client for Roc;roc-parser|Parser combinators for Roc")
-    (fill (label "Search packages") "js")
-    (fill (label "Search packages") "json")
-    (mark-metrics)
-    (resolve-stale-task "search" "stale-package|This superseded payload must never render")
-    (resolve-task "search" "roc-json|JSON codec for Roc")
-    (fill (label "Search packages") "zzzz")
-    (resolve-task "search" "")
-    (fill (label "Search packages") "boom")
-    (reject-task "search" "registry unreachable")
-    (fill (label "Search packages") "roc")
-    (resolve-task "search" "roc-json|JSON codec for Roc;roc-http|HTTP client for Roc;roc-parser|Parser combinators for Roc")
-    (mark-metrics)
-    (check (label "Reverse order"))
-    (mark-metrics)
-    (click (role button :name "Watch roc-http"))
-    (click (role button :name "Watch roc-parser"))
-    (uncheck (label "Reverse order"))
-    (fill (label "Search packages") "roc core")
-    (resolve-task "search" "roc-json|JSON codec for Roc;roc-parser|Parser combinators for Roc;roc-bytes|Byte helpers for Roc")
-    (fill (label "Search packages") "roc core ")
-    (resolve-task "search" "roc-json|JSON codec for Roc, revised;roc-parser|Parser combinators for Roc;roc-bytes|Byte helpers for Roc")
+    ; Establish the three search rows used by this scenario.
+    (stub-http "initial search" :url "/api/packages/search?q=" :status 200 :body "roc-json|JSON codec for Roc;roc-http|HTTP client for Roc;roc-parser|Parser combinators for Roc")
+    (run-effect 1)
 
     ; F. opening a package: three panels settle independently
 
@@ -40,14 +15,13 @@
     (expect-text (test-id "package-id") "Package: roc-json")
     (expect-text (test-id "context") "Context: package roc-json (3 search matches retained)")
     (expect-text (test-id "panel-summary") "Panels: 0 ready, 3 loading, 0 failed")
-    (expect-pending-task "detail" 1)
-    (expect-pending-task "versions" 1)
-    (expect-pending-task "deps" 1)
-    (expect-cleanup "package detail panels" 1)
+    (expect-pending-effects 3)
+    (expect-cleanup "package detail panels" 0)
     ; Versions resolves first. Its own loading -> loaded transition must not move
     ; the other two panels.
-    (resolve-task "versions" "1.2.0|2026-05-02;1.1.0|2026-03-14;1.0.0|2026-01-09")
-    (expect-pending-task "versions" 0)
+    (stub-http "versions" :url "/api/packages/versions?q=%72%6f%63%2d%6a%73%6f%6e" :status 200 :body "1.2.0|2026-05-02;1.1.0|2026-03-14;1.0.0|2026-01-09")
+    (run-effect 3)
+    (expect-pending-effects 2)
     (expect-text (test-id "versions-status") "Versions: 3 released")
     (expect-text (test-id "version-1.2.0") "1.2.0 released 2026-05-02")
     (expect-text (test-id "version-1.1.0") "1.1.0 released 2026-03-14")
@@ -57,16 +31,16 @@
     (expect-text (test-id "deps-status") "Dependencies: loading")
     (expect-text (test-id "panel-summary") "Panels: 1 ready, 2 loading, 0 failed")
     (expect-visible (text "Some panels are still loading."))
-    (expect-pending-task "detail" 1)
-    (expect-pending-task "deps" 1)
+    (expect-pending-effects 2)
     ; Dependencies resolves next. It creates only its own rows; the version rows
     ; are untouched.
     (mark-metrics)
-    (resolve-task "deps" "roc-parser|0.4.0;roc-bytes|1.1.0")
+    (stub-http "deps" :url "/api/packages/deps?q=%72%6f%63%2d%6a%73%6f%6e" :status 200 :body "roc-parser|0.4.0;roc-bytes|1.1.0")
+    (run-effect 4)
     (expect-metric-delta rows_created 2)
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta rows_reused 0)
-    (expect-pending-task "deps" 0)
+    (expect-pending-effects 1)
     (expect-text (test-id "deps-status") "Dependencies: 2 required")
     (expect-text (test-id "dep-roc-parser") "roc-parser requires 0.4.0")
     (expect-text (test-id "dep-roc-bytes") "roc-bytes requires 1.1.0")
@@ -75,9 +49,10 @@
     (expect-text (test-id "overview-status") "Overview: loading")
     (expect-text (test-id "panel-summary") "Panels: 2 ready, 1 loading, 0 failed")
     ; The overview fails while its two siblings stay loaded.
-    (reject-task "detail" "overview service unavailable")
-    (expect-pending-task "detail" 0)
-    (expect-text (test-id "overview-status") "Overview: failed - overview service unavailable")
+    (stub-http-reject "overview timeout" :kind timeout :detail "")
+    (run-effect 2)
+    (expect-pending-effects 0)
+    (expect-text (test-id "overview-status") "Overview: failed - Timeout")
     (expect-text (test-id "overview-empty") "Overview details unavailable.")
     (expect-text (test-id "versions-status") "Versions: 3 released")
     (expect-text (test-id "deps-status") "Dependencies: 2 required")

@@ -1,40 +1,62 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createPublicExampleFetch } from "../../www/static/example_tasks.mjs";
 
-import {
-  decodeHttpResponsePayload,
-  encodeHttpRequestPayload,
-} from "../../www/static/signals.mjs";
 import {
   createConduitBackend,
-  createConduitTaskHandler,
+  createConduitHandler,
 } from "../../www/static/conduit_backend.mjs";
 
-const decoder = new TextDecoder();
 
 function conduitRequest(handler, { method = "GET", uri, headers = [], body = [] }) {
-  return handler({
-    requestId: 1,
-    name: "http:send:conduit-test",
-    request: encodeHttpRequestPayload({ method, uri, headers, body }),
-  });
+  return handler({ method, uri, headers, body });
 }
 
 function jsonResponse(payload) {
-  const response = decodeHttpResponsePayload(payload);
-  return { status: response.status, json: JSON.parse(decoder.decode(response.body)) };
+  return { status: payload.status, json: JSON.parse(payload.body) };
 }
 
 const kimAuth = ["authorization", "Token jwt.conduit.kim"];
 
-test("conduit backend ignores non-HTTP tasks and non-conduit URIs", () => {
-  const handler = createConduitTaskHandler();
-  assert.equal(handler({ name: "lookup", request: "roc" }), null);
+test("public fetch routes authenticated Conduit requests and isolates mounted backends", async () => {
+  const fallback = async () => { throw new Error("unexpected network fallback"); };
+  const fetch = createPublicExampleFetch(fallback);
+  const otherMount = createPublicExampleFetch(fallback);
+  const response = await fetch("/api/users/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: new TextEncoder().encode(JSON.stringify({
+      user: { email: "kim@conduit.test", password: "secret-kim" },
+    })),
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /application\/json/);
+  const { user } = await response.json();
+  const headers = { authorization: `Token ${user.token}` };
+  const body = JSON.stringify({ article: {
+    title: "Effect transport", description: "Ordinary HTTP", body: "No task envelope", tagList: [],
+  } });
+  const created = await fetch("/api/articles", { method: "POST", headers, body });
+  assert.equal(created.status, 201);
+  const { article } = await created.json();
+  assert.equal((await fetch(`/api/articles/${article.slug}`)).status, 200);
+  assert.equal((await otherMount(`/api/articles/${article.slug}`)).status, 404);
+
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(fetch(`/api/articles/${article.slug}`, {
+    method: "DELETE", headers, signal: controller.signal,
+  }), { name: "AbortError" });
+  assert.equal((await fetch(`/api/articles/${article.slug}`)).status, 200);
+});
+
+test("conduit backend ignores non-conduit URIs", () => {
+  const handler = createConduitHandler();
   assert.equal(conduitRequest(handler, { uri: "/api/ops/dashboard" }), null);
 });
 
 test("GET /api/articles defaults to 20 most-recent articles with total count", () => {
-  const handler = createConduitTaskHandler();
+  const handler = createConduitHandler();
   const { status, json } = jsonResponse(conduitRequest(handler, { uri: "/api/articles" }));
 
   assert.equal(status, 200);
@@ -57,7 +79,7 @@ test("GET /api/articles defaults to 20 most-recent articles with total count", (
 });
 
 test("GET /api/articles honors limit and offset while keeping the total", () => {
-  const handler = createConduitTaskHandler();
+  const handler = createConduitHandler();
   const { json } = jsonResponse(
     conduitRequest(handler, { uri: "/api/articles?limit=10&offset=20" }),
   );
@@ -67,7 +89,7 @@ test("GET /api/articles honors limit and offset while keeping the total", () => 
 });
 
 test("GET /api/articles filters by tag, author, and favorited", () => {
-  const handler = createConduitTaskHandler();
+  const handler = createConduitHandler();
 
   const tagged = jsonResponse(conduitRequest(handler, { uri: "/api/articles?tag=testing" })).json;
   assert.ok(tagged.articlesCount > 0);
@@ -85,7 +107,7 @@ test("GET /api/articles filters by tag, author, and favorited", () => {
 });
 
 test("GET /api/articles marks favorited flags for the authenticated viewer", () => {
-  const handler = createConduitTaskHandler();
+  const handler = createConduitHandler();
   const anonymous = jsonResponse(conduitRequest(handler, { uri: "/api/articles?favorited=kim" })).json;
   assert.ok(anonymous.articles.every((article) => article.favorited === false));
 
@@ -96,7 +118,7 @@ test("GET /api/articles marks favorited flags for the authenticated viewer", () 
 });
 
 test("GET /api/articles/:slug returns the full article and 404s on unknown slugs", () => {
-  const handler = createConduitTaskHandler();
+  const handler = createConduitHandler();
   const listed = jsonResponse(conduitRequest(handler, { uri: "/api/articles?limit=1" })).json;
   const slug = listed.articles[0].slug;
 
@@ -113,7 +135,7 @@ test("GET /api/articles/:slug returns the full article and 404s on unknown slugs
 
 test("GET /api/articles/:slug/comments returns seeded comments", () => {
   const backend = createConduitBackend();
-  const handler = createConduitTaskHandler({ backend });
+  const handler = createConduitHandler({ backend });
   const slug = backend.articles[0].slug;
 
   const { status, json } = jsonResponse(
@@ -127,7 +149,7 @@ test("GET /api/articles/:slug/comments returns seeded comments", () => {
 
 test("POST and DELETE /api/articles/:slug/comments mutate authenticated comments", () => {
   const backend = createConduitBackend();
-  const handler = createConduitTaskHandler({ backend });
+  const handler = createConduitHandler({ backend });
   const slug = backend.articles[0].slug;
 
   const invalid = jsonResponse(
@@ -189,7 +211,7 @@ test("POST and DELETE /api/articles/:slug/comments mutate authenticated comments
 });
 
 test("GET /api/tags returns popular tags most-frequent first", () => {
-  const handler = createConduitTaskHandler();
+  const handler = createConduitHandler();
   const { json } = jsonResponse(conduitRequest(handler, { uri: "/api/tags" }));
   assert.ok(Array.isArray(json.tags));
   assert.ok(json.tags.includes("signals"));
@@ -197,7 +219,7 @@ test("GET /api/tags returns popular tags most-frequent first", () => {
 });
 
 test("GET /api/articles/feed requires auth and returns followed authors only", () => {
-  const handler = createConduitTaskHandler();
+  const handler = createConduitHandler();
 
   const anonymous = jsonResponse(conduitRequest(handler, { uri: "/api/articles/feed" }));
   assert.equal(anonymous.status, 401);
@@ -212,7 +234,7 @@ test("GET /api/articles/feed requires auth and returns followed authors only", (
 });
 
 test("GET /api/profiles/:username reflects the viewer's follow state", () => {
-  const handler = createConduitTaskHandler();
+  const handler = createConduitHandler();
 
   const anonymous = jsonResponse(conduitRequest(handler, { uri: "/api/profiles/anna" }));
   assert.equal(anonymous.status, 200);
@@ -230,7 +252,7 @@ test("GET /api/profiles/:username reflects the viewer's follow state", () => {
 
 test("POST and DELETE /api/profiles/:username/follow update profile and feed state", () => {
   const backend = createConduitBackend();
-  const handler = createConduitTaskHandler({ backend });
+  const handler = createConduitHandler({ backend });
 
   const unfollowed = jsonResponse(
     conduitRequest(handler, {
@@ -274,7 +296,7 @@ test("POST and DELETE /api/profiles/:username/follow update profile and feed sta
 });
 
 test("POST /api/users/login returns the user envelope or a 422 validation envelope", () => {
-  const handler = createConduitTaskHandler();
+  const handler = createConduitHandler();
 
   const ok = jsonResponse(
     conduitRequest(handler, {
@@ -309,7 +331,7 @@ test("POST /api/users/login returns the user envelope or a 422 validation envelo
 });
 
 test("POST /api/users registers users and validates required fields", () => {
-  const handler = createConduitTaskHandler();
+  const handler = createConduitHandler();
 
   const blank = jsonResponse(
     conduitRequest(handler, {
@@ -348,7 +370,7 @@ test("POST /api/users registers users and validates required fields", () => {
 });
 
 test("GET /api/user returns the viewer or 401 without a valid token", () => {
-  const handler = createConduitTaskHandler();
+  const handler = createConduitHandler();
 
   const asKim = jsonResponse(conduitRequest(handler, { uri: "/api/user", headers: [kimAuth] }));
   assert.equal(asKim.status, 200);
@@ -367,7 +389,7 @@ test("GET /api/user returns the viewer or 401 without a valid token", () => {
 });
 
 test("PUT /api/user updates the viewer and validates empty updates", () => {
-  const handler = createConduitTaskHandler();
+  const handler = createConduitHandler();
 
   const empty = jsonResponse(
     conduitRequest(handler, {
@@ -404,7 +426,7 @@ test("PUT /api/user updates the viewer and validates empty updates", () => {
 
 test("POST /api/articles creates an authenticated article and validates required fields", () => {
   const backend = createConduitBackend();
-  const handler = createConduitTaskHandler({ backend });
+  const handler = createConduitHandler({ backend });
 
   const created = jsonResponse(
     conduitRequest(handler, {
@@ -457,7 +479,7 @@ test("POST /api/articles creates an authenticated article and validates required
 
 test("PUT /api/articles/:slug updates only the author's article", () => {
   const backend = createConduitBackend();
-  const handler = createConduitTaskHandler({ backend });
+  const handler = createConduitHandler({ backend });
 
   const created = jsonResponse(
     conduitRequest(handler, {
@@ -538,7 +560,7 @@ test("PUT /api/articles/:slug updates only the author's article", () => {
 
 test("DELETE /api/articles/:slug removes only the author's article", () => {
   const backend = createConduitBackend();
-  const handler = createConduitTaskHandler({ backend });
+  const handler = createConduitHandler({ backend });
 
   const created = jsonResponse(
     conduitRequest(handler, {
@@ -588,7 +610,7 @@ test("DELETE /api/articles/:slug removes only the author's article", () => {
 
 test("POST and DELETE /api/articles/:slug/favorite update counts and favorited lists", () => {
   const backend = createConduitBackend();
-  const handler = createConduitTaskHandler({ backend });
+  const handler = createConduitHandler({ backend });
   const slug = backend.articles[1].slug;
 
   const favorite = jsonResponse(
@@ -633,21 +655,17 @@ test("POST and DELETE /api/articles/:slug/favorite update counts and favorited l
 });
 
 test("latency injection resolves after the delay and honors aborts", async () => {
-  const handler = createConduitTaskHandler({ latencyMs: 5 });
+  const handler = createConduitHandler({ latencyMs: 5 });
   const payload = await handler({
-    requestId: 7,
-    name: "http:send:conduit-test",
-    request: encodeHttpRequestPayload({ method: "GET", uri: "/api/tags" }),
+    method: "GET", uri: "/api/tags",
   });
-  assert.equal(decodeHttpResponsePayload(payload).status, 200);
+  assert.equal(payload.status, 200);
 
   const controller = new AbortController();
   const pending = handler({
-    requestId: 8,
-    name: "http:send:conduit-test",
-    request: encodeHttpRequestPayload({ method: "GET", uri: "/api/tags" }),
+    method: "GET", uri: "/api/tags",
     signal: controller.signal,
   });
   controller.abort();
-  await assert.rejects(pending, /canceled/);
+  await assert.rejects(pending, { name: "AbortError" });
 });

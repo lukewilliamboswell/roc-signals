@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 import known_failures
 import spec_driver
+from instrument_wasm import instrument_wasm
 from toolchain import replace_platform
 
 
@@ -320,9 +321,27 @@ def run_fuzz_suite() -> None:
     run([sys.executable, "scripts/fuzz.py", "check"])
 
 
-def run_browser_suite() -> None:
+def run_browser_suite(roc_bin: str) -> None:
     run(["zig", "build", "run-test-browser"])
     run([sys.executable, "-m", "unittest", "scripts/test_bundle_browser.py"])
+    run_wasm_effect_contracts(roc_bin)
+
+
+def run_wasm_effect_contracts(roc_bin: str) -> None:
+    """Exercise effect ownership and suspension with real Roc callables."""
+    output = TEST_OUT / "wasm-effects"
+    output.mkdir(parents=True, exist_ok=True)
+    for fixture in ("action", "http"):
+        wasm = output / f"{fixture}.wasm"
+        run([
+            roc_bin, "build", "--target=wasm32", "--opt=size", "--no-cache",
+            f"--output={wasm}", ROOT / "test" / "wasm" / fixture / "main.roc",
+        ])
+        instrument_wasm(wasm)
+        run([
+            "node", "--no-maglev", "--experimental-wasm-jspi",
+            ROOT / "scripts" / "browser" / f"wasm_{fixture}.test.mjs", wasm,
+        ])
 
 
 def run_roc_checks(
@@ -395,7 +414,8 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
             except subprocess.CalledProcessError as exc:
                 ledger.record("wasm", example.slug, False, f"roc build exited with {exc.returncode}")
                 continue
-            mount_cmd = ["node", "scripts/browser/mount_wasm_example.mjs", output, example.slug]
+            mount_cmd = ["node", "--no-maglev", "--experimental-wasm-jspi", "scripts/browser/mount_wasm_example.mjs", output, example.slug]
+            instrument_wasm(output)
             if example.expect_mount_error is not None:
                 mount_cmd.extend(["--expect-error", example.expect_mount_error])
             if example.slug == "location-source":
@@ -416,6 +436,10 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
                 mount_cmd.append("--exercise-svg")
             try:
                 run(mount_cmd)
+                if example.slug == "flight-search":
+                    # Node 23 can stall at shutdown waiting for Maglev GC;
+                    # this contract checks Wasm semantics, not JS optimization.
+                    run(["node", "--no-maglev", "--experimental-wasm-jspi", "scripts/browser/wasm_flight_search.test.mjs", output])
             except subprocess.CalledProcessError as exc:
                 ledger.record("wasm", example.slug, False, f"mount exited with {exc.returncode}")
                 continue
@@ -450,6 +474,7 @@ def run_coordinated_writes_wasm_faults(roc_bin: str) -> None:
     ), encoding="utf-8")
     wasm = output / "app.wasm"
     run([roc_bin, "build", "--target=wasm32", "--opt=size", "--no-cache", f"--output={wasm}", app])
+    instrument_wasm(wasm)
     run(["node", "scripts/browser/coordinated_writes_faults.mjs", wasm])
 
 
@@ -714,6 +739,7 @@ def run_wasm_runtime_benchmarks(roc_bin: str, args: argparse.Namespace) -> None:
     diagnostic_wasm = output / "js-framework-diagnostic.wasm"
     for source, wasm in ((production_source, production_wasm), (diagnostic_source, diagnostic_wasm)):
         benchmark_run([roc_bin, "build", "--target=wasm32", f"--opt={args.bench_app_opt}", "--no-cache", f"--output={wasm}", source])
+        instrument_wasm(wasm)
 
     version = subprocess.run([roc_bin, "version"], check=True, capture_output=True, text=True).stdout.strip()
     fixture_digest = hashlib.sha256(original.encode("utf-8")).hexdigest()
@@ -988,7 +1014,7 @@ def main() -> int:
     if "fuzz" in suites:
         run_fuzz_suite()
     if "browser" in suites:
-        run_browser_suite()
+        run_browser_suite(roc_bin)
     if "roc-check" in suites:
         run_local_roc_checks(roc_bin, examples)
     if "roc-test" in suites:

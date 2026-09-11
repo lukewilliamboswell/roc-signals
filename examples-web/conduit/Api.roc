@@ -4,7 +4,6 @@
 ## renders from.
 import Route
 import pf.Http
-import pf.Signal
 
 Api := {}.{
 	Remote(a) : [Loading, Ready(a), Failed(Str)]
@@ -54,7 +53,11 @@ Api := {}.{
 	feed_uri : Route.Feed -> Str
 	feed_uri = |feed| {
 		offset = (feed.page - 1) * page_size
-		base = "/api/articles?limit=${page_size.to_str()}&offset=${offset.to_str()}"
+		path = match feed.source {
+			Global => "/api/articles"
+			Yours => "/api/articles/feed"
+		}
+		base = "${path}?limit=${page_size.to_str()}&offset=${offset.to_str()}"
 		match feed.tag {
 			Tagged(tag) => "${base}&tag=${tag}"
 			AllTags => base
@@ -230,21 +233,26 @@ Api := {}.{
 
 	AuthResult : [AuthIdle, AuthAccepted(Api.User), AuthRejected(List(Str)), AuthErrored(Str)]
 
-	# Keep the package-owned Response value confined to one small transform.
-	# Current Roc main overflows its compiler stack when a task fold transforms
-	# that opaque value directly into Conduit's larger domain unions.
+	# Page classifiers consume status and strict text, not package-owned responses.
 	ResponseState : { status : U16, body : Str, error : Str, ready : Bool }
 
-	response_state = |task|
-		Signal.fold_task(
-			task,
-			{ status: 0, body: "", error: "", ready: False },
-			|response| { status: Http.response_status(response), body: response_text(response), error: "", ready: True },
-			|err| { status: 0, body: "", error: Http.error_text(err), ready: True },
-		)
+	## Execute one hosted request and release its package-owned response after
+	## extracting the status and strictly decoded text used by page state.
+	send_response! : _ => Api.ResponseState
+	send_response! = |request| match Http.send!(request) {
+		Err(err) => { status: 0, body: "", error: Str.inspect(err), ready: True }
+		Ok(response) => match Str.from_utf8(Http.response_body(response)) {
+			Ok(body) => { status: Http.response_status(response), body, error: "", ready: True }
+			Err(_) => { status: Http.response_status(response), body: "", error: "Invalid UTF-8 response", ready: True }
+		}
+	}
 
 	auth_headers : Str -> List(Http.Header)
-	auth_headers = |token| if token.is_empty() { [] } else { [{ name: "authorization", value: "Token ${token}" }] }
+	auth_headers = |token| if token.is_empty() {
+		[]
+	} else {
+		[{ name: "authorization", value: "Token ${token}" }]
+	}
 
 	json_headers : Str -> List(Http.Header)
 	json_headers = |token|
@@ -257,8 +265,7 @@ Api := {}.{
 			]
 		}
 
-	# Authenticated requests use the full request/response path because the
-	# text-task helpers cannot carry headers.
+	# Request builders attach authentication and a bounded request timeout.
 	get_request : Str, Str -> _
 	get_request = |uri, token| {
 		Http.with_timeout_ms(
@@ -319,8 +326,6 @@ Api := {}.{
 	register_body = |username, email, password|
 		Json.to_str({ user: { username: username, email: email, password: password } })
 
-	response_text : _ -> Str
-	response_text = |response| Str.from_utf8_lossy(Http.response_body(response))
 
 	decode_feed_response : Api.ResponseState -> Api.Remote(Api.FeedPage)
 	decode_feed_response = |response| {
@@ -365,7 +370,7 @@ Api := {}.{
 	parse_errors = |body| {
 		shielded = shield_escapes(body)
 		shielded.split_first("\"errors\"").map_ok(|split| collect_errors(split.after, []))
-		?? ["The request was rejected."]
+			?? ["The request was rejected."]
 	}
 
 	## Each step of the scan may run out of input; `?` short-circuits to the
@@ -384,7 +389,7 @@ Api := {}.{
 		next = acc.append(entry)
 		Ok(
 			message_close.after.split_first("]").map_ok(|list_close| collect_errors(list_close.after, next))
-			?? next,
+				?? next,
 		)
 	}
 }

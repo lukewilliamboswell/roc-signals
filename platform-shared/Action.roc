@@ -15,6 +15,7 @@ import Ui
 ## value it captured before the effect ran. The type parameter is the type of
 ## the declared reads, which is also what each effect receives.
 Action(a) := [Action(Node.Cmd)].{
+
 	## Change nothing.
 	none : Action(a)
 	none = Action(Node.Cmd.Noop)
@@ -25,8 +26,8 @@ Action(a) := [Action(Node.Cmd)].{
 
 	## Apply these changes atomically, then run `effect` after that commit with
 	## a fresh snapshot of the declared reads, then continue with the action it
-	## returns. The effect may call `!` functions and runs on its own worker
-	## thread, so it never blocks rendering. Disposing the owning scope does
+	## returns. The effect may call hosted `!` functions through the platform's
+	## effect executor. Disposing the owning scope does
 	## not cancel it: the effect reparents to the nearest live scope, and its
 	## result applies to the states that still exist.
 	then : List(Ui.StateWrite), (a => Action(a)) -> Action(a)
@@ -94,29 +95,30 @@ Action(a) := [Action(Node.Cmd)].{
 	every = |period_ms, reads, to_action| Ui.on_change(sampled(Signal.interval(period_ms), reads), |value| to_cmd(to_action(value)))
 
 	## `reads` as they are at each change of `trigger`, published only then:
-	## the pair signal compares ticks alone, so a reads change between ticks
-	## is pruned, and the projection never compares equal, so every tick
+	## the pair signal compares triggers alone, so a reads change between triggers
+	## is pruned, and the projection never compares equal, so every trigger change
 	## publishes even when the reads did not change.
-	sampled : Signal(U64), Signal(a) -> Signal(a)
+	sampled : Signal(trigger), Signal(a) -> Signal(a)
+		where [trigger.is_eq : trigger, trigger -> Bool]
 	sampled = |trigger, reads| {
-		pair_cap : Capability.Capability({ tick : U64, value : a })
+		pair_cap : Capability.Capability({ tick : trigger, value : a })
 		pair_cap = Capability.new_with_eq(|left, right| left.tick == right.tick)
 		pair : HostValue, HostValue -> HostValue
 		pair = |tick_hv, reads_hv| {
-			tick : U64
+			tick : trigger
 			tick = Box.unbox(Capability.get(tick_hv, trigger.cap))
 			value : a
 			value = Box.unbox(Capability.get(reads_hv, reads.cap))
 			Capability.store(Box.box({ tick, value }), pair_cap)
 		}
 		pair_box = Box.box(pair)
-		paired : Signal({ tick : U64, value : a })
+		paired : Signal({ tick : trigger, value : a })
 		paired = Signal.from_expr(Node.SignalExpr.Map2(pair_box, Signal.to_expr(trigger), Signal.to_expr(reads), pair_box, Capability.handle(pair_cap)), pair_cap)
 		value_cap : Capability.Capability(a)
 		value_cap = Capability.new_with_eq(|_, _| False)
 		project : HostValue -> HostValue
 		project = |pair_hv| {
-			current : { tick : U64, value : a }
+			current : { tick : trigger, value : a }
 			current = Box.unbox(Capability.get(pair_hv, pair_cap))
 			Capability.store(Box.box(current.value), value_cap)
 		}

@@ -118,6 +118,10 @@ class ReleaseTests(unittest.TestCase):
                 self.assertIn('platform "https://release/Gui.tar.zst"',
                               packed.read("examples-gui/demo/main.roc").decode())
                 self.assertEqual(packed.read("examples-gui/demo/theme.json"), b"{\"theme\":true}")
+                page = packed.read("examples-web/demo/index.html").decode()
+                self.assertIn('import { createPublicExampleFetch }', page)
+                self.assertIn('fetchImpl: createPublicExampleFetch()', page)
+                self.assertNotIn('taskHandler', page)
                 self.assertEqual(
                     packed.read("examples-gui/demo/assets/font.ttf"), b"example-owned-font"
                 )

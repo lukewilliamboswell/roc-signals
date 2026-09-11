@@ -355,11 +355,11 @@ test "roc allocation ledger allocates reallocates and frees backing memory" {
     var ledger: Ledger = .{};
     defer ledger.deinit(allocator);
 
-    const first = ledger.allocate(allocator, allocator, 8, 8, .task_payload, @returnAddress()).?;
+    const first = ledger.allocate(allocator, allocator, 8, 8, .host_value_store, @returnAddress()).?;
     const first_ptr: [*]u8 = @ptrCast(first.ptr);
     first_ptr[0] = 42;
 
-    const grown = try ledger.reallocate(allocator, allocator, first.ptr, 32, 8, .task_transform, @returnAddress());
+    const grown = try ledger.reallocate(allocator, allocator, first.ptr, 32, 8, .host_value_clone, @returnAddress());
     const grown_ptr: [*]u8 = @ptrCast(grown.ptr);
     try std.testing.expectEqual(@as(u8, 42), grown_ptr[0]);
     try std.testing.expectEqual(@as(?usize, null), ledger.findExactIndex(first.ptr));

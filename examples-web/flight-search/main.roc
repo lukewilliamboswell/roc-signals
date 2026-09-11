@@ -1,7 +1,9 @@
-app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst" }
+app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-09-04-c125b82" }
 
 import pf.Elem exposing [Elem]
+import pf.Action exposing [Action]
 import pf.Html
+import pf.Http
 import pf.Rows
 import pf.Signal
 import pf.Ui
@@ -136,7 +138,7 @@ Criteria : {
 	airline : AirlineFilter,
 }
 
-## What the host-backed search task currently holds.
+## The application's currently displayed search outcome.
 Outcome := [Loading, Ready(List(Flight)), Failed(Str)].{
 	is_eq : Outcome, Outcome -> Bool
 	is_eq = |left, right|
@@ -231,7 +233,13 @@ matches = |criteria, flight|
 
 u64_sort_order : U64, U64 -> [Before, Same, After]
 u64_sort_order = |left, right|
-	if left < right { Before } else if left > right { After } else { Same }
+	if left < right {
+		Before
+	} else if left > right {
+		After
+	} else {
+		Same
+	}
 
 sort_flights : List(Flight), SortKey -> List(Flight)
 sort_flights = |flights, key|
@@ -428,7 +436,7 @@ returned_count = |outcome|
 count_text : U64 -> Str
 count_text = |count| count.to_str()
 
-## Fan-in of the raw task outcome and the locally sorted rows, so an empty
+## Fan-in of the search outcome and the locally sorted rows, so an empty
 ## response reads differently from a filter that excluded every returned row.
 summary_text : Outcome, List(Flight) -> Str
 summary_text = |outcome, rows|
@@ -442,8 +450,8 @@ summary_text = |outcome, rows|
 				"0 of ${returned.len().to_str()} flights match the local filters."
 			} else {
 				"Showing ${rows.len().to_str()} of ${returned.len().to_str()} flights."
-			},
-	}
+			}
+		}
 
 cheapest_text : List(Flight) -> Str
 cheapest_text = |rows|
@@ -499,8 +507,8 @@ empty_note_text = |outcome, criteria|
 				"No flights on ${route_text(criteria)} for ${criteria.depart_date}. Try another date."
 			} else {
 				blocking_filter(criteria, returned)
-			},
-	}
+			}
+		}
 
 # --- classes -----------------------------------------------------------------
 
@@ -591,17 +599,15 @@ main = ||
 													Ui.state(
 														"price",
 														|sort_by|
-															search(
-																{
-																	origin,
-																	destination,
-																	depart_date,
-																	max_stops,
-																	max_price,
-																	airline,
-																	sort_by,
-																},
-															),
+															search({
+																origin,
+																destination,
+																depart_date,
+																max_stops,
+																max_price,
+																airline,
+																sort_by,
+															}),
 													),
 											),
 									),
@@ -621,8 +627,39 @@ Handles : {
 }
 
 search : Handles -> Elem
-search = |h| {
-	task = Signal.fake_task("flight-search", |value| value, |err| err)
+search = |h| Ui.state({ generation: 0.U64, outcome: Loading }, |result| search_view(h, result))
+
+SearchResult : { generation : U64, outcome : Outcome }
+
+SearchRead : { request : Str, generation : U64 }
+
+## Completion order is host policy; relevance is application policy. A new
+## generation distinguishes even an A -> B -> A sequence of equal requests.
+settle_search : SearchResult, U64, Outcome -> SearchResult
+settle_search = |current, generation, outcome|
+	if current.generation == generation {
+		{ ..current, outcome }
+	} else {
+		current
+	}
+
+## An older response cannot replace the current search, including a repeated URI.
+expect settle_search({ generation: 3, outcome: Loading }, 1, Ready([])) == { generation: 3, outcome: Loading }
+
+## The current occurrence may publish its result.
+expect settle_search({ generation: 3, outcome: Loading }, 3, Ready([])) == { generation: 3, outcome: Ready([]) }
+
+fetch_search! : Ui.State(SearchResult), Str, U64 => Action(SearchRead)
+fetch_search! = |result, request, generation| {
+	outcome = match Http.get_text!("/api/flights/${request}") {
+		Ok(payload) => Ready(parse_flights(payload))
+		Err(err) => Failed(Str.inspect(err))
+	}
+	Action.update([result.write(|current| settle_search(current, generation, outcome))])
+}
+
+search_view : Handles, Ui.State(SearchResult) -> Elem
+search_view = |h, result| {
 
 	# Fan-in 1: six independent filter states become one request key.
 	criteria : Signal.Signal(Criteria)
@@ -641,13 +678,8 @@ search = |h| {
 	request = criteria.map(request_of)
 
 	outcome : Signal.Signal(Outcome)
-	outcome =
-		Signal.fold_task(
-			task,
-			Loading,
-			|payload| Ready(parse_flights(payload)),
-			|err| Failed(err),
-		)
+	outcome = result.signal().map(|current| current.outcome)
+	reads = Action.sampled(request, { request, generation: result.signal().map(|current| current.generation) }.Signal)
 
 	# Fan-in 2: result set + criteria -> the matching subset.
 	matched =
@@ -840,7 +872,13 @@ search = |h| {
 					),
 				],
 			),
-			Ui.on_change_initial(request, |value| Signal.start_str(task, value)),
+			Action.on_change_initial(
+				reads,
+				|current| {
+					generation = current.generation + 1
+					Action.then([result.set({ generation, outcome: Loading })], |_| fetch_search!(result, current.request, generation))
+				},
+			),
 			Ui.on_cleanup(Signal.cleanup("flight search cleanup")),
 		],
 	)

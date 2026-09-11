@@ -1,6 +1,8 @@
-app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst" }
+app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-09-04-c125b82" }
 
 import Notes
+import Sync
+import pf.Action
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -29,10 +31,18 @@ toolbar_class = "flex flex-wrap items-center gap-2"
 ## a line of status text. Both the tone and the sentence come off the same
 ## `board.online` field.
 network_class : Bool -> Str
-network_class = |online| if online { "notice notice-ok" } else { "notice notice-warn" }
+network_class = |online| if online {
+	"notice notice-ok"
+} else {
+	"notice notice-warn"
+}
 
 auto_class : Bool -> Str
-auto_class = |auto| if auto { "badge badge-ok" } else { "badge badge-warn" }
+auto_class = |auto| if auto {
+	"badge badge-ok"
+} else {
+	"badge badge-warn"
+}
 
 ## Badge tone per note, derived from the same `Notes.Status` tag that produces
 ## the badge's caption, so the colour can never disagree with the word.
@@ -125,19 +135,24 @@ render_note = |capture, key, row|
 		],
 	)
 
-## The one place a lane request becomes wire text.
-sync_lane = |board, task, slot|
-	Ui.on_change_initial(
-		board.map(|value| Notes.request_at(value, slot)),
-		|request|
-			match request {
-				Idle => Signal.noop
-				Send(request_token) => Signal.start_str(task, request_token)
-			},
-	)
+## Observe the lane's next token without retriggering on settlement bookkeeping.
+sync_lane : Signal.Signal(Notes.Board), Ui.State(Sync.Lane), U64 -> Elem
+sync_lane = |board, lane, slot| {
+	request = board.map(|value| Notes.request_at(value, slot))
+	reads = { request, generation: lane.signal().map(|value| value.generation) }.Signal
+	Action.on_change_initial(Action.sampled(request, reads), |read| Sync.start(lane, read))
+}
+
+Lanes : { first : Ui.State(Sync.Lane), second : Ui.State(Sync.Lane), third : Ui.State(Sync.Lane), fourth : Ui.State(Sync.Lane) }
 
 main : () -> Elem
-main = || {
+main = || Ui.state(Sync.initial, |first|
+	Ui.state(Sync.initial, |second|
+		Ui.state(Sync.initial, |third|
+			Ui.state(Sync.initial, |fourth| notes_app({ first, second, third, fourth })))))
+
+notes_app : Lanes -> Elem
+notes_app = |lanes| {
 	stored = Browser.local_storage_text(Notes.notes_key)
 
 	Ui.state(
@@ -149,25 +164,14 @@ main = || {
 					Ui.state(
 						False,
 						|hide_synced| {
-							## A lane's value is a settlement record, not a live status, so lanes
-							## are built with reset_on_start = False: starting a request must not
-							## erase the Notes.token the lane last settled.
-							task_0 = Signal.task_source("note-sync", |value| value, |err| err, False)
-							task_1 = Signal.task_source("note-sync", |value| value, |err| err, False)
-							task_2 = Signal.task_source("note-sync", |value| value, |err| err, False)
-							task_3 = Signal.task_source("note-sync", |value| value, |err| err, False)
 
-							## Wide fan-in: one lane status signal per outbox lane, each from its
-							## own task source, combined into the lane status vector.
-							views =
-								Signal.combine(
-									[
-										Signal.fold_task(task_0, TaskIdle, |value| TaskDone(value), |err| TaskFailed(err)),
-										Signal.fold_task(task_1, TaskIdle, |value| TaskDone(value), |err| TaskFailed(err)),
-										Signal.fold_task(task_2, TaskIdle, |value| TaskDone(value), |err| TaskFailed(err)),
-										Signal.fold_task(task_3, TaskIdle, |value| TaskDone(value), |err| TaskFailed(err)),
-									],
-								)
+							## Preserve each lane's last settlement while its next effect runs.
+							views = Signal.combine([
+								lanes.first.signal().map(|value| value.settled),
+								lanes.second.signal().map(|value| value.settled),
+								lanes.third.signal().map(|value| value.settled),
+								lanes.fourth.signal().map(|value| value.settled),
+							])
 
 							base_notes = stored.map(Notes.stored_notes)
 							notes = Signal.map2(base_notes, capture.signal(), |base, current| current.ops.fold(base, Notes.apply_op))
@@ -216,7 +220,19 @@ main = || {
 									),
 									Html.section(
 										"Sync status",
-										[Html.class_attr(panel_class), Html.attr_s("data-network", board.map(|value| if value.online { "online" } else { "offline" }))],
+										[
+											Html.class_attr(panel_class),
+											Html.attr_s(
+												"data-network",
+												board.map(
+													|value| if value.online {
+														"online"
+													} else {
+														"offline"
+													},
+												),
+											),
+										],
 										[
 											Html.paragraph_s_attrs(
 												online_signal.map(Notes.network_text),
@@ -303,10 +319,10 @@ main = || {
 											),
 										],
 									),
-									sync_lane(board, task_0, 0),
-									sync_lane(board, task_1, 1),
-									sync_lane(board, task_2, 2),
-									sync_lane(board, task_3, 3),
+									sync_lane(board, lanes.first, 0),
+									sync_lane(board, lanes.second, 1),
+									sync_lane(board, lanes.third, 2),
+									sync_lane(board, lanes.fourth, 3),
 									Ui.on_change(notes, |value| Browser.set_local_storage_text(Notes.notes_key, Notes.encode_notes(value))),
 								],
 							)

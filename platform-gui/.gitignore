@@ -1,4 +1,5 @@
 # Copied from platform-shared by scripts/prepare_platforms.py.
+/Action.roc
 /Capability.roc
 /EachSink.roc
 /EventExtraction.roc

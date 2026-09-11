@@ -1,5 +1,6 @@
 (test "Field notes — initial mount"
   (setup
+    (manual-effects)
     ; Field Notes: offline capture, outbox drain, rollback, and restore.
     ;
     ; Storage format is "id|slot|queued|rev|body" per note, notes joined by ";".
@@ -46,7 +47,6 @@
     (expect-disabled (role button :name "Retry note n1") true)
     (expect-absent (role region :name "Note s1"))
     ; Offline means nothing is started even though a restored note is queued.
-    (expect-pending-task "note-sync" 0)
-    (expect-canceled-task "note-sync" 0)
+    (expect-pending-effects 0)
   )
 )

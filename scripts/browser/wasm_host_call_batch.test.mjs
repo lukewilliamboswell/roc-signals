@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { hostFixtureImports } from "./host_fixture_imports.mjs";
 
 // Wire ops from src/signals/render_commands.zig; the fixture only needs the
 // two that bracket a mount batch.
@@ -9,7 +10,7 @@ const SET_DOCUMENT_TITLE = 32;
 
 async function instantiateHostFixture() {
   const bytes = await readFile(".test-out/oom/host-fixture.wasm");
-  return (await WebAssembly.instantiate(bytes, { env: { roc_ui_init: () => 0 } })).instance.exports;
+  return (await WebAssembly.instantiate(bytes, hostFixtureImports)).instance.exports;
 }
 
 function publishedRecords(host) {
