@@ -407,16 +407,16 @@ pub fn Runner(comptime Ctx: type) type {
             for (commands) |cmd| {
                 if (verbose) {
                     var buffer: [160]u8 = undefined;
-                    const message = std.fmt.bufPrint(&buffer, "[SPEC] line {d}: {s}\n", .{ cmd.line_num, @tagName(cmd.cmd_type) }) catch "[SPEC] command\n";
+                    const message = std.fmt.bufPrint(&buffer, "[SPEC] line {d}: {s}\n", .{ cmd.line_num, @tagName(cmd.step) }) catch "[SPEC] command\n";
                     Ctx.writeStderr(message);
                 }
-                switch (cmd.cmd_type) {
+                switch (cmd.step) {
                     .wait, .type_text, .key, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot, .close => {
                         // The parser already keeps these out of a (test ...);
                         // this is the runner's own word on it, for a command
                         // list assembled some other way.
                         var buffer: [160]u8 = undefined;
-                        const message = std.fmt.bufPrint(&buffer, "Error: line {d}: {s} runs only against a real window; put it in a (scenario ...)\n", .{ cmd.line_num, @tagName(cmd.cmd_type) }) catch "Error: window-only step\n";
+                        const message = std.fmt.bufPrint(&buffer, "Error: line {d}: {s} runs only against a real window; put it in a (scenario ...)\n", .{ cmd.line_num, @tagName(cmd.step) }) catch "Error: window-only step\n";
                         Ctx.writeStderr(message);
                         return 1;
                     },
@@ -431,41 +431,29 @@ pub fn Runner(comptime Ctx: type) type {
 
                     .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result, .manual_effects => {},
 
-                    .set_visibility => {
+                    .set_visibility => |text| {
                         if (comptime !@hasDecl(Ctx, "setVisibility")) {
                             writeLocatorFailure(cmd.line_num, "visibility commands are not supported by this runner");
                             return 1;
                         } else {
-                            const text = cmd.expected_text orelse {
-                                writeLocatorFailure(cmd.line_num, "set_visibility command had no visibility text");
-                                return 1;
-                            };
                             const visibility = visibilitySnapshotFromSpecText(cmd.line_num, text) orelse return 1;
                             _ = Ctx.setVisibility(host, roc_host, visibility);
                             Ctx.finishHostMetrics(host);
                         }
                     },
 
-                    .set_online => {
+                    .set_online => |text| {
                         if (comptime !@hasDecl(Ctx, "setOnline")) {
                             writeLocatorFailure(cmd.line_num, "online commands are not supported by this runner");
                             return 1;
                         } else {
-                            const text = cmd.expected_text orelse {
-                                writeLocatorFailure(cmd.line_num, "set_online command had no online text");
-                                return 1;
-                            };
                             const online = onlineSnapshotFromSpecText(cmd.line_num, text) orelse return 1;
                             _ = Ctx.setOnline(host, roc_host, online);
                             Ctx.finishHostMetrics(host);
                         }
                     },
 
-                    .navigate => {
-                        const text = cmd.expected_text orelse {
-                            writeLocatorFailure(cmd.line_num, "navigate command had no URL text");
-                            return 1;
-                        };
+                    .navigate => |text| {
                         const location = locationSnapshotFromSpecText(cmd.line_num, text) orelse return 1;
                         _ = Ctx.navigateLocation(host, roc_host, location);
                         Ctx.finishHostMetrics(host);
@@ -481,11 +469,7 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.finishHostMetrics(host);
                     },
 
-                    .expect_current_location, .assert_current_location => {
-                        const text = cmd.expected_text orelse {
-                            writeLocatorFailure(cmd.line_num, "current-location assertion had no URL text");
-                            return 1;
-                        };
+                    .expect_current_location => |text| {
                         const expected = locationSnapshotFromSpecText(cmd.line_num, text) orelse return 1;
                         const actual = Ctx.currentLocation(host);
                         if (!std.mem.eql(u8, actual.path, expected.path)) {
@@ -502,11 +486,7 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_document_title => {
-                        const expected = cmd.expected_text orelse {
-                            writeLocatorFailure(cmd.line_num, "document-title assertion had no text");
-                            return 1;
-                        };
+                    .expect_document_title => |expected| {
                         const actual = documentTitleForCtx(Ctx, host);
                         if (!std.mem.eql(u8, actual, expected)) {
                             writeStringMismatch(cmd.line_num, "document title", expected, actual);
@@ -514,16 +494,10 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_local_storage, .expect_session_storage => {
-                        const key = cmd.task_name orelse {
-                            writeLocatorFailure(cmd.line_num, "storage assertion had no key text");
-                            return 1;
-                        };
-                        const expected = cmd.expected_text orelse {
-                            writeLocatorFailure(cmd.line_num, "storage assertion had no value text");
-                            return 1;
-                        };
-                        const area: boundary.StorageArea = switch (cmd.cmd_type) {
+                    .expect_local_storage, .expect_session_storage => |pair| {
+                        const key = pair.key;
+                        const expected = pair.value;
+                        const area: boundary.StorageArea = switch (cmd.step) {
                             .expect_local_storage => .local,
                             .expect_session_storage => .session,
                             else => unreachable,
@@ -538,12 +512,8 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_no_local_storage, .expect_no_session_storage => {
-                        const key = cmd.task_name orelse {
-                            writeLocatorFailure(cmd.line_num, "storage absence assertion had no key text");
-                            return 1;
-                        };
-                        const area: boundary.StorageArea = switch (cmd.cmd_type) {
+                    .expect_no_local_storage, .expect_no_session_storage => |key| {
+                        const area: boundary.StorageArea = switch (cmd.step) {
                             .expect_no_local_storage => .local,
                             .expect_no_session_storage => .session,
                             else => unreachable,
@@ -554,8 +524,8 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .click => {
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .click => |locator| {
+                        const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -577,8 +547,8 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event_id, BoundaryPayloadDescriptor.init(.unit, .none), Ctx.hostValueUnit(host, roc_host));
                     },
 
-                    .real_click => {
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .real_click => |locator| {
+                        const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -598,8 +568,8 @@ pub fn Runner(comptime Ctx: type) type {
                         if (!dispatchRealClickDefaultAction(Ctx, host, roc_host, target_id, click_result, cmd.line_num)) return 1;
                     },
 
-                    .pointer_down, .pointer_up, .pointer_enter, .pointer_leave => {
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .pointer_down, .pointer_up, .pointer_enter, .pointer_leave => |locator| {
+                        const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -607,8 +577,8 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "target is disabled");
                             return 1;
                         }
-                        const event_id = pointerEventIdForCommand(elem, cmd.cmd_type) orelse blk: {
-                            const event_name = pointerEventNameForCommand(cmd.cmd_type) orelse {
+                        const event_id = pointerEventIdForCommand(elem, cmd.kind()) orelse blk: {
+                            const event_name = pointerEventNameForCommand(cmd.kind()) orelse {
                                 writeLocatorFailure(cmd.line_num, "unsupported pointer event command");
                                 return 1;
                             };
@@ -625,8 +595,8 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event_id, BoundaryPayloadDescriptor.init(.unit, .none), Ctx.hostValueUnit(host, roc_host));
                     },
 
-                    .key_down => {
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .key_down => |args| {
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -642,14 +612,8 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "keydown binding does not request the key/shift payload descriptor");
                             return 1;
                         }
-                        const key = cmd.expected_text orelse {
-                            writeLocatorFailure(cmd.line_num, "key_down command is missing key text");
-                            return 1;
-                        };
-                        const shift_key = cmd.expected_bool orelse {
-                            writeLocatorFailure(cmd.line_num, "key_down command is missing shift flag");
-                            return 1;
-                        };
+                        const key = args.key;
+                        const shift_key = args.shift;
                         const target_id = elem.id;
                         const payload_bytes = encodeKeyShiftPayload(Ctx.allocator(host), key, shift_key);
                         defer Ctx.allocator(host).free(payload_bytes);
@@ -667,9 +631,9 @@ pub fn Runner(comptime Ctx: type) type {
                             return 1;
                         }
                     },
-                    .expect_window_closed => {
+                    .expect_window_closed => |expected| {
                         if (@hasDecl(Ctx, "windowClosed")) {
-                            if (Ctx.windowClosed(host) != cmd.expected_bool.?) {
+                            if (Ctx.windowClosed(host) != expected) {
                                 writeLocatorFailure(cmd.line_num, "window closed state differs from expected");
                                 return 1;
                             }
@@ -678,8 +642,8 @@ pub fn Runner(comptime Ctx: type) type {
                             return 1;
                         }
                     },
-                    .shortcut => {
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .shortcut => |args| {
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -687,11 +651,7 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "target is disabled");
                             return 1;
                         }
-                        const chord = cmd.shortcut orelse {
-                            writeLocatorFailure(cmd.line_num, "shortcut command is missing its validated chord");
-                            return 1;
-                        };
-                        const event = Ctx.shortcutEvent(elem, chord) orelse {
+                        const event = Ctx.shortcutEvent(elem, args.chord) orelse {
                             writeLocatorFailure(cmd.line_num, "target has no binding for this exact shortcut");
                             return 1;
                         };
@@ -702,12 +662,12 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host));
                     },
 
-                    .focus, .blur, .composition_start, .composition_end => {
-                        const event_name = namedUnitEventNameForCommand(cmd.cmd_type) orelse {
+                    .focus, .blur, .composition_start, .composition_end => |locator| {
+                        const event_name = namedUnitEventNameForCommand(cmd.kind()) orelse {
                             writeLocatorFailure(cmd.line_num, "unsupported named unit event command");
                             return 1;
                         };
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                        const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -723,7 +683,7 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "named event binding does not use a unit payload descriptor");
                             return 1;
                         }
-                        switch (cmd.cmd_type) {
+                        switch (cmd.step) {
                             .focus => Ctx.focusElement(host, elem),
                             .blur => Ctx.blurElement(host, elem),
                             .composition_start => Ctx.beginComposition(host, elem),
@@ -733,9 +693,9 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host));
                     },
 
-                    .change => {
-                        const value = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .change => |args| {
+                        const value = args.text;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -755,9 +715,9 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value));
                     },
 
-                    .select_option => {
-                        const value = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .select_option => |args| {
+                        const value = args.text;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -768,13 +728,10 @@ pub fn Runner(comptime Ctx: type) type {
                         if (!dispatchSelectOptionEvent(Ctx, host, roc_host, elem, value, cmd.line_num)) return 1;
                     },
 
-                    .custom_event => {
-                        const event_name = cmd.task_name orelse {
-                            writeLocatorFailure(cmd.line_num, "custom_event command had no event name");
-                            return 1;
-                        };
-                        const detail = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .custom_event => |args| {
+                        const event_name = args.name;
+                        const detail = args.detail;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -793,17 +750,17 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, detail));
                     },
 
-                    .submit => {
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .submit => |locator| {
+                        const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
                         if (!dispatchSubmitEvent(Ctx, host, roc_host, elem, cmd.line_num)) return 1;
                     },
 
-                    .fill => {
-                        const value = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .fill => |args| {
+                        const value = args.text;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -823,9 +780,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .check, .uncheck => {
-                        const checked = cmd.cmd_type == .check;
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .check, .uncheck => |locator| {
+                        const checked = cmd.kind() == .check;
+                        const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -836,26 +793,26 @@ pub fn Runner(comptime Ctx: type) type {
                         if (!dispatchCheckedChangeEvent(Ctx, host, roc_host, elem, checked, cmd.line_num)) return 1;
                     },
 
-                    .stub_file_result => {
+                    .stub_file_result => |stub| {
                         if (comptime !@hasDecl(Ctx, "stubFileResult")) {
                             writeLocatorFailure(cmd.line_num, "file stubs are not supported by this runner");
                             return 1;
                         }
-                        Ctx.stubFileResult(host, &(cmd.file_stub orelse unreachable));
+                        Ctx.stubFileResult(host, &stub.stub);
                     },
 
-                    .stub_http_result => {
+                    .stub_http_result => |stub| {
                         if (comptime !@hasDecl(Ctx, "stubHttpResult")) {
                             writeLocatorFailure(cmd.line_num, "http stubs are not supported by this runner");
                             return 1;
                         }
-                        Ctx.stubHttpResult(host, &(cmd.http_stub orelse unreachable));
+                        Ctx.stubHttpResult(host, &stub.stub);
                     },
-                    .run_effect => {
+                    .run_effect => |occurrence| {
                         if (comptime @hasDecl(Ctx, "runSpecEffect")) {
-                            if (!Ctx.runSpecEffect(host, roc_host, cmd.expected_count.?)) {
+                            if (!Ctx.runSpecEffect(host, roc_host, occurrence)) {
                                 var buffer: [192]u8 = undefined;
-                                const message = std.fmt.bufPrint(&buffer, "effect occurrence {d} is not pending or manual mode is disabled", .{cmd.expected_count.?}) catch unreachable;
+                                const message = std.fmt.bufPrint(&buffer, "effect occurrence {d} is not pending or manual mode is disabled", .{occurrence}) catch unreachable;
                                 writeLocatorFailure(cmd.line_num, message);
                                 return 1;
                             }
@@ -864,12 +821,12 @@ pub fn Runner(comptime Ctx: type) type {
                             return 1;
                         }
                     },
-                    .expect_pending_effects => {
+                    .expect_pending_effects => |expected| {
                         if (comptime @hasDecl(Ctx, "pendingEffectCount")) {
                             const actual = Ctx.pendingEffectCount(host);
-                            if (actual != cmd.expected_count.?) {
+                            if (actual != expected) {
                                 var buffer: [192]u8 = undefined;
-                                const message = std.fmt.bufPrint(&buffer, "expected {d} pending effects, got {d}", .{ cmd.expected_count.?, actual }) catch unreachable;
+                                const message = std.fmt.bufPrint(&buffer, "expected {d} pending effects, got {d}", .{ expected, actual }) catch unreachable;
                                 writeLocatorFailure(cmd.line_num, message);
                                 return 1;
                             }
@@ -879,45 +836,37 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .tick_interval => {
-                        const period_ms = cmd.interval_ms orelse {
-                            writeLocatorFailure(cmd.line_num, "interval command had no period");
-                            return 1;
-                        };
+                    .tick_interval => |period_ms| {
                         _ = Ctx.tickIntervalSource(host, roc_host, period_ms);
                         Ctx.finishHostMetrics(host);
                     },
 
-                    .tick_interval_if_active => {
-                        const period_ms = cmd.interval_ms orelse {
-                            writeLocatorFailure(cmd.line_num, "interval command had no period");
-                            return 1;
-                        };
+                    .tick_interval_if_active => |period_ms| {
                         if (Ctx.activeIntervalRecordCountByPeriod(host, period_ms) != 0) {
                             _ = Ctx.tickIntervalSource(host, roc_host, period_ms);
                             Ctx.finishHostMetrics(host);
                         }
                     },
 
-                    .expect_visible => {
-                        _ = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
-                            writeLocatorMiss(Ctx, cmd.line_num, cmd.locator);
+                    .expect_visible => |locator| {
+                        _ = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
+                            writeLocatorMiss(Ctx, cmd.line_num, locator);
                             return 1;
                         };
                     },
 
-                    .expect_absent => {
-                        const match_count = Ctx.countElementsByLocator(host, cmd.locator);
+                    .expect_absent => |locator| {
+                        const match_count = Ctx.countElementsByLocator(host, locator);
                         if (match_count != 0) {
                             writeAbsentFailure(cmd.line_num, match_count);
                             return 1;
                         }
                     },
 
-                    .expect_text => {
-                        const expected = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
-                            writeLocatorMiss(Ctx, cmd.line_num, cmd.locator);
+                    .expect_text => |args| {
+                        const expected = args.text;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
+                            writeLocatorMiss(Ctx, cmd.line_num, args.target);
                             return 1;
                         };
                         if (elem.text) |own_text| {
@@ -940,9 +889,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_value => {
-                        const expected = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .expect_value => |args| {
+                        const expected = args.text;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -953,13 +902,10 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_attr => {
-                        const attr_name = cmd.expected_attr orelse {
-                            writeLocatorFailure(cmd.line_num, "attr assertion had no attr name");
-                            return 1;
-                        };
-                        const expected = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .expect_attr => |args| {
+                        const attr_name = args.name;
+                        const expected = args.value;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -973,12 +919,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_no_attr => {
-                        const attr_name = cmd.expected_attr orelse {
-                            writeLocatorFailure(cmd.line_num, "attr assertion had no attr name");
-                            return 1;
-                        };
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .expect_no_attr => |args| {
+                        const attr_name = args.name;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -988,9 +931,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_checked => {
-                        const expected = cmd.expected_bool orelse false;
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .expect_checked => |args| {
+                        const expected = args.expected;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -1000,9 +943,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_disabled => {
-                        const expected = cmd.expected_bool orelse false;
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .expect_disabled => |args| {
+                        const expected = args.expected;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -1012,9 +955,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_updates => {
-                        const expected = cmd.expected_count orelse 0;
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .expect_updates => |args| {
+                        const expected = args.count;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -1027,9 +970,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_cleanup => {
-                        const name = cmd.task_name orelse "";
-                        const expected = cmd.expected_count orelse 0;
+                    .expect_cleanup => |args| {
+                        const name = args.name;
+                        const expected = args.count;
                         const actual = Ctx.cleanupEventCount(host, name);
                         if (actual != expected) {
                             var buf: [512]u8 = undefined;
@@ -1039,9 +982,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_interval => {
-                        const period_ms = cmd.interval_ms orelse 0;
-                        const expected = cmd.expected_count orelse 0;
+                    .expect_interval => |args| {
+                        const period_ms = args.period_ms;
+                        const expected = args.count;
                         const actual = Ctx.activeIntervalRecordCountByPeriod(host, period_ms);
                         if (actual != expected) {
                             var buf: [512]u8 = undefined;
@@ -1051,9 +994,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_metric_delta => {
-                        const metric_name = cmd.expected_text orelse "";
-                        const expected = cmd.expected_metric_delta orelse 0;
+                    .expect_metric_delta => |args| {
+                        const metric_name = args.metric;
+                        const expected = args.delta;
                         const marked = metrics_mark orelse {
                             writeMetricFailure(cmd.line_num, "mark_metrics must run before expect_metric_delta");
                             return 1;
@@ -1073,9 +1016,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_metric_delta_at_most => {
-                        const metric_name = cmd.expected_text orelse "";
-                        const expected = cmd.expected_metric_delta orelse 0;
+                    .expect_metric_delta_at_most => |args| {
+                        const metric_name = args.metric;
+                        const expected = args.delta;
                         const marked = metrics_mark orelse {
                             writeMetricFailure(cmd.line_num, "mark_metrics must run before expect_metric_delta_at_most");
                             return 1;
@@ -1096,7 +1039,7 @@ pub fn Runner(comptime Ctx: type) type {
                     },
                 }
                 if (comptime @hasDecl(Ctx, "traceAllocationCheckpoint")) {
-                    Ctx.traceAllocationCheckpoint(host, cmd.line_num, @tagName(cmd.cmd_type));
+                    Ctx.traceAllocationCheckpoint(host, cmd.line_num, @tagName(cmd.step));
                 }
             }
 

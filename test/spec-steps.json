@@ -1,0 +1,18 @@
+click
+shortcut key:unsigned modifiers:unsigned
+focus
+expect_text text:text
+expect_visible
+expect_absent
+expect_value text:text
+expect_disabled expected:boolean
+wait value:unsigned
+type_text text:text
+key value:text
+expect_onscreen
+expect_history count:unsigned
+expect_count prefix:text count:unsigned
+expect_selected expected:boolean
+expect_focused
+snapshot value:text
+close
