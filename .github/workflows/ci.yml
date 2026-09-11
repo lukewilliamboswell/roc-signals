@@ -53,6 +53,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y binaryen
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '23.9.0'
       - run: python3 scripts/minici hosted
 
   gui:

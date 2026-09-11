@@ -49,6 +49,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y binaryen
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '23.9.0'
       - run: python3 -m unittest discover -s scripts -p test_web_host_artifacts.py
       - name: Build once and exercise native and Wasm application paths
         run: python3 scripts/test.py roc-check roc-test native wasm

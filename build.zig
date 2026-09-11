@@ -227,7 +227,7 @@ pub fn build(b: *std.Build) void {
     overflow_fixture.rdynamic = true;
     const checked_overflow = b.addSystemCommand(&.{"wasm-opt"});
     checked_overflow.addFileArg(overflow_fixture.getEmittedBin());
-    checked_overflow.addArgs(&.{ "--stack-check", "-o" });
+    checked_overflow.addArgs(&.{ "--enable-mutable-globals", "--stack-check", "-o" });
     const checked_overflow_wasm = checked_overflow.addOutputFileArg("effect-stack-overflow-checked.wasm");
     const overflow_test = b.addSystemCommand(&.{
         "node", "--experimental-wasm-jspi", "scripts/browser/wasm_effect_stack_overflow.test.mjs",
