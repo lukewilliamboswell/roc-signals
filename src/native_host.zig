@@ -40,6 +40,7 @@ const native_timers = @import("native_timers.zig");
 comptime {
     std.testing.refAllDecls(spec_parser);
     std.testing.refAllDecls(spec_runner);
+    std.testing.refAllDecls(@import("spec/ctx.zig"));
     std.testing.refAllDecls(@import("spec/file_fixtures.zig"));
     std.testing.refAllDecls(@import("spec/sexpr.zig"));
     std.testing.refAllDecls(benchmark);
@@ -3573,6 +3574,16 @@ fn refreshSpecWindowClose(host: *HostEnv) void {
 }
 
 const SpecRunnerCtx = struct {
+    /// The full contract: this is the semantic host, so every capability the
+    /// runner knows about is implemented here.
+    pub const capabilities: spec_runner.ctx.Capabilities = .{
+        .environment = true,
+        .window = true,
+        .effect_fixtures = true,
+        .manual_effects = true,
+        .allocation_trace = true,
+    };
+
     /// Counts prepared occurrences still owned by the shared engine.
     pub fn pendingEffectCount(host: *HostEnv) u64 {
         return host.engine.pending_effects.items.len;

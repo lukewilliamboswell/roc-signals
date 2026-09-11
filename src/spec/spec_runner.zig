@@ -10,6 +10,7 @@ const render = signals.render;
 const runtime_limits = signals.runtime_limits;
 const spec_parser = @import("spec_parser.zig");
 const file_fixtures = @import("file_fixtures.zig");
+pub const ctx = @import("ctx.zig");
 
 const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
 const RuntimeMetrics = engine.RuntimeMetrics;
@@ -17,14 +18,14 @@ const SpecCommand = spec_parser.SpecCommand;
 const SpecCommandType = spec_parser.SpecCommandType;
 
 fn storageValueForCtx(comptime Ctx: type, host: *Ctx.Host, area: boundary.StorageArea, key: []const u8) ?[]const u8 {
-    if (comptime @hasDecl(Ctx, "storageValue")) {
+    if (comptime ctx.has(Ctx, .environment)) {
         return Ctx.storageValue(host, area, key);
     }
     return null;
 }
 
 fn documentTitleForCtx(comptime Ctx: type, host: *Ctx.Host) []const u8 {
-    if (comptime @hasDecl(Ctx, "documentTitle")) {
+    if (comptime ctx.has(Ctx, .environment)) {
         return Ctx.documentTitle(host);
     }
     return "";
@@ -50,9 +51,9 @@ fn writeLocatorMiss(comptime Ctx: type, line_num: usize, locator: spec_parser.Lo
             "TEST FAILED at line {d}: no element has text \"{s}\"\n" ++
                 "  A text: locator matches on content, so a changed value looks like a\n" ++
                 "  missing element. Give the element a test_id and assert its value:\n" ++
-                "    expect_text test_id:\"...\" \"{s}\"\n" ++
+                "    (expect-text (test-id \"...\") \"{s}\")\n" ++
                 "  To see what did render, assert a wrong value on the container:\n" ++
-                "    expect_text role:region name:\"...\" \"PROBE\"\n",
+                "    (expect-text (role region :name \"...\") \"PROBE\")\n",
             .{ line_num, locator.text orelse "", locator.text orelse "" },
         ) catch "TEST FAILED\n",
         else => std.fmt.bufPrint(
@@ -394,8 +395,78 @@ fn appendDescendantText(
     }
 }
 
+/// Reads one runtime metric by its spec name, or null for an unknown name.
+pub fn runtimeMetricValue(metrics: RuntimeMetrics, name: []const u8) ?i64 {
+    // A u64 gauge past i64 range would be an engine bug, not a spec's; refuse
+    // it here so no host has to.
+    const u64MetricAsI64 = struct {
+        fn cast(value: u64) i64 {
+            return std.math.cast(i64, value) orelse @panic("runtime metric exceeded signed assertion range");
+        }
+    }.cast;
+    if (std.mem.eql(u8, name, "active_graph_records_rebuilt")) return u64MetricAsI64(metrics.active_graph_records_rebuilt);
+    if (std.mem.eql(u8, name, "active_intervals_synced")) return u64MetricAsI64(metrics.active_intervals_synced);
+    if (std.mem.eql(u8, name, "reset_dom")) return u64MetricAsI64(metrics.reset_dom);
+    if (std.mem.eql(u8, name, "create_element")) return u64MetricAsI64(metrics.create_element);
+    if (std.mem.eql(u8, name, "append_child")) return u64MetricAsI64(metrics.append_child);
+    if (std.mem.eql(u8, name, "remove_node")) return u64MetricAsI64(metrics.remove_node);
+    if (std.mem.eql(u8, name, "move_before")) return u64MetricAsI64(metrics.move_before);
+    if (std.mem.eql(u8, name, "set_text")) return u64MetricAsI64(metrics.set_text);
+    if (std.mem.eql(u8, name, "set_value")) return u64MetricAsI64(metrics.set_value);
+    if (std.mem.eql(u8, name, "set_checked")) return u64MetricAsI64(metrics.set_checked);
+    if (std.mem.eql(u8, name, "set_disabled")) return u64MetricAsI64(metrics.set_disabled);
+    if (std.mem.eql(u8, name, "set_metadata")) return u64MetricAsI64(metrics.set_metadata);
+    if (std.mem.eql(u8, name, "bind_event")) return u64MetricAsI64(metrics.bind_event);
+    if (std.mem.eql(u8, name, "allocs_this_event")) return u64MetricAsI64(metrics.allocs_this_event);
+    if (std.mem.eql(u8, name, "deallocs_this_event")) return u64MetricAsI64(metrics.deallocs_this_event);
+    if (std.mem.eql(u8, name, "host_allocs_this_event")) return u64MetricAsI64(metrics.host_allocs_this_event);
+    if (std.mem.eql(u8, name, "host_deallocs_this_event")) return u64MetricAsI64(metrics.host_deallocs_this_event);
+    if (std.mem.eql(u8, name, "host_alloc_bytes_this_event")) return u64MetricAsI64(metrics.host_alloc_bytes_this_event);
+    if (std.mem.eql(u8, name, "host_dealloc_bytes_this_event")) return u64MetricAsI64(metrics.host_dealloc_bytes_this_event);
+    if (std.mem.eql(u8, name, "events_processed")) return u64MetricAsI64(metrics.events_processed);
+    if (std.mem.eql(u8, name, "dirty_source_roots")) return u64MetricAsI64(metrics.dirty_source_roots);
+    if (std.mem.eql(u8, name, "propagation_prunes")) return u64MetricAsI64(metrics.propagation_prunes);
+    if (std.mem.eql(u8, name, "derived_calls_into_roc")) return u64MetricAsI64(metrics.derived_calls_into_roc);
+    if (std.mem.eql(u8, name, "each_key_compares")) return u64MetricAsI64(metrics.each_key_compares);
+    if (std.mem.eql(u8, name, "each_key_hashes")) return u64MetricAsI64(metrics.each_key_hashes);
+    if (std.mem.eql(u8, name, "each_key_reuse_compares")) return u64MetricAsI64(metrics.each_key_reuse_compares);
+    if (std.mem.eql(u8, name, "each_key_duplicate_compares")) return u64MetricAsI64(metrics.each_key_duplicate_compares);
+    if (std.mem.eql(u8, name, "each_item_compares")) return u64MetricAsI64(metrics.each_item_compares);
+    if (std.mem.eql(u8, name, "each_syncs")) return u64MetricAsI64(metrics.each_syncs);
+    if (std.mem.eql(u8, name, "each_sync_keys")) return u64MetricAsI64(metrics.each_sync_keys);
+    if (std.mem.eql(u8, name, "each_sync_existing_rows")) return u64MetricAsI64(metrics.each_sync_existing_rows);
+    if (std.mem.eql(u8, name, "recompute_batches")) return u64MetricAsI64(metrics.recompute_batches);
+    if (std.mem.eql(u8, name, "patches_emitted")) return u64MetricAsI64(metrics.patches_emitted);
+    if (std.mem.eql(u8, name, "scopes_created")) return u64MetricAsI64(metrics.scopes_created);
+    if (std.mem.eql(u8, name, "scopes_disposed")) return u64MetricAsI64(metrics.scopes_disposed);
+    if (std.mem.eql(u8, name, "rows_reused")) return u64MetricAsI64(metrics.rows_reused);
+    if (std.mem.eql(u8, name, "selector_members_dirtied")) return u64MetricAsI64(metrics.selector_members_dirtied);
+    if (std.mem.eql(u8, name, "rows_created")) return u64MetricAsI64(metrics.rows_created);
+    if (std.mem.eql(u8, name, "rows_order_links_touched")) return u64MetricAsI64(metrics.rows_order_links_touched);
+    if (std.mem.eql(u8, name, "rows_removed")) return u64MetricAsI64(metrics.rows_removed);
+    if (std.mem.eql(u8, name, "rows_render_roots_moved")) return u64MetricAsI64(metrics.rows_render_roots_moved);
+    if (std.mem.eql(u8, name, "closure_retains")) return u64MetricAsI64(metrics.closure_retains);
+    if (std.mem.eql(u8, name, "closure_releases")) return u64MetricAsI64(metrics.closure_releases);
+    if (std.mem.eql(u8, name, "render_indexes_refreshed")) return u64MetricAsI64(metrics.render_indexes_refreshed);
+    if (std.mem.eql(u8, name, "signal_record_table_rebuilt")) return u64MetricAsI64(metrics.signal_record_table_rebuilt);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned")) return u64MetricAsI64(metrics.stream_nodes_scanned);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_apply")) return u64MetricAsI64(metrics.stream_nodes_scanned_apply);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_children")) return u64MetricAsI64(metrics.stream_nodes_scanned_children);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_dirty_scope")) return u64MetricAsI64(metrics.stream_nodes_scanned_dirty_scope);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_events")) return u64MetricAsI64(metrics.stream_nodes_scanned_events);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_mounts")) return u64MetricAsI64(metrics.stream_nodes_scanned_mounts);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_remove_target")) return u64MetricAsI64(metrics.stream_nodes_scanned_remove_target);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_render_scope")) return u64MetricAsI64(metrics.stream_nodes_scanned_render_scope);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_splice")) return u64MetricAsI64(metrics.stream_nodes_scanned_splice);
+    if (std.mem.eql(u8, name, "retained_alloc_delta")) return metrics.retained_alloc_delta;
+    if (std.mem.eql(u8, name, "host_retained_alloc_delta")) return metrics.host_retained_alloc_delta;
+    if (std.mem.eql(u8, name, "host_retained_bytes_delta")) return metrics.host_retained_bytes_delta;
+    return null;
+}
+
 /// Builds the semantic spec runner for a host adapter and its observable DOM surface.
 pub fn Runner(comptime Ctx: type) type {
+    ctx.assertRunnerCtx(Ctx);
     return struct {
         const Host = Ctx.Host;
         const RocHost = Ctx.RocHost;
@@ -432,7 +503,7 @@ pub fn Runner(comptime Ctx: type) type {
                     .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result, .manual_effects => {},
 
                     .set_visibility => |text| {
-                        if (comptime !@hasDecl(Ctx, "setVisibility")) {
+                        if (comptime !Ctx.capabilities.environment) {
                             writeLocatorFailure(cmd.line_num, "visibility commands are not supported by this runner");
                             return 1;
                         } else {
@@ -443,7 +514,7 @@ pub fn Runner(comptime Ctx: type) type {
                     },
 
                     .set_online => |text| {
-                        if (comptime !@hasDecl(Ctx, "setOnline")) {
+                        if (comptime !Ctx.capabilities.environment) {
                             writeLocatorFailure(cmd.line_num, "online commands are not supported by this runner");
                             return 1;
                         } else {
@@ -624,7 +695,7 @@ pub fn Runner(comptime Ctx: type) type {
                     },
 
                     .request_window_close => {
-                        if (@hasDecl(Ctx, "requestWindowClose")) {
+                        if (comptime Ctx.capabilities.window) {
                             Ctx.requestWindowClose(host, roc_host);
                         } else {
                             writeLocatorFailure(cmd.line_num, "window close requires the native GUI semantic host");
@@ -632,7 +703,7 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
                     .expect_window_closed => |expected| {
-                        if (@hasDecl(Ctx, "windowClosed")) {
+                        if (comptime Ctx.capabilities.window) {
                             if (Ctx.windowClosed(host) != expected) {
                                 writeLocatorFailure(cmd.line_num, "window closed state differs from expected");
                                 return 1;
@@ -794,7 +865,7 @@ pub fn Runner(comptime Ctx: type) type {
                     },
 
                     .stub_file_result => |stub| {
-                        if (comptime !@hasDecl(Ctx, "stubFileResult")) {
+                        if (comptime !Ctx.capabilities.effect_fixtures) {
                             writeLocatorFailure(cmd.line_num, "file stubs are not supported by this runner");
                             return 1;
                         }
@@ -802,14 +873,14 @@ pub fn Runner(comptime Ctx: type) type {
                     },
 
                     .stub_http_result => |stub| {
-                        if (comptime !@hasDecl(Ctx, "stubHttpResult")) {
+                        if (comptime !Ctx.capabilities.effect_fixtures) {
                             writeLocatorFailure(cmd.line_num, "http stubs are not supported by this runner");
                             return 1;
                         }
                         Ctx.stubHttpResult(host, &stub.stub);
                     },
                     .run_effect => |occurrence| {
-                        if (comptime @hasDecl(Ctx, "runSpecEffect")) {
+                        if (comptime Ctx.capabilities.manual_effects) {
                             if (!Ctx.runSpecEffect(host, roc_host, occurrence)) {
                                 var buffer: [192]u8 = undefined;
                                 const message = std.fmt.bufPrint(&buffer, "effect occurrence {d} is not pending or manual mode is disabled", .{occurrence}) catch unreachable;
@@ -822,7 +893,7 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
                     .expect_pending_effects => |expected| {
-                        if (comptime @hasDecl(Ctx, "pendingEffectCount")) {
+                        if (comptime Ctx.capabilities.manual_effects) {
                             const actual = Ctx.pendingEffectCount(host);
                             if (actual != expected) {
                                 var buffer: [192]u8 = undefined;
@@ -1038,7 +1109,7 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
                 }
-                if (comptime @hasDecl(Ctx, "traceAllocationCheckpoint")) {
+                if (comptime Ctx.capabilities.allocation_trace) {
                     Ctx.traceAllocationCheckpoint(host, cmd.line_num, @tagName(cmd.step));
                 }
             }
@@ -1048,71 +1119,6 @@ pub fn Runner(comptime Ctx: type) type {
             }
 
             return 0;
-        }
-
-        fn u64MetricAsI64(value: u64) i64 {
-            return std.math.cast(i64, value) orelse Ctx.fail("runtime metric exceeded signed assertion range");
-        }
-
-        fn runtimeMetricValue(metrics: RuntimeMetrics, name: []const u8) ?i64 {
-            if (std.mem.eql(u8, name, "active_graph_records_rebuilt")) return u64MetricAsI64(metrics.active_graph_records_rebuilt);
-            if (std.mem.eql(u8, name, "active_intervals_synced")) return u64MetricAsI64(metrics.active_intervals_synced);
-            if (std.mem.eql(u8, name, "reset_dom")) return u64MetricAsI64(metrics.reset_dom);
-            if (std.mem.eql(u8, name, "create_element")) return u64MetricAsI64(metrics.create_element);
-            if (std.mem.eql(u8, name, "append_child")) return u64MetricAsI64(metrics.append_child);
-            if (std.mem.eql(u8, name, "remove_node")) return u64MetricAsI64(metrics.remove_node);
-            if (std.mem.eql(u8, name, "move_before")) return u64MetricAsI64(metrics.move_before);
-            if (std.mem.eql(u8, name, "set_text")) return u64MetricAsI64(metrics.set_text);
-            if (std.mem.eql(u8, name, "set_value")) return u64MetricAsI64(metrics.set_value);
-            if (std.mem.eql(u8, name, "set_checked")) return u64MetricAsI64(metrics.set_checked);
-            if (std.mem.eql(u8, name, "set_disabled")) return u64MetricAsI64(metrics.set_disabled);
-            if (std.mem.eql(u8, name, "set_metadata")) return u64MetricAsI64(metrics.set_metadata);
-            if (std.mem.eql(u8, name, "bind_event")) return u64MetricAsI64(metrics.bind_event);
-            if (std.mem.eql(u8, name, "allocs_this_event")) return u64MetricAsI64(metrics.allocs_this_event);
-            if (std.mem.eql(u8, name, "deallocs_this_event")) return u64MetricAsI64(metrics.deallocs_this_event);
-            if (std.mem.eql(u8, name, "host_allocs_this_event")) return u64MetricAsI64(metrics.host_allocs_this_event);
-            if (std.mem.eql(u8, name, "host_deallocs_this_event")) return u64MetricAsI64(metrics.host_deallocs_this_event);
-            if (std.mem.eql(u8, name, "host_alloc_bytes_this_event")) return u64MetricAsI64(metrics.host_alloc_bytes_this_event);
-            if (std.mem.eql(u8, name, "host_dealloc_bytes_this_event")) return u64MetricAsI64(metrics.host_dealloc_bytes_this_event);
-            if (std.mem.eql(u8, name, "events_processed")) return u64MetricAsI64(metrics.events_processed);
-            if (std.mem.eql(u8, name, "dirty_source_roots")) return u64MetricAsI64(metrics.dirty_source_roots);
-            if (std.mem.eql(u8, name, "propagation_prunes")) return u64MetricAsI64(metrics.propagation_prunes);
-            if (std.mem.eql(u8, name, "derived_calls_into_roc")) return u64MetricAsI64(metrics.derived_calls_into_roc);
-            if (std.mem.eql(u8, name, "each_key_compares")) return u64MetricAsI64(metrics.each_key_compares);
-            if (std.mem.eql(u8, name, "each_key_hashes")) return u64MetricAsI64(metrics.each_key_hashes);
-            if (std.mem.eql(u8, name, "each_key_reuse_compares")) return u64MetricAsI64(metrics.each_key_reuse_compares);
-            if (std.mem.eql(u8, name, "each_key_duplicate_compares")) return u64MetricAsI64(metrics.each_key_duplicate_compares);
-            if (std.mem.eql(u8, name, "each_item_compares")) return u64MetricAsI64(metrics.each_item_compares);
-            if (std.mem.eql(u8, name, "each_syncs")) return u64MetricAsI64(metrics.each_syncs);
-            if (std.mem.eql(u8, name, "each_sync_keys")) return u64MetricAsI64(metrics.each_sync_keys);
-            if (std.mem.eql(u8, name, "each_sync_existing_rows")) return u64MetricAsI64(metrics.each_sync_existing_rows);
-            if (std.mem.eql(u8, name, "recompute_batches")) return u64MetricAsI64(metrics.recompute_batches);
-            if (std.mem.eql(u8, name, "patches_emitted")) return u64MetricAsI64(metrics.patches_emitted);
-            if (std.mem.eql(u8, name, "scopes_created")) return u64MetricAsI64(metrics.scopes_created);
-            if (std.mem.eql(u8, name, "scopes_disposed")) return u64MetricAsI64(metrics.scopes_disposed);
-            if (std.mem.eql(u8, name, "rows_reused")) return u64MetricAsI64(metrics.rows_reused);
-            if (std.mem.eql(u8, name, "selector_members_dirtied")) return u64MetricAsI64(metrics.selector_members_dirtied);
-            if (std.mem.eql(u8, name, "rows_created")) return u64MetricAsI64(metrics.rows_created);
-            if (std.mem.eql(u8, name, "rows_order_links_touched")) return u64MetricAsI64(metrics.rows_order_links_touched);
-            if (std.mem.eql(u8, name, "rows_removed")) return u64MetricAsI64(metrics.rows_removed);
-            if (std.mem.eql(u8, name, "rows_render_roots_moved")) return u64MetricAsI64(metrics.rows_render_roots_moved);
-            if (std.mem.eql(u8, name, "closure_retains")) return u64MetricAsI64(metrics.closure_retains);
-            if (std.mem.eql(u8, name, "closure_releases")) return u64MetricAsI64(metrics.closure_releases);
-            if (std.mem.eql(u8, name, "render_indexes_refreshed")) return u64MetricAsI64(metrics.render_indexes_refreshed);
-            if (std.mem.eql(u8, name, "signal_record_table_rebuilt")) return u64MetricAsI64(metrics.signal_record_table_rebuilt);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned")) return u64MetricAsI64(metrics.stream_nodes_scanned);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_apply")) return u64MetricAsI64(metrics.stream_nodes_scanned_apply);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_children")) return u64MetricAsI64(metrics.stream_nodes_scanned_children);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_dirty_scope")) return u64MetricAsI64(metrics.stream_nodes_scanned_dirty_scope);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_events")) return u64MetricAsI64(metrics.stream_nodes_scanned_events);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_mounts")) return u64MetricAsI64(metrics.stream_nodes_scanned_mounts);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_remove_target")) return u64MetricAsI64(metrics.stream_nodes_scanned_remove_target);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_render_scope")) return u64MetricAsI64(metrics.stream_nodes_scanned_render_scope);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_splice")) return u64MetricAsI64(metrics.stream_nodes_scanned_splice);
-            if (std.mem.eql(u8, name, "retained_alloc_delta")) return metrics.retained_alloc_delta;
-            if (std.mem.eql(u8, name, "host_retained_alloc_delta")) return metrics.host_retained_alloc_delta;
-            if (std.mem.eql(u8, name, "host_retained_bytes_delta")) return metrics.host_retained_bytes_delta;
-            return null;
         }
 
         fn encodeKeyShiftPayload(allocator: std.mem.Allocator, key: []const u8, shift_key: bool) []u8 {
@@ -2066,24 +2072,11 @@ test "spec runner submit dispatches enabled unit bindings" {
 }
 
 test "spec runner resolves runtime metric names" {
-    const TestCtx = struct {
-        pub const Host = void;
-        pub const RocHost = void;
-
-        /// Terminates this test or host path because continuing could leave runtime meaning incoherent.
-        pub fn fail(_: []const u8) noreturn {
-            unreachable;
-        }
-
-        /// Writes a diagnostic directly to standard error without entering application semantics.
-        pub fn writeStderr(_: []const u8) void {}
-    };
-    const TestRunner = Runner(TestCtx);
     var metrics = engine.zeroRuntimeMetrics();
     metrics.rows_reused = 7;
     metrics.retained_alloc_delta = -2;
 
-    try std.testing.expectEqual(@as(?i64, 7), TestRunner.runtimeMetricValue(metrics, "rows_reused"));
-    try std.testing.expectEqual(@as(?i64, -2), TestRunner.runtimeMetricValue(metrics, "retained_alloc_delta"));
-    try std.testing.expectEqual(@as(?i64, null), TestRunner.runtimeMetricValue(metrics, "missing_metric"));
+    try std.testing.expectEqual(@as(?i64, 7), runtimeMetricValue(metrics, "rows_reused"));
+    try std.testing.expectEqual(@as(?i64, -2), runtimeMetricValue(metrics, "retained_alloc_delta"));
+    try std.testing.expectEqual(@as(?i64, null), runtimeMetricValue(metrics, "missing_metric"));
 }
