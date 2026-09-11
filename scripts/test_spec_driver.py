@@ -219,3 +219,21 @@ class SpecDriverTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpecFormTests(unittest.TestCase):
+    """Window scenarios share the specs directory; discovery must tell them apart."""
+
+    def test_discovery_names_each_form_and_selection_defaults_to_display_free_specs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "a.scm").write_text('(test "a" (steps (expect-visible (text "x"))))\n')
+            (root / "b.scm").write_text('; window\n\n(scenario "b" :window "800x600" (steps (wait 1)))\n')
+            (root / "c.scm").write_text('(bogus)\n')
+            cases = spec_driver.discover_specs(root)
+            self.assertEqual([(case.id, case.form) for case in cases],
+                             [("a.scm", "test"), ("b.scm", "scenario"), ("c.scm", "unknown")])
+            self.assertEqual([case.id for case in spec_driver.select_specs(cases)], ["a.scm"])
+            self.assertEqual([case.id for case in spec_driver.select_specs(cases, form="scenario")],
+                             ["b.scm"])
+            self.assertEqual(len(spec_driver.select_specs(cases, form=None)), 3)

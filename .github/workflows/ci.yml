@@ -84,7 +84,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: gui-scenario-reports
-          path: .test-out/gui-regression
+          path: .test-out/gui-scenarios
           if-no-files-found: ignore
 
   gui-windows:

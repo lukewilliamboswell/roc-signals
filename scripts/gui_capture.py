@@ -57,7 +57,7 @@ def window(helper: Path, pid: int, deadline: float) -> tuple[str, int, int]:
         time.sleep(0.2)
 
 
-def capture(executable: Path, destination: Path, size: str, settle: float,
+def capture(executable: Path, destination: Path, size: str | None, settle: float,
             arguments=(), environment=None, timeout: float = 30.0, ready=None) -> Path:
     """Runs one application, captures its window, and stops it again.
 
@@ -65,20 +65,32 @@ def capture(executable: Path, destination: Path, size: str, settle: float,
     startup: the capture waits for it to return true before settling. A driven
     application is normally still running when it becomes ready, so the wait is
     bounded by the same deadline as the window itself.
+
+    ``size`` is the ``--host-window-size`` to request. When it is ``None`` the
+    application sizes its own window — a scenario's header does — and ``ready``
+    must then return the ``WIDTHxHEIGHT`` the run reported, so the capture is
+    still refused when the window does not match what was asked for.
     """
     helper = locator()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    command = [str(executable.resolve()), "--host-window-size", size, *arguments]
+    command = [str(executable.resolve()), *arguments]
+    if size is not None:
+        command[1:1] = ["--host-window-size", size]
     print("==> " + " ".join(command), flush=True)
     application = subprocess.Popen(command, env=environment,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         deadline = time.monotonic() + timeout
         identifier, width, height = window(helper, application.pid, deadline)
-        while ready is not None and not ready():
+        reported = None
+        while ready is not None and not (reported := ready()):
             if time.monotonic() >= deadline:
                 raise SystemExit(f"{executable.name} never reached the state to capture")
             time.sleep(0.2)
+        if size is None:
+            if not isinstance(reported, str):
+                raise SystemExit("a capture without --host-window-size needs the run to report its size")
+            size = reported
         requested = tuple(int(part) for part in size.lower().split("x"))
         # The recorded window frame includes the titlebar and can differ from the
         # requested content size by a few points of client decoration, but a

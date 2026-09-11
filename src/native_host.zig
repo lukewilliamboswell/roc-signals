@@ -3875,6 +3875,13 @@ comptime {
             @export(&Gpui.effectSize, .{ .name = "signals_effect_size" });
             @export(&Gpui.nextEffect, .{ .name = "signals_effect_next" });
             @export(&Gpui.taskResult, .{ .name = "signals_task_result" });
+            @export(&Gpui.scenarioOpen, .{ .name = "signals_scenario_open" });
+            @export(&Gpui.scenarioHeader, .{ .name = "signals_scenario_header" });
+            @export(&Gpui.scenarioChoice, .{ .name = "signals_scenario_choice" });
+            @export(&Gpui.scenarioScope, .{ .name = "signals_scenario_scope" });
+            @export(&Gpui.scenarioCount, .{ .name = "signals_scenario_count" });
+            @export(&Gpui.scenarioCommand, .{ .name = "signals_scenario_command" });
+            @export(&Gpui.scenarioClose, .{ .name = "signals_scenario_close" });
         } else @export(&main, .{ .name = "main" });
         if (@import("builtin").os.tag == .windows) {
             @export(&__main, .{ .name = "__main" });
@@ -4148,6 +4155,22 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
         return 2;
     };
     defer allocator.free(parsed_spec.name);
+    if (parsed_spec.scenario) |scenario| {
+        // A scenario needs a real window: layout bounds, native editor
+        // history, the platform's own close path. This host has none of them,
+        // and pretending would report a pass for evidence it never gathered.
+        scenario.deinit(allocator);
+        spec_parser.freeSpecCommands(allocator, parsed_spec.commands);
+        writeStderr("Error: this file is a (scenario ...); run it against a window with --host-scenario\n");
+        if (result_json) writeSpecJsonResult(.{
+            .id = spec_file,
+            .name = spec_file,
+            .status = "error",
+            .duration_ns = benchmark.nowNs() - started_ns,
+            .failure = .{ .phase = "parse", .kind = "window_scenario", .message = "window scenarios run through the GUI host" },
+        });
+        return 2;
+    }
     host_env.test_state.commands = parsed_spec.commands;
     host_env.test_state.commands_allocator = allocator;
     host_env.test_state.verbose = verbose;
@@ -12721,6 +12744,135 @@ const Gpui = struct {
     var host: HostEnv = undefined;
     var roc_host: abi.RocHost = undefined;
     var live = false;
+
+    // A window scenario is parsed by the same spec parser as every other spec,
+    // then read by the Rust host one command at a time. The parsed spec lives
+    // here, on its own allocator, so it neither depends on nor outlives a
+    // mounted runtime: a scenario is opened before mount and closed after the
+    // report is written. Every slice handed out borrows this storage.
+    var scenario_gpa: std.heap.DebugAllocator(.{ .safety = true }) = .init;
+    var scenario_spec: ?spec_parser.ParsedTestSpec = null;
+
+    /// The header of an opened scenario. Slices borrow the parsed spec; a
+    /// zero-length assets or diagnostic slice means the header did not name one.
+    const RawScenario = extern struct {
+        name: Slice,
+        window_width: u32,
+        window_height: u32,
+        assets: Slice,
+        choices: usize,
+        diagnostic: Slice,
+        scopes: usize,
+    };
+    /// One parsed step, self-describing: `kind` and `locator_kind` carry the
+    /// enum tag names rather than their numbering, so the Rust reader and this
+    /// writer never have to agree on an ordinal. Optional numbers travel with a
+    /// presence flag; absent strings are zero-length slices.
+    const RawCommand = extern struct {
+        kind: Slice,
+        line: u64,
+        locator_kind: Slice,
+        role: Slice,
+        name: Slice,
+        label: Slice,
+        text: Slice,
+        test_id: Slice,
+        expected_text: Slice,
+        task_name: Slice,
+        expected_count: u64,
+        has_count: u32,
+        expected_bool: u32,
+        has_bool: u32,
+        interval_ms: u64,
+        has_interval: u32,
+        shortcut_key: u32,
+        shortcut_modifiers: u32,
+        has_shortcut: u32,
+    };
+    fn optionalSlice(value: ?[]const u8) Slice {
+        return Slice.from(value orelse "");
+    }
+    /// Parses a scenario file. Returns 0 on success, 1 for a missing file, 2
+    /// for a malformed spec, 3 for a file that is a (test ...) rather than a
+    /// (scenario ...), and 4 for any other read failure. Only one scenario is
+    /// open at a time; opening another closes the first.
+    fn scenarioOpen(path: Slice) callconv(.c) u32 {
+        scenarioClose();
+        const allocator = scenario_gpa.allocator();
+        const parsed = spec_parser.parseTestSpecFile(allocator, path.ptr[0..path.len]) catch |err| return switch (err) {
+            ParseError.FileNotFound => 1,
+            ParseError.InvalidFormat => 2,
+            else => 4,
+        };
+        if (parsed.scenario == null) {
+            parsed.deinit(allocator);
+            return 3;
+        }
+        scenario_spec = parsed;
+        return 0;
+    }
+    fn openScenario() *const spec_parser.ParsedTestSpec {
+        if (scenario_spec) |*spec| return spec;
+        failHost("scenario read before it was opened");
+    }
+    fn scenarioHeader(out: *RawScenario) callconv(.c) void {
+        const spec = openScenario();
+        const header = spec.scenario.?;
+        out.* = .{
+            .name = Slice.from(spec.name),
+            .window_width = header.window_width,
+            .window_height = header.window_height,
+            .assets = optionalSlice(header.assets),
+            .choices = header.choices.len,
+            .diagnostic = optionalSlice(header.diagnostic),
+            .scopes = header.on.len,
+        };
+    }
+    fn scenarioChoice(index: usize, out: *Slice) callconv(.c) void {
+        const header = openScenario().scenario.?;
+        if (index >= header.choices.len) failHost("scenario choice index out of range");
+        out.* = Slice.from(header.choices[index]);
+    }
+    fn scenarioScope(index: usize, out: *Slice) callconv(.c) void {
+        const header = openScenario().scenario.?;
+        if (index >= header.on.len) failHost("scenario scope index out of range");
+        out.* = Slice.from(header.on[index]);
+    }
+    fn scenarioCount() callconv(.c) usize {
+        return openScenario().commands.len;
+    }
+    fn scenarioCommand(index: usize, out: *RawCommand) callconv(.c) void {
+        const spec = openScenario();
+        if (index >= spec.commands.len) failHost("scenario command index out of range");
+        const cmd = spec.commands[index];
+        out.* = .{
+            .kind = Slice.from(@tagName(cmd.cmd_type)),
+            .line = cmd.line_num,
+            .locator_kind = Slice.from(@tagName(cmd.locator.kind)),
+            .role = optionalSlice(cmd.locator.role),
+            .name = optionalSlice(cmd.locator.name),
+            .label = optionalSlice(cmd.locator.label),
+            .text = optionalSlice(cmd.locator.text),
+            .test_id = optionalSlice(cmd.locator.test_id),
+            .expected_text = optionalSlice(cmd.expected_text),
+            .task_name = optionalSlice(cmd.task_name),
+            .expected_count = cmd.expected_count orelse 0,
+            .has_count = @intFromBool(cmd.expected_count != null),
+            .expected_bool = @intFromBool(cmd.expected_bool orelse false),
+            .has_bool = @intFromBool(cmd.expected_bool != null),
+            .interval_ms = cmd.interval_ms orelse 0,
+            .has_interval = @intFromBool(cmd.interval_ms != null),
+            .shortcut_key = if (cmd.shortcut) |chord| chord.key else 0,
+            .shortcut_modifiers = if (cmd.shortcut) |chord| chord.modifiers else 0,
+            .has_shortcut = @intFromBool(cmd.shortcut != null),
+        };
+    }
+    fn scenarioClose() callconv(.c) void {
+        if (scenario_spec) |spec| {
+            spec.deinit(scenario_gpa.allocator());
+            scenario_spec = null;
+        }
+    }
     var tasks: NativeTaskQueue = .{};
     var timers: native_timers.Registry = .{};
     var child_order: signals.native_child_order.Tree = undefined;

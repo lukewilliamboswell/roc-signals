@@ -1,46 +1,57 @@
-//! Scripted interaction checks against a running GUI example.
+//! Window scenarios: spec steps executed against a running GUI example.
 //!
 //! The maintained semantic specs run the engine without a presentation layer, so
 //! they cannot see a control that GPUI laid out beyond the window, a dialog that
 //! does not fit, or a native editor that kept the previous document's history.
 //! `--host-smoke` covered the opposite extreme: one window, one click, one assertion.
 //!
-//! A script sits between them. It names controls the way the application names
-//! them — by `test_id`, or by the label a person would read — and never by pixel
-//! coordinates, so the checks survive layout work. Each step runs against the
-//! real window with the real key dispatch, engine propagation and dialog
-//! admission rules, and every observation is written to a JSON report so a
-//! failure leaves evidence behind instead of only an exit code.
+//! A `(scenario ...)` sits between them. It is written in the same spec language
+//! as every `(test ...)`, parsed by the same engine parser, and names controls
+//! the way the application names them — by `test_id`, or by the label a person
+//! would read — never by pixel coordinates, so the checks survive layout work.
+//! Each step runs against the real window with the real key dispatch, engine
+//! propagation and dialog admission rules, and every observation is written to
+//! a JSON report so a failure leaves evidence behind instead of only an exit code.
 //!
-//! Presentation assertions (`expect-onscreen`) are deliberately a different
-//! vocabulary from the native semantic assertions in `examples-gui/*/specs`:
-//! this file must not grow into a second, weaker copy of the spec language.
+//! This module owns no grammar. It decodes the engine's parsed commands into
+//! window actions, refuses the ones a window cannot honour, and keeps the
+//! presentation-only vocabulary (`expect-onscreen`, `expect-history`, `close`)
+//! that the display-free runner refuses in turn.
 
+use crate::bridge::{Command, Scenario};
 use crate::probe;
 use std::fmt::Write as _;
 
 /// How a step names the control it acts on.
+///
+/// The spec language's four locator forms collapse to two questions a rendered
+/// frame can answer: a `(test-id ...)` names one control exactly, and a
+/// `(role ... :name ...)`, `(label ...)` or `(text ...)` names it by the text a
+/// person reads — which the resolver then narrows by what the step is about.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Locator {
-    /// The application's own `test_id`, written `#identifier`.
+    /// The application's own `test_id`.
     TestId(String),
     /// Visible text, on the control itself or on one of its children.
     Text(String),
 }
 
 impl Locator {
-    fn parse(word: &str) -> Self {
-        match word.strip_prefix('#') {
-            Some(id) => Locator::TestId(id.to_string()),
-            None => Locator::Text(word.to_string()),
-        }
-    }
-
     /// How this locator should be named in a failure message.
     pub(crate) fn describe(&self) -> String {
         match self {
-            Locator::TestId(id) => format!("#{id}"),
+            Locator::TestId(id) => format!("(test-id {id:?})"),
             Locator::Text(text) => format!("{text:?}"),
+        }
+    }
+
+    fn decode(command: &Command) -> Result<Self, String> {
+        match command.locator_kind.as_str() {
+            "test_id" => Ok(Locator::TestId(command.test_id.clone())),
+            "role_name" => Ok(Locator::Text(command.name.clone())),
+            "label" => Ok(Locator::Text(command.label.clone())),
+            "text" => Ok(Locator::Text(command.text.clone())),
+            other => Err(format!("{} needs a locator, got {other}", command.kind)),
         }
     }
 }
@@ -58,10 +69,12 @@ pub(crate) enum Action {
     Type(Locator, String),
     /// Dispatch one keystroke, written the way GPUI writes bindings.
     Key(String),
-    /// Require some rendered control to carry exactly this text.
-    ExpectText(String),
-    /// Require no rendered control to carry this text.
-    ExpectMissing(String),
+    /// Require a control to be rendered.
+    ExpectVisible(Locator),
+    /// Require no rendered control to answer to a locator.
+    ExpectAbsent(Locator),
+    /// Require a control to carry exactly this text.
+    ExpectText(Locator, String),
     /// Require an editor's current value.
     ExpectValue(Locator, String),
     /// Require a control to be present and disabled, or present and enabled.
@@ -78,136 +91,115 @@ pub(crate) enum Action {
     ExpectHistory(Locator, usize),
     /// Record the rendered tree under a name, for evidence rather than assertion.
     Snapshot(String),
-    /// Close the window through the platform's ordinary close path. It must be
-    /// the last step: the runtime is gone once the window is, so nothing after
-    /// it could be observed.
+    /// Close the window through the platform's ordinary close path.
     Close,
 }
 
-/// A parsed step, keeping its source line so a failure can be located.
+/// A decoded step, keeping its source line so a failure can be located.
 #[derive(Clone, Debug)]
 pub(crate) struct Step {
     pub(crate) line: usize,
     pub(crate) action: Action,
 }
 
-/// Parses a script: one step per line, `#` comments and blank lines ignored.
+/// Decodes every step of a parsed scenario, refusing any the window cannot honour.
 ///
-/// Arguments are separated by whitespace except for the trailing text of `type`,
-/// `expect-text`, `expect-missing` and `expect-value`, which is taken verbatim to
-/// the end of the line so that labels containing spaces need no quoting.
-pub(crate) fn parse(source: &str) -> Result<Vec<Step>, String> {
-    let mut steps = Vec::new();
-    for (index, raw) in source.lines().enumerate() {
-        let line = index + 1;
-        let text = raw.trim();
-        if text.is_empty() || text.starts_with('#') {
-            continue;
-        }
-        let (verb, rest) = match text.split_once(char::is_whitespace) {
-            Some((verb, rest)) => (verb, rest.trim()),
-            None => (text, ""),
-        };
-        let action = parse_action(verb, rest).map_err(|error| format!("line {line}: {error}"))?;
-        steps.push(Step { line, action });
-    }
-    if steps.is_empty() {
-        return Err("a script must contain at least one step".into());
-    }
-    if let Some(position) = steps
+/// The parser has already kept fixtures and pre-mount setup out of a scenario.
+/// What is refused here is the display-free vocabulary that has no window
+/// meaning — `fill` sets a value without the keyboard, pointer phases and
+/// composition are simulated-DOM events — with the window step to use instead.
+pub(crate) fn steps(scenario: &Scenario) -> Result<Vec<Step>, String> {
+    scenario
+        .commands
         .iter()
-        .position(|step| step.action == Action::Close)
-        .filter(|position| position + 1 != steps.len())
-    {
-        return Err(format!(
-            "line {}: close must be the last step",
-            steps[position].line
-        ));
-    }
-    Ok(steps)
+        .map(|command| {
+            decode(command)
+                .map(|action| Step {
+                    line: command.line as usize,
+                    action,
+                })
+                .map_err(|error| format!("line {}: {error}", command.line))
+        })
+        .collect()
 }
 
-/// Splits a locator off the front of a step's arguments.
-///
-/// A visible label is usually several words ("Move to In progress"), so a
-/// locator may be quoted. Unquoted locators stop at the first space, which
-/// keeps the common `#test-id` case free of punctuation.
-fn split_locator(rest: &str) -> Result<(Locator, &str), String> {
-    if let Some(quoted) = rest.strip_prefix('"') {
-        let (label, tail) = quoted
-            .split_once('"')
-            .ok_or("a quoted locator needs a closing quote")?;
-        if label.is_empty() {
-            return Err("expected a #test-id or a visible label".into());
-        }
-        return Ok((Locator::Text(label.to_string()), tail.trim()));
-    }
-    let (word, tail) = match rest.split_once(char::is_whitespace) {
-        Some((word, tail)) => (word, tail.trim()),
-        None => (rest, ""),
+fn decode(command: &Command) -> Result<Action, String> {
+    let locator = || Locator::decode(command);
+    let count = || {
+        command
+            .expected_count
+            .map(|value| value as usize)
+            .ok_or_else(|| format!("{} needs a count", command.kind))
     };
-    if word.is_empty() {
-        return Err("expected a #test-id or a visible label".into());
-    }
-    Ok((Locator::parse(word), tail))
-}
-
-fn parse_action(verb: &str, rest: &str) -> Result<Action, String> {
-    match verb {
-        "wait" => rest
-            .parse()
-            .map(Action::Wait)
-            .map_err(|_| format!("wait expects milliseconds, got {rest:?}")),
-        "click" => Ok(Action::Click(split_locator(rest)?.0)),
-        "focus" => Ok(Action::Focus(split_locator(rest)?.0)),
-        "key" => (!rest.is_empty())
-            .then(|| Action::Key(rest.to_string()))
-            .ok_or_else(|| "key expects a keystroke".into()),
-        "type" => {
-            let (locator, text) = split_locator(rest)?;
-            Ok(Action::Type(locator, text.to_string()))
-        }
-        "expect-text" => Ok(Action::ExpectText(rest.to_string())),
-        "expect-missing" => Ok(Action::ExpectMissing(rest.to_string())),
-        "expect-value" => {
-            let (locator, value) = split_locator(rest)?;
-            Ok(Action::ExpectValue(locator, value.to_string()))
-        }
-        "expect-disabled" => Ok(Action::ExpectDisabled(split_locator(rest)?.0, true)),
-        "expect-enabled" => Ok(Action::ExpectDisabled(split_locator(rest)?.0, false)),
-        "expect-selected" => Ok(Action::ExpectSelected(split_locator(rest)?.0, true)),
-        "expect-unselected" => Ok(Action::ExpectSelected(split_locator(rest)?.0, false)),
-        "expect-focused" => Ok(Action::ExpectFocused(split_locator(rest)?.0)),
-        "expect-count" => {
-            let (prefix, count) = rest
-                .rsplit_once(char::is_whitespace)
-                .ok_or("expect-count expects a test-id prefix and a count")?;
-            let count = count
-                .trim()
-                .parse()
-                .map_err(|_| format!("expect-count expects a count, got {count:?}"))?;
-            Ok(Action::ExpectCount(
-                prefix.trim().trim_start_matches('#').to_string(),
-                count,
+    let flag = || {
+        command
+            .expected_bool
+            .ok_or_else(|| format!("{} needs true or false", command.kind))
+    };
+    Ok(match command.kind.as_str() {
+        "wait" => Action::Wait(
+            command
+                .interval_ms
+                .ok_or("wait expects milliseconds")?,
+        ),
+        "click" => Action::Click(locator()?),
+        "focus" => Action::Focus(locator()?),
+        "type_text" => Action::Type(locator()?, command.expected_text.clone()),
+        "key" => Action::Key(command.expected_text.clone()),
+        "shortcut" => Action::Key(chord_keystroke(
+            command
+                .shortcut
+                .ok_or("shortcut expects a key and modifiers")?,
+        )?),
+        "expect_visible" => Action::ExpectVisible(locator()?),
+        "expect_absent" => Action::ExpectAbsent(locator()?),
+        "expect_text" => Action::ExpectText(locator()?, command.expected_text.clone()),
+        "expect_value" => Action::ExpectValue(locator()?, command.expected_text.clone()),
+        "expect_disabled" => Action::ExpectDisabled(locator()?, flag()?),
+        "expect_selected" => Action::ExpectSelected(locator()?, flag()?),
+        "expect_focused" => Action::ExpectFocused(locator()?),
+        "expect_count" => Action::ExpectCount(command.expected_text.clone(), count()?),
+        "expect_onscreen" => Action::ExpectOnscreen(locator()?),
+        "expect_history" => Action::ExpectHistory(locator()?, count()?),
+        "snapshot" => Action::Snapshot(command.expected_text.clone()),
+        "close" => Action::Close,
+        "fill" => return Err("fill sets a value without the keyboard; a window scenario types with (type ...)".into()),
+        "real_click" => return Err("real_click is the simulated pointer; a window scenario uses (click ...)".into()),
+        other => {
+            return Err(format!(
+                "{other} has no meaning against a real window; it belongs in a (test ...)"
             ))
         }
-        "expect-onscreen" => Ok(Action::ExpectOnscreen(split_locator(rest)?.0)),
-        "expect-history" => {
-            let (locator, depth) = split_locator(rest)?;
-            let depth = depth
-                .parse()
-                .map_err(|_| format!("expect-history expects a count, got {depth:?}"))?;
-            Ok(Action::ExpectHistory(locator, depth))
+    })
+}
+
+/// Spells an engine key chord the way GPUI writes a binding, so a spec's
+/// `(shortcut ...)` dispatches the same keystroke a person's chord would.
+fn chord_keystroke((key, modifiers): (u32, u32)) -> Result<String, String> {
+    const NAMED: [&str; 26] = [
+        "enter", "escape", "tab", "space", "left", "right", "up", "down", "home", "end",
+        "pageup", "pagedown", "backspace", "delete", "f1", "f2", "f3", "f4", "f5", "f6", "f7",
+        "f8", "f9", "f10", "f11", "f12",
+    ];
+    let key = if key >= 256 {
+        NAMED
+            .get((key - 256) as usize)
+            .map(|name| name.to_string())
+            .ok_or_else(|| format!("unknown named key {key}"))?
+    } else {
+        char::from_u32(key)
+            .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            .map(|c| c.to_string())
+            .ok_or_else(|| format!("unknown key {key}"))?
+    };
+    let mut spelled = String::new();
+    for (bit, name) in [(1, "ctrl-"), (2, "shift-"), (4, "alt-"), (8, "cmd-")] {
+        if modifiers & bit != 0 {
+            spelled.push_str(name);
         }
-        "close" => rest
-            .is_empty()
-            .then_some(Action::Close)
-            .ok_or_else(|| "close takes no arguments".to_string()),
-        "snapshot" => (!rest.is_empty())
-            .then(|| Action::Snapshot(rest.to_string()))
-            .ok_or_else(|| "snapshot expects a name".into()),
-        other => Err(format!("unknown step {other:?}")),
     }
+    spelled.push_str(&key);
+    Ok(spelled)
 }
 
 /// The observation a `Locator` needs from the rendered tree.
@@ -337,7 +329,7 @@ fn resolve_within<'a>(
     Some(match preferred.as_slice() {
         [only] => Ok(**only),
         several => Err(format!(
-            "{} matches {} rendered controls; name one with a #test-id",
+            "{} matches {} rendered controls; name one with (test-id ...)",
             locator.describe(),
             several.len()
         )),
@@ -355,16 +347,32 @@ fn interactive(control: &Control) -> bool {
 /// pure so that the assertion vocabulary can be tested without a window.
 pub(crate) fn check(frame: &[Control], action: &Action) -> Result<(), String> {
     match action {
-        Action::ExpectText(text) => frame
+        // Visibility asks whether anything answers to the name; two controls
+        // answering is still visible, so this is the one locator use that is
+        // not an ambiguity error.
+        Action::ExpectVisible(locator) => frame
             .iter()
-            .any(|control| control.text == *text || control.label == *text)
+            .any(|control| control.matches(locator))
             .then_some(())
-            .ok_or_else(|| format!("no rendered control shows {text:?}")),
-        Action::ExpectMissing(text) => frame
+            .ok_or_else(|| format!("no rendered control matches {}", locator.describe())),
+        Action::ExpectAbsent(locator) => frame
             .iter()
-            .all(|control| control.text != *text && control.label != *text)
+            .all(|control| !control.matches(locator))
             .then_some(())
-            .ok_or_else(|| format!("{text:?} is still rendered")),
+            .ok_or_else(|| format!("{} is still rendered", locator.describe())),
+        Action::ExpectText(locator, text) => {
+            let control = resolve(frame, locator)?;
+            let shown = if control.text.is_empty() {
+                control.child_text.join("")
+            } else {
+                control.text.clone()
+            };
+            (shown == *text || control.label == *text)
+                .then_some(())
+                .ok_or_else(|| {
+                    format!("{} shows {shown:?}, expected {text:?}", locator.describe())
+                })
+        }
         Action::ExpectValue(locator, value) => {
             let control = resolve_preferring(frame, locator, |c| c.history.is_some())?;
             (control.value == *value).then_some(()).ok_or_else(|| {
@@ -544,10 +552,12 @@ pub(crate) fn report_json(
     name: &str,
     size: (f32, f32),
     client_frame: bool,
+    diagnostic: Option<&str>,
+    scopes: &[String],
     snapshots: &[(String, String)],
     failure: Option<&str>,
 ) -> String {
-    let mut out = String::from("{\"script\":");
+    let mut out = String::from("{\"scenario\":");
     escape(name, &mut out);
     let _ = write!(
         out,
@@ -557,6 +567,21 @@ pub(crate) fn report_json(
         if client_frame { "client" } else { "server" },
         failure.is_none()
     );
+    // The header's own words travel with the evidence, so the driver judges a
+    // documented defect from the report alone rather than by parsing the spec
+    // a second time.
+    if let Some(diagnostic) = diagnostic {
+        out.push_str(",\"diagnostic\":");
+        escape(diagnostic, &mut out);
+        out.push_str(",\"diagnostic_on\":[");
+        for (index, scope) in scopes.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            escape(scope, &mut out);
+        }
+        out.push(']');
+    }
     if let Some(failure) = failure {
         out.push_str(",\"failure\":");
         escape(failure, &mut out);
@@ -588,56 +613,89 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_script_parses_actions_assertions_and_comments() {
-        let steps = parse(
-            "# open the board\nclick #add-task\nwait 200\ntype #task-title A new task\n\
-             expect-value #task-title A new task\nexpect-count card- 4\nsnapshot populated\n",
-        )
-        .expect("valid script");
-        let actions: Vec<_> = steps.into_iter().map(|step| step.action).collect();
-        assert_eq!(
-            actions,
-            vec![
-                Action::Click(Locator::TestId("add-task".into())),
-                Action::Wait(200),
-                Action::Type(Locator::TestId("task-title".into()), "A new task".into()),
-                Action::ExpectValue(Locator::TestId("task-title".into()), "A new task".into()),
-                Action::ExpectCount("card-".into(), 4),
-                Action::Snapshot("populated".into()),
-            ]
-        );
+    fn command(kind: &str) -> Command {
+        Command {
+            kind: kind.into(),
+            line: 7,
+            locator_kind: "none".into(),
+            role: String::new(),
+            name: String::new(),
+            label: String::new(),
+            text: String::new(),
+            test_id: String::new(),
+            expected_text: String::new(),
+            expected_count: None,
+            expected_bool: None,
+            interval_ms: None,
+            shortcut: None,
+        }
     }
 
     #[test]
-    fn a_quoted_locator_carries_a_label_containing_spaces() {
-        let steps = parse("click \"Move to In progress\"\nexpect-value \"Task notes\" a b\n")
-            .expect("valid script");
+    fn engine_commands_decode_into_window_actions_by_name() {
+        let mut click = command("click");
+        click.locator_kind = "role_name".into();
+        click.role = "button".into();
+        click.name = "Add task".into();
+        assert_eq!(decode(&click).unwrap(), Action::Click(Locator::Text("Add task".into())));
+        let mut typed = command("type_text");
+        typed.locator_kind = "label".into();
+        typed.label = "Task title".into();
+        typed.expected_text = "A new task".into();
         assert_eq!(
-            steps[0].action,
-            Action::Click(Locator::Text("Move to In progress".into()))
+            decode(&typed).unwrap(),
+            Action::Type(Locator::Text("Task title".into()), "A new task".into())
         );
+        let mut wait = command("wait");
+        wait.interval_ms = Some(200);
+        assert_eq!(decode(&wait).unwrap(), Action::Wait(200));
+        let mut count = command("expect_count");
+        count.expected_text = "card-".into();
+        count.expected_count = Some(4);
+        assert_eq!(decode(&count).unwrap(), Action::ExpectCount("card-".into(), 4));
+        let mut onscreen = command("expect_onscreen");
+        onscreen.locator_kind = "test_id".into();
+        onscreen.test_id = "task-detail".into();
         assert_eq!(
-            steps[1].action,
-            Action::ExpectValue(Locator::Text("Task notes".into()), "a b".into())
+            decode(&onscreen).unwrap(),
+            Action::ExpectOnscreen(Locator::TestId("task-detail".into()))
         );
-        assert!(parse("click \"unterminated").unwrap_err().contains("closing quote"));
+        assert_eq!(decode(&command("close")).unwrap(), Action::Close);
     }
 
     #[test]
-    fn an_unusable_script_is_rejected_with_its_line() {
-        assert!(parse("click #ok\nwiggle #ok\n").unwrap_err().contains("line 2"));
-        assert!(parse("wait soon").unwrap_err().contains("milliseconds"));
-        assert!(parse("# only a comment\n").is_err());
+    fn a_spec_shortcut_becomes_the_keystroke_a_person_would_press() {
+        let mut shortcut = command("shortcut");
+        shortcut.locator_kind = "test_id".into();
+        shortcut.test_id = "notes-editor".into();
+        shortcut.shortcut = Some(('s' as u32, 1 | 2));
+        assert_eq!(decode(&shortcut).unwrap(), Action::Key("ctrl-shift-s".into()));
+        assert_eq!(chord_keystroke((256, 0)).unwrap(), "enter");
+        assert_eq!(chord_keystroke((256 + 4, 8)).unwrap(), "cmd-left");
+        assert!(chord_keystroke((999, 0)).is_err());
     }
 
     #[test]
-    fn close_ends_a_script_and_nothing_may_follow_it() {
-        let steps = parse("click Open\nwait 4000\nclose\n").expect("valid script");
-        assert_eq!(steps[2].action, Action::Close);
-        let error = parse("close\nexpect-text Gone\n").unwrap_err();
-        assert!(error.contains("line 1") && error.contains("last step"), "{error}");
-        assert!(parse("close now\n").unwrap_err().contains("no arguments"));
+    fn display_free_steps_are_refused_with_the_window_step_to_use() {
+        let mut fill = command("fill");
+        fill.locator_kind = "label".into();
+        let error = decode(&fill).unwrap_err();
+        assert!(error.contains("(type ...)"), "{error}");
+        assert!(decode(&command("tick_interval")).unwrap_err().contains("(test ...)"));
+        let mut wait = command("wait");
+        wait.interval_ms = None;
+        assert!(decode(&wait).is_err());
+        let scenario = Scenario {
+            name: "s".into(),
+            window: None,
+            assets: None,
+            choices: vec![],
+            diagnostic: None,
+            scopes: vec![],
+            commands: vec![command("mark_metrics")],
+        };
+        let error = steps(&scenario).unwrap_err();
+        assert!(error.starts_with("line 7:"), "{error}");
     }
 
     #[test]
@@ -655,8 +713,13 @@ mod tests {
     fn assertions_fail_with_what_was_observed() {
         let mut frame = vec![control("save", "Save"), control("delete", "Delete")];
         frame[0].disabled = true;
-        assert!(check(&frame, &Action::ExpectText("Save".into())).is_ok());
-        assert!(check(&frame, &Action::ExpectMissing("Save".into())).is_err());
+        assert!(check(&frame, &Action::ExpectVisible(Locator::Text("Save".into()))).is_ok());
+        assert!(check(&frame, &Action::ExpectAbsent(Locator::Text("Save".into()))).is_err());
+        assert!(check(&frame, &Action::ExpectAbsent(Locator::Text("Gone".into()))).is_ok());
+        assert!(check(&frame, &Action::ExpectText(Locator::TestId("save".into()), "Save".into())).is_ok());
+        let error = check(&frame, &Action::ExpectText(Locator::TestId("save".into()), "Saved".into()))
+            .unwrap_err();
+        assert!(error.contains("shows \"Save\""), "{error}");
         assert!(check(&frame, &Action::ExpectDisabled(Locator::TestId("save".into()), true)).is_ok());
         let error =
             check(&frame, &Action::ExpectDisabled(Locator::TestId("delete".into()), true))
@@ -742,9 +805,18 @@ mod tests {
         let frame = vec![control("quote", "a \"quoted\" \\ line\n")];
         let json = frame_json(&frame);
         assert!(json.contains(r#""a \"quoted\" \\ line\n""#), "{json}");
-        let report = report_json("notes", (360., 240.), true, &[("initial".into(), json)], Some("boom"));
+        let report = report_json(
+            "notes",
+            (360., 240.),
+            true,
+            Some("GUI-35."),
+            &["client-frame".into()],
+            &[("initial".into(), json)],
+            Some("boom"),
+        );
         assert!(report.contains(r#""passed":false"#), "{report}");
         assert!(report.contains(r#""frame":"client""#), "{report}");
+        assert!(report.contains(r#""diagnostic":"GUI-35.","diagnostic_on":["client-frame"]"#), "{report}");
         assert!(report.contains(r#""failure":"boom""#), "{report}");
         assert!(report.contains(r#""window":[360,240]"#), "{report}");
     }

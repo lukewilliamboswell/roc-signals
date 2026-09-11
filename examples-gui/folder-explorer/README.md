@@ -66,7 +66,7 @@ placeholder box, while a file that was altered but is still a valid image
 renders its new contents. So "altered" in the status line does not imply a
 placeholder, and a placeholder does not require a failed verification. The
 check runs once at mount; restoring a file afterwards is reported by the next
-run, not by the live status line. `regression/assets-problem/` holds a prepared
+run, not by the live status line. `specs/assets-problem/` holds a prepared
 assets root exercising all three cases at once. When running the built binary
 directly, pass `--host-assets-root examples-gui/folder-explorer/assets` (or set
 `ROC_SIGNALS_ASSETS_ROOT`); image sources are always relative paths inside
