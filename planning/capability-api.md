@@ -15,9 +15,14 @@ the host executes effects after engine commit. Capability passing must compose
 with ordinary Roc functions, signals, commands, explicit scopes, and retained
 callbacks.
 
-This is a plan, not a new public contract. [design.md](../design.md) remains the
-architectural authority. Entry-point, resource-lifetime, and transport changes
-identified here require deliberate design decisions before implementation.
+This is a plan, not a new public contract. [design.md](../design.md) remains
+the architectural authority, and its *Authority and delegated capabilities*
+section now records the target capability vocabulary — picker, reader,
+directory rights, follow-entry, save target — and the saving contract this
+plan builds toward. Authority enters through the platform's hosted effectful
+functions rather than the removed task transport, so the effect boundary is
+the enforcement point. Entry-point and resource-lifetime changes identified
+here still require deliberate design decisions before implementation.
 Current build and test commands belong in
 [Contributing](../www/content/docs/contributing.md).
 
@@ -32,8 +37,8 @@ Current build and test commands belong in
 3. **Host-enforced rights.** Validate resource identity, permitted operations,
    lifetime, and ownership at the host boundary before performing an effect.
    Opaque application types support this contract but cannot enforce it alone.
-4. **Pure, transactional effects.** Capability-bearing tasks and commands use the
-   existing engine scheduling, scope ownership, pruning, cancellation, and
+4. **Pure, transactional effects.** Capability-bearing effects and commands
+   use the existing engine scheduling, scope ownership, pruning, and
    publication model. Preparation describes effects; execution follows commit.
 5. **Bounded resource ownership.** Every resource has explicit acquisition,
    aliasing, transfer, release, refusal, saturation, and shutdown behavior.
@@ -48,16 +53,17 @@ Current build and test commands belong in
 
 ## Existing foundation and gaps
 
-Signals already provides pure commands, typed task failures, explicit effect
-routes, bounded workers, cancellation, and scope-owned work. State illustrates
-useful delegation: a `Signal(a)` permits observation, a specific message permits
+Signals already provides pure commands, actions with effectful continuations,
+typed failures, and scope-owned state. State illustrates
+useful delegation: a `Signal(a)` permits observation, a specific handler permits
 one action, and a state handle permits broader mutation descriptions.
 
 | Surface | Gap to address |
 | --- | --- |
 | [GUI entry point](../platform-gui/main.roc) | `main` takes no arguments, leaving no explicit initial authority parameter. |
-| [Files](../platform-gui/Files.roc) | Choosers return paths; read, write, and scan tasks accept absolute paths using process authority. |
-| [Signal task construction](../platform-shared/Signal.roc) | Reachable host-task factories and string request routes must not bypass resource checks. |
+| [Files](../platform-gui/Files.roc) | Hosted primitives accept absolute paths using process authority; choosers return path strings rather than opaque resources. |
+| [Hosted effectful functions](../platform-gui/main.roc) | Callable from any effect with ambient process authority; authority must become delegated values. |
+| [Signal task construction](../platform-shared/Signal.roc) | The interim browser task factories and string request routes must not bypass resource checks while they remain. |
 | [Browser APIs](../platform-web/Browser.roc) | Environment operations need an authority inventory and deliberate delegation boundaries. |
 | Widget registration | A supplied widget name must not grant access to every service in a mount. |
 | [Capability(a)](../platform-shared/Capability.roc) | Erased-value ownership and type safety are distinct from authority to use external resources. |
@@ -96,31 +102,35 @@ Do not approximate injection with an ambient service lookup.
 
 ### Resource identity and lifetime
 
-Distinguish permission to operate on a resource, ownership of a resource reference,
-and ownership of an in-flight task. Decide how rights can be narrowed and whether
-revocation is supported; neither operation should be inferred from ordinary
-reference release.
+Distinguish permission to operate on a resource, ownership of a resource
+reference, and ownership of an in-flight effect. Decide how rights can be
+narrowed and whether revocation is supported; neither operation should be
+inferred from ordinary reference release.
 
-Specify chooser success, abandoned or stale completion, task supersession,
-cancellation, scope disposal, independently retained aliases, and shutdown. A
-longer-lived owner may retain a resource independently, but a copied reference
-must not resurrect a canceled task or extend its disposed scope. Bound live
-resources independently of the worker queue. Use indexed validation and
-nonwrapping identities, preserving the changed-set work budget.
+Specify chooser success, abandoned or stale completion, results arriving
+after scope disposal, independently retained aliases, and shutdown. A
+longer-lived owner may retain a resource independently, but a copied
+reference must not revive invalidated delivery or extend a disposed scope.
+Bound live resources independently of the effect workers. Use indexed
+validation and nonwrapping identities, preserving the changed-set work
+budget.
 
 ### Save semantics
 
-Preserve the distinction between an open file and an authorized directory entry.
-Current writes atomically replace a named destination. A `SaveTarget` could
-represent permission to replace one name within an owned parent; a writer for an
-already-open file represents a different operation. Choose and document that
-contract before changing the editor's save API.
+Decided and recorded in `design.md`: an open file and an authorized directory
+entry are different capabilities. A `File.SaveTarget` represents permission
+to atomically replace one designated entry, including the temporary-sibling
+work; a writer for an already-open file is a different operation and does not
+authorize it. Saves start with busy refusal by default, an uncertain write is
+never retried automatically, and atomic replacement preserves publication,
+not power-loss durability. The work here is implementing that contract
+through the editor's save API.
 
 ### Resource transfer across the boundary
 
-A chooser should transfer an opaque resource reference associated with its active
-request, rather than returning a publicly reconstructible resource token inside
-the `files1` text codec. Specify who owns each reference before and after success,
+A chooser should transfer an opaque resource reference through its hosted
+function's return value, rather than a publicly reconstructible path string.
+Specify who owns each reference before and after success,
 refusal, allocation failure, stale delivery, and teardown. Resource references
 must coexist with capability-owned erased Roc values without exposing their
 layout or conflating the two meanings of capability.
@@ -147,11 +157,11 @@ resolve the decisions above in `design.md` before changing those contracts.
 
 Implement chooser → opaque reader/save target → component callback. A component
 can request a read or describe saving to one captured destination; it cannot
-substitute an arbitrary absolute path at task start. A directory capability may
+substitute an arbitrary absolute path at effect start. A directory capability may
 permit relative selection under its explicit traversal policy.
 
 Keep commands pure and execution in the existing host effect path. Complete the
-slice through Roc modules, ABI and typed views, shared task ownership, native
+slice through Roc modules, ABI and typed views, shared effect ownership, native
 adapter, semantic specs, maintained examples, and public documentation. Use
 Notes Editor to validate ordinary open, edit, save, cancel, and disposal workflows.
 
@@ -164,8 +174,8 @@ supersession, scope disposal, saturation, allocation failure, and shutdown.
 
 Use native semantic specs for application behavior and work budgets, focused host
 tests for resource ownership and filesystem races, and browser tests for browser
-integration contracts. Use sequence fuzzing where aliasing, retirement, and task
-completion order interact; mutation-test new fuzz oracles.
+integration contracts. Use sequence fuzzing where aliasing, retirement, and
+effect completion order interact; mutation-test new fuzz oracles.
 
 ### 4. Coherent migration
 
@@ -179,12 +189,12 @@ Do not claim platform-wide confinement from a successful editor-only slice.
 
 - [ ] The application receives explicit host-supplied authority, and a reusable
   component works with a narrower delegated interface.
-- [ ] Module imports, paths, inspection, and public task factories cannot recover
-  authority outside the documented assurance boundary.
+- [ ] Module imports, paths, inspection, public constructors, and hosted calls
+  cannot recover authority outside the documented assurance boundary.
 - [ ] The host rejects unauthorized or stale operations before external effects.
 - [ ] Commands remain pure descriptions and use the shared propagation and
   post-commit effect model.
-- [ ] Resource aliases, task lifetime, scope disposal, cancellation, and shutdown
+- [ ] Resource aliases, effect lifetime, scope disposal, and shutdown
   have explicit contracts and passing ownership tests.
 - [ ] Resource and queue bounds refuse work predictably without leaks, partial
   publication, stale reuse, or scans of unrelated live resources.
