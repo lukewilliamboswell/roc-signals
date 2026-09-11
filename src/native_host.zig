@@ -4308,6 +4308,11 @@ fn parseHostArgs(args: []const []const u8) HostArgResult {
 }
 
 fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
+    // A Roc application links no Zig start code, so nothing installs the
+    // fault handler that turns an access violation into a trace on stderr.
+    // Windows reports such a crash only as an exit status; the trace is
+    // what makes it diagnosable from a CI log.
+    if (comptime builtin.os.tag == .windows and std.debug.have_segfault_handling_support) std.debug.attachSegfaultHandler();
     var arg_storage: [max_host_args][]const u8 = undefined;
     const arg_count: usize = if (argc > 0) @intCast(argc) else 1;
     if (arg_count > max_host_args + 1) {
