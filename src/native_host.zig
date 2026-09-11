@@ -3881,6 +3881,7 @@ comptime {
             @export(&Gpui.scenarioScope, .{ .name = "signals_scenario_scope" });
             @export(&Gpui.scenarioCount, .{ .name = "signals_scenario_count" });
             @export(&Gpui.scenarioCommand, .{ .name = "signals_scenario_command" });
+            @export(&Gpui.scenarioArg, .{ .name = "signals_scenario_arg" });
             @export(&Gpui.scenarioClose, .{ .name = "signals_scenario_close" });
         } else @export(&main, .{ .name = "main" });
         if (@import("builtin").os.tag == .windows) {
@@ -4099,29 +4100,12 @@ fn onlineSnapshotFromSpecText(text: []const u8) boundary.OnlineSnapshot {
 
 fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void {
     for (commands) |cmd| {
-        switch (cmd.cmd_type) {
-            .set_initial_location => {
-                const text = cmd.expected_text orelse failHost("set_initial_location command is missing URL text");
-                host.setCurrentLocation(locationSnapshotFromSpecText(text));
-            },
-            .set_initial_visibility => {
-                const text = cmd.expected_text orelse failHost("set_initial_visibility command is missing visibility text");
-                host.setVisibility(visibilitySnapshotFromSpecText(text));
-            },
-            .set_initial_online => {
-                const text = cmd.expected_text orelse failHost("set_initial_online command is missing online text");
-                host.setOnline(onlineSnapshotFromSpecText(text));
-            },
-            .seed_local_storage, .seed_session_storage => {
-                const key = cmd.task_name orelse failHost("seed storage command is missing key text");
-                const value = cmd.expected_text orelse failHost("seed storage command is missing value text");
-                const area: boundary.StorageArea = switch (cmd.cmd_type) {
-                    .seed_local_storage => .local,
-                    .seed_session_storage => .session,
-                    else => unreachable,
-                };
-                host.setStorageText(area, key, value);
-            },
+        switch (cmd.step) {
+            .set_initial_location => |text| host.setCurrentLocation(locationSnapshotFromSpecText(text)),
+            .set_initial_visibility => |text| host.setVisibility(visibilitySnapshotFromSpecText(text)),
+            .set_initial_online => |text| host.setOnline(onlineSnapshotFromSpecText(text)),
+            .seed_local_storage => |pair| host.setStorageText(.local, pair.key, pair.value),
+            .seed_session_storage => |pair| host.setStorageText(.session, pair.key, pair.value),
             else => {},
         }
     }
@@ -12766,9 +12750,11 @@ const Gpui = struct {
     };
     /// One parsed step, self-describing: `kind` and `locator_kind` carry the
     /// enum tag names rather than their numbering, so the Rust reader and this
-    /// writer never have to agree on an ordinal. Optional numbers travel with a
-    /// presence flag; absent strings are zero-length slices.
-    const RawCommand = extern struct {
+    /// writer never have to agree on an ordinal. The locator is the one payload
+    /// every host resolves, so it travels in full; every other value of the
+    /// payload is a named argument read through `scenarioArg`, reflected from
+    /// the payload struct, so a new step or field needs no change here.
+    const RawStep = extern struct {
         kind: Slice,
         line: u64,
         locator_kind: Slice,
@@ -12777,16 +12763,17 @@ const Gpui = struct {
         label: Slice,
         text: Slice,
         test_id: Slice,
-        expected_text: Slice,
-        expected_count: u64,
-        has_count: u32,
-        expected_bool: u32,
-        has_bool: u32,
-        interval_ms: u64,
-        has_interval: u32,
-        shortcut_key: u32,
-        shortcut_modifiers: u32,
-        has_shortcut: u32,
+        args: usize,
+    };
+    /// One named argument of a step. `kind` says which value field is live:
+    /// 0 text, 1 unsigned, 2 signed, 3 boolean.
+    const RawArg = extern struct {
+        name: Slice,
+        kind: u32,
+        text: Slice,
+        unsigned: u64,
+        signed: i64,
+        boolean: u32,
     };
     fn optionalSlice(value: ?[]const u8) Slice {
         return Slice.from(value orelse "");
@@ -12840,30 +12827,68 @@ const Gpui = struct {
     fn scenarioCount() callconv(.c) usize {
         return openScenario().commands.len;
     }
-    fn scenarioCommand(index: usize, out: *RawCommand) callconv(.c) void {
+    fn scenarioCommand(index: usize, out: *RawStep) callconv(.c) void {
         const spec = openScenario();
         if (index >= spec.commands.len) failHost("scenario command index out of range");
         const cmd = spec.commands[index];
+        const locator = spec_parser.legacyView(cmd.step).locator;
         out.* = .{
-            .kind = Slice.from(@tagName(cmd.cmd_type)),
+            .kind = Slice.from(@tagName(cmd.step)),
             .line = cmd.line_num,
-            .locator_kind = Slice.from(@tagName(cmd.locator.kind)),
-            .role = optionalSlice(cmd.locator.role),
-            .name = optionalSlice(cmd.locator.name),
-            .label = optionalSlice(cmd.locator.label),
-            .text = optionalSlice(cmd.locator.text),
-            .test_id = optionalSlice(cmd.locator.test_id),
-            .expected_text = optionalSlice(cmd.expected_text),
-            .expected_count = cmd.expected_count orelse 0,
-            .has_count = @intFromBool(cmd.expected_count != null),
-            .expected_bool = @intFromBool(cmd.expected_bool orelse false),
-            .has_bool = @intFromBool(cmd.expected_bool != null),
-            .interval_ms = cmd.interval_ms orelse 0,
-            .has_interval = @intFromBool(cmd.interval_ms != null),
-            .shortcut_key = if (cmd.shortcut) |chord| chord.key else 0,
-            .shortcut_modifiers = if (cmd.shortcut) |chord| chord.modifiers else 0,
-            .has_shortcut = @intFromBool(cmd.shortcut != null),
+            .locator_kind = Slice.from(@tagName(locator.kind)),
+            .role = optionalSlice(locator.role),
+            .name = optionalSlice(locator.name),
+            .label = optionalSlice(locator.label),
+            .text = optionalSlice(locator.text),
+            .test_id = optionalSlice(locator.test_id),
+            .args = stepArgCount(cmd.step),
         };
+    }
+    /// Reads one named argument of a step. A scalar payload is one argument
+    /// named `value`; a struct payload contributes one argument per field other
+    /// than its locator, and a key chord contributes `key` and `modifiers`.
+    fn scenarioArg(step_index: usize, arg_index: usize, out: *RawArg) callconv(.c) void {
+        const spec = openScenario();
+        if (step_index >= spec.commands.len) failHost("scenario command index out of range");
+        var cursor: usize = 0;
+        switch (spec.commands[step_index].step) {
+            inline else => |payload| {
+                if (emitArgs(payload, "value", arg_index, &cursor, out)) return;
+            },
+        }
+        failHost("scenario argument index out of range");
+    }
+    fn stepArgCount(step: spec_parser.Step) usize {
+        var cursor: usize = 0;
+        var scratch: RawArg = undefined;
+        switch (step) {
+            inline else => |payload| _ = emitArgs(payload, "value", std.math.maxInt(usize), &cursor, &scratch),
+        }
+        return cursor;
+    }
+    /// Walks a payload, counting arguments through `cursor` and filling `out`
+    /// when the walk reaches `wanted`. Returns true once it has been filled.
+    fn emitArgs(payload: anytype, name: []const u8, wanted: usize, cursor: *usize, out: *RawArg) bool {
+        const T = @TypeOf(payload);
+        if (T == void or T == spec_parser.Locator) return false;
+        if (T == []const u8) return emitArg(.{ .name = Slice.from(name), .kind = 0, .text = Slice.from(payload), .unsigned = 0, .signed = 0, .boolean = 0 }, wanted, cursor, out);
+        if (T == u64) return emitArg(.{ .name = Slice.from(name), .kind = 1, .text = Slice.from(""), .unsigned = payload, .signed = 0, .boolean = 0 }, wanted, cursor, out);
+        if (T == i64) return emitArg(.{ .name = Slice.from(name), .kind = 2, .text = Slice.from(""), .unsigned = 0, .signed = payload, .boolean = 0 }, wanted, cursor, out);
+        if (T == bool) return emitArg(.{ .name = Slice.from(name), .kind = 3, .text = Slice.from(""), .unsigned = 0, .signed = 0, .boolean = @intFromBool(payload) }, wanted, cursor, out);
+        if (T == signals.key_chord.Chord) {
+            if (emitArgs(@as(u64, payload.key), "key", wanted, cursor, out)) return true;
+            return emitArgs(@as(u64, payload.modifiers), "modifiers", wanted, cursor, out);
+        }
+        inline for (std.meta.fields(T)) |field| {
+            if (emitArgs(@field(payload, field.name), field.name, wanted, cursor, out)) return true;
+        }
+        return false;
+    }
+    fn emitArg(arg: RawArg, wanted: usize, cursor: *usize, out: *RawArg) bool {
+        const found = cursor.* == wanted;
+        if (found) out.* = arg;
+        cursor.* += 1;
+        return found;
     }
     fn scenarioClose() callconv(.c) void {
         if (scenario_spec) |spec| {

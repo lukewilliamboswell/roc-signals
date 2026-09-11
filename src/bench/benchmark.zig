@@ -30,7 +30,7 @@ pub fn nowNs() u64 {
 
 /// Classifies whether a spec command mutates app state and therefore belongs in benchmark replay.
 pub fn commandIsAction(cmd: spec_parser.SpecCommand) bool {
-    return switch (cmd.cmd_type) {
+    return switch (cmd.step) {
         .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .focus, .blur, .change, .select_option, .custom_event, .composition_start, .composition_end, .submit, .fill, .check, .uncheck, .resolve_task, .reject_task, .tick_interval, .tick_interval_if_active, .navigate, .set_visibility, .set_online, .history_back, .history_forward => true,
         else => false,
     };
@@ -253,13 +253,13 @@ pub fn Runner(comptime Ctx: type) type {
 
             var measurement_started = true;
             for (commands) |cmd| {
-                if (cmd.cmd_type == .mark_metrics) {
+                if (cmd.kind() == .mark_metrics) {
                     measurement_started = false;
                     break;
                 }
             }
             for (commands) |cmd| {
-                if (cmd.cmd_type == .mark_metrics) {
+                if (cmd.kind() == .mark_metrics) {
                     measurement_started = true;
                 } else if (commandIsAction(cmd)) {
                     if (measurement_started) {
@@ -285,16 +285,16 @@ pub fn Runner(comptime Ctx: type) type {
         }
 
         fn runActionCommandMeasured(host: *Host, roc_host: *RocHost, cmd: SpecCommand, stats: *Stats) void {
-            switch (cmd.cmd_type) {
-                .click => {
-                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark click locator did not resolve");
+            switch (cmd.step) {
+                .click => |locator| {
+                    const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse Ctx.fail("benchmark click locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark click target is disabled");
                     const event_id = benchmarkClickEventId(elem) orelse Ctx.fail("benchmark click target has no binding");
                     Ctx.dispatchRocEventMeasured(host, roc_host, event_id, engine.BoundaryPayloadDescriptor.init(.unit, .none), Ctx.hostValueUnit(host, roc_host), stats);
                 },
 
-                .real_click => {
-                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark real_click locator did not resolve");
+                .real_click => |locator| {
+                    const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse Ctx.fail("benchmark real_click locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark real_click target is disabled");
                     const target_id = elem.id;
                     _ = dispatchBubblingUnitEventMeasured(host, roc_host, target_id, .pointer_down, "pointerdown", stats);
@@ -307,24 +307,24 @@ pub fn Runner(comptime Ctx: type) type {
                     dispatchBenchmarkRealClickDefaultAction(host, roc_host, target_id, click_result, stats);
                 },
 
-                .pointer_down, .pointer_up, .pointer_enter, .pointer_leave => {
-                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark pointer locator did not resolve");
+                .pointer_down, .pointer_up, .pointer_enter, .pointer_leave => |locator| {
+                    const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse Ctx.fail("benchmark pointer locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark pointer target is disabled");
-                    const event_id = Ctx.pointerEventId(elem, cmd.cmd_type) orelse Ctx.fail("benchmark pointer target has no binding");
+                    const event_id = Ctx.pointerEventId(elem, cmd.kind()) orelse Ctx.fail("benchmark pointer target has no binding");
                     Ctx.dispatchRocEventMeasured(host, roc_host, event_id, engine.BoundaryPayloadDescriptor.init(.unit, .none), Ctx.hostValueUnit(host, roc_host), stats);
                 },
 
-                .key_down => {
-                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark key_down locator did not resolve");
+                .key_down => |args| {
+                    const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse Ctx.fail("benchmark key_down locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark key_down target is disabled");
-                    const key = cmd.expected_text orelse Ctx.fail("benchmark key_down command is missing key text");
+                    const key = args.key;
                     const target_id = elem.id;
                     const default_prevented = Ctx.dispatchKeyDownMeasured(
                         host,
                         roc_host,
                         elem,
                         key,
-                        cmd.expected_bool orelse Ctx.fail("benchmark key_down command is missing shift flag"),
+                        args.shift,
                         stats,
                     );
                     if (std.mem.eql(u8, key, "Enter")) {
@@ -332,13 +332,13 @@ pub fn Runner(comptime Ctx: type) type {
                     }
                 },
 
-                .focus, .blur, .composition_start, .composition_end => {
-                    const event_name = namedUnitEventNameForCommand(cmd.cmd_type) orelse Ctx.fail("benchmark named event command had no event name");
-                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark named event locator did not resolve");
+                .focus, .blur, .composition_start, .composition_end => |locator| {
+                    const event_name = namedUnitEventNameForCommand(cmd.kind()) orelse Ctx.fail("benchmark named event command had no event name");
+                    const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse Ctx.fail("benchmark named event locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark named event target is disabled");
                     const event = Ctx.namedEvent(elem, event_name) orelse Ctx.fail("benchmark named event target has no binding");
                     if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.unit, .none))) Ctx.fail("benchmark named event binding does not use a unit payload descriptor");
-                    switch (cmd.cmd_type) {
+                    switch (cmd.step) {
                         .focus => Ctx.focusElement(host, elem),
                         .blur => Ctx.blurElement(host, elem),
                         .composition_start => Ctx.beginComposition(host, elem),
@@ -348,9 +348,9 @@ pub fn Runner(comptime Ctx: type) type {
                     Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
                 },
 
-                .change => {
-                    const value = cmd.expected_text orelse "";
-                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark change locator did not resolve");
+                .change => |args| {
+                    const value = args.text;
+                    const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse Ctx.fail("benchmark change locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark change target is disabled");
                     const event = Ctx.namedEvent(elem, "change") orelse Ctx.fail("benchmark change target has no binding");
                     if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.str, .target_value))) Ctx.fail("benchmark change binding does not request the target value payload descriptor");
@@ -358,10 +358,10 @@ pub fn Runner(comptime Ctx: type) type {
                     Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
                 },
 
-                .custom_event => {
-                    const event_name = cmd.task_name orelse Ctx.fail("benchmark custom_event command had no event name");
-                    const detail = cmd.expected_text orelse "";
-                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark custom_event locator did not resolve");
+                .custom_event => |args| {
+                    const event_name = args.name;
+                    const detail = args.detail;
+                    const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse Ctx.fail("benchmark custom_event locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark custom_event target is disabled");
                     const event = Ctx.namedEvent(elem, event_name) orelse Ctx.fail("benchmark custom_event target has no named event binding");
                     if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.str, .detail))) {
@@ -370,22 +370,22 @@ pub fn Runner(comptime Ctx: type) type {
                     Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, detail), stats);
                 },
 
-                .select_option => {
-                    const value = cmd.expected_text orelse "";
-                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark select_option locator did not resolve");
+                .select_option => |args| {
+                    const value = args.text;
+                    const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse Ctx.fail("benchmark select_option locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark select_option target is disabled");
                     dispatchBenchmarkSelectOption(host, roc_host, elem, value, stats);
                 },
 
-                .submit => {
-                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark submit locator did not resolve");
+                .submit => |locator| {
+                    const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse Ctx.fail("benchmark submit locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark submit target is disabled");
                     Ctx.dispatchSubmitMeasured(host, roc_host, elem, stats);
                 },
 
-                .fill => {
-                    const value = cmd.expected_text orelse "";
-                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark fill locator did not resolve");
+                .fill => |args| {
+                    const value = args.text;
+                    const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse Ctx.fail("benchmark fill locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark fill target is disabled");
                     _ = Ctx.setElementValueIfChanged(host, elem, value);
                     if (Ctx.inputEventId(elem)) |event_id| {
@@ -393,9 +393,9 @@ pub fn Runner(comptime Ctx: type) type {
                     }
                 },
 
-                .check, .uncheck => {
-                    const checked = cmd.cmd_type == .check;
-                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark check locator did not resolve");
+                .check, .uncheck => |locator| {
+                    const checked = cmd.kind() == .check;
+                    const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse Ctx.fail("benchmark check locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark check target is disabled");
                     if (Ctx.checkEventId(elem)) |event_id| {
                         Ctx.dispatchRocEventMeasured(host, roc_host, event_id, engine.BoundaryPayloadDescriptor.init(.bool, .target_checked), Ctx.hostValueBool(host, roc_host, checked), stats);
@@ -404,20 +404,19 @@ pub fn Runner(comptime Ctx: type) type {
                     }
                 },
 
-                .resolve_task, .reject_task => {
-                    const task_name = cmd.task_name orelse Ctx.fail("benchmark task command had no task name");
-                    const payload = cmd.expected_text orelse "";
-                    if (!@import("../spec/spec_runner.zig").validateTaskFixture(Ctx, host, cmd)) Ctx.fail("benchmark file fixture task-kind mismatch");
+                .resolve_task, .reject_task => |settlement| {
+                    const task_name = settlement.name;
+                    const payload = settlement.payload;
+                    if (!@import("../spec/spec_runner.zig").validateTaskFixture(Ctx, host, settlement, cmd.line_num)) Ctx.fail("benchmark file fixture task-kind mismatch");
                     const start_ns = nowNs();
-                    const counts = Ctx.resolvePendingTask(host, roc_host, task_name, payload, cmd.cmd_type == .reject_task);
+                    const counts = Ctx.resolvePendingTask(host, roc_host, task_name, payload, cmd.kind() == .reject_task);
                     stats.dispatch_apply_ns += nowNs() - start_ns;
                     stats.commands.addAll(counts);
                     Ctx.finishHostMetrics(host);
                     stats.actions += 1;
                 },
 
-                .tick_interval => {
-                    const period_ms = cmd.interval_ms orelse Ctx.fail("benchmark interval command had no period");
+                .tick_interval => |period_ms| {
                     const start_ns = nowNs();
                     const counts = Ctx.tickIntervalSource(host, roc_host, period_ms);
                     stats.dispatch_apply_ns += nowNs() - start_ns;
@@ -426,8 +425,7 @@ pub fn Runner(comptime Ctx: type) type {
                     stats.actions += 1;
                 },
 
-                .tick_interval_if_active => {
-                    const period_ms = cmd.interval_ms orelse Ctx.fail("benchmark interval command had no period");
+                .tick_interval_if_active => |period_ms| {
                     if (Ctx.activeIntervalRecordCountByPeriod(host, period_ms) != 0) {
                         const start_ns = nowNs();
                         const counts = Ctx.tickIntervalSource(host, roc_host, period_ms);
@@ -495,29 +493,12 @@ pub fn Runner(comptime Ctx: type) type {
 
         fn applyPreMountSpecCommands(host: *Host, commands: []const SpecCommand) void {
             for (commands) |cmd| {
-                switch (cmd.cmd_type) {
-                    .set_initial_location => {
-                        const text = cmd.expected_text orelse Ctx.fail("benchmark set_initial_location command had no URL text");
-                        Ctx.setInitialLocation(host, locationSnapshotFromSpecText(Ctx, cmd.line_num, text));
-                    },
-                    .set_initial_visibility => {
-                        const text = cmd.expected_text orelse Ctx.fail("benchmark set_initial_visibility command had no visibility text");
-                        Ctx.setInitialVisibility(host, visibilitySnapshotFromSpecText(Ctx, cmd.line_num, text));
-                    },
-                    .set_initial_online => {
-                        const text = cmd.expected_text orelse Ctx.fail("benchmark set_initial_online command had no online text");
-                        Ctx.setInitialOnline(host, onlineSnapshotFromSpecText(Ctx, cmd.line_num, text));
-                    },
-                    .seed_local_storage, .seed_session_storage => {
-                        const key = cmd.task_name orelse Ctx.fail("benchmark seed storage command had no key text");
-                        const value = cmd.expected_text orelse Ctx.fail("benchmark seed storage command had no value text");
-                        const area: boundary.StorageArea = switch (cmd.cmd_type) {
-                            .seed_local_storage => .local,
-                            .seed_session_storage => .session,
-                            else => unreachable,
-                        };
-                        Ctx.seedStorage(host, area, key, value);
-                    },
+                switch (cmd.step) {
+                    .set_initial_location => |text| Ctx.setInitialLocation(host, locationSnapshotFromSpecText(Ctx, cmd.line_num, text)),
+                    .set_initial_visibility => |text| Ctx.setInitialVisibility(host, visibilitySnapshotFromSpecText(Ctx, cmd.line_num, text)),
+                    .set_initial_online => |text| Ctx.setInitialOnline(host, onlineSnapshotFromSpecText(Ctx, cmd.line_num, text)),
+                    .seed_local_storage => |pair| Ctx.seedStorage(host, .local, pair.key, pair.value),
+                    .seed_session_storage => |pair| Ctx.seedStorage(host, .session, pair.key, pair.value),
                     else => {},
                 }
             }
@@ -733,60 +714,13 @@ pub fn Runner(comptime Ctx: type) type {
 }
 
 test "commandIsAction recognizes only mutating commands" {
-    try std.testing.expect(commandIsAction(.{
-        .cmd_type = .click,
-        .locator = .{ .kind = .none },
-        .expected_text = null,
-        .expected_count = null,
-        .expected_bool = null,
-        .line_num = 1,
-    }));
-    try std.testing.expect(commandIsAction(.{
-        .cmd_type = .focus,
-        .locator = .{ .kind = .none },
-        .expected_text = null,
-        .expected_count = null,
-        .expected_bool = null,
-        .line_num = 2,
-    }));
-    try std.testing.expect(commandIsAction(.{
-        .cmd_type = .navigate,
-        .locator = .{ .kind = .none },
-        .expected_text = null,
-        .expected_count = null,
-        .expected_bool = null,
-        .line_num = 3,
-    }));
-    try std.testing.expect(commandIsAction(.{
-        .cmd_type = .set_visibility,
-        .locator = .{ .kind = .none },
-        .expected_text = null,
-        .expected_count = null,
-        .expected_bool = null,
-        .line_num = 4,
-    }));
-    try std.testing.expect(commandIsAction(.{
-        .cmd_type = .custom_event,
-        .locator = .{ .kind = .none },
-        .expected_text = null,
-        .expected_count = null,
-        .expected_bool = null,
-        .line_num = 5,
-    }));
-    try std.testing.expect(!commandIsAction(.{
-        .cmd_type = .expect_text,
-        .locator = .{ .kind = .none },
-        .expected_text = null,
-        .expected_count = null,
-        .expected_bool = null,
-        .line_num = 6,
-    }));
-    try std.testing.expect(!commandIsAction(.{
-        .cmd_type = .set_initial_location,
-        .locator = .{ .kind = .none },
-        .expected_text = null,
-        .expected_count = null,
-        .expected_bool = null,
-        .line_num = 7,
-    }));
+    const none: spec_parser.Locator = .{ .kind = .none };
+    try std.testing.expect(commandIsAction(.{ .step = .{ .click = none }, .line_num = 1 }));
+    try std.testing.expect(commandIsAction(.{ .step = .{ .focus = none }, .line_num = 2 }));
+    try std.testing.expect(commandIsAction(.{ .step = .{ .navigate = "/" }, .line_num = 3 }));
+    try std.testing.expect(commandIsAction(.{ .step = .{ .set_visibility = "hidden" }, .line_num = 4 }));
+    try std.testing.expect(commandIsAction(.{ .step = .{ .custom_event = .{ .target = none, .name = "n", .detail = "" } }, .line_num = 5 }));
+    try std.testing.expect(!commandIsAction(.{ .step = .{ .expect_text = .{ .target = none, .text = "" } }, .line_num = 6 }));
+    try std.testing.expect(!commandIsAction(.{ .step = .mark_metrics, .line_num = 7 }));
+    try std.testing.expect(!commandIsAction(.{ .step = .{ .expect_metric_delta = .{ .metric = "m", .delta = 0 } }, .line_num = 8 }));
 }
