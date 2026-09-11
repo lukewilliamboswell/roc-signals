@@ -22,6 +22,49 @@ test("flight example uses HTTP responses and forwards unrelated requests", async
   assert.deepEqual(forwarded, [["/elsewhere", {}]]);
 });
 
+test("ops HTTP endpoints advance per mount and reject unsupported requests", async () => {
+  const forwarded = [];
+  const fetch = createPublicExampleFetch(async (uri) => { forwarded.push(uri); return new Response("external"); });
+  const summary = await fetch("/api/ops/summary");
+  assert.equal(summary.status, 200);
+  assert.equal(summary.headers.get("content-type"), "text/plain; charset=utf-8");
+  const text = await summary.text();
+  assert.match(text, /Overall:/);
+  assert.match(text, /Traffic:/);
+  const first = await (await fetch("/api/ops/dashboard")).json();
+  const second = await (await fetch("/api/ops/dashboard")).json();
+  assert.notDeepEqual(first, second);
+  for (const endpoint of ["traffic", "jobs", "alerts", "health"]) {
+    assert.notEqual(await (await fetch(`/api/ops/${endpoint}`)).text(), "");
+  }
+  assert.equal((await fetch("/api/ops/dashboard", { method: "POST" })).status, 405);
+  assert.equal((await fetch("/api/ops/missing")).status, 404);
+  assert.equal(await (await fetch("/api/private")).text(), "external");
+  assert.deepEqual(forwarded, ["/api/private"]);
+  const fresh = createPublicExampleFetch();
+  assert.equal(await (await fresh("/api/ops/summary")).text(), text);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(fresh("/api/ops/dashboard", { signal: controller.signal }), { name: "AbortError" });
+  assert.deepEqual(await (await fresh("/api/ops/dashboard")).json(), first, "an aborted request must not advance the script");
+});
+
+test("semantic fixture endpoints use ordinary HTTP bodies and method checks", async () => {
+  const fetch = createPublicExampleFetch(() => { throw new Error("unexpected external request"); });
+  assert.equal(await (await fetch("/api/state-command")).text(), "ready");
+  assert.equal(await (await fetch("/api/latest/0")).text(), "result 0");
+  assert.equal(await (await fetch("/api/latest/2")).text(), "result 2");
+  const body = new TextEncoder().encode("snapshot 🌱");
+  assert.equal(await (await fetch("/api/action-ping", { method: "POST", body })).text(), "snapshot 🌱");
+  assert.equal(await (await fetch("/api/action-dispose", { method: "POST", body })).text(), "ready");
+  assert.equal(await (await fetch("/api/form-submit", { method: "POST", body })).text(), "queued");
+  assert.equal((await fetch("/api/form-submit")).status, 405);
+  assert.equal((await fetch("/api/latest/2", { method: "POST" })).status, 405);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(fetch("/api/action-ping", { method: "POST", body, signal: controller.signal }), { name: "AbortError" });
+});
+
 test("equal HTTP occurrences execute independently and preserve HTTP failures as responses", async () => {
   let calls = 0;
   const fetchImpl = async () => { calls++; return new Response("missing", { status: 404 }); };
@@ -129,6 +172,37 @@ test("network rejection stays a typed failure", async () => {
   await assert.rejects(fetchHttpEffect(request(), { fetchImpl: async () => { throw new Error("offline"); } }), { kind: "Network", message: "offline" });
 });
 
+test("HTTP import decodes signed Wasm timeout bits before applying browser limits", async () => {
+  const original = Object.getOwnPropertyDescriptor(WebAssembly, "Suspending");
+  let execute;
+  Object.defineProperty(WebAssembly, "Suspending", {
+    configurable: true,
+    value: function (body) { execute = body; },
+  });
+  try {
+    for (const [timeout, expectedTag, expectedCalls] of [
+      [-1n, 0, 1], // NoTimeout crosses the real i64 import as signed -1.
+      [30000n, 0, 1],
+      [2147483648n, 1, 0],
+      [-2n, 1, 0], // A large unsigned duration must not become a negative timer.
+    ]) {
+      let calls = 0;
+      const memory = new WebAssembly.Memory({ initial: 1 });
+      new Uint8Array(memory.buffer).set(new TextEncoder().encode("GET/example"), 16);
+      createHttpEffectImports(() => ({ memory, roc_alloc: () => 128 }), {
+        fetchImpl: async () => { calls++; return new Response("ok"); },
+      });
+      const ptr = await execute(16, 3, 19, 8, timeout, 0, 0, 0, 0, 64);
+      assert.equal(ptr, 128);
+      assert.equal(new DataView(memory.buffer).getUint32(ptr, true), expectedTag);
+      assert.equal(calls, expectedCalls);
+    }
+  } finally {
+    if (original) Object.defineProperty(WebAssembly, "Suspending", original);
+    else delete WebAssembly.Suspending;
+  }
+});
+
 test("poisoned suspended HTTP never allocates a response in the host", async () => {
   // Capture the import body without needing JSPI in this primitive-only suite.
   // The linked Wasm tests separately exercise the actual suspension wrapper.
@@ -154,7 +228,7 @@ test("poisoned suspended HTTP never allocates a response in the host", async () 
           complete = () => outcome === "success" ? resolve(new Response("late")) : reject(new Error("late failure"));
         }),
       });
-      const pending = execute(16, 3, 19, 8, 0xffffffffffffffffn, 0, 0, 0, 0, 64);
+      const pending = execute(16, 3, 19, 8, -1n, 0, 0, 0, 0, 64);
       poisoned = true;
       complete();
       await assert.rejects(pending, /cannot resume a poisoned Signals instance/);

@@ -38,9 +38,6 @@ pub const SpecCommandType = enum {
     expect_checked,
     expect_disabled,
     expect_updates,
-    resolve_task,
-    resolve_stale_task,
-    reject_task,
     stub_file_result,
     seed_file_result,
     stub_http_result,
@@ -51,8 +48,6 @@ pub const SpecCommandType = enum {
     tick_interval,
     tick_interval_if_active,
     expect_cleanup,
-    expect_pending_task,
-    expect_canceled_task,
     expect_interval,
     set_initial_location,
     set_initial_visibility,
@@ -469,7 +464,6 @@ pub fn parseSExprTestSpecFrom(allocator: std.mem.Allocator, content: []const u8,
         // run, so nothing may follow it.
         for (commands.items, 0..) |cmd, index| {
             switch (cmd.cmd_type) {
-                .resolve_task, .resolve_stale_task, .reject_task => return ParseError.InvalidFormat,
                 .close => if (index + 1 != commands.items.len) return ParseError.InvalidFormat,
                 else => {},
             }
@@ -810,16 +804,11 @@ fn decodeStepForm(allocator: std.mem.Allocator, head: []const u8, args: []const 
         .{ .head = "history-forward", .cmd_type = .history_forward, .shape = .none },
         .{ .head = "request-window-close", .cmd_type = .request_window_close, .shape = .none },
         .{ .head = "mark-metrics", .cmd_type = .mark_metrics, .shape = .none },
-        .{ .head = "resolve-task", .cmd_type = .resolve_task, .shape = .key_value },
-        .{ .head = "resolve-stale-task", .cmd_type = .resolve_stale_task, .shape = .key_value },
-        .{ .head = "reject-task", .cmd_type = .reject_task, .shape = .key_value },
         .{ .head = "expect-local-storage", .cmd_type = .expect_local_storage, .shape = .key_value },
         .{ .head = "expect-session-storage", .cmd_type = .expect_session_storage, .shape = .key_value },
         .{ .head = "expect-no-local-storage", .cmd_type = .expect_no_local_storage, .shape = .key },
         .{ .head = "expect-no-session-storage", .cmd_type = .expect_no_session_storage, .shape = .key },
         .{ .head = "expect-cleanup", .cmd_type = .expect_cleanup, .shape = .count_after_key },
-        .{ .head = "expect-pending-task", .cmd_type = .expect_pending_task, .shape = .count_after_key },
-        .{ .head = "expect-canceled-task", .cmd_type = .expect_canceled_task, .shape = .count_after_key },
         .{ .head = "tick-interval", .cmd_type = .tick_interval, .shape = .interval },
         .{ .head = "tick-interval-if-active", .cmd_type = .tick_interval_if_active, .shape = .interval },
         .{ .head = "expect-interval", .cmd_type = .expect_interval, .shape = .interval_count },
@@ -1175,6 +1164,20 @@ test "manual effect controls distinguish setup mode from occurrence execution" {
     }
 }
 
+test "spec parser rejects retired task simulation controls" {
+    for ([_][]const u8{
+        "(resolve-task \"request\" \"result\")",
+        "(resolve-stale-task \"request\" \"result\")",
+        "(reject-task \"request\" \"offline\")",
+        "(expect-pending-task \"request\" 1)",
+        "(expect-canceled-task \"request\" 1)",
+    }) |step| {
+        const source = try std.fmt.allocPrint(std.testing.allocator, "(test \"retired control\" (steps {s}))", .{step});
+        defer std.testing.allocator.free(source);
+        try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, source));
+    }
+}
+
 test "a scenario and a test each refuse the other's steps" {
     // A test cannot wait on a real clock or read layout bounds.
     try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (wait 5)))"));
@@ -1434,12 +1437,7 @@ test "spec parser parses async cleanup metrics and boolean commands" {
         \\    (key-down (role textbox :name "Search") "Enter" true)
         \\    (expect-checked (label "Enabled") false)
         \\    (expect-disabled (test-id "submit") true)
-        \\    (resolve-task "fetch user" "hello\n\"world\"\\")
-        \\    (resolve-stale-task "fetch user" "late")
-        \\    (reject-task "fetch user" "bad\trequest")
         \\    (expect-cleanup "fetch user" 2)
-        \\    (expect-pending-task "fetch user" 1)
-        \\    (expect-canceled-task "fetch user" 1)
         \\    (mark-metrics)
         \\    (expect-metric-delta closure_releases -1)
         \\    (expect-metric-delta-at-most host_retained_alloc_delta 0)))
@@ -1447,7 +1445,7 @@ test "spec parser parses async cleanup metrics and boolean commands" {
     defer spec.deinit(std.testing.allocator);
     const commands = spec.commands;
 
-    try std.testing.expectEqual(@as(usize, 12), commands.len);
+    try std.testing.expectEqual(@as(usize, 7), commands.len);
     try std.testing.expectEqual(SpecCommandType.key_down, commands[0].cmd_type);
     try std.testing.expectEqual(@as(usize, 4), commands[0].line_num);
     try std.testing.expectEqualStrings("textbox", commands[0].locator.role.?);
@@ -1460,26 +1458,16 @@ test "spec parser parses async cleanup metrics and boolean commands" {
     try std.testing.expectEqual(SpecCommandType.expect_disabled, commands[2].cmd_type);
     try std.testing.expectEqualStrings("submit", commands[2].locator.test_id.?);
     try std.testing.expectEqual(@as(?bool, true), commands[2].expected_bool);
-    try std.testing.expectEqual(SpecCommandType.resolve_task, commands[3].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.expect_cleanup, commands[3].cmd_type);
     try std.testing.expectEqualStrings("fetch user", commands[3].task_name.?);
-    try std.testing.expectEqualStrings("hello\n\"world\"\\", commands[3].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.resolve_stale_task, commands[4].cmd_type);
-    try std.testing.expectEqualStrings("late", commands[4].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.reject_task, commands[5].cmd_type);
-    try std.testing.expectEqualStrings("bad\trequest", commands[5].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.expect_cleanup, commands[6].cmd_type);
-    try std.testing.expectEqualStrings("fetch user", commands[6].task_name.?);
-    try std.testing.expectEqual(@as(?u64, 2), commands[6].expected_count);
-    try std.testing.expectEqual(SpecCommandType.expect_pending_task, commands[7].cmd_type);
-    try std.testing.expectEqual(@as(?u64, 1), commands[7].expected_count);
-    try std.testing.expectEqual(SpecCommandType.expect_canceled_task, commands[8].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.mark_metrics, commands[9].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.expect_metric_delta, commands[10].cmd_type);
-    try std.testing.expectEqualStrings("closure_releases", commands[10].expected_text.?);
-    try std.testing.expectEqual(@as(?i64, -1), commands[10].expected_metric_delta);
-    try std.testing.expectEqual(SpecCommandType.expect_metric_delta_at_most, commands[11].cmd_type);
-    try std.testing.expectEqualStrings("host_retained_alloc_delta", commands[11].expected_text.?);
-    try std.testing.expectEqual(@as(?i64, 0), commands[11].expected_metric_delta);
+    try std.testing.expectEqual(@as(?u64, 2), commands[3].expected_count);
+    try std.testing.expectEqual(SpecCommandType.mark_metrics, commands[4].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.expect_metric_delta, commands[5].cmd_type);
+    try std.testing.expectEqualStrings("closure_releases", commands[5].expected_text.?);
+    try std.testing.expectEqual(@as(?i64, -1), commands[5].expected_metric_delta);
+    try std.testing.expectEqual(SpecCommandType.expect_metric_delta_at_most, commands[6].cmd_type);
+    try std.testing.expectEqualStrings("host_retained_alloc_delta", commands[6].expected_text.?);
+    try std.testing.expectEqual(@as(?i64, 0), commands[6].expected_metric_delta);
 }
 
 test "spec parser parses pointer form and visibility commands" {

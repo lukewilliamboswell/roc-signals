@@ -1,25 +1,28 @@
-(test "Loading disposes its own action scope and cancels the accepted request"
+(test "Loading disposes its action scope without cancelling the admitted effect"
+  (setup (manual-effects))
   (steps
     (expect-text (test-id "dispose-status") "idle")
     (expect-absent (role button :name "Dispose on loading"))
     (click (role button :name "Prime disposal"))
-    (expect-pending-task "action-dispose" 1)
-    (resolve-task "action-dispose" "ready")
+    (stub-http "prime" :url "/api/action-dispose" :status 200 :body "ready")
+    (run-effect 1)
     (expect-text (test-id "dispose-status") "ready")
     (click (role button :name "Dispose on loading"))
     (expect-text (test-id "dispose-status") "idle")
     (expect-absent (role button :name "Dispose on loading"))
-    (expect-pending-task "action-dispose" 0)
-    (expect-canceled-task "action-dispose" 1)
+    (expect-pending-effects 1)
 
-    ; A new occurrence outside the disposed scope remains usable. It is not
-    ; suppressed by equal inputs or confused with the retired request.
-    (click (role button :name "Prime disposal"))
-    (expect-pending-task "action-dispose" 1)
-    (resolve-task "action-dispose" "ready")
+    ; The retained result state survives the button that started the effect.
+    (stub-http "result after disposal" :url "/api/action-dispose" :status 200 :body "ready")
+    (run-effect 2)
+    (expect-text (test-id "dispose-status") "ready")
+    (expect-visible (role button :name "Dispose on loading"))
     (click (role button :name "Dispose on loading"))
     (expect-text (test-id "dispose-status") "idle")
-    (expect-pending-task "action-dispose" 0)
-    (expect-canceled-task "action-dispose" 2)
+    (expect-pending-effects 1)
+    (stub-http "result after scope reuse" :url "/api/action-dispose" :status 200 :body "ready")
+    (run-effect 3)
+    (expect-text (test-id "dispose-status") "ready")
+    (expect-pending-effects 0)
   )
 )

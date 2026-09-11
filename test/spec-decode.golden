@@ -1628,86 +1628,95 @@ test "Custom events"
   18: expect_text locator=test_id test_id="hover" expected="Hover: none"
   19: expect_text locator=test_id test_id="selected" expected="Selected: now | 1,558 rpm"
 == examples-web/_fixtures/event-actions/specs/event-actions-loading-disposal.scm
-test "Loading disposes its own action scope and cancels the accepted request"
-  3: expect_text locator=test_id test_id="dispose-status" expected="idle"
-  4: expect_absent locator=role_name role="button" name="Dispose on loading"
-  5: click locator=role_name role="button" name="Prime disposal"
-  6: expect_pending_task locator=none task="action-dispose" count=1
-  7: resolve_task locator=none task="action-dispose" expected="ready"
-  8: expect_text locator=test_id test_id="dispose-status" expected="ready"
-  9: click locator=role_name role="button" name="Dispose on loading"
-  10: expect_text locator=test_id test_id="dispose-status" expected="idle"
-  11: expect_absent locator=role_name role="button" name="Dispose on loading"
-  12: expect_pending_task locator=none task="action-dispose" count=0
-  13: expect_canceled_task locator=none task="action-dispose" count=1
-  17: click locator=role_name role="button" name="Prime disposal"
-  18: expect_pending_task locator=none task="action-dispose" count=1
-  19: resolve_task locator=none task="action-dispose" expected="ready"
+test "Loading disposes its action scope without cancelling the admitted effect"
+  2: manual_effects locator=none
+  4: expect_text locator=test_id test_id="dispose-status" expected="idle"
+  5: expect_absent locator=role_name role="button" name="Dispose on loading"
+  6: click locator=role_name role="button" name="Prime disposal"
+  7: stub_http_result locator=none task="prime" http=response uri="/api/action-dispose" status=200 headers=[] body="ready"
+  8: run_effect locator=none count=1
+  9: expect_text locator=test_id test_id="dispose-status" expected="ready"
+  10: click locator=role_name role="button" name="Dispose on loading"
+  11: expect_text locator=test_id test_id="dispose-status" expected="idle"
+  12: expect_absent locator=role_name role="button" name="Dispose on loading"
+  13: expect_pending_effects locator=none count=1
+  16: stub_http_result locator=none task="result after disposal" http=response uri="/api/action-dispose" status=200 headers=[] body="ready"
+  17: run_effect locator=none count=2
+  18: expect_text locator=test_id test_id="dispose-status" expected="ready"
+  19: expect_visible locator=role_name role="button" name="Dispose on loading"
   20: click locator=role_name role="button" name="Dispose on loading"
   21: expect_text locator=test_id test_id="dispose-status" expected="idle"
-  22: expect_pending_task locator=none task="action-dispose" count=0
-  23: expect_canceled_task locator=none task="action-dispose" count=2
+  22: expect_pending_effects locator=none count=1
+  23: stub_http_result locator=none task="result after scope reuse" http=response uri="/api/action-dispose" status=200 headers=[] body="ready"
+  24: run_effect locator=none count=3
+  25: expect_text locator=test_id test_id="dispose-status" expected="ready"
+  26: expect_pending_effects locator=none count=0
 == examples-web/_fixtures/event-actions/specs/event-actions-typed.scm
 test "Typed actions preserve payloads and each accepted occurrence"
-  3: fill locator=label label="Source" expected="café"
-  4: expect_text locator=test_id test_id="result" expected="waiting"
-  5: fill locator=label label="Action text" expected="hello 🌱"
-  6: expect_text locator=test_id test_id="result" expected="waiting|text:café:hello 🌱"
-  7: fill locator=label label="Action text" expected="hello 🌱"
-  8: expect_text locator=test_id test_id="result" expected="waiting|text:café:hello 🌱|text:café:hello 🌱"
-  9: check locator=label label="Action check"
-  10: expect_text locator=test_id test_id="result" expected="waiting|text:café:hello 🌱|text:café:hello 🌱|checked:True"
-  11: uncheck locator=label label="Action check"
-  12: expect_text locator=test_id test_id="result" expected="waiting|text:café:hello 🌱|text:café:hello 🌱|checked:True|checked:False"
-  13: key_down locator=label label="Action key" expected="Enter" bool=true
-  14: expect_text locator=test_id test_id="result" expected="waiting|text:café:hello 🌱|text:café:hello 🌱|checked:True|checked:False|key:Enter:True"
-  15: custom_event locator=test_id test_id="action-detail" task="demo-detail" expected="package ready"
+  2: manual_effects locator=none
+  4: fill locator=label label="Source" expected="café"
+  5: expect_text locator=test_id test_id="result" expected="waiting"
+  6: fill locator=label label="Action text" expected="hello 🌱"
+  7: expect_text locator=test_id test_id="result" expected="waiting|text:café:hello 🌱"
+  8: fill locator=label label="Action text" expected="hello 🌱"
+  9: expect_text locator=test_id test_id="result" expected="waiting|text:café:hello 🌱|text:café:hello 🌱"
+  10: check locator=label label="Action check"
+  11: expect_text locator=test_id test_id="result" expected="waiting|text:café:hello 🌱|text:café:hello 🌱|checked:True"
+  12: uncheck locator=label label="Action check"
+  13: expect_text locator=test_id test_id="result" expected="waiting|text:café:hello 🌱|text:café:hello 🌱|checked:True|checked:False"
+  14: key_down locator=label label="Action key" expected="Enter" bool=true
+  15: expect_text locator=test_id test_id="result" expected="waiting|text:café:hello 🌱|text:café:hello 🌱|checked:True|checked:False|key:Enter:True"
   16: custom_event locator=test_id test_id="action-detail" task="demo-detail" expected="package ready"
-  17: expect_text locator=test_id test_id="result" expected="waiting|text:café:hello 🌱|text:café:hello 🌱|checked:True|checked:False|key:Enter:True|detail:package ready|detail:package ready"
-  18: expect_pending_task locator=none task="action-ping" count=0
+  17: custom_event locator=test_id test_id="action-detail" task="demo-detail" expected="package ready"
+  18: expect_text locator=test_id test_id="result" expected="waiting|text:café:hello 🌱|text:café:hello 🌱|checked:True|checked:False|key:Enter:True|detail:package ready|detail:package ready"
+  19: expect_pending_effects locator=none count=0
 == examples-web/_fixtures/event-actions/specs/event-actions.scm
 test "Event actions use snapshots and preserve occurrences"
-  3: expect_text locator=test_id test_id="result" expected="waiting"
-  4: expect_pending_task locator=none task="action-ping" count=0
-  5: fill locator=label label="Source" expected="beta"
-  6: expect_text locator=test_id test_id="result" expected="waiting"
-  7: expect_pending_task locator=none task="action-ping" count=0
-  11: click locator=role_name role="button" name="Append snapshot"
-  12: expect_text locator=test_id test_id="result" expected="waiting|beta"
-  13: click locator=role_name role="button" name="Append snapshot"
-  14: expect_text locator=test_id test_id="result" expected="waiting|beta|beta"
-  17: click locator=role_name role="button" name="Ping"
-  18: expect_pending_task locator=none task="action-ping" count=1
-  19: expect_canceled_task locator=none task="action-ping" count=0
+  2: manual_effects locator=none
+  4: expect_text locator=test_id test_id="result" expected="waiting"
+  5: expect_pending_effects locator=none count=0
+  6: fill locator=label label="Source" expected="beta"
+  7: expect_text locator=test_id test_id="result" expected="waiting"
+  8: expect_pending_effects locator=none count=0
+  12: click locator=role_name role="button" name="Append snapshot"
+  13: expect_text locator=test_id test_id="result" expected="waiting|beta"
+  14: click locator=role_name role="button" name="Append snapshot"
+  15: expect_text locator=test_id test_id="result" expected="waiting|beta|beta"
+  18: click locator=role_name role="button" name="Ping"
+  19: expect_pending_effects locator=none count=1
   20: click locator=role_name role="button" name="Ping"
-  21: expect_pending_task locator=none task="action-ping" count=1
-  22: expect_canceled_task locator=none task="action-ping" count=1
-  23: fill locator=label label="Source" expected="gamma"
-  24: expect_pending_task locator=none task="action-ping" count=1
-  25: expect_canceled_task locator=none task="action-ping" count=1
-  28: click locator=role_name role="button" name="Toggle actions"
-  29: expect_absent locator=role_name role="button" name="Ping"
-  30: expect_pending_task locator=none task="action-ping" count=0
-  31: expect_canceled_task locator=none task="action-ping" count=2
-  32: fill locator=label label="Source" expected="delta"
-  33: click locator=role_name role="button" name="Toggle actions"
-  34: click locator=role_name role="button" name="Append snapshot"
-  35: expect_text locator=test_id test_id="result" expected="waiting|beta|beta|delta"
-  39: click locator=role_name role="button" name="Toggle actions"
-  40: click locator=role_name role="button" name="Toggle actions"
-  41: click locator=role_name role="button" name="Toggle actions"
-  42: click locator=role_name role="button" name="Toggle actions"
-  43: mark_metrics locator=none
+  21: expect_pending_effects locator=none count=2
+  22: fill locator=label label="Source" expected="gamma"
+  23: expect_pending_effects locator=none count=2
+  26: click locator=role_name role="button" name="Toggle actions"
+  27: expect_absent locator=role_name role="button" name="Ping"
+  28: expect_pending_effects locator=none count=2
+  29: fill locator=label label="Source" expected="delta"
+  30: click locator=role_name role="button" name="Toggle actions"
+  31: click locator=role_name role="button" name="Append snapshot"
+  32: expect_text locator=test_id test_id="result" expected="waiting|beta|beta|delta"
+  34: stub_http_result locator=none task="first ping" http=response uri="/api/action-ping" status=200 headers=[] body="first"
+  35: run_effect locator=none count=1
+  36: expect_text locator=test_id test_id="status" expected="first"
+  37: stub_http_result locator=none task="second ping" http=response uri="/api/action-ping" status=200 headers=[] body="second"
+  38: run_effect locator=none count=2
+  39: expect_text locator=test_id test_id="status" expected="second"
+  40: expect_pending_effects locator=none count=0
   44: click locator=role_name role="button" name="Toggle actions"
   45: click locator=role_name role="button" name="Toggle actions"
-  46: expect_metric_delta locator=none expected="retained_alloc_delta" delta=0
-  47: expect_metric_delta locator=none expected="host_retained_bytes_delta" delta=0
-  48: expect_pending_task locator=none task="action-ping" count=0
-  49: mark_metrics locator=none
+  46: click locator=role_name role="button" name="Toggle actions"
+  47: click locator=role_name role="button" name="Toggle actions"
+  48: mark_metrics locator=none
+  49: click locator=role_name role="button" name="Toggle actions"
   50: click locator=role_name role="button" name="Toggle actions"
-  51: click locator=role_name role="button" name="Toggle actions"
-  52: expect_metric_delta locator=none expected="retained_alloc_delta" delta=0
-  53: expect_metric_delta locator=none expected="host_retained_bytes_delta" delta=0
+  51: expect_metric_delta locator=none expected="retained_alloc_delta" delta=0
+  52: expect_metric_delta locator=none expected="host_retained_bytes_delta" delta=0
+  53: expect_pending_effects locator=none count=0
+  54: mark_metrics locator=none
+  55: click locator=role_name role="button" name="Toggle actions"
+  56: click locator=role_name role="button" name="Toggle actions"
+  57: expect_metric_delta locator=none expected="retained_alloc_delta" delta=0
+  58: expect_metric_delta locator=none expected="host_retained_bytes_delta" delta=0
 == examples-web/_fixtures/form-reset-default/specs/main.scm
 test "Form reset default"
   5: expect_visible locator=role_name role="heading" name="Form Reset Default"
@@ -1729,47 +1738,49 @@ test "Form reset default"
   21: expect_text locator=text text="Resets: 1" expected="Resets: 1"
 == examples-web/_fixtures/form-validation-pattern/specs/main.scm
 test "Form validation pattern"
-  5: expect_visible locator=role_name role="heading" name="Form Validation Pattern"
-  6: expect_attr locator=role_name role="region" name="Form Validation Pattern" attr="data-fixture" expected="form-validation-pattern"
-  7: expect_attr locator=role_name role="form" name="Validation form" attr="id" expected="validation-form"
-  8: expect_value locator=label label="Invite email" expected=""
-  9: expect_attr locator=label label="Invite email" attr="id" expected="invite-email"
-  10: expect_attr locator=label label="Invite email" attr="type" expected="email"
-  11: expect_attr locator=label label="Invite email" attr="aria-describedby" expected="invite-email-message"
-  12: expect_no_attr locator=label label="Invite email" attr="aria-invalid"
-  13: expect_attr locator=label label="Accept terms" attr="aria-describedby" expected="terms-message"
-  14: expect_no_attr locator=label label="Accept terms" attr="aria-invalid"
-  15: expect_text locator=text text="Email validation: ready." expected="Email validation: ready."
-  16: expect_text locator=text text="Terms validation: ready." expected="Terms validation: ready."
-  17: expect_text locator=text text="Submit status: idle" expected="Submit status: idle"
-  18: expect_disabled locator=role_name role="button" name="Send invite" bool=true
-  19: expect_pending_task locator=none task="form-submit" count=0
-  20: submit locator=role_name role="form" name="Validation form"
-  21: expect_attr locator=label label="Invite email" attr="aria-invalid" expected="true"
-  22: expect_attr locator=label label="Accept terms" attr="aria-invalid" expected="true"
-  23: expect_text locator=text text="Email validation: enter an email address." expected="Email validation: enter an email address."
-  24: expect_text locator=text text="Terms validation: accept terms to continue." expected="Terms validation: accept terms to continue."
-  25: expect_disabled locator=role_name role="button" name="Send invite" bool=true
-  26: expect_pending_task locator=none task="form-submit" count=0
-  27: fill locator=label label="Invite email" expected="ops@example.com"
-  28: expect_value locator=label label="Invite email" expected="ops@example.com"
-  29: expect_no_attr locator=label label="Invite email" attr="aria-invalid"
-  30: expect_attr locator=label label="Accept terms" attr="aria-invalid" expected="true"
-  31: expect_text locator=text text="Email validation: ready." expected="Email validation: ready."
-  32: expect_disabled locator=role_name role="button" name="Send invite" bool=true
-  33: check locator=label label="Accept terms"
-  34: expect_checked locator=label label="Accept terms" bool=true
-  35: expect_no_attr locator=label label="Accept terms" attr="aria-invalid"
-  36: expect_text locator=text text="Terms validation: ready." expected="Terms validation: ready."
-  37: expect_disabled locator=role_name role="button" name="Send invite" bool=false
-  38: click locator=role_name role="button" name="Send invite"
-  39: expect_pending_task locator=none task="form-submit" count=1
-  40: expect_text locator=text text="Submit status: sending" expected="Submit status: sending"
-  41: expect_disabled locator=role_name role="button" name="Send invite" bool=true
-  42: resolve_task locator=none task="form-submit" expected="queued"
-  43: expect_pending_task locator=none task="form-submit" count=0
-  44: expect_text locator=text text="Submit result: queued" expected="Submit result: queued"
-  45: expect_disabled locator=role_name role="button" name="Send invite" bool=false
+  2: manual_effects locator=none
+  6: expect_visible locator=role_name role="heading" name="Form Validation Pattern"
+  7: expect_attr locator=role_name role="region" name="Form Validation Pattern" attr="data-fixture" expected="form-validation-pattern"
+  8: expect_attr locator=role_name role="form" name="Validation form" attr="id" expected="validation-form"
+  9: expect_value locator=label label="Invite email" expected=""
+  10: expect_attr locator=label label="Invite email" attr="id" expected="invite-email"
+  11: expect_attr locator=label label="Invite email" attr="type" expected="email"
+  12: expect_attr locator=label label="Invite email" attr="aria-describedby" expected="invite-email-message"
+  13: expect_no_attr locator=label label="Invite email" attr="aria-invalid"
+  14: expect_attr locator=label label="Accept terms" attr="aria-describedby" expected="terms-message"
+  15: expect_no_attr locator=label label="Accept terms" attr="aria-invalid"
+  16: expect_text locator=text text="Email validation: ready." expected="Email validation: ready."
+  17: expect_text locator=text text="Terms validation: ready." expected="Terms validation: ready."
+  18: expect_text locator=text text="Submit status: idle" expected="Submit status: idle"
+  19: expect_disabled locator=role_name role="button" name="Send invite" bool=true
+  20: expect_pending_effects locator=none count=0
+  21: submit locator=role_name role="form" name="Validation form"
+  22: expect_attr locator=label label="Invite email" attr="aria-invalid" expected="true"
+  23: expect_attr locator=label label="Accept terms" attr="aria-invalid" expected="true"
+  24: expect_text locator=text text="Email validation: enter an email address." expected="Email validation: enter an email address."
+  25: expect_text locator=text text="Terms validation: accept terms to continue." expected="Terms validation: accept terms to continue."
+  26: expect_disabled locator=role_name role="button" name="Send invite" bool=true
+  27: expect_pending_effects locator=none count=0
+  28: fill locator=label label="Invite email" expected="ops@example.com"
+  29: expect_value locator=label label="Invite email" expected="ops@example.com"
+  30: expect_no_attr locator=label label="Invite email" attr="aria-invalid"
+  31: expect_attr locator=label label="Accept terms" attr="aria-invalid" expected="true"
+  32: expect_text locator=text text="Email validation: ready." expected="Email validation: ready."
+  33: expect_disabled locator=role_name role="button" name="Send invite" bool=true
+  34: check locator=label label="Accept terms"
+  35: expect_checked locator=label label="Accept terms" bool=true
+  36: expect_no_attr locator=label label="Accept terms" attr="aria-invalid"
+  37: expect_text locator=text text="Terms validation: ready." expected="Terms validation: ready."
+  38: expect_disabled locator=role_name role="button" name="Send invite" bool=false
+  39: click locator=role_name role="button" name="Send invite"
+  40: expect_pending_effects locator=none count=1
+  41: expect_text locator=text text="Submit status: sending" expected="Submit status: sending"
+  42: expect_disabled locator=role_name role="button" name="Send invite" bool=true
+  43: stub_http_result locator=none task="invitation queued" http=response uri="/api/form-submit" status=200 headers=[] body="queued"
+  44: run_effect locator=none count=1
+  45: expect_pending_effects locator=none count=0
+  46: expect_text locator=text text="Submit result: queued" expected="Submit result: queued"
+  47: expect_disabled locator=role_name role="button" name="Send invite" bool=false
 == examples-web/_fixtures/js-framework-benchmark/specs/append_1k_to_10k.scm
 test "append 1,000 rows to 10,000 rows"
   3: click locator=role_name role="button" name="Create 10,000 rows"

@@ -2296,7 +2296,19 @@ export fn roc_http_send(request_value: abi.Request) callconv(.c) abi.HttpSendRes
     const body: []const u8 = if (request.body.elements_ptr) |ptr| ptr[0..request.body.length] else "";
     const timeout = switch (request.timeout_ms.tag) {
         .NoTimeout => std.math.maxInt(u64),
-        .TimeoutMilliseconds => request.timeout_ms.payload_timeout_milliseconds(),
+        .TimeoutMilliseconds => blk: {
+            const milliseconds = request.timeout_ms.payload_timeout_milliseconds();
+            // Refuse before encoding: an explicit max-u64 duration must not
+            // alias the wire's NoTimeout marker, nor wrap a browser timer.
+            if (milliseconds > std.math.maxInt(i32)) {
+                var err: abi.HttpError = .{ .payload = undefined, .tag = .InvalidRequest };
+                @as(*abi.RocStr, @ptrCast(@alignCast(&err.payload))).* = abi.RocStr.fromSlice("HTTP timeout exceeds the browser timer range", &roc_host);
+                var refused: abi.HttpSendResult = .{ .payload = undefined, .tag = .Err };
+                @as(*abi.HttpError, @ptrCast(@alignCast(&refused.payload))).* = err;
+                return refused;
+            }
+            break :blk milliseconds;
+        },
     };
     var response_len: usize = 0;
     const token = active_effect_token;

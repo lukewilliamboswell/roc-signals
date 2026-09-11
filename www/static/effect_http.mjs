@@ -62,10 +62,13 @@ export function createHttpEffectImports(getExports, options = {}) {
         if (headerBytes > HttpEffectLimits.headerBytes) throw new HttpEffectError("TooLarge", "HTTP headers exceed browser limits");
         headers.push([text(view.getUint32(at, true), nameLen), text(view.getUint32(at + 8, true), valueLen)]);
       }
+      // WebAssembly exposes i64 arguments as signed BigInts, including this
+      // u64 field. Recover its bits before interpreting the no-timeout marker.
+      const timeoutBits = BigInt.asUintN(64, timeout);
       value = await fetchHttpEffect({
         method: text(methodPtr, methodLen), uri: text(uriPtr, uriLen), headers,
         body: new Uint8Array(memory, bodyPtr, bodyLen).slice(),
-        timeoutMs: timeout === 0xffffffffffffffffn ? null : Number(timeout),
+        timeoutMs: timeoutBits === 0xffffffffffffffffn ? null : Number(timeoutBits),
       }, options);
     } catch (error) {
       if (!(error instanceof HttpEffectError)) throw error;

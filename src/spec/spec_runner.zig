@@ -836,20 +836,6 @@ pub fn Runner(comptime Ctx: type) type {
                         if (!dispatchCheckedChangeEvent(Ctx, host, roc_host, elem, checked, cmd.line_num)) return 1;
                     },
 
-                    .resolve_task, .reject_task, .resolve_stale_task => {
-                        const task_name = cmd.task_name orelse {
-                            writeLocatorFailure(cmd.line_num, "task command had no task name");
-                            return 1;
-                        };
-                        const payload = cmd.expected_text orelse "";
-                        if (cmd.cmd_type == .resolve_stale_task) {
-                            _ = Ctx.resolveStalePendingTask(host, roc_host, task_name, payload, false);
-                        } else {
-                            _ = Ctx.resolvePendingTask(host, roc_host, task_name, payload, cmd.cmd_type == .reject_task);
-                        }
-                        Ctx.finishHostMetrics(host);
-                    },
-
                     .stub_file_result => {
                         if (comptime !@hasDecl(Ctx, "stubFileResult")) {
                             writeLocatorFailure(cmd.line_num, "file stubs are not supported by this runner");
@@ -1048,30 +1034,6 @@ pub fn Runner(comptime Ctx: type) type {
                         if (actual != expected) {
                             var buf: [512]u8 = undefined;
                             const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}:\n  Expected cleanup \"{s}\": {d}\n  Got cleanup count:       {d}\n", .{ cmd.line_num, name, expected, actual }) catch "TEST FAILED\n";
-                            Ctx.writeStderr(msg);
-                            return 1;
-                        }
-                    },
-
-                    .expect_pending_task => {
-                        const name = cmd.task_name orelse "";
-                        const expected = cmd.expected_count orelse 0;
-                        const actual = Ctx.pendingTaskCountByName(host, name);
-                        if (actual != expected) {
-                            var buf: [512]u8 = undefined;
-                            const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}:\n  Expected pending task \"{s}\": {d}\n  Got pending task count:       {d}\n", .{ cmd.line_num, name, expected, actual }) catch "TEST FAILED\n";
-                            Ctx.writeStderr(msg);
-                            return 1;
-                        }
-                    },
-
-                    .expect_canceled_task => {
-                        const name = cmd.task_name orelse "";
-                        const expected = cmd.expected_count orelse 0;
-                        const actual = Ctx.canceledTaskCountByName(host, name);
-                        if (actual != expected) {
-                            var buf: [512]u8 = undefined;
-                            const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}:\n  Expected canceled task \"{s}\": {d}\n  Got canceled task count:       {d}\n", .{ cmd.line_num, name, expected, actual }) catch "TEST FAILED\n";
                             Ctx.writeStderr(msg);
                             return 1;
                         }

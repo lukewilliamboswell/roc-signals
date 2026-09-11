@@ -55,7 +55,7 @@ class EffectContractTests(unittest.TestCase):
                 self.assertIn("--no-cache", build)
                 self.assertIn(f"--output={wasm}", build)
                 self.assertEqual(build[-1], test_driver.ROOT / "test" / "wasm" / fixture / "main.roc")
-                self.assertEqual(execute[:2], ["node", "--experimental-wasm-jspi"])
+                self.assertEqual(execute[:3], ["node", "--no-maglev", "--experimental-wasm-jspi"])
                 self.assertEqual(execute[-1], wasm)
 
 

@@ -16,9 +16,23 @@ main = || Ui.state(
 			Html.text_s(status.signal()),
 			Html.button("Fetch", Action.run(Signal.const({}), |_| Action.then([status.set("Loading")], |_| fetch!(status)))),
 			Html.button("Oversized", Action.run(Signal.const({}), |_| Action.then([], |_| oversized!(status)))),
+			Html.button("Too long", Action.run(Signal.const({}), |_| Action.then([], |_| invalid_timeout!(status)))),
 		],
 	),
 )
+
+invalid_timeout! : Ui.State(Str) => Action({})
+invalid_timeout! = |status| {
+	request = Http.request_from_method(Http.method_get)
+		|> Http.with_uri("https://example.test/value")
+		|> Http.with_timeout_ms(18446744073709551615.U64)
+	text = match Http.send!(request) {
+		Err(InvalidRequest(_)) => "Invalid timeout"
+		Err(_) => "Wrong timeout failure"
+		Ok(_) => "Unexpected timeout success"
+	}
+	Action.update([status.set(text)])
+}
 
 headers : U64 -> List({ name : Str, value : Str })
 headers = |count| if count == 0 [] else [{ name: "X-Test", value: "value" }].concat(headers(count - 1))

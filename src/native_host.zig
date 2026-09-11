@@ -83,8 +83,8 @@ const NativeTaskCancellationPublication = struct {
 };
 
 /// The engine's task starts are observations here: the GUI platform runs its
-/// native work as effects, and engine tasks exist only for the spec runner's
-/// task commands and the engine tests that drive them.
+/// native work as effects. These observations remain for the legacy engine
+/// task tests while the shared task transport is being removed.
 const NativeTaskPublication = struct {
     host: *HostEnv,
     record: ?NativeTaskRecord = null,
@@ -99,7 +99,7 @@ const NativeTaskPublication = struct {
         return .{ .host = host, .request_id = request_id, .record = .{ .request_id = request_id, .name = name } };
     }
 
-    /// Transfers a prepared observation to the spec runner without allocation.
+    /// Transfers a prepared observation to the host without allocation.
     /// It stays until resolution, cancellation before dispatch, or teardown.
     pub fn commit(self: *NativeTaskPublication) void {
         self.host.started_tasks.appendAssumeCapacity(self.record orelse @panic("task publication committed twice"));
@@ -3491,14 +3491,6 @@ fn setElementCheckedForBenchmark(elem: *DomElement, checked: bool) bool {
     return setElementCheckedIfChanged(elem, checked);
 }
 
-fn resolvePendingTaskForBenchmark(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
-    return resolvePendingTask(host, roc_host, name, payload_text, failed);
-}
-
-fn resolveStalePendingTaskForBenchmark(host: *HostEnv, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
-    return resolveStalePendingTask(host, name, payload_text, failed);
-}
-
 fn tickIntervalSourceForBenchmark(host: *HostEnv, roc_host: *abi.RocHost, period_ms: u64) CommandCounts {
     return tickIntervalSource(host, roc_host, period_ms);
 }
@@ -3691,18 +3683,6 @@ const BenchmarkCtx = struct {
         return setElementCheckedForBenchmark(elem, checked);
     }
 
-    /// Delivers pending task through the same source-update and propagation path as other inputs.
-    pub fn resolvePendingTask(host: *Host, roc_host: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
-        const counts = resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
-        drainEffects(host, roc_host);
-        return counts;
-    }
-
-    /// Consumes a deliberately stale task result for lifecycle testing without reviving canceled work.
-    pub fn resolveStalePendingTask(host: *Host, _: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
-        return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
-    }
-
     /// Declares one answer for a hosted `Files` function; see `native_services`.
     pub fn stubFileResult(host: *Host, stub: *const spec_file_fixtures.Stub) void {
         host.stubFile(stub);
@@ -3811,11 +3791,6 @@ const BenchmarkCtx = struct {
     /// Returns last runtime metrics retained for observability or local structural traversal.
     pub fn lastRuntimeMetrics(host: *const Host) RuntimeMetrics {
         return host.engine.last_runtime_metrics;
-    }
-
-    /// Provides canceled task count by name for native semantic observation without duplicating engine behavior.
-    pub fn canceledTaskCountByName(host: *const Host, name: []const u8) u64 {
-        return host.canceledTaskCountByName(name);
     }
 
     /// Provides add runtime metrics for native semantic observation without duplicating engine behavior.
@@ -4010,18 +3985,6 @@ const SpecRunnerCtx = struct {
         return sim_dom.textAttr(elem, name);
     }
 
-    /// Delivers pending task through the same source-update and propagation path as other inputs.
-    pub fn resolvePendingTask(host: *Host, roc_host: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
-        const counts = resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
-        drainEffects(host, roc_host);
-        return counts;
-    }
-
-    /// Consumes a deliberately stale task result for lifecycle testing without reviving canceled work.
-    pub fn resolveStalePendingTask(host: *Host, _: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
-        return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
-    }
-
     /// Declares one answer for a hosted `Files` function; see `native_services`.
     pub fn stubFileResult(host: *Host, stub: *const spec_file_fixtures.Stub) void {
         host.stubFile(stub);
@@ -4098,16 +4061,6 @@ const SpecRunnerCtx = struct {
     /// Provides cleanup event count for native semantic observation without duplicating engine behavior.
     pub fn cleanupEventCount(host: *const Host, name: []const u8) u64 {
         return host.engine.cleanupEventCount(name);
-    }
-
-    /// Resolves pending task count by name from the bounded task registry without scanning unrelated work.
-    pub fn pendingTaskCountByName(host: *const Host, name: []const u8) u64 {
-        return host.engine.pendingTaskCountByName(name);
-    }
-
-    /// Provides canceled task count by name for native semantic observation without duplicating engine behavior.
-    pub fn canceledTaskCountByName(host: *const Host, name: []const u8) u64 {
-        return host.canceledTaskCountByName(name);
     }
 
     /// Returns active interval record count by period from the maintained active-runtime indexes.

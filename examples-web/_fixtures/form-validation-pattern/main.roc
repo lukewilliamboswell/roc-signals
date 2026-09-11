@@ -1,11 +1,18 @@
-app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../../platform-web/main.roc" }
+app [main] { pf: platform "../../../platform-web/main.roc", roc: "nightly-2026-09-04-c125b82" }
 
+import pf.Action
+import pf.Http
 import pf.Elem exposing [Elem]
 import pf.Html
 import pf.Signal
 import pf.Ui
 
+SubmitStatus := [Sending, Done(Str), Failed(Str)].{
+	is_eq : _
+}
+
 FormState : {
+	status : SubmitStatus,
 	email : Str,
 	accepted : Bool,
 	attempted : Bool,
@@ -15,6 +22,7 @@ FormState : {
 
 initial_state : FormState
 initial_state = {
+	status: Sending,
 	email: "",
 	accepted: False,
 	attempted: False,
@@ -65,15 +73,15 @@ terms_message = |state|
 	}
 
 status_message : FormState, Str -> Str
-status_message = |state, task_text|
+status_message = |state, response_text|
 	if state.submit_count == 0 {
 		"Submit status: idle"
 	} else {
-		task_text
+		response_text
 	}
 
 disabled_state : FormState, Bool -> Bool
-disabled_state = |state, task_loading| (!can_submit_state(state)) or ((state.submit_count > 0) and task_loading)
+disabled_state = |state, sending| (!can_submit_state(state)) or ((state.submit_count > 0) and sending)
 
 page_class = "grid gap-5"
 
@@ -102,25 +110,25 @@ main = || {
 			email_text = state_signal.map(email_message)
 			terms_text : Signal.Signal(Str)
 			terms_text = state_signal.map(terms_message)
-			task = Signal.fake_task("form-submit", |value| value, |err| err)
-			task_text : Signal.Signal(Str)
-			task_text =
-				Signal.fold_task(
-					task,
-					"Submit status: sending",
-					|value| "Submit result: ${value}",
-					|err| "Submit error: ${err}",
-				)
-			task_loading : Signal.Signal(Bool)
-			task_loading = Signal.fold_task(task, True, |_| False, |_| False)
-			status_inputs : Signal.Signal({ state : FormState, task_text : Str })
-			status_inputs = { state: state_signal, task_text: task_text }.Signal
+			response_text = state_signal.map(
+				|state| match state.status {
+					Sending => "Submit status: sending"
+					Done(value) => "Submit result: ${value}"
+					Failed(error) => "Submit error: ${error}"
+				},
+			)
+			sending = state_signal.map(|state| match state.status {
+				Sending => True
+				_ => False
+			})
+			status_inputs : Signal.Signal({ state : FormState, response_text : Str })
+			status_inputs = { state: state_signal, response_text: response_text }.Signal
 			status_text : Signal.Signal(Str)
-			status_text = status_inputs.map(|inputs| status_message(inputs.state, inputs.task_text))
-			disabled_inputs : Signal.Signal({ state : FormState, task_loading : Bool })
-			disabled_inputs = { state: state_signal, task_loading: task_loading }.Signal
+			status_text = status_inputs.map(|inputs| status_message(inputs.state, inputs.response_text))
+			disabled_inputs : Signal.Signal({ state : FormState, sending : Bool })
+			disabled_inputs = { state: state_signal, sending: sending }.Signal
 			submit_disabled : Signal.Signal(Bool)
-			submit_disabled = disabled_inputs.map(|inputs| disabled_state(inputs.state, inputs.task_loading))
+			submit_disabled = disabled_inputs.map(|inputs| disabled_state(inputs.state, inputs.sending))
 
 			Html.div_c(
 				page_class,
@@ -182,11 +190,36 @@ main = || {
 								[Html.class_attr("button-primary"), Html.attr("type", "button")],
 								model.update(submit_if_valid),
 							),
-							Ui.on_change(request_signal, |request| Signal.start_str(task, request)),
+							Action.on_change(request_signal, |_request| Action.then([model.write(|state| { ..state, status: Sending })], |read| submit!(model, read))),
 						],
 					),
 				],
 			)
 		},
 	)
+}
+
+submit! : Ui.State(FormState), Str => Action(Str)
+submit! = |model, body| {
+	request = Http.request_from_method(Http.method_post).with_uri("/api/form-submit").with_body(body.to_utf8())
+	status = match Http.send!(request) {
+		Err(error) => Failed(Str.inspect(error))
+		Ok(response) => if Http.response_status(response) < 200 or Http.response_status(response) >= 300 {
+			Failed("HTTP ${Http.response_status(response).to_str()}")
+		} else {
+			match Str.from_utf8(Http.response_body(response)) {
+				Ok(text) => Done(text)
+				Err(_) => Failed("Invalid UTF-8 response")
+			}
+		}
+	}
+	Action.update([
+		model.write(
+			|current| if current.submit_request == body {
+				{ ..current, status }
+			} else {
+				current
+			},
+		),
+	])
 }

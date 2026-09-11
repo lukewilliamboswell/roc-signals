@@ -1,158 +1,20 @@
-import {
-  createHttpTaskRouter,
-  httpHeaderValue,
-  httpJsonResponse,
-  httpTaskError,
-  httpTextResponse,
-} from "./signals.mjs";
 import { createConduitFetch } from "./conduit_backend.mjs";
 
-export function createPublicExampleTaskHandler() {
-  const opsBackend = createOpsBackend();
-  // One backend instance per handler, so each mounted app gets its own scripted
-  // sequence starting at the beginning of the story.
-  // They are built on first use because the scripted payload tables below are
-  // module-level `const`s, and this factory also runs at module evaluation time.
-  let namedTaskHandlers = null;
-  const namedHandlers = () => {
-    if (namedTaskHandlers === null) {
-      namedTaskHandlers = [
-      ];
-    }
-    return namedTaskHandlers;
-  };
-  return function publicExampleTaskHandler(args) {
-    const lookup = lookupTaskHandler(args);
-    if (lookup !== null && lookup !== undefined) {
-      return lookup;
-    }
-
-    for (const handler of namedHandlers()) {
-      const handled = handler(args);
-      if (handled !== null && handled !== undefined) {
-        return handled;
-      }
-    }
-
-    const apiConsole = apiRequestConsoleTaskHandler(args);
-    if (apiConsole !== null && apiConsole !== undefined) {
-      return apiConsole;
-    }
-
-    return opsApiTaskHandler(args, opsBackend);
-  };
-}
-
-export const publicExampleTaskHandler = createPublicExampleTaskHandler();
-
-export function createOpsBackend() {
+// Each mount owns its scripted sequence; requests in a different app cannot
+// advance this app's dashboard.
+function createOpsFetch() {
   let sequence = 0;
-  return {
-    nextSnapshot() {
-      sequence += 1;
-      return opsSnapshot(sequence);
-    },
+  const textViews = { summary: summaryText, traffic: trafficText, jobs: jobsText, alerts: alertsText, health: healthText };
+  return (uri, options = {}) => {
+    options.signal?.throwIfAborted();
+    if ((options.method ?? "GET") !== "GET") return new Response("method not allowed", { status: 405 });
+    const endpoint = String(uri).slice("/api/ops/".length);
+    if (endpoint !== "dashboard" && !Object.hasOwn(textViews, endpoint)) return new Response("not found", { status: 404 });
+    const snapshot = opsSnapshot(++sequence);
+    return endpoint === "dashboard"
+      ? Response.json(snapshot.fields)
+      : new Response(textViews[endpoint](snapshot), { headers: { "content-type": "text/plain; charset=utf-8" } });
   };
-}
-
-const defaultOpsBackend = createOpsBackend();
-const opsRouters = new WeakMap();
-
-export function opsApiTaskHandler({ name, request }, backend = defaultOpsBackend) {
-  return opsRouterFor(backend)({ name, request });
-}
-
-function opsRouterFor(backend) {
-  let router = opsRouters.get(backend);
-  if (router) {
-    return router;
-  }
-
-  router = createHttpTaskRouter({
-    "GET /api/ops/dashboard": () => {
-      const snapshot = backend.nextSnapshot();
-      return httpJsonResponse(snapshot.fields);
-    },
-    "GET /api/ops/summary": () => {
-      const snapshot = backend.nextSnapshot();
-      return httpTextResponse(summaryText(snapshot));
-    },
-    "GET /api/ops/traffic": () => {
-      const snapshot = backend.nextSnapshot();
-      return httpTextResponse(trafficText(snapshot));
-    },
-    "GET /api/ops/jobs": () => {
-      const snapshot = backend.nextSnapshot();
-      return httpTextResponse(jobsText(snapshot));
-    },
-    "GET /api/ops/alerts": () => {
-      const snapshot = backend.nextSnapshot();
-      return httpTextResponse(alertsText(snapshot));
-    },
-    "GET /api/ops/health": () => {
-      const snapshot = backend.nextSnapshot();
-      return httpTextResponse(healthText(snapshot));
-    },
-  });
-  opsRouters.set(backend, router);
-  return router;
-}
-
-const apiConsoleRouter = createHttpTaskRouter({
-  "POST /api/api-request-console": (req) => {
-    const scenario = httpHeaderValue(req.headers, "x-scenario") || "success";
-    if (scenario === "failure") {
-      throw httpTaskError("network", "offline");
-    }
-
-    const missing = scenario === "missing";
-    return httpJsonResponse(
-      missing
-        ? { status: "missing", message: "customer record was not found" }
-        : { status: "created", message: "customer-42 is ready" },
-      {
-        status: missing ? 404 : 201,
-        headers: [["x-result", missing ? "missing" : "ok"]],
-      },
-    );
-  },
-});
-
-export function apiRequestConsoleTaskHandler(args) {
-  return apiConsoleRouter(args);
-}
-
-export function lookupTaskHandler({ name, request, signal }) {
-  if (name !== "lookup") {
-    return null;
-  }
-
-  const query = String(request).trim();
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error("canceled"));
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      if (query.toLowerCase().includes("fail") || query.toLowerCase().includes("offline")) {
-        reject(new Error("offline search index"));
-      } else if (query === "") {
-        resolve("Type a search term to see matching actions");
-      } else {
-        resolve(`Top results for "${query}": docs, examples, and release notes`);
-      }
-    }, 80);
-
-    signal?.addEventListener?.(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new Error("canceled"));
-      },
-      { once: true },
-    );
-  });
 }
 
 function opsSnapshot(sequence) {
@@ -415,7 +277,7 @@ function twoDigits(value) {
 // Native specs supply service responses explicitly. In the browser these
 // fetch implementations provide the corresponding scripted examples.
 //
-// House rules, same as `createOpsBackend`: no `Math.random()`, no wall-clock
+// House rules, same as `createOpsFetch`: no `Math.random()`, no wall-clock
 // input. Each backend owns a small counter that advances once per request, and
 // the counter indexes a scripted progression so that successive polls tell a
 // story — healthy, degraded, an incident with updates, a failure, recovery —
@@ -806,6 +668,7 @@ function criteriaSeed(text) {
 }
 
 export function createPublicExampleFetch(fetchImpl = globalThis.fetch) {
+  const opsFetch = createOpsFetch();
   const conduitFetch = createConduitFetch();
   const statusPageFetch = createStatusPageFetch();
   const packageExplorerFetch = createPackageExplorerFetch();
@@ -815,6 +678,21 @@ export function createPublicExampleFetch(fetchImpl = globalThis.fetch) {
     const conduit = conduitFetch(uri, options);
     if (conduit !== null) return conduit;
     const { signal } = options;
+    // Small semantic fixtures use real hosted HTTP, just like gallery apps.
+    // Return ordinary responses; occurrence ordering belongs to the engine.
+    if (uri === "/api/state-command" || /^\/api\/latest\/(0|[1-9][0-9]*)$/.test(uri)) {
+      signal?.throwIfAborted();
+      if ((options.method ?? "GET") !== "GET") return new Response("method not allowed", { status: 405 });
+      return new Response(uri === "/api/state-command" ? "ready" : `result ${uri.slice("/api/latest/".length)}`);
+    }
+    if (["/api/form-submit", "/api/action-ping", "/api/action-dispose"].includes(uri)) {
+      signal?.throwIfAborted();
+      if ((options.method ?? "GET") !== "POST") return new Response("method not allowed", { status: 405 });
+      if (uri === "/api/form-submit") return new Response("queued");
+      if (uri === "/api/action-dispose") return new Response("ready");
+      return new Response(options.body);
+    }
+    if (String(uri).startsWith("/api/ops/")) return opsFetch(uri, options);
     if (String(uri).startsWith("/api/status/")) return statusPageFetch(uri, options);
     if (String(uri).startsWith("/api/packages/")) return packageExplorerFetch(uri, options);
     if (String(uri) === "/api/notes/sync") return fieldNotesFetch(uri, options);

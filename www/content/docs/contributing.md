@@ -1178,9 +1178,7 @@ oversized values reject the spec.
 
 These stubs simulate results and perform no filesystem IO. They establish
 application response and state behavior; real filesystem and native chooser
-behavior need host tests and a native walkthrough. The raw `resolve-task`,
-`reject-task`, and `resolve-stale-task` commands settle engine tasks, which
-the browser platform still uses; no GUI example starts one. The Board and
+behavior need host tests and a native walkthrough. The Board and
 Notes journeys demonstrate save snapshots, failed loads, dismissed choosers,
 retries, and retained drafts.
 
@@ -1188,17 +1186,15 @@ A supplied result does not assert the request payload the app emitted. For
 example, resolving a write with `:bytes 14` does not prove that the app submitted
 those fourteen bytes. Test snapshot construction as pure application logic and
 check real submitted data through focused native IO workflows. The harness
-currently exposes pending/canceled counts, not request-body assertions.
+currently exposes pending effect counts, not request-body assertions.
 
 Supported async and lifecycle commands:
 
-- `(resolve-task "<task-name>" "<payload>")`
-- `(resolve-stale-task "<task-name>" "<payload>")`
-- `(reject-task "<task-name>" "<payload>")`
+- `(manual-effects)` (setup only)
+- `(expect-pending-effects <count>)`
+- `(run-effect <occurrence-id>)`
 - `(tick-interval <period-ms>)`, `(tick-interval-if-active <period-ms>)`
 - `(request-window-close)`, `(expect-window-closed true|false)` (native GUI lifecycle)
-- `(expect-pending-task "<task-name>" <count>)`
-- `(expect-canceled-task "<task-name>" <count>)`
 - `(expect-interval <period-ms> <count>)`
 - `(expect-cleanup "<cleanup-name>" <count>)`
 
@@ -1218,13 +1214,11 @@ Quoted values are unescaped (`\n`, `\t`, `\\`, `\"`) for every command that
 takes one, including `fill`, `change`, `select-option`, `key-down`, and the
 `expect-text` / `expect-value` / `expect-attr` comparison values.
 
-`expect-pending-task` asserts an absolute count, not a delta. To prove that an
-interaction did *not* start a request while another is in flight, assert that
-the count is unchanged and that `expect-canceled-task` is still 0.
-
-`resolve-stale-task` requires a previously canceled request for that task name;
-without one the host reports `fake stale task result had no matching canceled
-request`. Force a supersede first.
+`expect-pending-effects` asserts an absolute count, not a delta. In manual
+mode, `run-effect` executes one admitted occurrence's whole closure using the
+installed service stubs. Choose occurrence order to test stale results; the
+spec does not simulate suspension points inside an effect. The retired task
+settlement and pending/canceled-task commands are rejected.
 
 `real-click` dispatches `pointerdown -> pointerup -> click` through the
 simulated propagation path, including capture/bubble, `self`, and stop policy.

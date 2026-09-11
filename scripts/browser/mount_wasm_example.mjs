@@ -16,7 +16,7 @@ if (runtimeIndex !== -1) {
   runtimeBase = pathToFileURL(resolve(directory) + "/");
   args.splice(runtimeIndex, 2);
 }
-const { createPublicExampleFetch, publicExampleTaskHandler } = await import(new URL("example_tasks.mjs", runtimeBase));
+const { createPublicExampleFetch } = await import(new URL("example_tasks.mjs", runtimeBase));
 const { serviceOpsBehaviors } = await import(new URL("service_ops_charts.mjs", runtimeBase));
 const { SignalsRuntime, instantiateSignalsBytes } = await import(new URL("signals.mjs", runtimeBase));
 const wasmPath = args.shift();
@@ -142,8 +142,20 @@ function fail(message) {
 const bytes = await readFile(wasmPath);
 const localStorageDouble = createStorageDouble(initialLocalStorage());
 const sessionStorageDouble = createStorageDouble(initialSessionStorage());
+const actionRequests = [];
+const publicFetch = createPublicExampleFetch();
 const { instance } = await instantiateSignalsBytes(bytes, {
-  fetchImpl: createPublicExampleFetch(),
+  fetchImpl: exerciseEventActions ? (uri, options) => {
+    if (!["/api/action-ping", "/api/action-dispose"].includes(uri) || options.method !== "POST") {
+      throw new Error(`unexpected action HTTP request: ${options.method} ${uri}`);
+    }
+    return new Promise((resolve) => actionRequests.push({
+      uri,
+      body: new TextDecoder("utf-8", { fatal: true }).decode(options.body),
+      signal: options.signal,
+      resolve: (body) => resolve(new Response(body)),
+    }));
+  } : publicFetch,
   localStorage: localStorageDouble,
   sessionStorage: sessionStorageDouble,
 });
@@ -162,15 +174,7 @@ const locationDouble = {
     return browserHistory.href;
   },
 };
-const actionRequests = [];
 const runtime = new SignalsRuntime(instance.exports, root, {
-  taskHandler: exerciseEventActions || exerciseCoordinatedWrites
-    ? (request) => {
-      const allowed = exerciseCoordinatedWrites ? ["write-observer", "partial-write"] : ["action-ping", "action-dispose"];
-      if (!allowed.includes(request.name)) throw new Error(`unexpected action task: ${request.name}`);
-      return new Promise((resolve) => actionRequests.push({ ...request, resolve }));
-    }
-    : publicExampleTaskHandler,
   behaviors: instrumentBehaviors(serviceOpsBehaviors, behaviorCounts),
   location: locationDouble,
   history: browserHistory,
@@ -238,6 +242,8 @@ if (exerciseCounter) {
 }
 
 if (exerciseStateUpdates) {
+  const result = findNode(root, (node) => node.getAttribute?.("data-testid") === "result");
+  if (result?.textContent !== "done:ready") fail("state command HTTP effect did not publish its result");
   const history = () => findNode(root, (node) => node.getAttribute?.("data-testid") === "history")?.textContent;
   let expected = "";
   for (let occurrence = 0; occurrence < 7; occurrence++) {
@@ -287,7 +293,7 @@ if (exerciseEventActions) {
   await exerciseEventActionsWorkflow(name, root, errors, actionRequests);
 }
 if (exerciseCoordinatedWrites) {
-  await exerciseCoordinatedWritesWorkflow(name, root, errors, actionRequests);
+  await exerciseCoordinatedWritesWorkflow(name, root, errors);
 }
 if (exerciseSvg) {
   const svgNamespace = "http://www.w3.org/2000/svg";
@@ -467,8 +473,9 @@ async function exerciseLocationCanonicalBranchWorkflow(name, root, errors, brows
   }
 }
 
-async function exerciseCoordinatedWritesWorkflow(name, root, errors, requests) {
+async function exerciseCoordinatedWritesWorkflow(name, root, errors) {
   const read = (id) => findNode(root, (node) => node.getAttribute?.("data-testid") === id)?.textContent;
+  const history = ["B:A", "A:B", "B:A", "A:B"];
   const click = async (label, pair, count, branch) => {
     const button = findByText(root, "button", label);
     if (!button) fail(`missing coordinated write button: ${label}`);
@@ -478,14 +485,8 @@ async function exerciseCoordinatedWritesWorkflow(name, root, errors, requests) {
     if (read("pair") !== pair || read("branch-value") !== branch) {
       fail(`coordinated writes rendered an inconsistent snapshot after ${label}`);
     }
-    if (requests.length !== count || requests.some((request) => request.name !== "write-observer")) {
+    if (read("observed") !== history.slice(0, count).join(";")) {
       fail(`coordinated writes exposed a partial snapshot or repeated an unchanged effect after ${label}`);
-    }
-    if (count && (requests[count - 1].request !== pair || requests[count - 1].signal.aborted)) {
-      fail(`coordinated write observer did not receive the final snapshot after ${label}`);
-    }
-    if (requests.slice(0, -1).some((request) => !request.signal.aborted)) {
-      fail("coordinated write observer left an obsolete request active");
     }
   };
   await click("Cached single", "A:B", 0, undefined);
@@ -521,7 +522,7 @@ async function exerciseEventActionsWorkflow(name, root, errors, requests) {
 
   await fill("beta");
   expectResult("waiting");
-  if (requests.length !== 0) fail("changing action reads started a task");
+  if (requests.length !== 0) fail("changing action reads started an effect");
   // Dispatch before yielding: lossless clicks must not coalesce in the browser queue.
   click("Append snapshot");
   click("Append snapshot");
@@ -530,25 +531,28 @@ async function exerciseEventActionsWorkflow(name, root, errors, requests) {
   click("Ping");
   click("Ping");
   await settle();
-  if (requests.length !== 2 || requests.some((request) => request.request !== "beta")) {
-    fail("identical action clicks did not start two identical requests");
+  if (requests.length !== 2 || requests.some((request) => request.uri !== "/api/action-ping" || request.body !== "beta")) {
+    fail(`identical action clicks did not start two identical requests: ${JSON.stringify(requests.map(({ uri, body }) => ({ uri, body })))}; rendered: ${root.textContent}`);
   }
-  if (!requests[0].signal.aborted || requests[1].signal.aborted) {
-    fail("repeated action requests did not preserve latest-wins cancellation");
+  if (requests.some((request) => request.signal.aborted)) {
+    fail("repeated action occurrences canceled an admitted effect");
   }
   await fill("gamma");
   if (requests.length !== 2) fail("updating action reads repeated a request");
   click("Toggle actions");
   await settle();
-  if (!requests[1].signal.aborted || findByText(root, "button", "Ping")) {
-    fail("disposing an action scope did not remove its handler and cancel its task");
+  if (requests.some((request) => request.signal.aborted) || findByText(root, "button", "Ping")) {
+    fail("scope disposal must remove its handler without canceling admitted effects");
   }
-  // Late completions from canceled requests must not revive disposed work.
-  requests[0].resolve("stale first");
-  requests[1].resolve("stale second");
+  // Complete the newer occurrence first: there is no implicit latest-wins rule.
+  requests[1].resolve("second completed");
   await settle();
   const status = findNode(root, (node) => node.getAttribute?.("data-testid") === "status");
-  if (status?.textContent !== "idle") fail("canceled action completion changed task state");
+  if (status?.textContent !== "second completed") fail("effect result did not reach surviving ancestor state");
+  requests[0].resolve("first completed last");
+  await settle();
+  if (status?.textContent !== "first completed last") fail("effect results did not apply in completion order");
+  if (findByText(root, "button", "Ping")) fail("effect result revived its disposed action scope");
   click("Toggle actions");
   await settle();
   click("Append snapshot");
@@ -556,17 +560,17 @@ async function exerciseEventActionsWorkflow(name, root, errors, requests) {
   expectResult("waiting|beta|beta|gamma");
   click("Prime disposal");
   await settle();
-  if (requests.length !== 3 || requests[2].name !== "action-dispose") fail("disposal primer did not start");
+  if (requests.length !== 3 || requests[2].uri !== "/api/action-dispose" || requests[2].body !== "gamma") fail("disposal primer did not receive fresh reads");
   requests[2].resolve("ready");
   await settle();
   click("Dispose on loading");
   await settle();
-  if (requests.length !== 4 || !requests[3].signal.aborted) fail("Loading did not cancel its own action's request");
+  if (requests.length !== 4 || requests[3].signal.aborted || requests[3].body !== "gamma") fail("handler-time disposal lost its admitted effect or snapshot");
   if (findByText(root, "button", "Dispose on loading")) fail("Loading left its action scope rendered");
   requests[3].resolve("ready");
   await settle();
   const disposeStatus = findNode(root, (node) => node.getAttribute?.("data-testid") === "dispose-status");
-  if (disposeStatus?.textContent !== "idle") fail("retired action completion resurrected its Loading scope");
+  if (disposeStatus?.textContent !== "ready" || !findByText(root, "button", "Dispose on loading")) fail("surviving ancestor state did not render the completed effect");
   const target = (id) => {
     const node = findNode(root, (candidate) => candidate.getAttribute?.("data-testid") === id);
     if (!node) fail(`missing typed action target: ${id}`);
@@ -599,7 +603,7 @@ async function exerciseEventActionsWorkflow(name, root, errors, requests) {
   await settle();
   expected += "|detail:package ready|detail:package ready";
   expectResult(expected);
-  console.log(`exercised repeated actions, snapshots, and scoped cancellation in ${name}`);
+  console.log(`exercised repeated actions, snapshots, completion order, and effects surviving disposal in ${name}`);
 }
 
 async function exerciseStorageCommandsWorkflow(name, root, errors, localStorageDouble, sessionStorageDouble) {

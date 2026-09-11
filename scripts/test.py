@@ -337,7 +337,7 @@ def run_wasm_effect_contracts(roc_bin: str) -> None:
             f"--output={wasm}", ROOT / "test" / "wasm" / fixture / "main.roc",
         ])
         run([
-            "node", "--experimental-wasm-jspi",
+            "node", "--no-maglev", "--experimental-wasm-jspi",
             ROOT / "scripts" / "browser" / f"wasm_{fixture}.test.mjs", wasm,
         ])
 
@@ -412,7 +412,7 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
             except subprocess.CalledProcessError as exc:
                 ledger.record("wasm", example.slug, False, f"roc build exited with {exc.returncode}")
                 continue
-            mount_cmd = ["node", "--experimental-wasm-jspi", "scripts/browser/mount_wasm_example.mjs", output, example.slug]
+            mount_cmd = ["node", "--no-maglev", "--experimental-wasm-jspi", "scripts/browser/mount_wasm_example.mjs", output, example.slug]
             if example.expect_mount_error is not None:
                 mount_cmd.extend(["--expect-error", example.expect_mount_error])
             if example.slug == "location-source":
