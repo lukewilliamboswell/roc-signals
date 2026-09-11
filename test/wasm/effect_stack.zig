@@ -1,3 +1,5 @@
+//! Compiled stack-local guards for overlapping browser effect suspensions.
+//! Ordinary events and memory growth must not overwrite either saved frame.
 extern "env" fn suspend_effect(id: u32) u32;
 extern "env" fn set_limits(top: usize, bottom: usize) void;
 const stack = @import("effect_stack");
