@@ -2,8 +2,9 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from prepare_platforms import check_platform, prepare_platform
+from prepare_platforms import atomic_copy, check_platform, prepare_platform
 
 
 class SharedPlatformTests(unittest.TestCase):
@@ -53,3 +54,20 @@ class SharedPlatformTests(unittest.TestCase):
         prepare_platform(self.package, destination)
         self.assertEqual((destination / 'Signal.roc').read_bytes(), (self.shared / 'Signal.roc').read_bytes())
         self.assertEqual((destination / 'main.roc').read_text(), 'platform entry\n')
+
+    def test_failed_refresh_never_publishes_partial_bytes(self):
+        source = self.shared / 'Signal.roc'
+        destination = self.package / 'Signal.roc'
+        before = destination.read_bytes()
+
+        def fail_mid_copy(_source, pending):
+            Path(pending).write_bytes(b'partial')
+            raise OSError('injected copy failure')
+
+        source.write_text('replacement source\n')
+        with patch('prepare_platforms.shutil.copyfile', side_effect=fail_mid_copy), \
+                self.assertRaisesRegex(OSError, 'injected copy failure'):
+            atomic_copy(source, destination)
+
+        self.assertEqual(destination.read_bytes(), before)
+        self.assertEqual(list(destination.parent.glob(f'.{destination.name}.*')), [])
