@@ -1320,9 +1320,14 @@ bench gate. A built app binary also accepts benchmark flags directly:
 .test-out/bench-bin/signals-data-grid-bench --host-bench-app --host-bench-name signals-data-grid --host-bench-iterations 100 --host-bench-samples 3 examples-web/data-grid/specs/initial-mount.scm
 ```
 
-The host initializes a fresh app per iteration, applies the initial command
-batch, then replays commands classified as benchmark actions in
-`src/bench/benchmark.zig` (user actions, browser-environment changes, and interval ticks).
+The host initializes a fresh app per iteration, applies SCM setup through the
+same pre-mount path as a semantic test, then replays commands classified as
+benchmark actions in `src/bench/benchmark.zig` (user actions,
+browser-environment changes, and interval ticks). Replay calls the production
+`SpecRunnerCtx` and its ordinary event/effect path; benchmark code only attaches
+timing and command-count observation around that execution. This keeps the
+benchmark exercising the behavior developers actually ship instead of a
+parallel simulation of it.
 Expectation and metric assertion commands remain the semantic correctness suite
 used by `python3 scripts/test.py native`.
 
