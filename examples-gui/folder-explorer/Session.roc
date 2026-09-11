@@ -96,7 +96,7 @@ Session := [].{
 			phase: Idle,
 			retry: NoRetry,
 			preview: NoPreview,
-			notice: "${entries.len().to_str()} entries loaded.",
+			notice: loaded_text(entries.len()),
 		}
 	}
 
@@ -199,6 +199,10 @@ Session := [].{
 		Directory => navigate(state, selected.path)
 		_ => select(state, selected)
 	}
+
+	## The listing notice reads as prose, so one entry is "1 entry loaded."
+	loaded_text : U64 -> Str
+	loaded_text = |count| if count == 1 { "1 entry loaded." } else { "${count.to_str()} entries loaded." }
 
 	preview_selected : State -> State
 	preview_selected = |state| match (state.phase, state.selection, state.source) {
@@ -337,3 +341,5 @@ expect {
 	Session.breadcrumbs(Folder("C:\\Users\\Lee")) == [{ path: "C:\\", label: "C:\\" }, { path: "C:\\Users", label: "Users" }, { path: "C:\\Users\\Lee", label: "Lee" }] and
 	Session.breadcrumbs(Sample("docs")) == [{ path: "", label: "Sample" }, { path: "docs", label: "docs" }]
 }
+
+expect Session.loaded_text(1) == "1 entry loaded." and Session.loaded_text(3) == "3 entries loaded."

@@ -157,8 +157,9 @@ Breadcrumbs are adjacent buttons without clear hierarchy separators.
 
 Acceptance: label aligned data columns, lay out inspector metadata separately
 from content, distinguish page/section headings, consolidate quiet status and
-help, and give breadcrumbs a clear path hierarchy. Add correct singular/plural
-copy (`1 tasks`, `1 words` are visible in this review). Use existing style
+help, and give breadcrumbs a clear path hierarchy. Singular/plural copy is
+done: Board columns, the Explorer listing notice and the Notes summary all
+read `1 task`, `1 entry loaded.` and `1 word` (2026-09-11). Use existing style
 capabilities first; retain semantic labels and the honest sample/replay notices.
 Check long values and narrow sizes, not just seeded text. A strict “one accent
 per screen” rule is a design option, not a correctness requirement.
