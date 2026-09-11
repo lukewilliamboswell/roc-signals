@@ -146,6 +146,169 @@ pub const TaskKind = enum(u32) {
     verify_assets = 11,
 };
 
+/// One field of a task request or result, in wire order.
+pub const TaskField = struct {
+    name: []const u8,
+    kind: TaskFieldKind,
+};
+
+/// The typed shape of one task field. Text bounds are UTF-8 bytes; a list is
+/// framed as its count and then each element's fields in order; a tagged
+/// field is framed as its tag and then the chosen variant's fields.
+pub const TaskFieldKind = union(enum) {
+    path,
+    text: struct { max_bytes: usize, non_empty: bool = false },
+    unsigned: struct { max_value: ?u64 = null },
+    boolean,
+    symbol: []const []const u8,
+    hex_sha256,
+    list: struct { min_items: usize = 0, max_items: usize, of: []const TaskField, spelling: ?[]const []const u8 = null },
+    tagged: []const TaskVariant,
+};
+
+/// One variant of a tagged task field.
+pub const TaskVariant = struct { tag: []const u8, fields: []const TaskField };
+
+/// The manifest's shape for one task kind: what a request carries after the
+/// codec frame, what a successful result carries, the spec fixture that spells
+/// the result, and the hand-written rules the generic validators call by name.
+pub const TaskSchema = struct {
+    kind: TaskKind,
+    request: []const TaskField,
+    result: []const TaskField,
+    fixture: ?[]const u8,
+    rules: []const []const u8,
+    request_rules: []const []const u8,
+};
+
+/// Every task kind's shape, indexed by kind.
+pub const task_schemas = [_]TaskSchema{
+    .{
+        .kind = .external,
+        .request = &[_]TaskField{},
+        .result = &[_]TaskField{},
+        .fixture = null,
+        .rules = &[_][]const u8{},
+        .request_rules = &[_][]const u8{},
+    },
+    .{
+        .kind = .choose_file,
+        .request = &[_]TaskField{},
+        .result = &[_]TaskField{.{ .name = "choice", .kind = .{ .tagged = &[_]TaskVariant{ .{ .tag = "chosen", .fields = &[_]TaskField{.{ .name = "path", .kind = .path }} }, .{ .tag = "canceled", .fields = &[_]TaskField{} } } } }},
+        .fixture = "resolve-file-choice",
+        .rules = &[_][]const u8{},
+        .request_rules = &[_][]const u8{},
+    },
+    .{
+        .kind = .choose_directory,
+        .request = &[_]TaskField{},
+        .result = &[_]TaskField{.{ .name = "choice", .kind = .{ .tagged = &[_]TaskVariant{ .{ .tag = "chosen", .fields = &[_]TaskField{.{ .name = "path", .kind = .path }} }, .{ .tag = "canceled", .fields = &[_]TaskField{} } } } }},
+        .fixture = "resolve-file-choice",
+        .rules = &[_][]const u8{},
+        .request_rules = &[_][]const u8{},
+    },
+    .{
+        .kind = .choose_save_path,
+        .request = &[_]TaskField{ .{ .name = "directory_kind", .kind = .{ .symbol = &[_][]const u8{ "home", "at" } } }, .{ .name = "directory", .kind = .{ .text = .{ .max_bytes = 4096 } } }, .{ .name = "suggested_name", .kind = .{ .text = .{ .max_bytes = 255, .non_empty = true } } } },
+        .result = &[_]TaskField{.{ .name = "choice", .kind = .{ .tagged = &[_]TaskVariant{ .{ .tag = "chosen", .fields = &[_]TaskField{.{ .name = "path", .kind = .path }} }, .{ .tag = "canceled", .fields = &[_]TaskField{} } } } }},
+        .fixture = "resolve-file-choice",
+        .rules = &[_][]const u8{},
+        .request_rules = &[_][]const u8{},
+    },
+    .{
+        .kind = .read_text,
+        .request = &[_]TaskField{.{ .name = "path", .kind = .path }},
+        .result = &[_]TaskField{ .{ .name = "path", .kind = .path }, .{ .name = "text", .kind = .{ .text = .{ .max_bytes = 1048576 } } } },
+        .fixture = "resolve-file-read",
+        .rules = &[_][]const u8{},
+        .request_rules = &[_][]const u8{},
+    },
+    .{
+        .kind = .write_text,
+        .request = &[_]TaskField{ .{ .name = "path", .kind = .path }, .{ .name = "text", .kind = .{ .text = .{ .max_bytes = 1048576 } } } },
+        .result = &[_]TaskField{ .{ .name = "path", .kind = .path }, .{ .name = "bytes", .kind = .{ .unsigned = .{ .max_value = 1048576 } } } },
+        .fixture = "resolve-file-write",
+        .rules = &[_][]const u8{},
+        .request_rules = &[_][]const u8{},
+    },
+    .{
+        .kind = .scan_directory,
+        .request = &[_]TaskField{.{ .name = "root", .kind = .path }},
+        .result = &[_]TaskField{ .{ .name = "root", .kind = .path }, .{ .name = "entries", .kind = .{ .list = .{ .max_items = 10000, .of = &[_]TaskField{ .{ .name = "path", .kind = .path }, .{ .name = "kind", .kind = .{ .symbol = &[_][]const u8{ "file", "directory", "symbolic-link", "other" } } }, .{ .name = "bytes", .kind = .{ .unsigned = .{} } } } } } } },
+        .fixture = null,
+        .rules = &[_][]const u8{},
+        .request_rules = &[_][]const u8{},
+    },
+    .{
+        .kind = .list_directory,
+        .request = &[_]TaskField{.{ .name = "path", .kind = .path }},
+        .result = &[_]TaskField{ .{ .name = "path", .kind = .path }, .{ .name = "entries", .kind = .{ .list = .{ .max_items = 10000, .of = &[_]TaskField{ .{ .name = "path", .kind = .path }, .{ .name = "kind", .kind = .{ .symbol = &[_][]const u8{ "file", "directory", "symbolic-link", "other" } } }, .{ .name = "bytes", .kind = .{ .unsigned = .{} } } }, .spelling = &[_][]const u8{ "kind", "path", "bytes" } } } } },
+        .fixture = "resolve-file-directory",
+        .rules = &[_][]const u8{"directory_path_budget"},
+        .request_rules = &[_][]const u8{},
+    },
+    .{
+        .kind = .open_path,
+        .request = &[_]TaskField{.{ .name = "path", .kind = .path }},
+        .result = &[_]TaskField{.{ .name = "path", .kind = .path }},
+        .fixture = "resolve-file-open",
+        .rules = &[_][]const u8{},
+        .request_rules = &[_][]const u8{},
+    },
+    .{
+        .kind = .read_preview,
+        .request = &[_]TaskField{.{ .name = "path", .kind = .path }},
+        .result = &[_]TaskField{ .{ .name = "path", .kind = .path }, .{ .name = "text", .kind = .{ .text = .{ .max_bytes = 65536 } } }, .{ .name = "truncated", .kind = .boolean } },
+        .fixture = "resolve-file-preview",
+        .rules = &[_][]const u8{},
+        .request_rules = &[_][]const u8{},
+    },
+    .{
+        .kind = .read_log,
+        .request = &[_]TaskField{ .{ .name = "path", .kind = .path }, .{ .name = "position", .kind = .{ .symbol = &[_][]const u8{ "start", "end", "after" } } }, .{ .name = "device", .kind = .{ .unsigned = .{} } }, .{ .name = "inode", .kind = .{ .unsigned = .{} } }, .{ .name = "offset", .kind = .{ .unsigned = .{} } } },
+        .result = &[_]TaskField{ .{ .name = "path", .kind = .path }, .{ .name = "text", .kind = .{ .text = .{ .max_bytes = 65536 } } }, .{ .name = "device", .kind = .{ .unsigned = .{} } }, .{ .name = "inode", .kind = .{ .unsigned = .{} } }, .{ .name = "offset", .kind = .{ .unsigned = .{} } }, .{ .name = "change", .kind = .{ .symbol = &[_][]const u8{ "initial", "continued", "rotated", "truncated" } } }, .{ .name = "state", .kind = .{ .symbol = &[_][]const u8{ "more", "at-end", "partial-utf8" } } } },
+        .fixture = "resolve-file-log",
+        .rules = &[_][]const u8{},
+        .request_rules = &[_][]const u8{"log_cursor"},
+    },
+    .{
+        .kind = .verify_assets,
+        .request = &[_]TaskField{.{ .name = "entries", .kind = .{ .list = .{ .min_items = 1, .max_items = 256, .of = &[_]TaskField{ .{ .name = "name", .kind = .{ .text = .{ .max_bytes = 1024, .non_empty = true } } }, .{ .name = "digest", .kind = .hex_sha256 } } } } }},
+        .result = &[_]TaskField{.{ .name = "entries", .kind = .{ .list = .{ .min_items = 1, .max_items = 256, .of = &[_]TaskField{ .{ .name = "name", .kind = .{ .text = .{ .max_bytes = 1024, .non_empty = true } } }, .{ .name = "status", .kind = .{ .symbol = &[_][]const u8{ "ok", "missing", "mismatch" } } } }, .spelling = &[_][]const u8{ "status", "name" } } } }},
+        .fixture = "resolve-file-assets",
+        .rules = &[_][]const u8{},
+        .request_rules = &[_][]const u8{"assets_manifest"},
+    },
+};
+
+/// The error shape every non-external task kind may settle with.
+pub const task_error_fields = [_]TaskField{ .{ .name = "kind", .kind = .{ .symbol = &[_][]const u8{ "canceled", "not-found", "permission-denied", "invalid-utf8", "invalid-path", "resource-limit", "io", "unavailable" } } }, .{ .name = "detail", .kind = .{ .text = .{ .max_bytes = 4096 } } } };
+
+/// The spec fixture that spells a task error.
+pub const task_error_fixture = "reject-file";
+
+/// The hand-written rules the error fixture applies, by name.
+pub const task_error_rules = [_][]const u8{"canceled_empty_detail"};
+
+/// Frames a request of this kind carries after the codec frame, or null
+/// when a list field makes the count depend on the request.
+pub fn requestFrames(kind: TaskKind) ?usize {
+    return switch (kind) {
+        .external => 0,
+        .choose_file => 0,
+        .choose_directory => 0,
+        .choose_save_path => 3,
+        .read_text => 1,
+        .write_text => 2,
+        .scan_directory => 1,
+        .list_directory => 1,
+        .open_path => 1,
+        .read_preview => 1,
+        .read_log => 5,
+        .verify_assets => null,
+    };
+}
+
 /// The extern node record served through `signals_read_changed`. Zig and Rust
 /// declare this layout from the same manifest order, so the field order is ABI;
 /// `signals_node_size` and the host-side size assertion pin the layout.

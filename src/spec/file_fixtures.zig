@@ -13,18 +13,17 @@ pub const Fixture = struct {
     failed: bool,
 };
 
-/// Recognizes only the structured file-settlement vocabulary; raw task commands
-/// remain available for deliberate malformed-payload and stale-result tests.
+const protocol = @import("signals").native_protocol;
+
+/// Recognizes only the structured file-settlement vocabulary the manifest
+/// declares; raw task commands remain available for deliberate
+/// malformed-payload and stale-result tests.
 pub fn recognizes(head: []const u8) bool {
-    return std.mem.eql(u8, head, "resolve-file-choice") or
-        std.mem.eql(u8, head, "resolve-file-read") or
-        std.mem.eql(u8, head, "resolve-file-write") or
-        std.mem.eql(u8, head, "resolve-file-log") or
-        std.mem.eql(u8, head, "resolve-file-directory") or
-        std.mem.eql(u8, head, "resolve-file-preview") or
-        std.mem.eql(u8, head, "resolve-file-open") or
-        std.mem.eql(u8, head, "resolve-file-assets") or
-        std.mem.eql(u8, head, "reject-file");
+    if (std.mem.eql(u8, head, protocol.task_error_fixture)) return true;
+    for (protocol.task_schemas) |schema| {
+        if (schema.fixture) |fixture| if (std.mem.eql(u8, head, fixture)) return true;
+    }
+    return false;
 }
 
 fn bit(kind: boundary.TaskKind) u64 {
@@ -118,159 +117,170 @@ fn frame(writer: *std.Io.Writer, value: []const u8) ParseError!void {
 
 /// Parses and encodes a complete fixture before transferring its two owned
 /// strings to the spec command. Failure releases every provisional allocation.
+///
+/// The fixture's shape is the manifest's result shape for its task kind: each
+/// field is a `:name value` pair, a list is a list of positional elements in
+/// the field's spelling order, and a tagged field is a single positional form
+/// such as `(chosen "/p")`. The bytes written are the production frames, in
+/// wire order, so a fixture and a real worker settle a task identically.
 pub fn parse(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr) ParseError!Fixture {
-    if (args.len < 2) return error.InvalidFormat;
+    if (args.len < 1) return error.InvalidFormat;
     const task = try string(args[0]);
     if (task.len == 0 or !validText(task, 4096)) return error.InvalidFormat;
     var buffer: std.Io.Writer.Allocating = .init(allocator);
     defer buffer.deinit();
     try frame(&buffer.writer, "files1");
+    const failed = std.mem.eql(u8, head, protocol.task_error_fixture);
     var kinds: u64 = 0;
-    const failed = std.mem.eql(u8, head, "reject-file");
-    if (std.mem.eql(u8, head, "resolve-file-choice")) {
-        if (args.len != 2) return error.InvalidFormat;
-        const choice = switch (args[1].value) {
-            .list => |items| items,
-            else => return error.InvalidFormat,
-        };
-        if (choice.len == 0) return error.InvalidFormat;
-        const tag = try symbol(choice[0]);
-        if (std.mem.eql(u8, tag, "chosen")) {
-            if (choice.len != 2) return error.InvalidFormat;
-            const path = try string(choice[1]);
-            if (!validPath(path)) return error.InvalidFormat;
-            try frame(&buffer.writer, "chosen");
-            try frame(&buffer.writer, path);
-        } else if (std.mem.eql(u8, tag, "canceled") and choice.len == 1) {
-            try frame(&buffer.writer, "canceled");
-        } else return error.InvalidFormat;
-        kinds = bit(.choose_file) | bit(.choose_directory) | bit(.choose_save_path);
-    } else if (std.mem.eql(u8, head, "resolve-file-read")) {
-        if (args.len != 5) return error.InvalidFormat;
-        const path = try string(try field(args[1..], ":path"));
-        const text = try string(try field(args[1..], ":text"));
-        if (!validPath(path) or !validText(text, 1048576)) return error.InvalidFormat;
-        try frame(&buffer.writer, path);
-        try frame(&buffer.writer, text);
-        kinds = bit(.read_text);
-    } else if (std.mem.eql(u8, head, "resolve-file-write")) {
-        if (args.len != 5) return error.InvalidFormat;
-        const path = try string(try field(args[1..], ":path"));
-        const size = try unsigned(try field(args[1..], ":bytes"));
-        if (!validPath(path) or size > 1048576) return error.InvalidFormat;
-        try frame(&buffer.writer, path);
-        try numberFrame(&buffer.writer, size);
-        kinds = bit(.write_text);
-    } else if (std.mem.eql(u8, head, "resolve-file-log")) {
-        if (args.len != 15) return error.InvalidFormat;
-        const path = try string(try field(args[1..], ":path"));
-        const text = try string(try field(args[1..], ":text"));
-        const device = try unsigned(try field(args[1..], ":device"));
-        const inode = try unsigned(try field(args[1..], ":inode"));
-        const offset = try unsigned(try field(args[1..], ":offset"));
-        const change = try symbol(try field(args[1..], ":change"));
-        const state = try symbol(try field(args[1..], ":state"));
-        if (!validPath(path) or !validText(text, 65536) or
-            !oneOf(change, &.{ "initial", "continued", "rotated", "truncated" }) or
-            !oneOf(state, &.{ "more", "at-end", "partial-utf8" })) return error.InvalidFormat;
-        try frame(&buffer.writer, path);
-        try frame(&buffer.writer, text);
-        try numberFrame(&buffer.writer, device);
-        try numberFrame(&buffer.writer, inode);
-        try numberFrame(&buffer.writer, offset);
-        try frame(&buffer.writer, change);
-        try frame(&buffer.writer, state);
-        kinds = bit(.read_log);
-    } else if (std.mem.eql(u8, head, "resolve-file-preview")) {
-        if (args.len != 7) return error.InvalidFormat;
-        const path = try string(try field(args[1..], ":path"));
-        const text = try string(try field(args[1..], ":text"));
-        const truncated = switch ((try field(args[1..], ":truncated")).value) {
-            .atom => |atom| switch (atom) {
-                .boolean => |value| value,
-                else => return error.InvalidFormat,
-            },
-            else => return error.InvalidFormat,
-        };
-        if (!validPath(path) or !validText(text, 65536)) return error.InvalidFormat;
-        try frame(&buffer.writer, path);
-        try frame(&buffer.writer, text);
-        try frame(&buffer.writer, if (truncated) "true" else "false");
-        kinds = bit(.read_preview);
-    } else if (std.mem.eql(u8, head, "resolve-file-open")) {
-        if (args.len != 3) return error.InvalidFormat;
-        const path = try string(try field(args[1..], ":path"));
-        if (!validPath(path)) return error.InvalidFormat;
-        try frame(&buffer.writer, path);
-        kinds = bit(.open_path);
-    } else if (std.mem.eql(u8, head, "resolve-file-directory")) {
-        if (args.len != 5) return error.InvalidFormat;
-        const path = try string(try field(args[1..], ":path"));
-        const entries = switch ((try field(args[1..], ":entries")).value) {
-            .list => |items| items,
-            else => return error.InvalidFormat,
-        };
-        if (!validPath(path) or entries.len > 10000) return error.InvalidFormat;
-        var path_bytes: usize = path.len;
-        try frame(&buffer.writer, path);
-        try numberFrame(&buffer.writer, entries.len);
-        for (entries) |entry| {
-            const parts = switch (entry.value) {
-                .list => |items| items,
-                else => return error.InvalidFormat,
-            };
-            if (parts.len != 3) return error.InvalidFormat;
-            const kind = try symbol(parts[0]);
-            const entry_path = try string(parts[1]);
-            const bytes = try unsigned(parts[2]);
-            if (!oneOf(kind, &.{ "file", "directory", "symbolic-link", "other" }) or !validPath(entry_path)) return error.InvalidFormat;
-            if (entry_path.len > 4194304 - path_bytes) return error.InvalidFormat;
-            path_bytes += entry_path.len;
-            try frame(&buffer.writer, entry_path);
-            try frame(&buffer.writer, kind);
-            try numberFrame(&buffer.writer, bytes);
-        }
-        kinds = bit(.list_directory);
-    } else if (std.mem.eql(u8, head, "resolve-file-assets")) {
-        if (args.len != 3) return error.InvalidFormat;
-        const entries = switch ((try field(args[1..], ":entries")).value) {
-            .list => |items| items,
-            else => return error.InvalidFormat,
-        };
-        if (entries.len == 0 or entries.len > 256) return error.InvalidFormat;
-        try numberFrame(&buffer.writer, entries.len);
-        for (entries) |entry| {
-            const parts = switch (entry.value) {
-                .list => |items| items,
-                else => return error.InvalidFormat,
-            };
-            if (parts.len != 2) return error.InvalidFormat;
-            const status = try symbol(parts[0]);
-            const name = try string(parts[1]);
-            if (!oneOf(status, &.{ "ok", "missing", "mismatch" })) return error.InvalidFormat;
-            if (name.len == 0 or !validText(name, 1024)) return error.InvalidFormat;
-            try frame(&buffer.writer, name);
-            try frame(&buffer.writer, status);
-        }
-        kinds = bit(.verify_assets);
-    } else if (failed) {
-        if (args.len != 5) return error.InvalidFormat;
-        const kind = try symbol(try field(args[1..], ":kind"));
-        const detail = try string(try field(args[1..], ":detail"));
-        if (!validText(detail, 4096)) return error.InvalidFormat;
-        var known = false;
-        for ([_][]const u8{ "canceled", "not-found", "permission-denied", "invalid-utf8", "invalid-path", "resource-limit", "io", "unavailable" }) |candidate| {
-            known = known or std.mem.eql(u8, candidate, kind);
-        }
-        if (!known or (std.mem.eql(u8, kind, "canceled") and detail.len != 0)) return error.InvalidFormat;
-        try frame(&buffer.writer, kind);
-        try frame(&buffer.writer, detail);
+    if (failed) {
+        try encodeFields(&buffer.writer, &protocol.task_error_fields, args[1..], &protocol.task_error_rules);
         kinds = fileKinds();
-    } else return error.InvalidFormat;
+    } else {
+        var found = false;
+        for (protocol.task_schemas) |schema| {
+            const fixture = schema.fixture orelse continue;
+            if (!std.mem.eql(u8, head, fixture)) continue;
+            if (!found) try encodeFields(&buffer.writer, schema.result, args[1..], schema.rules);
+            found = true;
+            kinds |= bit(schema.kind);
+        }
+        if (!found) return error.InvalidFormat;
+    }
     const name = try allocator.dupe(u8, task);
     errdefer allocator.free(name);
     const payload = try allocator.dupe(u8, buffer.written());
     return .{ .task_name = name, .payload = payload, .kinds = kinds, .failed = failed };
+}
+
+/// Encodes one field list from the form's arguments. A single tagged field is
+/// spelled positionally; everything else is keyword pairs, every field
+/// required and none repeated.
+fn encodeFields(writer: *std.Io.Writer, fields: []const protocol.TaskField, args: []const sexpr.Expr, rules: []const []const u8) ParseError!void {
+    var budget: Budget = .{};
+    if (fields.len == 1 and fields[0].kind == .tagged) {
+        if (args.len != 1) return error.InvalidFormat;
+        try encodeValue(writer, fields[0], args[0], &budget);
+    } else {
+        if (args.len != fields.len * 2) return error.InvalidFormat;
+        for (fields) |field_spec| {
+            var keyword_buffer: [64]u8 = undefined;
+            const keyword = std.fmt.bufPrint(&keyword_buffer, ":{s}", .{field_spec.name}) catch return error.InvalidFormat;
+            try encodeValue(writer, field_spec, try field(args, keyword), &budget);
+        }
+    }
+    for (rules) |rule| try applyRule(rule, &budget);
+}
+
+/// What the hand-written rules observe as fields are encoded: the values
+/// they relate, which no per-field type can express.
+const Budget = struct {
+    path_bytes: usize = 0,
+    code: ?[]const u8 = null,
+    detail_len: usize = 0,
+};
+
+/// The cross-field rules the manifest names. A rule the manifest names but
+/// this switch does not know is a build error, not a silently skipped check.
+fn applyRule(rule: []const u8, budget: *Budget) ParseError!void {
+    if (std.mem.eql(u8, rule, "directory_path_budget")) {
+        // A listing's paths together stay under the aggregate-path bound.
+        if (budget.path_bytes > 4194304) return error.InvalidFormat;
+    } else if (std.mem.eql(u8, rule, "canceled_empty_detail")) {
+        if (budget.code) |code| if (std.mem.eql(u8, code, "canceled") and budget.detail_len != 0) return error.InvalidFormat;
+    } else {
+        @panic("unknown fixture rule named in the protocol manifest");
+    }
+}
+
+fn encodeValue(writer: *std.Io.Writer, spec: protocol.TaskField, expr: sexpr.Expr, budget: *Budget) ParseError!void {
+    switch (spec.kind) {
+        .path => {
+            const path = try string(expr);
+            if (!validPath(path)) return error.InvalidFormat;
+            budget.path_bytes += path.len;
+            try frame(writer, path);
+        },
+        .text => |text_spec| {
+            const text = try string(expr);
+            if (!validText(text, text_spec.max_bytes) or (text_spec.non_empty and text.len == 0)) return error.InvalidFormat;
+            if (std.mem.eql(u8, spec.name, "detail")) budget.detail_len = text.len;
+            try frame(writer, text);
+        },
+        .unsigned => |number_spec| {
+            const value = try unsigned(expr);
+            if (number_spec.max_value) |max| if (value > max) return error.InvalidFormat;
+            try numberFrame(writer, value);
+        },
+        .boolean => {
+            const value = switch (expr.value) {
+                .atom => |atom| switch (atom) {
+                    .boolean => |value| value,
+                    else => return error.InvalidFormat,
+                },
+                else => return error.InvalidFormat,
+            };
+            try frame(writer, if (value) "true" else "false");
+        },
+        .symbol => |options| {
+            const value = try symbol(expr);
+            if (!oneOf(value, options)) return error.InvalidFormat;
+            if (std.mem.eql(u8, spec.name, "kind")) budget.code = value;
+            try frame(writer, value);
+        },
+        .hex_sha256 => {
+            const digest = try string(expr);
+            if (digest.len != 64) return error.InvalidFormat;
+            for (digest) |byte| if (!((byte >= '0' and byte <= '9') or (byte >= 'a' and byte <= 'f'))) return error.InvalidFormat;
+            try frame(writer, digest);
+        },
+        .list => |list_spec| {
+            const items = switch (expr.value) {
+                .list => |items| items,
+                else => return error.InvalidFormat,
+            };
+            if (items.len < list_spec.min_items or items.len > list_spec.max_items) return error.InvalidFormat;
+            try numberFrame(writer, items.len);
+            for (items) |item| {
+                const parts = switch (item.value) {
+                    .list => |parts| parts,
+                    else => return error.InvalidFormat,
+                };
+                if (parts.len != list_spec.of.len) return error.InvalidFormat;
+                // Elements are spelled in the fixture's order but framed in wire order.
+                for (list_spec.of) |element_spec| {
+                    const position = spelledPosition(list_spec, element_spec.name);
+                    try encodeValue(writer, element_spec, parts[position], budget);
+                }
+            }
+        },
+        .tagged => |variants| {
+            const parts = switch (expr.value) {
+                .list => |parts| parts,
+                else => return error.InvalidFormat,
+            };
+            if (parts.len == 0) return error.InvalidFormat;
+            const tag = try symbol(parts[0]);
+            for (variants) |variant| {
+                if (!std.mem.eql(u8, tag, variant.tag)) continue;
+                if (parts.len != 1 + variant.fields.len) return error.InvalidFormat;
+                try frame(writer, tag);
+                for (variant.fields, parts[1..]) |variant_field, part| try encodeValue(writer, variant_field, part, budget);
+                return;
+            }
+            return error.InvalidFormat;
+        },
+    }
+}
+
+/// Where an element field appears in the fixture spelling: the manifest's
+/// `spelling` order when it declares one, wire order otherwise.
+fn spelledPosition(list_spec: anytype, name: []const u8) usize {
+    const order = list_spec.spelling orelse {
+        for (list_spec.of, 0..) |element, index| if (std.mem.eql(u8, element.name, name)) return index;
+        unreachable;
+    };
+    for (order, 0..) |spelled, index| if (std.mem.eql(u8, spelled, name)) return index;
+    unreachable;
 }
 
 test "asset fixtures frame ordered name and status pairs" {
@@ -324,15 +334,10 @@ test "file choice fixtures carry Windows paths byte for byte" {
     try std.testing.expect(admits(fixture.kinds, .choose_file));
 }
 
-/// Names the expected typed service for an actionable mismatch diagnostic.
+/// Names the expected typed service for an actionable mismatch diagnostic:
+/// the one kind a mask names, the chooser family, or the whole Files service.
 pub fn expectedService(kinds: u64) []const u8 {
-    if (kinds == bit(.read_text)) return "read_text";
-    if (kinds == bit(.write_text)) return "write_text";
-    if (kinds == bit(.read_log)) return "read_log";
-    if (kinds == bit(.read_preview)) return "read_preview";
-    if (kinds == bit(.list_directory)) return "list_directory";
-    if (kinds == bit(.open_path)) return "open_path";
-    if (kinds == bit(.verify_assets)) return "verify_assets";
     if (kinds == bit(.choose_file) | bit(.choose_directory) | bit(.choose_save_path)) return "file/directory/save chooser";
+    for (protocol.task_schemas) |schema| if (kinds == bit(schema.kind)) return @tagName(schema.kind);
     return "a native Files task";
 }

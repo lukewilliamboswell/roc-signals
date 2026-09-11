@@ -1075,7 +1075,11 @@ scenario is not the place to re-check what a test already proves.
 ### Readable native file fixtures
 
 Use structured Files settlements for application workflows so specs do not need
-hand-counted UTF-8 frames or knowledge of the private `files1` payload:
+hand-counted UTF-8 frames or knowledge of the private `files1` payload. Each
+fixture form is the manifest's result shape for its task kind, spelled as
+`:field value` pairs (`protocol/native-protocol.json` lists them, and the
+protocol reference renders the table), so a new task kind gets its fixture
+without parser work:
 
 ```lisp
 (click (role button :name "Open…"))

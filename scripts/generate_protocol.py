@@ -53,7 +53,7 @@ def load_manifest(path: Path = MANIFEST) -> dict:
 
 
 def validate(manifest: dict) -> None:
-    if manifest.get("schema_version") != 1:
+    if manifest.get("schema_version") != 2:
         raise SystemExit("unsupported protocol manifest schema")
     for key in ("protocol_version", "effect_version", "timer_version"):
         if not isinstance(manifest.get(key), int) or manifest[key] < 1:
@@ -87,6 +87,91 @@ def validate(manifest: dict) -> None:
     versions = [entry["version"] for entry in history]
     if versions != sorted(versions, reverse=True) or len(set(versions)) != len(versions):
         raise SystemExit("version_history must be unique and newest-first")
+    validate_task_shapes(manifest)
+
+
+FIELD_TYPES = {"path", "text", "u64", "bool", "enum", "list", "tagged", "hex_sha256"}
+FIXTURE_RULES = {"directory_path_budget", "canceled_empty_detail"}
+REQUEST_RULES = {"log_cursor", "assets_manifest"}
+
+
+def validate_shape_fields(where: str, fields: list[dict], *, nested: bool = False) -> None:
+    """Checks one ordered field list: names, types, and the bounds each type carries.
+
+    A list's element fields and a tagged field's variant fields are checked the
+    same way, so a shape nests to any depth the codec can frame.
+    """
+    names = set()
+    for field in fields:
+        for key in ("name", "type", "doc"):
+            if key not in field:
+                raise ValueError(f"{where}: field {field.get('name', '?')!r} is missing {key}")
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", field["name"]):
+            raise ValueError(f"{where}: invalid field name {field['name']!r}")
+        if field["name"] in names:
+            raise ValueError(f"{where}: duplicate field {field['name']!r}")
+        names.add(field["name"])
+        kind = field["type"]
+        if kind not in FIELD_TYPES:
+            raise ValueError(f"{where}.{field['name']}: unknown field type {kind!r}")
+        if kind == "text" and not isinstance(field.get("max_bytes"), int):
+            raise ValueError(f"{where}.{field['name']}: text needs max_bytes")
+        if kind == "enum" and not field.get("values"):
+            raise ValueError(f"{where}.{field['name']}: enum needs values")
+        if kind == "list":
+            if not isinstance(field.get("max_items"), int) or not field.get("of"):
+                raise ValueError(f"{where}.{field['name']}: list needs max_items and of")
+            validate_shape_fields(f"{where}.{field['name']}", field["of"], nested=True)
+            spelling = field.get("spelling")
+            if spelling is not None and sorted(spelling) != sorted(sub["name"] for sub in field["of"]):
+                raise ValueError(f"{where}.{field['name']}: spelling must permute the element fields")
+        if kind == "tagged":
+            if not field.get("variants"):
+                raise ValueError(f"{where}.{field['name']}: tagged needs variants")
+            for variant in field["variants"]:
+                validate_shape_fields(f"{where}.{field['name']}.{variant['tag']}", variant["fields"], nested=True)
+
+
+def validate_task_shapes(manifest: dict) -> None:
+    fixtures: dict[str, str] = {}
+    for kind in manifest["task_kinds"]:
+        if kind["name"] == "external":
+            if kind.get("request") or kind.get("result") or kind.get("fixture"):
+                raise ValueError("external tasks carry no manifest shape")
+            continue
+        for side in ("request", "result"):
+            if side not in kind:
+                raise ValueError(f"task kind {kind['name']!r} is missing its {side} shape")
+            validate_shape_fields(f"{kind['name']}.{side}", kind[side])
+        for rule in kind.get("rules", []):
+            if rule not in FIXTURE_RULES:
+                raise ValueError(f"task kind {kind['name']!r}: unknown fixture rule {rule!r}")
+        for rule in kind.get("request_rules", []):
+            if rule not in REQUEST_RULES:
+                raise ValueError(f"task kind {kind['name']!r}: unknown request rule {rule!r}")
+        fixture = kind.get("fixture")
+        if fixture is not None:
+            if fixture in fixtures and manifest_result(manifest, fixtures[fixture]) != kind["result"]:
+                raise ValueError(f"fixture {fixture!r} is shared by kinds with different result shapes")
+            fixtures.setdefault(fixture, kind["name"])
+    error = manifest["task_error"]
+    validate_shape_fields("task_error", error["fields"])
+    if error["fixture"] in fixtures:
+        raise ValueError("the error fixture must not share a name with a result fixture")
+    for rule in error.get("rules", []):
+        if rule not in FIXTURE_RULES:
+            raise ValueError(f"task_error: unknown fixture rule {rule!r}")
+
+
+def manifest_result(manifest: dict, kind_name: str) -> list[dict]:
+    return next(kind["result"] for kind in manifest["task_kinds"] if kind["name"] == kind_name)
+
+
+def request_frames(kind: dict) -> int | None:
+    """Frames a request carries after the codec frame, or None when a list makes it variable."""
+    if any(field["type"] == "list" for field in kind.get("request", [])):
+        return None
+    return len(kind.get("request", []))
 
 
 def validate_fields(table: str, fields: list[dict], *, reserved_id: int | None, require_scope: bool = True) -> None:
@@ -196,6 +281,75 @@ def render_zig(manifest: dict) -> str:
         out(f"    {kind['name']} = {kind['id']},")
     out("};")
     out("")
+    out("/// One field of a task request or result, in wire order.")
+    out("pub const TaskField = struct {")
+    out("    name: []const u8,")
+    out("    kind: TaskFieldKind,")
+    out("};")
+    out("")
+    out("/// The typed shape of one task field. Text bounds are UTF-8 bytes; a list is")
+    out("/// framed as its count and then each element's fields in order; a tagged")
+    out("/// field is framed as its tag and then the chosen variant's fields.")
+    out("pub const TaskFieldKind = union(enum) {")
+    out("    path,")
+    out("    text: struct { max_bytes: usize, non_empty: bool = false },")
+    out("    unsigned: struct { max_value: ?u64 = null },")
+    out("    boolean,")
+    out("    symbol: []const []const u8,")
+    out("    hex_sha256,")
+    out("    list: struct { min_items: usize = 0, max_items: usize, of: []const TaskField, spelling: ?[]const []const u8 = null },")
+    out("    tagged: []const TaskVariant,")
+    out("};")
+    out("")
+    out("/// One variant of a tagged task field.")
+    out("pub const TaskVariant = struct { tag: []const u8, fields: []const TaskField };")
+    out("")
+    out("/// The manifest's shape for one task kind: what a request carries after the")
+    out("/// codec frame, what a successful result carries, the spec fixture that spells")
+    out("/// the result, and the hand-written rules the generic validators call by name.")
+    out("pub const TaskSchema = struct {")
+    out("    kind: TaskKind,")
+    out("    request: []const TaskField,")
+    out("    result: []const TaskField,")
+    out("    fixture: ?[]const u8,")
+    out("    rules: []const []const u8,")
+    out("    request_rules: []const []const u8,")
+    out("};")
+    out("")
+    out("/// Every task kind's shape, indexed by kind.")
+    out("pub const task_schemas = [_]TaskSchema{")
+    for kind in manifest["task_kinds"]:
+        out("    .{")
+        out(f"        .kind = .{kind['name']},")
+        out(f"        .request = &{zig_fields(kind.get('request', []), 2)},")
+        out(f"        .result = &{zig_fields(kind.get('result', []), 2)},")
+        fixture = kind.get("fixture")
+        out(f"        .fixture = {zig_string(fixture) if fixture else 'null'},")
+        out(f"        .rules = &{zig_strings(kind.get('rules', []))},")
+        out(f"        .request_rules = &{zig_strings(kind.get('request_rules', []))},")
+        out("    },")
+    out("};")
+    out("")
+    error = manifest["task_error"]
+    out("/// The error shape every non-external task kind may settle with.")
+    out(f"pub const task_error_fields = {zig_fields(error['fields'], 0)};")
+    out("")
+    out("/// The spec fixture that spells a task error.")
+    out(f"pub const task_error_fixture = {zig_string(error['fixture'])};")
+    out("")
+    out("/// The hand-written rules the error fixture applies, by name.")
+    out(f"pub const task_error_rules = {zig_strings(error.get('rules', []))};")
+    out("")
+    out("/// Frames a request of this kind carries after the codec frame, or null")
+    out("/// when a list field makes the count depend on the request.")
+    out("pub fn requestFrames(kind: TaskKind) ?usize {")
+    out("    return switch (kind) {")
+    for kind in manifest["task_kinds"]:
+        frames = request_frames(kind)
+        out(f"        .{kind['name']} => {'null' if frames is None else frames},")
+    out("    };")
+    out("}")
+    out("")
     out("/// The extern node record served through `signals_read_changed`. Zig and Rust")
     out("/// declare this layout from the same manifest order, so the field order is ABI;")
     out("/// `signals_node_size` and the host-side size assertion pin the layout.")
@@ -207,6 +361,56 @@ def render_zig(manifest: dict) -> str:
     out("    };")
     out("}")
     return "\n".join(lines) + "\n"
+
+
+def zig_string(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def zig_initializer(type_name: str, items: list[str]) -> str:
+    """Spells an array literal the way `zig fmt` does: one item hugs its braces."""
+    if not items:
+        return type_name + "{}"
+    if len(items) == 1:
+        return type_name + "{" + items[0] + "}"
+    return type_name + "{ " + ", ".join(items) + " }"
+
+
+def zig_strings(values: list[str]) -> str:
+    return zig_initializer("[_][]const u8", [zig_string(value) for value in values])
+
+
+def zig_field_kind(field: dict) -> str:
+    kind = field["type"]
+    if kind == "path":
+        return ".path"
+    if kind == "text":
+        non_empty = ", .non_empty = true" if field.get("non_empty") else ""
+        return f".{{ .text = .{{ .max_bytes = {field['max_bytes']}{non_empty} }} }}"
+    if kind == "u64":
+        max_value = f".{{ .max_value = {field['max_value']} }}" if "max_value" in field else ".{}"
+        return f".{{ .unsigned = {max_value} }}"
+    if kind == "bool":
+        return ".boolean"
+    if kind == "enum":
+        return f".{{ .symbol = &{zig_strings(field['values'])} }}"
+    if kind == "hex_sha256":
+        return ".hex_sha256"
+    if kind == "list":
+        min_items = f".min_items = {field['min_items']}, " if "min_items" in field else ""
+        spelling = f", .spelling = &{zig_strings(field['spelling'])}" if field.get("spelling") else ""
+        return f".{{ .list = .{{ {min_items}.max_items = {field['max_items']}, .of = &{zig_fields(field['of'], 0)}{spelling} }} }}"
+    if kind == "tagged":
+        variants = [
+            f".{{ .tag = {zig_string(variant['tag'])}, .fields = &{zig_fields(variant['fields'], 0)} }}"
+            for variant in field["variants"]]
+        return f".{{ .tagged = &{zig_initializer('[_]TaskVariant', variants)} }}"
+    raise ValueError(kind)
+
+
+def zig_fields(fields: list[dict], indent: int) -> str:
+    return zig_initializer("[_]TaskField", [
+        f".{{ .name = {zig_string(field['name'])}, .kind = {zig_field_kind(field)} }}" for field in fields])
 
 
 def render_rust(manifest: dict) -> str:
@@ -236,6 +440,16 @@ def render_rust(manifest: dict) -> str:
         out(f"    /// {kind['doc']}")
         out(f"    pub const {kind['name'].upper()}: u32 = {kind['id']};")
     out("}")
+    out("")
+    out("/// Frames each task kind's request carries after the codec frame, from the")
+    out("/// manifest; `None` where a list field makes the count depend on the request.")
+    out("/// `effects::Request::decode` is tested against this table.")
+    out("#[allow(dead_code)]")
+    out("pub const REQUEST_FRAMES: &[(u32, Option<usize>)] = &[")
+    for kind in manifest["task_kinds"]:
+        frames = request_frames(kind)
+        out(f"    ({kind['id']}, {'None' if frames is None else f'Some({frames})'}),")
+    out("];")
     out("")
     out("/// The extern node record read through `signals_read_changed`. Zig and Rust")
     out("/// declare this layout from the same manifest order, so the field order is ABI;")
@@ -302,8 +516,43 @@ def render_docs_section(manifest: dict) -> str:
     for kind in manifest["task_kinds"]:
         out(f"| {kind['id']} | `{kind['name']}` | {kind['doc']} |")
     out("")
+    out("Each kind's request and result are framed in this order after the `files1`")
+    out("codec frame. A list is framed as its count and then each element's fields;")
+    out("a tagged field as its tag and then the chosen variant's fields. The spec")
+    out("fixture named for a kind spells its result; `reject-file` spells the error.")
+    out("")
+    for kind in manifest["task_kinds"]:
+        if kind["name"] == "external":
+            continue
+        out(f"`{kind['name']}` — request: {docs_fields(kind['request']) or 'none'}; result: {docs_fields(kind['result']) or 'none'}"
+            + (f"; fixture `{kind['fixture']}`" if kind.get("fixture") else "") + ".")
+        out("")
+    error = manifest["task_error"]
+    out(f"Task error — {docs_fields(error['fields'])}; fixture `{error['fixture']}`.")
+    out("")
     out(DOCS_END)
     return "\n".join(lines)
+
+
+def docs_field(field: dict) -> str:
+    kind = field["type"]
+    if kind == "text":
+        return f"`{field['name']}` text ≤ {field['max_bytes']} B"
+    if kind == "u64":
+        return f"`{field['name']}` u64" + (f" ≤ {field['max_value']}" if "max_value" in field else "")
+    if kind == "enum":
+        return f"`{field['name']}` one of " + "/".join(f"`{value}`" for value in field["values"])
+    if kind == "list":
+        return f"`{field['name']}` list (≤ {field['max_items']}) of [{docs_fields(field['of'])}]"
+    if kind == "tagged":
+        return f"`{field['name']}` " + " | ".join(
+            f"`{variant['tag']}`" + (f" [{docs_fields(variant['fields'])}]" if variant["fields"] else "")
+            for variant in field["variants"])
+    return f"`{field['name']}` {kind}"
+
+
+def docs_fields(fields: list[dict]) -> str:
+    return ", ".join(docs_field(field) for field in fields)
 
 
 def replace_section(content: str, begin: str, end: str, section: str, path: Path) -> str:

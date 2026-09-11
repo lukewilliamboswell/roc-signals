@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import re
 import sys
+import json
 import unittest
 from pathlib import Path
 
@@ -18,7 +19,7 @@ def manifest() -> dict:
 
 class ManifestValidationTests(unittest.TestCase):
     def test_committed_manifest_loads(self):
-        self.assertEqual(manifest()["schema_version"], 1)
+        self.assertEqual(manifest()["schema_version"], 2)
 
     def test_duplicate_field_id_is_rejected(self):
         bad = manifest()
@@ -126,6 +127,42 @@ class RenderingTests(unittest.TestCase):
             self.assertIn(f"`{field['name']}`", section)
         for kind in data["task_kinds"]:
             self.assertIn(f"| {kind['id']} | `{kind['name']}` |", section)
+
+    def test_every_task_kind_declares_its_shape(self):
+        current = manifest()
+        broken = json.loads(json.dumps(current))
+        del broken["task_kinds"][4]["result"]
+        with self.assertRaises(ValueError):
+            gen.validate(broken)
+
+    def test_field_types_and_rules_are_closed_vocabularies(self):
+        current = manifest()
+        broken = json.loads(json.dumps(current))
+        broken["task_kinds"][4]["result"][1]["type"] = "blob"
+        with self.assertRaises(ValueError):
+            gen.validate(broken)
+        broken = json.loads(json.dumps(current))
+        broken["task_kinds"][7]["rules"] = ["be_lenient"]
+        with self.assertRaises(ValueError):
+            gen.validate(broken)
+
+    def test_a_list_spelling_must_permute_its_element_fields(self):
+        current = manifest()
+        broken = json.loads(json.dumps(current))
+        listing = next(kind for kind in broken["task_kinds"] if kind["name"] == "list_directory")
+        listing["result"][1]["spelling"] = ["kind", "path"]
+        with self.assertRaises(ValueError):
+            gen.validate(broken)
+
+    def test_request_frame_counts_render_into_zig_and_rust(self):
+        current = manifest()
+        zig = gen.render_zig(current)
+        rust = gen.render_rust(current)
+        self.assertIn(".read_log => 5,", zig)
+        self.assertIn(".verify_assets => null,", zig)
+        self.assertIn("(10, Some(5)),", rust)
+        self.assertIn("(11, None),", rust)
+        self.assertIn('.fixture = "resolve-file-log"', zig)
 
     def test_committed_artifacts_are_current(self):
         for path, content in gen.render_all(gen.load_manifest()).items():

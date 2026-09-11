@@ -754,6 +754,46 @@ mod tests {
         assert!(Request::decode(5, &packet(&[&under("path")])).is_err());
     }
 
+    /// The manifest's request frame count per kind is what the engine
+    /// validates before publishing; this decoder must consume exactly that many
+    /// frames, or a request the engine accepted would fail here.
+    #[test]
+    fn every_request_decodes_with_exactly_the_manifest_frame_count() {
+        use crate::protocol_gen::REQUEST_FRAMES;
+        let sample = |kind: u32| -> Vec<&'static str> {
+            match kind {
+                task_kind::CHOOSE_SAVE_PATH => vec!["at", ABSOLUTE_DIRECTORY, "note.txt"],
+                task_kind::WRITE_TEXT => vec![ABSOLUTE_DIRECTORY, "text"],
+                task_kind::READ_LOG => vec![ABSOLUTE_DIRECTORY, "start", "0", "0", "0"],
+                _ => vec![ABSOLUTE_DIRECTORY],
+            }
+        };
+        for &(kind, frames) in REQUEST_FRAMES {
+            let Some(frames) = frames else { continue };
+            if kind == task_kind::EXTERNAL {
+                continue;
+            }
+            let fields: Vec<&str> = sample(kind).into_iter().take(frames).collect();
+            assert_eq!(fields.len(), frames, "sample for kind {kind} is too short");
+            assert!(
+                Request::decode(kind, &packet(&fields)).is_ok(),
+                "kind {kind} should decode {frames} frames"
+            );
+            let mut extra = fields.clone();
+            extra.push("extra");
+            assert!(
+                Request::decode(kind, &packet(&extra)).is_err(),
+                "kind {kind} accepted more frames than the manifest declares"
+            );
+            if frames > 0 {
+                assert!(
+                    Request::decode(kind, &packet(&fields[..frames - 1])).is_err(),
+                    "kind {kind} accepted fewer frames than the manifest declares"
+                );
+            }
+        }
+    }
+
     #[test]
     fn chooser_cancellation_and_explicit_cancellation_are_distinct() {
         assert_eq!(choice(None).unwrap(), packet(&["canceled"]));

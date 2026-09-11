@@ -73,6 +73,35 @@ Scalar boolean fields:
 | 10 | `read_log` | Cursor-driven bounded log chunk read with rotation detection. |
 | 11 | `verify_assets` | Hash a bounded manifest of relative assets against expected SHA-256 digests. |
 
+Each kind's request and result are framed in this order after the `files1`
+codec frame. A list is framed as its count and then each element's fields;
+a tagged field as its tag and then the chosen variant's fields. The spec
+fixture named for a kind spells its result; `reject-file` spells the error.
+
+`choose_file` — request: none; result: `choice` `chosen` [`path` path] | `canceled`; fixture `resolve-file-choice`.
+
+`choose_directory` — request: none; result: `choice` `chosen` [`path` path] | `canceled`; fixture `resolve-file-choice`.
+
+`choose_save_path` — request: `directory_kind` one of `home`/`at`, `directory` text ≤ 4096 B, `suggested_name` text ≤ 255 B; result: `choice` `chosen` [`path` path] | `canceled`; fixture `resolve-file-choice`.
+
+`read_text` — request: `path` path; result: `path` path, `text` text ≤ 1048576 B; fixture `resolve-file-read`.
+
+`write_text` — request: `path` path, `text` text ≤ 1048576 B; result: `path` path, `bytes` u64 ≤ 1048576; fixture `resolve-file-write`.
+
+`scan_directory` — request: `root` path; result: `root` path, `entries` list (≤ 10000) of [`path` path, `kind` one of `file`/`directory`/`symbolic-link`/`other`, `bytes` u64].
+
+`list_directory` — request: `path` path; result: `path` path, `entries` list (≤ 10000) of [`path` path, `kind` one of `file`/`directory`/`symbolic-link`/`other`, `bytes` u64]; fixture `resolve-file-directory`.
+
+`open_path` — request: `path` path; result: `path` path; fixture `resolve-file-open`.
+
+`read_preview` — request: `path` path; result: `path` path, `text` text ≤ 65536 B, `truncated` bool; fixture `resolve-file-preview`.
+
+`read_log` — request: `path` path, `position` one of `start`/`end`/`after`, `device` u64, `inode` u64, `offset` u64; result: `path` path, `text` text ≤ 65536 B, `device` u64, `inode` u64, `offset` u64, `change` one of `initial`/`continued`/`rotated`/`truncated`, `state` one of `more`/`at-end`/`partial-utf8`; fixture `resolve-file-log`.
+
+`verify_assets` — request: `entries` list (≤ 256) of [`name` text ≤ 1024 B, `digest` hex_sha256]; result: `entries` list (≤ 256) of [`name` text ≤ 1024 B, `status` one of `ok`/`missing`/`mismatch`]; fixture `resolve-file-assets`.
+
+Task error — `kind` one of `canceled`/`not-found`/`permission-denied`/`invalid-utf8`/`invalid-path`/`resource-limit`/`io`/`unavailable`, `detail` text ≤ 4096 B; fixture `reject-file`.
+
 <!-- END GENERATED PROTOCOL TABLES -->
 
 Zig exports `signals_protocol_version` and `signals_node_size`; Rust checks
@@ -547,6 +576,31 @@ at EOF after validating its terminal code point (up to four bytes). An incomplet
 or invalid EOF code point refuses `end` with `InvalidUtf8`; skipped history is
 not validated. All routes use the existing 16-operation reservations, shared
 scope cancellation, stale-result rejection, and typed failure delivery.
+
+## Adding a task kind
+
+The manifest also owns every task kind's shape: the request frames after the
+`files1` codec frame, the successful result frames, the spec fixture that
+spells the result, and the names of the hand-written rules no field type can
+express. To add a kind:
+
+1. Declare it in `protocol/native-protocol.json` under `task_kinds` with a
+   fresh id, its `request` and `result` field lists (types `path`, `text`
+   with `max_bytes`, `u64`, `bool`, `enum` with `values`, `hex_sha256`, `list`
+   with `max_items` and `of`, `tagged` with `variants`), a `fixture` name if
+   specs settle it, and any `rules` or `request_rules` by name. Bump
+   `effect_version` and prepend a `version_history` entry.
+2. Run `python3 scripts/generate_protocol.py`. The Zig `task_schemas` table,
+   `requestFrames`, the Rust `REQUEST_FRAMES` table and the tables above
+   follow. The spec fixture for the kind exists at once: `src/spec/file_fixtures.zig`
+   encodes any manifest shape, so `(resolve-<fixture> "task" :field value ...)`
+   needs no parser work.
+3. Write the honest residue: the worker that performs the task
+   (`crates/gpui-host/src/effects.rs` and `file_io/`), the Roc decoder in
+   `platform-gui/Files.roc`, and, for a rule the manifest names, its
+   implementation in `file_fixtures.zig` (`applyRule`) or
+   `src/native_files_codec.zig`; an unknown rule name is refused at build time,
+   not skipped.
 
 ## Adding a protocol field
 

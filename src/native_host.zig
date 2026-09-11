@@ -94,23 +94,20 @@ const NativeTaskPublication = struct {
     fn prepare(host: *HostEnv, request_id: ids.TaskRequestId, kind: boundary.TaskKind, task_name: []const u8, request: []const u8, cancellation_count: usize) error{ OutOfMemory, ResourceLimit }!NativeTaskPublication {
         const allocator = host.hostAllocator();
         if (Gpui.live) {
-            const arguments: usize = switch (kind) {
-                .external => failHost("external tasks require an external task executor"),
-                .choose_file, .choose_directory => 0,
-                .read_text, .scan_directory, .list_directory, .open_path, .read_preview => 1,
-                .write_text => 2,
-                .choose_save_path => 3,
-                .read_log => 5,
-                // Asset manifests carry a count frame plus two frames per
-                // asset; the dedicated validator owns that variable shape.
-                .verify_assets => 0,
-            };
-            if (kind == .verify_assets) {
-                native_files_codec.validateAssetsRequest(request) catch failHost("malformed native asset manifest request");
-            } else {
+            if (kind == .external) failHost("external tasks require an external task executor");
+            // The manifest says how many frames each request carries; a kind
+            // whose request holds a list has its own validator, as does the
+            // log cursor's cross-field rule, both named by the manifest.
+            if (signals.native_protocol.requestFrames(kind)) |arguments| {
                 native_files_codec.validateRequest(request, arguments) catch failHost("malformed native Files request");
             }
-            if (kind == .read_log) native_files_codec.validateLogRequest(request) catch failHost("malformed native Files log cursor");
+            for (signals.native_protocol.task_schemas[@intFromEnum(kind)].request_rules) |rule| {
+                if (std.mem.eql(u8, rule, "assets_manifest")) {
+                    native_files_codec.validateAssetsRequest(request) catch failHost("malformed native asset manifest request");
+                } else if (std.mem.eql(u8, rule, "log_cursor")) {
+                    native_files_codec.validateLogRequest(request) catch failHost("malformed native Files log cursor");
+                } else failHost("unknown request rule named in the protocol manifest");
+            }
             return .{
                 .host = host,
                 .request_id = request_id,

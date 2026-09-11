@@ -44,6 +44,25 @@ pub mod task_kind {
     pub const VERIFY_ASSETS: u32 = 11;
 }
 
+/// Frames each task kind's request carries after the codec frame, from the
+/// manifest; `None` where a list field makes the count depend on the request.
+/// `effects::Request::decode` is tested against this table.
+#[allow(dead_code)]
+pub const REQUEST_FRAMES: &[(u32, Option<usize>)] = &[
+    (0, Some(0)),
+    (1, Some(0)),
+    (2, Some(0)),
+    (3, Some(3)),
+    (4, Some(1)),
+    (5, Some(2)),
+    (6, Some(1)),
+    (7, Some(1)),
+    (8, Some(1)),
+    (9, Some(1)),
+    (10, Some(5)),
+    (11, None),
+];
+
 /// The extern node record read through `signals_read_changed`. Zig and Rust
 /// declare this layout from the same manifest order, so the field order is ABI;
 /// the `signals_node_size` assertion in `bridge::Engine::open` pins the layout.

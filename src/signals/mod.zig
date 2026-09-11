@@ -10,6 +10,8 @@ pub const abi = @import("roc_platform_abi.zig");
 pub const abi_view = @import("abi_view.zig");
 pub const active_signal_graph = @import("active_signal_graph.zig");
 pub const boundary = @import("boundary.zig");
+/// Protocol tables generated from protocol/native-protocol.json, including every task kind's shape.
+pub const native_protocol = @import("native_protocol_gen.zig");
 pub const callable_roles = @import("callable_roles.zig");
 pub const collection_budget = @import("collection_budget.zig");
 pub const collection_plan = @import("collection_plan.zig");
