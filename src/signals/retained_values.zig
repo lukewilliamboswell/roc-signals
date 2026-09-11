@@ -170,6 +170,80 @@ pub fn popCapabilities(comptime Ctx: type, ctx: Ctx.Handle) void {
     Ctx.popHostValueCapabilities(ctx);
 }
 
+/// Prepares a worker thunk while preserving the caller's effect, snapshot,
+/// and capability. The host's `prepareEffect` consumes owned references to
+/// both the effect callable and the capability; the snapshot handle remains
+/// borrowed inside its capability frame. The returned thunk belongs to the
+/// caller. Preparation has no recoverable failure channel across the Roc ABI.
+pub fn prepareEffectWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability, metrics: anytype) abi.RocErasedCallable {
+    const caps = [_]HostValueCapability{cap};
+    pushCapabilities(Ctx, ctx, &caps);
+    defer popCapabilities(Ctx, ctx);
+    abi.increfErasedCallable(effect, 1);
+    metrics.bump(.closure_retains, 1);
+    const owned_cap = retainHostValueCapability(cap, metrics);
+    return Ctx.prepareEffect(ctx, roc_host, effect, snapshot, owned_cap);
+}
+
+test "effect preparation transfers independent capability ownership" {
+    const TestCtx = struct {
+        pub const Handle = *@This();
+        active_cap: ?HostValueCapability = null,
+        preparations: usize = 0,
+
+        /// Records the capability frame that must surround snapshot decoding.
+        pub fn pushHostValueCapabilities(self: Handle, caps: []const HostValueCapability) void {
+            std.debug.assert(self.active_cap == null and caps.len == 1);
+            self.active_cap = caps[0];
+        }
+
+        /// Verifies that the preparation's capability frame is closed once.
+        pub fn popHostValueCapabilities(self: Handle) void {
+            std.debug.assert(self.active_cap != null);
+            self.active_cap = null;
+        }
+
+        /// Models the Roc export consuming its capability argument and
+        /// transferring the owned effect argument into the returned thunk.
+        pub fn prepareEffect(self: Handle, roc_host: *abi.RocHost, effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
+            std.debug.assert(hv.hostValueCapabilitiesMatch(self.active_cap.?, cap));
+            std.debug.assert(snapshot.toRaw() == 42);
+            std.testing.expect(!abi.isUniqueBox(effect)) catch @panic("effect preparation consumed the caller's callable reference");
+            inline for (.{ cap.clone, cap.eq, cap.drop }) |callable| {
+                std.testing.expect(!abi.isUniqueBox(callable)) catch @panic("effect preparation consumed the caller's capability reference");
+            }
+            hv.releaseHostValueCapability(cap, roc_host);
+            self.preparations += 1;
+            return effect;
+        }
+
+        fn unusedCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+            unreachable;
+        }
+    };
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const cap = HostValueCapability{
+        .clone = abi.rocErasedCallableAllocate(&roc_host, TestCtx.unusedCallable, null, 0),
+        .eq = abi.rocErasedCallableAllocate(&roc_host, TestCtx.unusedCallable, null, 0),
+        .drop = abi.rocErasedCallableAllocate(&roc_host, TestCtx.unusedCallable, null, 0),
+    };
+    defer hv.releaseHostValueCapability(cap, &roc_host);
+    const effect = abi.rocErasedCallableAllocate(&roc_host, TestCtx.unusedCallable, null, 0);
+    defer abi.decrefErasedCallable(effect, &roc_host);
+    var ctx: TestCtx = .{};
+    var metrics = @import("engine_metrics.zig").zeroRuntimeMetrics();
+    for (0..3) |_| {
+        const thunk = prepareEffectWithCapability(TestCtx, &ctx, &roc_host, effect, .fromRaw(42), cap, &metrics);
+        try std.testing.expect(ctx.active_cap == null);
+        abi.decrefErasedCallable(thunk, &roc_host);
+        inline for (.{ effect, cap.clone, cap.eq, cap.drop }) |callable| {
+            try std.testing.expect(abi.isUniqueBox(callable));
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 3), ctx.preparations);
+}
+
 /// Invokes the app-compiled callable inside capability frames for every erased value argument.
 pub fn callHostValueToUnitWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) void {
     const caps = [_]HostValueCapability{cap};

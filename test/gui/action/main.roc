@@ -56,6 +56,9 @@ main = || Ui.state(
 				Elem.button("Fail", Action.run(reads, |_| Action.then([status.set(Running)], |_| Action.update([status.set(Failed("boom"))])))),
 				Elem.button("Write", Action.run(reads, |_| Action.then([status.set(Running)], |name| roundtrip_file!(status, name)))),
 				Elem.button("Reset", Action.run(reads, |_| Action.update([status.set(Idle)]))),
+				# A distinct reads capability with no state handle captured by the
+				# effect exposes ownership lost at the effect-preparation boundary.
+				Elem.button("No-op effect", Action.run(Signal.const(42.U64), |_| Action.then([], |_| Action.none))),
 			],
 		)
 	},

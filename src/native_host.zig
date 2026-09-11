@@ -500,7 +500,8 @@ const NativeCtx = struct {
     pub const runsEffects = true;
 
     /// Has Roc turn an effect closure and its reads snapshot into the thunk a
-    /// worker runs; the closure reference is consumed.
+    /// worker runs. The export consumes the closure and capability references;
+    /// the snapshot handle remains borrowed for the call.
     pub fn prepareEffect(_: Handle, _: *abi.RocHost, effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
         return prepareEffectThunk(effect, snapshot, cap);
     }

@@ -17043,11 +17043,7 @@ pub fn Engine(comptime Ctx: type) type {
                 } else before;
                 before_dropped = true;
                 defer callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), snapshot);
-                abi.increfErasedCallable(cmd.effect, 1);
-                self.pending_roc_metrics.bump(.closure_retains, 1);
-                Ctx.pushHostValueCapabilities(ctx, &.{cap});
-                const thunk = Ctx.prepareEffect(ctx, roc_host, cmd.effect, snapshot, cap);
-                Ctx.popHostValueCapabilities(ctx);
+                const thunk = retained_values.prepareEffectWithCapability(Ctx, ctx, roc_host, cmd.effect, snapshot, cap, &self.pending_roc_metrics);
                 self.pending_effects.appendAssumeCapacity(.{
                     .id = self.next_effect_id,
                     .owner_scope_id = self.nearestActiveScope(owner_scope_id),

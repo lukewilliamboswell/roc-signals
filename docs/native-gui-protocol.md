@@ -367,6 +367,17 @@ shared engine's `SetDocumentTitle` command, exposed by `Gui.set_title`, and not
 a second route into the window: the host applies a title on the next frame and
 skips a revision it has already applied.
 
+## Effect preparation ownership
+
+The engine calls `roc_prepare_effect` on the UI thread to turn an effect
+closure and its reads snapshot into an independently owned worker thunk.
+The export consumes the supplied effect callable and capability references;
+the numeric snapshot handle is borrowed, and Roc reads its value through that
+capability. The engine retains separate references for the export so its own
+capability remains valid when it drops the snapshot after preparation. The
+returned thunk owns the Roc values needed by the worker. `roc_run_effect`
+consumes that thunk and returns an owned command for the engine to apply.
+
 ## Native Files
 
 `Files` exposes the host's file primitives as hosted effectful functions:
