@@ -21,6 +21,14 @@ selected task does not evaluate every card.
 The detail panel retains its current task value in an ancestor scope. Field
 actions write that value and the owning column atomically. Cross-column moves
 write both columns and the editor together when the moved task is selected.
+
+The editor also carries an explicit lifetime that names which task its native
+inputs belong to. It is an allocated number, never inferred from the task's text
+or from a key hidden in a label, and it changes exactly when the thing being
+edited changes: selecting another task, creating one, undo, redo, and opening a
+document all retire the current inputs, while editing, reordering, moving, and
+filtering keep them. That is what stops one task's native selection and undo
+history from reappearing in another whose fields happen to be equal.
 Pointer drops and the explicit controls use the same domain reducer. The old card scope is disposed and
 a new card scope is created at the destination; the application does not claim
 that independent keyed-list sites transfer scopes.
@@ -39,13 +47,23 @@ fixtures separately cover pointer gesture delivery and stale drag rejection.
 ## Assets
 
 Assignee avatars are tiny generated PNGs in `assets/` — regenerate them and
-`assets/manifest.json` (real SHA-256 hashes) with `python3 assets/generate.py`.
+`assets/manifest.json` (real SHA-256 hashes) with `python3 assets/generate.py`
+(`python` on Windows, where `python3` is usually the Store shortcut).
 The app ingests the manifest at compile time and verifies it at startup through
 `Files.verify_assets!`; if an asset is missing or altered, a danger-colored
-status line names it and the affected cards show neutral placeholder boxes
-while everything else keeps working. When running the built binary directly,
+status line names it while everything else keeps working.
+
+That report is advisory and does not gate rendering. Drawing an avatar is the
+host's own resolution and decoding of the file: an avatar the host cannot
+resolve or decode — missing, unreadable, or not a valid image — shows a neutral
+placeholder box, while a file that was altered but is still a valid image
+renders its new contents. So "altered" in the status line does not imply a
+placeholder, and a placeholder does not require a failed verification. The
+check runs once at mount; restoring a file afterwards is reported by the next
+run, not by the live status line. `specs/assets-problem/` holds a prepared
+assets root exercising all three cases at once. When running the built binary directly,
 point the host at the app's assets with
-`--assets-root examples-gui/task-board/assets` (or `ROC_SIGNALS_ASSETS_ROOT`);
+`--host-assets-root examples-gui/task-board/assets` (or `ROC_SIGNALS_ASSETS_ROOT`);
 image sources are always relative paths inside that root.
 
 ## Documents and undo
@@ -62,7 +80,10 @@ invalid fields or an oversized document without writing anything; shorten the
 draft and retry. Native individual text controls also have a one-MiB input bound.
 
 Open asks before replacing an unsaved board. Cancel or a failed read leaves the
-board and its previous path intact, even after choosing to discard. Saving holds
+board and its previous path intact, even after choosing to discard. A document
+that loads successfully selects nothing, so no editor survives the replacement:
+its tasks may reuse the previous document's keys, and picking one opens fresh
+inputs on the new document. Saving holds
 an immutable snapshot from the moment Save was requested, including time spent
 in the chooser. The chooser and the write run as one effect; success marks
 only that submitted snapshot saved, and later edits stay dirty. A failed write
@@ -71,7 +92,11 @@ or a dismissed chooser preserves the board and lets Save retry.
 Undo/Redo covers field changes, priority, creation, deletion, and movement.
 Changing a field creates one history entry per delivered edit. History holds at
 most 50 snapshots and four MiB of conservatively charged task text/key payload
-across both stacks; oldest entries retire first. Fixed collection overhead is
+across both stacks; oldest entries retire first. Each snapshot is charged for
+its column rows and, separately, for the editor task it retains, whether that
+duplicates a live row or is a value no row holds any more. Live drafts, the
+saved baseline, and a pending save's captured snapshot are separate retentions
+outside this budget, bounded by the 500-task and document decoding limits. Fixed collection overhead is
 separately bounded by 500 tasks per snapshot. Oversized snapshots are not
 retained, but the live operation still succeeds. New edits clear redo. Undoing
 creation never rewinds the next-key allocator, so a different new task receives

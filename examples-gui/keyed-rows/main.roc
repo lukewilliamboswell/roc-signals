@@ -7,10 +7,10 @@ import pf.Signal
 import pf.Ui
 
 initial_rows : Rows.Rows(Str)
-initial_rows = Rows.from_list(["Alpha", "Beta", "Gamma"], |key| key) ?? crash "duplicate spike key"
+initial_rows = Rows.from_list(["Alpha", "Beta", "Gamma"], |key| key) ?? crash "initial rows must have distinct keys"
 
 move_first : Rows.Rows(Str) -> Rows.Rows(Str)
-move_first = |rows| Rows.apply(rows, [MoveRange({ from: 0, count: 1, to: 2 })]) ?? crash "invalid spike move"
+move_first = |rows| Rows.apply(rows, [MoveRange({ from: 0, count: 1, to: 2 })]) ?? crash "moving the first row must be a valid range"
 
 row_view : Ui.Row(Str), Ui.State(Str) -> Elem
 row_view = |row, selected| {
@@ -79,8 +79,9 @@ main = || Ui.state(
 					True,
 					|visible| {
 						Elem.col(
-							{ padding: 32, gap: 16, width: Fill },
+							{ padding: 16, gap: 12, width: Fill },
 							[
+								Ui.on_change_initial(Signal.const("Keyed Rows - Roc Signals"), Gui.set_title),
 								Elem.heading("Roc Signals + GPUI"),
 								Elem.col(
 									{ fg: Rgb(0xA9BFCC) },
@@ -105,7 +106,9 @@ main = || Ui.state(
 									visible.signal(),
 									|| {
 										Elem.col(
-											{ gap: 12, width: 520.Px },
+											# Grow into the available width instead of pinning 520 pixels, which is
+											# wider than the smallest window the host allows.
+											{ gap: 12, width: Fill },
 											[
 												Elem.col(
 													{ font_size: 13, fg: Rgb(0x93A9B6) },

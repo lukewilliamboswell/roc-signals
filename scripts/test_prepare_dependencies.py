@@ -421,6 +421,24 @@ class DependencyStagingTests(unittest.TestCase):
             bundle_platforms.stage_dependency_inputs(self.inputs, ("freetype-x64glibc",), stage)
         self.assertEqual((stage / "dependencies.lock.json").read_bytes(), original)
 
+    def test_bundle_keeps_target_specific_gui_host_notices(self):
+        stage = self.root / "combined-hosts"
+        stage.mkdir()
+        artifacts = {}
+        for target, data in (("x64glibc", b"unix\n"), ("x64mingw", b"windows\r\n")):
+            identity = "gui-host-" + target
+            artifacts[identity] = {"target": target, "sha256": identity}
+            notice = self.inputs / identity / "licenses/gui-host/LICENSE"
+            notice.parent.mkdir(parents=True)
+            notice.write_bytes(data)
+        (self.inputs / "dependencies.lock.json").write_text(json.dumps({
+            "schema_version": 1, "artifacts": artifacts,
+        }))
+        bundle_platforms.stage_dependency_inputs(
+            self.inputs, tuple(artifacts), stage, target_scoped_licenses=True)
+        self.assertEqual((stage / "licenses/gui-host/x64glibc/LICENSE").read_bytes(), b"unix\n")
+        self.assertEqual((stage / "licenses/gui-host/x64mingw/LICENSE").read_bytes(), b"windows\r\n")
+
     def test_freetype_verification_failure_preserves_existing_input_and_prevents_build(self):
         destination = self.root / "linux"
         destination.mkdir()
@@ -505,6 +523,34 @@ class DependencyStagingTests(unittest.TestCase):
                 bundle_platforms.stage_web_inputs(self.source, self.root / "stage")
         self.assertFalse((self.root / "stage").exists())
 
+    def test_web_bundle_uses_only_the_complete_verified_host_set_when_locked(self):
+        host_inputs = self.root / "verified-hosts"
+        artifacts = {}
+        for target, filename in bundle_platforms.WEB_HOST_OUTPUTS.items():
+            identity = "web-host-" + target
+            artifacts[identity] = {"target": target, "sha256": identity}
+            output = host_inputs / identity / "targets" / target / filename
+            output.parent.mkdir(parents=True)
+            output.write_bytes(("released " + target).encode())
+            (host_inputs / identity / "dependency.json").write_text(identity)
+        (host_inputs / "dependencies.lock.json").write_text(json.dumps({
+            "schema_version": 1, "artifacts": artifacts,
+        }))
+
+        @contextmanager
+        def verified_hosts(*args):
+            yield host_inputs
+
+        stage = self.root / "locked-stage"
+        with patch.object(bundle_platforms, "verified_web_hosts", verified_hosts), \
+                patch.object(bundle_platforms, "verified_web_dependencies", self.verified):
+            bundle_platforms.stage_web_inputs(self.source, stage, self.root / "web-host.lock.json")
+        for target, filename in bundle_platforms.WEB_HOST_OUTPUTS.items():
+            self.assertEqual((stage / "targets" / target / filename).read_bytes(),
+                             ("released " + target).encode())
+        receipt = json.loads((stage / "dependencies.lock.json").read_text())
+        self.assertEqual(set(receipt["artifacts"]), set(artifacts))
+
     def test_failed_verification_never_falls_back_to_checkout_libc(self):
         (self.source / "targets/x64musl/libc.a").write_bytes(b"local libc")
         with patch.object(bundle_platforms, "verified_web_dependencies", side_effect=ValueError("untrusted signer")):
@@ -533,6 +579,23 @@ class DependencyStagingTests(unittest.TestCase):
         self.assertEqual(actual, lock)
         self.assertEqual((destination / "host.lib").read_bytes(), b"own host")
         self.assertEqual((destination / "advapi32.lib").read_bytes(), b"verified import")
+
+    def test_macos_install_copies_exact_released_tree_without_host_outputs(self):
+        source = self.inputs / prepare_dependencies.MACOS_INTERFACES / "targets/macos-sysroot"
+        source.mkdir(parents=True)
+        (source / "usr/lib").mkdir(parents=True)
+        (source / "usr/lib/libSystem.tbd").write_bytes(b"exact released interface")
+        (source / "manifest.json").write_text("{}")
+        lock = {"schema_version": 1, "artifacts": {
+            prepare_dependencies.MACOS_INTERFACES: "reviewed entry"}}
+        (self.inputs / "dependencies.lock.json").write_text(json.dumps(lock))
+        destination = self.root / "macos-sysroot"
+        with patch.object(prepare_dependencies, "verified_macos_interfaces", self.verified):
+            actual = prepare_dependencies.install_macos_interfaces(destination)
+        self.assertEqual(actual, lock)
+        self.assertEqual((destination / "usr/lib/libSystem.tbd").read_bytes(),
+                         b"exact released interface")
+        self.assertFalse((destination / "libengine.a").exists())
 
     def test_windows_verification_failure_prevents_compilation(self):
         with patch.object(build_gui, "host_target", return_value="x64mingw"), patch.object(

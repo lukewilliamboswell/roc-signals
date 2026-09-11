@@ -373,6 +373,9 @@ Elem := [
 		shortcuts : List({ chord : Node.KeyChord, msg : Node.Handler }) ?? [],
 		drag_source ?: Str,
 		on_drop ?: Node.Handler,
+		## Keeps the text focusable and selectable while refusing edits; lowers
+		## to the native read-only field rather than disabling the control.
+		read_only ?: Signal(Bool),
 	}
 
 	## Props for `checkbox`. `label` is the semantic name and `checked` the
@@ -539,8 +542,13 @@ Elem := [
 	## An explicit height includes caption and padding; the editor fills the rest.
 	## Auto height retains a 320-pixel editing viewport.
 	textarea : TextareaProps, Node.Handler -> Elem
-	textarea = |p, message|
-		build_textarea(p.label, p.value, lower_common(1, { style: Gui.Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, bg: p.bg, hover_bg: p.hover_bg, active_bg: p.active_bg, fg: p.fg, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: opt(p.?placeholder) }), message)
+	textarea = |p, message| {
+		read_only = match opt(p.?read_only) {
+			Some(value) => [signal_bool(native_read_only_field, value)]
+			None => []
+		}
+		build_textarea(p.label, p.value, lower_common(1, { style: Gui.Style.{ gap: p.gap, padding: p.padding, width: p.width, height: p.height, grow: p.grow, bg: p.bg, hover_bg: p.hover_bg, active_bg: p.active_bg, fg: p.fg, border_color: p.border_color, border_width: p.border_width, radius: p.radius, font_size: p.font_size, overflow_x: p.overflow_x, overflow_y: p.overflow_y }, changes: opt(p.?changes), test_id: opt(p.?test_id), font_family: opt(p.?font_family), embedded_fonts: p.embedded_fonts, selected: opt(p.?selected), enabled: opt(p.?enabled), disabled: opt(p.?disabled), shortcuts: p.shortcuts, drag_source: opt(p.?drag_source), on_drop: opt(p.?on_drop), label: None, placeholder: opt(p.?placeholder) }).concat(read_only), message)
+	}
 
 	## Toggle a controlled boolean using the ordinary checked-value event route.
 	checkbox : CheckboxProps, Node.Handler -> Elem
@@ -582,6 +590,9 @@ selected_field = { id: 4 }
 # Marks an internal drop target that must bind a string-detail drop event.
 native_drop_target_field : Node.BoolField
 native_drop_target_field = { id: 5 }
+# Refuses user edits and edit history while the control stays available at full contrast and in tab order.
+native_read_only_field : Node.BoolField
+native_read_only_field = { id: 6 }
 # END GENERATED PROTOCOL
 
 dimension : Gui.Length -> { kind : U32, value : U32 }

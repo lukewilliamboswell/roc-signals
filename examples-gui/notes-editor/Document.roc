@@ -13,6 +13,41 @@ Document := [].{
 	blank : Snapshot
 	blank = { title: "Untitled note", body: "" }
 
+	## How a file spelled its line ends, and whether it opened with a UTF-8
+	## byte-order mark. The editor always holds LF text without a mark; the
+	## format is what a save writes back so the file keeps its own spelling.
+	Format : { ending : [Lf, Crlf], bom : Bool }
+
+	## What a new document, and a file with no line ends, is saved as.
+	native_format : Format
+	native_format = { ending: Lf, bom: False }
+
+	## Bring a file's text into the editor's form. A leading byte-order mark is
+	## removed rather than left as an invisible first character, and CRLF becomes
+	## LF so the caret, the counts and native undo all see one character per line
+	## end. The file's ending is the one most of its lines use; a lone CR is text.
+	decode : Str -> { text : Str, format : Format }
+	decode = |raw| {
+		bom = raw.starts_with("\u(FEFF)")
+		text = if bom { raw.drop_prefix("\u(FEFF)") } else { raw }
+		crlf = text.split_on("\r\n").len() - 1
+		lf = text.split_on("\n").len() - 1 - crlf
+		ending = if crlf > lf { Crlf } else { Lf }
+		{ text: text.replace_each("\r\n", "\n"), format: { ending, bom } }
+	}
+
+	## Spell editor text the way its file did. Pasted CRLF text is normalized
+	## first, so a saved file never mixes endings whatever was pasted into it.
+	encode : Str, Format -> Str
+	encode = |body, format| {
+		normalized = body.replace_each("\r\n", "\n")
+		spelled = match format.ending {
+			Lf => normalized
+			Crlf => normalized.replace_each("\n", "\r\n")
+		}
+		if format.bom { "\u(FEFF)${spelled}" } else { spelled }
+	}
+
 	## Compare the complete draft with its last accepted document snapshot.
 	## Returning to the original text also clears the unsaved-change indicator.
 	is_dirty : { draft : Snapshot, baseline : Snapshot } -> Bool
@@ -107,3 +142,15 @@ expect Document.counts("can't... 🙂 !!!").words == 1
 
 ## CRLF is one grapheme cluster, and scalar spelling never normalizes the document.
 expect Document.counts("é\r\né") == { words: 2, characters: 3 }
+
+## A CRLF file with a byte-order mark opens as plain LF text and saves back as it was.
+expect {
+	opened = Document.decode("\u(FEFF)First\r\nSecond\r\n")
+	opened.text == "First\nSecond\n" and opened.format == { ending: Crlf, bom: True } and Document.encode("First\nSecond\nThird\n", opened.format) == "\u(FEFF)First\r\nSecond\r\nThird\r\n"
+}
+
+## The majority ending wins, a lone CR stays text, and pasted CRLF never survives an LF save.
+expect {
+	mixed = Document.decode("a\r\nb\nc\nd")
+	mixed.format == { ending: Lf, bom: False } and mixed.text == "a\nb\nc\nd" and Document.decode("x\ry").text == "x\ry" and Document.encode("a\r\nb", Document.native_format) == "a\nb" and Document.decode("").format == Document.native_format
+}

@@ -385,6 +385,7 @@ const NativeRenderPublication = struct {
                 },
                 .selected => node.selected = entry.next orelse false,
                 .native_drop_target => node.native_drop_target = entry.next orelse false,
+                .native_read_only => node.native_read_only = entry.next orelse false,
                 .disabled => {
                     node.disabled = entry.next orelse false;
                     node.disabled_update_count += 1;
@@ -699,7 +700,7 @@ fn writeStderr(bytes: []const u8) void {
 }
 
 fn writeUsage() void {
-    writeStderr("Usage: ./app [--verbose] [--trace-allocations] [--run-spec-json] [--entropy-seed U32] [--fail-on-allocation N] <case.scm>\n       ./app --bench-app [--bench-name NAME] [--bench-warmup N] [--bench-iterations N] [--bench-samples N] <case.scm>\n");
+    writeStderr("Usage: ./app [--host-verbose] [--host-trace-allocations] [--host-run-spec-json] [--host-entropy-seed U32] [--host-fail-on-allocation N] <case.scm>\n       ./app --host-bench-app [--host-bench-name NAME] [--host-bench-warmup N] [--host-bench-iterations N] [--host-bench-samples N] <case.scm>\n");
 }
 
 const SpecJsonFailure = struct {
@@ -1022,6 +1023,10 @@ const HostEnv = struct {
     online: boundary.OnlineSnapshot = .online,
     storage_entries: std.ArrayListUnmanaged(NativeStorageEntry) = .empty,
     document_title: ?[]u8 = null,
+    /// Bumped only when the applied title text actually changes, so a host that
+    /// observes the title can skip a native window update the engine already
+    /// pruned. It is an observation counter, never an alternate title route.
+    document_title_revision: u64 = 0,
 
     fn init() HostEnv {
         return .{
@@ -1702,9 +1707,12 @@ const HostEnv = struct {
     }
 
     fn setDocumentTitle(self: *HostEnv, title: []const u8) void {
+        if (std.mem.eql(u8, self.currentDocumentTitle(), title)) return;
         const allocator = self.hostAllocator();
+        const copy = allocator.dupe(u8, title) catch @panic("out of memory");
         self.clearDocumentTitle();
-        self.document_title = allocator.dupe(u8, title) catch @panic("out of memory");
+        self.document_title = copy;
+        self.document_title_revision +%= 1;
     }
 
     fn currentDocumentTitle(self: *const HostEnv) []const u8 {
@@ -3237,8 +3245,10 @@ const EffectJob = struct {
 };
 
 fn prepareEffectThunk(effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
-    if (comptime host_fixtures) {
-        failHost("effect closures cannot run in host fixtures");
+    // Only the GUI platform declares the effect entry points; a host fixture
+    // links no application and the web platform runs effects in the browser.
+    if (comptime host_fixtures or !gpui_spike) {
+        failHost("effect closures run only on the native GUI host");
     } else {
         return abi.roc_prepare_effect(effect, snapshot.toRaw(), cap);
     }
@@ -3247,8 +3257,8 @@ fn prepareEffectThunk(effect: abi.RocErasedCallable, snapshot: HostValue, cap: H
 /// The worker's entry point. It runs Roc code that reaches the host only
 /// through the allocation hooks and the hosted effectful primitives.
 fn runEffectJob(job: *EffectJob) void {
-    if (comptime host_fixtures) {
-        failHost("effect closures cannot run in host fixtures");
+    if (comptime host_fixtures or !gpui_spike) {
+        failHost("effect closures run only on the native GUI host");
     } else {
         job.cmd = abi.roc_run_effect(job.thunk);
     }
@@ -4027,6 +4037,12 @@ const SpecRunnerCtx = struct {
         return host.currentDocumentTitle();
     }
 
+    /// Provides the document title revision so a host or spec can tell a repeated
+    /// title from a re-applied one without inspecting engine internals.
+    pub fn documentTitleRevision(host: *const Host) u64 {
+        return host.document_title_revision;
+    }
+
     /// Provides finish host metrics for native semantic observation without duplicating engine behavior.
     pub fn finishHostMetrics(host: *Host) void {
         finishHostMetricsForBenchmark(host);
@@ -4072,19 +4088,24 @@ comptime {
         @export(&hostRealloc, .{ .name = "roc_realloc", .visibility = .hidden });
         @export(&hostDbg, .{ .name = "roc_dbg", .visibility = .hidden });
         @export(&hostEnvVar, .{ .name = "roc_env_var", .visibility = .hidden });
-        @export(&hostFilesChooseFile, .{ .name = "roc_files_choose_file", .visibility = .hidden });
-        @export(&hostFilesChooseDirectory, .{ .name = "roc_files_choose_directory", .visibility = .hidden });
-        @export(&hostFilesChooseSavePath, .{ .name = "roc_files_choose_save_path", .visibility = .hidden });
-        @export(&hostFilesStat, .{ .name = "roc_files_stat", .visibility = .hidden });
-        @export(&hostFilesReadBytes, .{ .name = "roc_files_read_bytes", .visibility = .hidden });
-        @export(&hostFilesWriteBytes, .{ .name = "roc_files_write_bytes", .visibility = .hidden });
-        @export(&hostFilesRename, .{ .name = "roc_files_rename", .visibility = .hidden });
-        @export(&hostFilesRemove, .{ .name = "roc_files_remove", .visibility = .hidden });
-        @export(&hostFilesSync, .{ .name = "roc_files_sync", .visibility = .hidden });
-        @export(&hostFilesListDirectory, .{ .name = "roc_files_list_directory", .visibility = .hidden });
-        @export(&hostFilesOpenPath, .{ .name = "roc_files_open_path", .visibility = .hidden });
-        @export(&hostFilesAssetsRoot, .{ .name = "roc_files_assets_root", .visibility = .hidden });
-        @export(&hostHttpSend, .{ .name = "roc_http_send", .visibility = .hidden });
+        // The hosted Files and Http primitives are the native GUI platform's:
+        // they call into the Rust host, which the web examples' native build
+        // does not link, so only the GUI engine exports them.
+        if (gpui_spike) {
+            @export(&hostFilesChooseFile, .{ .name = "roc_files_choose_file", .visibility = .hidden });
+            @export(&hostFilesChooseDirectory, .{ .name = "roc_files_choose_directory", .visibility = .hidden });
+            @export(&hostFilesChooseSavePath, .{ .name = "roc_files_choose_save_path", .visibility = .hidden });
+            @export(&hostFilesStat, .{ .name = "roc_files_stat", .visibility = .hidden });
+            @export(&hostFilesReadBytes, .{ .name = "roc_files_read_bytes", .visibility = .hidden });
+            @export(&hostFilesWriteBytes, .{ .name = "roc_files_write_bytes", .visibility = .hidden });
+            @export(&hostFilesRename, .{ .name = "roc_files_rename", .visibility = .hidden });
+            @export(&hostFilesRemove, .{ .name = "roc_files_remove", .visibility = .hidden });
+            @export(&hostFilesSync, .{ .name = "roc_files_sync", .visibility = .hidden });
+            @export(&hostFilesListDirectory, .{ .name = "roc_files_list_directory", .visibility = .hidden });
+            @export(&hostFilesOpenPath, .{ .name = "roc_files_open_path", .visibility = .hidden });
+            @export(&hostFilesAssetsRoot, .{ .name = "roc_files_assets_root", .visibility = .hidden });
+            @export(&hostHttpSend, .{ .name = "roc_http_send", .visibility = .hidden });
+        }
         @export(&hostExpectFailed, .{ .name = "roc_expect_failed", .visibility = .hidden });
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });
         @export(&eachBoolSinkPush, .{ .name = "roc_each_bool_sink_push", .visibility = .hidden });
@@ -4117,6 +4138,7 @@ comptime {
             @export(&Gpui.childAt, .{ .name = "signals_child_at" });
             @export(&Gpui.readShortcuts, .{ .name = "signals_read_shortcuts" });
             @export(&Gpui.metrics, .{ .name = "signals_metrics" });
+            @export(&Gpui.documentTitle, .{ .name = "signals_document_title" });
             @export(&Gpui.timerVersion, .{ .name = "signals_timer_version" });
             @export(&Gpui.timerSize, .{ .name = "signals_timer_size" });
             @export(&Gpui.nextTimer, .{ .name = "signals_timer_next" });
@@ -4124,6 +4146,13 @@ comptime {
             @export(&Gpui.nextRocEffect, .{ .name = "signals_roc_effect_next" });
             @export(&Gpui.runRocEffect, .{ .name = "signals_roc_effect_run" });
             @export(&Gpui.completeRocEffect, .{ .name = "signals_roc_effect_done" });
+            @export(&Gpui.scenarioOpen, .{ .name = "signals_scenario_open" });
+            @export(&Gpui.scenarioHeader, .{ .name = "signals_scenario_header" });
+            @export(&Gpui.scenarioChoice, .{ .name = "signals_scenario_choice" });
+            @export(&Gpui.scenarioScope, .{ .name = "signals_scenario_scope" });
+            @export(&Gpui.scenarioCount, .{ .name = "signals_scenario_count" });
+            @export(&Gpui.scenarioCommand, .{ .name = "signals_scenario_command" });
+            @export(&Gpui.scenarioClose, .{ .name = "signals_scenario_close" });
         } else @export(&main, .{ .name = "main" });
         if (@import("builtin").os.tag == .windows) {
             @export(&__main, .{ .name = "__main" });
@@ -4133,124 +4162,185 @@ comptime {
 
 fn __main() callconv(.c) void {}
 
-fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
-    var verbose = false;
-    var trace_allocations = false;
-    var result_json = false;
-    var fail_on_allocation: ?usize = null;
-    var entropy_seed: u32 = default_native_entropy_seed;
-    var bench_app = false;
-    var bench_name: []const u8 = "app_dispatch";
-    var bench_warmup: usize = 0;
-    var bench_iterations: usize = 100;
-    var bench_samples: usize = 3;
-    var spec_file: ?[]const u8 = null;
+/// The most arguments a host command line may carry. A native host takes a spec
+/// file and a handful of controls; a longer command line is a mistake worth
+/// naming rather than a buffer worth growing.
+const max_host_args: usize = 64;
 
-    var i: usize = 1;
-    const arg_count: usize = @intCast(argc);
-    while (i < arg_count) : (i += 1) {
-        const arg = std.mem.span(argv[i]);
-        if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v")) {
-            verbose = true;
-        } else if (std.mem.eql(u8, arg, "--trace-allocations")) {
-            trace_allocations = true;
-        } else if (std.mem.eql(u8, arg, "--run-spec-json")) {
-            result_json = true;
-        } else if (std.mem.eql(u8, arg, "--entropy-seed")) {
+/// Every command-line option the shared native host owns.
+///
+/// Host controls live in the reserved `--host-` namespace so an application can
+/// use the plain argument namespace without a host quietly capturing one of its
+/// flags (roc-signals#55).
+const HostOptions = struct {
+    verbose: bool = false,
+    trace_allocations: bool = false,
+    result_json: bool = false,
+    fail_on_allocation: ?usize = null,
+    entropy_seed: u32 = default_native_entropy_seed,
+    bench_app: bool = false,
+    bench_name: []const u8 = "app_dispatch",
+    bench_warmup: usize = 0,
+    bench_iterations: usize = 100,
+    bench_samples: usize = 3,
+    spec_file: ?[]const u8 = null,
+};
+
+const RenamedFlag = struct { old: []const u8, new: []const u8 };
+
+/// The host spellings that existed before the `--host-` namespace was reserved.
+///
+/// They are reported by name instead of falling through to the application: a
+/// stale command that silently ran with allocation tracing or a fixed entropy
+/// seed switched off would report a pass for a run it never performed. The
+/// short `-v` alias is gone with them; no unprefixed spelling remains.
+const renamed_host_flags = [_]RenamedFlag{
+    .{ .old = "-v", .new = "--host-verbose" },
+    .{ .old = "--verbose", .new = "--host-verbose" },
+    .{ .old = "--trace-allocations", .new = "--host-trace-allocations" },
+    .{ .old = "--run-spec-json", .new = "--host-run-spec-json" },
+    .{ .old = "--entropy-seed", .new = "--host-entropy-seed" },
+    .{ .old = "--fail-on-allocation", .new = "--host-fail-on-allocation" },
+    .{ .old = "--bench-app", .new = "--host-bench-app" },
+    .{ .old = "--bench-name", .new = "--host-bench-name" },
+    .{ .old = "--bench-iterations", .new = "--host-bench-iterations" },
+    .{ .old = "--bench-warmup", .new = "--host-bench-warmup" },
+    .{ .old = "--bench-samples", .new = "--host-bench-samples" },
+};
+
+const HostArgResult = union(enum) {
+    options: HostOptions,
+    usage,
+    message: []const u8,
+    renamed: RenamedFlag,
+};
+
+fn renamedHostFlag(arg: []const u8) ?RenamedFlag {
+    for (renamed_host_flags) |flag| {
+        if (std.mem.eql(u8, arg, flag.old)) return flag;
+    }
+    return null;
+}
+
+/// Reads the host options out of a command line, left to right.
+///
+/// The scan consumes each option's values as values, so a value that looks like
+/// a flag stays a value: `--host-bench-name --host-verbose` names a benchmark,
+/// it does not also turn verbose output on.
+fn parseHostArgs(args: []const []const u8) HostArgResult {
+    var options = HostOptions{};
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--host-verbose")) {
+            options.verbose = true;
+        } else if (std.mem.eql(u8, arg, "--host-trace-allocations")) {
+            options.trace_allocations = true;
+        } else if (std.mem.eql(u8, arg, "--host-run-spec-json")) {
+            options.result_json = true;
+        } else if (std.mem.eql(u8, arg, "--host-entropy-seed")) {
             i += 1;
-            if (i >= arg_count) {
-                writeStderr("Error: --entropy-seed requires a value\n");
-                return 1;
-            }
-            entropy_seed = std.fmt.parseInt(u32, std.mem.span(argv[i]), 10) catch {
-                writeStderr("Error: Invalid --entropy-seed value\n");
-                return 1;
+            if (i >= args.len) return .{ .message = "Error: --host-entropy-seed requires a value\n" };
+            options.entropy_seed = std.fmt.parseInt(u32, args[i], 10) catch {
+                return .{ .message = "Error: Invalid --host-entropy-seed value\n" };
             };
-        } else if (std.mem.eql(u8, arg, "--fail-on-allocation")) {
+        } else if (std.mem.eql(u8, arg, "--host-fail-on-allocation")) {
             i += 1;
-            if (i >= arg_count) {
-                writeStderr("Error: --fail-on-allocation requires a value\n");
-                return 1;
-            }
-            fail_on_allocation = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
-                writeStderr("Error: Invalid --fail-on-allocation value\n");
-                return 1;
+            if (i >= args.len) return .{ .message = "Error: --host-fail-on-allocation requires a value\n" };
+            options.fail_on_allocation = std.fmt.parseInt(usize, args[i], 10) catch {
+                return .{ .message = "Error: Invalid --host-fail-on-allocation value\n" };
             };
-            if (fail_on_allocation.? == 0) {
-                writeStderr("Error: --fail-on-allocation must be greater than zero\n");
-                return 1;
+            if (options.fail_on_allocation.? == 0) {
+                return .{ .message = "Error: --host-fail-on-allocation must be greater than zero\n" };
             }
-        } else if (std.mem.eql(u8, arg, "--bench-app")) {
-            bench_app = true;
-        } else if (std.mem.eql(u8, arg, "--bench-name")) {
+        } else if (std.mem.eql(u8, arg, "--host-bench-app")) {
+            options.bench_app = true;
+        } else if (std.mem.eql(u8, arg, "--host-bench-name")) {
             i += 1;
-            if (i >= arg_count) {
-                writeUsage();
-                return 1;
-            }
-            bench_name = std.mem.span(argv[i]);
-        } else if (std.mem.eql(u8, arg, "--bench-iterations")) {
+            if (i >= args.len) return .usage;
+            options.bench_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--host-bench-iterations")) {
             i += 1;
-            if (i >= arg_count) {
-                writeUsage();
-                return 1;
-            }
-            bench_iterations = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
-                writeStderr("Error: Invalid --bench-iterations value\n");
-                return 1;
+            if (i >= args.len) return .usage;
+            options.bench_iterations = std.fmt.parseInt(usize, args[i], 10) catch {
+                return .{ .message = "Error: Invalid --host-bench-iterations value\n" };
             };
-            if (bench_iterations == 0) {
-                writeStderr("Error: --bench-iterations must be greater than zero\n");
-                return 1;
+            if (options.bench_iterations == 0) {
+                return .{ .message = "Error: --host-bench-iterations must be greater than zero\n" };
             }
-        } else if (std.mem.eql(u8, arg, "--bench-warmup")) {
+        } else if (std.mem.eql(u8, arg, "--host-bench-warmup")) {
             i += 1;
-            if (i >= arg_count) {
-                writeStderr("Error: --bench-warmup requires a value\n");
-                return 1;
-            }
-            bench_warmup = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
-                writeStderr("Error: Invalid --bench-warmup value\n");
-                return 1;
+            if (i >= args.len) return .{ .message = "Error: --host-bench-warmup requires a value\n" };
+            options.bench_warmup = std.fmt.parseInt(usize, args[i], 10) catch {
+                return .{ .message = "Error: Invalid --host-bench-warmup value\n" };
             };
-        } else if (std.mem.eql(u8, arg, "--bench-samples")) {
+        } else if (std.mem.eql(u8, arg, "--host-bench-samples")) {
             i += 1;
-            if (i >= arg_count) {
-                writeUsage();
-                return 1;
-            }
-            bench_samples = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
-                writeStderr("Error: Invalid --bench-samples value\n");
-                return 1;
+            if (i >= args.len) return .usage;
+            options.bench_samples = std.fmt.parseInt(usize, args[i], 10) catch {
+                return .{ .message = "Error: Invalid --host-bench-samples value\n" };
             };
-            if (bench_samples == 0) {
-                writeStderr("Error: --bench-samples must be greater than zero\n");
-                return 1;
+            if (options.bench_samples == 0) {
+                return .{ .message = "Error: --host-bench-samples must be greater than zero\n" };
             }
+        } else if (renamedHostFlag(arg)) |flag| {
+            return .{ .renamed = flag };
         } else if (arg.len > 0 and arg[0] != '-') {
-            spec_file = arg;
+            options.spec_file = arg;
         } else {
+            return .usage;
+        }
+    }
+
+    if (options.spec_file == null) return .usage;
+
+    if (options.fail_on_allocation != null and !options.result_json) {
+        return .{ .message = "Error: --host-fail-on-allocation requires --host-run-spec-json\n" };
+    }
+
+    return .{ .options = options };
+}
+
+fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
+    var arg_storage: [max_host_args][]const u8 = undefined;
+    const arg_count: usize = if (argc > 0) @intCast(argc) else 1;
+    if (arg_count > max_host_args + 1) {
+        writeStderr("Error: too many command-line arguments\n");
+        return 1;
+    }
+    var i: usize = 1;
+    while (i < arg_count) : (i += 1) {
+        arg_storage[i - 1] = std.mem.span(argv[i]);
+    }
+    const args = arg_storage[0 .. arg_count - 1];
+
+    const options = switch (parseHostArgs(args)) {
+        .options => |parsed| parsed,
+        .usage => {
             writeUsage();
             return 1;
-        }
-    }
+        },
+        .message => |text| {
+            writeStderr(text);
+            return 1;
+        },
+        .renamed => |flag| {
+            writeStderr("Error: ");
+            writeStderr(flag.old);
+            writeStderr(" is now ");
+            writeStderr(flag.new);
+            writeStderr("\n");
+            return 1;
+        },
+    };
 
-    if (spec_file == null) {
-        writeUsage();
-        return 1;
-    }
-
-    if (fail_on_allocation != null and !result_json) {
-        writeStderr("Error: --fail-on-allocation requires --run-spec-json\n");
-        return 1;
-    }
-
-    if (bench_app) {
+    if (options.bench_app) {
         if (builtin.mode != .ReleaseFast) {
-            writeStderr("Error: --bench-app requires a ReleaseFast host; run `zig build build-test-hosts -Doptimize=ReleaseFast` before building the Roc app\n");
+            writeStderr("Error: --host-bench-app requires a ReleaseFast host; run `zig build build-test-hosts -Doptimize=ReleaseFast` before building the Roc app\n");
             return 1;
         }
-        return runAppBenchmarks(spec_file.?, bench_name, bench_warmup, bench_iterations, bench_samples, verbose) catch |err| {
+        return runAppBenchmarks(options.spec_file.?, options.bench_name, options.bench_warmup, options.bench_iterations, options.bench_samples, options.verbose) catch |err| {
             writeStderr("HOST ERROR: ");
             writeStderr(@errorName(err));
             writeStderr("\n");
@@ -4258,7 +4348,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         };
     }
 
-    return platform_main(spec_file.?, verbose, trace_allocations, result_json, fail_on_allocation, entropy_seed) catch |err| {
+    return platform_main(options.spec_file.?, options.verbose, options.trace_allocations, options.result_json, options.fail_on_allocation, options.entropy_seed) catch |err| {
         writeStderr("HOST ERROR: ");
         writeStderr(@errorName(err));
         writeStderr("\n");
@@ -4338,6 +4428,22 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
         return 2;
     };
     defer allocator.free(parsed_spec.name);
+    if (parsed_spec.scenario) |scenario| {
+        // A scenario needs a real window: layout bounds, native editor
+        // history, the platform's own close path. This host has none of them,
+        // and pretending would report a pass for evidence it never gathered.
+        scenario.deinit(allocator);
+        spec_parser.freeSpecCommands(allocator, parsed_spec.commands);
+        writeStderr("Error: this file is a (scenario ...); run it against a window with --host-scenario\n");
+        if (result_json) writeSpecJsonResult(.{
+            .id = spec_file,
+            .name = spec_file,
+            .status = "error",
+            .duration_ns = benchmark.nowNs() - started_ns,
+            .failure = .{ .phase = "parse", .kind = "window_scenario", .message = "window scenarios run through the GUI host" },
+        });
+        return 2;
+    }
     host_env.test_state.commands = parsed_spec.commands;
     host_env.test_state.commands_allocator = allocator;
     host_env.test_state.verbose = verbose;
@@ -7061,6 +7167,19 @@ test "signals host browser environment sources and commands update native state"
         defer releaseTestCmd(&roc_host, cmd);
         try std.testing.expectEqual(@as(u64, 0), host.engine.runCommand(&host, &roc_host, ids.ScopeId.fromRaw(0), cmd).total);
         try std.testing.expectEqualStrings("Ops ready", host.currentDocumentTitle());
+        try std.testing.expectEqual(@as(u64, 1), host.document_title_revision);
+    }
+
+    {
+        // Re-applying the same title is an equality cutoff at this boundary: a
+        // window host observing the revision must not be asked to re-title.
+        const cmd = testDocumentTitleCmd(&roc_host, "Ops ready");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        _ = host.engine.runCommand(&host, &roc_host, ids.ScopeId.fromRaw(0), cmd);
+        try std.testing.expectEqualStrings("Ops ready", host.currentDocumentTitle());
+        try std.testing.expectEqual(@as(u64, 1), host.document_title_revision);
     }
 
     {
@@ -7070,6 +7189,7 @@ test "signals host browser environment sources and commands update native state"
         defer releaseTestCmd(&roc_host, cmd);
         _ = host.engine.runCommand(&host, &roc_host, ids.ScopeId.fromRaw(0), cmd);
         try std.testing.expectEqualStrings("Ops steady", host.currentDocumentTitle());
+        try std.testing.expectEqual(@as(u64, 2), host.document_title_revision);
     }
 }
 
@@ -12894,6 +13014,133 @@ const Gpui = struct {
     var host: HostEnv = undefined;
     var roc_host: abi.RocHost = undefined;
     var live = false;
+
+    // A window scenario is parsed by the same spec parser as every other spec,
+    // then read by the Rust host one command at a time. The parsed spec lives
+    // here, on its own allocator, so it neither depends on nor outlives a
+    // mounted runtime: a scenario is opened before mount and closed after the
+    // report is written. Every slice handed out borrows this storage.
+    var scenario_gpa: std.heap.DebugAllocator(.{ .safety = true }) = .init;
+    var scenario_spec: ?spec_parser.ParsedTestSpec = null;
+
+    /// The header of an opened scenario. Slices borrow the parsed spec; a
+    /// zero-length assets or diagnostic slice means the header did not name one.
+    const RawScenario = extern struct {
+        name: Slice,
+        window_width: u32,
+        window_height: u32,
+        assets: Slice,
+        choices: usize,
+        diagnostic: Slice,
+        scopes: usize,
+    };
+    /// One parsed step, self-describing: `kind` and `locator_kind` carry the
+    /// enum tag names rather than their numbering, so the Rust reader and this
+    /// writer never have to agree on an ordinal. Optional numbers travel with a
+    /// presence flag; absent strings are zero-length slices.
+    const RawCommand = extern struct {
+        kind: Slice,
+        line: u64,
+        locator_kind: Slice,
+        role: Slice,
+        name: Slice,
+        label: Slice,
+        text: Slice,
+        test_id: Slice,
+        expected_text: Slice,
+        expected_count: u64,
+        has_count: u32,
+        expected_bool: u32,
+        has_bool: u32,
+        interval_ms: u64,
+        has_interval: u32,
+        shortcut_key: u32,
+        shortcut_modifiers: u32,
+        has_shortcut: u32,
+    };
+    fn optionalSlice(value: ?[]const u8) Slice {
+        return Slice.from(value orelse "");
+    }
+    /// Parses a scenario file. Returns 0 on success, 1 for a missing file, 2
+    /// for a malformed spec, 3 for a file that is a (test ...) rather than a
+    /// (scenario ...), and 4 for any other read failure. Only one scenario is
+    /// open at a time; opening another closes the first.
+    fn scenarioOpen(path: Slice) callconv(.c) u32 {
+        scenarioClose();
+        const allocator = scenario_gpa.allocator();
+        const parsed = spec_parser.parseTestSpecFile(allocator, path.ptr[0..path.len]) catch |err| return switch (err) {
+            ParseError.FileNotFound => 1,
+            ParseError.InvalidFormat => 2,
+            else => 4,
+        };
+        if (parsed.scenario == null) {
+            parsed.deinit(allocator);
+            return 3;
+        }
+        scenario_spec = parsed;
+        return 0;
+    }
+    fn openScenario() *const spec_parser.ParsedTestSpec {
+        if (scenario_spec) |*spec| return spec;
+        failHost("scenario read before it was opened");
+    }
+    fn scenarioHeader(out: *RawScenario) callconv(.c) void {
+        const spec = openScenario();
+        const header = spec.scenario.?;
+        out.* = .{
+            .name = Slice.from(spec.name),
+            .window_width = header.window_width,
+            .window_height = header.window_height,
+            .assets = optionalSlice(header.assets),
+            .choices = header.choices.len,
+            .diagnostic = optionalSlice(header.diagnostic),
+            .scopes = header.on.len,
+        };
+    }
+    fn scenarioChoice(index: usize, out: *Slice) callconv(.c) void {
+        const header = openScenario().scenario.?;
+        if (index >= header.choices.len) failHost("scenario choice index out of range");
+        out.* = Slice.from(header.choices[index]);
+    }
+    fn scenarioScope(index: usize, out: *Slice) callconv(.c) void {
+        const header = openScenario().scenario.?;
+        if (index >= header.on.len) failHost("scenario scope index out of range");
+        out.* = Slice.from(header.on[index]);
+    }
+    fn scenarioCount() callconv(.c) usize {
+        return openScenario().commands.len;
+    }
+    fn scenarioCommand(index: usize, out: *RawCommand) callconv(.c) void {
+        const spec = openScenario();
+        if (index >= spec.commands.len) failHost("scenario command index out of range");
+        const cmd = spec.commands[index];
+        out.* = .{
+            .kind = Slice.from(@tagName(cmd.cmd_type)),
+            .line = cmd.line_num,
+            .locator_kind = Slice.from(@tagName(cmd.locator.kind)),
+            .role = optionalSlice(cmd.locator.role),
+            .name = optionalSlice(cmd.locator.name),
+            .label = optionalSlice(cmd.locator.label),
+            .text = optionalSlice(cmd.locator.text),
+            .test_id = optionalSlice(cmd.locator.test_id),
+            .expected_text = optionalSlice(cmd.expected_text),
+            .expected_count = cmd.expected_count orelse 0,
+            .has_count = @intFromBool(cmd.expected_count != null),
+            .expected_bool = @intFromBool(cmd.expected_bool orelse false),
+            .has_bool = @intFromBool(cmd.expected_bool != null),
+            .interval_ms = cmd.interval_ms orelse 0,
+            .has_interval = @intFromBool(cmd.interval_ms != null),
+            .shortcut_key = if (cmd.shortcut) |chord| chord.key else 0,
+            .shortcut_modifiers = if (cmd.shortcut) |chord| chord.modifiers else 0,
+            .has_shortcut = @intFromBool(cmd.shortcut != null),
+        };
+    }
+    fn scenarioClose() callconv(.c) void {
+        if (scenario_spec) |spec| {
+            spec.deinit(scenario_gpa.allocator());
+            scenario_spec = null;
+        }
+    }
     var timers: native_timers.Registry = .{};
     // Prepared effects wait here until the Rust host collects them; each runs
     // on its own worker and its result applies whenever it completes.
@@ -13012,6 +13259,16 @@ const Gpui = struct {
         };
         return needed;
     }
+    // Reports the window identity the graph has already decided. The slice
+    // borrows engine-owned storage that stays valid until the next engine turn,
+    // so the caller must copy before dispatching again. The revision lets the
+    // host skip a native window update for a title that did not change; it is
+    // an observation of the SetDocumentTitle command, not a second title route.
+    fn documentTitle(out: *Slice) callconv(.c) u64 {
+        if (!live) failHost("native title read before mount");
+        out.* = Slice.from(host.currentDocumentTitle());
+        return host.document_title_revision;
+    }
     // Every slice is borrowed until the next mount/dispatch/unmount call. Rust
     // copies it before another host call and never owns any Roc allocation.
     fn read(index: usize, out: *Node) callconv(.c) void {
@@ -13039,6 +13296,7 @@ const Gpui = struct {
             .checked = @intFromBool(elem.checked),
             .disabled = @intFromBool(elem.disabled),
             .selected = @intFromBool(elem.selected),
+            .read_only = @intFromBool(elem.native_read_only),
             .style_present = @intFromBool(elem.native_style != null),
             .style = if (elem.native_style) |bytes| native_style.decode(bytes) catch unreachable else .{},
             .viewport = if (elem.native_viewport) |bytes| native_style.decodeViewport(bytes) catch unreachable else .{},
@@ -13478,4 +13736,95 @@ test "native GUI unit input and checked dispatch preserve their extraction descr
             try expectHostValueI64(Gpui.host.stateValueByNodeId(state_id), @intCast(expected));
         }
     }
+}
+
+test "host argument parsing keeps values out of the flag namespace" {
+    // A value that looks like a flag must stay a value: the benchmark name is
+    // whatever follows the option, and no second control may switch on.
+    const args = [_][]const u8{ "--host-bench-app", "--host-bench-name", "--host-verbose", "case.scm" };
+    const parsed = parseHostArgs(&args);
+    try std.testing.expect(parsed == .options);
+    try std.testing.expect(parsed.options.bench_app);
+    try std.testing.expectEqualStrings("--host-verbose", parsed.options.bench_name);
+    try std.testing.expect(!parsed.options.verbose);
+    try std.testing.expectEqualStrings("case.scm", parsed.options.spec_file.?);
+}
+
+test "host argument parsing accepts the renamed controls" {
+    const args = [_][]const u8{
+        "--host-verbose",
+        "--host-trace-allocations",
+        "--host-run-spec-json",
+        "--host-entropy-seed",
+        "77",
+        "--host-fail-on-allocation",
+        "3",
+        "case.scm",
+    };
+    const parsed = parseHostArgs(&args);
+    try std.testing.expect(parsed == .options);
+    try std.testing.expect(parsed.options.verbose);
+    try std.testing.expect(parsed.options.trace_allocations);
+    try std.testing.expect(parsed.options.result_json);
+    try std.testing.expectEqual(@as(u32, 77), parsed.options.entropy_seed);
+    try std.testing.expectEqual(@as(?usize, 3), parsed.options.fail_on_allocation);
+}
+
+test "host argument parsing rejects missing and invalid values" {
+    {
+        const args = [_][]const u8{ "--host-entropy-seed", "case.scm" };
+        const parsed = parseHostArgs(&args);
+        try std.testing.expect(parsed == .message);
+        try std.testing.expectEqualStrings("Error: Invalid --host-entropy-seed value\n", parsed.message);
+    }
+    {
+        const args = [_][]const u8{"--host-entropy-seed"};
+        const parsed = parseHostArgs(&args);
+        try std.testing.expect(parsed == .message);
+        try std.testing.expectEqualStrings("Error: --host-entropy-seed requires a value\n", parsed.message);
+    }
+    {
+        const args = [_][]const u8{ "--host-fail-on-allocation", "0", "--host-run-spec-json", "case.scm" };
+        const parsed = parseHostArgs(&args);
+        try std.testing.expect(parsed == .message);
+        try std.testing.expectEqualStrings("Error: --host-fail-on-allocation must be greater than zero\n", parsed.message);
+    }
+    {
+        const args = [_][]const u8{ "--host-fail-on-allocation", "2", "case.scm" };
+        const parsed = parseHostArgs(&args);
+        try std.testing.expect(parsed == .message);
+        try std.testing.expectEqualStrings("Error: --host-fail-on-allocation requires --host-run-spec-json\n", parsed.message);
+    }
+    {
+        const args = [_][]const u8{ "--host-bench-iterations", "0", "case.scm" };
+        const parsed = parseHostArgs(&args);
+        try std.testing.expect(parsed == .message);
+    }
+    {
+        const args = [_][]const u8{"--host-bench-name"};
+        try std.testing.expect(parseHostArgs(&args) == .usage);
+    }
+}
+
+test "host argument parsing names the pre-rename spellings instead of ignoring them" {
+    const cases = [_]struct { old: []const u8, new: []const u8 }{
+        .{ .old = "-v", .new = "--host-verbose" },
+        .{ .old = "--verbose", .new = "--host-verbose" },
+        .{ .old = "--run-spec-json", .new = "--host-run-spec-json" },
+        .{ .old = "--trace-allocations", .new = "--host-trace-allocations" },
+        .{ .old = "--bench-app", .new = "--host-bench-app" },
+    };
+    for (cases) |case| {
+        const args = [_][]const u8{ case.old, "case.scm" };
+        const parsed = parseHostArgs(&args);
+        try std.testing.expect(parsed == .renamed);
+        try std.testing.expectEqualStrings(case.old, parsed.renamed.old);
+        try std.testing.expectEqualStrings(case.new, parsed.renamed.new);
+    }
+}
+
+test "host argument parsing still requires a spec file and rejects unknown options" {
+    try std.testing.expect(parseHostArgs(&[_][]const u8{}) == .usage);
+    try std.testing.expect(parseHostArgs(&[_][]const u8{"--host-verbose"}) == .usage);
+    try std.testing.expect(parseHostArgs(&[_][]const u8{ "--nonsense", "case.scm" }) == .usage);
 }

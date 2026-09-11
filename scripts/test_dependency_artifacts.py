@@ -70,38 +70,30 @@ class DependencyTests(unittest.TestCase):
         path.write_text(json.dumps({"schema_version": 1, "artifacts": {"musl-x64musl": self.entry}}))
         return path
 
-    def test_signature_verifier_requires_exact_builder_source_and_ref(self):
+    def test_archive_verification_uses_reviewed_content_identity_without_network(self):
         archive = self.archive()
         deps.read_lock(self.lock())
-        with patch.object(deps.subprocess, "run") as verifier:
-            deps.verify_archive(archive, self.entry)
-        command = verifier.call_args.args[0]
-        for flag, value in [("--repo", "owner/repo"),
-                            ("--signer-workflow", self.entry["signer_workflow"]),
-                            ("--source-digest", "a" * 40),
-                            ("--source-ref", "refs/heads/main")]:
-            self.assertEqual(command[command.index(flag) + 1], value)
-        self.assertIn("--deny-self-hosted-runners", command)
-        self.assertTrue(verifier.call_args.kwargs["check"])
+        deps.verify_archive(archive, self.entry)
 
     def test_tampering_is_rejected_before_signature_verification(self):
         archive = self.archive()
         data = bytearray(archive.read_bytes())
         data[600] ^= 1
         archive.write_bytes(data)
-        with patch.object(deps.subprocess, "run") as verifier:
-            with self.assertRaisesRegex(ValueError, "locked digest"):
-                deps.verify_archive(archive, self.entry)
-            verifier.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "locked digest"):
+            deps.verify_archive(archive, self.entry)
 
-    def test_cached_artifacts_still_require_valid_signatures(self):
+    def test_cached_artifacts_still_require_the_locked_digest(self):
         archive = self.archive()
         cache = self.root / "cache"
         cache.mkdir()
-        archive.rename(cache / (self.entry["sha256"] + ".tar"))
-        with patch.object(deps.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "gh")):
-            with self.assertRaises(subprocess.CalledProcessError):
-                deps.materialize(self.lock(), ["musl-x64musl"], cache, self.root / "output")
+        cached = cache / (self.entry["sha256"] + ".tar")
+        archive.rename(cached)
+        data = bytearray(cached.read_bytes())
+        data[600] ^= 1
+        cached.write_bytes(data)
+        with self.assertRaisesRegex(ValueError, "locked digest"):
+            deps.materialize(self.lock(), ["musl-x64musl"], cache, self.root / "output")
         self.assertFalse((self.root / "output").exists())
 
     def test_complete_archive_is_materialized_with_its_lock(self):
@@ -109,8 +101,7 @@ class DependencyTests(unittest.TestCase):
         cache = self.root / "cache"
         cache.mkdir()
         archive.rename(cache / (self.entry["sha256"] + ".tar"))
-        with patch.object(deps.subprocess, "run"):
-            deps.materialize(self.lock(), ["musl-x64musl"], cache, self.root / "output")
+        deps.materialize(self.lock(), ["musl-x64musl"], cache, self.root / "output")
         output = self.root / "output"
         self.assertEqual((output / "musl-x64musl/targets/x64musl/libc.a").read_bytes(), b"libc")
         self.assertEqual(deps.read_lock(output / "dependencies.lock.json"), deps.read_lock(self.lock()))
@@ -162,15 +153,19 @@ class DependencyTests(unittest.TestCase):
                 deps.read_lock(self.lock())
             self.entry[field] = previous
 
-    def test_download_limits_and_signature_failures_leave_no_cached_artifact(self):
+        self.entry["input_fingerprint"] = "not-a-content-hash"
+        with self.assertRaisesRegex(ValueError, "input fingerprint"):
+            deps.read_lock(self.lock())
+
+    def test_download_limits_and_digest_failures_leave_no_cached_artifact(self):
         archive = self.archive()
         original = archive.read_bytes()
-        for data, error in [(original[:-1], ValueError), (original + b"x", ValueError),
-                            (original, subprocess.CalledProcessError)]:
+        corrupt = bytearray(original)
+        corrupt[600] ^= 1
+        for data in (original[:-1], original + b"x", bytes(corrupt)):
             cache = self.root / "cache"
-            with patch.object(deps, "urlopen", return_value=io.BytesIO(data)), patch.object(
-                    deps.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "gh")):
-                with self.assertRaises(error):
+            with patch.object(deps, "urlopen", return_value=io.BytesIO(data)):
+                with self.assertRaises(ValueError):
                     deps.fetch(self.entry, cache)
             self.assertEqual(list(cache.iterdir()), [])
 
@@ -186,13 +181,13 @@ class DependencyTests(unittest.TestCase):
 
         def verify(*args):
             self.assertTrue(all(handle.closed for handle in opened))
-            raise subprocess.CalledProcessError(1, "gh")
+            raise ValueError("rejected")
 
         cache = self.root / "closed-cache"
         with patch.object(deps.tempfile, "NamedTemporaryFile", side_effect=temporary), patch.object(
                 deps, "urlopen", return_value=io.BytesIO(data)), patch.object(
                 deps, "verify_archive", side_effect=verify):
-            with self.assertRaises(subprocess.CalledProcessError):
+            with self.assertRaisesRegex(ValueError, "rejected"):
                 deps.fetch(self.entry, cache)
         self.assertEqual(list(cache.iterdir()), [])
 

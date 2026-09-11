@@ -15,6 +15,12 @@ python3 scripts/spec_driver.py .test-out/Notes examples-gui/notes-editor/specs
 roc test examples-gui/notes-editor/main.roc
 ```
 
+On Windows use `python` rather than `python3`, which is usually the Store
+shortcut there.
+
+On Windows use `python` rather than `python3`, which is usually the Store
+shortcut there.
+
 Control+N creates a document, Control+O opens one, Control+S saves, and
 Control+Shift+S chooses a new destination. Escape closes the discard
 confirmation, and the native choosers handle their own Escape. Native editor selection, movement, and clipboard
@@ -43,6 +49,14 @@ asks whether to Save and close, Discard and close, or Keep editing. A closing
 save freezes editing and waits for successful completion; a dismissed chooser
 or a failure keeps the window and draft open. Closing during another file
 operation asks the user to finish or cancel it first.
+A file opens in the editor as LF text with no byte-order mark: a leading
+U+FEFF is removed rather than kept as an invisible first character, and CRLF
+becomes LF so the caret, the counts and native undo see one character per line
+end. The document remembers what the file used — the ending most of its lines
+had, and whether it had a mark — and a save writes that spelling back, so a
+CRLF file stays CRLF and a marked file stays marked. Text pasted with CRLF is
+normalized on save, so a saved file never mixes endings. A lone CR is ordinary
+text. New documents save as LF without a mark.
 Statistics use the pinned [Roc Unicode package](../../vendor/unicode/README.md).
 Characters are Unicode 17 extended grapheme clusters, including whitespace:
 `é` and `é` each count as one, as do joined emoji and flag sequences; CRLF
@@ -54,7 +68,14 @@ The scans use ranges and iterators rather than per-character lists; counting
 still visits the complete changed document. GPUI retains responsibility for
 native shaping, caret interaction, and IME behavior.
 
-`Session.roc` holds the pure document operation state machine. `Workflow.roc`
+`Session.roc` holds the pure document operation state machine, including the
+editable body and the `document_generation` that identifies the editor's
+lifetime. Keeping them in one state is deliberate: a document replacement
+advances the lifetime and installs its text as a single settled value, so the
+editor can never mount against another document's text. Typing, saving, and the
+temporary unavailability during a chooser leave the lifetime alone, which is
+what preserves native selection and undo history while a document is edited.
+`Workflow.roc`
 holds the effects the handlers start: the handler that moves the session into
 `Busy` runs the chooser, read, or write as its effect, and a chooser blocks
 that effect until the user answers. The native

@@ -359,7 +359,7 @@ check_row = |label, checked, state|
 	Html.div_c(
 		"check-row",
 		[
-			Html.checkbox_c(label, checked, "checkbox", state.on_bool(|_, value| value)),
+			Html.checkbox_c(label, checked, "checkbox", state.update_bool(|_, value| value)),
 			Html.text(label),
 		],
 	)
@@ -375,7 +375,7 @@ dep_checkbox = |tasks, key, row, other|
 				"${name_of(key)} after ${other.name}",
 				row.map(|value| value.deps.contains(other.id)),
 				"checkbox",
-				tasks.on_bool(|list, checked| Plan.set_dep(list, key, other.id, checked)),
+				tasks.update_bool(|list, checked| Plan.set_dep(list, key, other.id, checked)),
 			),
 			Html.text(other.name),
 		],
@@ -399,7 +399,7 @@ step_button = |tasks, key, action|
 		[Html.class_attr(step_button_class), Html.aria_label("${action.verb} ${name_of(key)}")],
 		# The parentheses keep `apply` a stored function being called rather than a
 		# method lookup on the record.
-		tasks.on_unit(|list| (action.apply)(list, key)),
+		tasks.update(|list| (action.apply)(list, key)),
 	)
 
 ## The three cells of one stepper, named so a caller cannot swap the buttons for
@@ -642,7 +642,7 @@ main = || {
 																"field",
 																[
 																	Html.paragraph_c("Focus task", "field-label"),
-																	Html.select_c("Focus task", focus_signal, "input", task_options, focus.on_str(|_, value| value)),
+																	Html.select_c("Focus task", focus_signal, "input", task_options, focus.update_str(|_, value| value)),
 																	Html.paragraph_s_attrs(
 																		headline.map(|lines| nth(lines, 2)),
 																		[Html.test_id("focus-detail"), Html.class_attr("hint numeric")],

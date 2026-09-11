@@ -96,7 +96,7 @@ Session := [].{
 			phase: Idle,
 			retry: NoRetry,
 			preview: NoPreview,
-			notice: "${entries.len().to_str()} entries loaded.",
+			notice: loaded_text(entries.len()),
 		}
 	}
 
@@ -200,6 +200,10 @@ Session := [].{
 		_ => select(state, selected)
 	}
 
+	## The listing notice reads as prose, so one entry is "1 entry loaded."
+	loaded_text : U64 -> Str
+	loaded_text = |count| if count == 1 { "1 entry loaded." } else { "${count.to_str()} entries loaded." }
+
 	preview_selected : State -> State
 	preview_selected = |state| match (state.phase, state.selection, state.source) {
 		(Idle, Selected(selected), Sample(_)) if selected.kind == File => {
@@ -265,27 +269,26 @@ Session := [].{
 	)
 
 	Breadcrumb : { path : Str, label : Str }
+
+	## Each crumb navigates to a real ancestor, so the trail is built by walking
+	## the typed `Files.Path` components from that path's own root outward. A
+	## Windows location therefore starts at its drive or share and keeps its own
+	## separators; the sample tree keeps its named relative root.
 	breadcrumbs : Source -> List(Breadcrumb)
 	breadcrumbs = |source| {
-		root = match source {
-			Sample(_) => { path: "", label: "Sample" }
-			Folder(_) => { path: "/", label: "/" }
+		location = Files.parse_path(path(source))
+		start = match source {
+			Sample(_) => { path: Files.parse_path(""), label: "Sample" }
+			Folder(_) => { path: location.root(), label: location.root().to_str() }
 		}
-		parts = path(source).split_on("/").keep_if(|part| !part.is_empty())
-		parts.fold(
-			[root],
-			|crumbs, part| {
-				previous = crumbs.last() ?? crash "Breadcrumb root must exist"
-				next = if previous.path == "/" {
-					"/${part}"
-				} else if previous.path.is_empty() {
-					part
-				} else {
-					"${previous.path}/${part}"
-				}
-				crumbs.append({ path: next, label: part })
+		trail = location.components().fold(
+			{ cursor: start.path, crumbs: [{ path: start.path.to_str(), label: start.label }] },
+			|state, part| {
+				next = state.cursor.join(part)
+				{ cursor: next, crumbs: state.crumbs.append({ path: next.to_str(), label: part }) }
 			},
 		)
+		trail.crumbs
 	}
 }
 
@@ -295,7 +298,7 @@ expect {
 	docs = Session.navigate(root, "docs")
 	back = Session.backward(docs)
 	again = Session.forward(back)
-	docs.source == Sample("docs") and Rows.len(docs.rows) == 3 and back.source == root.source and Rows.len(back.rows) == 6 and again.source == docs.source and Session.up(docs).source == Sample("")
+	docs.source == Sample("docs") and Rows.len(docs.rows) == 4 and back.source == root.source and Rows.len(back.rows) == 6 and again.source == docs.source and Session.up(docs).source == Sample("")
 }
 
 ## Failed or canceled Back retains both histories and accepted content; retry
@@ -331,4 +334,12 @@ expect {
 	failed.preview == before.preview and Session.retry_last(failed).phase == Previewing("/tmp/a.txt") and Session.open_selected(before).phase == Opening("/tmp/a.txt")
 }
 
-expect Session.breadcrumbs(Folder("/tmp/project")) == [{ path: "/", label: "/" }, { path: "/tmp", label: "tmp" }, { path: "/tmp/project", label: "project" }]
+## Breadcrumbs name real ancestors of the visited location on either operating
+## system, including the sample tree's relative root.
+expect {
+	Session.breadcrumbs(Folder("/tmp/project")) == [{ path: "/", label: "/" }, { path: "/tmp", label: "tmp" }, { path: "/tmp/project", label: "project" }] and
+	Session.breadcrumbs(Folder("C:\\Users\\Lee")) == [{ path: "C:\\", label: "C:\\" }, { path: "C:\\Users", label: "Users" }, { path: "C:\\Users\\Lee", label: "Lee" }] and
+	Session.breadcrumbs(Sample("docs")) == [{ path: "", label: "Sample" }, { path: "docs", label: "docs" }]
+}
+
+expect Session.loaded_text(1) == "1 entry loaded." and Session.loaded_text(3) == "3 entries loaded."

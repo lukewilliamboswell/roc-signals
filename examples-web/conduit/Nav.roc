@@ -32,7 +32,7 @@ Nav := {}.{
 			[
 				Html.class_attr(classes),
 				Html.attr("href", href(target)),
-				Html.on_event("click", Html.event_policy_prevent_default, intent.on_unit(|current| for_target(current, target))),
+				Html.on_event("click", Html.event_policy_prevent_default, intent.update(|current| for_target(current, target))),
 			],
 		)
 	}
@@ -44,7 +44,7 @@ Nav := {}.{
 			[
 				Html.class_attr_s(classes),
 				Html.attr("href", href(target)),
-				Html.on_event("click", Html.event_policy_prevent_default, intent.on_unit(|current| for_target(current, target))),
+				Html.on_event("click", Html.event_policy_prevent_default, intent.update(|current| for_target(current, target))),
 			],
 		)
 	}

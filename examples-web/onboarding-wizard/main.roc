@@ -862,12 +862,12 @@ wizard = |h| {
 								Signal.const("Back"),
 								step_signal.map(|current| Step.is_eq(current, Step.AccountStep)),
 								[Html.attr("type", "button"), Html.class_attr("button")],
-								h.step.on_unit(Step.previous),
+								h.step.update(Step.previous),
 							),
 							Html.button_attrs(
 								"Start over",
 								[Html.attr("type", "button"), Html.class_attr("button-ghost")],
-								h.reset_token.on_unit(|n| n + 1),
+								h.reset_token.update(|n| n + 1),
 							),
 						],
 					),
@@ -990,7 +990,7 @@ summary_row = |step, key, row| {
 				Signal.const("Go to ${Step.title(target)}"),
 				step.signal().map(|current| Step.index(target) >= Step.index(current)),
 				[Html.attr("type", "button"), Html.class_attr("button button-sm shrink-0")],
-				step.on_unit(
+				step.update(
 					|current| if Step.index(target) < Step.index(current) {
 						target
 					} else {
@@ -1038,7 +1038,7 @@ account_panel = |step, account, account_signal|
 						Html.aria_describedby("account-email-error"),
 						Html.aria_invalid_s(account_signal.map(|value| value.email != "" and !valid_email(value.email))),
 					],
-					account.on_str(|value, text| { ..value, email: text }),
+					account.update_str(|value, text| { ..value, email: text }),
 				),
 				message: account_signal.map(email_message),
 				tone: account_signal.map(|value| note_tone(value.email != "")),
@@ -1050,7 +1050,7 @@ account_panel = |step, account, account_signal|
 					"Full name",
 					account_signal.map(|value| value.full_name),
 					[Html.class_attr(input_class), Html.attr("placeholder", "Ada Lovelace"), Html.aria_describedby("account-name-error")],
-					account.on_str(|value, text| { ..value, full_name: text }),
+					account.update_str(|value, text| { ..value, full_name: text }),
 				),
 				message: account_signal.map(full_name_message),
 				tone: account_signal.map(|value| note_tone(value.full_name != "")),
@@ -1058,7 +1058,7 @@ account_panel = |step, account, account_signal|
 			}),
 			# The guard lives in the reducer: it reads `account` while writing `step`.
 			next_button(
-				step.on_unit_with(
+				step.update_with(
 					account,
 					|current, value| if account_ok(value) {
 						Step.OrgStep
@@ -1113,7 +1113,7 @@ org_panel = |step, org, org_signal| {
 	# The radios are bound by their wire value, so the tag is encoded once here
 	# and decoded once in the reducer below.
 	region_signal = org_signal.map(|value| Region.to_str(value.region))
-	pick_region = org.on_str(|value, text| { ..value, region: Region.from_str(text) })
+	pick_region = org.update_str(|value, text| { ..value, region: Region.from_str(text) })
 
 	Html.section_c(
 		"Organisation step",
@@ -1126,7 +1126,7 @@ org_panel = |step, org, org_signal| {
 					"Organisation name",
 					org_signal.map(|value| value.name),
 					[Html.class_attr(input_class), Html.attr("placeholder", "Analytical Engines Ltd"), Html.aria_describedby("org-name-error")],
-					org.on_str(|value, text| { ..value, name: text }),
+					org.update_str(|value, text| { ..value, name: text }),
 				),
 				message: org_signal.map(org_name_message),
 				tone: org_signal.map(|value| note_tone(value.name != "")),
@@ -1145,7 +1145,7 @@ org_panel = |step, org, org_signal| {
 							Html.option(Plan.to_str(Plan.Growth), Plan.label(Plan.Growth)),
 							Html.option(Plan.to_str(Plan.Enterprise), Plan.label(Plan.Enterprise)),
 						],
-						org.on_str(|value, text| { ..value, plan: Plan.from_str(text) }),
+						org.update_str(|value, text| { ..value, plan: Plan.from_str(text) }),
 					),
 					Html.paragraph_c("The plan decides which invite roles step 3 will offer.", hint_class),
 				],
@@ -1171,7 +1171,7 @@ org_panel = |step, org, org_signal| {
 				],
 			),
 			next_button(
-				step.on_unit_with(
+				step.update_with(
 					org,
 					|current, value| if org_ok(value) {
 						Step.InvitesStep
@@ -1204,7 +1204,7 @@ invites_panel = |view| {
 	# a role the plan does not include can never be stored. The radio's wire
 	# value is decoded here, at the one place it arrives as text.
 	pick_role =
-		view.role.on_str_with(
+		view.role.update_str_with(
 			view.org,
 			|current, org_value, text| {
 				picked = Role.from_str(text)
@@ -1228,7 +1228,7 @@ invites_panel = |view| {
 					"Invite emails",
 					view.emails_signal,
 					[Html.class_attr(textarea_class), Html.attr("placeholder", "One address per line"), Html.aria_describedby("invite-emails-error")],
-					view.emails.on_str(|_current, text| text),
+					view.emails.update_str(|_current, text| text),
 				),
 				message: view.emails_signal.map(invite_message),
 				tone: view.emails_signal.map(|value| note_tone(value != "")),
@@ -1260,7 +1260,7 @@ invites_panel = |view| {
 				],
 			),
 			next_button(
-				view.step.on_unit_with(
+				view.step.update_with(
 					view.emails,
 					|current, value| if invites_ok(value) {
 						Step.ReviewStep
@@ -1298,7 +1298,7 @@ review_panel = |attempts, summaries, submit_status, submit_disabled|
 						Signal.const("Create workspace"),
 						submit_disabled,
 						[Html.attr("type", "button"), Html.class_attr("button-primary")],
-						attempts.on_unit(|n| n + 1),
+						attempts.update(|n| n + 1),
 					),
 				],
 			),

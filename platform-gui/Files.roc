@@ -3,6 +3,118 @@
 ## Roc. Paths are absolute UTF-8 strings of at most 4096 bytes; the host never
 ## follows a symbolic link, in a path or as a target. A chooser blocks the
 ## effect until the user answers.
+## Paths are spelled by the operating system the host runs on: a Windows
+## worker returns drive-rooted paths written with backslashes. Derive any
+## parent, name, root, or breadcrumb through `Files.parse_path` and the
+## `Files.Path` queries rather than by splitting a path string on one separator.
+utf8 : List(U8) -> Str
+utf8 = |bytes| match Str.from_utf8(bytes) {
+	Ok(value) => value
+	Err(_) => crash "malformed Files UTF-8 frame"
+}
+
+# Lexical path primitives shared by the Files.Path methods. Every one works on
+# UTF-8 bytes and cuts only at ASCII separators, so a slice never splits a code
+# point. None of them inspects or rewrites a byte outside its own path style.
+path_byte : List(U8), U64 -> U8
+path_byte = |bytes, index| bytes.get(index) ?? 0
+
+is_path_separator : Files.PathStyle, U8 -> Bool
+is_path_separator = |style, byte| match style {
+	Posix => byte == 47
+	Windows => byte == 47 or byte == 92
+}
+
+is_drive_letter : U8 -> Bool
+is_drive_letter = |byte| (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
+
+is_unc_prefix : List(U8) -> Bool
+is_unc_prefix = |bytes| bytes.get(0) == Ok(92) and bytes.get(1) == Ok(92)
+
+is_drive_prefix : List(U8) -> Bool
+is_drive_prefix = |bytes| is_drive_letter(path_byte(bytes, 0)) and bytes.get(1) == Ok(58)
+
+path_style : Str -> Files.PathStyle
+path_style = |text| {
+	bytes = text.to_utf8()
+	if is_unc_prefix(bytes) or is_drive_prefix(bytes) {
+		Files.PathStyle.Windows
+	} else {
+		Files.PathStyle.Posix
+	}
+}
+
+path_scan : List(U8), U64, Files.PathStyle -> U64
+path_scan = |bytes, from, style| {
+	var $index = from
+	while $index < bytes.len() and !is_path_separator(style, path_byte(bytes, $index)) {
+		$index = $index + 1
+	}
+	$index
+}
+
+# The root prefix length in bytes, including one trailing separator when the
+# path spells it. A relative path has a zero-length root.
+path_root_len : List(U8), Files.PathStyle -> U64
+path_root_len = |bytes, style| {
+	leading = if is_path_separator(style, path_byte(bytes, 0)) {
+		1
+	} else {
+		0
+	}
+	match style {
+		Posix => leading
+		Windows =>
+			if is_unc_prefix(bytes) {
+				host_end = path_scan(bytes, 2, style)
+				share_end = if host_end < bytes.len() {
+					path_scan(bytes, host_end + 1, style)
+				} else {
+					host_end
+				}
+				if share_end < bytes.len() {
+					share_end + 1
+				} else {
+					share_end
+				}
+			} else if is_drive_prefix(bytes) {
+				if is_path_separator(style, path_byte(bytes, 2)) {
+					3
+				} else {
+					2
+				}
+			} else {
+				leading
+			}
+	}
+}
+
+# The end of the path's components: `limit` with any trailing separator run
+# removed, never cutting into the root.
+path_content_end : List(U8), Files.PathStyle, U64, U64 -> U64
+path_content_end = |bytes, style, root_len, limit| {
+	var $end = limit
+	while $end > root_len and is_path_separator(style, path_byte(bytes, $end - 1)) {
+		$end = $end - 1
+	}
+	$end
+}
+
+path_last_separator : List(U8), Files.PathStyle, U64, U64 -> [NoSeparator, At(U64)]
+path_last_separator = |bytes, style, root_len, end| {
+	var $index = end
+	var $result = NoSeparator
+	while $index > root_len and $result == NoSeparator {
+		$index = $index - 1
+		if is_path_separator(style, path_byte(bytes, $index)) {
+			$result = At($index)
+		}
+	}
+	$result
+}
+
+path_slice : List(U8), U64, U64 -> Str
+path_slice = |bytes, from, to| utf8(bytes.drop_first(from).take_first(to - from))
 Files := [].{
 	Choice := [Canceled, Chosen(Str)].{
 		is_eq : _
@@ -68,6 +180,146 @@ Files := [].{
 	## The folder the host resolves relative asset sources against.
 	assets_root! : () => Str
 
+
+	## How one path spells its root and separators. A native worker returns the
+	## operating system's own spelling, so both cases reach the same application.
+	PathStyle := [Posix, Windows].{
+		is_eq : _
+	}
+
+	## One native path, carrying the spelling it was recognized as.
+	##
+	## `Files.path` classifies a path once, by shape, at the boundary where it
+	## enters the application; nothing below ever rewrites a separator byte.
+	## A Posix path separates only on `/`, so a backslash inside a Unix file
+	## name stays part of that name. A Windows path separates on `\` or `/`.
+	##
+	## `text` is exactly the bytes the host supplied. Every query here is lexical:
+	## it consults no filesystem, resolves no link, and never normalizes `.`/`..`.
+	## Redundant separators are ignored when locating a component, and a trailing
+	## separator never produces an empty final component.
+	Path := { text : Str, style : PathStyle }.{
+		is_eq : _
+
+		## The exact path bytes, suitable for a native request or for identity.
+		to_str : Path -> Str
+		to_str = |value| value.text
+
+		## The root prefix: `/`, `C:\`, `\\server\share\`, or empty when relative.
+		## A root is a path in the same style, so it can be joined onto directly.
+		root : Path -> Path
+		root = |value| {
+			bytes = value.text.to_utf8()
+			Path.{ text: path_slice(bytes, 0, path_root_len(bytes, value.style)), style: value.style }
+		}
+
+		## True when the path holds no component above its root, so `parent`
+		## can no longer make progress. The empty relative path qualifies.
+		is_root : Path -> Bool
+		is_root = |value| {
+			bytes = value.text.to_utf8()
+			root_len = path_root_len(bytes, value.style)
+			path_content_end(bytes, value.style, root_len, bytes.len()) <= root_len
+		}
+
+		## The final component. A root is its own name, so `/` names `/` and
+		## `C:\` names `C:\`; a trailing separator is ignored.
+		name : Path -> Str
+		name = |value| {
+			bytes = value.text.to_utf8()
+			root_len = path_root_len(bytes, value.style)
+			end = path_content_end(bytes, value.style, root_len, bytes.len())
+			if end <= root_len {
+				path_slice(bytes, 0, root_len)
+			} else {
+				match path_last_separator(bytes, value.style, root_len, end) {
+					NoSeparator => path_slice(bytes, root_len, end)
+					At(index) => path_slice(bytes, index + 1, end)
+				}
+			}
+		}
+
+		## The lexical parent. Every root is its own parent, so repeatedly taking
+		## a parent terminates; a one-component relative path yields the empty
+		## relative path rather than inventing an absolute root.
+		parent : Path -> Path
+		parent = |value| {
+			bytes = value.text.to_utf8()
+			root_len = path_root_len(bytes, value.style)
+			end = path_content_end(bytes, value.style, root_len, bytes.len())
+			if end <= root_len {
+				value
+			} else {
+				cut = match path_last_separator(bytes, value.style, root_len, end) {
+					NoSeparator => root_len
+					At(index) => path_content_end(bytes, value.style, root_len, index)
+				}
+				Path.{ text: path_slice(bytes, 0, cut), style: value.style }
+			}
+		}
+
+		## The same location with any trailing separator run removed, so a path
+		## used as a prefix ends exactly one separator before its children. A
+		## root keeps the separator that is part of the root itself.
+		trimmed : Path -> Path
+		trimmed = |value| {
+			bytes = value.text.to_utf8()
+			root_len = path_root_len(bytes, value.style)
+			end = path_content_end(bytes, value.style, root_len, bytes.len())
+			Path.{ text: path_slice(bytes, 0, end), style: value.style }
+		}
+
+		## The components above the root, in order. Empty separator runs and a
+		## trailing separator contribute no component.
+		components : Path -> List(Str)
+		components = |value| {
+			bytes = value.text.to_utf8()
+			style = value.style
+			root_len = path_root_len(bytes, style)
+			end = path_content_end(bytes, style, root_len, bytes.len())
+			var $parts = []
+			var $start = root_len
+			var $index = root_len
+			while $index < end {
+				if is_path_separator(style, path_byte(bytes, $index)) {
+					if $index > $start {
+						$parts = $parts.append(path_slice(bytes, $start, $index))
+					}
+					$start = $index + 1
+				}
+				$index = $index + 1
+			}
+			if end > $start {
+				$parts = $parts.append(path_slice(bytes, $start, end))
+			}
+			$parts
+		}
+
+		## Append one component using this path's own primary separator, adding
+		## one only where the path does not already end in a separator.
+		join : Path, Str -> Path
+		join = |value, child| {
+			separator = match value.style {
+				Posix => "/"
+				Windows => "\\"
+			}
+			bytes = value.text.to_utf8()
+			joined = if bytes.is_empty() {
+				child
+			} else if is_path_separator(value.style, path_byte(bytes, bytes.len() - 1)) {
+				"${value.text}${child}"
+			} else {
+				"${value.text}${separator}${child}"
+			}
+			Path.{ text: joined, style: value.style }
+		}
+	}
+
+	## Recognize one native path by shape. A path is Windows-spelled when it
+	## begins with a drive designator (`C:`) or a UNC prefix (`\\`); anything
+	## else, including a relative path, is Posix-spelled. Bytes are preserved.
+	parse_path : Str -> Path
+	parse_path = |text| Path.{ text, style: path_style(text) }
 	TextFile : { path : Str, text : Str }
 	Written : { path : Str, bytes : U64 }
 	Scan : { root : Str, entries : List(Entry) }
@@ -268,3 +520,57 @@ expect Files.utf8_prefix("hé".to_utf8().take_first(2)) == Ok("h")
 expect Files.utf8_prefix([0xff, 0x41]) == Err(InvalidUtf8)
 expect Files.valid_sha256("0000000000000000000000000000000000000000000000000000000000000000")
 expect !Files.valid_sha256("00000000000000000000000000000000000000000000000000000000000000ZZ")
+
+
+
+## A Posix path separates only on `/`, so a backslash is an ordinary character
+## in a Unix file name and Unicode segments survive intact.
+expect {
+	note = Files.parse_path("/tmp/λ dir/a\\b.txt")
+	note.name() == "a\\b.txt" and note.parent().to_str() == "/tmp/λ dir" and note.components() == ["tmp", "λ dir", "a\\b.txt"]
+}
+
+## The Unix root is its own parent and its own name, and a trailing separator
+## never becomes an empty final component.
+expect {
+	root = Files.parse_path("/")
+	trailing = Files.parse_path("/tmp/project/")
+	root.is_root() and root.name() == "/" and root.parent().to_str() == "/" and trailing.name() == "project" and trailing.parent().to_str() == "/tmp"
+}
+
+## A drive-rooted Windows path yields its final segment, its real parent, and a
+## `C:\` root that terminates the parent chain.
+expect {
+	note = Files.parse_path("C:\\Users\\Lee\\Ideas.txt")
+	drive = Files.parse_path("C:\\")
+	note.name() == "Ideas.txt" and note.parent().to_str() == "C:\\Users\\Lee" and note.root().to_str() == "C:\\" and drive.is_root() and drive.parent().to_str() == "C:\\"
+}
+
+## Windows accepts either separator, and the bytes the host supplied are kept.
+expect {
+	mixed = Files.parse_path("C:/Users/Lee")
+	mixed.name() == "Lee" and mixed.parent().to_str() == "C:/Users" and mixed.to_str() == "C:/Users/Lee"
+}
+
+## A UNC share is a root: it terminates the parent chain and contributes no
+## component of its own.
+expect {
+	file = Files.parse_path("\\\\server\\share\\docs\\a.txt")
+	share = Files.parse_path("\\\\server\\share")
+	file.root().to_str() == "\\\\server\\share\\" and file.components() == ["docs", "a.txt"] and file.parent().to_str() == "\\\\server\\share\\docs" and share.is_root()
+}
+
+## A relative path keeps its relative parent instead of inventing a root, and
+## `join` adds the style's own separator only where one is missing.
+expect {
+	relative = Files.parse_path("docs/file.txt")
+	relative.parent().to_str() == "docs" and relative.parent().parent().to_str() == "" and Files.parse_path("C:\\").join("Users").to_str() == "C:\\Users" and Files.parse_path("/tmp").join("a").to_str() == "/tmp/a"
+}
+
+## Trimming removes a trailing separator run without disturbing a root, so a
+## location can be used as an exact prefix of its children.
+expect {
+	Files.parse_path("/tmp/project///").trimmed().to_str() == "/tmp/project" and
+	Files.parse_path("/").trimmed().to_str() == "/" and
+	Files.parse_path("C:\\").trimmed().to_str() == "C:\\"
+}

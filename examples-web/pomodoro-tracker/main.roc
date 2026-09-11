@@ -316,12 +316,12 @@ render_row = |ctx, key, item| {
 			Html.div_c(
 				toolbar_class,
 				[
-					Html.button_c("Attach ${name}", "button button-sm", attach.on_unit(|_| key)),
+					Html.button_c("Attach ${name}", "button button-sm", attach.update(|_| key)),
 					Html.action_button_c(
 						Signal.const("Log block to ${name}"),
 						view.map(|v| !v.can_log),
 						"button button-sm",
-						ledger.on_unit(|projects| log_block(projects, key)),
+						ledger.update(|projects| log_block(projects, key)),
 					),
 				],
 			),
@@ -389,12 +389,12 @@ board = |b, extras| {
 					Html.div_c(
 						toolbar_class,
 						[
-							Html.button_s_c(run_signal.map(start_label), "button-primary", run.on_unit(toggle_run)),
+							Html.button_s_c(run_signal.map(start_label), "button-primary", run.update(toggle_run)),
 							Html.action_button_c(
 								Signal.const("Reset timer"),
 								run_signal.map(is_idle),
 								"button",
-								run.on_unit(|_| RunState.Idle),
+								run.update(|_| RunState.Idle),
 							),
 						],
 					),

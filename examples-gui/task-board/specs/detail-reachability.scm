@@ -1,0 +1,8 @@
+(scenario "detail-reachability"
+  :window "1200x820"
+  ; The detail panel owns its own vertical scroll region, so its movement and
+  ; deletion controls stay reachable at the review size however tall the panel's
+  ; content becomes. This guards the fix for the defect where the panel grew to
+  ; its intrinsic height inside a board region that clipped both axes.
+  (steps
+    (expect-onscreen (test-id "task-detail"))))

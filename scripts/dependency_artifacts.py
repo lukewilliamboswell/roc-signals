@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Fetch locked dependency releases and verify provenance before extraction.
+"""Fetch locked dependency releases and verify reviewed content before extraction.
 
 A cache is transport storage, never a trust authority: every use checks the
-locked digest and verifies the expected signing workflow and source identity.
+locked size and digest. Published attestations provide optional provenance
+evidence, but consuming a reviewed lock does not depend on an online service.
 """
 
 import argparse
@@ -12,7 +13,6 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
-import subprocess
 import tarfile
 import tempfile
 from urllib.request import urlopen
@@ -38,7 +38,8 @@ def read_lock(path):
     for identity, entry in lock["artifacts"].items():
         fields = {"name", "target", "repository", "release", "asset", "sha256", "size",
                   "source_sha", "source_ref", "signer_workflow"}
-        if not IDENTIFIER.fullmatch(identity) or set(entry) != fields:
+        optional = {"input_fingerprint"}
+        if not IDENTIFIER.fullmatch(identity) or not fields <= set(entry) <= fields | optional:
             raise ValueError("invalid dependency lock entry")
         for field in ("name", "target", "release", "asset"):
             if not isinstance(entry[field], str) or not IDENTIFIER.fullmatch(entry[field]):
@@ -47,6 +48,8 @@ def read_lock(path):
             raise ValueError("invalid dependency repository")
         if not HEX256.fullmatch(entry["sha256"]) or not HEX160.fullmatch(entry["source_sha"]):
             raise ValueError("invalid dependency digest")
+        if "input_fingerprint" in entry and not HEX256.fullmatch(entry["input_fingerprint"]):
+            raise ValueError("invalid dependency input fingerprint")
         if type(entry["size"]) is not int or not 0 < entry["size"] <= MAX_ARCHIVE_BYTES:
             raise ValueError("invalid dependency archive size")
         if entry["source_ref"] != "refs/heads/main":
@@ -61,12 +64,6 @@ def read_lock(path):
 def verify_archive(path, entry):
     if path.is_symlink() or path.stat().st_size != entry["size"] or sha256(path) != entry["sha256"]:
         raise ValueError("dependency archive differs from its locked digest or size")
-    subprocess.run([
-        "gh", "attestation", "verify", str(path), "--repo", entry["repository"],
-        "--signer-workflow", entry["signer_workflow"],
-        "--source-digest", entry["source_sha"], "--source-ref", entry["source_ref"],
-        "--deny-self-hosted-runners",
-    ], check=True)
 
 
 def fetch(entry, cache):

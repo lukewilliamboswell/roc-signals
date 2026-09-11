@@ -52,19 +52,26 @@ platform.
 Linux requires glibc, a Wayland desktop and a working graphics driver. The
 operating system supplies runtime libraries, including FreeType and xkbcommon.
 CI validated Ubuntu 24.04 using software Vulkan, built every downloaded app,
-ran all 39 example specs, and checked rendering for all six apps.
+ran every maintained example spec, and opened every app for two seconds under the smoke
+check, which counts rendered frames. The scripted scenarios have also been run
+on a Linux desktop; see the contributing guide for what they cover.
 
 The Mac download targets Apple Silicon, not Intel Macs. macOS supplies its
 system frameworks and runtime libraries. Native CI rebuilt all six apps from
-their unchanged published URLs with a fresh Roc cache, passed all 39 specs, and
-confirmed rendering for every app.
+their unchanged published URLs with a fresh Roc cache, passed every maintained spec, and
+opened every app under the two-second smoke check. The scripted scenarios and
+their window captures have been run on Apple Silicon.
 
 The Windows download targets x86_64 and requires a native Windows desktop with
 working graphics support. It bundles GNU runtime link inputs and complete DLL
 import libraries; Windows supplies the system DLL implementations. Building the
 starters does not require a Windows SDK or a C/C++ compiler. Native CI rebuilt
 all six apps from their unchanged published URLs with a fresh Roc cache, passed
-all 39 specs, and confirmed rendering for every app.
+every maintained spec, and opened every app under the two-second smoke check. That check
+counts rendered frames; it exercises no Windows file dialog, file operation or
+window chrome, and the scripted scenarios have not yet been run on Windows. The
+specs inject POSIX paths, so Windows path handling is covered by the dedicated
+Windows-path specs rather than by the whole suite.
 
 ## Controls and layout
 
@@ -160,13 +167,17 @@ navigation while open.
 `Elem.image({ source, label, ... })` renders a picture from a relative path
 inside the host's assets root, sized and rounded by its style, for example
 `Elem.image({ source: "avatars/maya.png", label: "Maya avatar", width: 24.Px, height: 24.Px, radius: 24 })`.
-Launch the host with `--assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
+Launch the host with `--host-assets-root <dir>` (or `ROC_SIGNALS_ASSETS_ROOT`) to
 choose the root; the default is `assets/` beside the executable. Absolute
 paths, `..` traversal, URIs, and symbolic links never resolve, and a missing or
 undecodable image shows a neutral placeholder box instead of nothing.
 Ship an `assets/manifest.json` next to `main.roc`, ingest it at compile time,
 and call `Files.verify_assets!` from a mount effect to report each asset as ok,
-missing, or altered; the task-board and folder-explorer examples show the pattern.
+missing, or altered; the task-board and folder-explorer examples show the pattern. That
+report is advisory data, not a gate on rendering: the placeholder above comes
+from the host's own resolution and decoding, so an altered but still decodable
+image keeps rendering, and the check is one startup reading rather than a watch
+that notices a restored file.
 
 Use the `test_id` field for stable spec locators and `label` for semantic
 names; on an `action_button`, `label` replaces the live `caption` as the name.
@@ -179,7 +190,7 @@ system at startup. Embed the bytes with a compile-time import and declare them
 once on the app's root element:
 
 ```roc
-import "../../vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
+import "assets/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
 
 Elem.col(
     { embedded_fonts: [{ family: "Source Code Pro", bytes: source_code_pro }], ... },
@@ -386,3 +397,27 @@ requests while awaiting a decision are ignored. Disposing or replacing the
 wrapper cancels its pending request; the native adapter validates registration
 lifetime and binding. Apps without a wrapper close immediately. The Notes
 example demonstrates Save and close, Discard and close, and Keep editing.
+
+## Window identity
+
+`Gui.set_title` names the window. It is the same `SetDocumentTitle` command the
+browser platform's `Browser.set_title` issues, so a title reaches the desktop
+through the ordinary propagation path: an equal title is pruned before it is
+applied, and no separate title channel exists.
+
+Emit it like any other command, usually with `Ui.on_change_initial` so the
+window is named on the first frame and renamed whenever the signal changes:
+
+```roc
+Ui.on_change_initial(Signal.const("Counter - Roc Signals"), Gui.set_title)
+```
+
+Give the application a stable name, and fold the open document and its unsaved
+state into the same string when they are meaningful. Notes publishes
+`"Untitled note - Notes"` and marks an unsaved draft as
+`"* Untitled note - Notes"`; Task Board does the same with its board file. An
+app that never sets a title keeps the host's `Roc Signals` default.
+
+The title is observable in a native semantic spec with
+`(expect-document-title "…")`, so document and dirty-state naming is tested
+without a display.

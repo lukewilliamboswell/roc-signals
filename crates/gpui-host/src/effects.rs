@@ -364,11 +364,59 @@ enum Directory {
 impl Directory {
     fn resolve(self) -> Result<String, FileError> {
         match self {
-            Self::Home => std::env::var("HOME")
-                .map_err(|_| FileError::Unavailable("HOME is missing or is not UTF-8".into())),
+            Self::Home => home_directory(|name| std::env::var(name).ok()),
             Self::At(path) => Ok(path),
         }
     }
+}
+
+thread_local! {
+    /// Paths a scripted run has queued as the answers to the next choosers, in
+    /// order. A native dialog cannot be driven from a scenario, and the
+    /// display-free specs answer choosers with stubs; this is the window run's
+    /// equivalent, consulted on the UI thread before any dialog would open.
+    static SCRIPTED_CHOICES: std::cell::RefCell<std::collections::VecDeque<PathBuf>> =
+        std::cell::RefCell::new(std::collections::VecDeque::new());
+}
+
+/// Queues the paths the next file and folder choosers will return instead of
+/// opening a dialog. Only a scripted run supplies these; an ordinary launch
+/// always prompts.
+pub(crate) fn answer_choosers(paths: Vec<PathBuf>) {
+    SCRIPTED_CHOICES.with(|choices| choices.borrow_mut().extend(paths));
+}
+
+/// Resolves the native user's profile root from the environment an ordinary
+/// process of this operating system is started with. POSIX systems publish
+/// `HOME`; a Windows process launched from a shortcut or Explorer has no `HOME`
+/// at all and names the profile through `USERPROFILE`, with `HOMEDRIVE` and
+/// `HOMEPATH` as the older pair. `Unavailable` is reserved for an environment
+/// that names no usable directory, so a Windows launch outside a POSIX shell
+/// can still open the save dialog.
+fn home_directory(variable: impl Fn(&str) -> Option<String>) -> Result<String, FileError> {
+    let candidates: &[&str] = if cfg!(windows) {
+        &["USERPROFILE", "HOME"]
+    } else {
+        &["HOME"]
+    };
+    let mut found = candidates
+        .iter()
+        .filter_map(|name| variable(name))
+        .find(|value| !value.is_empty());
+    if found.is_none() && cfg!(windows) {
+        found = match (variable("HOMEDRIVE"), variable("HOMEPATH")) {
+            (Some(drive), Some(path)) if !drive.is_empty() && !path.is_empty() => {
+                Some(format!("{drive}{path}"))
+            }
+            _ => None,
+        };
+    }
+    found.ok_or_else(|| {
+        FileError::Unavailable(format!(
+            "the home directory is unknown: {} is missing or is not UTF-8",
+            candidates.join(" and ")
+        ))
+    })
 }
 
 /// A chooser a worker effect is waiting on. The worker blocks on the other
@@ -396,6 +444,12 @@ fn wait_for_chooser(request: Chooser) -> Result<Option<PathBuf>, FileError> {
 /// The worker is blocked on `reply` in `signals_files_choose`.
 pub(crate) fn prompt(waiting: ChooserRequest, cx: &mut Context<Runtime>) {
     let ChooserRequest { request, reply } = waiting;
+    if let Some(path) = SCRIPTED_CHOICES.with(|choices| choices.borrow_mut().pop_front()) {
+        // The scripted answer takes the same validated path the dialog's own
+        // result would; nothing downstream can tell the two apart.
+        let _ = reply.send(Ok(Some(path)));
+        return;
+    }
     match request {
         Chooser::File | Chooser::Directory => {
             let directories = matches!(request, Chooser::Directory);
@@ -453,6 +507,14 @@ fn validate_path(path: &str) -> Result<(), FileError> {
     if !Path::new(path).is_absolute() || path.contains('\0') {
         return Err(FileError::InvalidPath(path.into()));
     }
+    if let Some(std::path::Component::Prefix(prefix)) = Path::new(path).components().next() {
+        use std::path::Prefix;
+        if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) {
+            return Err(FileError::InvalidPath(format!(
+                "{path}: only drive-rooted paths are supported on Windows"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -480,6 +542,44 @@ mod tests {
         assert!(validate_save_options("relative", "note.txt").is_err());
         assert!(validate_save_options("/tmp", "note.txt").is_ok());
         assert!(validate_path("/tmp/a\0b").is_err());
+    }
+
+    #[test]
+    fn the_home_directory_comes_from_the_environment_this_system_provides() {
+        assert_eq!(
+            home_directory(|name| (name == "HOME").then(|| "/home/lee".to_string())).unwrap(),
+            "/home/lee"
+        );
+        assert!(home_directory(|_| None).is_err());
+        assert!(home_directory(|_| Some(String::new())).is_err());
+        if cfg!(windows) {
+            let profile = |name: &str| match name {
+                "USERPROFILE" => Some(r"C:\Users\Lee".to_string()),
+                _ => None,
+            };
+            assert_eq!(home_directory(profile).unwrap(), r"C:\Users\Lee");
+            let legacy = |name: &str| match name {
+                "HOMEDRIVE" => Some("C:".to_string()),
+                "HOMEPATH" => Some(r"\Users\Lee".to_string()),
+                _ => None,
+            };
+            assert_eq!(home_directory(legacy).unwrap(), r"C:\Users\Lee");
+        }
+    }
+
+    #[test]
+    fn windows_paths_outside_a_drive_are_refused_at_validation() {
+        if cfg!(windows) {
+            assert!(validate_path(r"C:\Users\Lee").is_ok());
+            for refused in [r"\\server\share\draft.txt", r"\\?\UNC\server\share", r"\\.\pipe\x"] {
+                let Err(FileError::InvalidPath(message)) = validate_path(refused) else {
+                    panic!("accepted {refused}");
+                };
+                assert!(message.contains("drive-rooted"), "{message}");
+            }
+        } else {
+            assert!(validate_path("/srv/share/draft.txt").is_ok());
+        }
     }
 
     #[test]

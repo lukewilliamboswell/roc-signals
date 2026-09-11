@@ -17,6 +17,14 @@ from dependency_artifacts import sha256, unpack_verified, verify_archive, read_l
 
 REPOSITORY = "lukewilliamboswell/roc-signals"
 KINDS = {
+    "macos-interfaces": {
+        "targets": ("macos-sysroot",),
+        "files": (),
+        "licenses": (),
+        "workflow": "macos-interface-dependencies.yml",
+        "inventory_error": "dependency release must include the generated macOS linker interfaces",
+        "validation": "The catalog-derived interfaces passed final Roc application links and native GUI specs against the reviewed released host; two independent generations produced identical archives.",
+    },
     "unwind": {"targets": ("x64glibc",), "files": ("libunwind.a",),
                "licenses": ("LICENSE.TXT", "LICENSE-ZIG"),
                "extra_files": tuple("sources/unwind/" + name for name in (
@@ -66,6 +74,16 @@ KINDS = {
 }
 
 
+def release_files(kind, policy):
+    """Resolve a catalog-sized inventory without coupling unrelated producers to it."""
+    if kind == "macos-interfaces":
+        catalog = json.loads((Path(__file__).resolve().parents[1]
+                              / "dependencies/macos-interfaces/interfaces.json").read_text())
+        return (*(library["path"] for library in catalog["libraries"]),
+                "interfaces.json", "manifest.json", "PROVENANCE.md")
+    return policy["files"]
+
+
 def prepare(directory, tag, environment, kind="musl"):
     policy = KINDS[kind]
     if (environment.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
@@ -94,7 +112,7 @@ def prepare(directory, tag, environment, kind="musl"):
             }
             verify_archive(archive, entry)
             manifest = unpack_verified(archive, entry, Path(temporary) / target)
-            required = {f"targets/{target}/{name}" for name in policy["files"]}
+            required = {f"targets/{target}/{name}" for name in release_files(kind, policy)}
             required.update(f"licenses/{kind}/{name}" for name in policy["licenses"])
             required.update(policy.get("extra_files", ()))
             if set(manifest["files"]) != required:

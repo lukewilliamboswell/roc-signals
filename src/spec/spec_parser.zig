@@ -71,6 +71,56 @@ pub const SpecCommandType = enum {
     mark_metrics,
     expect_metric_delta,
     expect_metric_delta_at_most,
+    // Window-only steps. A `(scenario ...)` runs against the real window through
+    // the GUI host, where these observe layout, native editor history and the
+    // window's own lifecycle; the display-free runner refuses them by name.
+    wait,
+    type_text,
+    key,
+    expect_onscreen,
+    expect_history,
+    expect_count,
+    expect_selected,
+    expect_focused,
+    snapshot,
+    close,
+};
+
+/// Whether a step exists only for a scenario driven against a real window.
+pub fn isWindowOnly(cmd_type: SpecCommandType) bool {
+    return switch (cmd_type) {
+        .wait, .type_text, .key, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot, .close => true,
+        else => false,
+    };
+}
+
+/// The header of a `(scenario ...)`: what the window run needs before its
+/// first step. Everything here used to be script front matter read by the
+/// Python driver; the host owns it now so that one parser decides.
+pub const Scenario = struct {
+    /// Requested window size in logical pixels; zero means the host default.
+    window_width: u32 = 0,
+    window_height: u32 = 0,
+    /// Assets root, relative to the example directory, or null for `assets/`.
+    assets: ?[]const u8 = null,
+    /// Paths handed to the file and folder choosers in order, relative to the
+    /// example directory, instead of opening native dialogs.
+    choices: [][]const u8 = &.{},
+    /// A defect this scenario documents; its failure is reported, not fatal.
+    diagnostic: ?[]const u8 = null,
+    /// Where the diagnostic applies: systems (`linux`, `macos`, `windows`) or
+    /// the frame the run saw (`client-frame`, `server-frame`). Empty means everywhere.
+    on: [][]const u8 = &.{},
+
+    /// Releases every string this header owns.
+    pub fn deinit(self: Scenario, allocator: std.mem.Allocator) void {
+        if (self.assets) |value| allocator.free(value);
+        for (self.choices) |choice| allocator.free(choice);
+        if (self.choices.len > 0) allocator.free(self.choices);
+        if (self.diagnostic) |value| allocator.free(value);
+        for (self.on) |token| allocator.free(token);
+        if (self.on.len > 0) allocator.free(self.on);
+    }
 };
 
 pub const LocatorKind = enum {
@@ -136,11 +186,14 @@ pub fn freeSpecCommands(allocator: std.mem.Allocator, commands: []SpecCommand) v
 pub const ParsedTestSpec = struct {
     name: []const u8,
     commands: []SpecCommand,
+    /// Present for a `(scenario ...)`, absent for a `(test ...)`.
+    scenario: ?Scenario = null,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: ParsedTestSpec, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         freeSpecCommands(allocator, self.commands);
+        if (self.scenario) |scenario| scenario.deinit(allocator);
     }
 };
 
@@ -303,11 +356,15 @@ pub fn onlineSnapshotFromSpecText(text: []const u8) ParseError!boundary.OnlineSn
     return ParseError.InvalidFormat;
 }
 
+// Locator values are quoted with the same escapes `writeLegacyQuoted` emits, so
+// they are unescaped here rather than taken literally. Without this a locator
+// could not name an element whose text contains a backslash, quote, or newline
+// -- for instance a Windows path shown in a breadcrumb.
 fn parseQuotedValue(allocator: std.mem.Allocator, prefix: []const u8, input: []const u8) ParseError!?[]const u8 {
     if (!std.mem.startsWith(u8, input, prefix)) return null;
     const rest = std.mem.trim(u8, input[prefix.len..], " \t");
     if (rest.len < 2 or rest[0] != '"' or rest[rest.len - 1] != '"') return ParseError.InvalidFormat;
-    return allocator.dupe(u8, rest[1 .. rest.len - 1]) catch ParseError.OutOfMemory;
+    return try dupeUnescapedQuoted(allocator, rest[1 .. rest.len - 1]);
 }
 
 fn parseLocator(allocator: std.mem.Allocator, input: []const u8) ParseError!Locator {
@@ -663,21 +720,32 @@ pub fn parseSExprTestSpecFrom(allocator: std.mem.Allocator, content: []const u8,
     defer root.deinit(allocator);
 
     const root_items = exprList(root) orelse return ParseError.InvalidFormat;
-    if (root_items.len < 3 or !exprSymbolEql(root_items[0], "test")) return ParseError.InvalidFormat;
+    if (root_items.len < 3) return ParseError.InvalidFormat;
+    const is_scenario = exprSymbolEql(root_items[0], "scenario");
+    if (!is_scenario and !exprSymbolEql(root_items[0], "test")) return ParseError.InvalidFormat;
     const name = exprString(root_items[1]) orelse return ParseError.InvalidFormat;
     const name_copy = allocator.dupe(u8, name) catch return ParseError.OutOfMemory;
     errdefer allocator.free(name_copy);
+
+    var scenario: ?Scenario = null;
+    errdefer if (scenario) |header| header.deinit(allocator);
+    var sections_from: usize = 2;
+    if (is_scenario) {
+        const header = try parseScenarioHeader(allocator, root_items[2..]);
+        scenario = header.scenario;
+        sections_from += header.consumed;
+    }
 
     var commands: std.ArrayListUnmanaged(SpecCommand) = .empty;
     errdefer freeCommandList(allocator, &commands);
     var saw_setup = false;
     var saw_steps = false;
 
-    for (root_items[2..]) |section| {
+    for (root_items[sections_from..]) |section| {
         const section_items = exprList(section) orelse return ParseError.InvalidFormat;
         if (section_items.len == 0) return ParseError.InvalidFormat;
         if (exprSymbolEql(section_items[0], "setup")) {
-            if (saw_setup or saw_steps) return ParseError.InvalidFormat;
+            if (is_scenario or saw_setup or saw_steps) return ParseError.InvalidFormat;
             saw_setup = true;
             for (section_items[1..]) |form| try appendDecodedForm(allocator, &commands, form, true, base_dir);
         } else if (exprSymbolEql(section_items[0], "steps")) {
@@ -690,11 +758,192 @@ pub fn parseSExprTestSpecFrom(allocator: std.mem.Allocator, content: []const u8,
         }
     }
     if (!saw_steps) return ParseError.InvalidFormat;
+    if (is_scenario) {
+        // A scenario runs the real file workers, so a fixture that resolves a
+        // task by name has nothing to resolve; and closing the window ends the
+        // run, so nothing may follow it.
+        for (commands.items, 0..) |cmd, index| {
+            switch (cmd.cmd_type) {
+                .resolve_task, .resolve_stale_task, .reject_task => return ParseError.InvalidFormat,
+                .close => if (index + 1 != commands.items.len) return ParseError.InvalidFormat,
+                else => {},
+            }
+        }
+    } else {
+        for (commands.items) |cmd| if (isWindowOnly(cmd.cmd_type)) return ParseError.InvalidFormat;
+    }
 
     return .{
         .name = name_copy,
         .commands = commands.toOwnedSlice(allocator) catch return ParseError.OutOfMemory,
+        .scenario = scenario,
     };
+}
+
+/// Reads the `:keyword value` pairs between a scenario's name and its `(steps ...)`.
+fn parseScenarioHeader(allocator: std.mem.Allocator, items: []const sexpr.Expr) ParseError!struct { scenario: Scenario, consumed: usize } {
+    var scenario: Scenario = .{};
+    errdefer scenario.deinit(allocator);
+    var index: usize = 0;
+    while (index < items.len) {
+        const key = exprSymbol(items[index]) orelse break;
+        if (key.len == 0 or key[0] != ':') break;
+        if (index + 1 >= items.len) return ParseError.InvalidFormat;
+        const value = items[index + 1];
+        if (std.mem.eql(u8, key, ":window")) {
+            if (scenario.window_width != 0) return ParseError.InvalidFormat;
+            const text = exprString(value) orelse return ParseError.InvalidFormat;
+            const separator = std.mem.indexOfAny(u8, text, "xX") orelse return ParseError.InvalidFormat;
+            scenario.window_width = std.fmt.parseInt(u32, text[0..separator], 10) catch return ParseError.InvalidFormat;
+            scenario.window_height = std.fmt.parseInt(u32, text[separator + 1 ..], 10) catch return ParseError.InvalidFormat;
+            if (scenario.window_width == 0 or scenario.window_height == 0) return ParseError.InvalidFormat;
+        } else if (std.mem.eql(u8, key, ":assets")) {
+            if (scenario.assets != null) return ParseError.InvalidFormat;
+            const text = exprString(value) orelse return ParseError.InvalidFormat;
+            if (text.len == 0) return ParseError.InvalidFormat;
+            scenario.assets = try dupePlain(allocator, text);
+        } else if (std.mem.eql(u8, key, ":choose")) {
+            if (scenario.choices.len != 0) return ParseError.InvalidFormat;
+            scenario.choices = try dupeStringList(allocator, value, false);
+        } else if (std.mem.eql(u8, key, ":diagnostic")) {
+            if (scenario.diagnostic != null) return ParseError.InvalidFormat;
+            const text = exprString(value) orelse return ParseError.InvalidFormat;
+            if (text.len == 0) return ParseError.InvalidFormat;
+            scenario.diagnostic = try dupePlain(allocator, text);
+        } else if (std.mem.eql(u8, key, ":on")) {
+            if (scenario.on.len != 0) return ParseError.InvalidFormat;
+            scenario.on = try dupeStringList(allocator, value, true);
+            for (scenario.on) |token| {
+                const known = [_][]const u8{ "linux", "macos", "windows", "client-frame", "server-frame" };
+                var recognized = false;
+                for (known) |candidate| recognized = recognized or std.mem.eql(u8, token, candidate);
+                if (!recognized) return ParseError.InvalidFormat;
+            }
+        } else {
+            return ParseError.InvalidFormat;
+        }
+        index += 2;
+    }
+    // A scope without a diagnostic scopes nothing.
+    if (scenario.on.len != 0 and scenario.diagnostic == null) return ParseError.InvalidFormat;
+    return .{ .scenario = scenario, .consumed = index };
+}
+
+/// Copies a non-empty list of strings (or, for `symbols`, of bare symbols).
+fn dupeStringList(allocator: std.mem.Allocator, value: sexpr.Expr, symbols: bool) ParseError![][]const u8 {
+    const items = exprList(value) orelse return ParseError.InvalidFormat;
+    if (items.len == 0) return ParseError.InvalidFormat;
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (out.items) |item| allocator.free(item);
+        out.deinit(allocator);
+    }
+    for (items) |item| {
+        const text = (if (symbols) exprSymbol(item) else exprString(item)) orelse return ParseError.InvalidFormat;
+        if (text.len == 0) return ParseError.InvalidFormat;
+        out.append(allocator, try dupePlain(allocator, text)) catch return ParseError.OutOfMemory;
+    }
+    return out.toOwnedSlice(allocator) catch return ParseError.OutOfMemory;
+}
+
+/// Decodes a window-only step directly from its form, or returns null when
+/// the head is not one. These never pass through the legacy line grammar.
+fn decodeWindowForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!?SpecCommand {
+    var command: SpecCommand = .{
+        .cmd_type = .wait,
+        .locator = emptyLocator(),
+        .expected_text = null,
+        .expected_count = null,
+        .expected_bool = null,
+        .line_num = line,
+    };
+    if (std.mem.eql(u8, head, "wait")) {
+        if (args.len != 1) return ParseError.InvalidFormat;
+        command.interval_ms = try exprUnsigned(args[0]);
+    } else if (std.mem.eql(u8, head, "type")) {
+        if (args.len != 2) return ParseError.InvalidFormat;
+        command.cmd_type = .type_text;
+        command.locator = try locatorFromExpr(allocator, args[0]);
+        errdefer command.locator.deinit(allocator);
+        const text = exprString(args[1]) orelse return ParseError.InvalidFormat;
+        if (text.len == 0) return ParseError.InvalidFormat;
+        command.expected_text = try dupePlain(allocator, text);
+    } else if (std.mem.eql(u8, head, "key")) {
+        if (args.len != 1) return ParseError.InvalidFormat;
+        command.cmd_type = .key;
+        const text = exprString(args[0]) orelse return ParseError.InvalidFormat;
+        if (text.len == 0) return ParseError.InvalidFormat;
+        command.expected_text = try dupePlain(allocator, text);
+    } else if (std.mem.eql(u8, head, "expect-onscreen")) {
+        if (args.len != 1) return ParseError.InvalidFormat;
+        command.cmd_type = .expect_onscreen;
+        command.locator = try locatorFromExpr(allocator, args[0]);
+    } else if (std.mem.eql(u8, head, "expect-focused")) {
+        if (args.len != 1) return ParseError.InvalidFormat;
+        command.cmd_type = .expect_focused;
+        command.locator = try locatorFromExpr(allocator, args[0]);
+    } else if (std.mem.eql(u8, head, "expect-selected")) {
+        if (args.len != 2) return ParseError.InvalidFormat;
+        command.cmd_type = .expect_selected;
+        command.locator = try locatorFromExpr(allocator, args[0]);
+        errdefer command.locator.deinit(allocator);
+        command.expected_bool = try exprBool(args[1]);
+    } else if (std.mem.eql(u8, head, "expect-history")) {
+        if (args.len != 2) return ParseError.InvalidFormat;
+        command.cmd_type = .expect_history;
+        command.locator = try locatorFromExpr(allocator, args[0]);
+        errdefer command.locator.deinit(allocator);
+        command.expected_count = try exprUnsigned(args[1]);
+    } else if (std.mem.eql(u8, head, "expect-count")) {
+        if (args.len != 2) return ParseError.InvalidFormat;
+        command.cmd_type = .expect_count;
+        const prefix = exprString(args[0]) orelse return ParseError.InvalidFormat;
+        if (prefix.len == 0) return ParseError.InvalidFormat;
+        command.expected_text = try dupePlain(allocator, prefix);
+        errdefer allocator.free(command.expected_text.?);
+        command.expected_count = try exprUnsigned(args[1]);
+    } else if (std.mem.eql(u8, head, "snapshot")) {
+        if (args.len != 1) return ParseError.InvalidFormat;
+        command.cmd_type = .snapshot;
+        const text = exprString(args[0]) orelse return ParseError.InvalidFormat;
+        if (text.len == 0) return ParseError.InvalidFormat;
+        command.expected_text = try dupePlain(allocator, text);
+    } else if (std.mem.eql(u8, head, "close")) {
+        if (args.len != 0) return ParseError.InvalidFormat;
+        command.cmd_type = .close;
+    } else {
+        return null;
+    }
+    return command;
+}
+
+fn exprUnsigned(expr: sexpr.Expr) ParseError!u64 {
+    return switch (expr.value) {
+        .atom => |atom| switch (atom) {
+            .integer => |value| if (value < 0) ParseError.InvalidFormat else @intCast(value),
+            else => ParseError.InvalidFormat,
+        },
+        else => ParseError.InvalidFormat,
+    };
+}
+
+fn exprBool(expr: sexpr.Expr) ParseError!bool {
+    return switch (expr.value) {
+        .atom => |atom| switch (atom) {
+            .boolean => |value| value,
+            else => ParseError.InvalidFormat,
+        },
+        else => ParseError.InvalidFormat,
+    };
+}
+
+/// Decodes a locator form by rendering it in the legacy spelling the line
+/// grammar already understands, so both grammars keep one locator vocabulary.
+fn locatorFromExpr(allocator: std.mem.Allocator, expr: sexpr.Expr) ParseError!Locator {
+    var line: std.Io.Writer.Allocating = .init(allocator);
+    defer line.deinit();
+    try writeLegacyArg(&line.writer, expr);
+    return parseLocator(allocator, line.written());
 }
 
 fn appendDecodedForm(
@@ -707,6 +956,16 @@ fn appendDecodedForm(
     const items = exprList(form) orelse return ParseError.InvalidFormat;
     if (items.len == 0) return ParseError.InvalidFormat;
     const head = exprSymbol(items[0]) orelse return ParseError.InvalidFormat;
+
+    if (!is_setup) {
+        if (try decodeWindowForm(allocator, head, items[1..], form.span.line)) |command| {
+            commands.append(allocator, command) catch {
+                freeOneCommand(allocator, command);
+                return ParseError.OutOfMemory;
+            };
+            return;
+        }
+    }
 
     if (file_fixtures.recognizes(head)) {
         const fixture = try file_fixtures.parse(allocator, base_dir, head, items[1..]);
@@ -925,6 +1184,97 @@ test "S-expression spec parser decodes setup locators actions and assertions" {
     try std.testing.expectEqual(SpecCommandType.real_click, spec.commands[4].cmd_type);
     try std.testing.expectEqual(LocatorKind.role_name, spec.commands[4].locator.kind);
     try std.testing.expectEqual(SpecCommandType.expect_metric_delta, spec.commands[6].cmd_type);
+}
+
+test "S-expression locators name text containing separators and quotes" {
+    const content =
+        \\(test "windows breadcrumb"
+        \\  (steps
+        \\    (click (label "Go to C:\\Users"))
+        \\    (expect-text (role button :name "say \"hi\"") "ok")))
+    ;
+    const spec = try parseSExprTestSpec(std.testing.allocator, content);
+    defer spec.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(LocatorKind.label, spec.commands[0].locator.kind);
+    try std.testing.expectEqualStrings("Go to C:\\Users", spec.commands[0].locator.label.?);
+    try std.testing.expectEqual(LocatorKind.role_name, spec.commands[1].locator.kind);
+    try std.testing.expectEqualStrings("say \"hi\"", spec.commands[1].locator.name.?);
+}
+
+test "a scenario carries its header and window-only steps" {
+    const content =
+        \\(scenario "follow and close"
+        \\  :window "800x600"
+        \\  :assets "assets"
+        \\  :choose ("specs/fixtures/events.log")
+        \\  :diagnostic "GUI-35. The frame takes 48 pixels."
+        \\  :on (client-frame linux)
+        \\  (steps
+        \\    (click (role button :name "Open log…"))
+        \\    (wait 800)
+        \\    (expect-count "event-" 3)
+        \\    (type (label "Note text") "hello")
+        \\    (key "ctrl-s")
+        \\    (expect-onscreen (test-id "count"))
+        \\    (expect-history (label "Task notes") 0)
+        \\    (expect-selected (test-id "task-4") true)
+        \\    (expect-focused (test-id "Increment"))
+        \\    (snapshot "following")
+        \\    (close)))
+    ;
+    const spec = try parseSExprTestSpec(std.testing.allocator, content);
+    defer spec.deinit(std.testing.allocator);
+    const scenario = spec.scenario.?;
+    try std.testing.expectEqual(@as(u32, 800), scenario.window_width);
+    try std.testing.expectEqual(@as(u32, 600), scenario.window_height);
+    try std.testing.expectEqualStrings("assets", scenario.assets.?);
+    try std.testing.expectEqual(@as(usize, 1), scenario.choices.len);
+    try std.testing.expectEqualStrings("specs/fixtures/events.log", scenario.choices[0]);
+    try std.testing.expectEqualStrings("GUI-35. The frame takes 48 pixels.", scenario.diagnostic.?);
+    try std.testing.expectEqual(@as(usize, 2), scenario.on.len);
+    try std.testing.expectEqualStrings("client-frame", scenario.on[0]);
+    try std.testing.expectEqual(@as(usize, 11), spec.commands.len);
+    try std.testing.expectEqual(SpecCommandType.click, spec.commands[0].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.wait, spec.commands[1].cmd_type);
+    try std.testing.expectEqual(@as(u64, 800), spec.commands[1].interval_ms.?);
+    try std.testing.expectEqual(SpecCommandType.expect_count, spec.commands[2].cmd_type);
+    try std.testing.expectEqualStrings("event-", spec.commands[2].expected_text.?);
+    try std.testing.expectEqual(@as(u64, 3), spec.commands[2].expected_count.?);
+    try std.testing.expectEqual(SpecCommandType.type_text, spec.commands[3].cmd_type);
+    try std.testing.expectEqual(LocatorKind.label, spec.commands[3].locator.kind);
+    try std.testing.expectEqualStrings("hello", spec.commands[3].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.key, spec.commands[4].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.expect_onscreen, spec.commands[5].cmd_type);
+    try std.testing.expectEqualStrings("count", spec.commands[5].locator.test_id.?);
+    try std.testing.expectEqual(@as(u64, 0), spec.commands[6].expected_count.?);
+    try std.testing.expectEqual(true, spec.commands[7].expected_bool.?);
+    try std.testing.expectEqual(SpecCommandType.expect_focused, spec.commands[8].cmd_type);
+    try std.testing.expectEqualStrings("following", spec.commands[9].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.close, spec.commands[10].cmd_type);
+    try std.testing.expectEqual(@as(usize, 18), spec.commands[10].line_num);
+}
+
+test "a scenario and a test each refuse the other's steps" {
+    // A test cannot wait on a real clock or read layout bounds.
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (wait 5)))"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (close)))"));
+    // A scenario runs the real workers, so a fixture has nothing to resolve.
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (resolve-file-choice \"open\" (canceled))))"));
+    // Nothing can follow the close that ends the run.
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (close) (wait 1)))"));
+    // Setup is pre-mount state for the display-free host only.
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (setup (initial-online offline)) (steps (wait 1)))"));
+    // Header values are checked, and a scope needs something to scope.
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" :window \"wide\" (steps (wait 1)))"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" :on (linux) (steps (wait 1)))"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" :diagnostic \"x\" :on (beos) (steps (wait 1)))"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" :size \"1x1\" (steps (wait 1)))"));
+    // A plain scenario with no header is fine, and the shared steps still parse.
+    const plain = try parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (expect-visible (text \"0\")) (expect-disabled (role button :name \"Save\") true)))");
+    defer plain.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 0), plain.scenario.?.window_width);
+    try std.testing.expectEqual(SpecCommandType.expect_disabled, plain.commands[1].cmd_type);
 }
 
 test "S-expression spec parser rejects executable setup and empty steps" {

@@ -20,44 +20,54 @@ theme = Theme.from_json("examples-gui/notes-editor/theme.json", theme_json)
 main : () -> Elem
 main = || Ui.state(
 	Session.initial,
-	|session| Ui.state(
-		"",
-		|body| {
-			view = { state: session.signal(), body: body.signal() }.Signal
-			ready = session.read(Session.can_start)
-			phase = session.read(|state| state.phase)
-			revert_ready = view.map(|value| Session.can_start(value.state) and Document.is_dirty({ draft: Session.draft(value.state, value.body), baseline: value.state.baseline }))
-			save = Action.run(view, |_| Action.then([session.write(Session.begin_save)], |current| Workflow.save!(session, current, False)))
-			save_as = Action.run(view, |_| Action.then([session.write(Session.begin_save)], |current| Workflow.save!(session, current, True)))
-			open = Action.run(view, |{ state, body: text }| Action.then([session.write(|_| Session.begin_open({ state, draft: Session.draft(state, text) }))], |current| Workflow.open!(session, body, current.state.phase)))
-			new = Action.run(
-				view,
-				|{ state, body: text }| {
-					if !Session.can_start(state) {
-						Action.none
-					}
-						else if Document.is_dirty({ draft: Session.draft(state, text), baseline: state.baseline }) {
-							Action.update([session.set({ ..state, phase: Session.Phase.ConfirmDiscard(Session.Destination.NewDocument), problem: None })])
-						} else {
-							Action.update([session.set(Session.new_document(state)), body.set("")])
-						}
-				},
-			)
-			revert = Action.run(
-				view,
-				|{ state, body: text }| {
-					if Session.can_start(state) and Document.is_dirty({ draft: Session.draft(state, text), baseline: state.baseline }) {
-						Action.update([session.set({ ..state, phase: Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument), problem: None })])
-					} else {
-						Action.none
-					}
-				},
-			)
-			cancel = Action.run(phase, |value| Workflow.cancel(session, value))
-			chord = { key: "s", control: True, shift: False, alt: False, meta: False }
-			Elem.window_lifecycle(
-				{ on_close_requested: session.update_with(body, Session.request_close), decision: session.read(Session.close_decision) },
-				[
+	|session| {
+		# The editable body belongs to the session state, beside the lifetime
+		# that owns it: a document replacement advances the lifetime and installs
+		# its text in one settled value, so the editor keyed by that lifetime can
+		# never mount with another document's text.
+		view = session.signal()
+		ready = session.read(Session.can_start)
+		phase = session.read(|value| value.phase)
+		dirty = |value| Document.is_dirty({ draft: Session.draft(value), baseline: value.baseline })
+		revert_ready = view.map(|value| Session.can_start(value) and dirty(value))
+		save = Action.run(view, |_| Action.then([session.write(Session.begin_save)], |current| Workflow.save!(session, current, False)))
+		save_as = Action.run(view, |_| Action.then([session.write(Session.begin_save)], |current| Workflow.save!(session, current, True)))
+		open = Action.run(view, |_| Action.then([session.write(Session.begin_open)], |current| Workflow.open!(session, current.phase)))
+		new = Action.run(
+			view,
+			|value| {
+				if !Session.can_start(value) {
+					Action.none
+				} else if dirty(value) {
+					Action.update([session.set({ ..value, phase: Session.Phase.ConfirmDiscard(Session.Destination.NewDocument), problem: None })])
+				} else {
+					Action.update([session.set(Session.new_document(value))])
+				}
+			},
+		)
+		revert = Action.run(
+			view,
+			|value| {
+				if Session.can_start(value) and dirty(value) {
+					Action.update([session.set({ ..value, phase: Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument), problem: None })])
+				} else {
+					Action.none
+				}
+			},
+		)
+		cancel = Action.run(phase, |value| Workflow.cancel(session, value))
+		# The window identity names the open document and marks unsaved work, so
+		# the desktop switcher tells two notes apart the way the header does.
+		window_title = view.map(
+			|value| {
+				mark = if dirty(value) { "* " } else { "" }
+				"${mark}${value.baseline.title} - Notes"
+			},
+		)
+		chord = { key: "s", control: True, shift: False, alt: False, meta: False }
+		Elem.window_lifecycle(
+			{ on_close_requested: session.update(Session.request_close), decision: session.read(Session.close_decision) },
+			[
 					Elem.col(
 						{
 							test_id: "notes-editor",
@@ -70,6 +80,7 @@ main = || Ui.state(
 							shortcuts: [{ chord: { ..chord, key: "n" }, msg: new }, { chord: { ..chord, key: "o" }, msg: open }, { chord: chord, msg: save }, { chord: { ..chord, shift: True }, msg: save_as }, { chord: { ..chord, key: "Escape", control: False }, msg: cancel }],
 						},
 						[
+							Ui.on_change_initial(window_title, Gui.set_title),
 							Elem.heading("Notes"),
 							Elem.col(
 								{ fg: theme.text_secondary },
@@ -104,17 +115,14 @@ main = || Ui.state(
 										{
 											test_id: "note-status",
 											changes: view.map(
-												|value| {
-													dirty = Document.is_dirty({ draft: Session.draft(value.state, value.body), baseline: value.state.baseline })
-													Gui.Style.{
-														padding: 4,
-														font_size: 13,
-														fg: if dirty {
-															theme.warning
-														} else {
-															theme.text_secondary
-														},
-													}
+												|value| Gui.Style.{
+													padding: 4,
+													font_size: 13,
+													fg: if dirty(value) {
+														theme.warning
+													} else {
+														theme.text_secondary
+													},
 												},
 											),
 										},
@@ -129,20 +137,22 @@ main = || Ui.state(
 									Elem.col(
 										{ width: 740.Px, height: Fill },
 										[
+											# Keyed by the document lifetime, so a replacement mounts a fresh
+											# editor and ordinary typing keeps its selection and undo history.
 											Ui.switch(
-												session.read(|state| state.document_generation),
+												session.read(|value| value.document_generation),
 												|_| Elem.textarea(
 													{
 														label: "Note text",
-														value: body.signal(),
+														value: session.read(|value| value.body),
 														placeholder: "Start writing…",
-														disabled: session.read(|state| !Session.can_edit(state.phase) or state.close != Session.CloseState.NoClose),
+														disabled: session.read(|value| !Session.can_edit(value.phase) or value.close != Session.CloseState.NoClose),
 														width: Fill,
 														height: Fill,
 														grow: True,
 														gap: 4,
 													},
-													body.update_str(|_, value| value),
+													session.update_str(Session.edit),
 												),
 											),
 										],
@@ -159,7 +169,7 @@ main = || Ui.state(
 											font_size: 13,
 											fg: theme.text_secondary,
 										},
-										[Elem.text_s(body.read(|text| Document.counts_text(Document.counts(text))))],
+										[Elem.text_s(session.read(|value| Document.counts_text(Document.counts(value.body))))],
 									),
 								],
 							),
@@ -208,11 +218,11 @@ main = || Ui.state(
 														Elem.button(
 															"Discard changes",
 															Action.run(
-																session.signal(),
-																|state| match state.phase {
-																	Session.Phase.ConfirmDiscard(Session.Destination.NewDocument) => Action.update([session.set(Session.new_document(state)), body.set("")])
-																	Session.Phase.ConfirmDiscard(Session.Destination.OpenDocument) => Action.then([session.write(Session.confirm_open)], |current| Workflow.open!(session, body, current.phase))
-																	Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument) => Action.update([session.set({ ..Session.cancel(state), document_generation: Session.next_generation(state) }), body.set(state.baseline.body)])
+																view,
+																|value| match value.phase {
+																	Session.Phase.ConfirmDiscard(Session.Destination.NewDocument) => Action.update([session.set(Session.new_document(value))])
+																	Session.Phase.ConfirmDiscard(Session.Destination.OpenDocument) => Action.then([session.write(Session.confirm_open)], |current| Workflow.open!(session, current.phase))
+																	Session.Phase.ConfirmDiscard(Session.Destination.RevertDocument) => Action.update([session.set(Session.revert(value))])
 																	_ => Action.none
 																},
 															),
@@ -253,5 +263,4 @@ main = || Ui.state(
 				],
 			)
 		},
-	),
 )

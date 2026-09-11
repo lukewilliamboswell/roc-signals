@@ -141,8 +141,23 @@ fn list(expr: sexpr.Expr) ParseError![]sexpr.Expr {
 fn validText(text: []const u8, limit: usize) bool {
     return text.len <= limit and std.unicode.utf8ValidateSlice(text);
 }
+fn driveLetter(byte: u8) bool {
+    return (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z');
+}
+/// Recognizes the absolute-path spellings a native worker can actually return,
+/// so a typed fixture can express a Windows result without dropping to a raw
+/// task frame. A path is absolute when it is POSIX-rooted (`/`), drive-rooted
+/// (`C:\` or `C:/`), or a UNC prefix (`\\server\share`). Backslashes are only
+/// separators inside the Windows spellings; a POSIX path may contain them as
+/// ordinary file-name bytes, which is why nothing here rewrites a byte.
+fn absolutePath(path: []const u8) bool {
+    if (path.len == 0) return false;
+    if (path[0] == '/') return true;
+    if (path.len >= 2 and path[0] == '\\' and path[1] == '\\') return true;
+    return path.len >= 3 and driveLetter(path[0]) and path[1] == ':' and (path[2] == '\\' or path[2] == '/');
+}
 fn validPath(path: []const u8) bool {
-    return validText(path, 4096) and path.len != 0 and path[0] == '/' and std.mem.indexOfScalar(u8, path, 0) == null;
+    return validText(path, 4096) and absolutePath(path) and std.mem.indexOfScalar(u8, path, 0) == null;
 }
 /// Finds a `:name value` pair; every key may appear at most once.
 fn field(items: []const sexpr.Expr, name: []const u8) ParseError!?sexpr.Expr {

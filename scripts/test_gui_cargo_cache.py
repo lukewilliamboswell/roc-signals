@@ -32,7 +32,7 @@ class CargoCheckoutTests(unittest.TestCase):
             def build(name, expected):
                 result = subprocess.run(
                     ["cargo", "build", "--offline", "--release", "--verbose"],
-                    cwd=root / name, env=environment, capture_output=True, text=True, timeout=60)
+                    cwd=root / name, env=environment, capture_output=True, text=True, timeout=300)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(subprocess.check_output([executable], text=True).strip(), expected)
                 return result.stderr

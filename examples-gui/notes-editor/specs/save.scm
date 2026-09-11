@@ -1,5 +1,8 @@
 (test "Saves own their submitted snapshot and later saves reuse the chosen path"
   (steps
+    ; The window identity is the same decision the header shows: application
+    ; name, open document, and a leading mark while the draft is unsaved.
+    (expect-document-title "Untitled note - Notes")
     (fill (label "Note text") "First revision")
     (stub-file-choice "notes-save-path" (chosen "/tmp/Ideas café.txt"))
     (shortcut (test-id "notes-editor") "s" 1)
@@ -9,6 +12,7 @@
     (expect-disabled (label "Note text") false)
     (fill (label "Note text") "Second revision")
     (expect-text (test-id "note-status") "Unsaved changes")
+    (expect-document-title "* Ideas café.txt - Notes")
     (click (role button :name "Revert changes"))
     (click (role button :name "Discard changes"))
     (expect-value (label "Note text") "First revision")

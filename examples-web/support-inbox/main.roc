@@ -355,7 +355,7 @@ conversation_row = |session, key, row|
 									Html.attr_s("aria-label", row.map(open_label)),
 									Html.class_attr("card-title truncate text-left hover:underline"),
 								],
-								session.on_unit(|current| Inbox.select_conversation(current, key)),
+								session.update(|current| Inbox.select_conversation(current, key)),
 							),
 							Html.paragraph_s_attrs(row.map(row_meta_label), [Html.test_id("meta-${key}"), Html.class_attr("hint truncate")]),
 						],
@@ -549,9 +549,9 @@ main = || {
 																	Html.div(
 																		[Html.class_attr("grid gap-1"), Html.attr("role", "radiogroup"), Html.attr("aria-label", "Inbox filter")],
 																		[
-																			check_row(Html.radio_c("All", "inbox-filter", "all", filter_value_sig, "checkbox", filter.on_str(|_, value| Inbox.Filter.from_str(value))), "All"),
-																			check_row(Html.radio_c("Unread", "inbox-filter", "unread", filter_value_sig, "checkbox", filter.on_str(|_, value| Inbox.Filter.from_str(value))), "Unread"),
-																			check_row(Html.radio_c("Assigned to me", "inbox-filter", "mine", filter_value_sig, "checkbox", filter.on_str(|_, value| Inbox.Filter.from_str(value))), "Assigned to me"),
+																			check_row(Html.radio_c("All", "inbox-filter", "all", filter_value_sig, "checkbox", filter.update_str(|_, value| Inbox.Filter.from_str(value))), "All"),
+																			check_row(Html.radio_c("Unread", "inbox-filter", "unread", filter_value_sig, "checkbox", filter.update_str(|_, value| Inbox.Filter.from_str(value))), "Unread"),
+																			check_row(Html.radio_c("Assigned to me", "inbox-filter", "mine", filter_value_sig, "checkbox", filter.update_str(|_, value| Inbox.Filter.from_str(value))), "Assigned to me"),
 																		],
 																	),
 																],
@@ -562,7 +562,7 @@ main = || {
 																	Html.div_c(
 																		"flex flex-wrap items-center justify-between gap-2",
 																		[
-																			check_row(Html.checkbox_c("Poll for updates", polling.signal(), "checkbox", polling.on_bool(|_, value| value)), "Poll for updates"),
+																			check_row(Html.checkbox_c("Poll for updates", polling.signal(), "checkbox", polling.update_bool(|_, value| value)), "Poll for updates"),
 																			Html.paragraph_s_attrs(polling.signal().map(poll_state_text), [Html.test_id("poll-state"), Html.class_attr_s(polling.signal().map(poll_state_class))]),
 																		],
 																	),
@@ -633,7 +633,7 @@ main = || {
 														"Composer",
 														[
 															Html.class_attr("grid gap-3 border-t border-zinc-200 pt-4"),
-															Html.on_submit_prevent_default(session.on_unit(Inbox.submit_draft)),
+															Html.on_submit_prevent_default(session.update(Inbox.submit_draft)),
 														],
 														[
 															Html.div_c(
@@ -648,7 +648,7 @@ main = || {
 																			Html.attr("rows", "3"),
 																			Html.attr("placeholder", "Thanks for flagging this — I've issued the refund and it should land in 3–5 days."),
 																		],
-																		session.on_str(|current, value| { ..current, draft: value }),
+																		session.update_str(|current, value| { ..current, draft: value }),
 																	),
 																],
 															),
@@ -670,13 +670,13 @@ main = || {
 																			Html.button_attrs(
 																				"Discard failed message",
 																				[Html.attr("type", "button"), Html.class_attr("button-danger button-sm")],
-																				session.on_unit(Inbox.discard_failed),
+																				session.update(Inbox.discard_failed),
 																			),
 																			Html.action_button_attrs(
 																				Signal.const("Send message"),
 																				view_input.map(send_disabled_value),
 																				[Html.attr("type", "button"), Html.class_attr("button-primary")],
-																				session.on_unit(Inbox.submit_draft),
+																				session.update(Inbox.submit_draft),
 																			),
 																		],
 																	),

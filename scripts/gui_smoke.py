@@ -17,11 +17,11 @@ from build_gui import executable_name
 from gui_suite import ROOT, examples
 
 MARKER = "PASS: GPUI mounted, rendered, and checked "
-COUNTER_ARGUMENTS = ("--smoke-click", "Increment", "--smoke-expect", "1")
+COUNTER_ARGUMENTS = ("--host-smoke-click", "Increment", "--host-smoke-expect", "1")
 
 
 def check(executable, arguments=(), environment=None):
-    command = [str(executable.resolve()), "--smoke", *arguments]
+    command = [str(executable.resolve()), "--host-smoke", *arguments]
     print("==> " + " ".join(command), flush=True)
     result = subprocess.run(command, capture_output=True, text=True,
                             encoding="utf-8", errors="replace", timeout=30,
@@ -38,7 +38,13 @@ def run(directory, environment=None):
         check(directory / executable_name(app.name), arguments, environment)
 
 
-def wayland(directory):
+def wayland(directory, action=None):
+    """Runs `action` against a private Wayland compositor on the current display.
+
+    The scripted scenarios need exactly the same isolated display as the smoke
+    checks, so the compositor lifecycle lives here once and the caller supplies
+    what to run inside it rather than each harness starting its own Weston.
+    """
     drivers = Path("/usr/share/vulkan/icd.d")
     driver = next((path for path in (drivers / "lvp_icd.x86_64.json", drivers / "lvp_icd.json")
                    if path.is_file()), None)
@@ -60,7 +66,7 @@ def wayland(directory):
                     if compositor.poll() is not None or time.monotonic() >= deadline:
                         raise RuntimeError("virtual Wayland compositor did not become ready")
                     time.sleep(0.1)
-                run(directory, environment)
+                (action or run)(directory, environment)
             finally:
                 if compositor.poll() is None:
                     compositor.terminate()

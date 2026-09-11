@@ -64,12 +64,65 @@ def run(args, env=None, output=None):
     return subprocess.run(args, cwd=ROOT, env=env, check=True, stdout=output)
 
 
+def missing_prerequisites(mode="build", which=shutil.which, exists=None, environ=None, output=None):
+    """Names every Windows build prerequisite that is absent, with what it is for.
+
+    The builder used to discover each of these by failing part-way through:
+    a missing `pwsh` as a process error, a missing SDK as a KeyError or a path
+    that does not exist, a missing toolchain as a version mismatch after the
+    tool copies had already been made. A contributor reading the contributing
+    page saw only the toolchain listed. Probe them all up front instead.
+
+    An inventory run stops after recording the SDK tools, so it needs only
+    `pwsh` and the SDK; the toolchain and `gh` are build prerequisites.
+    """
+    exists = exists or (lambda path: Path(path).exists())
+    environ = os.environ if environ is None else environ
+    output = output or (lambda args: subprocess.run(
+        args, capture_output=True, text=True, check=False).stdout)
+    missing = []
+    if which("pwsh") is None:
+        missing.append("PowerShell 7 (`pwsh`) on PATH: the FXC inventory and "
+                       "Get-AuthenticodeSignature run through it")
+    program_files = environ.get("ProgramFiles(x86)")
+    if not program_files:
+        missing.append("the ProgramFiles(x86) environment variable, which locates the Windows SDK")
+    else:
+        sdk = Path(program_files) / "Windows Kits/10/bin" / SDK / "x64"
+        for tool in ("fxc.exe", "d3dcompiler_47.dll"):
+            if not exists(sdk / tool):
+                missing.append(f"{sdk / tool}: the Windows SDK {SDK} shader compiler pair")
+    if mode != "build":
+        return missing
+    if which("rustup") is None:
+        missing.append("rustup on PATH: the build pins the 1.95.0 toolchain through it")
+    else:
+        toolchains = output(["rustup", "toolchain", "list"])
+        if not any(line.startswith("1.95.0-x86_64-pc-windows-msvc") for line in toolchains.splitlines()):
+            missing.append("the 1.95.0-x86_64-pc-windows-msvc toolchain: "
+                           "`rustup toolchain install 1.95.0`")
+        else:
+            targets = output(["rustup", "target", "list", "--installed", "--toolchain", "1.95.0"])
+            if TRIPLE not in targets.split():
+                missing.append(f"the {TRIPLE} target: `rustup target add --toolchain 1.95.0 {TRIPLE}`")
+    if which("gh") is None:
+        missing.append("the GitHub CLI (`gh`), authenticated: the signed dependency releases "
+                       "are downloaded through it")
+    return missing
+
+
 def execute(mode, output, *, jobs=2, cargo_target=None, debug=False, capture_evidence=True):
     """Build host-owned outputs; native dependency releases are installed separately."""
     if jobs < 1 or (debug and capture_evidence):
         raise ValueError("release evidence requires an optimized build and positive jobs")
     if sys.platform != "win32":
         raise ValueError("native Windows is required for GPUI release shader compilation")
+    missing = missing_prerequisites(mode)
+    if missing:
+        raise SystemExit("Windows host build prerequisites are missing:\n"
+                         + "".join(f"  - {item}\n" for item in missing)
+                         + "For local verification without them, use the released host: "
+                         "GUI_HOST_LOCK=gui-host.lock.json python scripts/test.py gui")
     commit = clean_commit() if capture_evidence else subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     fingerprint = source_fingerprint(ROOT) if capture_evidence else None

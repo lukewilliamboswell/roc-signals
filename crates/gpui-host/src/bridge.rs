@@ -95,6 +95,8 @@ pub struct Node {
     pub checked: bool,
     pub selected: bool,
     pub disabled: bool,
+    /// Refuses edits while the control stays available (bool field 6).
+    pub read_only: bool,
     pub shortcuts: Vec<Shortcut>,
 }
 /// Validated native presentation v2, copied from the committed C boundary.
@@ -167,6 +169,10 @@ pub struct Engine {
     next_roc_effect: unsafe extern "C" fn(*mut u64) -> u32,
     run_roc_effect: unsafe extern "C" fn(u64),
     roc_effect_done: unsafe extern "C" fn(u64),
+    document_title: unsafe extern "C" fn(*mut Slice) -> u64,
+    /// Revision of the last window identity handed to the platform window, so a
+    /// repeated title never re-enters the native windowing system.
+    applied_title: std::cell::Cell<u64>,
     _main_thread: PhantomData<Rc<()>>,
 }
 impl Engine {
@@ -185,6 +191,8 @@ impl Engine {
                 next_roc_effect: signals_roc_effect_next,
                 run_roc_effect: signals_roc_effect_run,
                 roc_effect_done: signals_roc_effect_done,
+                document_title: signals_document_title,
+                applied_title: std::cell::Cell::new(0),
                 _main_thread: PhantomData,
             };
             assert_eq!(
@@ -261,6 +269,7 @@ impl Engine {
                         checked: r.checked != 0,
                         selected: r.selected != 0,
                         disabled: r.disabled != 0,
+                        read_only: r.read_only != 0,
                         shortcuts: shortcuts[..shortcut_count].to_vec(),
                     }
                 })
@@ -318,6 +327,24 @@ impl Engine {
         unsafe { (self.roc_effect_done)(job) };
         self.changes()
     }
+    /// Reports the window identity the graph decided, but only when it actually
+    /// changed since the last report. The engine owns the returned storage until
+    /// the next engine call, so the text is copied before returning. A `None`
+    /// answer means the host should leave the current window title alone.
+    pub fn changed_document_title(&self) -> Option<String> {
+        let mut slice = Slice {
+            ptr: std::ptr::null(),
+            len: 0,
+        };
+        let revision = unsafe { (self.document_title)(&mut slice) };
+        if revision == self.applied_title.get() {
+            return None;
+        }
+        assert!(slice.len <= 4096, "native window title exceeded its bound");
+        let title = unsafe { slice.copy() };
+        self.applied_title.set(revision);
+        Some(title)
+    }
     pub fn metrics(&self) -> [u64; 3] {
         let mut result = [0; 3];
         unsafe { (self.metrics)(result.as_mut_ptr()) };
@@ -348,12 +375,165 @@ unsafe extern "C" {
     fn signals_roc_effect_next(out: *mut u64) -> u32;
     fn signals_roc_effect_run(job: u64);
     fn signals_roc_effect_done(job: u64);
+    fn signals_document_title(out: *mut Slice) -> u64;
+    fn signals_scenario_open(path: Slice) -> u32;
+    fn signals_scenario_header(out: *mut RawScenario);
+    fn signals_scenario_choice(index: usize, out: *mut Slice);
+    fn signals_scenario_scope(index: usize, out: *mut Slice);
+    fn signals_scenario_count() -> usize;
+    fn signals_scenario_command(index: usize, out: *mut RawCommand);
+    fn signals_scenario_close();
+}
+
+/// The header of a parsed `(scenario ...)`, as the engine hands it over.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawScenario {
+    name: Slice,
+    window_width: u32,
+    window_height: u32,
+    assets: Slice,
+    choices: usize,
+    diagnostic: Slice,
+    scopes: usize,
+}
+
+/// One parsed step. `kind` and `locator_kind` carry the engine's enum tag
+/// names, so this reader never depends on the Zig enum's numbering; optional
+/// numbers travel with a presence flag and absent strings are empty slices.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct RawCommand {
+    kind: Slice,
+    line: u64,
+    locator_kind: Slice,
+    role: Slice,
+    name: Slice,
+    label: Slice,
+    text: Slice,
+    test_id: Slice,
+    expected_text: Slice,
+    expected_count: u64,
+    has_count: u32,
+    expected_bool: u32,
+    has_bool: u32,
+    interval_ms: u64,
+    has_interval: u32,
+    shortcut_key: u32,
+    shortcut_modifiers: u32,
+    has_shortcut: u32,
+}
+
+/// An owned copy of one parsed step, with every string copied out of the
+/// engine's storage so the scenario can be closed before the run starts.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Command {
+    pub(crate) kind: String,
+    pub(crate) line: u64,
+    pub(crate) locator_kind: String,
+    pub(crate) role: String,
+    pub(crate) name: String,
+    pub(crate) label: String,
+    pub(crate) text: String,
+    pub(crate) test_id: String,
+    pub(crate) expected_text: String,
+    pub(crate) expected_count: Option<u64>,
+    pub(crate) expected_bool: Option<bool>,
+    pub(crate) interval_ms: Option<u64>,
+    pub(crate) shortcut: Option<(u32, u32)>,
+}
+
+/// A parsed window scenario: its header and its steps, owned by the host.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Scenario {
+    pub(crate) name: String,
+    /// Requested window size, when the header named one.
+    pub(crate) window: Option<(f32, f32)>,
+    /// Assets root relative to the example directory, when named.
+    pub(crate) assets: Option<String>,
+    /// Chooser answers relative to the example directory, in order.
+    pub(crate) choices: Vec<String>,
+    pub(crate) diagnostic: Option<String>,
+    pub(crate) scopes: Vec<String>,
+    pub(crate) commands: Vec<Command>,
+}
+
+/// Parses a scenario file through the engine's spec parser — the same parser
+/// that reads every `(test ...)` — and copies the result out, so one grammar
+/// and one parser decide what a step means on every host.
+pub(crate) fn load_scenario(path: &str) -> Result<Scenario, String> {
+    unsafe {
+        let status = signals_scenario_open(Slice {
+            ptr: path.as_ptr(),
+            len: path.len(),
+        });
+        match status {
+            0 => {}
+            1 => return Err(format!("{path}: scenario file not found")),
+            2 => return Err(format!("{path}: invalid spec format")),
+            3 => return Err(format!(
+                "{path}: this file is a (test ...); run it with --host-run-spec-json"
+            )),
+            _ => return Err(format!("{path}: cannot read the scenario")),
+        }
+        let mut header = std::mem::MaybeUninit::<RawScenario>::uninit();
+        signals_scenario_header(header.as_mut_ptr());
+        let header = header.assume_init();
+        let optional = |slice: Slice| (slice.len > 0).then(|| slice.copy());
+        let mut choices = Vec::with_capacity(header.choices);
+        for index in 0..header.choices {
+            let mut out = Slice { ptr: std::ptr::null(), len: 0 };
+            signals_scenario_choice(index, &mut out);
+            choices.push(out.copy());
+        }
+        let mut scopes = Vec::with_capacity(header.scopes);
+        for index in 0..header.scopes {
+            let mut out = Slice { ptr: std::ptr::null(), len: 0 };
+            signals_scenario_scope(index, &mut out);
+            scopes.push(out.copy());
+        }
+        let count = signals_scenario_count();
+        let mut commands = Vec::with_capacity(count);
+        for index in 0..count {
+            let mut raw = std::mem::MaybeUninit::<RawCommand>::uninit();
+            signals_scenario_command(index, raw.as_mut_ptr());
+            let raw = raw.assume_init();
+            commands.push(Command {
+                kind: raw.kind.copy(),
+                line: raw.line,
+                locator_kind: raw.locator_kind.copy(),
+                role: raw.role.copy(),
+                name: raw.name.copy(),
+                label: raw.label.copy(),
+                text: raw.text.copy(),
+                test_id: raw.test_id.copy(),
+                expected_text: raw.expected_text.copy(),
+                expected_count: (raw.has_count != 0).then_some(raw.expected_count),
+                expected_bool: (raw.has_bool != 0).then_some(raw.expected_bool != 0),
+                interval_ms: (raw.has_interval != 0).then_some(raw.interval_ms),
+                shortcut: (raw.has_shortcut != 0).then_some((raw.shortcut_key, raw.shortcut_modifiers)),
+            });
+        }
+        let scenario = Scenario {
+            name: header.name.copy(),
+            window: (header.window_width > 0)
+                .then_some((header.window_width as f32, header.window_height as f32)),
+            assets: optional(header.assets),
+            choices,
+            diagnostic: optional(header.diagnostic),
+            scopes,
+            commands,
+        };
+        signals_scenario_close();
+        Ok(scenario)
+    }
 }
 
 #[cfg(test)]
 thread_local! {
     static TEST_CHILDREN: std::cell::RefCell<std::collections::HashMap<u64, Vec<u64>>> = std::cell::RefCell::new(std::collections::HashMap::new());
     static TEST_EVENT: std::cell::RefCell<Option<(u64, u32, String, u32)>> = const { std::cell::RefCell::new(None) };
+    static TEST_TITLE: std::cell::RefCell<(u64, String)> = const { std::cell::RefCell::new((0, String::new())) };
 }
 
 #[cfg(test)]
@@ -381,6 +561,20 @@ impl Engine {
         unsafe extern "C" fn roc_effect_done(_: u64) {
             panic!("unexpected test Roc effect completion")
         }
+        unsafe extern "C" fn document_title(out: *mut Slice) -> u64 {
+            TEST_TITLE.with(|slot| {
+                let slot = slot.borrow();
+                // Mirrors the engine contract: the slice borrows storage the
+                // engine owns until its next call, and the caller copies it.
+                unsafe {
+                    *out = Slice {
+                        ptr: slot.1.as_ptr(),
+                        len: slot.1.len(),
+                    }
+                };
+                slot.0
+            })
+        }
         unsafe extern "C" fn read(_: usize, _: *mut RawNode) {
             panic!("unexpected test node read")
         }
@@ -405,6 +599,8 @@ impl Engine {
         TEST_EVENT.with(|slot| *slot.borrow_mut() = None);
         Self {
             unmount: noop,
+            document_title,
+            applied_title: std::cell::Cell::new(0),
             dispatch,
             count,
             read,
@@ -418,6 +614,12 @@ impl Engine {
             roc_effect_done,
             _main_thread: PhantomData,
         }
+    }
+
+    /// Scripts the window identity the fake boundary reports, standing in for a
+    /// `SetDocumentTitle` command the engine committed at that revision.
+    pub fn set_test_document_title(revision: u64, title: &str) {
+        TEST_TITLE.with(|slot| *slot.borrow_mut() = (revision, title.to_owned()));
     }
 
     pub fn set_test_children(parent: u64, children: Vec<u64>) {

@@ -1,0 +1,2 @@
+# Preview fixtures are exact bytes: crlf.txt must keep its CRLF endings.
+*.txt -text

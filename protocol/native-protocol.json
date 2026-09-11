@@ -1,7 +1,7 @@
 {
  "schema_version": 1,
  "comment": "Single authority for the native GUI protocol tables. Edit this file, then run `python3 scripts/generate_protocol.py` to regenerate the committed Zig, Rust, Roc, and docs artifacts. `docs/native-gui-protocol.md` documents the add-a-field procedure.",
- "protocol_version": 10,
+ "protocol_version": 12,
  "timer_version": 1,
  "custom_text_field_id": 7,
  "custom_bool_field_id": 3,
@@ -134,6 +134,13 @@
    "native": true,
    "roc_const": "native_drop_target_field",
    "doc": "Marks an internal drop target that must bind a string-detail drop event."
+  },
+  {
+   "id": 6,
+   "name": "native_read_only",
+   "native": true,
+   "roc_const": "native_read_only_field",
+   "doc": "Refuses user edits and edit history while the control stays available at full contrast and in tab order."
   }
  ],
  "task_kinds": [
@@ -307,6 +314,11 @@
     "doc": "Selected presentation word (bool field 4)."
    },
    {
+    "name": "read_only",
+    "type": "u64",
+    "doc": "Read-only state word (bool field 6)."
+   },
+   {
     "name": "style_present",
     "type": "u64",
     "doc": "Nonzero when the style record is populated (text field 8)."
@@ -349,6 +361,14 @@
   ]
  },
  "version_history": [
+  {
+   "version": 12,
+   "summary": "Adds the `native_read_only` boolean field and its node word: a control that refuses edits while staying readable and keyboard reachable, distinct from disabled."
+  },
+  {
+   "version": 11,
+   "summary": "Adds `signals_document_title`, the host read of the window identity decided by the shared engine's `SetDocumentTitle` command."
+  },
   {
    "version": 10,
    "summary": "Extends the presentation record to style version 2 with hover and active background slots (18 u32 style record); style version 1 records are no longer accepted."

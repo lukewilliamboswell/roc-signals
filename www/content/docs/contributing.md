@@ -17,7 +17,8 @@ Install:
 
 - Zig 0.16.0,
 - Python 3,
-- GitHub CLI (`gh`), authenticated for dependency attestation verification,
+- GitHub CLI (`gh`), authenticated for release operations and optional
+  attestation inspection,
 - Node.js,
 - Zola,
 - the Tailwind CSS 3.4.17 standalone CLI (the site uses the v3 configuration),
@@ -32,12 +33,12 @@ is no npm dependency or package manifest.
 
 Pull requests and pushes to `main` run a bounded hosted source gate: Zig and
 browser contracts, Roc checks and tests, Wasm builds and size budgets, fuzz
-corpus replay, and ordinary native semantic specs. Change selection adds GUI,
-published-example, archive, and site jobs only when their inputs are affected.
-The required checks are `Platform source`, `Published examples`, and `Release
-archive`. The release workflow validates exact candidate archives on Linux
-x64/arm64 and Intel/Apple Silicon macOS. Pages deploys the supported release,
-not development builds from ordinary pushes.
+corpus replay, and ordinary native semantic specs. Change selection adds GUI
+and site jobs only when their inputs are affected. `Platform source` is the
+required aggregate check. Exact archive creation and release-URL example smoke
+tests belong to the combined release workflow, which validates the same
+candidate on Linux, macOS, and Windows before publication. Pages deploys the
+supported release, not development builds from ordinary pushes.
 
 Compiler pins live in both platform headers and every web and GUI example
 header, including internal web fixtures. `.github/roc-nightly.json` selects all
@@ -66,7 +67,7 @@ campaigns. Platform-specific linking and archive checks still run on their
 corresponding CI runners.
 
 During investigation, pass one or more target names, such as
-`python3 scripts/minici gui gui-smoke`, but run the complete command before
+`python3 scripts/minici gui gui-smoke gui-scenarios`, but run the complete command before
 pushing.
 
 ## Test Driver
@@ -97,7 +98,6 @@ python3 scripts/test.py fault --native always
 python3 scripts/test.py bundle --bundle always
 python3 scripts/test.py bench --native always
 python3 scripts/test.py size --roc-bin /path/to/roc
-python3 scripts/test.py published
 ```
 
 `size` builds the ReleaseSmall browser host and the fixed fixture set in
@@ -140,7 +140,7 @@ To replay a reported coordinate directly, copy the command printed after
 `replay:`. The worker interface is:
 
 ```sh
-app --run-spec-json --fail-on-allocation 7 path/to/case.scm
+app --host-run-spec-json --host-fail-on-allocation 7 path/to/case.scm
 ```
 
 Roc allocator internals are excluded from host coordinates: their physical
@@ -196,8 +196,11 @@ zig build run-test-zig -Dtest-filter="signals host"
 
 `zig build build-test-hosts` builds our host and installs independently released
 musl inputs from `dependencies.lock.json` into Roc's platform target layout.
-It verifies cached or downloaded dependency archives with `gh attestation verify`;
-it never rebuilds musl or accepts existing local libraries as a fallback:
+It verifies cached or downloaded dependency archives against the reviewed size
+and SHA-256 pins in `dependencies.lock.json`; it never rebuilds musl or accepts
+existing local libraries as a fallback. Published attestations remain available
+for external provenance inspection, but ordinary builds do not require GitHub's
+attestation service:
 
 - `platform-web/targets/x64mac/libhost.a`
 - `platform-web/targets/arm64mac/libhost.a`
@@ -213,6 +216,23 @@ Roc app executables built during tests are written under `.test-out/` by
 `scripts/test.py`.
 
 ## Dependency artifact releases
+
+### Web host inputs
+
+The `Web host inputs` workflow builds the four native web spec hosts and the
+Wasm browser host only when their actual Zig sources or build recipe change. It
+tests native and Wasm application paths, then packages five target-confined
+archives under one immutable `deps-web-hosts-<version>` release. Each archive
+and its reviewed lock entry records both its exact SHA-256 and the shared narrow
+host-input fingerprint. Application modules, examples, platform API files,
+documentation, and release packaging do not change that fingerprint.
+
+Ordinary CI and combined platform releases consume `web-host.lock.json`; they
+do not compile these hosts. GitHub attestations remain available for external
+provenance inspection, while ordinary admission uses the reviewed content
+hashes without calling an attestation service. The independently released musl
+startup objects and libc archives remain final linker inputs rather than web
+host outputs.
 
 ### macOS linker interfaces
 
@@ -246,20 +266,31 @@ and supported compiler.
 
 The reviewed catalog in `dependencies/macos-interfaces/interfaces.json` selects
 symbols for generated TBD files and records the source URLs for each interface.
-The generator consumes this catalog and hashes the matching host archives:
+The producer consumes this catalog without reading host or SDK bytes:
 
 ```sh
 python3 scripts/build_macos_stubs.py \
-  --archives platform-gui/targets/arm64mac \
   --output /tmp/macos-interfaces-candidate
 ```
 
-`build_gui.py` installs freshly generated interfaces after building the host.
-`bundle_platforms.py` generates them again from the selected archives in fresh
-staging, including when using prebuilt hosts. Each output includes the source
-catalog, provenance statement, archive identities, and generated-file hashes.
-After changing the catalog or host, validate final application links, native
-specs, desktop smoke tests, and consumption through a bundled platform URL.
+`dependencies.lock.json` selects `deps-macos-interfaces-20260910.1` by exact
+archive size and SHA-256. Ordinary GUI tests and `bundle_platforms.py` stage its
+exact TBDs, catalog, provenance statement, manifest, and dependency receipt;
+they never invoke the generator. Changing the catalog requires a new producer
+release and reviewed lock update. Changing a host requires only final-link
+validation against the selected interface release; it does not regenerate or
+relabel those linker inputs.
+
+The `macOS interface dependency releases` workflow generates the catalog-only
+`.tbd` archive twice, compares the exact bytes, and then performs final Roc
+application links and native GUI specs against the attested host selected by
+`gui-host.lock.json`. An explicit dispatch on `main` with a fresh
+`deps-macos-interfaces-<version>` tag publishes the tested archive and its
+consumer lock with GitHub build provenance. Generation reads neither host nor
+SDK bytes; the host is an independently released validation input, not part of
+the generated artifact's identity. Review and adopt the emitted lock entry
+separately. The adopted entry is consumed by ordinary CI and GUI package
+bundling without an online attestation check.
 
 ### musl
 
@@ -279,16 +310,16 @@ python3 -m unittest scripts/test_dependency_artifacts.py
 ```
 
 Use a fresh output directory for each build. Local candidate testing establishes
-link behavior; release consumption additionally requires CI-signed provenance.
-Review the published `dependencies.lock.json` before adopting it. Fetch and verify
-a selected locked artifact with the GitHub CLI installed:
+link behavior; producer attestations provide optional external provenance evidence.
+Review the published `dependencies.lock.json` before adopting its exact size and
+SHA-256 pins. Fetch and verify a selected locked artifact with Python alone:
 
 ```sh
 python3 scripts/dependency_artifacts.py --lock dependencies.lock.json --artifact musl-x64musl --output /tmp/verified-musl
 ```
 
 The default download cache is `~/.cache/roc-signals/dependencies`; `--cache` selects
-another directory. Digest and provenance verification also run on cached bytes.
+another directory. Digest verification also runs on cached bytes.
 The output retains the selected lock and a directory for each artifact, containing
 its manifest, target files, and license notices. Existing output directories are
 rejected. There is no unsigned fallback or automatic dependency upgrade.
@@ -683,13 +714,14 @@ and `gui/` directories. `BUNDLE_OUT_DIR` or `--output-dir` changes that root.
 `--package web` and `--package gui` select one platform and put its archive
 directly in the output directory. `--no-build` reuses prepared hosts;
 `--debug-gui` selects a faster development Rust build. Use the default optimized
-GUI build for distributable archives. Both development and optimized GUI archives
-can exceed the pinned compiler's 100 MiB expanded transitive package budget;
+GUI build for distributable archives. A fat GUI archive containing every native
+target exceeds the compiler's default 100 MiB expanded transitive package budget;
 local-file platform builds passing does not establish that a URL-bound bundle
-can be consumed. The size-limit diagnostic suggests `--max-transitive-bytes`,
-but that option is not implemented by the pinned compiler. See
-`UPSTREAM_COMPILER_BUGS.md` for the reproducible limitation. Existing web test, site,
-and release commands explicitly select the web package.
+can be consumed. Release-candidate checks therefore pass the implemented
+`--max-transitive-mb=512` option explicitly. The older diagnostic's suggested
+`--max-transitive-bytes` spelling is incorrect. See `UPSTREAM_COMPILER_BUGS.md`
+for the reproduction and keep the override visible until host-size work makes it
+unnecessary.
 
 For the separate browser JavaScript artifact, run `python3 scripts/bundle_browser.py`.
 
@@ -763,9 +795,12 @@ host and public apps production build without starting a server:
 python3 scripts/serve.py --no-server --app-opt size
 ```
 
+Routine Roc tests and native smoke builds use `--opt=dev` to keep feedback fast.
 The pinned compiler's dev backend currently emits invalid Wasm for unit-valued
-capability callbacks (see `UPSTREAM_COMPILER_BUGS.md`, case 10). The optional
-`--app-opt dev` build is a compiler diagnostic, not a passing release gate or a
+capability callbacks (see `UPSTREAM_COMPILER_BUGS.md`, case 10), so ordinary
+Wasm smoke builds use `--opt=size` as a narrow workaround. TODO: switch those
+builds to `--opt=dev` once the upstream bug is fixed. The optional `--app-opt
+dev` site build remains a compiler diagnostic, not a passing release gate or a
 deployable alternative. Keep artifact validation enabled. After checking dev
 output, rebuild with `--app-opt size`; both modes write `dist/`.
 
@@ -780,41 +815,36 @@ when work on the next release begins. Published notes describe that upgrade;
 do not rewrite them to follow later APIs. The site guides document the supported
 API and link to releases rather than duplicating version-specific instructions.
 
-Dispatch `Release` on `main` with `release_tag` and `nightly_validation: false`.
+Dispatch `Combined platform release candidate` on `main` with `release_tag` and
+`validate_only: false`.
 The release guard explicitly permits exact-nightly bootstrap; it does not claim
-a stable Roc compiler exists. Preparation records the final source SHA and builds
-ReleaseSmall hosts, the platform archive, `signals-browser.zip`, and complete
-`signals-starters.zip`. Tests run those exact artifacts before publication. The
-release body combines the committed versioned notes with compiler/source identity,
-named URLs, and SHA-256 digests in `signals-release.json`.
+a stable Roc compiler exists. Preparation records the final source SHA, downloads
+and content-hash verifies the immutable web hosts, GUI hosts, and external linker
+inputs, then runs `roc bundle` exactly twice. It builds no Zig or Rust code. The
+result is one web platform archive, one fat GUI platform archive, and
+`signals-examples.zip`; the latter contains two distinct app roots whose headers
+name their corresponding final asset URLs. `signals-release.json` records those
+URLs, SHA-256 digests, sizes, input locks, compiler pin, and the explicit fat-package
+budget.
 
 To exercise preparation locally:
 
 ```sh
-python3 scripts/release.py prepare --version 0.2.0-rc1
+python3 scripts/release.py prepare --version 0.2.0-rc3
 python3 scripts/release.py check
 python3 scripts/release.py verify
 ```
 
 Preparation requires a clean committed checkout so its source SHA identifies the
 actual inputs. Output defaults to ignored `.release-out/` and must be empty;
-retain an existing candidate when investigating or recovering a release. Published
-checks use isolated caches and committed URLs without rebinding. They do not build
-hosts or borrow the checkout's browser executor. Candidate checks rewrite only
-temporary starter copies to a loopback URL for the exact proposed archive.
-
-After upload, the workflow verifies actual downloads, deploys `signals-site.zip`,
-and opens a verified signed follow-up PR updating public URLs and
-`releases/current.json`. It explicitly dispatches and reports required checks on
-that PR's head; the release follow-up is manually merged. Compiler pins are
-preserved. A moved base or occupied follow-up branch is refused rather than
-overwritten. Nightly validation performs none of these writes.
-
-The site archive retains earlier `/versions/<version>/` pages and platform
-downloads, and serves the supported release at the existing landing URLs. The
-initial migration restores platform downloads from the actually deployed site's
-Actions artifact and refuses to proceed if it cannot recover that evidence.
-Rendered documentation stays in artifacts, not Git.
+retain an existing candidate when investigating or recovering a release. Linux
+x64, Apple Silicon macOS, and Windows x64 runners each download the same candidate,
+serve both exact platform archives over loopback, verify every extracted app header,
+and run web and GUI smoke paths. Web apps build for Wasm on every runner and use the
+native spec host where available. Every GUI app builds for the runner's native
+target, runs semantic specs, and must report successful rendering. Only those
+already-tested bytes reach the single publishing job. `validate_only: true` runs
+the complete flow without creating a tag or release.
 
 Ordinary publication rejects any existing tag or release. After partial
 publication, inspect the tag SHA and every existing asset against the retained
@@ -843,7 +873,9 @@ ordering and rendering details in JavaScript/browser contract tests.
 
 Put each independent case in its own `*.scm` file under the app's
 `specs/` directory. The driver discovers files recursively and gives each one a
-fresh app process. Keep pre-mount state in an optional `(setup ...)` form;
+fresh app process. A file's head form says which host runs it: a `(test ...)`
+runs on the display-free host, a `(scenario ...)` against a real window (see
+[Window scenarios](#window-scenarios) below). Keep pre-mount state in an optional `(setup ...)` form;
 setup accepts only `initial-location`, `initial-visibility`, `initial-online`,
 `local-storage`, and `session-storage`.
 
@@ -941,6 +973,105 @@ Supported assertions:
 - `(expect-disabled <locator> true|false)`
 - `(expect-updates <locator> <count>)`
 
+### Window scenarios
+
+The display-free host runs the engine without a presentation layer, so a
+`(test ...)` cannot see a control that GPUI laid out beyond the window, a dialog
+that does not fit, or a native editor that kept the previous document's undo
+history. For the GUI examples those states are covered by `(scenario ...)`
+specs, which live in the same `specs/` directory, use the same locators and
+the same step names, and are parsed by the same engine parser. The GUI host
+interprets them against a real window, through its `--host-scenario` flag;
+`python3 scripts/gui_scenarios.py --directory .test-out/gui` runs every one.
+
+```lisp
+(scenario "detail reachability"
+  :window "800x600"
+  (steps
+    (click (test-id "edit-task-4"))
+    (wait 400)
+    (expect-selected (test-id "task-4") true)
+    (expect-value (label "Task title") "Polish the project sidebar")
+    (expect-history (label "Task notes") 0)
+    (expect-onscreen (test-id "task-detail"))
+    (snapshot "task-4-selected")))
+```
+
+The header names what the run needs, relative to the example directory:
+`:window "WIDTHxHEIGHT"` sizes the window (the host default otherwise, and a
+capture harness's `--host-window-size` overrides it); `:assets "path"` runs
+against a prepared assets root instead of the example's `assets/`, which is how
+the asset scenarios show a missing, altered or unreadable file without a
+scenario damaging the working tree (see `task-board/specs/assets-problem/`,
+whose `generate.py` derives that root from the shipped assets); and
+`:choose ("path" ...)` answers the file and folder choosers in order, because a
+native dialog cannot be driven from a spec. Everything past the chooser — the
+listing, preview, log-follow or open worker — is the real one, which is what
+separates a scenario from a test that resolves the worker's result by name;
+the parser refuses a `resolve-file-*` fixture inside a scenario for that reason.
+
+A scenario shares `click`, `focus`, `shortcut`, `expect-visible`,
+`expect-absent`, `expect-text`, `expect-value` and `expect-disabled` with a
+test. Its own steps are `(wait ms)`, which lets timers, tasks and propagation
+settle; `(type locator "text")`, which focuses an editor and types through the
+real key dispatch path (a scenario refuses `fill`, which sets a value without
+the keyboard); `(key "ctrl-s")`, one keystroke written the way GPUI writes
+bindings; `(expect-selected locator true)`, `(expect-focused locator)` and
+`(expect-count "test-id-prefix" n)`; `(expect-history locator n)`, which reads
+how many native undo entries an editor is holding — how document ownership
+becomes testable; `(expect-onscreen locator)`, which reads a control's laid-out
+bounds and means *visible without scrolling*, so a failure is a usability
+finding rather than proof that nothing can reach the control; `(snapshot
+"name")`, which records the rendered tree as evidence; and `(close)`, which must
+be last and leaves through the window's own close request the way the frame's
+close button does — an application with unsaved work may answer with a dialog
+and keep the window. The display-free host refuses every one of these by name.
+
+Every run writes a JSON report of every observation under
+`.test-out/gui-scenarios/<app>/`, and on macOS also photographs the
+application's own window in the state the scenario finished in — including the
+state a failing assertion stopped at. Captures go through `gui_capture.py`, so
+they find the window by the process id the driver started and refuse a window
+whose size does not match what the report says was requested; no region of
+your desktop is captured. The report is written before a `(close)` takes the
+window, so the driver also reads the process exit status: a crash during
+teardown fails the scenario even when every assertion passed. Pass
+`--no-capture` to run the scenarios alone, `--scenario SUBSTRING` to select
+some of them, and `--artifacts PATH` to write elsewhere.
+
+A scenario whose header carries `:diagnostic "reason"` documents a defect owned
+elsewhere. It runs and its failure is reported, but it does not fail the run —
+and a diagnostic that starts passing *does* fail the run, so a fix cannot leave
+a stale exclusion behind. Never weaken an assertion to make a scenario pass;
+state the reason and let it run as a diagnostic instead. A defect that only
+some runs show adds `:on (...)`, naming systems (`linux`, `macos`, `windows`)
+or the window frame the run saw (`client-frame` where the host drew its own
+title bar and insets, which it does when the compositor delegated decorations
+and the window is not fullscreen, as on a Wayland desktop; `server-frame`
+otherwise, as on macOS). The host copies the diagnostic and its scope into the
+report and records which frame the run had, so the driver judges a scope from
+the evidence alone; the scenario is an ordinary check wherever nothing named
+matches.
+
+The scenarios are platform-neutral, because the interpreter lives in the host
+rather than in the driver: the same checks run on every system the GUI
+supports. Only the captures are macOS-only, and the driver says which half it
+ran rather than reporting a pass for evidence it never gathered. On Linux the
+scenarios need the same private display as the smoke checks, which
+`python3 scripts/minici gui-scenarios` arranges — under Weston on an Xvfb
+display there, and directly on macOS and Windows. CI runs that target after
+`gui-smoke` and keeps the JSON reports when it fails.
+
+Two limits found by running the driver against real fixes: a dialog is lifted
+into its own render layer and the bounds probe records nothing for it, so
+`expect-onscreen` cannot judge a dialog and those scenarios rely on their
+capture instead; and a control inside a scrolling region is likewise not
+recorded. Both are gaps in the probe, not properties of the applications.
+
+Keep the two forms apart by what they prove. Semantic and work-budget
+assertions belong in a test; presentation assertions belong in a scenario. A
+scenario is not the place to re-check what a test already proves.
+
 ### Readable native file fixtures
 
 The `Files` primitives run synchronously inside an effect, so their results
@@ -997,6 +1128,13 @@ URL. Error kinds are `invalid-request`, `network`, `timeout`, `too-large`, and
   :headers (("content-type" "text/plain")) :body "")
 (stub-http-reject "feed" :kind timeout :detail "")
 ```
+
+Fields may appear in any order; each documented field is required exactly once.
+Paths must be valid UTF-8, at most 4096 bytes, and absolute in one of the
+spellings a native worker returns: POSIX-rooted (`/tmp/note.txt`), drive-rooted
+(`C:\Users\Lee` or `C:/Users/Lee`), or a UNC prefix (`\\server\share\docs`), so a
+stub can express a Windows result directly. Unknown fields, duplicate fields,
+invalid types, and oversized values reject the spec.
 
 A read's `:size` and `:offset` and a stat's `:bytes`, `:device`, and `:inode`
 are canonical unsigned decimal U64 values, including values above signed
@@ -1090,7 +1228,7 @@ hosts; use `python3 scripts/test.py bench --native always` to force the focused
 bench gate. A built app binary also accepts benchmark flags directly:
 
 ```sh
-.test-out/bench-bin/signals-data-grid-bench --bench-app --bench-name signals-data-grid --bench-iterations 100 --bench-samples 3 examples-web/data-grid/specs/initial-mount.scm
+.test-out/bench-bin/signals-data-grid-bench --host-bench-app --host-bench-name signals-data-grid --host-bench-iterations 100 --host-bench-samples 3 examples-web/data-grid/specs/initial-mount.scm
 ```
 
 The host initializes a fresh app per iteration, applies the initial command
@@ -1218,6 +1356,13 @@ Microsoft-signed FXC/compiler DLL pair from SDK 10.0.26100.0, file version
 10.0.26100.8249. It checks the actual loaded compiler DLL and committed hashes;
 ambient `GPUI_FXC_PATH` cannot override release shader tooling. Optimized builds
 compile GPUI shaders before packaging; development builds compile them at runtime.
+A local Windows host build needs PowerShell 7 (`pwsh`) on `PATH`, the SDK
+10.0.26100.0 `fxc.exe` and `d3dcompiler_47.dll` under `ProgramFiles(x86)`, the
+`1.95.0` toolchain with its `x86_64-pc-windows-gnullvm` target, and an
+authenticated `gh`; `python scripts/build_gui.py --debug` checks all of them
+before compiling and names every one that is missing. Without them, verify
+against the released host instead:
+`GUI_HOST_LOCK=gui-host.lock.json python scripts/test.py gui`.
 
 Windows host builds verify and reuse both independently signed dependencies in
 `dependencies.lock.json`: complete per-DLL import archives and GNU CRT inputs.
@@ -1266,9 +1411,9 @@ python3 scripts/build_gui.py --debug
 roc build examples-gui/counter/main.roc --output=.test-out/Counter
 .test-out/Counter
 # Same executable, display-free semantic check:
-.test-out/Counter --run-spec-json examples-gui/counter/specs/counting.scm
+.test-out/Counter --host-run-spec-json examples-gui/counter/specs/counting.scm
 # Brief rendering/adapter integration check:
-.test-out/Counter --smoke --smoke-click Increment --smoke-expect '1'
+.test-out/Counter --host-smoke --host-smoke-click Increment --host-smoke-expect '1'
 ```
 
 `python3 scripts/test.py gui --roc-bin /path/to/pinned/roc --keep-output`
@@ -1291,9 +1436,12 @@ and fails on a crash or a 30-second timeout. This checks the GPUI window/renderi
 path separately from the display-free specs. Run the same script on a desktop
 after the GUI suite to exercise the local graphics driver.
 
+## Native GUI host flags
+
 Normal GUI launches do not print engine metrics. Pass `--host-trace-engine` to an
-app executable to log event-turn metrics to stderr; `--smoke` prints its explicit
-validation result. Host errors remain visible without tracing.
+app executable to log event-turn metrics to stderr; `--host-smoke` prints its explicit
+validation result, and `--host-scenario` prints its own pass or failure line. Host
+errors remain visible without tracing.
 
 Host builds default to two Cargo workers. Use `scripts/build_gui.py --jobs N`
 or `scripts/test.py gui --gui-build-jobs N` to adjust memory pressure. Parallel
@@ -1365,8 +1513,8 @@ linked source access when redistributing the bundle.
 A main-branch manual dispatch selects Linux, Windows, macOS, Linux and Windows,
 or all three targets
 for an independent `deps-gui-host-<version>` release. Mac admission requires the
-complete source/notice pair and native final links/specs against regenerated
-project-authored interfaces; copied SDK stubs are not release inputs. The original
+complete source/notice pair and native final links/specs against the independently
+released project-authored interfaces; copied SDK stubs are not release inputs. The original
 objc2 qualification is retained alongside its declared license terms. Missing
 standalone license files alone are not a blanket
 publication prohibition: original source evidence and declarations remain visible
@@ -1377,24 +1525,42 @@ the reviewed lock directly to the bundler:
 
 ```sh
 gh release download "$HOST_RELEASE" --pattern dependencies.lock.json --dir /tmp/hosts
-gh release verify-asset "$HOST_RELEASE" /tmp/hosts/dependencies.lock.json
 scripts/bundle.sh --package gui --no-build --prebuilt-host-lock /tmp/hosts/dependencies.lock.json
 ```
 
 The bundler downloads and verifies every selected archive, including cached
-copies, against the locked digest, source commit, main ref, and this repository's
-host-producing workflow. It extracts into private staging and checks host source
-compatibility before copying any host outputs. Host-related source must be clean
-and committed; documentation-only commits do not invalidate host compatibility.
-Overlapping local and prebuilt hosts for one target are errors.
+copies, against the reviewed size and SHA-256. The lock also records its producer
+repository, source commit, main ref, and workflow for optional provenance
+inspection. It extracts into private staging and checks whether the actual Rust
+host, Zig engine, Cargo manifest, lock, or build configuration changed since the
+host release. Platform Roc APIs, applications, semantic specs, documentation,
+packaging, and external linker inputs do not invalidate a compatible host.
+Host-related source must be clean and committed. Overlapping local and prebuilt
+hosts for one target are errors.
 
 The GUI test driver accepts the same reviewed lock through
 `python3 scripts/test.py gui --gui-host-lock /path/to/dependencies.lock.json` or
 `GUI_HOST_LOCK`. It downloads only the host for the current operating system,
 stages that target's independently released system link inputs, and runs the
 ordinary Roc checks, builds, and semantic specs without rebuilding Cargo or Zig
-host code. Cargo host tests and fresh link-input construction remain part of the
-dedicated producer workflow when host sources or packaging change.
+host code. Cargo host tests and fresh host-output construction remain part of the
+dedicated producer workflow when actual host inputs or producer machinery change.
+
+A reviewed host release can only be published from `main`, so a branch that
+changes the host sources has no matching release yet. When the lock does not
+describe the checkout's host inputs, the driver says so and builds and tests the
+host from source for that run instead of refusing to start — otherwise a host
+change could never reach `main` to be released from. Asking for the verified
+host itself still refuses a mismatched lock: the fallback is the test driver's
+decision, never something a release or a bundle can inherit. The macOS bundle
+step is skipped in that case for the same reason — there is no released archive
+for it to validate.
+
+Because that job may build the host, its runner needs the host's build inputs:
+the FreeType and xkbcommon development packages on Linux, and the
+`x86_64-pc-windows-gnullvm` Rust target on Windows. Generating the macOS
+interface catalog remains outside ordinary CI; that has its own producer and
+review.
 
 These archives contain host code and licenses, not external system libraries or
 SDK stubs. Every included target must also have its external link inputs supplied;
@@ -1422,80 +1588,45 @@ visible range; ordinary containers enumerate direct children when rendered.
 See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
 `crates/gpui-host/README.md` for the boundary limits.
 
-### Linux GUI release candidates
+### Combined platform release candidates
 
-`GUI release candidate` (`gui-release.yml`) packages an already published
-host for the selected `x64glibc`, `arm64mac`, or `x64mingw` target. Linux includes the independently
-verified FreeType, glibc, LLVM unwinder, and xkbcommon releases. Apple Silicon uses
-the host-owned project interface catalog; macOS supplies system implementations. It runs no Cargo or Zig host build. Use a fresh checkout with
-no `platform-gui/targets` directory and an immutable `deps-gui-host-<version>`
-release whose source fingerprint matches that checkout.
+The single release workflow publishes the web and GUI platforms together without
+conflating their APIs. Web applications and GUI applications remain separate app
+roots and may share ordinary Roc modules, but each header names its own platform
+archive. The GUI archive is deliberately fat: it contains the admitted
+`x64glibc`, `arm64mac`, and `x64mingw` hosts and their target-confined linker inputs.
+The web archive contains its native spec hosts and Wasm browser host.
 
-Dispatch the workflow with a new `gui-X.Y.Z-rc.N` tag, the host release tag,
-`target: x64glibc`, `target: arm64mac`, or `target: x64mingw`, and `validate_only: true` for candidate validation. The job packages the existing
-verified inputs, serves the exact Roc archive over HTTP, builds all six maintained
-GUI applications with their pinned compiler, runs every semantic spec, and opens
-the same executables on its native runner. Linux uses Weston/Xvfb with Mesa
-software Vulkan; Apple Silicon and Windows use their native rendering backends. Rendering must
-report explicit success; the counter also verifies its increment interaction.
-The archive inventory check rejects missing dependency notices and receipts,
-unselected target files, and expanded payloads over Roc's 100 MiB limit.
+Packaging changes do not rebuild either host. `web-host.lock.json` and
+`gui-host.lock.json` select immutable host releases whose narrow source
+fingerprints must match the checkout; packaging and publication refuse a lock
+that does not, and only the GUI test driver falls back to a source build. `dependencies.lock.json` independently
+selects the external linker inputs, including the catalog-derived macOS TBDs.
+Ordinary admission uses the recorded byte counts and SHA-256 hashes without an
+attestation service. The publishing job additionally attests the exact two bundles,
+example archive, and release manifest for users who want external provenance.
 
-Mac archive admission regenerates the catalog's expected TBD bytes and checks
-all interface files, original provenance, generator identity, exact host hashes,
-and native validation record. Additional files under `targets/macos-sysroot` are
-rejected. The existing bundler runs the native link/spec validator before bundle
-creation; the RC gate then repeats builds/specs and rendering over fresh HTTP.
-Windows preparation requires both independently released dependency locks and
-the exact complete production header input order. The native Windows runner
-verifies the archive decoder, downloads the pinned Roc compiler, then uses the
-released GNU runtime and complete DLL import libraries without building Rust or
-Zig host inputs. A compatible signed host release and its source companion are
-still mandatory; candidate CI artifacts cannot substitute for those releases.
-All six Windows executables use `--target=x64mingw` and are checked locally over
-fresh HTTP and again from untouched public URLs after publication.
-
-A publishing dispatch must run on `main` with `validate_only: false`. It attests
-the exact tested platform archive, starter ZIP, original host lock, and
-`signals-gui-release.json`, then creates a new immutable prerelease. Repository
-[release immutability](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/establish-provenance-and-integrity/prevent-release-changes)
-must already be enabled. Existing tags or releases are never overwritten; a
-partial publication requires inspecting and recovering those original bytes.
-The workflow verifies the published release and every asset, then rebuilds and
-runs all six applications from their unchanged public release URLs with a fresh
-Roc cache. A post-publication failure does not replace or silently repair assets.
-
-The starter ZIP contains all app sources/specs, the six-app registry, and the
-pinned Unicode source dependency. Compiler pins are preserved and platform URLs
-name the immutable GUI release. Host notices remain inside the platform; the
-original source companion remains at its independently attested host release,
-with its exact digest, size, and URL retained in the GUI manifest and embedded
-dependency lock. Candidate and published checks verify that source is available.
-Windows and macOS are outside this Linux RC and retain their separate release
-completion work.
-
-The CI-only GUI release helper and its tests live under `.github/scripts`, outside
-the host build fingerprint, because packaging verified archives does not alter
-host bytes. Packaging-only changes therefore reuse a compatible host release;
-changes to actual host inputs still invalidate that compatibility check. The
-existing web release workflow and supported web release are independent.
+Mac admission final-links maintained applications against the reviewed TBD catalog;
+Windows retains the complete GNU runtime and system import order; Linux retains
+the reviewed glibc, FreeType, xkbcommon, and unwinder inputs. Missing final-link
+symbols are feedback to the relevant external linker-input catalog and do not make
+those interfaces host-build dependencies.
 
 ### Validate generated macOS bundles
 
-Local macOS bundles, including `--no-build`, require native Apple Silicon.
-Before creating the bundle, admission links every maintained GUI example with
-the selected host archives and generated interfaces, then runs its native specs.
-The generated validation record binds these exact inputs; regeneration alone
-is not accepted as compatibility evidence. Mac CI repeats this with the Rust
-1.95.0 optimized host and consumes the resulting archive over HTTP with an empty
-Roc cache:
+Creating a bundle from the reviewed locks is platform-independent. Native Apple
+Silicon validation happens after bundling: the macOS runner downloads the same
+candidate as the other smoke runners, serves it over HTTP with an empty Roc
+cache, final-links every maintained GUI example against the selected released
+host archives and interface inputs, and runs its native specs. It does not
+install Rust, build Cargo, build the Zig engine, download the Metal toolchain,
+or regenerate TBDs:
 
 ```sh
-python3 scripts/build_gui.py
+GUI_HOST_LOCK=gui-host.lock.json python3 scripts/minici gui
 python3 scripts/bundle_platforms.py --package gui --no-build --output-dir /tmp/macos-bundle
 python3 scripts/check_macos_interfaces.py --bundle /tmp/macos-bundle
 ```
 
-These are candidate checks. Mac host source/notice eligibility and signed
-publication remain separate requirements. Cross-platform bundling of future
-Mac prebuilts will require a verified compatibility receipt.
+These are candidate checks. Mac host and interface production remain separate
+release cycles; ordinary consumers use their reviewed content hashes.

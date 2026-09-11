@@ -26,6 +26,34 @@ NATIVE_SPEC_ENTROPY_SEED = 0
 class SpecCase:
     id: str
     path: Path
+    #: ``test`` for a display-free spec, ``scenario`` for one driven against a
+    #: real window. Both share one grammar and one engine parser; only the
+    #: host that runs them differs, so discovery has to tell them apart.
+    form: str = "test"
+
+
+def spec_form(path: Path) -> str:
+    """Names the head form of a spec file without parsing it.
+
+    The engine is the parser; this only reads the first symbol so a directory
+    of specs can be split between the display-free host and the window host.
+    A file whose head is neither is left to the host to refuse with its reason.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character.isspace():
+            index += 1
+        elif character == ";":
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline + 1
+        elif character == "(":
+            head = text[index + 1:index + 1 + 16].split(None, 1)[0] if text[index + 1:].strip() else ""
+            return head if head in ("test", "scenario") else "unknown"
+        else:
+            break
+    return "unknown"
 
 
 @dataclass(frozen=True)
@@ -59,7 +87,7 @@ def discover_specs(spec_directory: Path) -> tuple[SpecCase, ...]:
         if path.is_symlink() or not path.is_file():
             continue
         relative = path.relative_to(root).as_posix()
-        cases.append(SpecCase(relative, path))
+        cases.append(SpecCase(relative, path, spec_form(path)))
     cases.sort(key=lambda case: case.id)
     if not cases:
         raise ValueError(f"no *.scm files found in {spec_directory}")
@@ -71,11 +99,18 @@ def select_specs(
     *,
     patterns: tuple[str, ...] = (),
     shard: tuple[int, int] | None = None,
+    form: str | None = "test",
 ) -> tuple[SpecCase, ...]:
+    """Filters cases by id pattern, shard, and form.
+
+    ``form`` defaults to the display-free specs, which is what every existing
+    caller runs; the window driver asks for ``"scenario"`` and ``None`` keeps both.
+    """
     selected = tuple(
         case
         for case in cases
-        if not patterns or any(fnmatch.fnmatchcase(case.id, pattern) for pattern in patterns)
+        if (not patterns or any(fnmatch.fnmatchcase(case.id, pattern) for pattern in patterns))
+        and (form is None or case.form == form)
     )
     if shard is None:
         return selected
@@ -93,12 +128,12 @@ def run_case(
 ) -> SpecResult:
     command = [
         str(executable),
-        "--run-spec-json",
-        "--entropy-seed",
+        "--host-run-spec-json",
+        "--host-entropy-seed",
         str(NATIVE_SPEC_ENTROPY_SEED),
     ]
     if verbose:
-        command.append("--verbose")
+        command.append("--host-verbose")
     command.extend(worker_args)
     command.append(str(case.path))
     started = time.monotonic_ns()
@@ -186,8 +221,8 @@ def run_case(
     fault = payload.get("fault")
     if fault is not None and not isinstance(fault, dict):
         return synthetic_result(case, "protocol_error", started, "invalid_fault", "worker fault must be an object or null", stdout=completed.stdout, stderr=completed.stderr)
-    if "--fail-on-allocation" in worker_args:
-        expected_allocation = int(worker_args[worker_args.index("--fail-on-allocation") + 1])
+    if "--host-fail-on-allocation" in worker_args:
+        expected_allocation = int(worker_args[worker_args.index("--host-fail-on-allocation") + 1])
         if fault is None or fault.get("allocation") != expected_allocation:
             return synthetic_result(case, "protocol_error", started, "invalid_fault", "worker did not report the selected allocation coordinate", stdout=completed.stdout, stderr=completed.stderr)
         if fault.get("outcome") not in {"continued", "refused_then_retried", "skipped_roc", "skipped_fatal_command"}:
@@ -346,8 +381,8 @@ def run_fault_suite(
     for probe in probes:
         for allocation in range(1, probe.host_allocation_attempts + 1):
             case = SpecCase(f"{probe.id}::allocation@{allocation}", source_cases[probe.id].path)
-            args = ("--fail-on-allocation", str(allocation))
-            replay = f"{executable} --run-spec-json --entropy-seed {NATIVE_SPEC_ENTROPY_SEED} {' '.join(args)} {case.path}"
+            args = ("--host-fail-on-allocation", str(allocation))
+            replay = f"{executable} --host-run-spec-json --host-entropy-seed {NATIVE_SPEC_ENTROPY_SEED} {' '.join(args)} {case.path}"
             jobs_to_run.append((case, args, replay))
     if not jobs_to_run:
         raise ValueError("clean specs reported no host allocation opportunities")

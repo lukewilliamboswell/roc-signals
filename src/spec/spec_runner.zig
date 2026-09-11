@@ -411,6 +411,15 @@ pub fn Runner(comptime Ctx: type) type {
                     Ctx.writeStderr(message);
                 }
                 switch (cmd.cmd_type) {
+                    .wait, .type_text, .key, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot, .close => {
+                        // The parser already keeps these out of a (test ...);
+                        // this is the runner's own word on it, for a command
+                        // list assembled some other way.
+                        var buffer: [160]u8 = undefined;
+                        const message = std.fmt.bufPrint(&buffer, "Error: line {d}: {s} runs only against a real window; put it in a (scenario ...)\n", .{ cmd.line_num, @tagName(cmd.cmd_type) }) catch "Error: window-only step\n";
+                        Ctx.writeStderr(message);
+                        return 1;
+                    },
                     .mark_metrics => {
                         // Refresh absolute retained-allocation gauges at the
                         // command boundary. Mount and dispatch can release

@@ -48,9 +48,9 @@ def fixtures(root: Path = ROOT) -> tuple[Path, ...]:
 
 def install_prebuilt_host(lock: Path, target: str) -> None:
     """Materialize one verified host and its independently released link inputs."""
-    from build_macos_stubs import generate as generate_macos_interfaces
     from gui_host_artifacts import verified_hosts, stage_candidate_dependencies
     from host_build_identity import HOST_FILES
+    from prepare_dependencies import install_macos_interfaces
 
     destination = ROOT / "platform-gui/targets" / target
     if destination.exists():
@@ -66,7 +66,7 @@ def install_prebuilt_host(lock: Path, target: str) -> None:
         for name in HOST_FILES[target]:
             shutil.copyfile(source / name, destination / name)
     if target == "arm64mac":
-        generate_macos_interfaces(destination, destination.parent / "macos-sysroot")
+        install_macos_interfaces(destination.parent / "macos-sysroot")
 
 
 def run(roc: str, args, output: Path) -> None:
@@ -76,19 +76,34 @@ def run(roc: str, args, output: Path) -> None:
     toolchain.verify_compiler(roc, toolchain.read_pin(ROOT / "platform-gui/main.roc"))
     subprocess.run([sys.executable, ROOT / "scripts/prepare_platforms.py"], check=True)
     target = host_target()
-    if args.gui_host_lock is None:
+    # A reviewed host release can only be published from `main`, so a checkout
+    # that changes the host sources has no matching release yet. Test the host
+    # this checkout actually describes rather than refusing to run: the reviewed
+    # release still covers every checkout that leaves the host alone, and it is
+    # still the only thing a release is built from.
+    use_prebuilt = args.gui_host_lock is not None
+    if use_prebuilt:
+        from gui_host_artifacts import lock_matches_sources
+
+        use_prebuilt = lock_matches_sources(args.gui_host_lock.resolve(), ROOT)
+        if not use_prebuilt:
+            print("==> the GUI host lock does not describe this checkout's host inputs; "
+                  "building and testing the host from source instead", flush=True)
+    if use_prebuilt:
+        install_prebuilt_host(args.gui_host_lock, target)
+    else:
         subprocess.run(
             [sys.executable, ROOT / "scripts/build_gui.py", "--debug", "--jobs", str(args.gui_build_jobs)],
             check=True,
         )
-    else:
-        install_prebuilt_host(args.gui_host_lock, target)
     environment = build_environment()
     library_path = str(ROOT / "platform-gui/targets" / target)
     if environment.get("LIBRARY_PATH"):
         library_path += os.pathsep + environment["LIBRARY_PATH"]
     environment["LIBRARY_PATH"] = library_path
-    if args.gui_host_lock is None:
+    if not use_prebuilt:
+        # The host we just built is the one under test, so its own unit tests
+        # belong to this run; a prebuilt release arrives already tested.
         subprocess.run(
             ["cargo", "test", "--locked", "-p", "signals-gpui-host", "--lib", "-j",
              str(args.gui_build_jobs), "--", "--test-threads=1"],
@@ -111,7 +126,7 @@ def run(roc: str, args, output: Path) -> None:
         try:
             for command in (
                 [roc, "check", source],
-                [roc, "test", source],
+                [roc, "test", "--opt=dev", source],
                 [roc, "build", f"--target={target}", "--opt=dev", "--no-cache", f"--output={executable}", source],
             ):
                 print("\n==> " + " ".join(map(str, command)), flush=True)

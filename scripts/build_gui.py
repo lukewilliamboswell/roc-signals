@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import tempfile
 
-from build_macos_stubs import install as install_macos_interfaces
 from prepare_dependencies import install_freetype, install_glibc, install_xkbcommon, install_unwind
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -52,6 +51,14 @@ def build(debug=False, jobs=2, cargo_evidence=None):
     if cargo_evidence is not None:
         from host_build_identity import source_fingerprint
         fingerprint = source_fingerprint(ROOT)
+    if target == 'arm64mac':
+        # The macOS analogue of the Linux link inputs staged below. A prebuilt
+        # host brings the interface stubs with it, so a source build was the one
+        # path that left them missing and failed the final application link.
+        sysroot = ROOT / 'platform-gui/targets/macos-sysroot'
+        if not sysroot.exists():
+            from prepare_dependencies import install_macos_interfaces
+            install_macos_interfaces(sysroot)
     linux_dependencies = (install_freetype(ROOT / 'platform-gui/targets/x64glibc')
                           if target == 'x64glibc' else None)
     if target == 'x64glibc':
@@ -80,10 +87,6 @@ def build(debug=False, jobs=2, cargo_evidence=None):
     shutil.copyfile(engine, dest / 'libengine.a')
     (dest / host_archive(target)).unlink(missing_ok=True)
     if platform.system() == 'Darwin':
-        manifest = install_macos_interfaces(dest.parent)
-        (dest / 'link-inputs.json').write_text(json.dumps({
-            'macos_interfaces': manifest,
-        }, indent=2) + '\n')
         finish_evidence(target, dest, cargo_evidence, fingerprint)
         return
     provenance = {'dependencies': linux_dependencies}

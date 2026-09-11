@@ -9,7 +9,7 @@ class ChangeSelectionTests(unittest.TestCase):
         results = {"changes": {"result": "success", "outputs": {
             area: "true" if area == "gui" else "false" for area in AREAS
         }}}
-        for job in ("source", "gui", "gui-windows", "gui-macos", "published", "archive", "site"):
+        for job in ("source", "gui", "gui-windows", "gui-macos", "site"):
             results[job] = {"result": "success" if job.startswith("gui") else "skipped"}
         verify_results(results)
         for bad in ("failure", "cancelled", "skipped"):

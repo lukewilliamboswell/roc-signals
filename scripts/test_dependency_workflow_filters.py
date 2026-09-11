@@ -18,8 +18,8 @@ WORKFLOWS = {
 }
 
 
-def workflow(name):
-    path = ROOT / ".github/workflows" / WORKFLOWS[name]
+def workflow_text(filename):
+    path = ROOT / ".github/workflows" / filename
     text = path.read_text()
     # These workflows deliberately use a plain literal list. Refuse unsupported
     # glob/negation syntax rather than approximating GitHub's matching semantics.
@@ -30,6 +30,10 @@ def workflow(name):
     if any(re.search(r"[*?!\[\]{}]", path) for path in paths):
         raise ValueError("producer filters must name exact inputs")
     return path.relative_to(ROOT).as_posix(), set(paths), text.split("\njobs:\n", 1)[1]
+
+
+def workflow(name):
+    return workflow_text(WORKFLOWS[name])
 
 
 def script_inputs(jobs):
@@ -72,6 +76,19 @@ class DependencyWorkflowFilterTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(covered(path), f"GUI host fingerprint input does not trigger producer: {path}")
 
+    def test_web_host_fingerprint_inputs_trigger_only_the_web_host_producer(self):
+        from web_host_artifacts import SOURCE_PATHS
+
+        text = (ROOT / ".github/workflows/web-hosts.yml").read_text()
+        section = text.split("    paths:\n", 1)[1].split("  workflow_dispatch:", 1)[0]
+        paths = {line.removeprefix("      - ") for line in section.splitlines() if line.strip()}
+        for path in SOURCE_PATHS:
+            covered = path in paths or any(entry.endswith("/**") and path.startswith(entry[:-3]) for entry in paths)
+            with self.subTest(path=path):
+                self.assertTrue(covered, f"web host input does not trigger its producer: {path}")
+        for unrelated in ("platform-web/main.roc", "examples-web/counter/main.roc", "design.md"):
+            self.assertFalse(unrelated in paths)
+
     def test_all_executed_scripts_and_transitive_imports_trigger_their_workflow(self):
         for name in WORKFLOWS:
             with self.subTest(producer=name):
@@ -103,6 +120,17 @@ class DependencyWorkflowFilterTests(unittest.TestCase):
                     selected = {name for name in WORKFLOWS if filename in workflow(name)[1]}
                     self.assertEqual(selected, {owner})
 
+    def test_macos_interface_inputs_select_only_the_interface_producer(self):
+        _, paths, jobs = workflow_text("macos-interface-dependencies.yml")
+        for filename in ("dependencies/macos-interfaces/interfaces.json",
+                         "dependencies/macos-interfaces/PROVENANCE.md",
+                         "scripts/build_macos_interfaces.py", "scripts/build_macos_stubs.py"):
+            with self.subTest(input=filename):
+                self.assertIn(filename, paths)
+                self.assertFalse(any(filename in workflow(name)[1] for name in WORKFLOWS))
+        self.assertIn("--host-lock gui-host.lock.json", jobs)
+        self.assertNotIn("scripts/build_gui.py", jobs)
+
     def test_shared_admission_and_publication_changes_select_every_producer(self):
         for path in ("scripts/dependency_archive.py", "scripts/dependency_artifacts.py",
                      "scripts/release_dependencies.py", "scripts/test_dependency_artifacts.py"):
@@ -120,6 +148,27 @@ class DependencyWorkflowFilterTests(unittest.TestCase):
         for path in unrelated:
             with self.subTest(input=path):
                 self.assertFalse(any(path in workflow(name)[1] for name in WORKFLOWS))
+
+    def test_ordinary_gui_ci_selects_the_reviewed_host_release(self):
+        text = (ROOT / ".github/workflows/ci.yml").read_text()
+        gui = text.split("  gui:\n", 1)[1].split("  platform-source:\n", 1)[0]
+        self.assertEqual(gui.count("GUI_HOST_LOCK: gui-host.lock.json"), 3)
+
+    def test_ordinary_gui_ci_never_produces_macos_interfaces(self):
+        """The host may be built here; the macOS interface catalog may not.
+
+        A checkout that changes the host sources has no release describing it,
+        so ordinary GUI CI builds and tests that host itself — installing the
+        Rust target it needs is part of that. Generating the interface catalog
+        is a different thing entirely: it has its own producer, its own review,
+        and its bytes are an input to admission rather than something a test job
+        may reproduce.
+        """
+        text = (ROOT / ".github/workflows/ci.yml").read_text()
+        gui = text.split("  gui:\n", 1)[1].split("  platform-source:\n", 1)[0]
+        for forbidden in ("MetalToolchain", "build_macos_stubs.py", "release_gui_hosts.py"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, gui)
 
 
 if __name__ == "__main__":

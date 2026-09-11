@@ -124,15 +124,22 @@ Conveniences written in Roc:
 | `verify_assets!(entries)` | `List(AssetCheck)`, each manifest entry hashed with `Crypto.SHA256` under the assets root |
 
 `Choice` is `[Chosen(Str), Canceled]`. The save chooser's `directory` is
-`Home` or `At(absolute_path)`; `Home` resolves the native user's home
-directory, and a missing or non-UTF-8 value returns `Unavailable`. `Kind` is
+`Home` or `At(absolute_path)`; `Home` resolves the native user's profile root
+(`HOME` on Linux and macOS, `USERPROFILE` on Windows), and only an environment
+that names no UTF-8 directory at all returns `Unavailable`. `Kind` is
 `File`, `Directory`, `SymbolicLink`, or `Other`. `stat!` never follows a
 symbolic link, and `read_bytes!` refuses anything but a regular file. `device`
 and `inode` identify a file across renames, which is how the activity
 monitor's log reader notices rotation. Paths are absolute UTF-8 of at most
-4,096 bytes. `open_path!` requests the desktop's associated application
-through `gio open`; success confirms the launch, not the application's
-lifetime. Writes replace a regular file's contents in place; `write_text!`
+4,096 bytes. `open_path!` requests the desktop's associated application:
+the Unix file service, which macOS builds also use, hands the path to `gio open`,
+and the Windows service hands it to `rundll32.exe url.dll,FileProtocolHandler`;
+success confirms the launch, not the application's lifetime, and an unassociated
+extension on Windows still counts as a launch. Paths are spelled by the operating
+system the host runs on: a Windows worker returns drive-rooted paths written
+with backslashes, and UNC and device paths are refused with `InvalidPath` when
+they are chosen, because the Windows worker walks names below a drive's volume
+root only. Writes replace a regular file's contents in place; `write_text!`
 that fails before its rename leaves the destination untouched.
 
 `Error` is `[Canceled, NotFound(Str), PermissionDenied(Str), InvalidUtf8(Str),
@@ -141,6 +148,17 @@ never produces `Canceled`; it is for apps that treat a dismissed chooser as a
 failure, which instead arrives as `Ok(Choice.Canceled)`.
 `Files.error_text(error)` formats errors for display, and diagnostic detail is
 bounded at 4,096 UTF-8 bytes.
+
+`Files.parse_path(text)` recognizes one path by shape and returns a `Files.Path`
+carrying that spelling: drive designators (`C:`) and UNC prefixes (`\\`) are
+Windows, everything else is POSIX, where only `/` separates and a backslash is an
+ordinary file-name byte. The exact bytes are preserved; nothing is rewritten.
+`to_str` returns them, and `root`, `is_root`, `name`, `parent`, `trimmed`,
+`components`, and `join(component)` answer parent, name, root, and breadcrumb
+questions lexically, without consulting the filesystem or resolving `.`/`..`.
+Derive these through `Files.Path` rather than by splitting a path string, which
+is wrong on whichever operating system the application was not written for.
+
 
 ## Native Actions
 

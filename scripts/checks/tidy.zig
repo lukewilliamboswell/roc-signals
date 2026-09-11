@@ -42,6 +42,7 @@ fn runTidy(allocator: Allocator, io: std.Io) !void {
     for (paths.items) |path| {
         errors += try checkFile(allocator, io, path);
     }
+    errors += try checkSharedCopies(allocator, io);
 
     if (errors != 0) {
         std.debug.print("\n{s}[FAIL]{s} Found {d} tidy violation(s)\n", .{ TermColor.red, TermColor.reset, errors });
@@ -49,6 +50,43 @@ fn runTidy(allocator: Allocator, io: std.Io) !void {
     }
 
     std.debug.print("{s}[OK]{s} All tidy checks passed\n", .{ TermColor.green, TermColor.reset });
+}
+
+/// Modules that two examples share by keeping byte-identical copies, because a
+/// Roc application only imports modules from its own directory. Each pair is
+/// one contract with one implementation, so the copies must not drift.
+const shared_copies = [_][2][]const u8{
+    .{ "examples-gui/counter/Theme.roc", "examples-gui/notes-editor/Theme.roc" },
+};
+
+fn checkSharedCopies(allocator: Allocator, io: std.Io) !usize {
+    var errors: usize = 0;
+    for (shared_copies) |pair| {
+        const left = try std.Io.Dir.cwd().readFileAllocOptions(
+            io,
+            pair[0],
+            allocator,
+            .limited(max_file_bytes),
+            std.mem.Alignment.of(u8),
+            0,
+        );
+        defer allocator.free(left);
+        const right = try std.Io.Dir.cwd().readFileAllocOptions(
+            io,
+            pair[1],
+            allocator,
+            .limited(max_file_bytes),
+            std.mem.Alignment.of(u8),
+            0,
+        );
+        defer allocator.free(right);
+
+        if (!std.mem.eql(u8, left, right)) {
+            std.debug.print("{s} and {s} are shared copies and must be byte-identical\n", .{ pair[0], pair[1] });
+            errors += 1;
+        }
+    }
+    return errors;
 }
 
 fn runGitLints(allocator: Allocator, io: std.Io) !void {
@@ -148,6 +186,13 @@ fn shouldCheckFile(path: []const u8) bool {
     // interesting states. The directory's README is prose and is still checked.
     if (std.mem.startsWith(u8, repo_path, "test/fuzzing/corpus/") and
         !std.mem.endsWith(u8, repo_path, ".md")) return false;
+
+    // Window-scenario fixtures are exact bytes a real file worker reads back:
+    // a preview fixture without a trailing newline, or with CRLF endings, is
+    // the case the scenario exists to check. Each fixture directory's own
+    // .gitattributes keeps those bytes; the specs beside them stay checked.
+    if (std.mem.startsWith(u8, repo_path, "examples-gui/") and
+        std.mem.indexOf(u8, repo_path, "/specs/fixtures/") != null) return false;
 
     const skipped_extensions = [_][]const u8{
         ".a",       ".lib", ".o",   ".obj", ".wasm", ".png", ".jpg", ".jpeg", ".gif", ".webp",

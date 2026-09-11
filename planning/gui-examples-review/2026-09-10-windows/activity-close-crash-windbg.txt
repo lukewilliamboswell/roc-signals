@@ -1,0 +1,45 @@
+|                                                                        |
++------------------------------------------------------------------------+
+(1de4.21a0): Unknown exception - code 000006ba (first chance)
+(1de4.31a8): Access violation - code c0000005 (first chance)
+First chance exceptions are reported before any exception handling.
+This exception may be expected and handled.
+*** WARNING: Unable to verify checksum for C:\Users\bosyl\Documents\Github\roc-signals\.test-out\gui\activity-monitor.exe
+activity_monitor+0x6037ab:
+00007ff6`b80d37ab 450fb688f8000000 movzx   r9d,byte ptr [r8+0F8h] ds:000001cb`ce28eef8=??
+0:000> sxe av; g; .ecxr; r; k 40; .logclose; q
+sxe av; g; .ecxr; r; k 40; .logclose; q
+(1de4.31a8): Access violation - code c0000005 (!!! second chance !!!)
+Unable to get exception context, HRESULT 0x8000FFFF
+rax=00007ff6b8c88000 rbx=00007ff6b8d5a558 rcx=00000062e53ff068
+rdx=00007ff6b8d5a558 rsi=00000062e53ff100 rdi=00007ff6b8dfc9f0
+rip=00007ff6b80d37ab rsp=00000062e53fef30 rbp=00000062e53fef90
+ r8=000001cbce28ee00  r9=ff0a0062e53fef90 r10=0000000000000000
+r11=0000000000000246 r12=00000062e53ff068 r13=000001cbce190000
+r14=000001cbce28ee00 r15=0000000a00000052
+iopl=0         nv up ei ng nz na po nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00010284
+activity_monitor+0x6037ab:
+00007ff6`b80d37ab 450fb688f8000000 movzx   r9d,byte ptr [r8+0F8h] ds:000001cb`ce28eef8=??
+ # Child-SP          RetAddr               Call Site
+00 00000062`e53fef30 00007ff6`b81b5dc3     activity_monitor+0x6037ab
+01 00000062`e53fefa0 00007ff6`b81b5a66     activity_monitor+0x6e5dc3
+02 00000062`e53ff0d0 00007ff6`b8260813     activity_monitor+0x6e5a66
+03 00000062`e53ff1a0 00007ff6`b8040d32     activity_monitor+0x790813
+04 00000062`e53ff230 00007ff6`b835040f     activity_monitor+0x570d32
+05 00000062`e53ff320 00007ff6`b82cd995     activity_monitor+0x88040f
+06 00000062`e53ff3c0 00007ff6`b82640e0     activity_monitor+0x7fd995
+07 00000062`e53ff430 00007ff6`b833383e     activity_monitor+0x7940e0
+08 00000062`e53ff4d0 00007ff6`b825c5bf     activity_monitor+0x86383e
+09 00000062`e53ff550 00007ff6`b839ad4c     activity_monitor+0x78c5bf
+0a 00000062`e53ff600 00007ff9`f59c52c6     activity_monitor+0x8cad4c
+0b 00000062`e53ff730 00007ff9`f59c5d9d     user32!UserCallWinProcCheckWow+0x356
+0c 00000062`e53ff890 00007ff6`b83a9148     user32!DispatchMessageWorker+0x1dd
+0d 00000062`e53ff910 00007ff6`b8347f67     activity_monitor+0x8d9148
+0e 00000062`e53ffa10 00007ff6`b804a625     activity_monitor+0x877f67
+0f 00000062`e53ffa70 00007ff6`b7ad138d     activity_monitor+0x57a625
+10 00000062`e53ffbe0 00007ff6`b7ad13fc     activity_monitor+0x138d
+11 00000062`e53ffc40 00007ff9`f450cd87     activity_monitor+0x13fc
+12 00000062`e53ffc70 00007ff9`f662caec     KERNEL32!BaseThreadInitThunk+0x17
+13 00000062`e53ffca0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+Closing open log file C:\Users\bosyl\AppData\Local\Temp\claude\C--Users-bosyl-Documents-Github-roc-signals\06e7e2f0-309b-4a50-85a9-77b87af28255\scratchpad\dbg_activity_close.txt

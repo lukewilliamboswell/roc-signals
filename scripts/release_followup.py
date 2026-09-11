@@ -16,7 +16,7 @@ import time
 import release
 
 REPO = release.REPOSITORY
-CHECKS = {"Published examples", "Platform source", "Release archive"}
+CHECKS = {"Platform source"}
 
 
 def api(path, payload=None, method=None, missing=False):

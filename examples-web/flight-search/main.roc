@@ -697,7 +697,7 @@ search = |h| {
 									Html.option("MEL", "MEL — Melbourne"),
 									Html.option("BNE", "BNE — Brisbane"),
 								],
-								h.origin.on_str(|_, value| value),
+								h.origin.update_str(|_, value| value),
 							),
 							filter_field(
 								"To",
@@ -707,7 +707,7 @@ search = |h| {
 									Html.option("PER", "PER — Perth"),
 									Html.option("MEL", "MEL — Melbourne"),
 								],
-								h.destination.on_str(|_, value| value),
+								h.destination.update_str(|_, value| value),
 							),
 							filter_field(
 								"Departure date",
@@ -717,7 +717,7 @@ search = |h| {
 									Html.option("2026-09-02", "Wed 2 Sep"),
 									Html.option("2026-09-03", "Thu 3 Sep"),
 								],
-								h.depart_date.on_str(|_, value| value),
+								h.depart_date.update_str(|_, value| value),
 							),
 							filter_field(
 								"Max stops",
@@ -727,7 +727,7 @@ search = |h| {
 									Html.option("0", "Nonstop"),
 									Html.option("1", "1 stop"),
 								],
-								h.max_stops.on_str(|_, value| value),
+								h.max_stops.update_str(|_, value| value),
 							),
 							filter_field(
 								"Max price",
@@ -738,7 +738,7 @@ search = |h| {
 									Html.option("300", "$300"),
 									Html.option("400", "$400"),
 								],
-								h.max_price.on_str(|_, value| value),
+								h.max_price.update_str(|_, value| value),
 							),
 							filter_field(
 								"Airline",
@@ -749,7 +749,7 @@ search = |h| {
 									Html.option("Virgin Australia", "Virgin Australia"),
 									Html.option("Jetstar", "Jetstar"),
 								],
-								h.airline.on_str(|_, value| value),
+								h.airline.update_str(|_, value| value),
 							),
 							# Sorting sits beside the filters because that is where a
 							# traveller looks for it, but it is its own region: nothing
@@ -768,7 +768,7 @@ search = |h| {
 											Html.option("duration", "Duration"),
 											Html.option("departure", "Departure time"),
 										],
-										h.sort_by.on_str(|_, value| value),
+										h.sort_by.update_str(|_, value| value),
 									),
 									Html.paragraph_s_attrs(
 										sort_key.map(sort_text),

@@ -18,8 +18,11 @@ import pf.Ui
 asset_entries : List(Files.AssetEntry)
 asset_entries = Manifest.entries(manifest_json)
 
-## A missing avatar file renders the host's neutral placeholder box; an
-## assignee without a generated avatar simply shows no picture.
+## An avatar file the host cannot resolve or decode renders the host's neutral
+## placeholder box; an assignee without a generated avatar simply shows no
+## picture. Nothing here consults asset verification: a file that is still a
+## valid image renders whatever it now contains, whether or not its bytes match
+## the manifest digest.
 avatar : Str, U32 -> Elem
 avatar = |assignee, size| match Board.avatar_source(assignee) {
 	Some(source) => Elem.image({
@@ -39,7 +42,21 @@ asset_status_text = |status| match status {
 	Files.AssetStatus.Mismatch => "altered"
 }
 
-## All-ok verification reports render as an empty (invisible) status line.
+## The status line starts with this while the startup check is still running.
+## It is never empty at mount on purpose: a status column that is laid out with
+## no area keeps that area when its text arrives, so a warning written into an
+## initially empty line is in the semantic tree but never visible to a person.
+asset_checking : Str
+asset_checking = "Checking assets…"
+
+## Verification is advisory. It reports the integrity of the shipped files at
+## startup and decides nothing about what a card draws: the host resolves and
+## decodes each avatar independently, so an altered file that is still a valid
+## image keeps rendering its new contents, and only a file the host cannot
+## resolve or decode becomes a placeholder box. The check also runs once, so a
+## file restored afterwards is reported by the next run, not by this line.
+##
+## An all-ok report empties the status line, collapsing it out of the layout.
 asset_problem_text : List(Files.AssetCheck) -> Str
 asset_problem_text = |report| {
 	bad = report.keep_if(|check| check.status != Files.AssetStatus.Ok)
@@ -47,14 +64,64 @@ asset_problem_text = |report| {
 		""
 	} else {
 		names = bad.map(|check| "${check.name} (${asset_status_text(check.status)})")
-		"Problem assets: ${Str.join_with(names, ", ")}. Cards show placeholder boxes until the assets are restored."
+		"Problem assets: ${Str.join_with(names, ", ")}. Startup check only: avatars the host cannot load show placeholder boxes. Restart to re-check after restoring them."
+	}
+}
+
+## An advisory report names every problem file and says nothing once every
+## asset verifies, including on the run after a restored file is verified.
+expect {
+	problems = asset_problem_text([
+		{ name: "avatars/maya.png", status: Files.AssetStatus.Ok },
+		{ name: "avatars/jon.png", status: Files.AssetStatus.Missing },
+		{ name: "avatars/sam.png", status: Files.AssetStatus.Mismatch },
+	])
+	restored = asset_problem_text([
+		{ name: "avatars/maya.png", status: Files.AssetStatus.Ok },
+		{ name: "avatars/jon.png", status: Files.AssetStatus.Ok },
+		{ name: "avatars/sam.png", status: Files.AssetStatus.Ok },
+	])
+	{ problems, restored } == {
+		problems: "Problem assets: avatars/jon.png (missing), avatars/sam.png (altered). Startup check only: avatars the host cannot load show placeholder boxes. Restart to re-check after restoring them.",
+		restored: "",
 	}
 }
 
 ## The detail panel owns its current editing value independently of card scopes.
 ## Each edit writes this value and its column row atomically, so filtering a
 ## card away or moving it between columns cannot discard an unfinished edit.
-Editor : { column : Board.Column, task : Board.Task }
+##
+## `lifetime` names which document/task the native inputs belong to. It is an
+## explicitly allocated number, never derived from the task's text or from a
+## key smuggled into a label, and it changes exactly when the thing being
+## edited changes. Editing the selected task, moving it, or filtering the board
+## keeps it, so ordinary input echo keeps its native selection and undo history.
+Editor : { lifetime : U64, column : Board.Column, task : Board.Task }
+
+## Allocate the lifetime that replaces this one. It only has to differ from the
+## lifetime it succeeds, so exhaustion wraps instead of refusing to edit.
+next_lifetime : Editor -> U64
+next_lifetime = |editor| if editor.lifetime == 18446744073709551615 {
+	0
+} else {
+	editor.lifetime + 1
+}
+
+## Retire the current editor. Nothing is being edited, so the detail panel is
+## gone and its inactive payload must not be retained by later snapshots.
+retired_editor : Editor -> Editor
+retired_editor = |editor| { lifetime: next_lifetime(editor), column: Planned, task: Board.new_task(0, "") }
+
+## Select a task. Re-selecting the task already open keeps its native editors,
+## because that is the same document under the same lifetime; every other
+## selection retires the previous editors along with their history.
+select_editor : { current : Editor, editing : Bool, column : Board.Column, task : Board.Task } -> Editor
+select_editor = |{ current, editing, column, task }|
+	if editing and task.key == current.task.key {
+		{ ..current, column, task }
+	} else {
+		{ lifetime: next_lifetime(current), column, task }
+	}
 
 ## Builds one text control from its label, controlled value, disabled signal, and reducer.
 TextField : Str, Signal.Signal(Str), Signal.Signal(Bool), Event.Handler -> Elem
@@ -130,7 +197,11 @@ column_rows = |snapshot, column|
 		Complete => snapshot.complete
 	}
 
-find_task : BoardSnapshot, Str -> Try(Editor, [MissingTask])
+## Where a task currently lives. This is a lookup result, not an editor: it
+## carries no lifetime, because finding a task is not selecting one.
+Located : { column : Board.Column, task : Board.Task }
+
+find_task : BoardSnapshot, Str -> Try(Located, [MissingTask])
 find_task = |snapshot, key|
 	match Rows.get_key(snapshot.planned, key) {
 		Ok(task) => Ok({ column: Planned, task })
@@ -178,7 +249,9 @@ move_task = |handles, context, key, destination_column, before| {
 				moved = Rows.apply(column_rows(current, destination_column), [insertion]) ?? crash "Task keys must be unique across columns"
 				writes = [source.set(remaining), destination.set(moved)]
 				if current.editor.task.key == key {
-					remember(handles, context, writes.append(handles.editor.set({ column: destination_column, task: found.task })))
+					# A transfer moves the task the user is already editing, so its
+					# native inputs keep their lifetime, selection, and history.
+					remember(handles, context, writes.append(handles.editor.set({ ..current.editor, column: destination_column, task: found.task })))
 				} else {
 					remember(handles, context, writes)
 				}
@@ -200,6 +273,13 @@ visible_rows = |rows, query|
 	} else {
 		Rows.replace_all(rows, Rows.to_list(rows).keep_if(|task| Board.matches(task, query))) ?? crash "Filtering cannot introduce duplicate task keys"
 	}
+
+## Column summaries read as prose, so one task is "1 task".
+task_count_text : U64 -> Str
+task_count_text = |count| if count == 1 { "1 task" } else { "${count.to_str()} tasks" }
+
+expect task_count_text(1) == "1 task"
+expect task_count_text(0) == "0 tasks" and task_count_text(12) == "12 tasks"
 
 task_card : Ui.Row(Board.Task), Board.Column, Handles, Signal.Signal(Str) -> Elem
 task_card = |row, column, handles, selected| {
@@ -264,13 +344,19 @@ task_card = |row, column, handles, selected| {
 								caption: Signal.const("Edit"),
 								test_id: "edit-${key}",
 							},
+							# Reads the one shared context signal rather than a per-card
+							# combination of it, so selecting a task stays proportional to
+							# the change and not to the number of cards on the board.
 							Action.run(
-								row.signal(),
-								|task| Action.update([
-									handles.editor.set({ column, task }),
-									handles.editing.set(True),
-									handles.confirm_delete.set(False),
-								]),
+								handles.context,
+								|context| match find_task(context.board, key) {
+									Err(_) => Action.none
+									Ok(found) => Action.update([
+										handles.editor.set(select_editor({ current: context.board.editor, editing: context.board.editing, column: found.column, task: found.task })),
+										handles.editing.set(True),
+										handles.confirm_delete.set(False),
+									])
+								},
 							),
 						),
 					],
@@ -289,7 +375,9 @@ column_view = |handles, column, selected| {
 			disabled: handles.edit_disabled,
 			test_id: "column-${column.to_str()}",
 			on_drop: drop_message(handles, column, End),
-			grow: True,
+			width: 256.Px,
+			height: Fill,
+			overflow_y: Scroll,
 			gap: 12,
 			padding: 12,
 			radius: 10,
@@ -299,7 +387,7 @@ column_view = |handles, column, selected| {
 			Elem.heading(column.to_str()),
 			Elem.col(
 				{ font_size: 13, fg: Rgb(0xA9BFCC) },
-				[Elem.text_s(rows.map(|items| "${Rows.len(items).to_str()} tasks"))],
+				[Elem.text_s(rows.map(|items| task_count_text(Rows.len(items))))],
 			),
 			Ui.each(visible, |row| task_card(row, column, handles, selected)),
 			# Trailing so the hidden branch's empty text costs no gap slot
@@ -318,9 +406,8 @@ column_view = |handles, column, selected| {
 
 ## Field reducers share one atomic edit operation. The UI owns the text draft;
 ## the corresponding keyed task receives the identical value in the same turn.
-edit_field : TextField, Handles, Board.Column, Str, (Board.Task, Str -> Board.Task), (Board.Task -> Str) -> Elem
-edit_field = |field, handles, column, label, update, read| {
-	owner = column_state(handles, column)
+edit_field : TextField, Handles, Str, (Board.Task, Str -> Board.Task), (Board.Task -> Str) -> Elem
+edit_field = |field, handles, label, update, read| {
 	reads = handles.context
 	field(
 		label,
@@ -330,20 +417,22 @@ edit_field = |field, handles, column, label, update, read| {
 			reads,
 			|context, text| {
 				current = context.board
+				column = current.editor.column
 				task = update(current.editor.task, text)
 				if task == current.editor.task {
 					return Action.none
 				}
 				rows = Rows.apply(column_rows(current, column), [SetKey({ key: task.key, item: task })]) ?? crash "The active editor must name a live task"
-				remember(handles, context, [owner.set(rows), handles.editor.set({ column, task }), handles.bytes.set(current.bytes - task_bytes(current.editor.task) + task_bytes(task))])
+				# An edit is not a replacement: the lifetime is carried through so
+				# the native input keeps the caret and history it just used.
+				remember(handles, context, [column_state(handles, column).set(rows), handles.editor.set({ ..current.editor, task }), handles.bytes.set(current.bytes - task_bytes(current.editor.task) + task_bytes(task))])
 			},
 		),
 	)
 }
 
-priority_button : Handles, Board.Column, Signal.Signal(Str), Board.Priority -> Elem
-priority_button = |handles, column, priority_key, priority| {
-	owner = column_state(handles, column)
+priority_button : Handles, Signal.Signal(Str), Board.Priority -> Elem
+priority_button = |handles, priority_key, priority| {
 	reads = handles.context
 	Elem.action_button(
 		{
@@ -356,12 +445,13 @@ priority_button = |handles, column, priority_key, priority| {
 			reads,
 			|context| {
 				current = context.board
+				column = current.editor.column
 				task = { ..current.editor.task, priority }
 				if task == current.editor.task {
 					return Action.none
 				}
 				rows = Rows.apply(column_rows(current, column), [SetKey({ key: task.key, item: task })]) ?? crash "The active editor must name a live task"
-				remember(handles, context, [owner.set(rows), handles.editor.set({ column, task })])
+				remember(handles, context, [column_state(handles, column).set(rows), handles.editor.set({ ..current.editor, task })])
 			},
 		),
 	)
@@ -394,9 +484,8 @@ reorder_buttons = |handles, column|
 		],
 	)
 
-delete_confirmation : Handles, Board.Column -> Elem
-delete_confirmation = |handles, column| {
-	owner = column_state(handles, column)
+delete_confirmation : Handles -> Elem
+delete_confirmation = |handles| {
 	reads = handles.context
 	Ui.when(
 		handles.confirm_delete.signal(),
@@ -418,8 +507,11 @@ delete_confirmation = |handles, column| {
 								reads,
 								|context| {
 									current = context.board
+									column = current.editor.column
 									remaining = Rows.apply(column_rows(current, column), [RemoveKey(current.editor.task.key)]) ?? crash "The task selected for deletion must exist"
-									remember(handles, context, [owner.set(remaining), handles.editing.set(False), handles.confirm_delete.set(False), handles.bytes.set(current.bytes - task_bytes(current.editor.task))])
+									# Retiring the editor drops the deleted task's text instead of
+									# leaving it retained, and uncharged, in every later snapshot.
+									remember(handles, context, [column_state(handles, column).set(remaining), handles.editor.set(retired_editor(current.editor)), handles.editing.set(False), handles.confirm_delete.set(False), handles.bytes.set(current.bytes - task_bytes(current.editor.task))])
 								},
 							),
 						),
@@ -437,19 +529,25 @@ detail_view = |handles|
 		{
 			test_id: "task-detail",
 			width: 320.Px,
+			height: Fill,
 			padding: 16,
 			gap: 12,
 			bg: Rgb(0x283A47),
 			radius: 8,
+			overflow_y: Scroll,
 		},
 		[
 			Elem.heading("Task details"),
 			Ui.when(
 				handles.editing.signal(),
 				|| {
+					# The native inputs belong to the selected task, so their scope is
+					# keyed by the editor's lifetime. Column-dependent structure is
+					# keyed separately: moving a task between columns rebuilds its
+					# movement controls without discarding the text being edited.
 					Ui.switch(
-						handles.editor.read(|editor| editor.column),
-						|column| Elem.col(
+						handles.editor.read(|editor| editor.lifetime),
+						|_| Elem.col(
 							Elem.ColProps.{},
 							[
 								Elem.col(
@@ -458,7 +556,7 @@ detail_view = |handles|
 								),
 								Elem.col(
 									{ gap: 4, font_size: 13, fg: Rgb(0xA9BFCC) },
-									["Task title", edit_field(|label, value, disabled, msg| Elem.text_input({ label, value, disabled, width: Fill }, msg), handles, column, "Task title", |task, title| { ..task, title }, |task| task.title)],
+									["Task title", edit_field(|label, value, disabled, msg| Elem.text_input({ label, value, disabled, width: Fill }, msg), handles, "Task title", |task, title| { ..task, title }, |task| task.title)],
 								),
 								Elem.col(
 									{ gap: 4, font_size: 13, fg: Rgb(0xA9BFCC) },
@@ -468,24 +566,32 @@ detail_view = |handles|
 											{ gap: 8 },
 											[
 												Ui.switch(handles.editor.read(|editor| editor.task.assignee), |assignee| avatar(assignee, 32)),
-												edit_field(|label, value, disabled, msg| Elem.text_input({ label, value, disabled, width: Fill, grow: True }, msg), handles, column, "Assignee", |task, assignee| { ..task, assignee }, |task| task.assignee),
+												edit_field(|label, value, disabled, msg| Elem.text_input({ label, value, disabled, width: Fill, grow: True }, msg), handles, "Assignee", |task, assignee| { ..task, assignee }, |task| task.assignee),
 											],
 										),
 									],
 								),
-								edit_field(|label, value, disabled, msg| Elem.textarea({ label, value, disabled, height: 150.Px }, msg), handles, column, "Task notes", |task, notes| { ..task, notes }, |task| task.notes),
+								edit_field(|label, value, disabled, msg| Elem.textarea({ label, value, disabled, height: 150.Px }, msg), handles, "Task notes", |task, notes| { ..task, notes }, |task| task.notes),
 								Elem.text_s(handles.editor.read(|editor| "Priority: ${editor.task.priority.to_str()}")),
 								{
 									priority_key = handles.editor.read(|editor| editor.task.priority.to_str())
-									Elem.row({ gap: 8 }, Board.priorities.map(|priority| priority_button(handles, column, priority_key, priority)))
+									Elem.row({ gap: 8 }, Board.priorities.map(|priority| priority_button(handles, priority_key, priority)))
 								},
 								Elem.col(
 									{ font_size: 13, fg: Rgb(0x93A9B6) },
 									["Changes appear on the board immediately."],
 								),
-								reorder_buttons(handles, column),
-								Elem.col(Elem.ColProps.{}, Board.columns.keep_if(|other| other != column).map(|other| move_button(handles, other))),
-								delete_confirmation(handles, column),
+								Ui.switch(
+									handles.editor.read(|editor| editor.column),
+									|column| Elem.col(
+										Elem.ColProps.{},
+										[
+											reorder_buttons(handles, column),
+											Elem.col(Elem.ColProps.{}, Board.columns.keep_if(|other| other != column).map(|other| move_button(handles, other))),
+										],
+									),
+								),
+								delete_confirmation(handles),
 							],
 						),
 					)
@@ -536,7 +642,7 @@ new_task_form = |handles| {
 								handles.planned.set(rows),
 								handles.next_id.set(current.next_id + 1),
 								handles.draft.set(""),
-								handles.editor.set({ column: Planned, task }),
+								handles.editor.set({ lifetime: next_lifetime(current.context.board.editor), column: Planned, task }),
 								handles.editing.set(True),
 								handles.confirm_delete.set(False),
 							],
@@ -588,9 +694,25 @@ board_view = |handles| {
 					padding: 24,
 					gap: 12,
 					width: Fill,
+					height: Fill,
 					shortcuts: [{ chord: chord, msg: actions.save }, { chord: { ..chord, shift: True }, msg: actions.save_as }, { chord: { ..chord, key: "o" }, msg: actions.open }, { chord: { ..chord, key: "z" }, msg: history_message(handles, False) }, { chord: { ..chord, key: "z", shift: True }, msg: history_message(handles, True) }],
 				},
 				[
+					# The window identity names the open board file and marks unsaved
+					# work, so the desktop switcher agrees with the toolbar.
+					Ui.on_change_initial(
+						handles.context.map(
+							|context| {
+								mark = if dirty(context) { "* " } else { "" }
+								name = match context.document.path {
+									None => "Untitled board"
+									Some(value) => value
+								}
+								"${mark}${name} - Launch Board"
+							},
+						),
+						Gui.set_title,
+					),
 					Elem.heading("Launch Board"),
 					Elem.col(
 						{ fg: Rgb(0xA9BFCC) },
@@ -617,10 +739,13 @@ board_view = |handles| {
 							"Undo keeps up to 50 changes within 4 MiB; older changes are retired.",
 						],
 					),
+					# The content row takes the free height; the columns scroll sideways
+					# inside it and the detail panel keeps its own width, so the detail
+					# stays reachable at the smaller supported sizes.
 					Elem.row(
-						{ gap: 20, grow: True, overflow_x: Clip, overflow_y: Clip },
+						{ gap: 20, height: Fill, grow: True, overflow_x: Clip, overflow_y: Clip },
 						[
-							Elem.row({ gap: 16, grow: True, overflow_x: Scroll }, Board.columns.map(|column| column_view(handles, column, selected))),
+							Elem.row({ gap: 16, width: Fill, height: Fill, overflow_x: Scroll }, Board.columns.map(|column| column_view(handles, column, selected))),
 							detail_view(handles),
 						],
 					),
@@ -641,7 +766,7 @@ main = || Ui.state(
 					initial_rows(Complete),
 					|complete| {
 						Ui.state(
-							{ column: Planned, task: Board.seed(Planned).first() ?? crash "The seeded board must contain a task" },
+							{ lifetime: 0, column: Planned, task: Board.seed(Planned).first() ?? crash "The seeded board must contain a task" },
 							|editor| {
 								Ui.state(
 									True,
@@ -671,7 +796,7 @@ main = || Ui.state(
 																							Ui.state(
 																								Close.KeepEditing,
 																								|close| Ui.state(
-																									"",
+																									asset_checking,
 																									|asset_problem| {
 																										editable = document.read(|doc| can_edit(doc.phase))
 																										edit_disabled = editable.map(|value| !value)
@@ -709,6 +834,17 @@ main = || Ui.state(
 task_bytes : Board.Task -> U64
 task_bytes = |task| task.key.to_utf8().len() + task.title.to_utf8().len() + task.notes.to_utf8().len() + task.assignee.to_utf8().len() + 64
 
+## `bytes` charges the column rows only, but a snapshot also retains its editor
+## task independently of those rows. History must charge every payload it
+## retains, so the rule here is deliberately conservative: the editor task is
+## always charged, whether it duplicates a live row (the ordinary editing case)
+## or is a value no row holds any more (a deletion's retired editor, or a task
+## that later edits replaced). This bounds undo and redo. Live drafts, saved
+## baselines, and a pending save's captured snapshot are separate retentions
+## outside this budget, each bounded by the 500-task and file-decoding limits.
+snapshot_bytes : BoardSnapshot -> U64
+snapshot_bytes = |item| item.bytes + task_bytes(item.editor.task)
+
 initial_bytes : () -> U64
 initial_bytes = || Board.columns.fold(0.U64, |sum, column| Board.seed(column).fold(sum, |n, task| n + task_bytes(task)))
 
@@ -720,10 +856,11 @@ trim_history = |items| {
 	var $bytes = 0.U64
 	var $kept = []
 	for item in items {
-		if $kept.len() >= 50 or item.bytes > 4194304 - $bytes {
+		charge = snapshot_bytes(item)
+		if $kept.len() >= 50 or charge > 4194304 - $bytes {
 			break
 		}
-		$bytes = $bytes + item.bytes
+		$bytes = $bytes + charge
 		$kept = $kept.append(item)
 	}
 	$kept
@@ -785,7 +922,9 @@ history_message = |handles, redo| Action.run(
 					handles.planned.set(previous.planned),
 					handles.progress.set(previous.progress),
 					handles.complete.set(previous.complete),
-					handles.editor.set(previous.editor),
+					# A restored snapshot is a different document as far as the native
+					# inputs are concerned, so it never inherits their history.
+					handles.editor.set({ ..previous.editor, lifetime: next_lifetime(context.board.editor) }),
 					handles.editing.set(previous.editing),
 					handles.bytes.set(previous.bytes),
 					handles.confirm_delete.set(False),
@@ -937,25 +1076,19 @@ load_document = |handles, file| match Codec.decode(file.text) {
 		planned = Rows.from_list(decoded.planned, |task| task.key) ?? crash "Validated board keys must be unique"
 		progress = Rows.from_list(decoded.progress, |task| task.key) ?? crash "Validated board keys must be unique"
 		complete = Rows.from_list(decoded.complete, |task| task.key) ?? crash "Validated board keys must be unique"
-		editor = match decoded.planned.first() {
-			Ok(task) => { column: Planned, task }
-			Err(_) => match decoded.progress.first() {
-				Ok(task) => { column: InProgress, task }
-				Err(_) => match decoded.complete.first() {
-					Ok(task) => { column: Complete, task }
-					Err(_) => { column: Planned, task: Board.new_task(0, "") }
-				}
-			}
-		}
+		# A replacement document selects nothing. Its tasks may even reuse the
+		# previous document's keys, so no editor may survive the replacement;
+		# retiring the detail panel disposes the native inputs outright and
+		# leaves no inactive task payload retained by later snapshots.
+		editor = { lifetime: 0, column: Planned, task: Board.new_task(0, "") }
 		bytes = decoded.planned.concat(decoded.progress).concat(decoded.complete).fold(0.U64, |sum, task| sum + task_bytes(task))
-		editing = Rows.len(planned) + Rows.len(progress) + Rows.len(complete) > 0
-		snapshot = { planned, progress, complete, editor, editing, bytes }
+		snapshot = { planned, progress, complete, editor, editing: False, bytes }
 		Action.update([
 			handles.planned.set(planned),
 			handles.progress.set(progress),
 			handles.complete.set(complete),
 			handles.editor.set(editor),
-			handles.editing.set(editing),
+			handles.editing.set(False),
 			handles.bytes.set(bytes),
 			handles.next_id.set(decoded.next),
 			handles.history.set({ past: [], future: [] }),
@@ -1026,7 +1159,7 @@ bound_history = |history, redo| {
 			history.future
 		},
 	)
-	used = primary.fold(0.U64, |sum, item| sum + item.bytes)
+	used = primary.fold(0.U64, |sum, item| sum + snapshot_bytes(item))
 	var $bytes = used
 	var $count = primary.len()
 	var $secondary = []
@@ -1037,10 +1170,11 @@ bound_history = |history, redo| {
 			history.past
 		}
 	) {
-		if $count >= 50 or item.bytes > 4194304 - $bytes {
+		charge = snapshot_bytes(item)
+		if $count >= 50 or charge > 4194304 - $bytes {
 			break
 		}
-		$bytes = $bytes + item.bytes
+		$bytes = $bytes + charge
 		$count = $count + 1
 		$secondary = $secondary.append(item)
 	}
@@ -1054,7 +1188,7 @@ bound_history = |history, redo| {
 ## History bounds count and aggregate task payload across undo and redo together.
 expect {
 	item : BoardSnapshot
-	item = { planned: initial_rows(Planned), progress: initial_rows(InProgress), complete: initial_rows(Complete), editor: { column: Planned, task: Board.new_task(1, "Example") }, editing: True, bytes: 100000 }
+	item = { planned: initial_rows(Planned), progress: initial_rows(InProgress), complete: initial_rows(Complete), editor: { lifetime: 0, column: Planned, task: Board.new_task(1, "Example") }, editing: True, bytes: 100000 }
 	bounded = bound_history({ past: List.repeat(item, 30), future: List.repeat(item, 30) }, True)
 	{ past: bounded.past.len(), future: bounded.future.len() } == { past: 30, future: 11 }
 }
@@ -1062,7 +1196,7 @@ expect {
 ## Oversized snapshots are not retained and ordinary tiny histories cap at 50.
 expect {
 	item : BoardSnapshot
-	item = { planned: initial_rows(Planned), progress: initial_rows(InProgress), complete: initial_rows(Complete), editor: { column: Planned, task: Board.new_task(1, "Example") }, editing: True, bytes: 1 }
+	item = { planned: initial_rows(Planned), progress: initial_rows(InProgress), complete: initial_rows(Complete), editor: { lifetime: 0, column: Planned, task: Board.new_task(1, "Example") }, editing: True, bytes: 1 }
 	{ small: trim_history(List.repeat(item, 70)).len(), oversized: trim_history([{ ..item, bytes: 4194305 }]).len() } == { small: 50, oversized: 0 }
 }
 
@@ -1174,4 +1308,61 @@ document_actions = |handles| {
 		},
 	)
 	{ open, save: save_message(False), save_as: save_message(True), cancel, discard_and_open }
+}
+
+## Editor lifetimes are allocated, never derived from a task's text. Exhaustion
+## wraps, because a lifetime only has to differ from the one it replaces.
+expect {
+	editor : Editor
+	editor = { lifetime: 18446744073709551615, column: Planned, task: Board.new_task(1, "Duplicate") }
+	next_lifetime(editor) == 0
+}
+
+## Two tasks whose fields are equal are still different documents; only
+## re-selecting the task already open keeps its native editors.
+expect {
+	current : Editor
+	current = { lifetime: 5, column: Planned, task: Board.new_task(1, "Duplicate") }
+	other = { ..Board.new_task(2, "Duplicate"), notes: current.task.notes, assignee: current.task.assignee }
+	reselected = select_editor({ current, editing: True, column: Planned, task: current.task })
+	equal_fields = select_editor({ current, editing: True, column: Planned, task: other })
+	moved = select_editor({ current, editing: True, column: Complete, task: current.task })
+	# Nothing was open, so even the same key opens a new editor.
+	reopened = select_editor({ current, editing: False, column: Planned, task: current.task })
+	[reselected.lifetime, equal_fields.lifetime, moved.lifetime, reopened.lifetime] == [5, 6, 5, 6]
+}
+
+## Retiring an editor releases the deleted task's payload and takes a lifetime
+## no later selection can collide with.
+expect {
+	deleted = { ..Board.new_task(9, "Deleted"), notes: "Notes that no column row holds once this task is gone." }
+	editor : Editor
+	editor = { lifetime: 3, column: InProgress, task: deleted }
+	retired = retired_editor(editor)
+	retired.lifetime == 4 and task_bytes(retired.task) < task_bytes(deleted)
+}
+
+## History charges every payload a snapshot retains independently. The editor
+## task is charged from the actual retained value, so a deletion's inactive
+## editor, or an editor holding text later edits replaced, still counts.
+expect {
+	rows = initial_rows(Complete)
+	row_payload = Rows.to_list(rows).fold(0.U64, |sum, task| sum + task_bytes(task))
+	inactive = { ..Board.new_task(9, "Deleted"), notes: Str.join_with(List.repeat("x", 2097152), "") }
+	item : BoardSnapshot
+	item = { planned: rows, progress: rows, complete: rows, editor: { lifetime: 1, column: Complete, task: inactive }, editing: False, bytes: row_payload * 3 }
+	charged = snapshot_bytes(item)
+	# Charging only `bytes` would retain two of these, over four MiB of text.
+	charged == row_payload * 3 + task_bytes(inactive) and trim_history([item, item]).len() == 1 and item.bytes < 4194304 / 2
+}
+
+## Branch retirement uses the same charge, so redo cannot retain an editor
+## payload that undo has already been charged for.
+expect {
+	rows = initial_rows(Complete)
+	big = { ..Board.new_task(9, "Draft"), notes: Str.join_with(List.repeat("y", 1048576), "") }
+	item : BoardSnapshot
+	item = { planned: rows, progress: rows, complete: rows, editor: { lifetime: 1, column: Complete, task: big }, editing: True, bytes: 0 }
+	bounded = bound_history({ past: List.repeat(item, 3), future: List.repeat(item, 3) }, True)
+	{ past: bounded.past.len(), future: bounded.future.len() } == { past: 3, future: 0 }
 }

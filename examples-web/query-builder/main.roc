@@ -196,7 +196,7 @@ render_cond = |tree, id, node| {
 							field_signal.map(|field| field.to_str()),
 							input_class,
 							field_options,
-							tree.on_str(|current, value| Query.set_field(current, id, value)),
+							tree.update_str(|current, value| Query.set_field(current, id, value)),
 						),
 					),
 					field_box(
@@ -207,7 +207,7 @@ render_cond = |tree, id, node| {
 							cond.map(|c| c.op.to_str()),
 							input_class,
 							op_options,
-							tree.on_str(|current, value| Query.set_op(current, id, value)),
+							tree.update_str(|current, value| Query.set_op(current, id, value)),
 						),
 					),
 					field_box(
@@ -221,7 +221,7 @@ render_cond = |tree, id, node| {
 								Html.attr_s("placeholder", field_signal.map(value_placeholder)),
 								Html.attr_s("inputmode", field_signal.map(value_mode)),
 							],
-							tree.on_str(|current, value| Query.set_value(current, id, value)),
+							tree.update_str(|current, value| Query.set_value(current, id, value)),
 						),
 					),
 					Html.button_attrs(
@@ -231,7 +231,7 @@ render_cond = |tree, id, node| {
 							Html.aria_label("Delete ${id}"),
 							Html.class_attr("button-ghost button-sm sm:mb-0.5"),
 						],
-						tree.on_unit(|current| Query.delete_node(current, id)),
+						tree.update(|current| Query.delete_node(current, id)),
 					),
 				],
 			),
@@ -275,7 +275,7 @@ mode_segment = |tree, id, mode, value| {
 			),
 			Html.class_attr_s(mode.map(|current| segment_class(current.is_eq(value)))),
 		],
-		tree.on_unit(|current| Query.set_mode(current, id, value)),
+		tree.update(|current| Query.set_mode(current, id, value)),
 	)
 }
 
@@ -310,7 +310,7 @@ render_group = |tree, group, node| {
 						Html.aria_label("Delete ${id}"),
 						Html.class_attr("button-ghost button-sm"),
 					],
-					tree.on_unit(|current| Query.delete_node(current, id)),
+					tree.update(|current| Query.delete_node(current, id)),
 				),
 			]
 		}
@@ -333,7 +333,7 @@ render_group = |tree, group, node| {
 								"Negate ${id}",
 								node.map(Query.group_negated),
 								"checkbox",
-								tree.on_bool(|current, value| Query.set_negated(current, id, value)),
+								tree.update_bool(|current, value| Query.set_negated(current, id, value)),
 							),
 							Html.text("NOT"),
 						],
@@ -363,7 +363,7 @@ render_group = |tree, group, node| {
 							Html.aria_label("Add group to ${id}"),
 							Html.class_attr("button button-sm"),
 						],
-						tree.on_unit(|current| Query.add_group(current, id)),
+						tree.update(|current| Query.add_group(current, id)),
 					),
 					Html.button_attrs(
 						"Add condition",
@@ -372,7 +372,7 @@ render_group = |tree, group, node| {
 							Html.aria_label("Add condition to ${id}"),
 							Html.class_attr(add_condition_class),
 						],
-						tree.on_unit(|current| Query.add_condition(current, id)),
+						tree.update(|current| Query.add_condition(current, id)),
 					),
 				],
 			),
@@ -536,7 +536,7 @@ main = || {
 																"Include archived rows",
 																archived_signal,
 																"checkbox",
-																archived.on_bool(|_current, value| value),
+																archived.update_bool(|_current, value| value),
 															),
 															Html.text("Include archived rows"),
 														],

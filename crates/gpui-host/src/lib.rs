@@ -9,6 +9,8 @@ mod http;
 mod workers;
 mod file_io;
 mod input;
+mod probe;
+mod script;
 mod scrollbars;
 mod shortcut;
 mod fonts;
@@ -66,7 +68,23 @@ impl NodeView {
 impl Render for NodeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders.set(self.renders.get() + 1);
-        let mut element = div()
+        // Bounds recording is opt-in so that an ordinary run installs no
+        // listener at all. The identities are filled in below, once the child
+        // views for this frame are known; prepaint runs after render returns.
+        let probed = probe::enabled().then(|| Rc::new(std::cell::RefCell::new(Vec::new())));
+        let mut base = div();
+        if let Some(probed) = &probed {
+            let probed: Rc<std::cell::RefCell<Vec<String>>> = probed.clone();
+            base = base.on_children_prepainted(move |bounds, window, _| {
+                probe::record_viewport(window.viewport_size());
+                let identities = probed.borrow();
+                let start = bounds.len().saturating_sub(identities.len());
+                for (identity, bounds) in identities.iter().zip(&bounds[start..]) {
+                    probe::record(identity, *bounds);
+                }
+            });
+        }
+        let mut element = base
             .id(("node", self.node.id))
             .flex()
             .flex_col()
@@ -328,6 +346,16 @@ impl Render for NodeView {
                 (child.read(cx).node.kind != ControlKind::Dialog).then(|| AnyView::from(child.clone()))
             })
             .collect::<Vec<_>>();
+        if let Some(probed) = &probed {
+            *probed.borrow_mut() = (0..self.node.child_count)
+                .filter_map(|rank| {
+                    let id = runtime.engine.child_at(parent, rank);
+                    let child = runtime.nodes.get(&id)?.read(cx);
+                    (child.node.kind != ControlKind::Dialog)
+                        .then(|| child.node.test_id.clone())
+                })
+                .collect();
+        }
         let element = element.children(children);
         if self
             .node
@@ -514,6 +542,11 @@ struct Runtime {
     engine: Engine,
     dialogs: dialog::Dialogs,
     window_lifecycle: window_lifecycle::Lifecycle,
+    /// Window identity decided by the graph but not yet handed to the platform
+    /// window. `Runtime::new` runs before a window exists and a title-only turn
+    /// touches no render slot, so the decision is carried to the next frame
+    /// rather than applied from inside the engine turn.
+    pending_title: Option<String>,
     nodes: HashMap<u64, Entity<NodeView>>,
     roots: Vec<Entity<NodeView>>,
     renders: Rc<Cell<u64>>,
@@ -548,6 +581,24 @@ impl Runtime {
         self.event(binding.event, Payload::Unit, cx);
         true
     }
+    /// Collects the window identity the engine decided in this turn. Returns
+    /// whether a redraw is owed: a title-only turn touches no render slot, so
+    /// without this the frame that applies the title would never be scheduled.
+    fn take_document_title(&mut self) -> bool {
+        let Some(title) = self.engine.changed_document_title() else {
+            return false;
+        };
+        self.pending_title = Some(title);
+        true
+    }
+    /// Hands a decided window identity to the platform window exactly once.
+    /// The engine has already pruned an unchanged title, so this never re-enters
+    /// the native windowing system for a repeated value.
+    fn apply_document_title(&mut self, window: &mut Window) {
+        if let Some(title) = self.pending_title.take() {
+            window.set_window_title(&title);
+        }
+    }
     fn new(clock: bool, cx: &mut Context<Self>) -> Self {
         let engine = Engine::open();
         let initial = engine.changes();
@@ -559,6 +610,7 @@ impl Runtime {
             engine,
             dialogs: crate::dialog::Dialogs::default(),
             window_lifecycle: crate::window_lifecycle::Lifecycle::default(),
+            pending_title: None,
             nodes: HashMap::new(),
             roots: vec![],
             renders: Rc::new(Cell::new(0)),
@@ -751,6 +803,7 @@ impl Runtime {
                         input.set_placeholder(&node.placeholder, cx);
                         input.set_style_foreground(editor_style_foreground(node.style), cx);
                         input.set_disabled(node.disabled, cx);
+                        input.set_read_only(node.read_only, cx);
                         input.set_fill_height(
                             node.kind == ControlKind::Textarea
                                 && node.style.is_some_and(|style| style.height_kind != 0),
@@ -774,7 +827,8 @@ impl Runtime {
             }
         }
         self.sync_window_lifecycle(&changes, cx);
-        if self.sync_dialogs(&changes, cx) || roots_changed {
+        let title_changed = self.take_document_title();
+        if self.sync_dialogs(&changes, cx) || roots_changed || title_changed {
             cx.notify();
         }
     }
@@ -816,6 +870,7 @@ impl Render for Runtime {
                 cx.stop_propagation();
             }));
         }
+        self.apply_document_title(window);
         self.prepare_window_lifecycle(window, cx);
         self.prepare_dialog_focus(window, cx);
         let mut root = div()
@@ -856,8 +911,19 @@ impl Render for Runtime {
             ));
         for dialog in &self.dialogs.active {
             let id = dialog.id;
+            let probed = probe::enabled()
+                .then(|| self.nodes[&id].read(cx).node.test_id.clone())
+                .filter(|test_id| !test_id.is_empty());
             root = root.child(
                 div()
+                    .when_some(probed, |element, test_id| {
+                        element.on_children_prepainted(move |bounds, window, _| {
+                            probe::record_viewport(window.viewport_size());
+                            if let Some(bounds) = bounds.last() {
+                                probe::record(&test_id, *bounds);
+                            }
+                        })
+                    })
                     .id(("dialog-layer", id))
                     .absolute()
                     .inset_0()
@@ -875,11 +941,163 @@ impl Render for Runtime {
                             }
                         },
                     ))
-                    .child(self.nodes[&id].clone()),
+                    .p_4()
+                    // A dialog declares the width its content wants, but the
+                    // window it opens in can be as small as 360x240. Bounding
+                    // it here keeps every dialog — the platform default and
+                    // any style an application supplies — inside the viewport
+                    // it is centred in, instead of laying its heading and its
+                    // safe action out past the edges where nothing can reach
+                    // them. The application still owns the dialog's colours,
+                    // padding and intrinsic size.
+                    .child(
+                        div()
+                            .max_w_full()
+                            .max_h_full()
+                            .overflow_hidden()
+                            .child(self.nodes[&id].clone()),
+                    ),
             );
         }
         self.window_frame(root, window.window_decorations(), window, cx)
     }
+}
+
+/// Reads a `WIDTHxHEIGHT` content size for the review and regression captures.
+///
+/// Screenshot evidence has to be reproducible at each supported window size, so
+/// the capture harness asks for the size instead of resizing the window through
+/// a desktop automation API that is unavailable on some supported systems. The
+/// value is rejected rather than clamped: a size below the window minimum would
+/// silently produce a capture that does not match the size it claims to show.
+fn parse_window_size(value: &str) -> Option<(f32, f32)> {
+    let (width, height) = value.split_once(['x', 'X'])?;
+    let width: f32 = width.trim().parse().ok()?;
+    let height: f32 = height.trim().parse().ok()?;
+    (width >= 360. && height >= 240. && width.is_finite() && height.is_finite())
+        .then_some((width, height))
+}
+
+/// Every command-line option this launcher owns or intercepts.
+///
+/// Host controls live in the reserved `--host-` namespace so an application can
+/// use the plain argument namespace without a host quietly capturing one of its
+/// flags (roc-signals#55).
+#[derive(Debug, Default, PartialEq)]
+struct HostArgs {
+    run_spec_json: bool,
+    assets_root: Option<String>,
+    trace_engine: bool,
+    smoke: bool,
+    smoke_timers: bool,
+    click: Option<String>,
+    drop_request: Option<(String, String)>,
+    expected: Option<String>,
+    scenario: Option<String>,
+    scenario_report: Option<String>,
+    scenario_hold: bool,
+    window_size: Option<(f32, f32)>,
+}
+
+/// The host spellings that existed before the `--host-` namespace was reserved.
+///
+/// They are rejected by name rather than ignored: falling through to the
+/// application would silently turn a stale command into a run with the control
+/// switched off, so a smoke or capture harness would report a passing run that
+/// never exercised what it named.
+const RENAMED_HOST_FLAGS: &[(&str, &str)] = &[
+    ("--run-spec-json", "--host-run-spec-json"),
+    ("--assets-root", "--host-assets-root"),
+    ("--smoke", "--host-smoke"),
+    ("--smoke-timers", "--host-smoke-timers"),
+    ("--smoke-click", "--host-smoke-click"),
+    ("--smoke-drop", "--host-smoke-drop"),
+    ("--smoke-expect", "--host-smoke-expect"),
+    ("--script", "--host-scenario"),
+    ("--script-report", "--host-scenario-report"),
+    ("--script-hold", "--host-scenario-hold"),
+    ("--window-size", "--host-window-size"),
+    // The line-per-step scripts became (scenario ...) specs, parsed by the
+    // engine; their choosers are answered from the header, not a flag.
+    ("--host-script", "--host-scenario"),
+    ("--host-script-report", "--host-scenario-report"),
+    ("--host-script-hold", "--host-scenario-hold"),
+    ("--host-choose", ":choose in the scenario header"),
+];
+
+/// Reads the host options out of a command line, left to right.
+///
+/// The scan consumes each option's values as values. A single pass is what makes
+/// `--host-smoke-click --host-verbose` name a click target called
+/// `--host-verbose` rather than also switching a second control on: an
+/// independent search per flag cannot tell an option from the argument that
+/// follows one.
+fn parse_host_args(args: &[String]) -> Result<HostArgs, String> {
+    fn value<'a>(
+        args: &'a [String],
+        index: &mut usize,
+        flag: &str,
+        count: usize,
+    ) -> Result<&'a str, String> {
+        *index += 1;
+        args.get(*index).map(String::as_str).ok_or_else(|| {
+            if count == 1 {
+                format!("Error: {flag} requires a value")
+            } else {
+                format!("Error: {flag} requires {count} values")
+            }
+        })
+    }
+
+    let mut parsed = HostArgs::default();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].clone();
+        match arg.as_str() {
+            "--host-run-spec-json" => parsed.run_spec_json = true,
+            "--host-trace-engine" => parsed.trace_engine = true,
+            "--host-smoke" => parsed.smoke = true,
+            "--host-smoke-timers" => parsed.smoke_timers = true,
+            "--host-scenario-hold" => parsed.scenario_hold = true,
+            "--host-assets-root" => {
+                parsed.assets_root = Some(value(args, &mut i, &arg, 1)?.to_string());
+            }
+            "--host-smoke-click" => {
+                parsed.click = Some(value(args, &mut i, &arg, 1)?.to_string());
+            }
+            "--host-smoke-expect" => {
+                parsed.expected = Some(value(args, &mut i, &arg, 1)?.to_string());
+            }
+            "--host-scenario" => {
+                parsed.scenario = Some(value(args, &mut i, &arg, 1)?.to_string());
+            }
+            "--host-scenario-report" => {
+                parsed.scenario_report = Some(value(args, &mut i, &arg, 1)?.to_string());
+            }
+            "--host-smoke-drop" => {
+                let source = value(args, &mut i, &arg, 2)?.to_string();
+                let target = value(args, &mut i, &arg, 2)?.to_string();
+                parsed.drop_request = Some((source, target));
+            }
+            "--host-window-size" => {
+                let raw = value(args, &mut i, &arg, 1)?.to_string();
+                parsed.window_size = Some(parse_window_size(&raw).ok_or_else(|| {
+                    format!("Error: {arg} expects WIDTHxHEIGHT in pixels, got {raw:?}")
+                })?);
+            }
+            other => {
+                if let Some((old, new)) = RENAMED_HOST_FLAGS
+                    .iter()
+                    .find(|(old, _)| *old == other)
+                    .copied()
+                {
+                    return Err(format!("Error: {old} is now {new}"));
+                }
+            }
+        }
+        i += 1;
+    }
+    Ok(parsed)
 }
 
 fn tab_direction(key: &Keystroke) -> Option<bool> {
@@ -895,38 +1113,280 @@ unsafe extern "C" {
     fn signals_spec_main(argc: i32, argv: *const *const i8) -> i32;
 }
 
+/// Snapshots every rendered control the scripted checks can name.
+///
+/// Iteration is ordered by engine node id so that two runs of the same script
+/// produce byte-identical evidence: a report that reshuffles itself between runs
+/// cannot be diffed, which is most of what makes it useful after a failure.
+#[cfg(not(test))]
+fn control_frame(runtime: &Runtime, window: &mut Window, cx: &App) -> Vec<script::Control> {
+    let mut ids: Vec<u64> = runtime.nodes.keys().copied().collect();
+    ids.sort_unstable();
+    ids.iter()
+        .map(|id| {
+            let view = runtime.nodes[id].read(cx);
+            let node = &view.node;
+            let child_text = (0..node.child_count)
+                .filter_map(|rank| {
+                    let child = runtime.engine.child_at(node.id, rank);
+                    runtime.nodes.get(&child).map(|c| c.read(cx).node.text.clone())
+                })
+                .filter(|text| !text.is_empty())
+                .collect();
+            script::Control {
+                id: node.id,
+                test_id: node.test_id.clone(),
+                kind: format!("{:?}", node.kind),
+                text: node.text.clone(),
+                label: node.label.clone(),
+                value: match &view.input {
+                    Some(input) => input.read(cx).draft().to_string(),
+                    None => node.value.clone(),
+                },
+                child_text,
+                disabled: node.disabled,
+                selected: node.selected,
+                focused: view
+                    .focus_target(cx)
+                    .is_some_and(|focus| focus.contains_focused(window, cx)),
+                activatable: node.kind == ControlKind::Button
+                    || node.role == Role::Checkbox
+                    || node.click != 0,
+                history: view.input.as_ref().map(|input| input.read(cx).undo_depth()),
+            }
+        })
+        .collect()
+}
+
+/// The keystroke a single typed character produces.
+///
+/// Typing goes through GPUI's real key dispatch rather than the editor's
+/// value setter, because the behaviour under test — grouping, selection, and
+/// which document owns the resulting undo entry — only exists on that path.
+#[cfg(not(test))]
+fn typed_keystroke(character: char) -> Keystroke {
+    let key = match character {
+        ' ' => "space".to_string(),
+        other => other.to_lowercase().to_string(),
+    };
+    Keystroke {
+        modifiers: Modifiers {
+            shift: character.is_uppercase(),
+            ..Modifiers::default()
+        },
+        key,
+        key_char: Some(character.to_string()),
+    }
+}
+
+/// Runs one script step against the live window.
+///
+/// Every action resolves its control from the frame that was just observed, so
+/// an action and the assertion after it describe the same application state.
+/// Refusals are returned rather than panicked: a script that clicks a control
+/// the engine has disabled should report that, not abort the process without
+/// writing its evidence.
+#[cfg(not(test))]
+#[derive(Default)]
+struct Deferred {
+    /// A control to focus before any keystrokes are dispatched.
+    focus: Option<FocusHandle>,
+    /// Keystrokes to dispatch once the runtime lease has been released.
+    keystrokes: Vec<Keystroke>,
+    /// Evidence the step produced.
+    snapshot: Option<(String, String)>,
+    /// Whether the application allowed the window to close; a document that
+    /// asked first keeps the window, and its dialog, open.
+    close: bool,
+}
+
+#[cfg(not(test))]
+fn perform(
+    runtime: &mut Runtime,
+    window: &mut Window,
+    cx: &mut Context<Runtime>,
+    action: &script::Action,
+) -> Result<Deferred, String> {
+    let frame = control_frame(runtime, window, cx);
+    match action {
+        script::Action::Wait(_) => Ok(Deferred::default()),
+        script::Action::Snapshot(name) => Ok(Deferred {
+            snapshot: Some((name.clone(), script::frame_json(&frame))),
+            ..Deferred::default()
+        }),
+        script::Action::Click(locator) => {
+            let control = script::resolve_activatable(&frame, locator)?;
+            let view = runtime
+                .nodes
+                .get(&control.id)
+                .ok_or("the control disappeared before it could be clicked")?;
+            let view_id = view.entity_id();
+            let node = view.read(cx).node.clone();
+            let binding = if node.role == Role::Checkbox {
+                node.check
+            } else {
+                node.click
+            };
+            runtime
+                .activate_if_live(node.id, view_id, node.lifetime, binding, cx)
+                .then(Deferred::default)
+                .ok_or_else(|| {
+                    format!(
+                        "the host refused to activate {}; it is disabled, retired, \
+                         or covered by a modal dialog",
+                        locator.describe()
+                    )
+                })
+        }
+        script::Action::Focus(locator) => {
+            let control = script::resolve_preferring(&frame, locator, |control| {
+                control.activatable || control.history.is_some()
+            })?;
+            let view = runtime
+                .nodes
+                .get(&control.id)
+                .ok_or("the control disappeared before it could be focused")?;
+            let focus = view
+                .read(cx)
+                .focus_target(cx)
+                .ok_or_else(|| format!("{} cannot take focus", locator.describe()))?;
+            Ok(Deferred {
+                focus: Some(focus),
+                ..Deferred::default()
+            })
+        }
+        script::Action::Type(locator, text) => {
+            let control =
+                script::resolve_preferring(&frame, locator, |control| control.history.is_some())?;
+            let view = runtime
+                .nodes
+                .get(&control.id)
+                .ok_or("the editor disappeared before it could be typed into")?;
+            let input = view
+                .read(cx)
+                .input
+                .clone()
+                .ok_or_else(|| format!("{} is not an editor", locator.describe()))?;
+            Ok(Deferred {
+                focus: Some(input.focus_handle(cx)),
+                keystrokes: text.chars().map(typed_keystroke).collect(),
+                ..Deferred::default()
+            })
+        }
+        script::Action::Close => Ok(Deferred {
+            // The same admission the frame's own close button uses: an
+            // application with unsaved work may answer with a dialog instead.
+            close: runtime.native_close_requested(cx),
+            ..Deferred::default()
+        }),
+        script::Action::Key(keystroke) => {
+            let parsed = Keystroke::parse(keystroke)
+                .map_err(|error| format!("{keystroke:?} is not a keystroke: {error:?}"))?;
+            Ok(Deferred {
+                keystrokes: vec![parsed],
+                ..Deferred::default()
+            })
+        }
+        assertion => script::check(&frame, assertion).map(|()| Deferred::default()),
+    }
+}
+
 /// Starts the GUI, or runs the shared native semantic-spec host without a display.
 /// The process entry owns the runtime until all windows have closed.
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|arg| arg == "--run-spec-json") {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let host = match parse_host_args(&args) {
+        Ok(host) => host,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    if host.run_spec_json {
         return unsafe { signals_spec_main(argc, argv) };
     }
-    let assets_root = args
-        .windows(2)
-        .find(|pair| pair[0] == "--assets-root")
-        .map(|pair| std::path::PathBuf::from(&pair[1]))
-        .or_else(|| std::env::var_os("ROC_SIGNALS_ASSETS_ROOT").map(std::path::PathBuf::from));
+    // A scenario is parsed by the engine's spec parser before the window
+    // exists, so a malformed file is refused with its reason rather than
+    // after a window has opened. Its header names what a run needs relative to
+    // the example directory — the parent of the `specs/` directory it lives in.
+    let scenario = host.scenario.as_ref().map(|path| {
+        let path = std::path::PathBuf::from(path);
+        let scenario = bridge::load_scenario(&path.to_string_lossy()).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        });
+        let steps = script::steps(&scenario).unwrap_or_else(|error| {
+            eprintln!("Error: {}: {error}", path.display());
+            std::process::exit(1);
+        });
+        let example = path
+            .parent()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        probe::enable();
+        (path, example, scenario, steps)
+    });
+    let assets_root = host
+        .assets_root
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("ROC_SIGNALS_ASSETS_ROOT").map(std::path::PathBuf::from))
+        .or_else(|| {
+            // A scenario runs against its example's own assets unless its
+            // header prepared another root; the root must exist, because a
+            // scenario about damaged assets that silently ran against nothing
+            // would prove the wrong thing.
+            let (_, example, scenario, _) = scenario.as_ref()?;
+            let root = example.join(scenario.assets.as_deref().unwrap_or("assets"));
+            if scenario.assets.is_some() && !root.is_dir() {
+                eprintln!("Error: :assets names no directory: {}", root.display());
+                std::process::exit(1);
+            }
+            root.is_dir().then_some(root)
+        });
     if let Some(root) = assets_root {
         assets::set_root(root);
     }
-    let trace_engine = args.iter().any(|arg| arg == "--host-trace-engine");
-    let smoke = args.iter().any(|arg| arg == "--smoke");
-    let smoke_timers = args.iter().any(|arg| arg == "--smoke-timers");
-    let click = args
-        .windows(2)
-        .find(|a| a[0] == "--smoke-click")
-        .map(|a| a[1].clone());
-    let drop_request = args
-        .windows(3)
-        .find(|a| a[0] == "--smoke-drop")
-        .map(|a| (a[1].clone(), a[2].clone()));
-    let expected = args
-        .windows(2)
-        .find(|a| a[0] == "--smoke-expect")
-        .map(|a| a[1].clone());
+    let trace_engine = host.trace_engine;
+    let smoke = host.smoke;
+    let smoke_timers = host.smoke_timers;
+    let click = host.click;
+    let drop_request = host.drop_request;
+    let expected = host.expected;
+    let script_report = host.scenario_report.map(std::path::PathBuf::from);
+    // A held window stays open after the last step so a capture harness can
+    // photograph the state the scenario left behind — including the state a
+    // failing assertion stopped at, which is the evidence worth keeping.
+    let script_hold = host.scenario_hold;
+    // Chooser answers come from the header, resolved against the example
+    // directory and required to exist: a scenario that names a fixture which
+    // is not there would otherwise open a real dialog nobody can answer.
+    let choices: Vec<std::path::PathBuf> = scenario
+        .as_ref()
+        .map(|(_, example, scenario, _)| {
+            scenario
+                .choices
+                .iter()
+                .map(|choice| {
+                    let path = example.join(choice);
+                    if !path.exists() {
+                        eprintln!("Error: :choose names nothing on disk: {}", path.display());
+                        std::process::exit(1);
+                    }
+                    path.canonicalize().unwrap_or(path)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // An explicit size wins, because a capture harness states the size it
+    // then verifies; otherwise the scenario's own header sizes the window.
+    let window_size = host
+        .window_size
+        .or_else(|| scenario.as_ref().and_then(|(_, _, scenario, _)| scenario.window))
+        .unwrap_or((1200., 820.));
+    let script = scenario.map(|(path, _, scenario, steps)| (path, scenario, steps));
     Application::new().run(move |cx| {
         input::bind_keys(cx);
         controls::bind_keys(cx);
@@ -936,7 +1396,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
             }
         })
         .detach();
-        let bounds = Bounds::centered(None, size(px(1200.), px(820.)), cx);
+        let bounds = Bounds::centered(None, size(px(window_size.0), px(window_size.1)), cx);
         let window = cx
             .open_window(
                 WindowOptions {
@@ -955,12 +1415,166 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                     cx.new(|cx| {
                         let mut runtime = Runtime::new(!smoke || smoke_timers, cx);
                         runtime.trace_engine = trace_engine;
+                        effects::answer_choosers(choices);
                         runtime
                     })
                 },
             )
             .unwrap();
         cx.activate(true);
+        if let Some((path, scenario, steps)) = script {
+            let name = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            cx.spawn(async move |cx| {
+                // The first frame, any startup task, and the initial timer tick
+                // all have to land before the opening assertions mean anything.
+                cx.background_executor()
+                    .timer(Duration::from_millis(900))
+                    .await;
+                let mut snapshots: Vec<(String, String)> = Vec::new();
+                let mut failure: Option<String> = None;
+                let mut closing = false;
+                for step in &steps {
+                    if let script::Action::Wait(milliseconds) = step.action {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(milliseconds))
+                            .await;
+                        continue;
+                    }
+                    let outcome = window
+                        .update(cx, |runtime, window, cx| {
+                            let outcome = perform(runtime, window, cx, &step.action);
+                            // Only a layout-changing step invalidates the
+                            // recording, and only for controls that have gone
+                            // away: a mounted node that did not re-render is
+                            // not prepainted again, so wiping its bounds would
+                            // read as "not laid out" on the very next line.
+                            if step.action.changes_layout() {
+                                let mounted = runtime
+                                    .nodes
+                                    .values()
+                                    .map(|view| view.read(cx).node.test_id.clone())
+                                    .filter(|id| !id.is_empty())
+                                    .collect();
+                                probe::retain_mounted(&mounted);
+                                window.refresh();
+                            }
+                            outcome
+                        })
+                        .expect("the scripted window closed early");
+                    let deferred = match outcome {
+                        Ok(deferred) => deferred,
+                        Err(error) => {
+                            failure = Some(format!("line {}: {error}", step.line));
+                            break;
+                        }
+                    };
+                    if let Some(snapshot) = deferred.snapshot {
+                        snapshots.push(snapshot);
+                    }
+                    if deferred.close {
+                        // Closing is the last step, and the runtime it would be
+                        // observed through goes with the window. Keep the frame
+                        // the window showed as it closed, then leave through the
+                        // same path a person's close does; the process exit
+                        // status is the evidence of what teardown did.
+                        closing = true;
+                        break;
+                    }
+                    // Focus changes and keystrokes reach the window without the
+                    // runtime lease held: they run the application's own
+                    // listeners, which update the runtime themselves.
+                    let handle: AnyWindowHandle = window.into();
+                    if let Some(focus) = deferred.focus {
+                        handle
+                            .update(cx, |_, window, _| focus.focus(window))
+                            .expect("the scripted window closed early");
+                    }
+                    // One keystroke per turn. The editor submits each committed
+                    // edit as its own ordered engine turn and refuses a second
+                    // before the first has been applied, exactly as a person
+                    // typing cannot outrun the frame they are typing into.
+                    for keystroke in deferred.keystrokes {
+                        handle
+                            .update(cx, |_, window, cx| {
+                                window.dispatch_keystroke(keystroke, cx)
+                            })
+                            .expect("the scripted window closed early");
+                        cx.background_executor()
+                            .timer(Duration::from_millis(20))
+                            .await;
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(150))
+                        .await;
+                }
+                let (final_frame, client_frame) = window
+                    .update(cx, |runtime, window, cx| {
+                        (
+                            script::frame_json(&control_frame(runtime, window, cx)),
+                            // The frame is drawn only when the compositor
+                            // delegated decorations and the window is not
+                            // fullscreen, exactly the test window_frame makes.
+                            !window.is_fullscreen()
+                                && matches!(window.window_decorations(), Decorations::Client { .. }),
+                        )
+                    })
+                    .expect("the scripted window closed early");
+                snapshots.push(("final".into(), final_frame));
+                let close_window = |cx: &mut gpui::AsyncApp| {
+                    let handle: AnyWindowHandle = window.into();
+                    handle
+                        .update(cx, |_, window, _| window.remove_window())
+                        .expect("the scripted window closed early");
+                };
+                if let Some(report) = &script_report {
+                    // The harness owns the artifact directory: creating it here
+                    // would add a directory-creation syscall to the macOS link
+                    // surface for a path only the harness ever uses.
+                    std::fs::write(
+                        report,
+                        script::report_json(
+                            &name,
+                            window_size,
+                            client_frame,
+                            scenario.diagnostic.as_deref(),
+                            &scenario.scopes,
+                            &snapshots,
+                            failure.as_deref(),
+                        ),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("cannot write {}: {error}", report.display())
+                    });
+                }
+                match &failure {
+                    Some(error) => eprintln!("FAIL: {name}: {error}"),
+                    None => eprintln!(
+                        "PASS: {name} completed {} scripted steps at {}x{}",
+                        steps.len(),
+                        window_size.0 as u32,
+                        window_size.1 as u32
+                    ),
+                }
+                if closing {
+                    // Removing the last window quits the application from its
+                    // own close handler; the run's exit status then reports
+                    // whatever follow-up work outlives the runtime.
+                    close_window(cx);
+                    return;
+                }
+                if script_hold {
+                    return;
+                }
+                cx.update(|cx| cx.quit()).unwrap();
+                if failure.is_some() {
+                    std::process::exit(1);
+                }
+            })
+            .detach();
+        }
         if smoke {
             cx.spawn(async move |cx| {
                 cx.background_executor().timer(Duration::from_secs(2)).await;
@@ -1091,10 +1705,122 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Engine, Node, Payload, Runtime, bridge};
+    use super::{Engine, Node, Payload, Runtime, bridge, parse_host_args, parse_window_size};
     use gpui::Focusable;
     use gpui::{AppContext, TestAppContext, point, px, size};
     use std::{cell::Cell, collections::HashMap, rc::Rc};
+
+    #[test]
+    fn window_size_accepts_supported_capture_sizes() {
+        assert_eq!(parse_window_size("1200x820"), Some((1200., 820.)));
+        assert_eq!(parse_window_size("360X240"), Some((360., 240.)));
+    }
+
+    #[test]
+    fn window_size_rejects_sizes_the_window_cannot_honour() {
+        assert_eq!(parse_window_size("359x600"), None);
+        assert_eq!(parse_window_size("800x239"), None);
+        assert_eq!(parse_window_size("800"), None);
+        assert_eq!(parse_window_size("widexhigh"), None);
+    }
+
+    fn host_args(args: &[&str]) -> Result<super::HostArgs, String> {
+        parse_host_args(&args.iter().map(|a| (*a).to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn host_flags_read_their_values() {
+        let parsed = host_args(&[
+            "--host-smoke",
+            "--host-smoke-timers",
+            "--host-smoke-click",
+            "Increment",
+            "--host-smoke-drop",
+            "task-1",
+            "column-Done",
+            "--host-smoke-expect",
+            "Count: 1",
+            "--host-assets-root",
+            "/assets",
+            "--host-scenario",
+            "s.scm",
+            "--host-scenario-report",
+            "r.json",
+            "--host-scenario-hold",
+            "--host-trace-engine",
+            "--host-window-size",
+            "800x600",
+        ])
+        .expect("a complete host command line parses");
+        assert!(
+            host_args(&["--host-choose", "/project"])
+                .unwrap_err()
+                .contains(":choose")
+        );
+        assert!(parsed.smoke && parsed.smoke_timers && parsed.scenario_hold && parsed.trace_engine);
+        assert_eq!(parsed.click.as_deref(), Some("Increment"));
+        assert_eq!(
+            parsed.drop_request,
+            Some(("task-1".into(), "column-Done".into()))
+        );
+        assert_eq!(parsed.expected.as_deref(), Some("Count: 1"));
+        assert_eq!(parsed.assets_root.as_deref(), Some("/assets"));
+        assert_eq!(parsed.scenario.as_deref(), Some("s.scm"));
+        assert_eq!(parsed.scenario_report.as_deref(), Some("r.json"));
+        assert_eq!(parsed.window_size, Some((800., 600.)));
+    }
+
+    #[test]
+    fn application_arguments_are_left_to_the_application() {
+        let parsed = host_args(&["--theme", "dark", "input.txt"])
+            .expect("arguments the host does not own pass through");
+        assert_eq!(parsed, super::HostArgs::default());
+    }
+
+    #[test]
+    fn a_value_that_looks_like_a_flag_stays_a_value() {
+        // An independent search per flag would see `--host-smoke` inside the
+        // click target and switch smoke mode on; the left-to-right scan must not.
+        let parsed = host_args(&["--host-smoke-click", "--host-smoke"])
+            .expect("a flag-shaped value is still a value");
+        assert_eq!(parsed.click.as_deref(), Some("--host-smoke"));
+        assert!(!parsed.smoke);
+
+        let parsed = host_args(&["--host-smoke-drop", "--host-script-hold", "--host-smoke"])
+            .expect("both drop values are still values");
+        assert_eq!(
+            parsed.drop_request,
+            Some(("--host-script-hold".into(), "--host-smoke".into()))
+        );
+        assert!(!parsed.scenario_hold && !parsed.smoke);
+    }
+
+    #[test]
+    fn missing_and_invalid_values_are_reported() {
+        assert_eq!(
+            host_args(&["--host-smoke-click"]).unwrap_err(),
+            "Error: --host-smoke-click requires a value"
+        );
+        assert_eq!(
+            host_args(&["--host-smoke-drop", "task-1"]).unwrap_err(),
+            "Error: --host-smoke-drop requires 2 values"
+        );
+        assert_eq!(
+            host_args(&["--host-window-size", "10x10"]).unwrap_err(),
+            "Error: --host-window-size expects WIDTHxHEIGHT in pixels, got \"10x10\""
+        );
+        assert!(host_args(&["--host-window-size"]).is_err());
+    }
+
+    #[test]
+    fn pre_rename_spellings_are_named_rather_than_ignored() {
+        for (old, new) in super::RENAMED_HOST_FLAGS {
+            assert_eq!(
+                host_args(&[old]).unwrap_err(),
+                format!("Error: {old} is now {new}")
+            );
+        }
+    }
 
     fn runtime() -> Runtime {
         Runtime {
@@ -1105,6 +1831,7 @@ mod tests {
             engine: Engine::test_boundary(),
             dialogs: crate::dialog::Dialogs::default(),
             window_lifecycle: crate::window_lifecycle::Lifecycle::default(),
+            pending_title: None,
             nodes: HashMap::new(),
             roots: vec![],
             renders: Rc::new(Cell::new(0)),
@@ -1112,6 +1839,45 @@ mod tests {
             timers: crate::timers::Manager::new(false),
             fonts: crate::fonts::Registry::default(),
         }
+    }
+
+    #[test]
+    fn document_title_reaches_the_window_once_per_decided_change() {
+        let mut runtime = runtime();
+        Engine::set_test_document_title(0, "");
+        assert!(
+            !runtime.take_document_title(),
+            "an engine that decided no title must not owe a frame"
+        );
+        assert_eq!(runtime.pending_title, None);
+
+        Engine::set_test_document_title(1, "Notes");
+        assert!(runtime.take_document_title());
+        assert_eq!(runtime.pending_title.as_deref(), Some("Notes"));
+
+        // A second turn at the same revision is the engine's equality cutoff:
+        // it must not re-enter the native windowing system, and it must not
+        // discard a decision the window has not applied yet.
+        assert!(!runtime.take_document_title());
+        assert_eq!(runtime.pending_title.as_deref(), Some("Notes"));
+
+        Engine::set_test_document_title(2, "* Notes");
+        assert!(runtime.take_document_title());
+        assert_eq!(runtime.pending_title.as_deref(), Some("* Notes"));
+    }
+
+    #[test]
+    fn a_remounted_engine_reapplies_its_window_identity() {
+        // Close/reopen builds a fresh Engine whose applied revision starts at
+        // zero, so the identity of the reopened window is decided again rather
+        // than inherited from the process's previous window.
+        Engine::set_test_document_title(3, "Task Board");
+        let mut first = runtime();
+        assert!(first.take_document_title());
+        assert_eq!(first.pending_title.as_deref(), Some("Task Board"));
+        let mut second = runtime();
+        assert!(second.take_document_title());
+        assert_eq!(second.pending_title.as_deref(), Some("Task Board"));
     }
 
     fn node(id: u64, tag: &str, children: &[u64]) -> Node {

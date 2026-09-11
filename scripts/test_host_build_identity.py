@@ -43,7 +43,7 @@ class HostBuildIdentityTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 macos_shaders(metadata, messages, target, tools, host["sha256"])
 
-    def test_macos_catalog_changes_invalidate_clean_source_identity(self):
+    def test_only_rust_host_and_zig_engine_inputs_change_host_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             def git(*args):
@@ -51,18 +51,30 @@ class HostBuildIdentityTests(unittest.TestCase):
             git('init')
             git('config', 'user.email', 'fixture@example.invalid')
             git('config', 'user.name', 'Fixture')
+            engine = root / 'src/signals/engine.zig'
+            engine.parent.mkdir(parents=True)
+            engine.write_text('original')
             catalog = root / 'dependencies/macos-interfaces/interfaces.json'
             catalog.parent.mkdir(parents=True)
             catalog.write_text('original')
             git('add', '.')
             git('-c', 'commit.gpgsign=false', 'commit', '-m', 'Original catalog')
+            original_sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
             before = identity.source_fingerprint(root)
             catalog.write_text('changed')
+            git('add', '.')
+            git('-c', 'commit.gpgsign=false', 'commit', '-m', 'Changed catalog')
+            self.assertEqual(before, identity.source_fingerprint(root))
+            self.assertEqual(identity.compatible_source(root, original_sha, 'legacy-fingerprint'),
+                             'legacy-fingerprint')
+            engine.write_text('changed')
             with self.assertRaisesRegex(ValueError, 'clean committed'):
                 identity.source_fingerprint(root)
             git('add', '.')
-            git('-c', 'commit.gpgsign=false', 'commit', '-m', 'Changed catalog')
+            git('-c', 'commit.gpgsign=false', 'commit', '-m', 'Changed engine')
             self.assertNotEqual(before, identity.source_fingerprint(root))
+            with self.assertRaisesRegex(ValueError, 'does not match'):
+                identity.compatible_source(root, original_sha, 'legacy-fingerprint')
 
     def test_every_native_output_is_bound_before_packaging(self):
         for target in ("x64glibc", "x64win"):

@@ -24,9 +24,21 @@ terminal CR while waiting to determine whether it belongs to CRLF.
 History retains at most the newest 1,000 events and 4 MiB of message/component
 text, evicting the oldest records first and showing the eviction count.
 Clearing or evicting an event never recycles its identity. Each fixed-height
-row includes the message; the scrollable inspector exposes its complete text.
-The virtual list lays out only visible rows. Follow latest keeps the newest
-matching record visible; turn it off to browse earlier events.
+row includes the message and never wraps it; the feed clips what does not fit
+and the scrollable inspector below it exposes the selected event's complete
+text, wrapped. The inspector is a full-width shelf rather than a side column so
+that a small window spends its width on messages instead of on chrome; it grows
+only while an unterminated line needs the extra room. The virtual list lays out
+only visible rows. Follow latest keeps the newest matching record visible; turn
+it off to browse earlier events.
+
+One toolbar carries the source choice, whichever source control is live, and
+Clear history. Actions appear only in the phase that gives them meaning: Retry
+read while a failed read offers an exact retry, Cancel operation while a choice
+or a first read of a new file is in flight, and the replay controls only for the
+simulated source. The banner beside the heading always states whether the feed
+is the simulated replay or a real file, and the quiet lines underneath carry the
+session notice and what history retains.
 
 File cursor, partial line and history commit as one application state. A failed
 or refused read preserves the last accepted state. A new file replaces history
@@ -44,10 +56,10 @@ event is cleared or evicted, the inspector explains that it is gone.
 The event feed rows and inspector detail render in Source Code Pro, an
 OFL-licensed monospace face embedded into the binary at compile time with
 `import "….ttf" as source_code_pro : List(U8)`, registered at startup through
-`Gui.embedded_fonts`, and applied with `Gui.font_family`. The canonical font
-file, its SIL Open Font License 1.1 text, and provenance notes live in
-`vendor/fonts/source-code-pro/`; the import references that vendored copy
-directly, so the repository carries exactly one copy of the font.
+`Gui.embedded_fonts`, and applied with `Gui.font_family`. The font, its SIL Open
+Font License 1.1 text, and provenance notes live beside the app in `assets/`.
+The release example archive therefore carries everything needed to compile the
+example without making the font a platform asset.
 
 Run `scripts/test.py gui` with the pinned Roc compiler, as described in the
 contributor guide. The semantic journeys exercise replay, chunk assembly,

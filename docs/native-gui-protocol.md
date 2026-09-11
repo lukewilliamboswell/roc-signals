@@ -11,11 +11,13 @@ document stays hand-written.
 
 <!-- BEGIN GENERATED PROTOCOL TABLES (scripts/generate_protocol.py; edit protocol/native-protocol.json) -->
 
-The statically linked GUI boundary uses protocol version **10**
+The statically linked GUI boundary uses protocol version **12**
 and the separate timer boundary is version **1**.
 
 | Version | Change |
 | --- | --- |
+| 12 | Adds the `native_read_only` boolean field and its node word: a control that refuses edits while staying readable and keyboard reachable, distinct from disabled. |
+| 11 | Adds `signals_document_title`, the host read of the window identity decided by the shared engine's `SetDocumentTitle` command. |
 | 10 | Extends the presentation record to style version 2 with hover and active background slots (18 u32 style record); style version 1 records are no longer accepted. |
 | 9 | Adds the explicit image-source text slot together with the font-family and embedded-font declaration slots to the node layout. |
 | 8 | Adds the placeholder text slot to the node layout. |
@@ -50,6 +52,7 @@ Scalar boolean fields:
 | 2 | `disabled` | browser (`set_disabled`) | Disables input while retaining native identity. |
 | 4 | `selected` | native | Native selected presentation, independent of checkbox state. |
 | 5 | `native_drop_target` | native | Marks an internal drop target that must bind a string-detail drop event. |
+| 6 | `native_read_only` | native | Refuses user edits and edit history while the control stays available at full contrast and in tab order. |
 | 3 | - | shared | Reserved marker for named custom boolean attributes. |
 
 `Node.TaskKind` is an explicit closed route:
@@ -144,6 +147,18 @@ Explicit textarea heights constrain the complete field; the retained editor
 fills the space after caption and padding. Auto presentation retains a
 320-pixel editor.
 
+The `read_only` props field lowers boolean field 6. Read-only is not disabled, and the
+two are separate fields because they make different claims. Disabled says a
+control is unavailable: the host dims it and removes its tab stop. Read-only
+says the document belongs to the application: the control keeps its ordinary
+contrast and its place in the tab order, still takes focus, selects, copies
+and scrolls, and still accepts an authoritative value — but every user edit
+route and the native undo and redo history are refused. Nothing a person does
+can move the shown text away from the published value, so a read-only editor
+cannot diverge from its source the way an enabled one with ignored change
+events would. A control may carry both fields; disabled's presentation and
+tab-stop effects apply on top, and either flag alone refuses edits.
+
 The `placeholder` props field lowers static empty-field hint text through field 12. The
 hint is app-declared configuration, not host behavior: the host shows exactly
 the supplied text while a controlled field's document is empty, and a field
@@ -153,7 +168,7 @@ every other native scalar.
 
 `Elem.image` lowers element tag `img` with its relative source text on field
 13. The source is application data, not a filesystem capability: the host
-resolves it against one process-wide assets root (`--assets-root <dir>`, else
+resolves it against one process-wide assets root (`--host-assets-root <dir>`, else
 `ROC_SIGNALS_ASSETS_ROOT`, else `assets/` beside the executable) and refuses
 absolute paths, `..` traversal, URI schemes, backslashes, and symbolic links
 anywhere below the root. Sources are 1 to 1024 UTF-8 bytes. A source that does
@@ -344,6 +359,14 @@ Follow-tail positions the final matching row at the bottom when the list is
 updated while enabled. Turning it off leaves scrolling under user control.
 This is presentation policy, not a second timer, observer, or reactive graph.
 
+`signals_document_title(out)` reports the window identity the graph decided and
+returns a revision that changes only when the applied title text changes. The
+slice borrows engine-owned storage that stays valid until the next engine call,
+so the host copies it before dispatching again. It is an observation of the
+shared engine's `SetDocumentTitle` command, exposed by `Gui.set_title`, and not
+a second route into the window: the host applies a title on the next frame and
+skips a revision it has already applied.
+
 ## Native Files
 
 `Files` exposes the host's file primitives as hosted effectful functions:
@@ -395,8 +418,10 @@ detail of at most **4096 UTF-8 bytes**, including an explicit ` [truncated]`
 suffix when detail was omitted.
 
 `choose_save_path` takes `{directory: [Home, At(Str)], suggested_name: Str}`.
-`Home` resolves the native environment's UTF-8 `HOME`; a missing or non-UTF-8 value
-returns `Unavailable`. `At` supplies an explicit initial directory. Both paths
+`Home` resolves the native user's profile root: `HOME` on Linux and macOS, and
+`USERPROFILE` (falling back to `HOMEDRIVE` plus `HOMEPATH`) on Windows, where an
+ordinary process has no `HOME`. Only an environment that names no UTF-8 directory
+at all returns `Unavailable`. `At` supplies an explicit initial directory. Both paths
 must be absolute and valid. Suggested names must be a single nonempty file name
 of at most **255 UTF-8 bytes**; invalid names return `InvalidPath`. Paths are
 absolute UTF-8, at most **4096 bytes**; invalid paths and unsupported traversal
@@ -424,7 +449,7 @@ engine teardown.
 Native periods are executor wake intervals; each wake submits one tick, without
 inventing elapsed-time values or merging queued ticks. Long waits are split into
 day-sized executor waits to avoid overflowing native clock arithmetic. Normal
-smoke checks disable clocks for deterministic assertions; `--smoke-timers`
+smoke checks disable clocks for deterministic assertions; `--host-smoke-timers`
 enables real timer delivery and waits 1.2 seconds after the requested action.
 
 ## Adding a protocol field

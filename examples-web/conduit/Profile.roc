@@ -153,7 +153,7 @@ Profile := {}.{
 														follow_label,
 														follow_label.map(|_| False),
 														[Html.class_attr("mt-4 rounded-lg border border-emerald-500 bg-white px-4 py-2 text-sm font-medium text-emerald-700 shadow-sm transition hover:bg-emerald-50")],
-														model.on_unit(|value| { follow_serial: value.follow_serial + 1 }),
+														model.update(|value| { follow_serial: value.follow_serial + 1 }),
 													),
 													|| Html.text(""),
 												),

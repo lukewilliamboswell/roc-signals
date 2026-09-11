@@ -53,4 +53,12 @@ Gui := [].{
 
 	## A command returned by an action or a state write.
 	Cmd : Node.Cmd
+
+	## Set the window identity shown by the desktop switcher and the titlebar.
+	## The command travels the ordinary propagation path, so an unchanged title
+	## is pruned before it reaches the window. Give the application a stable
+	## name, and fold the open document and its unsaved state into the same
+	## string when they are meaningful, as `"* Notes - draft"`.
+	set_title : Str -> Cmd
+	set_title = |title| Node.Cmd.SetDocumentTitle({ title: title })
 }

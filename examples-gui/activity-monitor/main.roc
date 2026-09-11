@@ -1,4 +1,4 @@
-app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc" }
+app [main] { pf: platform "../../platform-gui/main.roc", roc: "nightly-2026-09-04-c125b82" }
 
 import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]
@@ -10,8 +10,8 @@ import Session
 import Workflow
 
 # Embedded at compile time; registered with the native text system at startup.
-# Licensed under the SIL Open Font License 1.1 — see vendor/fonts/source-code-pro/OFL.txt.
-import "../../vendor/fonts/source-code-pro/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
+# Licensed under the SIL Open Font License 1.1 — see assets/OFL.txt.
+import "assets/SourceCodePro-Regular.ttf" as source_code_pro : List(U8)
 
 feed_font : Str
 feed_font = "Source Code Pro"
@@ -94,13 +94,14 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 	Elem.col(
 		{
 			embedded_fonts: [{ family: feed_font, bytes: source_code_pro }],
-			padding: 24,
-			gap: 12,
+			padding: 20,
+			gap: 10,
 			width: Fill,
 			height: Fill,
 			overflow_y: Clip,
 		},
 		[
+			Ui.on_change_initial(Signal.const("Activity Monitor - Roc Signals"), Gui.set_title),
 			Elem.heading("Activity Monitor"),
 			Elem.col(
 				{ fg: Rgb(0xA9BFCC) },
@@ -177,7 +178,9 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 					}, Action.run(session, |_| Action.then([model.write(|value| { ..value, session: Session.retry_read(value.session) })], |state| Workflow.advance!(model, state)))),
 				],
 			),
-			Elem.col({ test_id: "activity-status", font_size: 13, fg: Rgb(0xA9BFCC) }, [Elem.text_s(session.map(|state| state.notice))]),
+			# The notice grows so a long path or error takes the free width
+			# instead of pushing the controls beside it off the edge.
+			Elem.col({ test_id: "activity-status", grow: True, font_size: 13, fg: Rgb(0xA9BFCC), overflow_x: Clip }, [Elem.text_s(session.map(|state| state.notice))]),
 			Ui.when(
 				replay,
 				|| Elem.row(
@@ -320,21 +323,21 @@ view = |model, running, query, errors_only, selected, follow_tail| {
 									),
 								],
 							),
-							Ui.when(
-								session.map(|state| !state.lines.partial.is_empty()),
-								|| Elem.col(
-									{ gap: 4, height: 100.Px, overflow_x: Scroll, overflow_y: Scroll },
-									[
-										Elem.col(
-											{ font_size: 13, fg: Rgb(0xA9BFCC) },
-											[Elem.heading("Unterminated line")],
-										),
-										Elem.col({ font_family: feed_font }, [Elem.text_s(session.map(|state| state.lines.partial))]),
-									],
-								),
-								|| Elem.text(""),
-							),
 						],
+					),
+					Ui.when(
+						session.map(|state| !state.lines.partial.is_empty()),
+						|| Elem.row(
+							{ gap: 12, width: Fill },
+							[
+								Elem.col(
+									{ width: 210.Px, fg: Rgb(0xA9BFCC), overflow_x: Clip },
+									[Elem.heading("Unterminated line")],
+								),
+								Elem.col({ font_family: feed_font, width: Fill, grow: True, font_size: 13 }, [Elem.text_s(session.map(|state| state.lines.partial))]),
+							],
+						),
+						|| Elem.text(""),
 					),
 				],
 			),

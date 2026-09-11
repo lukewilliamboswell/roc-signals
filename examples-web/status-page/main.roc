@@ -720,7 +720,7 @@ main = ||
 						],
 					),
 					health_banner(totals),
-					overview_panel(totals, refresh_status, refresh_count, refreshes.on_unit(|n| n + 1)),
+					overview_panel(totals, refresh_status, refresh_count, refreshes.update(|n| n + 1)),
 					Html.section_c(
 						"Services",
 						panel_class,

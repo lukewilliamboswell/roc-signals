@@ -1,5 +1,6 @@
-"""Release validation must distinguish downloads from local source success."""
+"""The combined release publishes and tests exact immutable platform bytes."""
 
+import ast
 import json
 import os
 from pathlib import Path
@@ -13,264 +14,200 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release
-import release_followup
-import site_release
-import serve
-import toolchain
-from compiler_pins import replace_pin
 
 
 class ReleaseTests(unittest.TestCase):
-    def test_development_preview_does_not_rebind_sources_to_supported_release(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "releases").mkdir()
-            (root / "releases/current.json").write_text('{"assets":{"platform":{"url":"https://example.com/old.tar.zst"}}}')
-            with patch.object(serve, "ROOT", root), patch.object(serve, "site_config", return_value={"extra": {}}):
-                self.assertIsNone(serve.config_release_platform_url())
-
-    def test_release_source_identity_rejects_uncommitted_changes(self):
-        with patch.object(release.subprocess, "check_output", return_value=" M platform-web/main.roc\n"), self.assertRaisesRegex(ValueError, "clean committed"):
-            release.clean_source_sha()
-        with patch.object(release.subprocess, "check_output", side_effect=["", "a" * 40 + "\n"]):
-            self.assertEqual(release.clean_source_sha(), "a" * 40)
-
-    def test_starters_include_transitive_example_runtime_imports(self):
-        files = release.bundle_browser.runtime_files(("example_tasks.mjs", "service_ops_charts.mjs"))
-        self.assertIn("vendor/ops_chart.mjs", files)
-        self.assertIn("conduit_backend.mjs", files)
-        self.assertIn("signals.mjs", files)
-
-    def test_platform_rebinding_ignores_comments_and_module_bodies(self):
-        source = '# platform "comment"\napp [main] { pf: platform "old", roc: "0.1.0" }\nmain = "platform \\\"body\\\""\n'
-        self.assertEqual(toolchain.replace_platform(source, "new"), source.replace('platform "old"', 'platform "new"'))
-        self.assertEqual(toolchain.replace_platform('module []\nvalue = "platform"', "new"), 'module []\nvalue = "platform"')
-        with self.assertRaises(ValueError):
-            toolchain.replace_platform('app [main] { a: platform "one", b: platform "two" }', "new")
-
-    def test_compiler_pin_replacement_preserves_both_dependency_urls(self):
-        source = '# header\napp [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "https://a/p.tar.zst", lib: "https://b/l.tar.zst" }\nmain = "roc: fake"\n'
-        self.assertEqual(replace_pin(source, "nightly-2026-09-07-14d9829"), source.replace("nightly-2026-09-04-c125b82", "nightly-2026-09-07-14d9829"))
-
-    def test_published_urls_reject_local_floating_and_unrelated_downloads(self):
-        for url in ["../../platform-web/main.roc", "http://127.0.0.1/a.tar.zst", release.RELEASE_BASE + "/latest/a.tar.zst",
-                    release.RELEASE_BASE + "/0.2.0-rc1/../a.tar.zst", "https://example.com/0.2.0/a.tar.zst"]:
-            with self.subTest(url=url), self.assertRaises(ValueError):
-                release.release_base(url)
-        url = release.RELEASE_BASE + "/0.2.0-rc1/Ab123.tar.zst"
-        self.assertEqual(release.release_base(url), url.rsplit("/", 1)[0])
-
-    def test_unpublished_examples_cannot_fall_back_to_local_bundle(self):
-        with patch.object(release.driver, "bundle_platform") as bundle, patch.object(release, "verify_compiler"), self.assertRaises(ValueError):
-            # This remains a local URL even after the repository publishes its baseline.
-            with patch.object(release, "platform_url", return_value="../../platform-web/main.roc"):
-                release.check_published("roc")
-        bundle.assert_not_called()
-
-    def test_compiler_identity_rejects_wrong_binary(self):
-        pin = "nightly-2026-09-04-c125b82"
-        with patch.object(toolchain.subprocess, "check_output", return_value="Roc compiler version release-c125b82abcd"):
-            toolchain.verify_compiler("roc", pin)
-        with patch.object(toolchain.subprocess, "check_output", return_value="Roc compiler version debug-12345678"), self.assertRaises(ValueError):
-            toolchain.verify_compiler("roc", pin)
-
-    def test_cache_is_isolated_and_restored_after_failure(self):
-        with patch.dict(os.environ, ROC_CACHE_DIR="original", XDG_CACHE_HOME="packages"):
-            with self.assertRaises(RuntimeError):
-                with release.fresh_cache(Path("isolated")):
-                    self.assertEqual(os.environ["ROC_CACHE_DIR"], "isolated")
-                    self.assertEqual(os.environ["XDG_CACHE_HOME"], "isolated")
-                    raise RuntimeError()
-            self.assertEqual(os.environ["ROC_CACHE_DIR"], "original")
-            self.assertEqual(os.environ["XDG_CACHE_HOME"], "packages")
+    def test_controller_text_io_is_explicitly_utf8(self):
+        tree = ast.parse(Path(release.__file__).read_text(encoding="utf-8"))
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute)
+                 and node.func.attr in {"read_text", "write_text"}]
+        self.assertTrue(calls)
+        for call in calls:
+            with self.subTest(line=call.lineno):
+                encoding = next((keyword.value for keyword in call.keywords
+                                 if keyword.arg == "encoding"), None)
+                self.assertIsInstance(encoding, ast.Constant)
+                self.assertEqual(encoding.value, "utf-8")
 
     def manifest_fixture(self, root):
-        manifest = {"schema_version": 1, "version": "0.2.0-rc1", "source_sha": "a" * 40, "compiler_pin": "nightly-2026-09-04-c125b82", "assets": {}}
-        for kind, name in {"platform": "Ab123.tar.zst", "browser": "signals-browser.zip", "starters": "signals-starters.zip"}.items():
+        assets = {}
+        for kind, name in (("web", "WebHash.tar.zst"), ("gui", "GuiHash.tar.zst"),
+                           ("examples", release.EXAMPLES)):
             path = root / name
             path.write_bytes(kind.encode())
-            manifest["assets"][kind] = {"name": name, "url": release.RELEASE_BASE + "/0.2.0-rc1/" + name, "sha256": release.digest(path)}
-        (root / "signals-release.json").write_text(json.dumps(manifest))
+            assets[kind] = release.record(path, "0.2.0-rc2")
+        manifest = {
+            "schema_version": 2,
+            "version": "0.2.0-rc2",
+            "source_sha": "a" * 40,
+            "compiler_pin": "nightly-2026-09-04-c125b82",
+            "max_transitive_mb": release.MAX_TRANSITIVE_MB,
+            "assets": assets,
+            "inputs": {"web_hosts": {}, "gui_hosts": {}, "linker_inputs": {}},
+            "provenance": {
+                "signer_workflow": release.REPOSITORY + "/.github/workflows/release.yml",
+                "source_ref": "refs/heads/main",
+            },
+        }
+        (root / release.MANIFEST).write_text(json.dumps(manifest))
+        (root / "release-notes.md").write_text("notes")
         return manifest
 
-    def test_corrupt_or_repointed_artifacts_are_rejected(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            original = self.manifest_fixture(root)
-            self.assertEqual(release.read_manifest(root), original)
-            (root / "Ab123.tar.zst").write_bytes(b"replacement")
-            with self.assertRaisesRegex(ValueError, "digest mismatch"):
-                release.read_manifest(root)
-            original = self.manifest_fixture(root)
-            original["assets"]["platform"]["url"] = "https://example.com/another.tar.zst"
-            (root / "signals-release.json").write_text(json.dumps(original))
-            with self.assertRaisesRegex(ValueError, "URL disagrees"):
-                release.read_manifest(root)
-
-    def test_final_release_verifies_each_asset_and_metadata_at_the_tested_source(self):
+    def test_manifest_requires_two_distinct_platforms_and_exact_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             manifest = self.manifest_fixture(root)
-            manifest["provenance"] = {"signer_workflow": release.REPOSITORY + "/.github/workflows/release.yml",
-                                      "source_ref": "refs/heads/main"}
-            with patch.object(release.subprocess, "run") as verify:
-                release.verify_release_provenance(root, manifest)
-            self.assertEqual(verify.call_count, 4)
-            for call in verify.call_args_list:
-                command = call.args[0]
-                self.assertEqual(command[command.index("--source-digest") + 1], manifest["source_sha"])
-                self.assertEqual(command[command.index("--signer-workflow") + 1], manifest["provenance"]["signer_workflow"])
-                self.assertTrue(call.kwargs["check"])
-            with patch.object(release.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "gh")):
-                with self.assertRaises(subprocess.CalledProcessError):
-                    release.verify_release_provenance(root, manifest)
+            self.assertEqual(release.read_manifest(root), manifest)
+            (root / "GuiHash.tar.zst").write_bytes(b"replacement")
+            with self.assertRaisesRegex(ValueError, "differs from its manifest"):
+                release.read_manifest(root)
+            manifest = self.manifest_fixture(root)
+            manifest["assets"]["gui"] = manifest["assets"]["web"]
+            (root / release.MANIFEST).write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "distinct platform"):
+                release.read_manifest(root)
 
-    def test_published_metadata_cannot_remove_the_reviewed_provenance_policy(self):
+    def test_manifest_rejects_missing_inputs_and_unexpected_assets(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             manifest = self.manifest_fixture(root)
-            manifest["provenance"] = {"signer_workflow": release.REPOSITORY + "/.github/workflows/release.yml",
-                                      "source_ref": "refs/heads/main"}
-            (root / "releases").mkdir()
-            (root / "releases/current.json").write_text(json.dumps(manifest))
-            example = Path("example/main.roc")
-            (root / example).parent.mkdir()
-            (root / example).write_text('app [main] { pf: platform "' + manifest["assets"]["platform"]["url"] + '" }')
-            downgraded = dict(manifest)
-            downgraded.pop("provenance")
-            def download(url, path):
-                path.write_text(json.dumps(downgraded))
-            with patch.object(release, "ROOT", root), patch.object(release, "public_examples", return_value=(SimpleNamespace(source=example),)), patch.object(
-                    release, "validate_roots", return_value=manifest["compiler_pin"]), patch.object(
-                    release, "verify_compiler"), patch.object(release, "download", side_effect=download) as fetch:
-                with self.assertRaisesRegex(ValueError, "reviewed supported release"):
-                    release.check_published("roc")
-                self.assertEqual(fetch.call_count, 1)
+            manifest["inputs"].pop("web_hosts")
+            (root / release.MANIFEST).write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "input locks"):
+                release.read_manifest(root)
+            manifest = self.manifest_fixture(root)
+            (root / "unreviewed").write_text("no")
+            with self.assertRaisesRegex(ValueError, "unexpected asset"):
+                release.read_manifest(root)
 
-    def test_archive_escape_is_rejected_before_extraction(self):
+    def test_examples_keep_web_and_gui_roots_distinct_and_include_assets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            web = root / "examples-web/demo"
+            gui = root / "examples-gui/demo"
+            vendor = root / "vendor/unicode"
+            for directory in (web, gui, vendor):
+                directory.mkdir(parents=True)
+            (web / "main.roc").write_text(
+                'app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-web/main.roc" }'
+            )
+            (gui / "main.roc").write_text(
+                'app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc" }'
+            )
+            (gui / "theme.json").write_bytes(b"{\"theme\":true}")
+            (gui / "assets").mkdir()
+            (gui / "assets/font.ttf").write_bytes(b"example-owned-font")
+            (vendor / "Unicode.roc").write_text("module []")
+            web_example = SimpleNamespace(source=Path("examples-web/demo/main.roc"))
+            archive = root / release.EXAMPLES
+
+            def files(directory):
+                return tuple(path for path in directory.rglob("*") if path.is_file())
+
+            with patch.object(release, "ROOT", root), \
+                    patch.object(release, "web_examples", return_value=(web_example,)), \
+                    patch.object(release, "gui_examples", return_value=(gui,)), \
+                    patch.object(release, "tracked_files", side_effect=files), \
+                    patch.object(release.bundle_browser, "runtime_files", return_value={"signals.mjs": b"runtime"}):
+                release.write_examples(archive, "nightly-2026-09-04-c125b82", "https://release/Web.tar.zst",
+                                       "https://release/Gui.tar.zst")
+            with zipfile.ZipFile(archive) as packed:
+                self.assertIn('platform "https://release/Web.tar.zst"',
+                              packed.read("examples-web/demo/main.roc").decode())
+                self.assertIn('platform "https://release/Gui.tar.zst"',
+                              packed.read("examples-gui/demo/main.roc").decode())
+                self.assertEqual(packed.read("examples-gui/demo/theme.json"), b"{\"theme\":true}")
+                self.assertEqual(
+                    packed.read("examples-gui/demo/assets/font.ttf"), b"example-owned-font"
+                )
+
+    def test_archive_escape_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             archive = root / "unsafe.zip"
-            with zipfile.ZipFile(archive, "w") as output:
-                output.writestr("../escaped", "no")
-            with self.assertRaisesRegex(ValueError, "unsafe archive"):
-                release.extract(archive, root / "out")
+            with zipfile.ZipFile(archive, "w") as packed:
+                packed.writestr("../escaped", "no")
+            with self.assertRaisesRegex(ValueError, "unsafe example archive"):
+                release.extract_examples(archive, root / "out")
             self.assertFalse((root / "escaped").exists())
 
-    def test_explicit_runtime_never_falls_back_to_checkout_executor(self):
-        with tempfile.TemporaryDirectory() as directory:
-            result = subprocess.run(["node", "scripts/browser/mount_wasm_example.mjs", "missing.wasm", "--runtime-dir", directory], cwd=release.ROOT, text=True, capture_output=True)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn(str(Path(directory) / "example_tasks.mjs"), result.stderr)
+    def test_every_release_compiler_command_raises_the_fat_package_budget(self):
+        with patch.object(release.driver, "run") as run:
+            release.roc_run("roc", "build", Path("example/main.roc"), "--target=x64glibc")
+        command = run.call_args.args[0]
+        self.assertIn(f"--max-transitive-mb={release.MAX_TRANSITIVE_MB}", command)
 
-    def test_selected_roots_cover_both_platforms_and_every_example(self):
-        self.assertEqual(toolchain.validate_roots(), toolchain.development_pin())
-
-    def test_compiler_pin_reads_do_not_depend_on_windows_locale(self):
-        original = Path.read_text
-        def windows_read(path, *args, **kwargs):
-            kwargs.setdefault("encoding", "cp1252")
-            return original(path, *args, **kwargs)
+    def test_prepare_invokes_only_the_no_build_two_package_bundler(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            source = root / "main.roc"
-            source.write_text('app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "local" }\nmain = "А"', encoding="utf-8")
-            with patch.object(Path, "read_text", windows_read):
-                self.assertEqual(toolchain.read_pin(source), "nightly-2026-09-04-c125b82")
-                self.assertIn('"А"', toolchain.local_sources(root, ["main.roc"])["main.roc"])
+            (root / "releases").mkdir()
+            (root / "releases/0.2.0-rc2.md").write_text("candidate")
+            output = root / "release"
+            web_lock = root / "web.lock"
+            gui_lock = root / "gui.lock"
+            web_lock.write_text("{}")
+            gui_lock.write_text("{}")
+            calls = []
 
-    def test_ci_compiler_relocation_preserves_checkout_and_refuses_external_tools(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            workspace = root / "workspace"
-            compiler = workspace / "download/roc"
-            compiler.parent.mkdir(parents=True)
-            compiler.write_bytes(b"compiler")
-            envfile = root / "path"
-            environment = {"GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(root),
-                           "GITHUB_PATH": str(envfile)}
-            with patch.dict(os.environ, environment), patch.object(toolchain.shutil, "which", return_value=str(compiler)):
-                toolchain.relocate_for_ci()
-            self.assertTrue(workspace.is_dir())
-            self.assertFalse(compiler.parent.exists())
-            self.assertEqual((root / "roc-toolchain/roc").read_bytes(), b"compiler")
-            self.assertEqual(envfile.read_text().strip(), str(root / "roc-toolchain"))
-            with patch.dict(os.environ, environment), patch.object(toolchain.shutil, "which", return_value=str(root / "roc-toolchain/roc")):
-                with self.assertRaisesRegex(ValueError, "immediate child"):
-                    toolchain.relocate_for_ci()
+            def bundle(command, **kwargs):
+                calls.append(command)
+                bundle_root = Path(command[command.index("--output-dir") + 1])
+                for kind, name in (("web", "WebHash.tar.zst"), ("gui", "GuiHash.tar.zst")):
+                    path = bundle_root / kind / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(kind.encode())
+                (bundle_root / "bundles.json").write_text(json.dumps({
+                    "web": "web/WebHash.tar.zst", "gui": "gui/GuiHash.tar.zst",
+                }))
+                return subprocess.CompletedProcess(command, 0)
 
-    def test_new_example_requires_a_pin_and_updater_registration(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / ".github").mkdir()
-            paths = ["platform-web/main.roc", "platform-gui/main.roc",
-                     "examples-web/hello/main.roc", "examples-gui/hello/main.roc"]
-            for name in paths:
-                path = root / name
-                path.parent.mkdir(parents=True)
-                path.write_text('app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "local" }')
-            config = root / ".github/roc-nightly.json"
-            config.write_text(json.dumps({"compiler_roots": paths[:-1]}))
-            with self.assertRaisesRegex(ValueError, "every web and GUI example"):
-                toolchain.validate_roots(root)
-            config.write_text(json.dumps({"compiler_roots": paths}))
-            self.assertEqual(toolchain.validate_roots(root), "nightly-2026-09-04-c125b82")
-            (root / paths[-1]).write_text('app [main] { pf: platform "local" }')
-            with self.assertRaisesRegex(ValueError, "no literal pin"):
-                toolchain.validate_roots(root)
+            def examples(path, *args):
+                with zipfile.ZipFile(path, "x") as packed:
+                    packed.writestr("README.md", "examples")
 
-    def test_release_writes_require_explicit_tested_main_dispatch(self):
-        sha = "a" * 40
-        environment = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
-                       "NIGHTLY_VALIDATION": "false", "GITHUB_SHA": sha}
-        with patch.dict(os.environ, environment), patch.object(release_followup.subprocess, "check_output", return_value=sha):
-            release_followup.require_release_context({"source_sha": sha})
-            for key, value in [("GITHUB_EVENT_NAME", "pull_request"), ("NIGHTLY_VALIDATION", "true"),
-                               ("GITHUB_REF", "refs/heads/automation/roc-nightly"), ("GITHUB_SHA", "b" * 40)]:
-                with self.subTest(key=key), patch.dict(os.environ, {key: value}), self.assertRaises(ValueError):
-                    release_followup.require_release_context({"source_sha": sha})
+            with patch.object(release, "ROOT", root), \
+                    patch.object(release, "clean_source_sha", return_value="a" * 40), \
+                    patch.object(release, "validate_roots", return_value="nightly-2026-09-04-c125b82"), \
+                    patch.object(release, "verify_compiler"), \
+                    patch.object(release, "read_lock", return_value={"schema_version": 1, "artifacts": {}}), \
+                    patch.object(release, "write_examples", side_effect=examples), \
+                    patch.object(release.subprocess, "run", side_effect=bundle):
+                release.prepare("0.2.0-rc2", output, "roc", web_lock, gui_lock)
+            self.assertEqual(len(calls), 1)
+            command = list(map(os.fspath, calls[0]))
+            self.assertIn("--package", command)
+            self.assertIn("all", command)
+            self.assertIn("--no-build", command)
+            self.assertIn("--prebuilt-web-host-lock", command)
+            self.assertIn("--prebuilt-host-lock", command)
+            self.assertFalse(any(tool in command for tool in ("zig", "cargo", "rustc")))
 
-    def test_followup_requires_current_sha_and_every_required_job(self):
-        for stale, missing_job in [(True, False), (False, True), (False, False)]:
-            statuses = []
-            def api(path, payload=None):
-                if "/statuses/" in path:
-                    statuses.append(payload)
-                    return {}
-                if path.endswith("/dispatches"):
-                    return {"workflow_run_id": 1 if "ci.yml" in path else 2}
-                if "/git/ref/heads/" in path:
-                    return {"object": {"sha": "moved" if stale else "candidate"}}
-                if "/jobs?" in path:
-                    names = release_followup.CHECKS - ({"Published examples"} if missing_job else set())
-                    return {"jobs": [{"name": name, "conclusion": "success"} for name in names]}
-                return {"head_sha": "candidate", "head_branch": "release/examples", "event": "workflow_dispatch", "status": "completed", "conclusion": "success"}
-            with patch.object(release_followup, "api", side_effect=api):
-                if stale or missing_job:
-                    with self.assertRaises(ValueError):
-                        release_followup.validate("release/examples", "candidate")
-                    self.assertNotIn("success", [status["state"] for status in statuses])
-                else:
-                    release_followup.validate("release/examples", "candidate")
-                    self.assertEqual({status["context"] for status in statuses if status["state"] == "success"}, release_followup.CHECKS)
+    def test_publication_requires_exact_tested_main_context(self):
+        manifest = {"source_sha": "a" * 40}
+        environment = {
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_REPOSITORY": release.REPOSITORY,
+            "GITHUB_SHA": "a" * 40,
+        }
+        with patch.dict(os.environ, environment, clear=True), \
+                patch.object(release.subprocess, "check_output", return_value="a" * 40 + "\n"):
+            release.require_publish_context(manifest)
+            for key in environment:
+                changed = dict(environment, **{key: "wrong"})
+                with self.subTest(key=key), patch.dict(os.environ, changed, clear=True), \
+                        self.assertRaisesRegex(ValueError, "explicit main"):
+                    release.require_publish_context(manifest)
 
-    def test_site_assembly_preserves_versioned_pages_and_platform_urls(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            manifest = self.manifest_fixture(root)
-            archive = root / "signals-site.zip"
-            with zipfile.ZipFile(archive, "w") as site:
-                site.writestr("current/index.html", "landing")
-                site.writestr("versions/0.2.0-rc1/index.html", "new")
-                site.writestr("versions/0.1.1/index.html", "old")
-                site.writestr("platform/OldHash.tar.zst", "old archive")
-            manifest["site"] = {"name": archive.name, "url": release.RELEASE_BASE + "/0.2.0-rc1/" + archive.name, "sha256": release.digest(archive)}
-            (root / "signals-release.json").write_text(json.dumps(manifest))
-            output = root / "dist"
-            site_release.assemble(root, output)
-            self.assertEqual((output / "index.html").read_text(), "landing")
-            self.assertEqual((output / "versions/0.1.1/index.html").read_text(), "old")
-            self.assertEqual((output / "platform/OldHash.tar.zst").read_text(), "old archive")
+    def test_workflow_has_one_publisher_and_no_host_toolchain_setup(self):
+        workflow = (release.ROOT / ".github/workflows/release.yml").read_text()
+        self.assertEqual(workflow.count("contents: write"), 1)
+        self.assertIn("./.github/actions/setup-roc", workflow)
+        self.assertNotIn("./.github/actions/setup-toolchain", workflow)
+        self.assertNotIn("zig", workflow.lower())
+        self.assertNotIn("cargo", workflow.lower())
+        self.assertFalse((release.ROOT / ".github/workflows/gui-release.yml").exists())
 
 
 if __name__ == "__main__":

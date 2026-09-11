@@ -21,7 +21,10 @@ asset_entries : List(Files.AssetEntry)
 asset_entries = Manifest.entries(manifest_json)
 
 ## Folder and file rows show a small generated glyph beside their kind text; a
-## missing glyph file renders the host's neutral placeholder box instead.
+## glyph file the host cannot resolve or decode renders the host's neutral
+## placeholder box instead. Nothing here consults asset verification: a glyph
+## that is still a valid image renders whatever it now contains, whether or not
+## its bytes match the manifest digest.
 kind_glyph : Explorer.Kind -> Elem
 kind_glyph = |kind| {
 	glyph = |source, label| Elem.image({ source, label, width: 16.Px, height: 16.Px, radius: 3 })
@@ -39,7 +42,21 @@ asset_status_text = |status| match status {
 	Files.AssetStatus.Mismatch => "altered"
 }
 
-## All-ok verification reports render as an empty (invisible) status line.
+## The status line starts with this while the startup check is still running.
+## It is never empty at mount on purpose: a status column that is laid out with
+## no area keeps that area when its text arrives, so a warning written into an
+## initially empty line is in the semantic tree but never visible to a person.
+asset_checking : Str
+asset_checking = "Checking assets…"
+
+## Verification is advisory. It reports the integrity of the shipped files at
+## startup and decides nothing about what a row draws: the host resolves and
+## decodes each glyph independently, so an altered file that is still a valid
+## image keeps rendering its new contents, and only a file the host cannot
+## resolve or decode becomes a placeholder box. The check also runs once, so a
+## file restored afterwards is reported by the next run, not by this line.
+##
+## An all-ok report empties the status line, collapsing it out of the layout.
 asset_problem_text : List(Files.AssetCheck) -> Str
 asset_problem_text = |report| {
 	bad = report.keep_if(|check| check.status != Files.AssetStatus.Ok)
@@ -47,7 +64,24 @@ asset_problem_text = |report| {
 		""
 	} else {
 		names = bad.map(|check| "${check.name} (${asset_status_text(check.status)})")
-		"Problem assets: ${Str.join_with(names, ", ")}. Rows show placeholder boxes until the assets are restored."
+		"Problem assets: ${Str.join_with(names, ", ")}. Startup check only: glyphs the host cannot load show placeholder boxes. Restart to re-check after restoring them."
+	}
+}
+
+## An advisory report names every problem file and says nothing once every
+## asset verifies, including on the run after a restored file is verified.
+expect {
+	problems = asset_problem_text([
+		{ name: "glyphs/folder.png", status: Files.AssetStatus.Ok },
+		{ name: "glyphs/file.png", status: Files.AssetStatus.Mismatch },
+	])
+	restored = asset_problem_text([
+		{ name: "glyphs/folder.png", status: Files.AssetStatus.Ok },
+		{ name: "glyphs/file.png", status: Files.AssetStatus.Ok },
+	])
+	{ problems, restored } == {
+		problems: "Problem assets: glyphs/file.png (altered). Startup check only: glyphs the host cannot load show placeholder boxes. Restart to re-check after restoring them.",
+		restored: "",
 	}
 }
 
@@ -136,12 +170,16 @@ inspect_view = |handles| {
 	)
 	Elem.panel(
 		{
+			# The inspector shares the height left by the header and footer bands;
+			# it bounds itself to the row's height and scrolls a long path or error.
 			test_id: "file-details",
-			width: 340.Px,
+			width: Fill,
+			height: Fill,
 			gap: 12,
 			padding: 16,
 			bg: Rgb(0x283A47),
 			radius: 8,
+			overflow_y: Scroll,
 		},
 		[
 			Elem.heading("File details"),
@@ -229,10 +267,9 @@ inspect_view = |handles| {
 					),
 					test_id: "text-preview",
 					placeholder: "Preview a file to read it here.",
-					disabled: Signal.const(True),
+					read_only: Signal.const(True),
 					width: Fill,
-					height: Fill,
-					grow: True,
+					height: 220.Px,
 				},
 				handles.model.update_str(|state, _| state),
 			),
@@ -303,15 +340,27 @@ explorer_view = |handles| {
 	crumbs = source.map(|location| Rows.from_list(Session.breadcrumbs(location), |crumb| crumb.path) ?? crash "Breadcrumb paths must be unique")
 	Elem.col(
 		{
+			# The root bounds itself to the window and hands the free height to
+			# the content row; every band of chrome above the list is height the
+			# preview does not get.
 			test_id: "explorer",
 			gap: 12,
 			padding: 24,
 			width: Fill,
 			height: Fill,
-			overflow_y: Clip,
 			shortcuts: [{ chord: { key: "o", control: True, shift: False, alt: False, meta: False }, msg: choose_action }, { chord: { key: "F5", control: False, shift: False, alt: False, meta: False }, msg: refresh_action }, { chord: { key: "ArrowLeft", control: False, shift: False, alt: True, meta: False }, msg: back_action }, { chord: { key: "ArrowRight", control: False, shift: False, alt: True, meta: False }, msg: forward_action }, { chord: { key: "ArrowUp", control: False, shift: False, alt: True, meta: False }, msg: up_action }],
 		},
 		workflow(handles).concat([
+			Ui.on_change_initial(
+				source.map(
+					|value| {
+						location = Session.path(value)
+						place = if location.is_empty() { "Sample workspace" } else { location }
+						"${place} - Folder Explorer"
+					},
+				),
+				Gui.set_title,
+			),
 			Elem.heading("Folder Explorer"),
 			Elem.col(
 				{ fg: Rgb(0xA9BFCC) },
@@ -382,7 +431,7 @@ explorer_view = |handles| {
 				{ gap: 16 },
 				[
 					Elem.col(
-						{ test_id: "dataset-source", font_size: 13, fg: Rgb(0xA9BFCC) },
+						{ test_id: "dataset-source", font_size: 13, fg: Rgb(0xA9BFCC), overflow_x: Clip },
 						[
 							Elem.text_s(
 								model.map(
@@ -398,7 +447,7 @@ explorer_view = |handles| {
 							),
 						],
 					),
-					Elem.col({ test_id: "operation-status", font_size: 13, fg: Rgb(0xA9BFCC) }, [Elem.text_s(model.map(|state| state.notice))]),
+					Elem.col({ test_id: "operation-status", font_size: 13, fg: Rgb(0xA9BFCC), overflow_x: Clip }, [Elem.text_s(model.map(|state| state.notice))]),
 				],
 			),
 			Elem.row(
@@ -426,17 +475,20 @@ explorer_view = |handles| {
 			Elem.row(
 				{ gap: 16 },
 				[
-					Elem.col({ test_id: "dataset-summary", font_size: 13, fg: Rgb(0x93A9B6) }, [Elem.text_s(total.map(|summary| "${summary.files.to_str()} files · ${summary.folders.to_str()} folders · ${summary.links.to_str()} links · ${summary.other.to_str()} other · ${summary.bytes.to_str()} B"))]),
-					Elem.col({ test_id: "results-summary", font_size: 13, fg: Rgb(0x93A9B6) }, [Elem.text_s(visible.map(|entries| "${Rows.len(entries).to_str()} matching entries"))]),
+					Elem.col({ test_id: "dataset-summary", font_size: 13, fg: Rgb(0x93A9B6), overflow_x: Clip }, [Elem.text_s(total.map(|summary| "${summary.files.to_str()} files · ${summary.folders.to_str()} folders · ${summary.links.to_str()} links · ${summary.other.to_str()} other · ${summary.bytes.to_str()} B"))]),
+					Elem.col({ test_id: "results-summary", font_size: 13, fg: Rgb(0x93A9B6), overflow_x: Clip }, [Elem.text_s(visible.map(|entries| "${Rows.len(entries).to_str()} matching entries"))]),
 				],
 			),
 			Elem.row(
-				{ gap: 16, width: Fill, grow: True },
+				# The content row takes the free height and clips: the list's
+				# viewport and the inspector each own their own scrolling.
+				{ gap: 16, width: Fill, height: Fill, grow: True, overflow_x: Clip, overflow_y: Clip },
 				[
 					Elem.col(
 						{
 							test_id: "file-list",
-							grow: True,
+							width: Fill,
+							height: Fill,
 							gap: 0,
 							padding: 12,
 							radius: 10,
@@ -466,7 +518,7 @@ explorer_view = |handles| {
 				],
 			),
 			Elem.col(
-				{ font_size: 13, fg: Rgb(0x93A9B6) },
+				{ test_id: "shortcut-hints", font_size: 13, fg: Rgb(0x93A9B6) },
 				["Alt+Left / Right: history · Alt+Up: parent · F5: refresh · Ctrl+O: choose folder · Esc: cancel"],
 			),
 			# Trailing problem line: empty on healthy runs, so it pays no gap
@@ -480,4 +532,4 @@ explorer_view = |handles| {
 }
 
 main : () -> Elem
-main = || Ui.state(Session.initial, |model| Ui.state(NameAscending, |order| Ui.state("", |asset_problem| explorer_view({ model, order, asset_problem }))))
+main = || Ui.state(Session.initial, |model| Ui.state(NameAscending, |order| Ui.state(asset_checking, |asset_problem| explorer_view({ model, order, asset_problem }))))

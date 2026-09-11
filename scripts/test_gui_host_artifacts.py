@@ -133,13 +133,13 @@ class HostArtifactTests(unittest.TestCase):
                     del files["licenses/gui-host/LICENSE-GPUI"]
                 write_archive(root / f"gui-host-{target}.tar", {
                     "schema_version": 1, "name": "gui-host", "target": target,
-                    "source_fingerprint": "expected"}, files)
+                    "source_fingerprint": "1" * 64}, files)
                 if failure == "missing-source":
                     source.unlink()
                 # Composition/admission tests validate actual notice contents. Here the
                 # seam is exact candidate pairing and independent signature admission.
                 with patch.object(release_dependencies.subprocess, "check_output", return_value="a" * 40), \
-                        patch.object(gui_host_artifacts, "source_fingerprint", return_value="expected"), \
+                        patch.object(gui_host_artifacts, "source_fingerprint", return_value="1" * 64), \
                         patch.object(gui_host_artifacts, "validate_host"), \
                         patch.object(gui_host_artifacts, "validate_publication_notices") as admit, \
                         patch.object(release_dependencies, "verify_archive") as verifier:
@@ -161,6 +161,7 @@ class HostArtifactTests(unittest.TestCase):
                         for entry in lock["artifacts"].values():
                             self.assertEqual(entry["signer_workflow"], gui_host_artifacts.WORKFLOW)
                             self.assertEqual(entry["source_sha"], "a" * 40)
+                            self.assertEqual(entry["input_fingerprint"], "1" * 64)
         for targets in (["unknown"], ["x64glibc", "x64glibc"], []):
             with self.assertRaisesRegex(ValueError, "eligible"):
                 release_dependencies.prepare(Path("unused"), "deps-gui-host-1", environment, targets)
@@ -177,6 +178,40 @@ class HostArtifactTests(unittest.TestCase):
             for name in prepare_dependencies.windows_gnu_files():
                 (target / name).write_bytes(b"verified dependency")
             bundle_platforms.validate_gui_link_inputs(root)
+
+    def test_a_lock_describing_this_checkout_is_usable(self):
+        entry = {"input_fingerprint": "abc"}
+        with patch.object(gui_host_artifacts, "read_lock",
+                          return_value={"artifacts": {"gui-host-x64glibc": entry}}), \
+                patch.object(gui_host_artifacts, "source_fingerprint", return_value="abc"):
+            self.assertTrue(gui_host_artifacts.lock_matches_sources(Path("unused")))
+
+    def test_a_lock_from_before_a_host_change_is_reported_not_raised(self):
+        # The caller builds the host from source in this case, so the answer has
+        # to be a value it can act on rather than an exception that stops the run.
+        entry = {"input_fingerprint": "stale"}
+        with patch.object(gui_host_artifacts, "read_lock",
+                          return_value={"artifacts": {"gui-host-x64glibc": entry}}), \
+                patch.object(gui_host_artifacts, "source_fingerprint", return_value="abc"), \
+                patch.object(gui_host_artifacts, "materialize") as download:
+            self.assertFalse(gui_host_artifacts.lock_matches_sources(Path("unused")))
+        download.assert_not_called()
+
+    def test_a_mismatched_lock_is_still_refused_when_a_prebuilt_host_is_demanded(self):
+        # Falling back is the caller's decision. Asking for the verified host
+        # itself must still refuse rather than hand back a mismatched archive.
+        entry = {"name": "gui-host", "target": "x64glibc", "repository": gui_host_artifacts.REPOSITORY,
+                 "signer_workflow": gui_host_artifacts.WORKFLOW, "input_fingerprint": "stale"}
+        source = dict(entry, name=gui_host_artifacts.SOURCE_KIND)
+        with patch.object(gui_host_artifacts, "read_lock", return_value={"artifacts": {
+                "gui-host-x64glibc": entry,
+                gui_host_artifacts.SOURCE_KIND + "-x64glibc": source}}), \
+                patch.object(gui_host_artifacts, "source_fingerprint", return_value="abc"), \
+                patch.object(gui_host_artifacts, "materialize") as download:
+            with self.assertRaisesRegex(ValueError, "does not match this checkout"):
+                with gui_host_artifacts.verified_hosts(Path("unused"), Path("unused-cache")):
+                    self.fail("mismatched host admitted")
+        download.assert_not_called()
 
     def test_foreign_host_producer_is_rejected_before_download(self):
         entry = {"name": "gui-host", "target": "x64glibc", "repository": "other/repository",

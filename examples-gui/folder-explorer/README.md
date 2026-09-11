@@ -1,6 +1,6 @@
 # Folder Explorer
 
-Browse a navigable sample workspace or choose a real folder on this Linux
+Browse a navigable sample workspace or choose a real folder on this
 computer. Each view lists only direct children. Open folder rows, follow the
 breadcrumbs, or use Back, Forward, Up, and Refresh. The two history stacks retain
 at most 64 accepted locations each. Changing folders clears the filter;
@@ -10,9 +10,13 @@ path still exists.
 Select a regular file to inspect its metadata. **Preview text** loads at most
 64 KiB of strict UTF-8, with an explicit truncated label. Empty files produce a
 successful empty preview; binary or invalid text returns a visible error.
-**Open in app** requests the desktop's associated application through `gio open`.
-Success confirms the launch, not the external application's lifetime. Sample
-files have explicit sample previews and cannot launch nonexistent local files.
+**Open in app** requests the desktop's associated application: the Unix file
+service — the one macOS builds also use — hands the path to `gio open`, and the
+Windows service hands it to the shell through
+`rundll32.exe url.dll,FileProtocolHandler`. Success confirms the launch, not the
+external application's lifetime; a macOS machine without `gio` installed reports
+a launcher failure rather than opening anything. Sample files have explicit
+sample previews and cannot launch nonexistent local files.
 Symbolic links and special files remain visible as metadata, without traversal.
 
 The accepted folder, results, selection, preview, and navigation history remain
@@ -24,7 +28,14 @@ Keyboard controls are Ctrl+O to choose a folder, Alt+Left/Right for history,
 Alt+Up for the parent, and F5 to refresh; the native chooser handles its own
 Escape. Buttons
 also work through ordinary Tab and Enter/Space navigation. The result list uses
-64-pixel virtual rows and stable full-path keys; visible labels use file names.
+44-pixel virtual rows and stable full-path keys; visible labels use file names.
+
+The window bounds itself: the list and the inspector share the height left by
+the header and footer bands and scroll their own overflow, so the preview, the
+status line and any asset problem stay reachable at the smaller supported
+sizes. The preview field is read-only rather than disabled — ordinary contrast,
+in the tab order, selectable and copyable — because its text belongs to the
+loaded preview and no keystroke may move it away from that.
 
 Directory observations use `Files.list_directory!` and its
 10,000-entry/four-MiB aggregate-path bounds. Concurrent filesystem changes can
@@ -44,11 +55,21 @@ preview contents, and associated launch outcomes.
 
 Folder and file rows carry small generated glyph PNGs from `assets/` —
 regenerate them and `assets/manifest.json` (real SHA-256 hashes) with
-`python3 assets/generate.py`. The app ingests the manifest at compile time and
+`python3 assets/generate.py` (`python` on Windows, where `python3` is usually the
+Store shortcut). The app ingests the manifest at compile time and
 verifies it at startup through `Files.verify_assets!`; a missing or altered
-glyph is named in a danger-colored status line and its rows show neutral
-placeholder boxes while browsing continues. When running the built binary
-directly, pass `--assets-root examples-gui/folder-explorer/assets` (or set
+glyph is named in a danger-colored status line while browsing continues.
+
+That report is advisory and does not gate rendering. Drawing a glyph is the
+host's own resolution and decoding of the file: a glyph the host cannot resolve
+or decode — missing, unreadable, or not a valid image — shows a neutral
+placeholder box, while a file that was altered but is still a valid image
+renders its new contents. So "altered" in the status line does not imply a
+placeholder, and a placeholder does not require a failed verification. The
+check runs once at mount; restoring a file afterwards is reported by the next
+run, not by the live status line. `specs/assets-problem/` holds a prepared
+assets root exercising all three cases at once. When running the built binary
+directly, pass `--host-assets-root examples-gui/folder-explorer/assets` (or set
 `ROC_SIGNALS_ASSETS_ROOT`); image sources are always relative paths inside
 that root.
 

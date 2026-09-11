@@ -75,11 +75,34 @@ class GuiDiscoveryTests(unittest.TestCase):
                 patch.object(gui_suite.toolchain, "verify_compiler"), \
                 patch.object(gui_suite.toolchain, "read_pin"), \
                 patch.object(gui_suite, "install_prebuilt_host") as install, \
+                patch("gui_host_artifacts.lock_matches_sources", return_value=True), \
                 patch.object(gui_suite.subprocess, "run") as run:
             with self.assertRaisesRegex(SystemExit, "no GUI specs matched"):
                 gui_suite.run("roc", args, Path(temporary) / "output")
         install.assert_called_once_with(Path("host.lock"), build_gui.host_target())
         self.assertFalse(any(command.args[0][0] == "cargo" for command in run.call_args_list))
+
+    def test_a_lock_from_before_a_host_change_builds_and_tests_the_host(self):
+        """The case that would otherwise make a host change unmergeable."""
+        args = SimpleNamespace(
+            gui_host_lock=Path("host.lock"), gui_build_jobs=2, spec_filter=(), shard=None,
+            jobs=1, fail_fast=False, spec_timeout=30,
+        )
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(gui_suite, "examples", return_value=()), \
+                patch.object(gui_suite, "fixtures", return_value=()), \
+                patch.object(gui_suite.toolchain, "verify_compiler"), \
+                patch.object(gui_suite.toolchain, "read_pin"), \
+                patch.object(gui_suite, "install_prebuilt_host") as install, \
+                patch("gui_host_artifacts.lock_matches_sources", return_value=False), \
+                patch.object(gui_suite.subprocess, "run") as run:
+            with self.assertRaisesRegex(SystemExit, "no GUI specs matched"):
+                gui_suite.run("roc", args, Path(temporary) / "output")
+        install.assert_not_called()
+        commands = [command.args[0] for command in run.call_args_list]
+        self.assertTrue(any(str(part).endswith("build_gui.py") for command in commands
+                            for part in command))
+        self.assertTrue(any(command[0] == "cargo" for command in commands))
 
 
 if __name__ == "__main__":
