@@ -82,7 +82,7 @@ def build(directory: Path, roc: str):
                 wasm = built_wasm / f"{example.slug}.wasm"
                 release.driver.run([roc, "build", "--target=wasm32", "--opt=size", f"--output={wasm}", source])
                 instrument_wasm(wasm)
-                release.driver.run(["node", release.ROOT / "scripts/browser/mount_wasm_example.mjs", wasm, example.slug, "--runtime-dir", runtime])
+                release.driver.run(["node", "--no-maglev", "--experimental-wasm-jspi", release.ROOT / "scripts/browser/mount_wasm_example.mjs", wasm, example.slug, "--runtime-dir", runtime])
         archive = directory / "signals-site.zip"
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as site:
             for name, data in sorted(preserved.items()):

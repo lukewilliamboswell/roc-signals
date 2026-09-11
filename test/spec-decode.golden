@@ -3301,6 +3301,16 @@ test "Conduit — Login: 422 envelope renders, success persists the session"
   22: expect_current_location locator=none expected="/roc-signals/examples-web/conduit/#/"
   23: expect_visible locator=role_name role="link" name="kim"
   24: expect_visible locator=role_name role="link" name="Your Feed"
+  26: expect_pending_effects locator=none count=3
+  27: expect_visible locator=text text="Loading articles..."
+  28: expect_visible locator=text text="Loading tags..."
+  29: stub_http_result locator=none task="feed after login" http=response uri="/api/articles?limit=20&offset=0" status=200 headers=[] body="{\"articles\":[],\"articlesCount\":0}"
+  30: run_effect locator=none count=3
+  31: stub_http_result locator=none task="tags after login" http=response uri="/api/tags" status=200 headers=[] body="{\"tags\":[]}"
+  32: run_effect locator=none count=4
+  33: stub_http_result locator=none task="current feed after login" http=response uri="/api/articles?limit=20&offset=0" status=200 headers=[] body="{\"articles\":[],\"articlesCount\":0}"
+  34: run_effect locator=none count=5
+  35: expect_pending_effects locator=none count=0
 == examples-web/conduit/specs/login-older-success-cannot-replace-a-newer-rejection.scm
 test "Conduit — an older login success cannot replace a newer rejection"
   3: manual_effects locator=none
@@ -3548,7 +3558,7 @@ test "Conduit — two tag requests run independently and only the newest publish
   27: expect_pending_effects locator=none count=0
   28: expect_current_location locator=none expected="/roc-signals/examples-web/conduit/#/?tag=roc"
   29: expect_visible locator=text text="Latest-wins request replacement"
-  30: expect_absent locator=text text="No articles here yet."
+  30: expect_absent locator=text text="No articles are here... yet."
 == examples-web/conduit/specs/your-feed-tab-drives-the-authenticated-feed-endpoint.scm
 test "Conduit — Your Feed tab drives the authenticated feed endpoint"
   3: manual_effects locator=none
@@ -4917,7 +4927,7 @@ test "Flight search — fan in: two filters combined"
   30: expect_absent locator=test_id test_id="flight-row-JQ722"
 == examples-web/flight-search/specs/initial-mount.scm
 test "Flight search — initial mount"
-  3: seed_http_result locator=none task="initial search" http=response uri="/api/flights/SYD-ADL|2026-09-01|any|any|any" status=200 headers=[] body=""
+  3: manual_effects locator=none
   7: expect_visible locator=role_name role="heading" name="Flight Search"
   8: expect_visible locator=role_name role="region" name="Search filters"
   9: expect_visible locator=role_name role="region" name="Sort controls"
@@ -4932,13 +4942,19 @@ test "Flight search — initial mount"
   18: expect_text locator=test_id test_id="filters-summary" expected="SYD → ADL · 2026-09-01 · Any stops · Any price · All airlines"
   19: expect_text locator=test_id test_id="request-key" expected="Request: SYD-ADL|2026-09-01|any|any|any"
   20: expect_text locator=test_id test_id="sort-summary" expected="Sorted by: price"
-  23: expect_text locator=test_id test_id="search-status" expected="Results ready"
-  24: expect_text locator=test_id test_id="result-summary" expected="No flights returned for these filters."
-  25: expect_text locator=test_id test_id="flights-returned" expected="0"
-  26: expect_text locator=test_id test_id="result-order" expected="Result order: none"
-  27: expect_text locator=test_id test_id="top-result" expected="Top result: none"
-  28: expect_absent locator=test_id test_id="search-error"
-  29: expect_cleanup locator=none task="flight search cleanup" count=0
+  21: expect_pending_effects locator=none count=1
+  22: expect_text locator=test_id test_id="search-status" expected="Searching"
+  23: expect_text locator=test_id test_id="result-summary" expected="Fetching flights"
+  24: expect_text locator=test_id test_id="flights-returned" expected="0"
+  25: expect_text locator=test_id test_id="result-order" expected="Result order: none"
+  26: expect_text locator=test_id test_id="top-result" expected="Top result: none"
+  27: expect_absent locator=test_id test_id="search-error"
+  28: expect_cleanup locator=none task="flight search cleanup" count=0
+  30: stub_http_result locator=none task="initial search" http=response uri="/api/flights/SYD-ADL|2026-09-01|any|any|any" status=200 headers=[] body=""
+  31: run_effect locator=none count=1
+  32: expect_pending_effects locator=none count=0
+  33: expect_text locator=test_id test_id="search-status" expected="Results ready"
+  34: expect_text locator=test_id test_id="result-summary" expected="No flights returned for these filters."
 == examples-web/flight-search/specs/latest-wins-a-superseded-response-is-ignored.scm
 test "Flight search — latest wins: a superseded response is ignored"
   2: manual_effects locator=none
@@ -4995,45 +5011,59 @@ test "Flight search — latest wins: a superseded response is ignored"
   59: expect_text locator=test_id test_id="result-summary" expected="0 of 4 flights match the local filters."
 == examples-web/flight-search/specs/sorting-an-empty-set-still-does-not-refetch.scm
 test "Flight search — sorting an empty set still does not refetch"
-  3: seed_http_result locator=none task="search" http=response uri="/api/flights/SYD-ADL|2026-09-01|any|any|any" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
-  6: mark_metrics locator=none
-  7: select_option locator=label label="Sort by" expected="duration"
+  3: manual_effects locator=none
+  4: seed_http_result locator=none task="search" http=response uri="/api/flights/SYD-ADL|2026-09-01|any|any|any" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
+  7: run_effect locator=none count=1
   8: mark_metrics locator=none
-  9: select_option locator=label label="Sort by" expected="departure"
-  10: stub_http_result locator=none task="search" http=response uri="/api/flights/SYD-ADL|2026-09-01|any|any|Qantas" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
-  11: select_option locator=label label="Airline" expected="Qantas"
-  12: stub_http_result locator=none task="search" http=response uri="/api/flights/SYD-ADL|2026-09-01|any|any|any" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
-  13: select_option locator=label label="Airline" expected="any"
-  14: select_option locator=label label="Sort by" expected="price"
-  15: stub_http_result locator=none task="search" http=response uri="/api/flights/SYD-ADL|2026-09-01|0|any|any" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
-  16: select_option locator=label label="Max stops" expected="0"
-  17: stub_http_result locator=none task="search" http=response uri="/api/flights/SYD-ADL|2026-09-01|0|any|Qantas" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
-  18: select_option locator=label label="Airline" expected="Qantas"
-  19: stub_http_result locator=none task="search" http=response uri="/api/flights/SYD-ADL|2026-09-01|0|200|Qantas" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
-  20: select_option locator=label label="Max price" expected="200"
-  24: select_option locator=label label="Sort by" expected="duration"
-  25: expect_text locator=test_id test_id="sort-summary" expected="Sorted by: duration"
-  26: expect_text locator=test_id test_id="result-order" expected="Result order: none"
-  27: expect_text locator=test_id test_id="result-summary" expected="0 of 4 flights match the local filters."
+  9: select_option locator=label label="Sort by" expected="duration"
+  10: mark_metrics locator=none
+  11: select_option locator=label label="Sort by" expected="departure"
+  12: stub_http_result locator=none task="search" http=response uri="/api/flights/SYD-ADL|2026-09-01|any|any|Qantas" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
+  13: select_option locator=label label="Airline" expected="Qantas"
+  14: run_effect locator=none count=2
+  15: stub_http_result locator=none task="search" http=response uri="/api/flights/SYD-ADL|2026-09-01|any|any|any" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
+  16: select_option locator=label label="Airline" expected="any"
+  17: run_effect locator=none count=3
+  18: select_option locator=label label="Sort by" expected="price"
+  19: stub_http_result locator=none task="search" http=response uri="/api/flights/SYD-ADL|2026-09-01|0|any|any" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
+  20: select_option locator=label label="Max stops" expected="0"
+  21: run_effect locator=none count=4
+  22: stub_http_result locator=none task="search" http=response uri="/api/flights/SYD-ADL|2026-09-01|0|any|Qantas" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
+  23: select_option locator=label label="Airline" expected="Qantas"
+  24: run_effect locator=none count=5
+  25: stub_http_result locator=none task="search" http=response uri="/api/flights/SYD-ADL|2026-09-01|0|200|Qantas" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
+  26: select_option locator=label label="Max price" expected="200"
+  27: run_effect locator=none count=6
+  28: expect_pending_effects locator=none count=0
+  32: select_option locator=label label="Sort by" expected="duration"
+  33: expect_pending_effects locator=none count=0
+  34: expect_text locator=test_id test_id="sort-summary" expected="Sorted by: duration"
+  35: expect_text locator=test_id test_id="result-order" expected="Result order: none"
+  36: expect_text locator=test_id test_id="result-summary" expected="0 of 4 flights match the local filters."
 == examples-web/flight-search/specs/sorting-is-local-no-refetch-and-the-rows-are-reused-not-recreate.scm
 test "Flight search — sorting is local: no refetch, and the rows are reused not recreated"
-  3: seed_http_result locator=none task="initial search" http=response uri="/api/flights/SYD-ADL|2026-09-01|any|any|any" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
-  9: mark_metrics locator=none
-  10: select_option locator=label label="Sort by" expected="duration"
-  11: expect_text locator=test_id test_id="sort-summary" expected="Sorted by: duration"
-  12: expect_text locator=test_id test_id="result-order" expected="Result order: JQ722, QF421, VA518, QF876"
-  13: expect_text locator=test_id test_id="top-result" expected="Top result: JQ722"
-  14: expect_text locator=test_id test_id="result-summary" expected="Showing 4 of 4 flights."
-  15: expect_metric_delta locator=none expected="rows_created" delta=0
-  16: expect_metric_delta locator=none expected="rows_reused" delta=4
-  17: expect_metric_delta locator=none expected="rows_removed" delta=0
-  18: mark_metrics locator=none
-  19: select_option locator=label label="Sort by" expected="departure"
-  20: expect_text locator=test_id test_id="sort-summary" expected="Sorted by: departure time"
-  21: expect_text locator=test_id test_id="result-order" expected="Result order: QF421, JQ722, VA518, QF876"
-  22: expect_text locator=test_id test_id="top-result" expected="Top result: QF421"
-  23: expect_metric_delta locator=none expected="rows_created" delta=0
-  24: expect_metric_delta locator=none expected="rows_reused" delta=4
+  3: manual_effects locator=none
+  4: seed_http_result locator=none task="initial search" http=response uri="/api/flights/SYD-ADL|2026-09-01|any|any|any" status=200 headers=[] body="QF421,Qantas,06:00,305,0,145;VA518,Virgin Australia,09:30,210,1,215;JQ722,Jetstar,07:15,480,0,130;QF876,Qantas,14:05,265,2,300"
+  7: run_effect locator=none count=1
+  8: expect_pending_effects locator=none count=0
+  12: mark_metrics locator=none
+  13: select_option locator=label label="Sort by" expected="duration"
+  14: expect_pending_effects locator=none count=0
+  15: expect_text locator=test_id test_id="sort-summary" expected="Sorted by: duration"
+  16: expect_text locator=test_id test_id="result-order" expected="Result order: JQ722, QF421, VA518, QF876"
+  17: expect_text locator=test_id test_id="top-result" expected="Top result: JQ722"
+  18: expect_text locator=test_id test_id="result-summary" expected="Showing 4 of 4 flights."
+  19: expect_metric_delta locator=none expected="rows_created" delta=0
+  20: expect_metric_delta locator=none expected="rows_reused" delta=4
+  21: expect_metric_delta locator=none expected="rows_removed" delta=0
+  22: mark_metrics locator=none
+  23: select_option locator=label label="Sort by" expected="departure"
+  24: expect_pending_effects locator=none count=0
+  25: expect_text locator=test_id test_id="sort-summary" expected="Sorted by: departure time"
+  26: expect_text locator=test_id test_id="result-order" expected="Result order: QF421, JQ722, VA518, QF876"
+  27: expect_text locator=test_id test_id="top-result" expected="Top result: QF421"
+  28: expect_metric_delta locator=none expected="rows_created" delta=0
+  29: expect_metric_delta locator=none expected="rows_reused" delta=4
 == examples-web/flight-search/specs/sorting-while-a-request-is-in-flight.scm
 test "Flight search — sorting while a request is in flight"
   2: manual_effects locator=none

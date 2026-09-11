@@ -1,5 +1,6 @@
 """Driver paths and test manifests remain stable across routine formatting."""
 
+import ast
 from contextlib import chdir
 import os
 from pathlib import Path
@@ -41,6 +42,28 @@ class CompilerPathTests(unittest.TestCase):
 
 
 class EffectContractTests(unittest.TestCase):
+    def test_fault_campaign_enables_jspi(self) -> None:
+        tree = ast.parse(Path(test_driver.__file__).read_text(encoding="utf-8"))
+        commands = [node for node in ast.walk(tree) if isinstance(node, ast.List)
+                    and any(isinstance(value, ast.Constant)
+                            and value.value == "scripts/browser/coordinated_writes_faults.mjs"
+                            for value in node.elts)]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual([value.value for value in commands[0].elts[:3]],
+                         ["node", "--no-maglev", "--experimental-wasm-jspi"])
+
+    def test_release_mount_commands_enable_jspi(self) -> None:
+        for name in ("release.py", "site_release.py"):
+            tree = ast.parse(Path(__file__).with_name(name).read_text(encoding="utf-8"))
+            commands = [node for node in ast.walk(tree) if isinstance(node, ast.List)
+                        and any(isinstance(value, ast.Constant)
+                                and value.value == "scripts/browser/mount_wasm_example.mjs"
+                                for value in ast.walk(node))]
+            with self.subTest(controller=name):
+                self.assertEqual(len(commands), 1)
+                self.assertEqual([value.value for value in commands[0].elts[:3]],
+                                 ["node", "--no-maglev", "--experimental-wasm-jspi"])
+
     def test_linked_contracts_build_each_fixture_before_running_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)

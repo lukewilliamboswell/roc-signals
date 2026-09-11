@@ -32,9 +32,10 @@ fetch_row = |file, run| Ui.state(
 
 fetch! : Ui.State(State), Str => Action(Str)
 fetch! = |state, file| {
-	body = match Http.get_text!("/probe/${file}") {
-		Ok(text) => text
-		Err(error) => crash Str.inspect(error)
+	request = Http.request_from_method(Http.method_get).with_uri("/probe/${file}")
+	body = match Http.send!(request) {
+		Ok(response) => Str.from_utf8_lossy(Http.response_body(response))
+		Err(_) => ""
 	}
 	Action.update([state.set({ body, ready: True })])
 }
