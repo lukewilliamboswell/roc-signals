@@ -1,3 +1,4 @@
+import Document
 import pf.Elem exposing [Elem]
 import pf.Files
 import pf.Gui
@@ -42,7 +43,7 @@ Workflow := [].{
 					}
 					Files.choose_save_path(tasks.choose_save, { directory, suggested_name })
 				}
-				Session.Phase.Writing(write) => Files.write_text(tasks.write, { path: write.path, text: write.document.body })
+				Session.Phase.Writing(write) => Files.write_text(tasks.write, { path: write.path, text: Document.encode(write.document.body, write.format) })
 				_ => Signal.noop
 			},
 		),

@@ -9,8 +9,8 @@ Session := [].{
 		is_eq : _
 	}
 
-	Write : { path : Str, document : Document.Snapshot }
-	SaveChoice : { document : Document.Snapshot, previous_path : [None, Some(Str)] }
+	Write : { path : Str, document : Document.Snapshot, format : Document.Format }
+	SaveChoice : { document : Document.Snapshot, format : Document.Format, previous_path : [None, Some(Str)] }
 
 	Phase := [
 		Idle,
@@ -37,12 +37,14 @@ Session := [].{
 		path : [None, Some(Str)],
 		baseline : Document.Snapshot,
 		body : Str,
+		## The opened file's line-end spelling and byte-order mark, written back on save.
+		format : Document.Format,
 		phase : Phase,
 		problem : [None, Some(Str)],
 	}
 
 	initial : State
-	initial = { document_generation: 0, close: NoClose, path: None, baseline: Document.blank, body: "", phase: Idle, problem: None }
+	initial = { document_generation: 0, close: NoClose, path: None, baseline: Document.blank, body: "", format: Document.native_format, phase: Idle, problem: None }
 
 	## Ordinary typing is not a document replacement: it never advances the
 	## lifetime, so the native editor keeps its own selection and undo history.
@@ -112,8 +114,8 @@ Session := [].{
 	begin_save = |{ state, save_as }|
 		if can_start(state) {
 			phase = match state.path {
-				Some(path) if !save_as => Writing({ path, document: draft(state) })
-				_ => ChoosingSave({ document: draft(state), previous_path: state.path })
+				Some(path) if !save_as => Writing({ path, document: draft(state), format: state.format })
+				_ => ChoosingSave({ document: draft(state), format: state.format, previous_path: state.path })
 			}
 			{ ..state, phase, problem: None }
 		} else {
@@ -139,7 +141,7 @@ Session := [].{
 	choose_path = |state, path|
 		match state.phase {
 			ChoosingOpen => { ..state, phase: Reading(path) }
-			ChoosingSave(choice) => { ..state, phase: Writing({ path, document: choice.document }) }
+			ChoosingSave(choice) => { ..state, phase: Writing({ path, document: choice.document, format: choice.format }) }
 			_ => crash "A file choice arrived without its owning Notes operation"
 		}
 
@@ -147,13 +149,17 @@ Session := [].{
 	## because only that path can allocate the lifetime that must own it.
 	from_file : { path : Str, text : Str } -> State
 	from_file = |file| {
-		document_generation: 0,
-		close: NoClose,
-		path: Some(file.path),
-		baseline: { title: file_name(file.path), body: file.text },
-		body: file.text,
-		phase: Idle,
-		problem: None,
+		opened = Document.decode(file.text)
+		{
+			document_generation: 0,
+			close: NoClose,
+			path: Some(file.path),
+			baseline: { title: file_name(file.path), body: opened.text },
+			body: opened.text,
+			format: opened.format,
+			phase: Idle,
+			problem: None,
+		}
 	}
 
 	## A successful read belongs to the active reading operation. Every accepted
@@ -272,7 +278,7 @@ expect {
 	first = Session.begin_save({ state, save_as: False })
 	saved = Session.written(first, "/tmp/Ideas.txt")
 	second = Session.begin_save({ state: saved, save_as: False })
-	second.phase == Writing({ path: "/tmp/Ideas.txt", document: accepted })
+	second.phase == Writing({ path: "/tmp/Ideas.txt", document: accepted, format: Document.native_format })
 }
 
 ## A successful read replaces the baseline and names the file without parsing its body.

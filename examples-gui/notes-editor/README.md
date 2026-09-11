@@ -46,6 +46,14 @@ asks whether to Save and close, Discard and close, or Keep editing. A closing
 save freezes editing and waits for successful completion; cancellation or failure
 keeps the window and draft open. Closing during another file operation asks the
 user to finish or cancel it first.
+A file opens in the editor as LF text with no byte-order mark: a leading
+U+FEFF is removed rather than kept as an invisible first character, and CRLF
+becomes LF so the caret, the counts and native undo see one character per line
+end. The document remembers what the file used — the ending most of its lines
+had, and whether it had a mark — and a save writes that spelling back, so a
+CRLF file stays CRLF and a marked file stays marked. Text pasted with CRLF is
+normalized on save, so a saved file never mixes endings. A lone CR is ordinary
+text. New documents save as LF without a mark.
 Statistics use the pinned [Roc Unicode package](../../vendor/unicode/README.md).
 Characters are Unicode 17 extended grapheme clusters, including whitespace:
 `é` and `é` each count as one, as do joined emoji and flag sequences; CRLF

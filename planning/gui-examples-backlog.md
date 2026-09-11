@@ -378,13 +378,19 @@ each CRLF into two spaces. CRLF rendering showed no stray glyph in these
 captures; caret math past `\r` was not measured. Activity's line stream
 already handles CRLF correctly and needs no change.
 
-Acceptance: choose a document line-ending policy (preserve the file's
-dominant ending on save, or normalize on load and write back one ending) and
-strip or preserve a BOM deliberately; state it in the Notes README. Test load,
-edit, paste from a CRLF source, save, and round-trip on all three OSes, with
-the footer counts and native undo agreeing with the visible text. Keep the
-policy in the application or the typed Files boundary, not in the host's
-generic input.
+Policy chosen and landed 2026-09-11, in the application: a file is decoded on
+load (leading BOM removed, CRLF to LF, the majority ending and the mark
+remembered on the session) and encoded on save with that spelling, after
+normalizing any pasted CRLF, so the editor, the counts and native undo see one
+character per line end and a CRLF file round-trips as CRLF. The Notes README
+states it; `line-endings.scm` and Document expectations cover decode, counts
+and encode. The host's generic input is untouched, so its single-line paste
+still turns CRLF into two spaces (Board and Explorer fields), which is a
+separate, minor item.
+
+Remaining: the round trip has been exercised through fixtures on Linux only.
+Open a CRLF file, edit, paste from a CRLF source and save on Windows and macOS
+and compare the bytes.
 
 ### GUI-29 — Activity Monitor crashes on close while following a log
 
