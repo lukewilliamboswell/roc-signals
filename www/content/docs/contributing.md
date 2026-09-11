@@ -943,11 +943,10 @@ Supported assertions:
 
 ### Readable native file fixtures
 
-Use structured Files results for application workflows so specs do not need
-hand-counted UTF-8 frames or knowledge of the private `files1` payload. The
-`Files` functions run synchronously inside an effect, so their results are
-declared ahead of time with `stub-file-*` forms, either in `setup` for
-mount-time effects or in `steps` before the step that triggers the call:
+The `Files` functions run synchronously inside an effect, so their results
+are declared ahead of time with `stub-file-*` forms, either in `setup` for
+mount-time effects or in `steps` before the step that triggers the call. A
+stub is a typed value the spec host hands back exactly as a real call would:
 
 ```lisp
 (stub-file-choice "notes-open" (chosen "/tmp/meeting.txt"))

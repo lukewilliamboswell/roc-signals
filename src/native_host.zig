@@ -27,6 +27,7 @@ const spec_parser = @import("spec/spec_parser.zig");
 const spec_runner = @import("spec/spec_runner.zig");
 const spec_file_fixtures = @import("spec/file_fixtures.zig");
 const spec_http_fixtures = @import("spec/http_fixtures.zig");
+const services = @import("native_services.zig");
 const benchmark = @import("bench/benchmark.zig");
 const sim_dom = @import("sim_dom.zig");
 const native_style = signals.native_style;
@@ -80,77 +81,6 @@ const NativeTaskCancellationPublication = struct {
     /// Uncommitted cancellation owns no additional payload or registration.
     pub fn deinit(_: *@This()) void {}
 };
-
-/// One spec-declared result for a synchronous `Files` request: the task kinds
-/// it may answer, the `files1` packet to return, and whether it is an error.
-const FileStub = struct {
-    kinds: u64,
-    payload: []const u8,
-    failed: bool,
-};
-
-/// Answers a synchronous `Files` request in the spec host from the declared
-/// stubs: the first stub admitting the kind whose result path frame matches
-/// the request's path frame, or any stub for a kind without a path. Consumed
-/// stubs are removed so a spec can sequence results. No stub is an error result.
-fn stubbedFilesResult(host: *HostEnv, gpa: std.mem.Allocator, kind: boundary.TaskKind, request: []const u8) struct { failed: bool, payload: []const u8 } {
-    const request_path = filesFrame(request, 1);
-    for (host.file_stubs.items, 0..) |stub, index| {
-        if (!spec_file_fixtures.admits(stub.kinds, kind)) continue;
-        const keyed = kind != .verify_assets and kind != .choose_file and kind != .choose_directory and kind != .choose_save_path;
-        if (keyed and !stub.failed and !std.mem.eql(u8, filesFrame(stub.payload, 1), request_path)) continue;
-        const taken = host.file_stubs.orderedRemove(index);
-        return .{ .failed = taken.failed, .payload = taken.payload };
-    }
-    const message = std.fmt.allocPrint(gpa, "no spec stub for {s} {s}", .{ @tagName(kind), request_path }) catch @panic("out of memory");
-    defer gpa.free(message);
-    return .{ .failed = true, .payload = filesErrorPacket(gpa, "unavailable", message) };
-}
-
-/// One declared answer for the hosted `Http` function in the spec host: the
-/// request URI it answers, or any URI for an error, and the `http1` packet.
-const HttpStub = struct {
-    uri: []const u8,
-    payload: []const u8,
-    failed: bool,
-};
-
-/// Answers a hosted `Http` request in the spec host from the declared stubs:
-/// the first stub whose URI matches the request's, or any error stub. Consumed
-/// stubs are removed so a spec can sequence results. No stub is an error result.
-fn stubbedHttpResult(host: *HostEnv, gpa: std.mem.Allocator, request: []const u8) struct { failed: bool, payload: []const u8 } {
-    const request_uri = filesFrame(request, 2);
-    for (host.http_stubs.items, 0..) |stub, index| {
-        if (!stub.failed and !std.mem.eql(u8, stub.uri, request_uri)) continue;
-        const taken = host.http_stubs.orderedRemove(index);
-        gpa.free(taken.uri);
-        return .{ .failed = taken.failed, .payload = taken.payload };
-    }
-    const message = std.fmt.allocPrint(gpa, "no spec stub for {s}", .{request_uri}) catch @panic("out of memory");
-    defer gpa.free(message);
-    const payload = std.fmt.allocPrint(gpa, "5:http111:unavailable{d}:{s}", .{ message.len, message }) catch @panic("out of memory");
-    return .{ .failed = true, .payload = payload };
-}
-
-/// Reads frame `index` (0 is the codec version) of a length-prefixed packet, or "".
-fn filesFrame(packet: []const u8, index: usize) []const u8 {
-    var rest = packet;
-    var current: usize = 0;
-    while (rest.len > 0) : (current += 1) {
-        const colon = std.mem.indexOfScalar(u8, rest, ':') orelse return "";
-        const len = std.fmt.parseInt(usize, rest[0..colon], 10) catch return "";
-        if (rest.len < colon + 1 + len) return "";
-        const value = rest[colon + 1 .. colon + 1 + len];
-        if (current == index) return value;
-        rest = rest[colon + 1 + len ..];
-    }
-    return "";
-}
-
-/// Encodes a `files1` error packet the Roc `Files` decoder understands.
-fn filesErrorPacket(gpa: std.mem.Allocator, code: []const u8, detail: []const u8) []const u8 {
-    return std.fmt.allocPrint(gpa, "6:files1{d}:{s}{d}:{s}", .{ code.len, code, detail.len, detail }) catch @panic("out of memory");
-}
 
 /// The engine's task starts are observations here: the GUI platform runs its
 /// native work as effects, and engine tasks exist only for the spec runner's
@@ -1076,8 +1006,8 @@ const HostEnv = struct {
     started_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     /// Spec-declared results for the synchronous `Files` primitives, consumed
     /// oldest first as requests arrive; only the display-free spec host uses them.
-    file_stubs: std.ArrayListUnmanaged(FileStub) = .empty,
-    http_stubs: std.ArrayListUnmanaged(HttpStub) = .empty,
+    file_stubs: services.FileStubs = .empty,
+    http_stubs: services.HttpStubs = .empty,
     canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
     location_index: usize = 0,
@@ -1159,29 +1089,26 @@ const HostEnv = struct {
         return .{ .ptr = self, .vtable = &HostAllocator.vtable };
     }
 
-    /// Declares one result for the synchronous `Files` primitives in spec mode.
-    fn stubFile(self: *HostEnv, kinds: u64, payload: []const u8, failed: bool) void {
+    /// Declares one answer for a hosted `Files` function in spec mode.
+    fn stubFile(self: *HostEnv, stub: *const spec_file_fixtures.Stub) void {
         const gpa = self.hostAllocator();
-        self.file_stubs.append(gpa, .{ .kinds = kinds, .payload = gpa.dupe(u8, payload) catch @panic("out of memory"), .failed = failed }) catch @panic("out of memory");
+        const copy = stub.dupe(gpa) catch @panic("out of memory");
+        self.file_stubs.append(gpa, copy) catch @panic("out of memory");
     }
 
-    /// Declares one result for the hosted `Http` function in spec mode.
-    fn stubHttp(self: *HostEnv, uri: []const u8, payload: []const u8, failed: bool) void {
+    /// Declares one answer for the hosted `Http` function in spec mode.
+    fn stubHttp(self: *HostEnv, stub: *const spec_http_fixtures.Stub) void {
         const gpa = self.hostAllocator();
-        const uri_copy = gpa.dupe(u8, uri) catch @panic("out of memory");
-        const payload_copy = gpa.dupe(u8, payload) catch @panic("out of memory");
-        self.http_stubs.append(gpa, .{ .uri = uri_copy, .payload = payload_copy, .failed = failed }) catch @panic("out of memory");
+        const copy = stub.dupe(gpa) catch @panic("out of memory");
+        self.http_stubs.append(gpa, copy) catch @panic("out of memory");
     }
 
     fn deinitTaskRecords(self: *HostEnv) void {
         const allocator = self.hostAllocator();
-        for (self.file_stubs.items) |stub| allocator.free(stub.payload);
+        for (self.file_stubs.items) |stub| stub.deinit(allocator);
         self.file_stubs.deinit(allocator);
         self.file_stubs = .empty;
-        for (self.http_stubs.items) |stub| {
-            allocator.free(stub.uri);
-            allocator.free(stub.payload);
-        }
+        for (self.http_stubs.items) |stub| stub.deinit(allocator);
         self.http_stubs.deinit(allocator);
         self.http_stubs = .empty;
         for (self.started_tasks.items) |record| {
@@ -2530,54 +2457,129 @@ fn hostEnvVar(name: abi.RocStr) callconv(.c) abi.EnvVarResult {
     return result;
 }
 
-/// The Rust host's synchronous filesystem runner and the release for the
-/// packet buffer it hands back. Both link from the GPUI host crate.
-extern fn signals_files_run(kind: u32, request_ptr: [*]const u8, request_len: usize, out_ptr: *[*]u8, out_len: *usize) callconv(.c) u32;
-extern fn signals_files_release(ptr: [*]u8, len: usize) callconv(.c) void;
-extern fn signals_http_run(request_ptr: [*]const u8, request_len: usize, out_ptr: *[*]u8, out_len: *usize) callconv(.c) u32;
-extern fn signals_http_release(ptr: [*]u8, len: usize) callconv(.c) void;
-
-/// Hosted `Http.run!`: performs one request on the calling worker. The spec
-/// host answers from declared stubs and never touches the network.
-fn hostHttpRun(request: abi.RocListWith(u8, false)) callconv(.c) abi.HttpRun {
+/// The hosted `Files` and `Http` functions. Each receives owned Roc
+/// arguments, releases them, and returns the typed result the glue declares;
+/// the work itself happens in `native_services`, from the Rust host's C
+/// structs in a live window and from declared stubs in the spec host.
+fn hostFilesChooseFile() callconv(.c) abi.FilesChoose_fileResult {
     const roc_host = currentRocHost();
-    defer request.decref(roc_host);
-    const bytes: []const u8 = if (request.elements_ptr) |ptr| ptr[0..request.length] else "";
-    if (!Gpui.live) {
-        const host = currentHost();
-        const gpa = host.hostAllocator();
-        const stubbed = stubbedHttpResult(host, gpa, bytes);
-        defer gpa.free(stubbed.payload);
-        return .{ .bytes = abi.RocListWith(u8, false).fromSlice(stubbed.payload, roc_host), .failed = stubbed.failed };
-    }
-    var out_ptr: [*]u8 = undefined;
-    var out_len: usize = 0;
-    const failed = signals_http_run(bytes.ptr, bytes.len, &out_ptr, &out_len);
-    defer signals_http_release(out_ptr, out_len);
-    return .{ .bytes = abi.RocListWith(u8, false).fromSlice(out_ptr[0..out_len], roc_host), .failed = failed == 1 };
+    if (!Gpui.live) return services.stubChoose(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, "choose_file");
+    return services.choose(roc_host, .file, "", false, "");
 }
 
-/// Hosted `Files.run!`: performs one filesystem request on the calling thread
-/// through the Rust host and returns its `files1` packet. Roc transfers the
-/// request string here; the packet text is one owned reference handed back.
-fn hostFilesRun(kind: u32, request: abi.RocStr) callconv(.c) abi.FilesRun {
+fn hostFilesChooseDirectory() callconv(.c) abi.FilesChoose_fileResult {
+    const roc_host = currentRocHost();
+    if (!Gpui.live) return services.stubChoose(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, "choose_directory");
+    return services.choose(roc_host, .directory, "", false, "");
+}
+
+fn hostFilesChooseSavePath(args: abi.FilesChoose_save_pathArgs) callconv(.c) abi.FilesChoose_fileResult {
+    const roc_host = currentRocHost();
+    defer args.decref(roc_host);
+    if (!Gpui.live) return services.stubChoose(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, "choose_save_path");
+    var holder = args;
+    const home = holder.directory.tag == .Home;
+    const directory: []const u8 = if (home) "" else @as(*const abi.RocStr, @ptrCast(@alignCast(&holder.directory.payload))).asSlice();
+    return services.choose(roc_host, .save_path, directory, home, holder.suggested_name.asSlice());
+}
+
+fn hostFilesReadText(path: abi.RocStr) callconv(.c) abi.FilesRead_textResult {
+    const roc_host = currentRocHost();
+    defer path.decref(roc_host);
+    if (!Gpui.live) return services.stubReadText(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, path.asSlice());
+    return services.readText(roc_host, path.asSlice());
+}
+
+fn hostFilesWriteText(args: abi.FilesWrite_textArgs) callconv(.c) abi.FilesWrite_textResult {
+    const roc_host = currentRocHost();
+    defer args.decref(roc_host);
+    if (!Gpui.live) return services.stubWriteText(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, args.path.asSlice());
+    return services.writeText(roc_host, args.path.asSlice(), args.text.asSlice());
+}
+
+fn hostFilesScan(root: abi.RocStr) callconv(.c) abi.FilesScanResult {
+    const roc_host = currentRocHost();
+    defer root.decref(roc_host);
+    const host = currentHost();
+    if (!Gpui.live) return services.stubScan(host.hostAllocator(), &host.file_stubs, roc_host, root.asSlice());
+    return services.scan(roc_host, host.hostAllocator(), root.asSlice());
+}
+
+fn hostFilesListDirectory(path: abi.RocStr) callconv(.c) abi.FilesList_directoryResult {
+    const roc_host = currentRocHost();
+    defer path.decref(roc_host);
+    const host = currentHost();
+    if (!Gpui.live) return services.stubListDirectory(host.hostAllocator(), &host.file_stubs, roc_host, path.asSlice());
+    return services.listDirectory(roc_host, host.hostAllocator(), path.asSlice());
+}
+
+fn hostFilesOpenPath(path: abi.RocStr) callconv(.c) abi.FilesOpen_pathResult {
+    const roc_host = currentRocHost();
+    defer path.decref(roc_host);
+    if (!Gpui.live) return services.stubOpenPath(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, path.asSlice());
+    return services.openPath(roc_host, path.asSlice());
+}
+
+fn hostFilesReadPreview(path: abi.RocStr) callconv(.c) abi.FilesRead_previewResult {
+    const roc_host = currentRocHost();
+    defer path.decref(roc_host);
+    if (!Gpui.live) return services.stubReadPreview(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, path.asSlice());
+    return services.readPreview(roc_host, path.asSlice());
+}
+
+fn hostFilesReadLog(args: abi.FilesRead_logArgs) callconv(.c) abi.FilesRead_logResult {
+    const roc_host = currentRocHost();
+    defer args.decref(roc_host);
+    if (!Gpui.live) return services.stubReadLog(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, args.path.asSlice());
+    return services.readLog(roc_host, args.path.asSlice(), args.position);
+}
+
+fn hostFilesVerifyAssets(entries: @FieldType(abi.FilesVerify_assetsArgs, "arg0")) callconv(.c) abi.FilesVerify_assetsResult {
+    const roc_host = currentRocHost();
+    defer abi.decrefListOf__AnonStruct_7ef14d5b382b23ae(entries, roc_host);
+    const host = currentHost();
+    if (!Gpui.live) return services.stubVerifyAssets(host.hostAllocator(), &host.file_stubs, roc_host);
+    const gpa = host.hostAllocator();
+    const items = if (entries.elements_ptr) |ptr| ptr[0..entries.length] else &.{};
+    const inputs = gpa.alloc(services.AssetEntry, items.len) catch @panic("out of memory");
+    defer gpa.free(inputs);
+    for (items, 0..) |*item, index| inputs[index] = .{ .name = item.name.asSlice(), .sha256 = item.sha256.asSlice() };
+    return services.verifyAssets(roc_host, gpa, inputs);
+}
+
+fn hostHttpSend(request: abi.Request) callconv(.c) abi.HttpSendResult {
     const roc_host = currentRocHost();
     defer request.decref(roc_host);
-    if (!Gpui.live) {
-        // The display-free spec host answers from declared stubs and never
-        // touches the filesystem.
-        const host = currentHost();
-        const gpa = host.hostAllocator();
-        const task_kind = std.enums.fromInt(boundary.TaskKind, kind) orelse failHost("unknown Files request kind");
-        const stubbed = stubbedFilesResult(host, gpa, task_kind, request.asSlice());
-        defer gpa.free(stubbed.payload);
-        return .{ .text = abi.RocStr.fromSlice(stubbed.payload, roc_host), .failed = stubbed.failed };
+    const host = currentHost();
+    const gpa = host.hostAllocator();
+    var holder = request;
+    if (!Gpui.live) return services.stubHttpSend(gpa, &host.http_stubs, roc_host, holder.uri.asSlice());
+    const method: []const u8 = switch (holder.method.tag) {
+        .CONNECT => "CONNECT",
+        .DELETE => "DELETE",
+        .GET => "GET",
+        .HEAD => "HEAD",
+        .OPTIONS => "OPTIONS",
+        .PATCH => "PATCH",
+        .POST => "POST",
+        .PUT => "PUT",
+        .TRACE => "TRACE",
+        .Unknown => @as(*const abi.RocStr, @ptrCast(@alignCast(&holder.method.payload))).asSlice(),
+    };
+    const timeout_ms: ?u64 = switch (holder.timeout_ms.tag) {
+        .NoTimeout => null,
+        .TimeoutMilliseconds => @as(*const u64, @ptrCast(@alignCast(&holder.timeout_ms.payload))).*,
+    };
+    const pairs = if (holder.headers.elements_ptr) |ptr| ptr[0..holder.headers.length] else &.{};
+    const headers = gpa.alloc(services.HeaderIn, pairs.len) catch @panic("out of memory");
+    defer gpa.free(headers);
+    for (pairs, 0..) |*pair, index| {
+        const name = pair._0.asSlice();
+        const value = pair._1.asSlice();
+        headers[index] = .{ .name_ptr = name.ptr, .name_len = name.len, .value_ptr = value.ptr, .value_len = value.len };
     }
-    var out_ptr: [*]u8 = undefined;
-    var out_len: usize = 0;
-    const failed = signals_files_run(kind, request.asSlice().ptr, request.asSlice().len, &out_ptr, &out_len);
-    defer signals_files_release(out_ptr, out_len);
-    return .{ .text = abi.RocStr.fromSlice(out_ptr[0..out_len], roc_host), .failed = failed == 1 };
+    const body: []const u8 = if (holder.body.elements_ptr) |ptr| ptr[0..holder.body.length] else "";
+    return services.httpSend(roc_host, gpa, .{ .method = method, .uri = holder.uri.asSlice(), .timeout_ms = timeout_ms, .headers = headers, .body = body });
 }
 
 fn hostDbg(bytes: [*]const u8, len: usize) callconv(.c) void {
@@ -3667,14 +3669,14 @@ const BenchmarkCtx = struct {
         return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
     }
 
-    /// Declares one result for the synchronous `Files` primitives; see `stubbedFilesResult`.
-    pub fn stubFileResult(host: *Host, kinds: u64, payload: []const u8, failed: bool) void {
-        host.stubFile(kinds, payload, failed);
+    /// Declares one answer for a hosted `Files` function; see `native_services`.
+    pub fn stubFileResult(host: *Host, stub: *const spec_file_fixtures.Stub) void {
+        host.stubFile(stub);
     }
 
-    /// Declares one result for the hosted `Http` function; see `stubbedHttpResult`.
-    pub fn stubHttpResult(host: *Host, uri: []const u8, payload: []const u8, failed: bool) void {
-        host.stubHttp(uri, payload, failed);
+    /// Declares one answer for the hosted `Http` function; see `native_services`.
+    pub fn stubHttpResult(host: *Host, stub: *const spec_http_fixtures.Stub) void {
+        host.stubHttp(stub);
     }
 
     /// Advances interval source through the shared propagation queue.
@@ -3963,14 +3965,14 @@ const SpecRunnerCtx = struct {
         return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
     }
 
-    /// Declares one result for the synchronous `Files` primitives; see `stubbedFilesResult`.
-    pub fn stubFileResult(host: *Host, kinds: u64, payload: []const u8, failed: bool) void {
-        host.stubFile(kinds, payload, failed);
+    /// Declares one answer for a hosted `Files` function; see `native_services`.
+    pub fn stubFileResult(host: *Host, stub: *const spec_file_fixtures.Stub) void {
+        host.stubFile(stub);
     }
 
-    /// Declares one result for the hosted `Http` function; see `stubbedHttpResult`.
-    pub fn stubHttpResult(host: *Host, uri: []const u8, payload: []const u8, failed: bool) void {
-        host.stubHttp(uri, payload, failed);
+    /// Declares one answer for the hosted `Http` function; see `native_services`.
+    pub fn stubHttpResult(host: *Host, stub: *const spec_http_fixtures.Stub) void {
+        host.stubHttp(stub);
     }
 
     /// Advances interval source through the shared propagation queue.
@@ -4070,8 +4072,18 @@ comptime {
         @export(&hostRealloc, .{ .name = "roc_realloc", .visibility = .hidden });
         @export(&hostDbg, .{ .name = "roc_dbg", .visibility = .hidden });
         @export(&hostEnvVar, .{ .name = "roc_env_var", .visibility = .hidden });
-        @export(&hostFilesRun, .{ .name = "roc_files_run", .visibility = .hidden });
-        @export(&hostHttpRun, .{ .name = "roc_http_run", .visibility = .hidden });
+        @export(&hostFilesChooseFile, .{ .name = "roc_files_choose_file", .visibility = .hidden });
+        @export(&hostFilesChooseDirectory, .{ .name = "roc_files_choose_directory", .visibility = .hidden });
+        @export(&hostFilesChooseSavePath, .{ .name = "roc_files_choose_save_path", .visibility = .hidden });
+        @export(&hostFilesReadText, .{ .name = "roc_files_read_text", .visibility = .hidden });
+        @export(&hostFilesWriteText, .{ .name = "roc_files_write_text", .visibility = .hidden });
+        @export(&hostFilesScan, .{ .name = "roc_files_scan", .visibility = .hidden });
+        @export(&hostFilesListDirectory, .{ .name = "roc_files_list_directory", .visibility = .hidden });
+        @export(&hostFilesOpenPath, .{ .name = "roc_files_open_path", .visibility = .hidden });
+        @export(&hostFilesReadPreview, .{ .name = "roc_files_read_preview", .visibility = .hidden });
+        @export(&hostFilesReadLog, .{ .name = "roc_files_read_log", .visibility = .hidden });
+        @export(&hostFilesVerifyAssets, .{ .name = "roc_files_verify_assets", .visibility = .hidden });
+        @export(&hostHttpSend, .{ .name = "roc_http_send", .visibility = .hidden });
         @export(&hostExpectFailed, .{ .name = "roc_expect_failed", .visibility = .hidden });
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });
         @export(&eachBoolSinkPush, .{ .name = "roc_each_bool_sink_push", .visibility = .hidden });
@@ -4280,8 +4292,8 @@ fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void
                 const text = cmd.expected_text orelse failHost("set_initial_online command is missing online text");
                 host.setOnline(onlineSnapshotFromSpecText(text));
             },
-            .seed_file_result => host.stubFile(cmd.expected_task_kinds, cmd.expected_text orelse "", cmd.expected_bool orelse false),
-            .seed_http_result => host.stubHttp(cmd.task_name orelse "", cmd.expected_text orelse "", cmd.expected_bool orelse false),
+            .seed_file_result => host.stubFile(&(cmd.file_stub orelse failHost("file stub command carried no stub"))),
+            .seed_http_result => host.stubHttp(&(cmd.http_stub orelse failHost("http stub command carried no stub"))),
             .seed_local_storage, .seed_session_storage => {
                 const key = cmd.task_name orelse failHost("seed storage command is missing key text");
                 const value = cmd.expected_text orelse failHost("seed storage command is missing value text");

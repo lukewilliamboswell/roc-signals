@@ -842,7 +842,11 @@ pub fn Runner(comptime Ctx: type) type {
                     },
 
                     .stub_file_result => {
-                        Ctx.stubFileResult(host, cmd.expected_task_kinds, cmd.expected_text orelse "", cmd.expected_bool orelse false);
+                        if (comptime !@hasDecl(Ctx, "stubFileResult")) {
+                            writeLocatorFailure(cmd.line_num, "file stubs are not supported by this runner");
+                            return 1;
+                        }
+                        Ctx.stubFileResult(host, &(cmd.file_stub orelse unreachable));
                     },
 
                     .stub_http_result => {
@@ -850,7 +854,7 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "http stubs are not supported by this runner");
                             return 1;
                         }
-                        Ctx.stubHttpResult(host, cmd.task_name orelse "", cmd.expected_text orelse "", cmd.expected_bool orelse false);
+                        Ctx.stubHttpResult(host, &(cmd.http_stub orelse unreachable));
                     },
 
                     .tick_interval => {

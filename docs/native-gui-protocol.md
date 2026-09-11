@@ -355,14 +355,17 @@ a call carries to the host; the generated task-kind table above is the
 authoritative numbering. The browser platform has no `Files` and rejects
 non-external task routes before command publication.
 
-A call crosses the boundary through `roc_files_run(kind, request)`, which the
-Zig host answers by calling the Rust `signals_files_run(kind, pointer, length,
-out_pointer, out_length)` on the calling thread and copying the result packet
-into a Roc string before releasing it with `signals_files_release`. The return
-value is one when the packet is an error packet. The spec host answers the same
-calls from declared `stub-file-*` results instead and never touches the
-filesystem. No Roc value, callable, layout, or pointer leaves the worker that
-made the call.
+Each function is its own hosted entry point with the argument and result
+types the glue generates from its Roc signature: `roc_files_read_text` takes a
+Roc string and returns `Try(TextFile, Error)` as an extern tag union, and so
+on. The Zig host releases the owned arguments and builds the result value
+directly. In a live window the work happens in Rust, which returns plain C
+structs, buffers with a pointer and length, that the host copies into Roc
+values and releases through the matching `signals_*_release`. The spec host
+answers the same calls from declared `stub-file-*` results instead and never
+touches the filesystem. No Roc value, callable, layout, or pointer leaves the
+worker that made the call, and nothing crosses either boundary encoded as
+text.
 
 Choosers need the windowing event loop. The worker posts the request to the UI
 thread's mailbox and blocks on a reply channel; the UI thread shows the desktop
@@ -371,30 +374,12 @@ own workers meanwhile. The pinned GPUI API provides no handle for closing an
 already open dialog, so a chooser settles only when the user does. Closing the
 window while a chooser is open answers the waiting worker with `Unavailable`.
 
-Files uses a strict private `files1` codec. Each frame is a canonical decimal UTF-8
-byte length, a colon, and exactly that many bytes. Every packet begins with the
-frame `6:files1`, has at most **8 MiB**, and has no trailing fields. Lengths have
-no signs or leading zeroes. The Rust adapter and the Roc result decoder both reject malformed packets.
-The route kind defines the remaining request frames:
-
-| Kind | Request frames |
-| --- | --- |
-| Choose file / directory | none |
-| Choose save path | location kind (`home` or `at`), directory, suggested file name |
-| Read text / scan / list directory / open path / read preview | absolute path |
-| Read log | absolute path, position (`start`, `end`, `after`), device, inode, offset |
-| Write text | absolute path, complete UTF-8 text |
-| Verify assets | asset count, then per asset: relative name, lowercase hex SHA-256 |
-
-Choice results are `chosen, path` or `canceled`. A user dismissing a dialog is
-`Ok(Choice.Canceled)`; `Error.Canceled` is reserved for work the host abandoned.
-Read results are `path, text`; write results are `path, byte count`; scan results
-are `root, entry count` followed by `path, kind, bytes` for each entry. Entry kinds
-are `file`, `directory`, `symbolic-link`, and `other`. Errors have `code, detail`;
-codes are `canceled`, `not-found`, `permission-denied`, `invalid-utf8`,
-`invalid-path`, `resource-limit`, `io`, and `unavailable`.
-Diagnostic detail is at most **4096 UTF-8 bytes**, including an explicit
-` [truncated]` suffix when detail was omitted. Error codes remain unchanged;
+Entry kinds are `File`, `Directory`, `SymbolicLink`, and `Other`. A user
+dismissing a dialog is `Ok(Choice.Canceled)`; `Error.Canceled` is reserved for
+work the host abandoned. Errors are `NotFound`, `PermissionDenied`,
+`InvalidUtf8`, `InvalidPath`, `ResourceLimit`, `Io`, and `Unavailable`, each
+with diagnostic detail of at most **4096 UTF-8 bytes**, including an explicit
+` [truncated]` suffix when detail was omitted. Error cases remain unchanged;
 paths, text, and metadata results are never truncated.
 
 `choose_save_path` takes `{directory: [Home, At(Str)], suggested_name: Str}`.

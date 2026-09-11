@@ -1,17 +1,36 @@
 //! The hosted `Http` function: one request performed to completion on the
-//! calling effect worker, with the same `http1` byte framing the Roc side
-//! encodes and decodes.
+//! calling effect worker, with its response handed back as C structs the Zig
+//! host copies into the Roc `Response`.
+use crate::effects::Bytes;
 use std::time::Duration;
 
 const MAX_BODY: usize = 8 * 1024 * 1024;
-const MAX_PACKET: usize = MAX_BODY + 64 * 1024;
 
-struct Request {
-    method: String,
-    uri: String,
-    timeout: Option<Duration>,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
+#[repr(C)]
+pub(crate) struct HeaderIn {
+    name_ptr: *const u8,
+    name_len: usize,
+    value_ptr: *const u8,
+    value_len: usize,
+}
+
+#[repr(C)]
+pub(crate) struct HeaderOut {
+    name: Bytes,
+    value: Bytes,
+}
+
+#[repr(C)]
+pub(crate) struct HeadersOut {
+    ptr: *mut HeaderOut,
+    len: usize,
+    cap: usize,
+}
+
+#[repr(C)]
+pub(crate) struct HttpErrorOut {
+    kind: u32,
+    detail: Bytes,
 }
 
 enum HttpError {
@@ -22,118 +41,34 @@ enum HttpError {
     Unavailable(String),
 }
 
-struct Reader<'a>(&'a [u8]);
-impl<'a> Reader<'a> {
-    fn frame(&mut self) -> Result<&'a [u8], &'static str> {
-        let colon = self.0.iter().position(|b| *b == b':').ok_or("missing length")?;
-        let length_text = std::str::from_utf8(&self.0[..colon]).map_err(|_| "invalid length")?;
-        let length: usize = length_text.parse().map_err(|_| "invalid length")?;
-        if length.to_string() != length_text {
-            return Err("noncanonical length");
-        }
-        let rest = &self.0[colon + 1..];
-        let value = rest.get(..length).ok_or("truncated frame")?;
-        self.0 = &rest[length..];
-        Ok(value)
-    }
-    fn text(&mut self) -> Result<&'a str, &'static str> {
-        std::str::from_utf8(self.frame()?).map_err(|_| "frame is not UTF-8")
-    }
-    fn number(&mut self) -> Result<u64, &'static str> {
-        let text = self.text()?;
-        let value: u64 = text.parse().map_err(|_| "invalid number")?;
-        if value.to_string() != text {
-            return Err("noncanonical number");
-        }
-        Ok(value)
-    }
+struct Request {
+    method: String,
+    uri: String,
+    timeout: Option<Duration>,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
 }
 
-fn decode(packet: &[u8]) -> Result<Request, &'static str> {
-    if packet.len() > MAX_PACKET {
-        return Err("packet limit");
-    }
-    let mut reader = Reader(packet);
-    if reader.text()? != "http1" {
-        return Err("unsupported codec");
-    }
-    let method = reader.text()?.to_owned();
-    let uri = reader.text()?.to_owned();
-    let timeout = match reader.text()? {
-        "none" => None,
-        text => {
-            let ms: u64 = text.parse().map_err(|_| "invalid timeout")?;
-            Some(Duration::from_millis(ms))
-        }
+struct Response {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+/// The kind numbers are the ones `native_services.zig` maps onto the Roc
+/// `Http.Error` tags. Detail is bounded like the `Files` errors.
+fn error_out(error: HttpError) -> HttpErrorOut {
+    let (kind, detail) = match error {
+        HttpError::InvalidRequest(detail) => (0, detail),
+        HttpError::Network(detail) => (1, detail),
+        HttpError::Timeout => (2, String::new()),
+        HttpError::TooLarge(detail) => (3, detail),
+        HttpError::Unavailable(detail) => (4, detail),
     };
-    let count = reader.number()? as usize;
-    if count > 256 {
-        return Err("too many headers");
+    HttpErrorOut {
+        kind,
+        detail: Bytes::from_string(crate::file_io::bounded_detail(detail)),
     }
-    let mut headers = Vec::with_capacity(count);
-    for _ in 0..count {
-        let name = reader.text()?.to_owned();
-        let value = reader.text()?.to_owned();
-        headers.push((name, value));
-    }
-    let body = reader.frame()?.to_vec();
-    if !reader.0.is_empty() {
-        return Err("trailing fields");
-    }
-    Ok(Request {
-        method,
-        uri,
-        timeout,
-        headers,
-        body,
-    })
-}
-
-fn append_frame(output: &mut Vec<u8>, value: &[u8]) {
-    output.extend_from_slice(format!("{}:", value.len()).as_bytes());
-    output.extend_from_slice(value);
-}
-
-fn encode(result: Result<(u16, Vec<(String, String)>, Vec<u8>), HttpError>) -> (bool, Vec<u8>) {
-    let mut packet = Vec::new();
-    append_frame(&mut packet, b"http1");
-    match result {
-        Ok((status, headers, body)) => {
-            append_frame(&mut packet, status.to_string().as_bytes());
-            append_frame(&mut packet, headers.len().to_string().as_bytes());
-            for (name, value) in headers {
-                append_frame(&mut packet, name.as_bytes());
-                append_frame(&mut packet, value.as_bytes());
-            }
-            append_frame(&mut packet, &body);
-            (false, packet)
-        }
-        Err(error) => {
-            let (code, detail) = match error {
-                HttpError::InvalidRequest(detail) => ("invalid-request", detail),
-                HttpError::Network(detail) => ("network", detail),
-                HttpError::Timeout => ("timeout", String::new()),
-                HttpError::TooLarge(detail) => ("too-large", detail),
-                HttpError::Unavailable(detail) => ("unavailable", detail),
-            };
-            append_frame(&mut packet, code.as_bytes());
-            append_frame(&mut packet, bounded(detail).as_bytes());
-            (true, packet)
-        }
-    }
-}
-
-/// Diagnostic detail is bounded like the Files errors, on a character boundary.
-fn bounded(detail: String) -> String {
-    const LIMIT: usize = 4096 - " [truncated]".len();
-    if detail.len() <= 4096 {
-        return detail;
-    }
-    let mut end = LIMIT;
-    while !detail.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{} [truncated]", &detail[..end])
 }
 
 fn classify(error: reqwest::Error) -> HttpError {
@@ -146,7 +81,7 @@ fn classify(error: reqwest::Error) -> HttpError {
     }
 }
 
-async fn perform(request: Request) -> Result<(u16, Vec<(String, String)>, Vec<u8>), HttpError> {
+async fn perform(request: Request) -> Result<Response, HttpError> {
     let method = reqwest::Method::from_bytes(request.method.as_bytes())
         .map_err(|_| HttpError::InvalidRequest(format!("unsupported method {}", request.method)))?;
     let url = reqwest::Url::parse(&request.uri)
@@ -164,58 +99,140 @@ async fn perform(request: Request) -> Result<(u16, Vec<(String, String)>, Vec<u8
     let headers = response
         .headers()
         .iter()
-        .map(|(name, value)| (name.as_str().to_owned(), String::from_utf8_lossy(value.as_bytes()).into_owned()))
+        .map(|(name, value)| {
+            (
+                name.as_str().to_owned(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
         .collect();
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(classify)? {
         if body.len() + chunk.len() > MAX_BODY {
-            return Err(HttpError::TooLarge(format!("response body exceeds {MAX_BODY} bytes")));
+            return Err(HttpError::TooLarge(format!(
+                "response body exceeds {MAX_BODY} bytes"
+            )));
         }
         body.extend_from_slice(&chunk);
     }
-    Ok((status, headers, body))
+    Ok(Response {
+        status,
+        headers,
+        body,
+    })
 }
 
-fn run(packet: &[u8]) -> (bool, Vec<u8>) {
-    let request = match decode(packet) {
-        Ok(request) => request,
-        Err(reason) => return encode(Err(HttpError::InvalidRequest(format!("malformed Http request: {reason}")))),
-    };
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(runtime) => runtime,
-        Err(error) => return encode(Err(HttpError::Unavailable(format!("no async runtime: {error}")))),
-    };
-    encode(runtime.block_on(perform(request)))
-}
-
-/// Performs one HTTP request for the Zig host's hosted `Http` function. The
-/// result packet is written to a buffer the caller returns through
-/// `signals_http_release`; the return value is 1 when it is an error packet.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn signals_http_run(
-    request_ptr: *const u8,
-    request_len: usize,
-    out_ptr: *mut *mut u8,
-    out_len: *mut usize,
-) -> u32 {
-    let request = unsafe { std::slice::from_raw_parts(request_ptr, request_len) };
-    let (failed, payload) = run(request);
-    let mut bytes = payload.into_boxed_slice();
-    unsafe {
-        *out_len = bytes.len();
-        *out_ptr = bytes.as_mut_ptr();
+fn run(request: Request) -> Result<Response, HttpError> {
+    if request.body.len() > MAX_BODY {
+        return Err(HttpError::TooLarge(format!(
+            "request body exceeds {MAX_BODY} bytes"
+        )));
     }
-    std::mem::forget(bytes);
-    u32::from(failed)
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| HttpError::Unavailable(format!("no async runtime: {error}")))?;
+    runtime.block_on(perform(request))
 }
 
-/// Frees a packet buffer returned by `signals_http_run`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn signals_http_release(ptr: *mut u8, len: usize) {
+unsafe fn text<'a>(ptr: *const u8, len: usize) -> &'a str {
     if len == 0 {
+        return "";
+    }
+    // Roc strings are UTF-8 by construction.
+    std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len) }).unwrap_or("")
+}
+
+/// Performs one HTTP request for the Zig host's hosted `Http` function. A
+/// timeout of `u64::MAX` waits as long as the server does. The return value is
+/// 1 when `err` was written instead of the response.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_http_send(
+    method: *const u8,
+    method_len: usize,
+    uri: *const u8,
+    uri_len: usize,
+    timeout_ms: u64,
+    headers: *const HeaderIn,
+    header_count: usize,
+    body: *const u8,
+    body_len: usize,
+    out_status: *mut u16,
+    out_headers: *mut HeadersOut,
+    out_body: *mut Bytes,
+    err: *mut HttpErrorOut,
+) -> u32 {
+    let header_inputs = if header_count == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(headers, header_count) }
+    };
+    let request = Request {
+        method: unsafe { text(method, method_len) }.to_owned(),
+        uri: unsafe { text(uri, uri_len) }.to_owned(),
+        timeout: (timeout_ms != u64::MAX).then(|| Duration::from_millis(timeout_ms)),
+        headers: header_inputs
+            .iter()
+            .map(|header| {
+                (
+                    unsafe { text(header.name_ptr, header.name_len) }.to_owned(),
+                    unsafe { text(header.value_ptr, header.value_len) }.to_owned(),
+                )
+            })
+            .collect(),
+        body: if body_len == 0 {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(body, body_len) }.to_vec()
+        },
+    };
+    match run(request) {
+        Ok(response) => {
+            let mut pairs: Vec<HeaderOut> = response
+                .headers
+                .into_iter()
+                .map(|(name, value)| HeaderOut {
+                    name: Bytes::from_string(name),
+                    value: Bytes::from_string(value),
+                })
+                .collect();
+            let headers_out = HeadersOut {
+                ptr: pairs.as_mut_ptr(),
+                len: pairs.len(),
+                cap: pairs.capacity(),
+            };
+            std::mem::forget(pairs);
+            unsafe {
+                out_status.write(response.status);
+                out_headers.write(headers_out);
+                out_body.write(Bytes::from_vec(response.body));
+            }
+            0
+        }
+        Err(error) => {
+            unsafe { err.write(error_out(error)) };
+            1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn signals_headers_release(headers: HeadersOut) {
+    if headers.ptr.is_null() {
         return;
     }
-    drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) });
+    for header in unsafe { Vec::from_raw_parts(headers.ptr, headers.len, headers.cap) } {
+        unsafe {
+            signals_bytes_release_pair(header);
+        }
+    }
+}
+
+unsafe fn signals_bytes_release_pair(header: HeaderOut) {
+    unsafe {
+        crate::effects::signals_bytes_release(header.name);
+        crate::effects::signals_bytes_release(header.value);
+    }
 }
 
 #[cfg(test)]
@@ -223,20 +240,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn requests_round_trip_through_the_frame_codec() {
-        let mut packet = Vec::new();
-        for field in ["http1", "POST", "https://example.test/x", "1500", "1", "accept", "text/plain"] {
-            append_frame(&mut packet, field.as_bytes());
-        }
-        append_frame(&mut packet, b"body \xff");
-        let request = decode(&packet).unwrap();
-        assert_eq!(request.method, "POST");
-        assert_eq!(request.timeout, Some(Duration::from_millis(1500)));
-        assert_eq!(request.headers, vec![("accept".to_owned(), "text/plain".to_owned())]);
-        assert_eq!(request.body, b"body \xff");
-        assert!(decode(b"5:http13:GET").is_err());
-        let (failed, error) = encode(Err(HttpError::Timeout));
-        assert!(failed);
-        assert_eq!(error, b"5:http17:timeout0:");
+    fn error_kinds_are_stable_and_bounded() {
+        let out = error_out(HttpError::Timeout);
+        assert_eq!((out.kind, out.detail.len), (2, 0));
+        unsafe { crate::effects::signals_bytes_release(out.detail) };
+        let out = error_out(HttpError::Network("x".repeat(5000)));
+        assert_eq!(out.kind, 1);
+        assert!(out.detail.len <= 4096);
+        unsafe { crate::effects::signals_bytes_release(out.detail) };
     }
 }

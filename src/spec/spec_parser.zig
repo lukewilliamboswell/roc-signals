@@ -106,7 +106,6 @@ pub const SpecCommand = struct {
     cmd_type: SpecCommandType,
     locator: Locator,
     task_name: ?[]const u8 = null,
-    expected_task_kinds: u64 = 0,
     expected_attr: ?[]const u8 = null,
     interval_ms: ?u64 = null,
     shortcut: ?signals.key_chord.Chord = null,
@@ -114,6 +113,8 @@ pub const SpecCommand = struct {
     expected_count: ?u64,
     expected_metric_delta: ?i64 = null,
     expected_bool: ?bool,
+    file_stub: ?file_fixtures.Stub = null,
+    http_stub: ?http_fixtures.Stub = null,
     line_num: usize,
 };
 
@@ -124,6 +125,8 @@ pub fn freeSpecCommands(allocator: std.mem.Allocator, commands: []SpecCommand) v
         if (cmd.task_name) |name| allocator.free(name);
         if (cmd.expected_attr) |attr| allocator.free(attr);
         if (cmd.expected_text) |text| allocator.free(text);
+        if (cmd.file_stub) |stub| stub.deinit(allocator);
+        if (cmd.http_stub) |stub| stub.deinit(allocator);
     }
     if (commands.len > 0) {
         allocator.free(commands);
@@ -701,16 +704,16 @@ fn appendDecodedForm(
 
     if (file_fixtures.recognizes(head)) {
         const fixture = try file_fixtures.parse(allocator, head, items[1..]);
-        errdefer allocator.free(fixture.task_name);
-        errdefer allocator.free(fixture.payload);
+        errdefer allocator.free(fixture.label);
+        errdefer fixture.stub.deinit(allocator);
         try commands.append(allocator, .{
             .cmd_type = if (is_setup) .seed_file_result else .stub_file_result,
             .locator = emptyLocator(),
-            .task_name = fixture.task_name,
-            .expected_task_kinds = fixture.kinds,
-            .expected_text = fixture.payload,
+            .task_name = fixture.label,
+            .expected_text = null,
             .expected_count = null,
-            .expected_bool = fixture.failed,
+            .expected_bool = null,
+            .file_stub = fixture.stub,
             .line_num = form.span.line,
         });
         return;
@@ -718,16 +721,16 @@ fn appendDecodedForm(
 
     if (http_fixtures.recognizes(head)) {
         const fixture = try http_fixtures.parse(allocator, head, items[1..]);
-        errdefer allocator.free(fixture.uri);
-        errdefer allocator.free(fixture.payload);
+        errdefer allocator.free(fixture.label);
+        errdefer fixture.stub.deinit(allocator);
         try commands.append(allocator, .{
             .cmd_type = if (is_setup) .seed_http_result else .stub_http_result,
             .locator = emptyLocator(),
-            .task_name = fixture.uri,
-            .expected_task_kinds = 0,
-            .expected_text = fixture.payload,
+            .task_name = fixture.label,
+            .expected_text = null,
             .expected_count = null,
-            .expected_bool = fixture.failed,
+            .expected_bool = null,
+            .http_stub = fixture.stub,
             .line_num = form.span.line,
         });
         return;
@@ -879,6 +882,8 @@ fn freeOneCommand(allocator: std.mem.Allocator, command: SpecCommand) void {
     if (command.task_name) |name| allocator.free(name);
     if (command.expected_attr) |attr| allocator.free(attr);
     if (command.expected_text) |text| allocator.free(text);
+    if (command.file_stub) |stub| stub.deinit(allocator);
+    if (command.http_stub) |stub| stub.deinit(allocator);
 }
 
 fn freeCommandList(allocator: std.mem.Allocator, commands: *std.ArrayListUnmanaged(SpecCommand)) void {
@@ -1285,11 +1290,11 @@ fn parseFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
     );
     defer parsed.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 5), parsed.commands.len);
-    try std.testing.expectEqualStrings("6:files18:canceled", parsed.commands[1].expected_text.?);
-    try std.testing.expectEqualStrings("6:files16:/tmp/a1:0", parsed.commands[3].expected_text.?);
+    try std.testing.expectEqualStrings("/tmp/λ:note.txt", parsed.commands[0].file_stub.?.choice.?);
+    try std.testing.expect(parsed.commands[1].file_stub.?.choice == null);
+    try std.testing.expectEqual(@as(u64, 0), parsed.commands[3].file_stub.?.write.bytes);
     try std.testing.expectEqual(SpecCommandType.stub_file_result, parsed.commands[4].cmd_type);
-    try std.testing.expect(parsed.commands[4].expected_bool.?);
-    try std.testing.expect(!parsed.commands[0].expected_bool.?);
+    try std.testing.expectEqual(file_fixtures.ErrorKind.permission_denied, parsed.commands[4].file_stub.?.reject.kind);
     try std.testing.expectEqual(@as(usize, 4), parsed.commands[1].line_num);
 }
 
@@ -1318,13 +1323,16 @@ fn parseExtendedFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
         \\  (stub-file-open "launch" :path "/tmp/λ")))
     );
     defer parsed.deinit(allocator);
-    try std.testing.expectEqualStrings("6:files18:/tmp/log3:λ\n20:184467440737095516152:131:37:rotated12:partial-utf8", parsed.commands[0].expected_text.?);
-    try std.testing.expect(file_fixtures.admits(parsed.commands[0].expected_task_kinds, .read_log));
-    try std.testing.expect(!file_fixtures.admits(parsed.commands[0].expected_task_kinds, .read_text));
-    try std.testing.expect(file_fixtures.admits(parsed.commands[1].expected_task_kinds, .list_directory));
-    try std.testing.expect(!file_fixtures.admits(parsed.commands[1].expected_task_kinds, .scan_directory));
-    try std.testing.expectEqualStrings("6:files17:/tmp/λ12:first\nsecond4:true", parsed.commands[2].expected_text.?);
-    try std.testing.expectEqualStrings("6:files17:/tmp/λ", parsed.commands[3].expected_text.?);
+    const log = parsed.commands[0].file_stub.?.log;
+    try std.testing.expectEqual(@as(u64, 18446744073709551615), log.device);
+    try std.testing.expectEqual(file_fixtures.LogChange.rotated, log.change);
+    try std.testing.expectEqual(file_fixtures.LogState.partial_utf8, log.state);
+    const directory = parsed.commands[1].file_stub.?.directory;
+    try std.testing.expectEqual(@as(usize, 3), directory.entries.len);
+    try std.testing.expectEqual(file_fixtures.Kind.symbolic_link, directory.entries[2].kind);
+    try std.testing.expectEqual(@as(u64, 18446744073709551615), directory.entries[0].bytes);
+    try std.testing.expect(parsed.commands[2].file_stub.?.preview.truncated);
+    try std.testing.expectEqualStrings("/tmp/λ", parsed.commands[3].file_stub.?.open);
 }
 
 test "extended file fixtures preserve full unsigned cursors under allocation failure" {
