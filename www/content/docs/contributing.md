@@ -20,6 +20,8 @@ Install:
 - GitHub CLI (`gh`), authenticated for release operations and optional
   attestation inspection,
 - Node.js,
+- Binaryen's `wasm-opt` (every linked browser app requires the `--stack-check`
+  post-link pass; locally verified with version 116),
 - Zola,
 - the Tailwind CSS 3.4.17 standalone CLI (the site uses the v3 configuration),
 - Roc.
@@ -175,7 +177,7 @@ partial publication.
 The Wasm suite separately builds the coordinated-writes fixture with test-only
 allocator exports and sweeps every allocation in a write-plus-observer host call.
 It verifies poison, a bounded diagnostic, empty publication buffers, unchanged
-browser DOM, no unpublished task execution, detached event listeners, and
+browser DOM, no unpublished effect execution, detached event listeners, and
 allocation-free idempotent containment. Recovery uses a fresh instance. This
 linked-app fatal campaign complements native refusal/retry tests; it does not
 turn arbitrary native crashes into accepted outcomes. Roc-allocator fatal
@@ -1038,7 +1040,7 @@ the parser refuses a `resolve-file-*` fixture inside a scenario for that reason.
 
 A scenario shares `click`, `focus`, `shortcut`, `expect-visible`,
 `expect-absent`, `expect-text`, `expect-value` and `expect-disabled` with a
-test. Its own steps are `(wait ms)`, which lets timers, tasks and propagation
+test. Its own steps are `(wait ms)`, which lets timers, effects and propagation
 settle; `(type locator "text")`, which focuses an editor and types through the
 real key dispatch path (a scenario refuses `fill`, which sets a value without
 the keyboard); `(key "ctrl-s")`, one keystroke written the way GPUI writes
@@ -1236,7 +1238,7 @@ Common metric names include `dirty_source_roots`, `rows_reused`,
 `stream_nodes_scanned`, `stream_nodes_scanned_events`,
 `render_indexes_refreshed`, `active_intervals_synced`,
 `active_graph_records_rebuilt`, `signal_record_table_rebuilt`,
-`stale_task_results_ignored`, `retained_alloc_delta`,
+`retained_alloc_delta`,
 `host_retained_alloc_delta`, and `host_retained_bytes_delta`. The authoritative
 list lives in `src/spec/spec_runner.zig`.
 
@@ -1253,7 +1255,7 @@ bench gate. A built app binary also accepts benchmark flags directly:
 
 The host initializes a fresh app per iteration, applies the initial command
 batch, then replays commands classified as benchmark actions in
-`src/bench/benchmark.zig` (user actions, task results, and interval ticks).
+`src/bench/benchmark.zig` (user actions, browser-environment changes, and interval ticks).
 Expectation and metric assertion commands remain the semantic correctness suite
 used by `python3 scripts/test.py native`.
 

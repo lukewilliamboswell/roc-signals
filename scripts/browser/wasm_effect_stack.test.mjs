@@ -1,20 +1,22 @@
 import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import { createEffectRunner } from '../../www/static/effect_runner.mjs';
+import { createBoundedEffectRunner } from '../../www/static/bounded_effect_runner.mjs';
 
 const pending = new Map();
 let wasm;
 let mainStack;
 const { instance } = await WebAssembly.instantiate(await readFile(process.argv[2]), {
   env: {
+    set_limits: (top, bottom) => wasm.__set_stack_limits(top, bottom),
     suspend_effect: new WebAssembly.Suspending(id => {
       return new Promise(resolve => pending.set(id, resolve));
     }),
   },
 });
 wasm = instance.exports;
-mainStack = wasm.stack_pointer();
-const run = createEffectRunner({ stack_pointer: wasm.__stack_pointer, stack_top: wasm.effect_stack_top, set_main: wasm.set_main, run: wasm.run_effect });
+mainStack = wasm.__stack_pointer.value;
+wasm.__set_stack_limits(mainStack, 0);
+const run = createBoundedEffectRunner({ stack_pointer: wasm.__stack_pointer, stack_top: wasm.effect_stack_top, stack_bottom: wasm.effect_stack_bottom, set_limits: wasm.__set_stack_limits, set_main: wasm.set_main, run: wasm.run_effect });
 const first = run(0);
 assert.equal(wasm.stack_pointer(), mainStack, "suspension restores the original main stack");
 assert.equal(wasm.event(99), 99);

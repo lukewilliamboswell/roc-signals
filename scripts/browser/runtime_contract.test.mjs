@@ -40,6 +40,24 @@ import {
 } from "./dom_double.mjs";
 
 const PAGE = 65536;
+test("a rejected effect prevents the pump from entering the next occurrence", async () => {
+  const host = new MockHost();
+  const errors = [];
+  const runtime = new SignalsRuntime(host.exports, installDomDouble(), { onError: error => errors.push(error) });
+  let entries = 0;
+  host.exports.roc_ui_last_error_ptr = () => { throw new Error("diagnostics re-entered a trapped effect stack"); };
+  const failure = new WebAssembly.RuntimeError("effect stack overflow");
+  runtime.runEffect = () => Promise.reject(failure);
+  runtime.mounted = true;
+  // Bound the broken implementation's synchronous loop so the regression
+  // fails an assertion instead of hanging the test runner.
+  host.exports.roc_ui_effect_next = () => ++entries <= 2 ? entries : 0;
+  runtime.scheduleEffects();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(entries, 1, "do not enter Wasm again before handling the trap");
+  assert.equal(runtime.failedError, failure);
+  assert.equal(errors.length, 1);
+});
 const CMD_BASE = 1024;
 const STR_BASE = 16384;
 const DYN_BASE = 24576;
@@ -172,6 +190,14 @@ class MockHost {
     this.writeStorageDeclarationKeys();
 
     this.exports = {
+      __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 65536),
+      __set_stack_limits: () => {},
+      roc_ui_effect_next: () => 0,
+      roc_ui_effect_run: () => {},
+      roc_ui_effect_complete: () => {},
+      roc_ui_effect_stack_top: () => 65536,
+      roc_ui_effect_stack_bottom: () => 128,
+      roc_ui_effect_stack_main: () => {},
       memory: this.memory,
       roc_ui_protocol_version: () => this.protocolVersion,
       roc_ui_protocol_features: () => this.protocolFeatures,
@@ -732,6 +758,16 @@ test("controlled input policy clears pending write when user typed it", () => {
 });
 
 test("protocol checks reject incompatible wasm exports", () => {
+  for (const name of ["__set_stack_limits", "roc_ui_effect_stack_bottom", "roc_ui_effect_run"]) {
+    const unsafe = new MockHost();
+    delete unsafe.exports[name];
+    assert.throws(() => new SignalsRuntime(unsafe.exports, installDomDouble()),
+      new RegExp(`${name} is missing`));
+  }
+  const invalidStack = new MockHost();
+  invalidStack.exports.__stack_pointer = { value: 65536 };
+  assert.throws(() => new SignalsRuntime(invalidStack.exports, installDomDouble()),
+    /__stack_pointer must be a WebAssembly.Global/);
   assert.throws(
     () => new SignalsRuntime(new MockHost({ protocolVersion: 14 }).exports, installDomDouble()),
     /wire protocol version mismatch/,

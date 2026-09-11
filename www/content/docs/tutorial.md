@@ -599,6 +599,7 @@ python3 scripts/spec_driver.py /tmp/reading-list examples-web/reading-list/specs
 
 ```sh
 roc build --target=wasm32 --opt=size --output=/tmp/reading-list.wasm examples-web/reading-list/main.roc
+python3 scripts/instrument_wasm.py /tmp/reading-list.wasm
 ```
 
 Use the matching browser runtime as described in

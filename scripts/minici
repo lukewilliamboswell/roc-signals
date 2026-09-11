@@ -51,6 +51,7 @@ def shared_sources() -> None:
     run(sys.executable, "scripts/prepare_platforms.py")
     run(sys.executable, "scripts/prepare_platforms.py", "--check")
     run(sys.executable, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_prepare_platforms.py")
+    run(sys.executable, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_instrument_wasm.py")
 
 
 def smoke() -> None:

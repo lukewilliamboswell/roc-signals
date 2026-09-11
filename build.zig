@@ -204,12 +204,38 @@ pub fn build(b: *std.Build) void {
         effect_stack_fixture.entry = .disabled;
         effect_stack_fixture.root_module.export_symbol_names = &.{"__stack_pointer"};
         effect_stack_fixture.rdynamic = true;
+        const check_effect_stack = b.addSystemCommand(&.{"wasm-opt"});
+        check_effect_stack.addFileArg(effect_stack_fixture.getEmittedBin());
+        check_effect_stack.addArgs(&.{ "--strip-debug", "--enable-bulk-memory", "--enable-mutable-globals", "--enable-sign-ext", "--enable-simd", "--stack-check", "-o" });
+        const checked_effect_stack = check_effect_stack.addOutputFileArg("effect-stack-checked.wasm");
         const effect_stack_test = b.addSystemCommand(&.{
             "node", "--experimental-wasm-jspi", "scripts/browser/wasm_effect_stack.test.mjs",
         });
-        effect_stack_test.addFileArg(effect_stack_fixture.getEmittedBin());
+        effect_stack_test.addFileArg(checked_effect_stack);
         run_effect_stack_step.dependOn(&effect_stack_test.step);
     }
+    const overflow_fixture = b.addExecutable(.{
+        .name = "effect-stack-overflow",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/wasm/effect_stack_overflow.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+        }),
+    });
+    overflow_fixture.entry = .disabled;
+    overflow_fixture.root_module.export_symbol_names = &.{"__stack_pointer"};
+    overflow_fixture.rdynamic = true;
+    const checked_overflow = b.addSystemCommand(&.{"wasm-opt"});
+    checked_overflow.addFileArg(overflow_fixture.getEmittedBin());
+    checked_overflow.addArgs(&.{ "--stack-check", "-o" });
+    const checked_overflow_wasm = checked_overflow.addOutputFileArg("effect-stack-overflow-checked.wasm");
+    const overflow_test = b.addSystemCommand(&.{
+        "node", "--experimental-wasm-jspi", "scripts/browser/wasm_effect_stack_overflow.test.mjs",
+    });
+    overflow_test.addFileArg(overflow_fixture.getEmittedBin());
+    overflow_test.addFileArg(checked_overflow_wasm);
+    run_effect_stack_step.dependOn(&overflow_test.step);
+
     // Node 23's Maglev optimizer can spend minutes compiling the repeated Wasm
     // instantiation loop in this fault sweep. The test completes in under a
     // second without Maglev and still executes the same Wasm failure paths.

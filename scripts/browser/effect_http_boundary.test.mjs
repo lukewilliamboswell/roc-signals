@@ -156,6 +156,31 @@ test("HTTP import encodes synchronous and asynchronous network rejection identic
   }
 });
 
+test("poisoned suspended HTTP effects never allocate or publish late results", async () => {
+  for (const outcome of ["response", "rejection"]) {
+    const { memory, args } = requestFrame();
+    let poisoned = false;
+    let resolve;
+    let reject;
+    let allocations = 0;
+    const execute = captureImport({
+      memory,
+      roc_alloc: () => { allocations++; return 4096; },
+    }, {
+      isPoisoned: () => poisoned,
+      fetchImpl: () => new Promise((yes, no) => { resolve = yes; reject = no; }),
+    });
+    const pending = execute(...args);
+    poisoned = true;
+    const before = new Uint8Array(memory.buffer).slice();
+    if (outcome === "response") resolve(new Response("late result"));
+    else reject(new Error("late failure"));
+    await assert.rejects(pending, /cannot resume a poisoned Signals instance/);
+    assert.equal(allocations, 0);
+    assert.deepEqual(new Uint8Array(memory.buffer), before);
+  }
+});
+
 test("HTTP import preserves an HTTP error status as a response, not a transport failure", async () => {
   const { memory, args } = requestFrame({ headers: [], body: new Uint8Array() });
   const execute = captureImport({ memory, roc_alloc: () => 4096 }, {

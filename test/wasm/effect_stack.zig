@@ -1,4 +1,5 @@
 extern "env" fn suspend_effect(id: u32) u32;
+extern "env" fn set_limits(top: usize, bottom: usize) void;
 const stack = @import("effect_stack");
 
 var effect_stacks: [2][65536]u8 align(16) = undefined;
@@ -25,6 +26,10 @@ export fn effect_stack_top(id: u32) usize {
     return @intFromPtr(&effect_stacks[id]) + 65536;
 }
 
+export fn effect_stack_bottom(id: u32) usize {
+    return @intFromPtr(&effect_stacks[id]) + 128;
+}
+
 export fn run_effect(id: u32) void {
     const seed = (id + 1) * 10;
     var guard: [64]u32 = undefined;
@@ -40,8 +45,10 @@ noinline fn effect_body(id: u32, seed: u32) u32 {
     // Force the array to remain in linear memory across the suspending import.
     const retained: *volatile [512]u32 = &values;
     const saved_stack = stack.get();
+    set_limits(main_stack, 0);
     stack.set(main_stack);
     const response = suspend_effect(id);
+    set_limits(effect_stack_top(id), effect_stack_bottom(id));
     stack.set(saved_stack);
     var sum: u32 = response;
     for (0..512) |index| sum +%= retained[index];

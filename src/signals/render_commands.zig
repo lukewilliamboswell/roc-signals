@@ -5,10 +5,10 @@ const shared_buffer = @import("shared_buffer.zig");
 const boundary = @import("boundary.zig");
 const ids = @import("ids.zig");
 
-/// Version 15 uses hosted effects instead of task commands and settlement.
-/// Task opcodes 20 and 21 are retired, and roc_ui_resolve is no longer exported.
+/// Version 16 requires post-link stack instrumentation and explicit effect
+/// stack bounds. Task opcodes 20 and 21 remain retired.
 /// Hosts and browser executors must agree on this version before mounting.
-pub const protocol_version: u32 = 15;
+pub const protocol_version: u32 = 16;
 pub const protocol_feature_dynamic_attrs: u32 = 1 << 0;
 pub const protocol_feature_dynamic_events: u32 = 1 << 1;
 pub const protocol_features: u32 = protocol_feature_dynamic_attrs | protocol_feature_dynamic_events;

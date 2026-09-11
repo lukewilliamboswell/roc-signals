@@ -20,7 +20,7 @@ class BrowserBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             copy_runtime(root)
-            for name in ("effect_runner.mjs", "effect_http.mjs"):
+            for name in ("bounded_effect_runner.mjs", "effect_http.mjs"):
                 self.assertTrue((root / name).is_file(), name)
             result = subprocess.run(
                 ["node", "--input-type=module", "-e", "await import('./signals.mjs');"],

@@ -22,6 +22,7 @@ built-in API and where a JavaScript behaviour can help.
 
 ```roc
 import pf.Elem exposing [Elem]
+import pf.Action exposing [Action]
 import pf.Browser
 import pf.Html
 import pf.Http
@@ -67,27 +68,30 @@ For three or more inputs use the record builder rather than nesting `map2`:
 { price: price, qty: qty, tax: tax }.Signal
 ```
 
-### Tasks
+## Action
 
-| Function | Type |
+Import `pf.Action exposing [Action]`. Actions describe an atomic batch of
+state reducers, optionally followed by effectful Roc code.
+
+| Member | Purpose |
 | --- | --- |
-| `fake_task` | `Str, (Str -> a), (Str -> err) -> Task(a, err)` |
-| `from_task` | `Task(a, err) -> Signal(TaskStatus(a, err))` |
-| `fold_task` | `Task(a, err), b, (a -> b), (err -> b) -> Signal(b)` |
-| `start_str` | `Task(a, err), Str -> Cmd` |
-| `cancel` | `Task(a, err) -> Cmd` |
+| `Action.none` | make no changes |
+| `Action.update(changes)` | commit a list of `State.write` reducers atomically |
+| `Action.then(changes, effect!)` | commit changes, then run an effect with fresh declared reads |
+| `Action.run(reads, handler)` | bind a unit event |
+| `Action.run_str`, `run_bool`, `run_detail`, `run_key` | bind a payload-carrying event |
+| `Action.on_change`, `on_change_initial` | observe changes, optionally including the mounted value |
+| `Action.on_mount(handler)` | run once when the owning scope mounts |
+| `Action.every(period_ms, reads, handler)` | run on interval ticks with the current reads |
 
-The public associated types are `Signal.Task(a, err)` and
-`Signal.TaskStatus(a, err)`. Typed service constructors take a `TaskConfig(err)`
-record containing `name`, `reset_on_start`, `canceled: () -> err`, and
-`refused: () -> err`. The last two initializers declare terminal errors without
-requiring the host to interpret application error types. The low-level external
-string-task constructor retains its published `(name, done, failed, reset_on_start)`
-calling convention so maintained examples can use their pinned release.
+An effect returns the next action. Reducers apply against state at commit time,
+not a value captured before suspension. Equal events remain distinct occurrences;
+changing declared reads alone does not fire an event handler.
 
-`TaskStatus(a, err)` is `[Loading, Done(a), Failed(err)]`. Construct tasks with
-`Signal.fake_task` or the `Http` helpers. `task_source` and
-`task_source_with_eq` are internal platform plumbing, not supported app APIs.
+Disposing the originating scope does not cancel an admitted effect. Its result
+updates surviving state destinations and skips retired ones. Applications that
+need latest-request-wins behavior encode a generation or request identity in
+their state reducers; there is no implicit task cancellation or stale-result rule.
 
 ## Native Files
 
@@ -393,24 +397,24 @@ Delivery: `event_delivery_auto` (default), `event_delivery_native`.
 ## Http
 
 `Http.Header` is `{ name : Str, value : Str }`.
-`Http.HttpError` is `[Network(Str), Timeout, Canceled, ResourceLimit(Str), Unsupported(Str), ResponseMaterialization(Str)]`.
+`Http.Error` is `[InvalidRequest(Str), Network(Str), Timeout, TooLarge(Str), Status(U16), InvalidUtf8, Unavailable(Str)]`.
 
 | Group | Members |
 | --- | --- |
-| Tasks | `request_task(purpose)`, `get_text_task(purpose)` |
-| Start | `start(task, request)`, `get(task, uri)`, `get_text(task, uri)` |
+| Hosted effects | `send!(request)`, `get!(uri)`, `get_text!(uri)` |
 | Methods | `method_get`, `method_post`, `method_put`, `method_delete`, `method_patch`, `method_unknown(name)` |
 | Build request | `request_from_method`, `with_method`, `with_uri`, `with_body`, `with_headers`, `add_header`, `with_timeout_ms`, `with_no_timeout` |
 | Read request | `request_method`, `request_method_str`, `request_uri`, `request_headers`, `request_body`, `request_timeout` |
 | Read response | `response_status`, `response_headers`, `response_body` |
 | Build response | `response_from_status`, `response_with_status`, `response_with_headers`, `response_add_header`, `response_with_body` |
-| Errors | `error_text(err)` |
 | Header tuples | `header_to_tuple`, `header_from_tuple` |
 
-A task created with `request_task("feed")` registers under the spec name
-`http:send:feed`.
+Call these functions inside an action effect. `send!` and `get!` return
+typed responses even for non-2xx statuses. `get_text!` instead returns
+`Status(code)` for non-2xx responses and `InvalidUtf8` for invalid text.
+`get!` and `get_text!` use a thirty-second timeout.
 
-Non-2xx statuses resolve as **responses**, not errors. The runtime does not set
+The runtime does not set
 `credentials`, `redirect`, `mode`, `cache`, or referrer policy.
 
 ## Browser
@@ -520,11 +524,8 @@ one case as `(test "name" (steps ...))`. See [Testing](@/docs/testing.md).
 ### Async and lifecycle
 
 ```lisp
-(resolve-task "<name>" "<payload>")
-(resolve-stale-task "<name>" "<payload>")
-(reject-task "<name>" "<payload>")
-(expect-pending-task "<name>" <count>)
-(expect-canceled-task "<name>" <count>)
+(expect-pending-effects <count>)
+(run-effect <occurrence-id>)
 (stub-file-choice "<label>" (chosen "<path>"))
 (stub-file-read "<label>" :path "<path>" :text "<text>")
 (stub-http "<label>" :url "<url>" :status <code> :body "<text>")
@@ -533,6 +534,12 @@ one case as `(test "name" (steps ...))`. See [Testing](@/docs/testing.md).
 (expect-interval <period-ms> <count>)
 (expect-cleanup "<name>" <count>)
 ```
+
+Use `(setup (manual-effects))` to hold admitted effects until `run-effect`.
+Each command runs one whole effect closure with the declared host stubs; it
+does not simulate suspension within the closure. Select occurrence IDs in the
+desired order to test races, then assert application-visible state. Without
+manual mode, the native harness runs effects automatically.
 
 ### Browser environment
 
@@ -567,7 +574,7 @@ Forms inside `(setup ...)` apply **before** the first render.
 
 Common metrics: `derived_calls_into_roc`, `rows_created`,
 `rows_removed`, `rows_reused`, `scopes_created`, `scopes_disposed`,
-`events_processed`, `propagation_prunes`, `stale_task_results_ignored`,
+`events_processed`, `propagation_prunes`,
 `active_intervals_synced`, `render_indexes_refreshed`,
 `active_graph_records_rebuilt`, `signal_record_table_rebuilt`,
 `stream_nodes_scanned`, `stream_nodes_scanned_events`, `retained_alloc_delta`,
@@ -598,11 +605,15 @@ runtime.unmount();
 
 Also exported: `instantiateSignalsWasm`, `instantiateSignalsBytes`.
 
-The browser wire protocol is version 15. Deploy the Wasm application and
+The browser wire protocol is version 16. Deploy the Wasm application and
 `signals.mjs` together: the runtime rejects a mismatched host before mounting.
 Version 15 removes task command opcodes 20 and 21 and the
 `roc_ui_resolve` export. Rebuild older applications; there is no task-transport
-compatibility adapter. Hosted HTTP effects require WebAssembly JSPI support.
+compatibility adapter. Version 16 additionally requires bounded effect stacks
+and post-link instrumentation. After a direct Roc Wasm build, run
+`python3 scripts/instrument_wasm.py path/to/app.wasm` before serving it.
+The repository's test and site builders perform this step automatically.
+Hosted HTTP effects require WebAssembly JSPI support.
 
 HTTP effects use ordinary requests and responses through `fetchImpl` (default:
 the browser's `fetch`). The retired string-envelope codecs and task router are
@@ -663,6 +674,7 @@ python3 scripts/spec_driver.py /tmp/app examples-web/my-app/specs
 
 # Browser build
 roc build --target=wasm32 --opt=size --output=/tmp/app.wasm examples-web/my-app/main.roc
+python3 scripts/instrument_wasm.py /tmp/app.wasm
 
 # Inspect the startup command stream
 node scripts/browser/mount_wasm_example.mjs /tmp/app.wasm my-app --telemetry-summary

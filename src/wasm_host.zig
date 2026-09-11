@@ -376,7 +376,7 @@ var roc_benchmark_counters: AllocationCounters = .{};
 var benchmark_host_baseline: AllocationCounters = .{};
 var benchmark_roc_baseline_live_count: u64 = 0;
 var benchmark_roc_baseline_live_bytes: u64 = 0;
-const benchmark_metrics_schema_version: u32 = 3;
+const benchmark_metrics_schema_version: u32 = 4;
 const runtime_metric_count = std.meta.fields(engine.RuntimeMetrics).len;
 const BenchmarkMetricsBlock = extern struct {
     roc: [10]u64,
@@ -2092,6 +2092,12 @@ export fn roc_ui_effect_stack_top(token: u32) callconv(.c) usize {
     return @intFromPtr(memory.ptr) + memory.len;
 }
 
+/// Lowest permitted stack pointer; reserved tail space covers leaf-frame
+/// red-zone accesses below the pointer without touching another allocation.
+export fn roc_ui_effect_stack_bottom(token: u32) callconv(.c) usize {
+    return @intFromPtr(effectJob(token).stack_memory.ptr) + 128;
+}
+
 /// Records the main stack to restore around each suspending service import.
 export fn roc_ui_effect_stack_main(pointer: usize) callconv(.c) void {
     effect_main_stack = pointer;
@@ -2143,6 +2149,7 @@ export fn roc_ui_effect_complete(token: u32) callconv(.c) void {
 }
 
 const HttpHeaderWire = extern struct { name_ptr: usize, name_len: usize, value_ptr: usize, value_len: usize };
+extern "env" fn roc_ui_set_stack_limits(top: usize, bottom: usize) void;
 extern "env" fn roc_ui_http_send(method_ptr: usize, method_len: usize, uri_ptr: usize, uri_len: usize, timeout: u64, headers: [*]const HttpHeaderWire, header_count: usize, body_ptr: usize, body_len: usize, out_len: *usize) usize;
 
 const HttpResponseReader = struct {
@@ -2247,8 +2254,11 @@ export fn roc_http_send(request_value: abi.Request) callconv(.c) abi.HttpSendRes
     const token = active_effect_token;
     const saved_stack = effect_stack.get();
     active_effect_token = 0;
+    roc_ui_set_stack_limits(effect_main_stack, 0);
     effect_stack.set(effect_main_stack);
     const response_ptr = roc_ui_http_send(@intFromPtr(method.ptr), method.len, @intFromPtr(uri.ptr), uri.len, timeout, &headers, pairs.len, @intFromPtr(body.ptr), body.len, &response_len);
+    const stack_memory = effectJob(token).stack_memory;
+    roc_ui_set_stack_limits(@intFromPtr(stack_memory.ptr) + stack_memory.len, @intFromPtr(stack_memory.ptr) + 128);
     effect_stack.set(saved_stack);
     active_effect_token = token;
     if (response_ptr == 0 or response_len > 9 * 1024 * 1024) failHostWith("HTTP response buffer is invalid");

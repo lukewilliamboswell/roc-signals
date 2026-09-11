@@ -17,6 +17,7 @@ import subprocess
 import threading
 import tomllib
 from toolchain import replace_platform
+from instrument_wasm import instrument_wasm
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -387,6 +388,7 @@ def build_example_wasm(
             build_dir / source.name,
         ]
     )
+    instrument_wasm(wasm_path)
     run(["node", ROOT / "scripts" / "browser" / "validate_wasm.mjs", wasm_path])
 
 

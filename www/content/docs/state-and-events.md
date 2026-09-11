@@ -126,11 +126,13 @@ Html.button(
 
 The callback sees settled values for the declared reads. Each accepted event
 invokes it, including repeated clicks with identical reads. Changing a read
-does **not** invoke it. Return a task, navigation, storage, or state command;
+does **not** invoke it. Return a navigation, storage, or state command;
 do not add serial counters just to make repeated clicks look like value changes.
 
-The mounted event's scope owns its read graph and any task it starts. Disposing
-that scope removes the handler, releases its read edges, and cancels its work.
+The mounted event's scope owns its read graph. Disposing that scope removes the
+handler and its read edges. For hosted effects, use `Action.run` and
+`Action.then`: admitted effects survive scope disposal, while returned writes
+skip retired state destinations.
 `Ui.action` accepts payload-free events. For typed payloads, use `Ui.action_str`,
 `Ui.action_bool`, `Ui.action_key`, or `Ui.action_detail`. Their callbacks receive
 `(reads, payload)`; extraction matches the corresponding `State.on_*` method.
@@ -441,17 +443,18 @@ Html.div(
 )
 ```
 
-Use an action to submit. In this fragment, `task` is a declared task accepting a
-string request, as described in [Effects, HTTP, and the Browser](@/docs/effects-and-browser.md):
+Use an action to submit. Import `pf.Action exposing [Action]`. In this fragment,
+`send_invite!` is an application effect that accepts an email and returns the
+next action, as described in [Effects, HTTP, and the Browser](@/docs/effects-and-browser.md):
 
 ```roc
-submit = Ui.action(
+submit = Action.run(
     state,
     |value|
         if can_submit(value) {
-            Signal.start_str(task, value.email)
+            Action.then([], |current| send_invite!(current.email))
         } else {
-            model.set_cmd({ ..value, attempted: True })
+            Action.update([model.write(|current| { ..current, attempted: True })])
         },
 )
 ```
@@ -469,18 +472,19 @@ button and let the form own submission.
 Let users attempt an invalid form if that is how your UI reveals errors.
 Disabling its only submission control while invalid can prevent them from
 learning what needs attention. If requests must not overlap, derive a busy flag
-from task and application state, disable submission while busy, and check the
+from application state, disable submission while busy, and check the
 same condition in the handler. A disabled button alone does not guard other
 submission paths.
 
 A native spec can assert that invalid input reveals the message and starts no
-work. Assuming the form is named `"Invite form"` and the task `"form-submit"`:
+work. In manual-effect mode, assuming the form is named `"Invite form"` and
+no other effects are pending:
 
 ```lisp
 (submit (role form :name "Invite form"))
 (expect-text (test-id "email-error") "Enter an email address.")
 (expect-attr (label "Invite email") aria-invalid "true")
-(expect-pending-task "form-submit" 0)
+(expect-pending-effects 0)
 ```
 
 Also test the real browser path. Native specs do not implement the browser's

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 
 from bundle_browser import runtime_files
+from instrument_wasm import instrument_wasm
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -68,6 +69,7 @@ def main() -> None:
             FIXTURE,
         ]
     )
+    instrument_wasm(OUTPUT / "app.wasm")
     copy_runtime(OUTPUT)
     shutil.copyfile(ADAPTER / "src" / "main.mjs", OUTPUT / "main.mjs")
     print(f"Built {display_path(OUTPUT)}/", flush=True)

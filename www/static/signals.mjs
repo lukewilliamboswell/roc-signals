@@ -1,5 +1,5 @@
 import { createMemoryViewCache } from "./wasm_memory_views.mjs";
-import { createEffectRunner } from "./effect_runner.mjs";
+import { createBoundedEffectRunner } from "./bounded_effect_runner.mjs";
 import { createHttpEffectImports } from "./effect_http.mjs";
 import {
   applySetValue,
@@ -44,10 +44,10 @@ export const Op = Object.freeze({
   setDocumentTitle: 32,
 });
 
-// Version 15 replaces task commands and roc_ui_resolve with hosted effects.
-// Retired opcodes 20 and 21 remain invalid; they must not be reused.
+// Version 16 requires bounded effect stacks and post-link stack checks.
+// Retired task opcodes 20 and 21 remain invalid.
 export const Protocol = Object.freeze({
-  version: 15,
+  version: 16,
 });
 
 export const ProtocolFeature = Object.freeze({
@@ -372,6 +372,7 @@ export async function instantiateSignalsBytes(bytes, options = {}) {
   const lifetime = { controller: new AbortController(), poisoned: false };
   const result = await WebAssembly.instantiate(bytes, {
     env: {
+      roc_ui_set_stack_limits: (top, bottom) => instanceRef.exports.__set_stack_limits(top, bottom),
       ...createStorageImports(() => instanceRef?.exports, options),
       ...createHttpEffectImports(() => instanceRef?.exports, {
         ...options,
@@ -381,6 +382,12 @@ export async function instantiateSignalsBytes(bytes, options = {}) {
     },
   });
   instanceRef = result.instance;
+  if (typeof instanceRef.exports.roc_ui_effect_run === "function") {
+    if (typeof instanceRef.exports.__set_stack_limits !== "function") {
+      throw new Error("Signals effect modules require stack instrumentation; rebuild with the stack-check pass");
+    }
+    instanceRef.exports.__set_stack_limits(instanceRef.exports.__stack_pointer.value, 0);
+  }
   effectLifetimes.set(instanceRef.exports, lifetime);
   return result;
 }
@@ -469,6 +476,17 @@ export class SignalsRuntime {
   }
 
   checkProtocol() {
+    for (const name of ["roc_ui_effect_next", "roc_ui_effect_run", "roc_ui_effect_complete",
+      "roc_ui_effect_stack_top", "roc_ui_effect_stack_bottom", "roc_ui_effect_stack_main",
+      "__set_stack_limits"]) {
+      if (typeof this.exports[name] !== "function") {
+        throw new Error(`Signals wasm export ${name} is missing; rebuild with stack instrumentation`);
+      }
+    }
+    if (!(this.exports.__stack_pointer instanceof WebAssembly.Global)) {
+      throw new Error("Signals wasm export __stack_pointer must be a WebAssembly.Global");
+    }
+    this.exports.__set_stack_limits(this.exports.__stack_pointer.value, 0);
     if (typeof this.exports.roc_ui_protocol_version !== "function") {
       throw new Error("Signals wasm export roc_ui_protocol_version is missing");
     }
@@ -1027,9 +1045,9 @@ export class SignalsRuntime {
     if (!this.mounted) throw new Error("Signals event dispatch requires a mounted runtime");
   }
 
-  poisonAfterHostFailure(err) {
+  poisonAfterHostFailure(err, readHostDiagnostic = true) {
     if (this.failedError !== null) return this.failedError;
-    const fatal = this.runtimeError(err);
+    const fatal = readHostDiagnostic ? this.runtimeError(err) : err;
     this.failedError = fatal;
     const lifetime = effectLifetimes.get(this.exports);
     if (lifetime) {
@@ -1232,36 +1250,46 @@ export class SignalsRuntime {
         return;
       }
       try {
-        for (;;) {
+        {
           const { result: token } = this.views.callHost(this.exports.roc_ui_effect_next);
-          if (token === 0) break;
+          if (token === 0) return;
           if (this.runEffect === null) {
             if (typeof WebAssembly.promising !== "function") {
               throw new Error("Signals action effects require WebAssembly JavaScript Promise Integration (JSPI)");
             }
-            this.runEffect = createEffectRunner({
+            this.runEffect = createBoundedEffectRunner({
               stack_pointer: this.exports.__stack_pointer,
               stack_top: this.exports.roc_ui_effect_stack_top,
+              stack_bottom: this.exports.roc_ui_effect_stack_bottom,
+              set_limits: this.exports.__set_stack_limits,
               set_main: this.exports.roc_ui_effect_stack_main,
               run: this.exports.roc_ui_effect_run,
             });
           }
           this.runningEffects.add(token);
-          this.runEffect(token).then(() => {
-            this.runningEffects.delete(token);
-            if (!this.mounted || this.failedError || generation !== this.mountGeneration) {
-              this.finishUnmount();
-              return;
-            }
-            this.views.callHost(this.exports.roc_ui_effect_complete, token);
-            this.applyPendingCommands(`effect:${token}`);
-          }).catch(err => {
+          const failed = (err, readHostDiagnostic = true) => {
             this.runningEffects.delete(token);
             if (!this.failedError) {
-              const fatal = this.poisonAfterHostFailure(err);
+              const fatal = this.poisonAfterHostFailure(err, readHostDiagnostic);
               if (!fatal.signalsReported) this.onError(fatal);
             }
-          });
+          };
+          this.runEffect(token).then(() => {
+            try {
+              this.runningEffects.delete(token);
+              if (!this.mounted || this.failedError || generation !== this.mountGeneration) {
+                this.finishUnmount();
+                return;
+              }
+              this.views.callHost(this.exports.roc_ui_effect_complete, token);
+              this.applyPendingCommands(`effect:${token}`);
+            } catch (err) { failed(err); }
+          // A trap may leave the effect stack selected: even diagnostic
+          // exports must not re-enter this instance after rejection.
+          }, err => failed(err, false));
+          // An immediate JSPI trap rejects before this next pump microtask.
+          // Suspended calls remain pending and do not serialize later effects.
+          this.scheduleEffects();
         }
       } catch (err) {
         const fatal = this.poisonAfterHostFailure(err);

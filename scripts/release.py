@@ -21,6 +21,7 @@ import tempfile
 import zipfile
 
 import bundle_browser
+from instrument_wasm import instrument_wasm
 from build_gui import build_environment, executable_name, host_target
 from compiler_pins import read_pin, replace_pin
 from dependency_artifacts import read_lock
@@ -242,6 +243,7 @@ def check_web(roc: str, root: Path, output: Path) -> None:
         # TODO(upstream compiler bug 10): switch this routine smoke build to
         # --opt=dev once unit-state capability callbacks produce valid Wasm.
         roc_run(roc, "build", source, "--target=wasm32", "--opt=size", "--no-cache", f"--output={wasm}")
+        instrument_wasm(wasm)
         driver.run(["node", "--no-maglev", "--experimental-wasm-jspi", ROOT / "scripts/browser/mount_wasm_example.mjs", wasm,
                     example.slug, "--runtime-dir", root / "browser"])
         if target is None or not example.native or driver.should_skip_native_example(target, example):
