@@ -167,7 +167,15 @@ fn writeFileStub(writer: *std.Io.Writer, stub: file_fixtures.Stub) std.Io.Writer
         },
         .read => |value| {
             try writeField(writer, "path", value.path);
-            try writeField(writer, "bytes", value.bytes);
+            // A `:file` stub may carry an image; text is quoted, anything
+            // else is named by length and digest so the golden stays text.
+            if (std.unicode.utf8ValidateSlice(value.bytes)) {
+                try writeField(writer, "bytes", value.bytes);
+            } else {
+                var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+                std.crypto.hash.sha2.Sha256.hash(value.bytes, &digest, .{});
+                try writer.print(" bytes=<{d} bytes sha256:{x}>", .{ value.bytes.len, digest });
+            }
             if (value.offset) |offset| try writer.print(" offset={d}", .{offset});
             if (value.size) |size| try writer.print(" size={d}", .{size});
         },

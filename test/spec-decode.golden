@@ -270,7 +270,7 @@ scenario "minimum-window" window=360x240 assets=none choose=[] diagnostic=none o
   13: expect_visible locator=text text="0"
 == examples-gui/folder-explorer/specs/asset-verification.scm
 test "Startup glyph verification names problem assets advisorily and browsing continues"
-  3: seed_file_result locator=none task="folder-glyph" file=read path="/assets/glyphs/folder.png" bytes="‰PNG\r\n\n   \rIHDR           szzô   AIDATxÚc`£ \tœœôŸ<ê€Q¨å”âQ`8àÅ¡ªÿôÄ£uÀ¨F0ê€QŒ:`´2\n\r  I£­GA“VÏ    IEND®B`‚"
+  3: seed_file_result locator=none task="folder-glyph" file=read path="/assets/glyphs/folder.png" bytes=<122 bytes sha256:54a467e1f1da195edf51144beaeb6112f4bfab7040db9728a4879c692207754e>
   4: seed_file_result locator=none task="file-glyph" file=read path="/assets/glyphs/file.png" bytes="altered"
   6: expect_visible locator=role_name role="heading" name="Folder Explorer"
   7: expect_text locator=test_id test_id="asset-status" expected="Problem assets: glyphs/file.png (altered). Startup check only: glyphs the host cannot load show placeholder boxes. Restart to re-check after restoring them."
@@ -1051,14 +1051,14 @@ test "A Windows document is named by its final path component through Save As"
   11: expect_text locator=test_id test_id="note-status" expected="No changes"
 == examples-gui/task-board/specs/asset-verification-ok.scm
 test "An all-ok asset verification report leaves the status line empty"
-  3: seed_file_result locator=none task="maya" file=read path="/assets/avatars/maya.png" bytes="‰PNG\r\n\n   \rIHDR   @   @   ªiqÞ  µIDATxÚí›;rÃ †}•.}_„k¨w¥’sø iÔºTKÉ9t‚ÌàRd5C2‰;¶y-âgæol½öCZvaÙíÐÐ’¶ãé£#\t’$$MšI†´8÷›vÇHwNW«ÑÒ@R$(å®u¨Áðµ×.Œ¾§õÚ‚«á*¡á¾·BpyÕÇŒ†ßj,öiÐ{ç¼la­ÏÐç6þÌÀð[s\riCã¿5%:éÂ{7N[æZŸqŸ¢çk0þ7„.&€©\"ã>‡-;¼<ŽÑ\ru¶rõ!AŽÙ  óV°T8Â‹1¾ÛÛI¼ 8±ù4×?Ê}¾/ÊÚû<÷ÄÊç™¸<ãùí†Ø‡#‚›zJà?ƒ^=>@CRçW õ(á±\r °ÞD)öØÏ€ð)Äþ?P2yèËÀè  } æ† Ì> ¦! Æ`iÀ ø\n;Á‚ÉÐ]'¨ ‹B…ŒÅCáÂ dödˆ ‘=f Ë>!Â€*2%ÆÀ€IQL‹caKcXÅò8\n$P\"ƒ\")”É¡P¥²(–F¹<6L`Ë6MaÛ6Nbë,Z«íð\nRd6üÎ    IEND®B`‚"
-  4: seed_file_result locator=none task="jon" file=read path="/assets/avatars/jon.png" bytes="‰PNG\r\n\n   \rIHDR   @   @   ªiqÞ  ±IDATxÚí›1Žƒ0E9‚«UÊ4ÛíM|\r®@ÉRæ\n´”´.©÷\\Á-Î yW+äÁž1þ–~%„y†ñÌx\\UQÇí»S$MjIi$M$Kš½¬ÿlôßiýoT®F_I\rÉÜ›2þZ×_f­?Àèÿ´\\[K5ÜD4<ôTh)z—Ððµ:¶Wƒþ¸öÎË1k¹‡:µñw†¯uOµ¤\rÿÑmé¤_ü:í„k¹ÇKŒ™ÏÁø¿Ô‘ †ŒŒÿ}ÎìðÒ8F¿Ô¹ÌU¿äØ °»‚%æïðˆqOlïN&½@ôÄæãók“ŽH DÍ>€×ž‚Èù<7€þÏïNÀ=]|é‰ÅIE4x­†Õù\t `ž%<®  .˜(q¯ý‰è€¶  ­¸Ð71€.`,À0`\n°°! sA f À+ 'ˆeBáˆÉÐVƒ$$Cª  *zAD0 “¤$&@ÃRMXôÜ_Y gÛ@³m\t `°9Šíq4H EMRh“C£$ZeÑ,vy˜À‘šÂ±9œÄÑYŒªz ß}lÏ)Ö    IEND®B`‚"
-  5: seed_file_result locator=none task="sam" file=read path="/assets/avatars/sam.png" bytes="‰PNG\r\n\n   \rIHDR   @   @   ªiqÞ  ¢IDATxÚí[;ŽÃ Í\\­R¦ÙnoÂ5|…4‘8G®@›Ò-%çp‘¸5GlEÄÊ‡ÁƒyH¯‰lâyÀü˜Ùl00XÇÙ‚\"h‚!8BOcÀ~sáÞiJzGØ,Á\tæÚ• ø´j§B?Ã4·’*¸e<¶+””­n2\nþ³ØÑ ?nƒòòcú†6·ðG‚?â˜Ë¤u…ÿGÇf:iâm°Ó^8¦oÜr¬|\tÂß“Ð¤$ +HøÛqX³ÂË£ƒ©ó…£ýÆÉV@Àð‘³´°‡—ÜcüÄ·÷+ƒz‡€äÍÏïß[à ]}¼¶¸ây!œ^Ñü~ÅøY‹RO,ç~û,ÊO0v.àñà£Rjí/œ #@K\"€šÝõN€‰à*\"ÀÅè+\" Àú\nr„®!rŒ€±\"F€#À¬…+ÑžÝ\n'À‰Ï2`Ø]aáhC‡‘AJIQ¤Åq1‚«1\\Žâz(‘A‘ÊäP(‰RYK£\\\rh™AÓÚæÐ8‰ÖYŒÚÆëº\\\nÎnù    IEND®B`‚"
+  3: seed_file_result locator=none task="maya" file=read path="/assets/avatars/maya.png" bytes=<494 bytes sha256:aeb17694a3f988d07ce16b5adbb4f9b56599f0f3589bbbb11eee7be388c9000c>
+  4: seed_file_result locator=none task="jon" file=read path="/assets/avatars/jon.png" bytes=<490 bytes sha256:2bdb053c4fd1be23692f5bd41adff385ace3dad0a4f9ddc9b211ccc5c0fc8aec>
+  5: seed_file_result locator=none task="sam" file=read path="/assets/avatars/sam.png" bytes=<475 bytes sha256:ff81a96e7f666a199f814d95e9028bd7ae6fb46ea53d9a67a1dff96ab8b971a5>
   7: expect_visible locator=role_name role="heading" name="Launch Board"
   8: expect_text locator=test_id test_id="asset-status" expected=""
 == examples-gui/task-board/specs/asset-verification.scm
 test "Startup asset verification names missing and altered assets and keeps the board editable"
-  3: seed_file_result locator=none task="maya" file=read path="/assets/avatars/maya.png" bytes="‰PNG\r\n\n   \rIHDR   @   @   ªiqÞ  µIDATxÚí›;rÃ †}•.}_„k¨w¥’sø iÔºTKÉ9t‚ÌàRd5C2‰;¶y-âgæol½öCZvaÙíÐÐ’¶ãé£#\t’$$MšI†´8÷›vÇHwNW«ÑÒ@R$(å®u¨Áðµ×.Œ¾§õÚ‚«á*¡á¾·BpyÕÇŒ†ßj,öiÐ{ç¼la­ÏÐç6þÌÀð[s\riCã¿5%:éÂ{7N[æZŸqŸ¢çk0þ7„.&€©\"ã>‡-;¼<ŽÑ\ru¶rõ!AŽÙ  óV°T8Â‹1¾ÛÛI¼ 8±ù4×?Ê}¾/ÊÚû<÷ÄÊç™¸<ãùí†Ø‡#‚›zJà?ƒ^=>@CRçW õ(á±\r °ÞD)öØÏ€ð)Äþ?P2yèËÀè  } æ† Ì> ¦! Æ`iÀ ø\n;Á‚ÉÐ]'¨ ‹B…ŒÅCáÂ dödˆ ‘=f Ë>!Â€*2%ÆÀ€IQL‹caKcXÅò8\n$P\"ƒ\")”É¡P¥²(–F¹<6L`Ë6MaÛ6Nbë,Z«íð\nRd6üÎ    IEND®B`‚"
+  3: seed_file_result locator=none task="maya" file=read path="/assets/avatars/maya.png" bytes=<494 bytes sha256:aeb17694a3f988d07ce16b5adbb4f9b56599f0f3589bbbb11eee7be388c9000c>
   4: seed_file_result locator=none task="jon" file=reject kind=not_found detail="/assets/avatars/jon.png"
   5: seed_file_result locator=none task="sam" file=read path="/assets/avatars/sam.png" bytes="altered"
   7: expect_visible locator=role_name role="heading" name="Launch Board"
