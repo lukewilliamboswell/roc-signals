@@ -294,8 +294,8 @@ attestation service:
 - `platform-web/targets/arm64musl/libc.a`
 - `platform-web/targets/wasm32/host.wasm`
 
-Roc app executables built during tests are written under `.test-out/` by
-`scripts/test.py`.
+Roc app executables built during tests are written under the invocation's
+printed `.test-out/run-*` directory by `scripts/test.py`.
 
 ## Dependency artifact releases
 
@@ -1314,13 +1314,15 @@ list lives in `src/spec/spec_runner.zig`.
 
 ## Benchmark Mode
 
-The Python driver builds benchmark binaries under `.test-out/bench-bin` when the
-bench suite runs. The default `all` suite includes benchmarks on supported native
-hosts; use `python3 scripts/test.py bench --native always` to force the focused
-bench gate. A built app binary also accepts benchmark flags directly:
+The Python driver builds benchmark binaries under the printed run directory's
+`bench-bin/` subdirectory when the bench suite runs. The default `all` suite
+includes benchmarks on supported native hosts; use
+`python3 scripts/test.py bench --native always --keep-output --output-dir .test-out/inspect-bench`
+to retain a predictable copy for direct inspection. A built app binary also
+accepts benchmark flags directly:
 
 ```sh
-.test-out/bench-bin/signals-data-grid-bench --host-bench-app --host-bench-name signals-data-grid --host-bench-iterations 100 --host-bench-samples 3 --host-entropy-seed 0 examples-web/data-grid/specs/initial-mount.scm
+.test-out/inspect-bench/bench-bin/signals-data-grid-bench --host-bench-app --host-bench-name signals-data-grid --host-bench-iterations 100 --host-bench-samples 3 --host-entropy-seed 0 examples-web/data-grid/specs/initial-mount.scm
 ```
 
 The driver supplies the same deterministic entropy seed as the native SCM

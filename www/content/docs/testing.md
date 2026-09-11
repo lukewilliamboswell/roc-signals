@@ -320,11 +320,12 @@ Do not pin `patches_emitted` in semantic specs: it combines unrelated command
 kinds. Use row and scope counters for structural behaviour and benchmark
 telemetry to track overall command traffic.
 
-For a retained-allocation delta that should not be there, rerun the built native
-app with `--host-trace-allocations`:
+For a retained-allocation delta that should not be there, retain a predictably
+named native run and rerun its built app with `--host-trace-allocations`:
 
 ```sh
-.test-out/bin/signals-my-example --host-trace-allocations examples-web/my-example/specs/case.scm
+python3 scripts/test.py native --keep-output --output-dir .test-out/inspect-native
+.test-out/inspect-native/bin/signals-my-example --host-trace-allocations examples-web/my-example/specs/case.scm
 ```
 
 The host writes an allocation checkpoint after mount and after every spec
