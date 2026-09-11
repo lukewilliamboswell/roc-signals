@@ -16,6 +16,7 @@ import shutil
 import socketserver
 import subprocess
 import sys
+import tempfile
 import threading
 import tomllib
 from dataclasses import dataclass
@@ -28,7 +29,8 @@ from toolchain import replace_platform
 
 
 ROOT = Path(__file__).resolve().parent.parent
-TEST_OUT = ROOT / ".test-out"
+TEST_OUT_PARENT = ROOT / ".test-out"
+TEST_OUT = TEST_OUT_PARENT
 EXAMPLES_MANIFEST = ROOT / "www" / "data" / "examples.toml"
 PLATFORM_HEADER_RE = re.compile(r'platform\s+"[^"]+"')
 PLATFORM_HEADER_CAPTURE_RE = re.compile(r'platform\s+"([^"]+)"')
@@ -172,7 +174,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--keep-output",
         action="store_true",
-        help="Keep .test-out after the run.",
+        help="Keep this invocation's output directory after the run.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "Use PATH for this invocation's output. PATH must not already exist; "
+            "by default a unique directory is created under .test-out."
+        ),
     )
     parser.add_argument(
         "--jobs",
@@ -285,13 +296,18 @@ def command_path(value: str) -> str:
     raise SystemExit(f"missing Roc compiler: {value}")
 
 
-def ensure_clean_output(keep_output: bool) -> None:
-    if keep_output:
-        TEST_OUT.mkdir(exist_ok=True)
-        return
-    if TEST_OUT.exists():
-        shutil.rmtree(TEST_OUT)
-    TEST_OUT.mkdir()
+def create_test_output(requested: Path | None) -> Path:
+    """Create and return a directory owned exclusively by this driver invocation."""
+    TEST_OUT_PARENT.mkdir(exist_ok=True)
+    if requested is None:
+        return Path(tempfile.mkdtemp(prefix="run-", dir=TEST_OUT_PARENT))
+
+    output = requested if requested.is_absolute() else ROOT / requested
+    try:
+        output.mkdir(parents=True)
+    except FileExistsError as exc:
+        raise SystemExit(f"test output directory already exists: {output}") from exc
+    return output
 
 
 def build_hosts() -> None:
@@ -986,6 +1002,8 @@ def validate_args_before_build(args: argparse.Namespace, suites: set[str]) -> No
 
 
 def main() -> int:
+    global TEST_OUT
+
     import gui_suite
 
     args = parse_args()
@@ -1003,7 +1021,8 @@ def main() -> int:
 
     validate_args_before_build(args, suites)
     roc_bin = command_path(args.roc_bin)
-    ensure_clean_output(args.keep_output)
+    TEST_OUT = create_test_output(args.output_dir)
+    print(f"Test output: {TEST_OUT}")
 
     if suites != {"gui"}:
         build_hosts()
@@ -1094,6 +1113,8 @@ def main() -> int:
 
     if not args.keep_output and TEST_OUT.exists():
         shutil.rmtree(TEST_OUT)
+    elif args.keep_output:
+        print(f"Kept test output: {TEST_OUT}")
     if not ledger.outcomes:
         return 0
     status = known_failures.report(ledger, known_failures_path)

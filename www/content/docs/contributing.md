@@ -242,7 +242,10 @@ linked-app fatal campaign complements native refusal/retry tests; it does not
 turn arbitrary native crashes into accepted outcomes. Roc-allocator fatal
 boundaries also have focused linked-host tests.
 
-Use `--keep-output` when debugging generated artifacts under `.test-out/`.
+Each test-driver invocation owns a unique directory under `.test-out/`, so
+concurrent suites cannot delete or overwrite one another's artifacts. Use
+`--keep-output` when debugging; the driver prints the retained directory. Pass
+`--output-dir PATH` when a script needs a predictable, newly-created path.
 
 For small documentation edits that do not change behavior or coverage claims,
 run the lightweight tidy gate:
@@ -833,8 +836,8 @@ To inspect command-wire byte traffic for a built wasm app, keep wasm outputs and
 mount an artifact with telemetry summarization:
 
 ```sh
-python3 scripts/test.py wasm --keep-output
-node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs .test-out/wasm/package-explorer.wasm package-explorer --telemetry-summary
+python3 scripts/test.py wasm --keep-output --output-dir .test-out/inspect-wasm
+node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs .test-out/inspect-wasm/wasm/package-explorer.wasm package-explorer --telemetry-summary
 ```
 
 Repeat the mount command for each public wasm app when refreshing a public-app
@@ -1537,8 +1540,9 @@ each app must have specs. Every GUI check must pass; this suite has no known-fai
 allowlist. `--spec-filter`, `--shard`, `--jobs`, and `--fail-fast` also apply.
 The default `all` suite includes GUI checks on Linux x86_64; run `gui` explicitly
 on macOS, where it requires full Xcode and the Metal toolchain. CI runs them in a
-dedicated Linux, Windows, and macOS jobs. GUI executables remain under `.test-out/gui`
-when output is kept. Linux CI then runs `xvfb-run -a python3 scripts/gui_smoke.py --wayland`
+dedicated Linux, Windows, and macOS jobs. GUI executables remain under the
+printed run directory's `gui/` subdirectory when output is kept. Linux CI then
+runs `xvfb-run -a python3 scripts/gui_smoke.py --wayland`
 with Weston and Mesa's software Vulkan driver. Weston runs on Xvfb so GPUI
 receives a Wayland input seat as well as a virtual display; Weston's headless
 backend provides no seat and GPUI 0.2.2 requires one.
