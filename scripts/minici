@@ -15,11 +15,13 @@ import platform
 import shutil
 import subprocess
 import sys
+import uuid
 
 from toolchain import validate_roots, verify_compiler
 
 
 ROOT = Path(__file__).resolve().parent.parent
+GUI_OUTPUT_ENV = "GUI_TEST_OUTPUT"
 
 
 def run(*command: str) -> None:
@@ -77,17 +79,40 @@ def source() -> None:
 
 
 def gui() -> None:
+    output = os.environ.get(GUI_OUTPUT_ENV)
+    if output is None:
+        output = str(ROOT / ".test-out" / f"minici-gui-{uuid.uuid4().hex}")
+        os.environ[GUI_OUTPUT_ENV] = output
+    print(f"==> GUI test output: {output}", flush=True)
     run(sys.executable, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_gui*.py")
-    run(sys.executable, "scripts/test.py", "gui", "--keep-output")
+    run(sys.executable, "scripts/test.py", "gui", "--keep-output", "--output-dir", output)
+
+
+def gui_output() -> Path:
+    """Return the explicit output shared by sequential GUI verification stages."""
+    output = os.environ.get(GUI_OUTPUT_ENV)
+    if output is None:
+        raise SystemExit(
+            f"set {GUI_OUTPUT_ENV} to the retained output printed by the gui target, "
+            "or run gui and its consumers in one minici invocation"
+        )
+    path = Path(output)
+    if not path.is_absolute():
+        path = ROOT / path
+    if not (path / "gui").is_dir():
+        raise SystemExit(f"GUI test output has no built applications: {path / 'gui'}")
+    return path
 
 
 def gui_smoke() -> None:
+    directory = gui_output() / "gui"
     if platform.system() == "Linux":
         if not all(shutil.which(tool) for tool in ("weston", "xvfb-run")):
             raise SystemExit("Linux gui-smoke requires weston and xvfb-run (CI installs both)")
-        run("xvfb-run", "-a", "-s", "-screen 0 1280x1024x24", sys.executable, "scripts/gui_smoke.py", "--wayland")
+        run("xvfb-run", "-a", "-s", "-screen 0 1280x1024x24", sys.executable,
+            "scripts/gui_smoke.py", "--wayland", "--directory", str(directory))
     else:
-        run(sys.executable, "scripts/gui_smoke.py")
+        run(sys.executable, "scripts/gui_smoke.py", "--directory", str(directory))
 
 
 def gui_scenarios() -> None:
@@ -98,13 +123,18 @@ def gui_scenarios() -> None:
     Only the window captures are macOS-only, and the runner says so rather than
     quietly reporting a pass for evidence it did not gather.
     """
+    output = gui_output()
+    arguments = (
+        "--directory", str(output / "gui"),
+        "--artifacts", str(output / "gui-scenarios"),
+    )
     if platform.system() == "Linux":
         if not all(shutil.which(tool) for tool in ("weston", "xvfb-run")):
             raise SystemExit("Linux gui-scenarios requires weston and xvfb-run (CI installs both)")
         run("xvfb-run", "-a", "-s", "-screen 0 1280x1024x24", sys.executable,
-            "scripts/gui_scenarios.py", "--wayland")
+            "scripts/gui_scenarios.py", "--wayland", *arguments)
     else:
-        run(sys.executable, "scripts/gui_scenarios.py")
+        run(sys.executable, "scripts/gui_scenarios.py", *arguments)
 
 
 def selection() -> None:

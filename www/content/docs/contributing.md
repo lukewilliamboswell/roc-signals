@@ -1079,8 +1079,9 @@ that does not fit, or a native editor that kept the previous document's undo
 history. For the GUI examples those states are covered by `(scenario ...)`
 specs, which live in the same `specs/` directory, use the same locators and
 the same step names, and are parsed by the same engine parser. The GUI host
-interprets them against a real window, through its `--host-scenario` flag;
-`python3 scripts/gui_scenarios.py --directory .test-out/gui` runs every one.
+interprets them against a real window, through its `--host-scenario` flag. Run
+`GUI_TEST_OUTPUT=.test-out/my-gui-run python3 scripts/minici gui gui-scenarios`
+to build and exercise one explicitly owned set of executables.
 
 ```lisp
 (scenario "detail reachability"
@@ -1125,8 +1126,8 @@ be last and leaves through the window's own close request the way the frame's
 close button does — an application with unsaved work may answer with a dialog
 and keep the window. The display-free host refuses every one of these by name.
 
-Every run writes a JSON report of every observation under
-`.test-out/gui-scenarios/<app>/`, and on macOS also photographs the
+Every run writes a JSON report of every observation under the owning run's
+`gui-scenarios/<app>/` directory, and on macOS also photographs the
 application's own window in the state the scenario finished in — including the
 state a failing assertion stopped at. Captures go through `gui_capture.py`, so
 they find the window by the process id the driver started and refuse a window
@@ -1543,9 +1544,12 @@ allowlist. `--spec-filter`, `--shard`, `--jobs`, and `--fail-fast` also apply.
 The default `all` suite includes GUI checks on Linux x86_64; run `gui` explicitly
 on macOS, where it requires full Xcode and the Metal toolchain. CI runs them in a
 dedicated Linux, Windows, and macOS jobs. GUI executables remain under the
-printed run directory's `gui/` subdirectory when output is kept. Linux CI then
-runs `xvfb-run -a python3 scripts/gui_smoke.py --wayland`
-with Weston and Mesa's software Vulkan driver. Weston runs on Xvfb so GPUI
+printed run directory's `gui/` subdirectory when output is kept. A multi-stage
+run sets `GUI_TEST_OUTPUT` once and passes that owned directory explicitly to
+the build, smoke, and scenario stages; for example,
+`GUI_TEST_OUTPUT=.test-out/my-gui-run python3 scripts/minici gui gui-smoke gui-scenarios`.
+Linux CI runs the equivalent through Xvfb, Weston, and Mesa's software Vulkan
+driver. Weston runs on Xvfb so GPUI
 receives a Wayland input seat as well as a virtual display; Weston's headless
 backend provides no seat and GPUI 0.2.2 requires one.
 It opens every maintained example, requires

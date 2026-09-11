@@ -156,7 +156,10 @@ class WaylandDispatch(unittest.TestCase):
 
         with patch.object(gui_smoke, "wayland", fake_wayland), \
                 patch.object(gui_scenarios, "run", fake_run), \
-                patch.object(sys, "argv", ["gui_scenarios.py", "--wayland", "--no-capture"]):
+                patch.object(sys, "argv", [
+                    "gui_scenarios.py", "--wayland", "--no-capture",
+                    "--directory", "/gui-output",
+                ]):
             gui_scenarios.main()
         self.assertEqual(captured["environment"], {"WAYLAND_DISPLAY": "signals-smoke"})
         self.assertFalse(captured["capture"])

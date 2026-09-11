@@ -31,7 +31,7 @@ import subprocess
 import sys
 
 from build_gui import executable_name
-from gui_suite import ROOT, examples
+from gui_suite import examples
 import spec_driver
 
 SYSTEMS = {"linux": "Linux", "macos": "Darwin", "windows": "Windows"}
@@ -208,11 +208,10 @@ def run(directory: Path, artifacts: Path, patterns=(), capture=True,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--directory", type=Path, default=ROOT / ".test-out/gui",
+    parser.add_argument("--directory", type=Path, required=True,
                         help="Directory holding the built GUI examples")
     parser.add_argument("--artifacts", type=Path,
-                        default=ROOT / ".test-out/gui-scenarios",
-                        help="Where reports and window captures are written")
+                        help="Where reports and window captures are written; defaults beside the owning GUI run")
     parser.add_argument("--scenario", action="append", default=[], metavar="SUBSTRING",
                         help="Run only scenarios whose app/name contains this. Repeatable.")
     parser.add_argument("--no-capture", action="store_true",
@@ -220,6 +219,7 @@ def main() -> None:
     parser.add_argument("--wayland", action="store_true",
                         help="Run Weston on the supplied X display; use xvfb-run for CI")
     args = parser.parse_args()
+    artifacts = args.artifacts or args.directory.parent / "gui-scenarios"
     capture = not args.no_capture and sys.platform == "darwin"
     if not args.no_capture and not capture:
         # Say which half is running. A harness that quietly skipped its captures
@@ -233,10 +233,10 @@ def main() -> None:
         gui_smoke.wayland(
             args.directory,
             lambda directory, environment: run(
-                directory, args.artifacts, patterns, capture, environment),
+                directory, artifacts, patterns, capture, environment),
         )
         return
-    run(args.directory, args.artifacts, patterns, capture, dict(os.environ))
+    run(args.directory, artifacts, patterns, capture, dict(os.environ))
 
 
 if __name__ == "__main__":

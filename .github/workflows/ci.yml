@@ -68,6 +68,7 @@ jobs:
     timeout-minutes: 45
     env:
       GUI_HOST_LOCK: gui-host.lock.json
+      GUI_TEST_OUTPUT: .test-out/gui-${{ github.run_id }}-${{ github.run_attempt }}
       RUSTUP_TOOLCHAIN: 1.95.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -104,7 +105,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: gui-scenario-reports
-          path: .test-out/gui-scenarios
+          path: ${{ env.GUI_TEST_OUTPUT }}/gui-scenarios
           if-no-files-found: ignore
 
   gui-windows:
