@@ -7,6 +7,33 @@ import http.Response
 ## HTTP request helpers backed by the pinned `roc-lang/http` package and the
 ## Signals task runtime.
 Http := [].{
+	## Failures of a hosted request. HTTP status codes remain successful
+	## responses; text helpers report non-success status and invalid UTF-8.
+	Error := [InvalidRequest(Str), Network(Str), Timeout, TooLarge(Str), Status(U16), InvalidUtf8, Unavailable(Str)].{
+		is_eq : _
+	}
+
+	## Performs one request inside an engine-scheduled action effect. Each call
+	## is a distinct occurrence and its result returns through that action.
+	send! : Request.Request => Try(Response.Response, Error)
+
+	## Performs a GET with a thirty-second timeout.
+	get! : Str => Try(Response.Response, Error)
+	get! = |uri| Http.send!(Request.from_method(GET).with_uri(uri).with_timeout(TimeoutMilliseconds(30000)))
+
+	## Reads a successful response as UTF-8, preserving status and decoding
+	## failures as typed errors rather than replacing bytes.
+	get_text! : Str => Try(Str, Error)
+	get_text! = |uri| {
+		response = get!(uri)?
+		status = Response.status(response)
+		if status < 200 or status >= 300 {
+			Err(Status(status))
+		} else {
+			text = Str.from_utf8(Response.body(response)) ? |_| InvalidUtf8
+			Ok(text)
+		}
+	}
 
 	## Errors returned by platform HTTP task helpers.
 	HttpError := [

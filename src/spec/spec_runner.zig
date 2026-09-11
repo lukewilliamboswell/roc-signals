@@ -429,7 +429,7 @@ pub fn Runner(comptime Ctx: type) type {
                         metrics_mark = Ctx.lastRuntimeMetrics(host);
                     },
 
-                    .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result => {},
+                    .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result, .manual_effects => {},
 
                     .set_visibility => {
                         if (comptime !@hasDecl(Ctx, "setVisibility")) {
@@ -864,6 +864,33 @@ pub fn Runner(comptime Ctx: type) type {
                             return 1;
                         }
                         Ctx.stubHttpResult(host, &(cmd.http_stub orelse unreachable));
+                    },
+                    .run_effect => {
+                        if (comptime @hasDecl(Ctx, "runSpecEffect")) {
+                            if (!Ctx.runSpecEffect(host, roc_host, cmd.expected_count.?)) {
+                                var buffer: [192]u8 = undefined;
+                                const message = std.fmt.bufPrint(&buffer, "effect occurrence {d} is not pending or manual mode is disabled", .{cmd.expected_count.?}) catch unreachable;
+                                writeLocatorFailure(cmd.line_num, message);
+                                return 1;
+                            }
+                        } else {
+                            writeLocatorFailure(cmd.line_num, "manual effects are not supported by this runner");
+                            return 1;
+                        }
+                    },
+                    .expect_pending_effects => {
+                        if (comptime @hasDecl(Ctx, "pendingEffectCount")) {
+                            const actual = Ctx.pendingEffectCount(host);
+                            if (actual != cmd.expected_count.?) {
+                                var buffer: [192]u8 = undefined;
+                                const message = std.fmt.bufPrint(&buffer, "expected {d} pending effects, got {d}", .{ cmd.expected_count.?, actual }) catch unreachable;
+                                writeLocatorFailure(cmd.line_num, message);
+                                return 1;
+                            }
+                        } else {
+                            writeLocatorFailure(cmd.line_num, "manual effects are not supported by this runner");
+                            return 1;
+                        }
                     },
 
                     .tick_interval => {

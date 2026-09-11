@@ -1019,6 +1019,9 @@ const HostEnv = struct {
     window_registration: ?u64 = null,
     spec_pending_close: ?struct { node: u64, event: ids.EventId } = null,
     spec_window_closed: bool = false,
+    // Manual spec execution leaves prepared effects owned by the engine until
+    // a test explicitly advances them. The live GUI never enables this mode.
+    spec_manual_effects: bool = false,
     started_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     /// Spec-declared results for the synchronous `Files` primitives, consumed
     /// oldest first as requests arrive; only the display-free spec host uses them.
@@ -2578,6 +2581,7 @@ fn hostHttpSend(request: abi.Request) callconv(.c) abi.HttpSendResult {
     const host = currentHost();
     const gpa = host.hostAllocator();
     var holder = request;
+    if (comptime !gpui_spike) return services.stubHttpSend(gpa, &host.http_stubs, roc_host, holder.uri.asSlice());
     if (!Gpui.live) return services.stubHttpSend(gpa, &host.http_stubs, roc_host, holder.uri.asSlice());
     const method: []const u8 = switch (holder.method.tag) {
         .CONNECT => "CONNECT",
@@ -3243,9 +3247,6 @@ fn acceptInitElem(host: *HostEnv, roc_host: *abi.RocHost, root_box: ElemBox) voi
     acceptInitElemWithStats(host, roc_host, root_box, null, null);
 }
 
-/// Calls the platform's `roc_run_effect` entry point, which consumes the
-/// closure and returns the next command. Host fixtures link no Roc
-/// application, so they cannot run one.
 /// One effect between its UI-thread preparation and the application of its
 /// result. The worker touches only `thunk` and `cmd`; everything else about
 /// the effect stays with the engine's running-effect record.
@@ -3256,10 +3257,10 @@ const EffectJob = struct {
 };
 
 fn prepareEffectThunk(effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
-    // Only the GUI platform declares the effect entry points; a host fixture
-    // links no application and the web platform runs effects in the browser.
-    if (comptime host_fixtures or !gpui_spike) {
-        failHost("effect closures run only on the native GUI host");
+    // Both platforms provide these entry points. Zig-only host fixtures have
+    // no linked Roc application and therefore cannot invoke a Roc effect.
+    if (comptime host_fixtures) {
+        failHost("effect closures require a linked Roc application");
     } else {
         return abi.roc_prepare_effect(effect, snapshot.toRaw(), cap);
     }
@@ -3268,8 +3269,8 @@ fn prepareEffectThunk(effect: abi.RocErasedCallable, snapshot: HostValue, cap: H
 /// The worker's entry point. It runs Roc code that reaches the host only
 /// through the allocation hooks and the hosted effectful primitives.
 fn runEffectJob(job: *EffectJob) void {
-    if (comptime host_fixtures or !gpui_spike) {
-        failHost("effect closures run only on the native GUI host");
+    if (comptime host_fixtures) {
+        failHost("effect closures require a linked Roc application");
     } else {
         job.cmd = abi.roc_run_effect(job.thunk);
     }
@@ -3285,18 +3286,29 @@ fn runEffectJob(job: *EffectJob) void {
 /// joined worker here failed every macOS application link. An effect that
 /// queues further effects extends the same drain.
 fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
-    while (host.engine.takeNextPendingEffect()) |taken| {
-        var effect = taken;
-        const job = host.hostAllocator().create(EffectJob) catch @panic("out of memory");
-        job.* = .{ .id = effect.id, .thunk = effect.thunk };
-        host.engine.trackRunningEffect(host, &effect);
-        if (Gpui.live) {
-            Gpui.queueEffectJob(job);
-        } else {
-            runEffectJob(job);
-            completeEffectJob(host, roc_host, job);
-        }
+    if (host.spec_manual_effects) {
+        if (Gpui.live) failHost("manual effect execution is restricted to native specs");
+        return;
     }
+    while (runNextEffect(host, roc_host)) {}
+}
+
+// Advance exactly one prepared occurrence. Chained effects remain queued so a
+// manual executor can observe each commit independently. Allocate the host job
+// before taking ownership from the engine's cleanup-managed pending queue.
+fn runNextEffect(host: *HostEnv, roc_host: *abi.RocHost) bool {
+    if (host.engine.pending_effects.items.len == 0) return false;
+    const job = host.hostAllocator().create(EffectJob) catch @panic("out of memory");
+    var effect = host.engine.takeNextPendingEffect() orelse unreachable;
+    job.* = .{ .id = effect.id, .thunk = effect.thunk };
+    host.engine.trackRunningEffect(host, &effect);
+    if (Gpui.live) {
+        Gpui.queueEffectJob(job);
+    } else {
+        runEffectJob(job);
+        completeEffectJob(host, roc_host, job);
+    }
+    return true;
 }
 
 /// Applies the command a finished effect returned, with the effect's declared
@@ -3839,6 +3851,29 @@ fn refreshSpecWindowClose(host: *HostEnv) void {
 }
 
 const SpecRunnerCtx = struct {
+    /// Counts prepared occurrences still owned by the shared engine.
+    pub fn pendingEffectCount(host: *HostEnv) u64 {
+        return host.engine.pending_effects.items.len;
+    }
+
+    /// Runs one queued occurrence selected by its engine-issued identity.
+    /// Its real closure consumes existing service stubs; chained effects stay
+    /// pending, and the normal completion path applies the returned action.
+    pub fn runSpecEffect(host: *HostEnv, roc_host: *abi.RocHost, id: u64) bool {
+        if (!host.spec_manual_effects or Gpui.live) return false;
+        for (host.engine.pending_effects.items, 0..) |pending, index| {
+            if (pending.id != id) continue;
+            const job = host.hostAllocator().create(EffectJob) catch @panic("out of memory");
+            var effect = host.engine.pending_effects.orderedRemove(index);
+            job.* = .{ .id = effect.id, .thunk = effect.thunk };
+            host.engine.trackRunningEffect(host, &effect);
+            runEffectJob(job);
+            completeEffectJob(host, roc_host, job);
+            return true;
+        }
+        return false;
+    }
+
     pub const Host = HostEnv;
     pub const RocHost = abi.RocHost;
 
@@ -4100,6 +4135,7 @@ comptime {
         @export(&hostRealloc, .{ .name = "roc_realloc", .visibility = .hidden });
         @export(&hostDbg, .{ .name = "roc_dbg", .visibility = .hidden });
         @export(&hostEnvVar, .{ .name = "roc_env_var", .visibility = .hidden });
+        @export(&hostHttpSend, .{ .name = "roc_http_send", .visibility = .hidden });
         // The hosted Files and Http primitives are the native GUI platform's:
         // they call into the Rust host, which the web examples' native build
         // does not link, so only the GUI engine exports them.
@@ -4116,7 +4152,6 @@ comptime {
             @export(&hostFilesListDirectory, .{ .name = "roc_files_list_directory", .visibility = .hidden });
             @export(&hostFilesOpenPath, .{ .name = "roc_files_open_path", .visibility = .hidden });
             @export(&hostFilesAssetsRoot, .{ .name = "roc_files_assets_root", .visibility = .hidden });
-            @export(&hostHttpSend, .{ .name = "roc_http_send", .visibility = .hidden });
         }
         @export(&hostExpectFailed, .{ .name = "roc_expect_failed", .visibility = .hidden });
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });
@@ -4402,6 +4437,7 @@ fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void
             },
             .seed_file_result => host.stubFile(&(cmd.file_stub orelse failHost("file stub command carried no stub"))),
             .seed_http_result => host.stubHttp(&(cmd.http_stub orelse failHost("http stub command carried no stub"))),
+            .manual_effects => host.spec_manual_effects = true,
             .seed_local_storage, .seed_session_storage => {
                 const key = cmd.task_name orelse failHost("seed storage command is missing key text");
                 const value = cmd.expected_text orelse failHost("seed storage command is missing value text");

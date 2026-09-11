@@ -151,7 +151,7 @@ Inbox :: [].{
 			}
 	}
 
-	## What the send task currently holds. Both payloads are the client id of
+	## The latest send effect's settlement. Both payloads are the client id of
 	## the message that settled, which is what lets the app tell *which*
 	## optimistic message a result belongs to.
 	SendResult := [Idle, Sent(Str), Failed(Str)].{
@@ -178,8 +178,8 @@ Inbox :: [].{
 	##
 	## - `Synced`     the poll came back carrying our client id; the server row
 	##                takes over the same row key, so nothing is recreated.
-	## - `Sent`       the send task acknowledged, no poll has caught up yet.
-	## - `Failed`     the send task rejected; the message is rolled back out of
+	## - `Sent`       the send effect acknowledged, no poll has caught up yet.
+	## - `Failed`     the send effect failed; the message is rolled back out of
 	##                the thread and surfaced in the error banner. The composer
 	##                stays disabled until the user discards it.
 	## - `Discarded`  the user dismissed a failed message.
@@ -406,7 +406,7 @@ Inbox :: [].{
 	server_has_cid = |msgs, cid| msgs.any(|m| m.cid == cid)
 
 	## Lifecycle of one optimistic message, derived from three independent
-	## inputs: the outbox, the polled snapshot, and the send task's result.
+	## inputs: the outbox, the polled snapshot, and the send effect's result.
 	pending_state : Inbox.ViewInput, Str -> Inbox.PendingState
 	pending_state = |input, cid|
 		if cid == "" {
@@ -416,9 +416,9 @@ Inbox :: [].{
 		} else if Inbox.server_has_cid(input.msgs, cid) {
 			Synced
 		} else if cid != input.session.last_cid {
-			# Only one send is ever in flight (the composer is disabled while one
-			# is pending or failed), so an older queued message that is neither on
-			# the server nor discarded was already acknowledged.
+			# The composer permits another send only after acknowledgment or
+			# discard. An older message absent from both the server snapshot and
+			# the discard list was therefore already acknowledged.
 			Sent
 		} else {
 			match input.send {

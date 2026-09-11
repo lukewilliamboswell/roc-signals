@@ -45,6 +45,9 @@ pub const SpecCommandType = enum {
     seed_file_result,
     stub_http_result,
     seed_http_result,
+    manual_effects,
+    run_effect,
+    expect_pending_effects,
     tick_interval,
     tick_interval_if_active,
     expect_cleanup,
@@ -741,6 +744,10 @@ fn bare(cmd_type: SpecCommandType, line: usize) SpecCommand {
 /// The pre-mount state a `(setup ...)` may declare. Setup is declarative:
 /// nothing here dispatches an event or touches the tree.
 fn decodeSetupForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (std.mem.eql(u8, head, "manual-effects")) {
+        if (args.len != 0) return ParseError.InvalidFormat;
+        return bare(.manual_effects, line);
+    }
     if (std.mem.eql(u8, head, "initial-location")) {
         return textForm(allocator, .set_initial_location, args, line);
     } else if (std.mem.eql(u8, head, "initial-visibility")) {
@@ -759,6 +766,12 @@ fn decodeSetupForm(allocator: std.mem.Allocator, head: []const u8, args: []const
 /// head is the spec spelling; the command type is the runner's. Argument
 /// shapes are checked here once, with the line of the form in every refusal.
 fn decodeStepForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (std.mem.eql(u8, head, "run-effect") or std.mem.eql(u8, head, "expect-pending-effects")) {
+        if (args.len != 1) return ParseError.InvalidFormat;
+        var command = bare(if (std.mem.eql(u8, head, "run-effect")) .run_effect else .expect_pending_effects, line);
+        command.expected_count = try exprUnsigned(args[0]);
+        return command;
+    }
     // Setup vocabulary is refused inside steps by falling through to the
     // unknown-head refusal below: none of these heads is a step.
     const Shape = enum { locator, locator_text, locator_bool, locator_count, text, symbol, key_value, key, count_after_key, interval, interval_count, metric_delta, none };
@@ -1137,6 +1150,29 @@ test "a scenario carries its header and window-only steps" {
     try std.testing.expectEqualStrings("following", spec.commands[9].expected_text.?);
     try std.testing.expectEqual(SpecCommandType.close, spec.commands[10].cmd_type);
     try std.testing.expectEqual(@as(usize, 18), spec.commands[10].line_num);
+}
+
+test "manual effect controls distinguish setup mode from occurrence execution" {
+    const spec = try parseSExprTestSpec(
+        std.testing.allocator,
+        "(test \"manual\" (setup (manual-effects)) (steps (expect-pending-effects 2) (run-effect 2)))",
+    );
+    defer spec.deinit(std.testing.allocator);
+    try std.testing.expectEqual(SpecCommandType.manual_effects, spec.commands[0].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.expect_pending_effects, spec.commands[1].cmd_type);
+    try std.testing.expectEqual(@as(u64, 2), spec.commands[1].expected_count.?);
+    try std.testing.expectEqual(SpecCommandType.run_effect, spec.commands[2].cmd_type);
+    try std.testing.expectEqual(@as(u64, 2), spec.commands[2].expected_count.?);
+    for ([_][]const u8{
+        "(test \"bad\" (steps (manual-effects)))",
+        "(test \"bad\" (setup (manual-effects 1)) (steps (run-effect 1)))",
+        "(test \"bad\" (setup (run-effect 1)) (steps (run-effect 1)))",
+        "(test \"bad\" (steps (run-effect -1)))",
+        "(test \"bad\" (steps (run-effect 1 2)))",
+        "(test \"bad\" (steps (expect-pending-effects)))",
+    }) |source| {
+        try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, source));
+    }
 }
 
 test "a scenario and a test each refuse the other's steps" {

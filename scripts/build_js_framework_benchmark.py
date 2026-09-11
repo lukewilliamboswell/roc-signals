@@ -8,6 +8,8 @@ from pathlib import Path
 import shutil
 import subprocess
 
+from bundle_browser import runtime_files
+
 
 ROOT = Path(__file__).resolve().parent.parent
 ADAPTER = Path(
@@ -16,11 +18,6 @@ ADAPTER = Path(
 ).resolve()
 OUTPUT = ADAPTER / "dist"
 FIXTURE = ROOT / "examples-web" / "_fixtures" / "js-framework-benchmark" / "main.roc"
-RUNTIME_FILES = (
-    "signals.mjs",
-    "controlled_input_policy.mjs",
-    "wasm_memory_views.mjs",
-)
 
 
 def run(command: list[str | Path]) -> None:
@@ -45,6 +42,14 @@ def display_path(path: Path) -> str:
         return str(path)
 
 
+def copy_runtime(output: Path) -> None:
+    """Ship the same complete module graph as the standalone browser bundle."""
+    for name in runtime_files():
+        destination = output / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "www" / "static" / name, destination)
+
+
 def main() -> None:
     """Produce the ordinary optimized Wasm app and its matching JS runtime."""
     roc = resolve_executable(os.environ.get("ROC_BIN") or os.environ.get("ROC") or "roc", "Roc compiler")
@@ -63,8 +68,7 @@ def main() -> None:
             FIXTURE,
         ]
     )
-    for runtime_file in RUNTIME_FILES:
-        shutil.copyfile(ROOT / "www" / "static" / runtime_file, OUTPUT / runtime_file)
+    copy_runtime(OUTPUT)
     shutil.copyfile(ADAPTER / "src" / "main.mjs", OUTPUT / "main.mjs")
     print(f"Built {display_path(OUTPUT)}/", flush=True)
 

@@ -9,10 +9,8 @@ Notes := {}.{
 	## Local storage key holding the whole persisted note list.
 	notes_key = "field-notes:notes"
 
-	## The outbox has a fixed number of sync lanes. Each lane owns one task
-	## source, so a note's sync outcome is derived from its lane instead of being
-	## copied into retained state (a task result can never be written back into
-	## `Ui.state`).
+	## The outbox has a fixed number of sync lanes. Each lane retains its latest
+	## settlement; a note's status compares that token with its current revision.
 	slot_count : U64
 	slot_count = 4
 
@@ -90,9 +88,8 @@ Notes := {}.{
 			_ => True
 		}
 
-	## What a lane should be doing right now. `Signal.start_str` puts a `Str` on
-	## the wire, so the token is encoded at exactly one point (`sync_lane`) rather
-	## than an empty string standing in for "nothing to send".
+	## What a lane should send next. Idle is explicit, so an empty string never
+	## stands in for "nothing to send". The HTTP effect owns the send token.
 	Request := [Idle, Send(Str)].{
 		is_eq : Notes.Request, Notes.Request -> Bool
 		is_eq = |left, right|
@@ -427,7 +424,8 @@ Notes := {}.{
 		)
 	}
 
-	## Only one lane is ever in flight, so the whole outbox shares one task name.
+	## Only the outbox head requests a send. Previously admitted effects may
+	## still finish after an edit or reconnect; lane generations reject stale writes.
 	request_at : Board, U64 -> Notes.Request
 	request_at = |board, slot|
 		if !board.online or !board.auto {

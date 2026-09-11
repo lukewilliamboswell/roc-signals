@@ -1,31 +1,16 @@
 (test "Support inbox — a conversation with no messages"
+  (setup (manual-effects))
   (steps
-    ; Given the state established by earlier scenarios
-    (resolve-task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|new|-")
-    (click (test-id "open-c1"))
-    (mark-metrics)
-    (click (test-id "open-c3"))
-    (resolve-stale-task "inbox" "c9|Stale conversation|Nobody|me#")
-    (click (test-id "open-c2"))
-    (resolve-task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-")
-    (change (label "Assigned to me") "mine")
-    (change (label "Unread") "unread")
-    (change (label "All") "all")
-    (click (test-id "open-c1"))
-    (resolve-task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-")
-    (fill (label "Message") "Refund issued")
-    (mark-metrics)
-    (click (role button :name "Send message"))
-    (tick-interval 4000)
-    (mark-metrics)
-    (resolve-task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-")
-    (resolve-task "send" "p1")
+    ; A settled snapshot provides the conversations this scenario needs.
+    (stub-http "initial inbox" :url "/api/inbox" :status 200 :body "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-;m9|c1|agent|Refund issued|read|p1")
+    (run-effect 1)
 
     ; a conversation with no messages
 
     (click (test-id "open-c3"))
-    (expect-pending-task "inbox" 1)
-    (resolve-task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-;m9|c1|agent|Refund issued|read|p1")
+    (expect-pending-effects 1)
+    (stub-http "read empty conversation" :url "/api/inbox" :status 200 :body "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-;m9|c1|agent|Refund issued|read|p1")
+    (run-effect 2)
     (expect-text (test-id "thread-title") "Refund status")
     (expect-text (test-id "thread-empty") "No messages yet.")
     (expect-text (test-id "thread-count") "0 messages")

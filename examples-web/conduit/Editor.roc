@@ -3,13 +3,14 @@
 ## and navigate to the accepted article only after the server confirms it.
 import Api
 import Auth
+import Load
 import Route
 import Session
 import Styles
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
-import pf.Http
+import pf.Action
 import pf.Signal
 import pf.Ui
 
@@ -52,100 +53,103 @@ Editor := {}.{
 
 	create_page : Signal.Signal(Session) -> Elem
 	create_page = |session| {
-		Ui.component(
-			|| {
-				Ui.state(
-					empty_form,
-					|form| {
-						task = Http.request_task("editor")
-						result : Signal.Signal(Editor.ArticleResult)
-						result = Api.response_state(task).map(classify_article)
+		Ui.state(
+			{ serial: 0.U64, result: ArticleIdle },
+			|response| {
+				Ui.component(
+					|| {
+						Ui.state(
+							empty_form,
+							|form| {
+								result : Signal.Signal(Editor.ArticleResult)
+								result = response.signal().map(|value| value.result)
 
-						form_signal : Signal.Signal(Editor.Form)
-						form_signal = form.signal()
+								form_signal : Signal.Signal(Editor.Form)
+								form_signal = form.signal()
 
-						token = session.map(|value| Session.token_of(value))
-						submission_inputs = { form: form_signal, token: token }.Signal
+								token = session.map(|value| Session.token_of(value))
+								submission_inputs = { form: form_signal, token: token }.Signal
 
-						submission : Signal.Signal({ serial : U64, body : Str, token : Str })
-						submission = submission_inputs.map(|value| { serial: value.form.serial, body: value.form.submitted_body, token: value.token })
+								submission : Signal.Signal(Editor.Submission)
+								submission = submission_inputs.map(|value| { serial: value.form.serial, body: value.form.submitted_body, token: value.token, slug: "" })
 
-						errors : Signal.Signal(List(Str))
-						errors = result.map(error_lines)
+								errors : Signal.Signal(List(Str))
+								errors = result.map(error_lines)
 
-						accepted_slug : Signal.Signal(Str)
-						accepted_slug = result.map(accepted_slug_of)
+								accepted_slug : Signal.Signal(Str)
+								accepted_slug = result.map(accepted_slug_of)
 
-						title : Signal.Signal(Str)
-						title = form_signal.map(|value| value.title)
+								title : Signal.Signal(Str)
+								title = form_signal.map(|value| value.title)
 
-						description : Signal.Signal(Str)
-						description = form_signal.map(|value| value.description)
+								description : Signal.Signal(Str)
+								description = form_signal.map(|value| value.description)
 
-						body : Signal.Signal(Str)
-						body = form_signal.map(|value| value.body)
+								body : Signal.Signal(Str)
+								body = form_signal.map(|value| value.body)
 
-						tag_input : Signal.Signal(Str)
-						tag_input = form_signal.map(|value| value.tag_input)
+								tag_input : Signal.Signal(Str)
+								tag_input = form_signal.map(|value| value.tag_input)
 
-						Html.section(
-							"New article",
-							[Html.class_attr(Styles.wide_page)],
-							[
-								Ui.on_change(
-									submission,
-									|snapshot|
-										if snapshot.serial == 0 {
-											Signal.noop
-										} else {
-											Http.start(task, Api.post_request("/api/articles", snapshot.body, snapshot.token))
-										},
-								),
-								Ui.on_change(
-									accepted_slug,
-									|slug| if slug.is_empty() {
-										Signal.noop
-									} else {
-										Browser.push_state(Route.article_location(slug))
-									},
-								),
-								Html.heading_c("New article", "mb-8 text-center text-4xl font-semibold tracking-normal text-zinc-950"),
-								Auth.error_list(errors),
-								Html.form(
-									[Html.class_attr(Styles.form), Html.on_submit_prevent_default(form.update(submit_form))],
+								Html.section(
+									"New article",
+									[Html.class_attr(Styles.wide_page)],
 									[
-										Html.text_input_attrs(
-											"Title",
-											title,
-											[Html.class_attr(Auth.field_class)],
-											form.update_str(|value, text| { ..value, title: text }),
+										Action.on_change(
+											Action.sampled(form_signal.map(|value| value.serial), submission),
+											|snapshot| if snapshot.serial == 0 {
+												Action.none
+											} else {
+												Action.then([response.set({ serial: snapshot.serial, result: ArticleIdle })], |read| save!(response, read))
+											},
 										),
-										Html.text_input_attrs(
-											"Description",
-											description,
-											[Html.class_attr(Auth.field_class)],
-											form.update_str(|value, text| { ..value, description: text }),
+										Ui.on_change(
+											accepted_slug,
+											|slug| if slug.is_empty() {
+												Signal.noop
+											} else {
+												Browser.push_state(Route.article_location(slug))
+											},
 										),
-										Html.textarea_attrs(
-											"Body",
-											body,
-											[Html.class_attr(Auth.field_class)],
-											form.update_str(|value, text| { ..value, body: text }),
-										),
-										Html.text_input_attrs(
-											"Tags",
-											tag_input,
-											[Html.class_attr(Auth.field_class)],
-											form.update_str(|value, text| { ..value, tag_input: text }),
-										),
-										Html.button_attrs(
-											"Publish Article",
-											[Html.class_attr(Styles.primary_button), Html.attr("type", "submit")],
-											form.update(submit_form),
+										Html.heading_c("New article", "mb-8 text-center text-4xl font-semibold tracking-normal text-zinc-950"),
+										Auth.error_list(errors),
+										Html.form(
+											[Html.class_attr(Styles.form), Html.on_submit_prevent_default(form.update(submit_form))],
+											[
+												Html.text_input_attrs(
+													"Title",
+													title,
+													[Html.class_attr(Auth.field_class)],
+													form.update_str(|value, text| { ..value, title: text }),
+												),
+												Html.text_input_attrs(
+													"Description",
+													description,
+													[Html.class_attr(Auth.field_class)],
+													form.update_str(|value, text| { ..value, description: text }),
+												),
+												Html.textarea_attrs(
+													"Body",
+													body,
+													[Html.class_attr(Auth.field_class)],
+													form.update_str(|value, text| { ..value, body: text }),
+												),
+												Html.text_input_attrs(
+													"Tags",
+													tag_input,
+													[Html.class_attr(Auth.field_class)],
+													form.update_str(|value, text| { ..value, tag_input: text }),
+												),
+												Html.button_attrs(
+													"Publish Article",
+													[Html.class_attr(Styles.primary_button), Html.attr("type", "submit")],
+													form.update(submit_form),
+												),
+											],
 										),
 									],
-								),
-							],
+								)
+							},
 						)
 					},
 				)
@@ -155,161 +159,192 @@ Editor := {}.{
 
 	edit_page : Signal.Signal(Route), Signal.Signal(Session) -> Elem
 	edit_page = |route, session| {
-		Ui.component(
-			|| {
+		Ui.state(
+			{ generation: 0.U64, value: Loading },
+			|article| {
 				Ui.state(
-					empty_form,
-					|form| {
-						article_task = Http.get_text_task("editor-load")
-						task = Http.request_task("editor")
+					{ serial: 0.U64, result: ArticleIdle },
+					|response| {
+						Ui.component(
+							|| {
+								Ui.state(
+									empty_form,
+									|form| {
 
-						article_state : Signal.Signal(Api.Remote(Api.Article))
-						article_state = Signal.fold_task(article_task, Loading, Api.decode_article, Api.request_failed)
+										article_state : Signal.Signal(Api.Remote(Api.Article))
+										article_state = article.signal().map(|value| value.value)
 
-						result : Signal.Signal(Editor.ArticleResult)
-						result = Api.response_state(task).map(classify_article)
+										result : Signal.Signal(Editor.ArticleResult)
+										result = response.signal().map(|value| value.result)
 
-						slug = route.map(|value| Route.article_slug(value))
-						form_signal : Signal.Signal(Editor.Form)
-						form_signal = form.signal()
-						token = session.map(|value| Session.token_of(value))
-						submission_inputs = { form: form_signal, slug: slug, token: token }.Signal
+										slug = route.map(|value| Route.article_slug(value))
+										form_signal : Signal.Signal(Editor.Form)
+										form_signal = form.signal()
+										token = session.map(|value| Session.token_of(value))
+										submission_inputs = { form: form_signal, slug: slug, token: token }.Signal
 
-						submission : Signal.Signal({ serial : U64, body : Str, slug : Str, token : Str })
-						submission = submission_inputs.map(
-							|value| { serial: value.form.serial, body: value.form.submitted_body, slug: value.slug, token: value.token },
-						)
+										submission : Signal.Signal({ serial : U64, body : Str, slug : Str, token : Str })
+										submission = submission_inputs.map(
+											|value| { serial: value.form.serial, body: value.form.submitted_body, slug: value.slug, token: value.token },
+										)
 
-						errors : Signal.Signal(List(Str))
-						errors = result.map(error_lines)
+										errors : Signal.Signal(List(Str))
+										errors = result.map(error_lines)
 
-						accepted_slug : Signal.Signal(Str)
-						accepted_slug = result.map(accepted_slug_of)
+										accepted_slug : Signal.Signal(Str)
+										accepted_slug = result.map(accepted_slug_of)
 
-						title : Signal.Signal(Str)
-						title = form_signal.map(|value| value.title)
+										title : Signal.Signal(Str)
+										title = form_signal.map(|value| value.title)
 
-						description : Signal.Signal(Str)
-						description = form_signal.map(|value| value.description)
+										description : Signal.Signal(Str)
+										description = form_signal.map(|value| value.description)
 
-						body : Signal.Signal(Str)
-						body = form_signal.map(|value| value.body)
+										body : Signal.Signal(Str)
+										body = form_signal.map(|value| value.body)
 
-						tag_input : Signal.Signal(Str)
-						tag_input = form_signal.map(|value| value.tag_input)
+										tag_input : Signal.Signal(Str)
+										tag_input = form_signal.map(|value| value.tag_input)
 
-						is_loading : Signal.Signal(Bool)
-						is_loading = article_state.map(Api.is_loading)
+										is_loading : Signal.Signal(Bool)
+										is_loading = article_state.map(Api.is_loading)
 
-						is_failed : Signal.Signal(Bool)
-						is_failed = article_state.map(Api.is_failed)
+										is_failed : Signal.Signal(Bool)
+										is_failed = article_state.map(Api.is_failed)
 
-						load_message : Signal.Signal(Str)
-						load_message = article_state.map(Api.failure_message)
+										load_message : Signal.Signal(Str)
+										load_message = article_state.map(Api.failure_message)
 
-						current_title : Signal.Signal(Str)
-						current_title = article_state.map(current_title_text)
+										current_title : Signal.Signal(Str)
+										current_title = article_state.map(current_title_text)
 
-						current_description : Signal.Signal(Str)
-						current_description = article_state.map(current_description_text)
+										current_description : Signal.Signal(Str)
+										current_description = article_state.map(current_description_text)
 
-						current_body : Signal.Signal(Str)
-						current_body = article_state.map(current_body_text)
+										current_body : Signal.Signal(Str)
+										current_body = article_state.map(current_body_text)
 
-						current_tags : Signal.Signal(Str)
-						current_tags = article_state.map(current_tags_text)
+										current_tags : Signal.Signal(Str)
+										current_tags = article_state.map(current_tags_text)
 
-						Html.section(
-							"Edit article",
-							[Html.class_attr(Styles.wide_page)],
-							[
-								Ui.on_change_initial(
-									slug,
-									|value|
-										if value.is_empty() {
-											Signal.noop
-										} else {
-											Http.get_text(article_task, Api.article_uri(value))
-										},
-								),
-								Ui.on_change(
-									submission,
-									|snapshot|
-										if snapshot.serial == 0 or snapshot.slug.is_empty() {
-											Signal.noop
-										} else {
-											Http.start(task, Api.put_request(Api.article_uri(snapshot.slug), snapshot.body, snapshot.token))
-										},
-								),
-								Ui.on_change(
-									accepted_slug,
-									|value| if value.is_empty() {
-										Signal.noop
-									} else {
-										Browser.push_state(Route.article_location(value))
-									},
-								),
-								Html.heading_c("Edit article", "mb-8 text-center text-4xl font-semibold tracking-normal text-zinc-950"),
-								Ui.when(
-									is_loading,
-									|| Html.paragraph("Loading article..."),
-
-									|| Ui.when(
-										is_failed,
-										|| Html.paragraph_s_c(load_message, "text-red-700"),
-
-										|| Html.div_c(
-											"mb-4 space-y-1 rounded border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700",
+										Html.section(
+											"Edit article",
+											[Html.class_attr(Styles.wide_page)],
 											[
-												Html.paragraph_s(current_title),
-												Html.paragraph_s(current_description),
-												Html.paragraph_s(current_body),
-												Html.paragraph_s(current_tags),
+												Load.watch(
+													article,
+													slug.map(
+														|value| if value.is_empty() {
+															""
+														} else {
+															Api.article_uri(value)
+														},
+													),
+													Api.decode_article,
+												),
+												Action.on_change(
+													Action.sampled(form_signal.map(|value| value.serial), submission),
+													|snapshot| if snapshot.serial == 0 or snapshot.slug.is_empty() {
+														Action.none
+													} else {
+														Action.then([response.set({ serial: snapshot.serial, result: ArticleIdle })], |read| save!(response, read))
+													},
+												),
+												Ui.on_change(
+													accepted_slug,
+													|value| if value.is_empty() {
+														Signal.noop
+													} else {
+														Browser.push_state(Route.article_location(value))
+													},
+												),
+												Html.heading_c("Edit article", "mb-8 text-center text-4xl font-semibold tracking-normal text-zinc-950"),
+												Ui.when(
+													is_loading,
+													|| Html.paragraph("Loading article..."),
+
+													|| Ui.when(
+														is_failed,
+														|| Html.paragraph_s_c(load_message, "text-red-700"),
+
+														|| Html.div_c(
+															"mb-4 space-y-1 rounded border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700",
+															[
+																Html.paragraph_s(current_title),
+																Html.paragraph_s(current_description),
+																Html.paragraph_s(current_body),
+																Html.paragraph_s(current_tags),
+															],
+														),
+													),
+												),
+												Auth.error_list(errors),
+												Html.form(
+													[Html.class_attr(Styles.form), Html.on_submit_prevent_default(form.update(submit_form))],
+													[
+														Html.text_input_attrs(
+															"Title",
+															title,
+															[Html.class_attr(Auth.field_class)],
+															form.update_str(|value, text| { ..value, title: text }),
+														),
+														Html.text_input_attrs(
+															"Description",
+															description,
+															[Html.class_attr(Auth.field_class)],
+															form.update_str(|value, text| { ..value, description: text }),
+														),
+														Html.textarea_attrs(
+															"Body",
+															body,
+															[Html.class_attr(Auth.field_class)],
+															form.update_str(|value, text| { ..value, body: text }),
+														),
+														Html.text_input_attrs(
+															"Tags",
+															tag_input,
+															[Html.class_attr(Auth.field_class)],
+															form.update_str(|value, text| { ..value, tag_input: text }),
+														),
+														Html.button_attrs(
+															"Update Article",
+															[Html.class_attr(Styles.primary_button), Html.attr("type", "submit")],
+															form.update(submit_form),
+														),
+													],
+												),
 											],
-										),
-									),
-								),
-								Auth.error_list(errors),
-								Html.form(
-									[Html.class_attr(Styles.form), Html.on_submit_prevent_default(form.update(submit_form))],
-									[
-										Html.text_input_attrs(
-											"Title",
-											title,
-											[Html.class_attr(Auth.field_class)],
-											form.update_str(|value, text| { ..value, title: text }),
-										),
-										Html.text_input_attrs(
-											"Description",
-											description,
-											[Html.class_attr(Auth.field_class)],
-											form.update_str(|value, text| { ..value, description: text }),
-										),
-										Html.textarea_attrs(
-											"Body",
-											body,
-											[Html.class_attr(Auth.field_class)],
-											form.update_str(|value, text| { ..value, body: text }),
-										),
-										Html.text_input_attrs(
-											"Tags",
-											tag_input,
-											[Html.class_attr(Auth.field_class)],
-											form.update_str(|value, text| { ..value, tag_input: text }),
-										),
-										Html.button_attrs(
-											"Update Article",
-											[Html.class_attr(Styles.primary_button), Html.attr("type", "submit")],
-											form.update(submit_form),
-										),
-									],
-								),
-							],
+										)
+									},
+								)
+							},
 						)
 					},
 				)
 			},
 		)
+	}
+
+	Submission : { serial : U64, body : Str, token : Str, slug : Str }
+	ResponseState : { serial : U64, result : Editor.ArticleResult }
+
+	save! : Ui.State(Editor.ResponseState), Editor.Submission => Action(Editor.Submission)
+	save! = |response, read| {
+		request = if read.slug.is_empty() {
+			Api.post_request("/api/articles", read.body, read.token)
+		} else {
+			Api.put_request(Api.article_uri(read.slug), read.body, read.token)
+		}
+		result = classify_article(Api.send_response!(request))
+		Action.update([
+			response.write(
+				|current| if current.serial == read.serial {
+					{ ..current, result }
+				} else {
+					current
+				},
+			),
+		])
 	}
 
 	classify_article : Api.ResponseState -> Editor.ArticleResult
@@ -347,9 +382,6 @@ Editor := {}.{
 			ArticleAccepted(article) => article.slug
 			_ => ""
 		}
-
-
-
 
 	current_title_text : Api.Remote(Api.Article) -> Str
 	current_title_text = |remote|

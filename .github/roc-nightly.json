@@ -7,6 +7,8 @@
   "compiler_roots": [
     "platform-web/main.roc",
     "platform-gui/main.roc",
+    "test/wasm/action/main.roc",
+    "test/wasm/http/main.roc",
     "examples-gui/activity-monitor/main.roc",
     "examples-gui/counter/main.roc",
     "examples-gui/folder-explorer/main.roc",

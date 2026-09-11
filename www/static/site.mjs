@@ -1,4 +1,4 @@
-import { publicExampleTaskHandler } from "./example_tasks.mjs";
+import { createPublicExampleFetch, publicExampleTaskHandler } from "./example_tasks.mjs";
 import { serviceOpsBehaviors } from "./service_ops_charts.mjs";
 import { mountSignalsApp } from "./signals.mjs";
 
@@ -28,6 +28,7 @@ async function mountInto(root, wasmUrl, title, errorTarget = null) {
       wasmUrl,
       root,
       taskHandler: publicExampleTaskHandler,
+      fetchImpl: createPublicExampleFetch(),
       onError: (err) => showError(errorTarget, err),
       telemetry: true,
       behaviors: serviceOpsBehaviors,

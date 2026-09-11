@@ -40,6 +40,25 @@ class CompilerPathTests(unittest.TestCase):
                 test_driver.command_path("missing/roc")
 
 
+class EffectContractTests(unittest.TestCase):
+    def test_linked_contracts_build_each_fixture_before_running_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            with patch.object(test_driver, "TEST_OUT", output), patch.object(test_driver, "run") as run:
+                test_driver.run_wasm_effect_contracts("selected-roc")
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertEqual(len(commands), 4)
+            for index, fixture in enumerate(("action", "http")):
+                build, execute = commands[index * 2:index * 2 + 2]
+                wasm = output / "wasm-effects" / f"{fixture}.wasm"
+                self.assertEqual(build[0], "selected-roc")
+                self.assertIn("--no-cache", build)
+                self.assertIn(f"--output={wasm}", build)
+                self.assertEqual(build[-1], test_driver.ROOT / "test" / "wasm" / fixture / "main.roc")
+                self.assertEqual(execute[:2], ["node", "--experimental-wasm-jspi"])
+                self.assertEqual(execute[-1], wasm)
+
+
 class FaultManifestTests(unittest.TestCase):
     def test_export_insertion_accepts_compact_and_multiline_manifests(self) -> None:
         for source in (

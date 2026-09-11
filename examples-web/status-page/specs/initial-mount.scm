@@ -1,4 +1,5 @@
 (test "Status page — Initial mount"
+  (setup (manual-effects))
   (steps
     ; Initial mount
 
@@ -31,11 +32,7 @@
     (expect-text (test-id "open-incident-count") "0")
     (expect-visible (text "No incidents reported in the last 90 days."))
     (expect-interval 5000 1)
-    (expect-pending-task "check:api" 1)
-    (expect-pending-task "check:web" 1)
-    (expect-pending-task "check:database" 1)
-    (expect-pending-task "check:notifications" 1)
-    (expect-pending-task "incidents" 1)
+    (expect-pending-effects 5)
     (expect-cleanup "status page cleanup" 0)
   )
 )

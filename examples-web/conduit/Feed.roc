@@ -13,7 +13,7 @@ import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
 import pf.Rows
-import pf.Http
+import pf.Action exposing [Action]
 import pf.Signal
 import pf.Ui
 
@@ -82,17 +82,22 @@ Feed := {}.{
 		}
 
 	preview_row : Str, Signal.Signal(Api.ArticleSummary), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
-	preview_row = |slug, article, session, intent| {
+	preview_row = |slug, article, session, intent| Ui.state({ generation: 0.U64, result: FavoriteIdle }, |state| preview_with_state(slug, article, session, intent, state))
+
+	FavoriteState : { generation : U64, result : Feed.FavoriteResult }
+	FavoriteRead : { slug : Str, favorited : Bool, token : Str, generation : U64 }
+
+	preview_with_state : Str, Signal.Signal(Api.ArticleSummary), Signal.Signal(Session), Ui.State(Nav.RouteIntent), Ui.State(Feed.FavoriteState) -> Elem
+	preview_with_state = |slug, article, session, intent, state| {
 		Ui.component(
 			|| {
-				favorite_task = Http.request_task("feed-favorite")
 				favorite_result : Signal.Signal(Feed.FavoriteResult)
-				favorite_result = Api.response_state(favorite_task).map(classify_favorite)
+				favorite_result = state.signal().map(|current| current.result)
 
 				token = session.map(|value| Session.token_of(value))
 				row = { article: article, result: favorite_result }.Signal.map(|value| row_state(value.article, value.result))
-				request_inputs = { row: row, token: token }.Signal
-				request = request_inputs.map(|value| { slug: value.row.slug, favorited: value.row.favorited, token: value.token })
+				request_inputs = { row: row, token: token, generation: state.signal().map(|current| current.generation) }.Signal
+				request = request_inputs.map(|value| { slug: value.row.slug, favorited: value.row.favorited, token: value.token, generation: value.generation })
 
 				date_text : Signal.Signal(Str)
 				date_text = article.map(|value| Format.display_date(value.created_at))
@@ -148,22 +153,7 @@ Feed := {}.{
 							[
 								Ui.when(
 									signed_in,
-									|| Html.action_button_attrs(
-										favorite_label,
-										favorite_label.map(|_| False),
-										[Html.class_attr("rounded-full border border-emerald-500 bg-white px-3 py-1.5 font-medium text-emerald-700 transition hover:bg-emerald-50")],
-										Ui.action(
-											request,
-											|value|
-												if value.slug.is_empty() {
-													Signal.noop
-												} else if value.favorited {
-													Http.start(favorite_task, Api.delete_request(Api.favorite_uri(value.slug), value.token))
-												} else {
-													Http.start(favorite_task, Api.post_request(Api.favorite_uri(value.slug), "", value.token))
-												},
-										),
-									),
+									|| Html.action_button_attrs(favorite_label, favorite_label.map(|_| False), [Html.class_attr("rounded-full border border-emerald-500 bg-white px-3 py-1.5 font-medium text-emerald-700 transition hover:bg-emerald-50")], Action.run(request, |read| start_favorite(state, read))),
 									|| Html.text_s(favorites),
 								),
 								Html.div_c(
@@ -177,6 +167,33 @@ Feed := {}.{
 				})
 			},
 		)
+	}
+
+	start_favorite : Ui.State(Feed.FavoriteState), Feed.FavoriteRead -> Action(Feed.FavoriteRead)
+	start_favorite = |state, read| if read.slug.is_empty() {
+		Action.none
+	} else {
+		generation = read.generation + 1
+		Action.then([state.write(|current| { ..current, generation })], |_| favorite!(state, read, generation))
+	}
+
+	favorite! : Ui.State(Feed.FavoriteState), Feed.FavoriteRead, U64 => Action(Feed.FavoriteRead)
+	favorite! = |state, read, generation| {
+		request = if read.favorited {
+			Api.delete_request(Api.favorite_uri(read.slug), read.token)
+		} else {
+			Api.post_request(Api.favorite_uri(read.slug), "", read.token)
+		}
+		result = classify_favorite(Api.send_response!(request))
+		Action.update([
+			state.write(
+				|current| if current.generation == generation {
+					{ ..current, result }
+				} else {
+					current
+				},
+			),
+		])
 	}
 
 	classify_favorite : Api.ResponseState -> Feed.FavoriteResult

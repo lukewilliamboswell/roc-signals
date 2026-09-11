@@ -171,6 +171,7 @@ pub fn build(b: *std.Build) void {
         "scripts/browser/command_buffer_snapshot.test.mjs",
         "scripts/browser/conduit_backend.test.mjs",
         "scripts/browser/dom_double.test.mjs",
+        "scripts/browser/effect_http.test.mjs",
         "scripts/browser/validate_wasm.test.mjs",
         "scripts/browser/http_task_router.test.mjs",
         "scripts/browser/runtime_contract.test.mjs",
@@ -182,6 +183,33 @@ pub fn build(b: *std.Build) void {
         "scripts/browser/wasm_benchmark_runtime.test.mjs",
         "scripts/browser/wasm_memory_views.test.mjs",
     });
+    const run_effect_stack_step = b.step("run-test-effect-stack", "Verify overlapping suspended Wasm effect stacks");
+    run_test_browser_step.dependOn(run_effect_stack_step);
+    // Debug frames expose stack-switching mistakes that optimized builds can
+    // hide; exercise both layouts against the same suspension oracle.
+    for ([_]std.builtin.OptimizeMode{ .Debug, .ReleaseSmall }) |stack_optimize| {
+        const effect_stack_fixture = b.addExecutable(.{
+            .name = b.fmt("effect-stack-fixture-{s}", .{@tagName(stack_optimize)}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("test/wasm/effect_stack.zig"),
+                .target = wasm_target,
+                .optimize = stack_optimize,
+            }),
+        });
+        effect_stack_fixture.root_module.addImport("effect_stack", b.createModule(.{
+            .root_source_file = b.path("src/signals/wasm_effect_stack.zig"),
+            .target = wasm_target,
+            .optimize = stack_optimize,
+        }));
+        effect_stack_fixture.entry = .disabled;
+        effect_stack_fixture.root_module.export_symbol_names = &.{"__stack_pointer"};
+        effect_stack_fixture.rdynamic = true;
+        const effect_stack_test = b.addSystemCommand(&.{
+            "node", "--experimental-wasm-jspi", "scripts/browser/wasm_effect_stack.test.mjs",
+        });
+        effect_stack_test.addFileArg(effect_stack_fixture.getEmittedBin());
+        run_effect_stack_step.dependOn(&effect_stack_test.step);
+    }
     // Node 23's Maglev optimizer can spend minutes compiling the repeated Wasm
     // instantiation loop in this fault sweep. The test completes in under a
     // second without Maglev and still executes the same Wasm failure paths.

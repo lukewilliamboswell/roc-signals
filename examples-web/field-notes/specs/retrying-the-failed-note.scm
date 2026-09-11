@@ -1,5 +1,6 @@
 (test "Field notes — retrying the failed note"
   (setup
+    (manual-effects)
     ; Field Notes: offline capture, outbox drain, rollback, and restore.
     ;
     ; Storage format is "id|slot|queued|rev|body" per note, notes joined by ";".
@@ -24,22 +25,26 @@
     (click (role button :name "Promote note s2"))
     (click (role button :name "Promote note n0"))
     (set-online online)
-    (resolve-task "note-sync" "n0#r7")
-    (reject-task "note-sync" "s2#r0")
-    (resolve-task "note-sync" "s1#r0")
+    (stub-http "sync n0#r7" :url "/api/notes/sync" :status 200 :body "n0#r7")
+    (run-effect 1)
+    (stub-http "failed sync s2#r0" :url "/api/notes/sync" :status 503 :body "temporarily unavailable")
+    (run-effect 2)
+    (stub-http "sync s1#r0" :url "/api/notes/sync" :status 200 :body "s1#r0")
+    (run-effect 3)
 
     ; retrying the failed note
 
     (expect-disabled (role button :name "Retry note s2") false)
     (click (role button :name "Retry note s2"))
     (expect-text (test-id "status-s2") "Syncing")
-    (expect-pending-task "note-sync" 1)
-    (resolve-task "note-sync" "s2#s2:1")
+    (expect-pending-effects 1)
+    (stub-http "sync s2#s2:1" :url "/api/notes/sync" :status 200 :body "s2#s2:1")
+    (run-effect 4)
     (expect-text (test-id "status-s2") "Synced")
     (expect-text (test-id "synced-count") "3")
     (expect-text (test-id "failed-count") "0")
     (expect-text (test-id "outbox-count") "0")
     (expect-visible (text "Outbox is empty"))
-    (expect-pending-task "note-sync" 0)
+    (expect-pending-effects 0)
   )
 )

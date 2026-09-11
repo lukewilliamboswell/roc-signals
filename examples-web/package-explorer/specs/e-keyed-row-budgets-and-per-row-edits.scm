@@ -1,27 +1,12 @@
 (test "Package explorer — E. keyed row budgets and per row edits"
-  (setup
-    ; A. deep link
-
-    (initial-location "/packages/roc-json")
-  )
+  (setup (manual-effects))
   (steps
-    ; Given the state established by earlier scenarios
-    (click (role link :name "Back to search"))
-    (resolve-task "search" "roc-json|JSON codec for Roc;roc-http|HTTP client for Roc;roc-parser|Parser combinators for Roc")
-    (fill (label "Search packages") "js")
-    (fill (label "Search packages") "json")
-    (mark-metrics)
-    (resolve-stale-task "search" "stale-package|This superseded payload must never render")
-    (resolve-task "search" "roc-json|JSON codec for Roc")
-    (fill (label "Search packages") "zzzz")
-    (resolve-task "search" "")
-    (fill (label "Search packages") "boom")
-    (reject-task "search" "registry unreachable")
+    ; Establish the three search rows used by this scenario.
+    (stub-http "initial search" :url "/api/packages/search?q=" :status 200 :body "roc-json|JSON codec for Roc;roc-http|HTTP client for Roc;roc-parser|Parser combinators for Roc")
+    (run-effect 1)
 
     ; E. keyed row budgets and per row edits
 
-    (fill (label "Search packages") "roc")
-    (resolve-task "search" "roc-json|JSON codec for Roc;roc-http|HTTP client for Roc;roc-parser|Parser combinators for Roc")
     (expect-text (test-id "search-status") "Search status: 3 packages")
     (expect-text (test-id "order") "Order: A to Z")
     (expect-text (test-id "watch-roc-json") "roc-json: not watching")
@@ -61,7 +46,8 @@
     (expect-text (test-id "order") "Order: A to Z")
     ; Add one package and remove another through a fresh search.
     (fill (label "Search packages") "roc core")
-    (resolve-task "search" "roc-json|JSON codec for Roc;roc-parser|Parser combinators for Roc;roc-bytes|Byte helpers for Roc")
+    (stub-http "updated search" :url "/api/packages/search?q=%72%6f%63%20%63%6f%72%65" :status 200 :body "roc-json|JSON codec for Roc;roc-parser|Parser combinators for Roc;roc-bytes|Byte helpers for Roc")
+    (run-effect 2)
     (expect-text (test-id "search-status") "Search status: 3 packages")
     (expect-visible (role link :name "Open roc-bytes"))
     (expect-absent (role link :name "Open roc-http"))
@@ -69,7 +55,8 @@
     (expect-text (test-id "summary-roc-bytes") "Byte helpers for Roc")
     ; One row's summary changes while its siblings keep theirs.
     (fill (label "Search packages") "roc core ")
-    (resolve-task "search" "roc-json|JSON codec for Roc, revised;roc-parser|Parser combinators for Roc;roc-bytes|Byte helpers for Roc")
+    (stub-http "updated search" :url "/api/packages/search?q=%72%6f%63%20%63%6f%72%65%20" :status 200 :body "roc-json|JSON codec for Roc, revised;roc-parser|Parser combinators for Roc;roc-bytes|Byte helpers for Roc")
+    (run-effect 3)
     (expect-text (test-id "summary-roc-json") "JSON codec for Roc, revised")
     (expect-text (test-id "summary-roc-parser") "Parser combinators for Roc")
     (expect-text (test-id "summary-roc-bytes") "Byte helpers for Roc")

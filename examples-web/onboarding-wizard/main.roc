@@ -1,4 +1,4 @@
-app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst" }
+app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-09-04-c125b82" }
 
 ## Onboarding Wizard — four steps, eight state handles, zero stored validation.
 ##
@@ -53,6 +53,8 @@ app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "https://github.com
 
 import pf.Browser
 import pf.Elem exposing [Elem]
+import pf.Action exposing [Action]
+import pf.Http
 import pf.Html
 import pf.Rows
 import pf.Signal
@@ -703,9 +705,32 @@ Handles : {
 }
 
 wizard : Handles -> Elem
-wizard = |h| {
+wizard = |h| Ui.state({ generation: 0.U64, status: "Not submitted yet." }, |submission| wizard_view(h, submission))
+
+Submission : { generation : U64, status : Str }
+
+SubmissionRead : { attempt : U64, generation : U64 }
+
+submit! : Ui.State(Submission), U64, U64 => Action(SubmissionRead)
+submit! = |submission, attempt, generation| {
+	status = match Http.get_text!("/api/onboarding/${submit_request_text(attempt)}") {
+		Ok(value) => "Workspace ready: ${value}"
+		Err(err) => "Submit failed: ${Str.inspect(err)}"
+	}
+	Action.update([
+		submission.write(
+			|current| if current.generation == generation {
+				{ ..current, status }
+			} else {
+				current
+			},
+		),
+	])
+}
+
+wizard_view : Handles, Ui.State(Submission) -> Elem
+wizard_view = |h, submission| {
 	restored = Browser.local_storage_text(draft_key).map(read_draft)
-	submit_task = Signal.fake_task("onboarding-submit", |value| value, |err| err)
 	reset_signal = h.reset_token.signal()
 	inbox_signal = h.inbox.signal()
 	step_signal = h.step.signal()
@@ -795,24 +820,9 @@ wizard = |h| {
 	# --- submission ----------------------------------------------------------
 	# One attempt counter, one encode point: the counter is the request, and
 	# `submit_request_text` is the only place it becomes a `Str` for the wire.
-	task_status = Signal.from_task(submit_task)
-	submit_status =
-		Signal.map2(
-			attempts_signal,
-			task_status,
-			|n, status|
-				if n == 0 {
-					"Not submitted yet."
-				} else {
-					match status {
-						Loading => "Creating workspace…"
-						Done(value) => "Workspace ready: ${value}"
-						Failed(err) => "Submit failed: ${err}"
-					}
-				},
-		)
-	# Submitting again while a request is in flight supersedes it: the task
-	# source cancels the older request and the newer one wins.
+	submit_status = submission.signal().map(|current| current.status)
+	submit_reads = Action.sampled(attempts_signal, { attempt: attempts_signal, generation: submission.signal().map(|current| current.generation) }.Signal)
+	# Admitted effects finish independently; the latest generation wins.
 	submit_disabled = can_submit.map(|ok| !ok)
 
 	Html.div_c(
@@ -909,12 +919,15 @@ wizard = |h| {
 			Ui.on_change(reset_signal, |_| h.role.set_cmd(default_role)),
 			Ui.on_change(reset_signal, |_| h.step.set_cmd(first_step)),
 			Ui.on_change(reset_signal, |_| h.attempts.set_cmd(0)),
-			Ui.on_change(
-				attempts_signal,
-				|n| if n == 0 {
-					Signal.noop
-				} else {
-					Signal.start_str(submit_task, submit_request_text(n))
+			Action.on_change(
+				submit_reads,
+				|current| {
+					generation = current.generation + 1
+					if current.attempt == 0 {
+						Action.update([submission.set({ generation, status: "Not submitted yet." })])
+					} else {
+						Action.then([submission.set({ generation, status: "Creating workspace…" })], |_| submit!(submission, current.attempt, generation))
+					}
 				},
 			),
 		],

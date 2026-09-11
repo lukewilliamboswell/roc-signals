@@ -1,8 +1,8 @@
-app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst" }
+app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-09-04-c125b82" }
 
 ## Status Page — four independent service checks fanning in to one rollup.
 ##
-## Each service is its own `Signal.task_source`, polled on a 5s interval that
+## Each service has its own state and HTTP effect, polled on a 5s interval that
 ## only exists while the page is visible. The four checks collapse into a single
 ## `Tally` through a balanced `Signal.map2` tree, and the banner, the metrics and
 ## every per-service badge are derived from that one value, so the page can never
@@ -14,14 +14,16 @@ app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "https://github.com
 ##     database ──────> tally_of ─┐ │
 ##     notifications ─> tally_of ─┴─┘ back
 ##
-## The incident feed is a fifth, unrelated task source rendered as a timeline.
+## The incident feed is a fifth, independent HTTP result rendered as a timeline.
 ##
 ## Nothing downstream of a parser is stringly typed: `Health` and `Severity` are
 ## nominal tag unions with an `is_eq` (so they can be signal state) and a
-## `from_str` that runs once, at the host boundary, on the payload the task
+## `from_str` that runs once, at the host boundary, on the payload the HTTP effect
 ## returned. Every branch after that is a `match` on a tag.
 
 import pf.Elem exposing [Elem]
+import pf.Action
+import Poll
 import pf.Browser
 import pf.Html
 import pf.Rows
@@ -177,7 +179,11 @@ expect whole_number("not a number") == 0
 format_uptime : U64 -> Str
 format_uptime = |bps| {
 	rest = bps % 100
-	pad = if rest < 10 { "0" } else { "" }
+	pad = if rest < 10 {
+		"0"
+	} else {
+		""
+	}
 	"${(bps / 100).to_str()}.${pad}${rest.to_str()}%"
 }
 
@@ -386,6 +392,7 @@ parse_updates = |id, raw|
 	}
 
 update_of : Str, U64, Str -> Update
+
 ## `"10:02@Investigating elevated 5xx responses"` -> one `Update`. An entry with
 ## no `@` has no timestamp and the whole entry is the body.
 update_of = |id, seq, entry| {
@@ -658,25 +665,30 @@ incidents_panel = |feed| {
 }
 
 main : () -> Elem
-main = ||
+main = || Ui.state({ generation: 0.U64, value: pending_check }, |api|
+	Ui.state({ generation: 0.U64, value: pending_check }, |web|
+		Ui.state({ generation: 0.U64, value: pending_check }, |database|
+			Ui.state({ generation: 0.U64, value: pending_check }, |notifications|
+				Ui.state({ generation: 0.U64, value: loading_feed }, |feed| status_page(api, web, database, notifications, feed))))))
+
+status_page : Ui.State(Poll.State(Check)), Ui.State(Poll.State(Check)), Ui.State(Poll.State(Check)), Ui.State(Poll.State(Check)), Ui.State(Poll.State(Feed)) -> Elem
+status_page = |api_state, web_state, database_state, notifications_state, feed_state|
 	Ui.state(
 		0,
 		|refreshes| {
-			# `reset_on_start = False` keeps the last known result on screen while a
-			# refresh is in flight, so a poll does not blank the board every 5s.
-			api_task = Signal.task_source("check:api", parse_check, |err| err, False)
-			web_task = Signal.task_source("check:web", parse_check, |err| err, False)
-			database_task = Signal.task_source("check:database", parse_check, |err| err, False)
-			notifications_task = Signal.task_source("check:notifications", parse_check, |err| err, False)
-			feed_task = Signal.task_source("incidents", parse_feed, |err| err, False)
-
-			check_of = |task| Signal.fold_task(task, pending_check, |value| value, |err| { health: Health.CheckFailed(err), uptime_bps: 0 })
-
-			api = check_of(api_task)
-			web = check_of(web_task)
-			database = check_of(database_task)
-			notifications = check_of(notifications_task)
-			feed = Signal.fold_task(feed_task, loading_feed, ready_feed, failed_feed)
+			api = api_state.signal().map(|current| current.value)
+			web = web_state.signal().map(|current| current.value)
+			database = database_state.signal().map(|current| current.value)
+			notifications = notifications_state.signal().map(|current| current.value)
+			feed = feed_state.signal().map(|current| current.value)
+			decode_check = |result| match result {
+				Ok(text) => parse_check(text)
+				Err(err) => { health: Health.CheckFailed(Str.inspect(err)), uptime_bps: 0 }
+			}
+			decode_feed = |result| match result {
+				Ok(text) => ready_feed(parse_feed(text))
+				Err(err) => failed_feed(Str.inspect(err))
+			}
 
 			# Fan-in: four independently-created service signals collapse into one
 			# rollup through a balanced `Signal.map2` tree. `Signal.combine` cannot
@@ -693,19 +705,19 @@ main = ||
 			ticks = Signal.interval(5000)
 
 			start_all = |trigger| [
-				Ui.on_change(trigger, |_| Signal.start_str(api_task, "refresh")),
-				Ui.on_change(trigger, |_| Signal.start_str(web_task, "refresh")),
-				Ui.on_change(trigger, |_| Signal.start_str(database_task, "refresh")),
-				Ui.on_change(trigger, |_| Signal.start_str(notifications_task, "refresh")),
-				Ui.on_change(trigger, |_| Signal.start_str(feed_task, "refresh")),
+				Action.on_change(Action.sampled(trigger, api_state.signal()), |current| Poll.refresh(api_state, "/api/status/api", decode_check, current)),
+				Action.on_change(Action.sampled(trigger, web_state.signal()), |current| Poll.refresh(web_state, "/api/status/web", decode_check, current)),
+				Action.on_change(Action.sampled(trigger, database_state.signal()), |current| Poll.refresh(database_state, "/api/status/database", decode_check, current)),
+				Action.on_change(Action.sampled(trigger, notifications_state.signal()), |current| Poll.refresh(notifications_state, "/api/status/notifications", decode_check, current)),
+				Action.on_change(Action.sampled(trigger, feed_state.signal()), |current| Poll.refresh(feed_state, "/api/status/incidents", decode_feed, current)),
 			]
 
 			mount_all = [
-				Ui.on_mount(|| Signal.start_str(api_task, "refresh")),
-				Ui.on_mount(|| Signal.start_str(web_task, "refresh")),
-				Ui.on_mount(|| Signal.start_str(database_task, "refresh")),
-				Ui.on_mount(|| Signal.start_str(notifications_task, "refresh")),
-				Ui.on_mount(|| Signal.start_str(feed_task, "refresh")),
+				Action.on_change_initial(Action.sampled(Signal.const(0.U64), api_state.signal()), |current| Poll.refresh(api_state, "/api/status/api", decode_check, current)),
+				Action.on_change_initial(Action.sampled(Signal.const(0.U64), web_state.signal()), |current| Poll.refresh(web_state, "/api/status/web", decode_check, current)),
+				Action.on_change_initial(Action.sampled(Signal.const(0.U64), database_state.signal()), |current| Poll.refresh(database_state, "/api/status/database", decode_check, current)),
+				Action.on_change_initial(Action.sampled(Signal.const(0.U64), notifications_state.signal()), |current| Poll.refresh(notifications_state, "/api/status/notifications", decode_check, current)),
+				Action.on_change_initial(Action.sampled(Signal.const(0.U64), feed_state.signal()), |current| Poll.refresh(feed_state, "/api/status/incidents", decode_feed, current)),
 			]
 
 			Html.div_c(
@@ -734,7 +746,7 @@ main = ||
 					),
 					incidents_panel(feed),
 					# Polling lives inside the visible arm, so hiding the page disposes
-					# the interval and cancels in-flight checks.
+					# the interval. Already-admitted effects are allowed to finish.
 					Ui.when(
 						visible,
 						|| Html.div_c("hidden", mount_all.concat(start_all(ticks))),

@@ -1,4 +1,5 @@
 (test "Reusable state updaters read the latest value and survive producer disposal"
+  (setup (manual-effects))
   (steps
     (click (role button :name "Append event"))
     (click (role button :name "Append event"))

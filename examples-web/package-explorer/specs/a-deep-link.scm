@@ -1,5 +1,6 @@
 (test "Package explorer — A. deep link"
   (setup
+    (manual-effects)
     ; A. deep link
 
     (initial-location "/packages/roc-json")
@@ -32,13 +33,7 @@
     ; The search query is a separate source, so a cold deep link also starts the
     ; empty-query search. The context line is the map2 fan-in of route + matches.
     (expect-text (test-id "context") "Context: package roc-json (0 search matches retained)")
-    (expect-pending-task "detail" 1)
-    (expect-pending-task "versions" 1)
-    (expect-pending-task "deps" 1)
-    (expect-pending-task "search" 1)
-    (expect-canceled-task "detail" 0)
-    (expect-canceled-task "versions" 0)
-    (expect-canceled-task "deps" 0)
+    (expect-pending-effects 4)
     (expect-cleanup "package detail panels" 0)
   )
 )

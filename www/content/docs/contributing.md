@@ -100,6 +100,24 @@ python3 scripts/test.py bench --native always
 python3 scripts/test.py size --roc-bin /path/to/roc
 ```
 
+The browser contracts include a Wasm effect-stack fixture in both Debug and
+ReleaseSmall modes. It checks overlapping suspensions, reverse-order completion,
+interleaved host calls, and memory growth. Run it alone with
+`zig build run-test-effect-stack`. This fixture requires Node with
+`--experimental-wasm-jspi` support (verified with Node 23.9.0); the build target
+passes the flag. It tests the suspension substrate, not the full Roc effect
+semantics.
+
+`python3 scripts/test.py browser` additionally builds the Roc action and HTTP
+fixtures with the selected compiler and runs them through the browser runtime.
+These linked tests cover fresh reads in effect chains, overlapping HTTP
+completions, UTF-8 response ownership, and shutdown/remount while work is pending.
+The `wasm` suite also runs the flight-search browser scenario after building that
+application. It checks that sorting does not refetch and that application-owned
+generations reject older completions in an A → B → A request sequence without
+canceling the earlier effects. Mount smoke tests wait for suspended-effect
+shutdown before asserting that retained host values have been released.
+
 `size` builds the ReleaseSmall browser host and the fixed fixture set in
 `test/size/fixtures.toml` as production Wasm, then fails if any fixture's raw
 or gzip size exceeds `test/size/budgets.toml`. It requires the selected

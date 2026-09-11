@@ -16,7 +16,7 @@ if (runtimeIndex !== -1) {
   runtimeBase = pathToFileURL(resolve(directory) + "/");
   args.splice(runtimeIndex, 2);
 }
-const { publicExampleTaskHandler } = await import(new URL("example_tasks.mjs", runtimeBase));
+const { createPublicExampleFetch, publicExampleTaskHandler } = await import(new URL("example_tasks.mjs", runtimeBase));
 const { serviceOpsBehaviors } = await import(new URL("service_ops_charts.mjs", runtimeBase));
 const { SignalsRuntime, instantiateSignalsBytes } = await import(new URL("signals.mjs", runtimeBase));
 const wasmPath = args.shift();
@@ -143,6 +143,7 @@ const bytes = await readFile(wasmPath);
 const localStorageDouble = createStorageDouble(initialLocalStorage());
 const sessionStorageDouble = createStorageDouble(initialSessionStorage());
 const { instance } = await instantiateSignalsBytes(bytes, {
+  fetchImpl: createPublicExampleFetch(),
   localStorage: localStorageDouble,
   sessionStorage: sessionStorageDouble,
 });
@@ -315,6 +316,13 @@ if (exerciseSvg) {
 
 try {
   runtime.unmount();
+  // Suspended hosted calls must settle before their private stacks and retained
+  // Roc values can be released. Input is already detached by unmount().
+  const shutdownDeadline = Date.now() + 3000;
+  while (!runtime.unmountFinished && !runtime.failedError && Date.now() < shutdownDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  if (!runtime.unmountFinished) throw runtime.failedError ?? new Error("effect shutdown did not finish");
 } catch (err) {
   const detail = hostError(instance.exports);
   const suffix = detail === "" ? "" : `\nHost error: ${detail}`;

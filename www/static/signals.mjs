@@ -1,4 +1,6 @@
 import { createMemoryViewCache } from "./wasm_memory_views.mjs";
+import { createEffectRunner } from "./effect_runner.mjs";
+import { createHttpEffectImports } from "./effect_http.mjs";
 import {
   applySetValue,
   beginComposition,
@@ -676,12 +678,23 @@ function createStorageImports(getExports, options = {}) {
   };
 }
 
+const effectLifetimes = new WeakMap();
+
 export async function instantiateSignalsBytes(bytes, options = {}) {
   let instanceRef = null;
+  const lifetime = { controller: new AbortController(), poisoned: false };
   const result = await WebAssembly.instantiate(bytes, {
-    env: createStorageImports(() => instanceRef?.exports, options),
+    env: {
+      ...createStorageImports(() => instanceRef?.exports, options),
+      ...createHttpEffectImports(() => instanceRef?.exports, {
+        ...options,
+        get signal() { return lifetime.controller.signal; },
+        isPoisoned: () => lifetime.poisoned,
+      }),
+    },
   });
   instanceRef = result.instance;
+  effectLifetimes.set(instanceRef.exports, lifetime);
   return result;
 }
 
@@ -696,8 +709,8 @@ export async function instantiateSignalsWasm(url, options = {}) {
   return instance;
 }
 
-export async function mountSignalsApp({ wasmUrl, root, taskHandler, onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget, crypto }) {
-  const instance = await instantiateSignalsWasm(wasmUrl, { telemetry, localStorage, sessionStorage, storage });
+export async function mountSignalsApp({ wasmUrl, root, taskHandler, fetchImpl, onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget, crypto }) {
+  const instance = await instantiateSignalsWasm(wasmUrl, { telemetry, localStorage, sessionStorage, storage, fetchImpl });
   const runtime = new SignalsRuntime(instance.exports, root, { taskHandler, onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget, crypto });
   runtime.mount();
   return runtime;
@@ -736,6 +749,11 @@ export class SignalsRuntime {
     this.telemetrySeq = 0;
     this.mounted = false;
     this.mountGeneration = 0;
+    this.effectPumpScheduled = false;
+    this.runningEffects = new Set();
+    this.runEffect = null;
+    this.unmountRequested = false;
+    this.unmountFinished = false;
     this.locationListenerCleanup = null;
     this.visibilityListenerCleanup = null;
     this.onlineListenerCleanup = null;
@@ -799,6 +817,11 @@ export class SignalsRuntime {
 
   mount() {
     this.assertUsable();
+    if (this.runningEffects.size !== 0) throw new Error("Signals cannot mount while effects are shutting down");
+    this.unmountRequested = false;
+    this.unmountFinished = false;
+    const lifetime = effectLifetimes.get(this.exports);
+    if (lifetime) lifetime.controller = new AbortController();
     const initialPayloads = this.prepareInitialEnvironmentPayloads();
     try {
       this.commitInitialEnvironmentPayloads(initialPayloads);
@@ -1158,10 +1181,21 @@ export class SignalsRuntime {
 
   unmount() {
     if (this.failedError !== null) return;
+    if (this.unmountRequested) return;
+    this.unmountRequested = true;
     this.mounted = false;
     this.clearLocationListener();
     this.clearVisibilityListener();
     this.clearOnlineListener();
+    effectLifetimes.get(this.exports)?.controller.abort();
+    this.clearPointerProbe();
+    this.clearDom();
+    this.finishUnmount();
+  }
+
+  finishUnmount() {
+    if (!this.unmountRequested || this.unmountFinished || this.runningEffects.size !== 0 || this.failedError) return;
+    this.unmountFinished = true;
     this.emitTelemetry("host_call", { call: "unmount" });
     try {
       this.views.callHost(this.exports.roc_ui_unmount);
@@ -1169,8 +1203,6 @@ export class SignalsRuntime {
       throw this.poisonAfterHostFailure(err);
     }
     this.applyPendingCommands("unmount");
-    this.clearPointerProbe();
-    this.clearDom();
   }
 
   dispatchUnit(eventId, options = {}) {
@@ -1182,6 +1214,7 @@ export class SignalsRuntime {
   }
 
   dispatchString(eventId, value, options = {}) {
+    this.assertEventIngress();
     const bytes = textEncoder.encode(value);
     const ptr = this.allocatePayload(bytes.length);
     let primaryError;
@@ -1197,6 +1230,7 @@ export class SignalsRuntime {
   }
 
   dispatchBytes(eventId, bytes, options = {}) {
+    this.assertEventIngress();
     const ptr = this.allocatePayload(bytes.length);
     let primaryError;
     try {
@@ -1222,7 +1256,7 @@ export class SignalsRuntime {
   }
 
   dispatch(eventId, payloadKind, payloadPtr, payloadLen, boolValue, options = {}) {
-    this.assertUsable();
+    this.assertEventIngress();
     this.emitTelemetry("host_call", {
       call: "event",
       eventId,
@@ -1349,10 +1383,20 @@ export class SignalsRuntime {
     }
   }
 
+  assertEventIngress() {
+    this.assertUsable();
+    if (!this.mounted) throw new Error("Signals event dispatch requires a mounted runtime");
+  }
+
   poisonAfterHostFailure(err) {
     if (this.failedError !== null) return this.failedError;
     const fatal = this.runtimeError(err);
     this.failedError = fatal;
+    const lifetime = effectLifetimes.get(this.exports);
+    if (lifetime) {
+      lifetime.poisoned = true;
+      lifetime.controller.abort();
+    }
     this.mounted = false;
     this.mountGeneration += 1;
     this.lastCommands = [];
@@ -1533,7 +1577,58 @@ export class SignalsRuntime {
       decode: decodeStats,
     });
     this.emitAllocationTelemetry(phase);
+    this.scheduleEffects();
     return records;
+  }
+
+  scheduleEffects() {
+    if (this.effectPumpScheduled || typeof this.exports.roc_ui_effect_next !== "function") return;
+    this.effectPumpScheduled = true;
+    const generation = this.mountGeneration;
+    queueMicrotask(() => {
+      this.effectPumpScheduled = false;
+      if (!this.mounted || this.failedError) return;
+      if (generation !== this.mountGeneration) {
+        this.scheduleEffects();
+        return;
+      }
+      try {
+        for (;;) {
+          const { result: token } = this.views.callHost(this.exports.roc_ui_effect_next);
+          if (token === 0) break;
+          if (this.runEffect === null) {
+            if (typeof WebAssembly.promising !== "function") {
+              throw new Error("Signals action effects require WebAssembly JavaScript Promise Integration (JSPI)");
+            }
+            this.runEffect = createEffectRunner({
+              stack_pointer: this.exports.__stack_pointer,
+              stack_top: this.exports.roc_ui_effect_stack_top,
+              set_main: this.exports.roc_ui_effect_stack_main,
+              run: this.exports.roc_ui_effect_run,
+            });
+          }
+          this.runningEffects.add(token);
+          this.runEffect(token).then(() => {
+            this.runningEffects.delete(token);
+            if (!this.mounted || this.failedError || generation !== this.mountGeneration) {
+              this.finishUnmount();
+              return;
+            }
+            this.views.callHost(this.exports.roc_ui_effect_complete, token);
+            this.applyPendingCommands(`effect:${token}`);
+          }).catch(err => {
+            this.runningEffects.delete(token);
+            if (!this.failedError) {
+              const fatal = this.poisonAfterHostFailure(err);
+              if (!fatal.signalsReported) this.onError(fatal);
+            }
+          });
+        }
+      } catch (err) {
+        const fatal = this.poisonAfterHostFailure(err);
+        if (!fatal.signalsReported) this.onError(fatal);
+      }
+    });
   }
 
   emitAllocationTelemetry(phase) {

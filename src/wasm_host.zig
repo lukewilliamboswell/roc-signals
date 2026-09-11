@@ -29,6 +29,7 @@ const debug_phase = signals.debug_phase;
 const DebugPhase = debug_phase.Phase;
 const runtime_limits = signals.runtime_limits;
 const ids = signals.ids;
+const effect_stack = @import("signals/wasm_effect_stack.zig");
 
 const HostValue = hv.HostValue;
 const HostValueCapability = hv.HostValueCapabilityHandle;
@@ -47,6 +48,13 @@ const EventClearCommand = render_sink.EventClearCommand;
 const HostActiveEventDesc = SharedEngine.ActiveEventDesc;
 
 const WasmCtx = struct {
+    pub const runsEffects = true;
+
+    /// Consumes the effect closure and capability after the shared engine has
+    /// committed its state batch, decoding its snapshot into an owned thunk.
+    pub fn prepareEffect(_: Handle, _: *abi.RocHost, effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
+        return abi.roc_prepare_effect(effect, snapshot.toRaw(), cap);
+    }
     pub const supports_native_shortcuts = false;
     pub const Handle = WasmCtx;
     pub const RegistryOps = hv.RegistryOps();
@@ -477,6 +485,45 @@ var recent_freed_roc_allocation_next: usize = 0;
 var roc_allocation_phase: DebugPhase = .idle;
 var active_capabilities: hv.ActiveCapabilityStack = .{};
 var roc_host_env: u8 = 0;
+
+const EffectJob = struct {
+    id: u64,
+    stack_memory: []align(16) u8,
+    state: union(enum) { prepared: abi.RocErasedCallable, running, finished: erased_calls.Cmd },
+};
+// The browser holds integer tokens only. Slots are reusable; tokens never are.
+const effect_job_capacity = 64;
+var effect_jobs: [effect_job_capacity]?EffectJob = @splat(null);
+var effect_job_tokens: [effect_job_capacity]u32 = @splat(0);
+var next_effect_job_token: u32 = 1;
+var effect_main_stack: usize = 0;
+var active_effect_token: u32 = 0;
+const effect_stack_bytes = 8 * 1024 * 1024;
+
+fn effectJob(token: u32) *EffectJob {
+    for (&effect_jobs, effect_job_tokens) |*slot, current| {
+        if (current == token and token != 0) {
+            if (slot.*) |*job| return job;
+            failHostWith("effect token is retired");
+        }
+    }
+    failHostWith("effect token is unknown");
+}
+
+fn clearEffectJobs() void {
+    for (&effect_jobs, &effect_job_tokens) |*slot, *token| {
+        if (slot.*) |job| {
+            switch (job.state) {
+                .prepared => |thunk| abi.decrefErasedCallable(thunk, &roc_host),
+                .finished => |cmd| cmd.decref(&roc_host),
+                .running => failHostWith("running effect cannot be torn down before its executor returns"),
+            }
+            allocator().free(job.stack_memory);
+        }
+        slot.* = null;
+        token.* = 0;
+    }
+}
 var roc_host = abi.RocHost{
     .env = @ptrCast(&roc_host_env),
     .roc_alloc = &rocAllocForAbi,
@@ -1307,6 +1354,9 @@ fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     if (desc.handler == .action) {
         const cmd = shared_engine.evaluateEventAction(ctx, &roc_host, desc, payload);
         defer cmd.decref(&roc_host);
+        var action_desc = desc;
+        shared_engine.effect_origin = &action_desc.handler.action.reads;
+        defer shared_engine.effect_origin = null;
         _ = shared_engine.runCommand(ctx, &roc_host, desc.handler.action.scope_id, cmd);
         return;
     }
@@ -1379,6 +1429,7 @@ fn dispatchOnlineChange(payload: []const u8) void {
 /// Runs before each mount and on unmount; the order mirrors the engine portion of
 /// the native host's `HostEnv.deinit`.
 fn clearActiveRuntime() void {
+    clearEffectJobs();
     const a = allocator();
     const ctx = WasmCtx{};
     shared_engine.roc_host = &roc_host;
@@ -2081,6 +2132,221 @@ export fn roc_ui_event(event_id: u32, payload_kind: u32, payload_ptr: usize, pay
     dispatchEvent(desc, payload);
     publishCommandTransaction();
     return 0;
+}
+
+/// Transfers a committed effect into a bounded executor slot. Zero means that
+/// no thunk is queued; nonzero tokens are valid until completion or teardown.
+export fn roc_ui_effect_next() callconv(.c) u32 {
+    beginHostCall();
+    if (shared_engine.pending_effects.items.len == 0) return 0;
+    if (next_effect_job_token == std.math.maxInt(u32)) failHostWith("effect token space exhausted");
+    for (&effect_jobs, &effect_job_tokens) |*slot, *token| {
+        if (slot.* != null) continue;
+        const stack_memory = allocator().alignedAlloc(u8, .@"16", effect_stack_bytes) catch failHostWith("out of memory reserving browser effect stack");
+        var pending = shared_engine.takeNextPendingEffect().?;
+        slot.* = .{ .id = pending.id, .stack_memory = stack_memory, .state = .{ .prepared = pending.thunk } };
+        shared_engine.trackRunningEffect(.{}, &pending);
+        token.* = next_effect_job_token;
+        next_effect_job_token += 1;
+        return token.*;
+    }
+    failHostWith("browser effect executor capacity exceeded");
+}
+
+/// Gives the executor the aligned high address of this job's retained stack.
+export fn roc_ui_effect_stack_top(token: u32) callconv(.c) usize {
+    const memory = effectJob(token).stack_memory;
+    return @intFromPtr(memory.ptr) + memory.len;
+}
+
+/// Records the main stack to restore around each suspending service import.
+export fn roc_ui_effect_stack_main(pointer: usize) callconv(.c) void {
+    effect_main_stack = pointer;
+}
+
+/// Consumes one prepared thunk, retaining its result for a separate engine
+/// turn. Execution itself never publishes commands or writes reactive state.
+export fn roc_ui_effect_run(token: u32) callconv(.c) void {
+    beginHostCall();
+    const job = effectJob(token);
+    const thunk = switch (job.state) {
+        .prepared => |thunk| thunk,
+        else => failHostWith("effect token was executed more than once"),
+    };
+    job.state = .running;
+    active_effect_token = token;
+    const cmd = abi.roc_run_effect(thunk);
+    active_effect_token = 0;
+    job.state = .{ .finished = cmd };
+}
+
+/// Applies a finished effect through the shared action transaction and releases
+/// its result and declared reads. The complete render batch publishes once.
+export fn roc_ui_effect_complete(token: u32) callconv(.c) void {
+    beginHostCall();
+    const job = effectJob(token);
+    const cmd = switch (job.state) {
+        .finished => |cmd| cmd,
+        else => failHostWith("effect completion arrived before execution finished"),
+    };
+    beginCommandTransaction();
+    var running = shared_engine.finishRunningEffect(job.id);
+    const scope = shared_engine.nearestActiveScope(running.owner_scope_id);
+    shared_engine.effect_origin = &running.reads;
+    shared_engine.applying_effect_result = true;
+    _ = shared_engine.tryRunCommand(.{}, &roc_host, scope, cmd) catch |err| failHostWithFmt("effect result transaction failed: {s}", .{@errorName(err)});
+    shared_engine.applying_effect_result = false;
+    shared_engine.effect_origin = null;
+    cmd.decref(&roc_host);
+    shared_engine.releaseFinishedEffect(.{}, &running);
+    allocator().free(job.stack_memory);
+    for (&effect_jobs, &effect_job_tokens) |*slot, *current| {
+        if (current.* != token) continue;
+        slot.* = null;
+        current.* = 0;
+        break;
+    }
+    publishCommandTransaction();
+}
+
+const HttpHeaderWire = extern struct { name_ptr: usize, name_len: usize, value_ptr: usize, value_len: usize };
+extern "env" fn roc_ui_http_send(method_ptr: usize, method_len: usize, uri_ptr: usize, uri_len: usize, timeout: u64, headers: [*]const HttpHeaderWire, header_count: usize, body_ptr: usize, body_len: usize, out_len: *usize) usize;
+
+const HttpResponseReader = struct {
+    bytes: []const u8,
+
+    fn word(self: *@This()) u32 {
+        if (self.bytes.len < 4) failHostWith("HTTP response ended inside an integer");
+        const value = std.mem.readInt(u32, self.bytes[0..4], .little);
+        self.bytes = self.bytes[4..];
+        return value;
+    }
+
+    fn field(self: *@This()) []const u8 {
+        const len = self.word();
+        if (len > self.bytes.len) failHostWith("HTTP response field exceeds its buffer");
+        const value = self.bytes[0..len];
+        self.bytes = self.bytes[len..];
+        return value;
+    }
+
+    fn text(self: *@This()) abi.RocStr {
+        const value = self.field();
+        if (!std.unicode.utf8ValidateSlice(value)) failHostWith("HTTP response text is not UTF-8");
+        return abi.RocStr.fromSlice(value, &roc_host);
+    }
+
+    // Validate the entire borrowed frame before materialization can retain any
+    // Roc strings or lists. A malformed later field must not strand earlier
+    // allocations at the fatal protocol boundary.
+    fn validate(self: @This()) void {
+        var reader = self;
+        const kind = reader.word();
+        if (kind == 0) {
+            if (reader.word() > 65535) failHostWith("HTTP response status exceeds U16");
+            const count = reader.word();
+            if (count > 256) failHostWith("HTTP response exceeds the header count limit");
+            var header_bytes: usize = 0;
+            for (0..count) |_| {
+                const name = reader.field();
+                const value = reader.field();
+                header_bytes += name.len + value.len;
+                if (header_bytes > 65536) failHostWith("HTTP response exceeds the header byte limit");
+                if (!std.unicode.utf8ValidateSlice(name) or !std.unicode.utf8ValidateSlice(value))
+                    failHostWith("HTTP response text is not UTF-8");
+            }
+            if (reader.field().len > 8 * 1024 * 1024) failHostWith("HTTP response body exceeds 8 MiB");
+        } else {
+            if (kind > 5) failHostWith("HTTP response has an unknown failure kind");
+            const detail = reader.field();
+            if (detail.len > 16384) failHostWith("HTTP failure detail exceeds its byte limit");
+            if (!std.unicode.utf8ValidateSlice(detail)) failHostWith("HTTP response text is not UTF-8");
+        }
+        if (reader.bytes.len != 0) failHostWith("HTTP response has trailing bytes");
+    }
+};
+
+/// Performs the browser HTTP primitive only while an effect owns execution.
+/// Request ownership remains on its private stack across suspension; JS copies
+/// primitive request fields before returning its promise. Response bytes are
+/// copied into typed Roc values here and their marshalling allocation released.
+export fn roc_http_send(request_value: abi.Request) callconv(.c) abi.HttpSendResult {
+    if (active_effect_token == 0) failHostWith("HTTP calls require an engine-scheduled effect");
+    var request = request_value;
+    defer request.decref(&roc_host);
+    const method = switch (request.method.tag) {
+        .Unknown => @as(*const abi.RocStr, @ptrCast(@alignCast(&request.method.payload))).asSlice(),
+        else => @tagName(request.method.tag),
+    };
+    const uri = request.uri.asSlice();
+    const pairs = if (request.headers.elements_ptr) |ptr| ptr[0..request.headers.length] else &.{};
+    if (pairs.len > 256) {
+        var err: abi.HttpError = .{ .payload = undefined, .tag = .TooLarge };
+        @as(*abi.RocStr, @ptrCast(@alignCast(&err.payload))).* = abi.RocStr.fromSlice("HTTP request exceeds the header count limit", &roc_host);
+        var refused: abi.HttpSendResult = .{ .payload = undefined, .tag = .Err };
+        @as(*abi.HttpError, @ptrCast(@alignCast(&refused.payload))).* = err;
+        return refused;
+    }
+    var headers: [256]HttpHeaderWire = undefined;
+    for (pairs, 0..) |*pair, index| {
+        const name = pair._0.asSlice();
+        const value = pair._1.asSlice();
+        headers[index] = .{ .name_ptr = @intFromPtr(name.ptr), .name_len = name.len, .value_ptr = @intFromPtr(value.ptr), .value_len = value.len };
+    }
+    const body: []const u8 = if (request.body.elements_ptr) |ptr| ptr[0..request.body.length] else "";
+    const timeout = switch (request.timeout_ms.tag) {
+        .NoTimeout => std.math.maxInt(u64),
+        .TimeoutMilliseconds => request.timeout_ms.payload_timeout_milliseconds(),
+    };
+    var response_len: usize = 0;
+    const token = active_effect_token;
+    const saved_stack = effect_stack.get();
+    active_effect_token = 0;
+    effect_stack.set(effect_main_stack);
+    const response_ptr = roc_ui_http_send(@intFromPtr(method.ptr), method.len, @intFromPtr(uri.ptr), uri.len, timeout, &headers, pairs.len, @intFromPtr(body.ptr), body.len, &response_len);
+    effect_stack.set(saved_stack);
+    active_effect_token = token;
+    if (response_ptr == 0 or response_len > 9 * 1024 * 1024) failHostWith("HTTP response buffer is invalid");
+    defer roc_dealloc(@ptrFromInt(response_ptr), 1);
+    var reader = HttpResponseReader{ .bytes = @as([*]const u8, @ptrFromInt(response_ptr))[0..response_len] };
+    reader.validate();
+    const kind = reader.word();
+    var result: abi.HttpSendResult = .{ .payload = undefined, .tag = if (kind == 0) .Ok else .Err };
+    if (kind == 0) {
+        const status = reader.word();
+        if (status > 65535) failHostWith("HTTP response status exceeds U16");
+        const count = reader.word();
+        if (count > 256) failHostWith("HTTP response exceeds the header count limit");
+        const HeaderList = @FieldType(abi.Response, "headers");
+        const Header = @typeInfo(@typeInfo(@FieldType(HeaderList, "elements_ptr")).optional.child).pointer.child;
+        var built: [256]Header = undefined;
+        for (built[0..count]) |*pair| pair.* = .{ ._0 = reader.text(), ._1 = reader.text() };
+        const bytes = reader.field();
+        if (bytes.len > 8 * 1024 * 1024) failHostWith("HTTP response body exceeds 8 MiB");
+        @as(*abi.Response, @ptrCast(@alignCast(&result.payload))).* = .{
+            .status = @intCast(status),
+            .headers = HeaderList.fromSlice(built[0..count], &roc_host),
+            .body = @FieldType(abi.Response, "body").fromSlice(bytes, &roc_host),
+        };
+    } else {
+        const tag: abi.HttpErrorTag = switch (kind) {
+            1 => .InvalidRequest,
+            2 => .Network,
+            3 => .Timeout,
+            4 => .TooLarge,
+            5 => .Unavailable,
+            else => failHostWith("HTTP response has an unknown failure kind"),
+        };
+        var err: abi.HttpError = .{ .payload = undefined, .tag = tag };
+        if (tag == .Timeout) {
+            _ = reader.field();
+        } else {
+            @as(*abi.RocStr, @ptrCast(@alignCast(&err.payload))).* = reader.text();
+        }
+        @as(*abi.HttpError, @ptrCast(@alignCast(&result.payload))).* = err;
+    }
+    if (reader.bytes.len != 0) failHostWith("HTTP response has trailing bytes");
+    return result;
 }
 
 export fn roc_ui_timer(token: u32) callconv(.c) void {

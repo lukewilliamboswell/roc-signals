@@ -1,8 +1,10 @@
 (test "Status page — First results: everything healthy, empty incident timeline"
+  (setup (manual-effects))
   (steps
     ; First results: everything healthy, empty incident timeline
 
-    (resolve-task "check:api" "operational|99.98")
+    (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")
+    (run-effect 1)
     (expect-text (test-id "service-api-status") "Operational")
     (expect-text (test-id "service-api-uptime") "99.98%")
     (expect-text (test-id "count-operational") "1")
@@ -10,12 +12,15 @@
     (expect-text (test-id "count-outage") "0")
     (expect-text (test-id "count-awaiting") "3")
     (expect-text (test-id "overall-rollup") "All systems operational")
-    (resolve-task "check:web" "operational|99.99")
-    (resolve-task "check:database" "operational|99.90")
-    (resolve-task "check:notifications" "operational|99.95")
-    (resolve-task "incidents" "")
-    (expect-pending-task "check:api" 0)
-    (expect-pending-task "incidents" 0)
+    (stub-http "web" :url "/api/status/web" :status 200 :body "operational|99.99")
+    (run-effect 2)
+    (stub-http "database" :url "/api/status/database" :status 200 :body "operational|99.90")
+    (run-effect 3)
+    (stub-http "notifications" :url "/api/status/notifications" :status 200 :body "operational|99.95")
+    (run-effect 4)
+    (stub-http "incidents" :url "/api/status/incidents" :status 200 :body "")
+    (run-effect 5)
+    (expect-pending-effects 0)
     (expect-text (test-id "overall-rollup") "All systems operational")
     (expect-text (test-id "count-operational") "4")
     (expect-text (test-id "count-degraded") "0")

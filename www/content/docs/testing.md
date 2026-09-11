@@ -12,6 +12,42 @@ as the browser build. They let you check rendered values, state lifetime,
 requests, and update work. You control task results and timer ticks explicitly,
 so a test does not need a network connection or a delay to exercise those paths.
 
+## Controlling action effects
+
+Native specs normally execute prepared action effects synchronously. Add
+`(manual-effects)` to a test's `setup` to leave them queued instead. The engine
+still prepares each owned snapshot when its action commits.
+
+```scheme
+(setup (manual-effects))
+(steps
+  (expect-pending-effects 2)
+  (stub-http "second answer" :url "/api/search" :status 200 :body "new")
+  (run-effect 2)
+  (expect-pending-effects 1)
+  (stub-http "first answer" :url "/api/search" :status 200 :body "old")
+  (run-effect 1)
+  (expect-pending-effects 0))
+```
+
+This fragment assumes earlier mount or input actions admitted two effects.
+Occurrence IDs start at `1` in each fresh runtime and increase for every prepared
+effect, including chained effects. They are not queue positions or request keys:
+running `2` first does not rename `1`. Unknown or already-consumed IDs fail the
+spec. `run-effect` requires manual mode.
+
+Each selected effect runs its real Roc closure against the existing service
+stubs, then applies its returned action through normal engine propagation.
+Chained effects remain queued for another explicit step. Unexecuted effects
+remain owned by the engine and are released during teardown. Sorting, stale
+application generations, and scope disposal can therefore be tested with the
+same native structural-work assertions as other actions.
+
+Manual mode controls execution order, not suspension inside a closure. It does
+not simulate a network, run worker threads, or interleave events between two
+hosted calls in one closure. Browser suspension and memory-boundary tests cover
+those additional executor concerns.
+
 For a checkout-based app, build for your machine and run its specs:
 
 ```sh

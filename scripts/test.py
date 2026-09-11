@@ -320,9 +320,26 @@ def run_fuzz_suite() -> None:
     run([sys.executable, "scripts/fuzz.py", "check"])
 
 
-def run_browser_suite() -> None:
+def run_browser_suite(roc_bin: str) -> None:
     run(["zig", "build", "run-test-browser"])
     run([sys.executable, "-m", "unittest", "scripts/test_bundle_browser.py"])
+    run_wasm_effect_contracts(roc_bin)
+
+
+def run_wasm_effect_contracts(roc_bin: str) -> None:
+    """Exercise effect ownership and suspension with real Roc callables."""
+    output = TEST_OUT / "wasm-effects"
+    output.mkdir(parents=True, exist_ok=True)
+    for fixture in ("action", "http"):
+        wasm = output / f"{fixture}.wasm"
+        run([
+            roc_bin, "build", "--target=wasm32", "--opt=size", "--no-cache",
+            f"--output={wasm}", ROOT / "test" / "wasm" / fixture / "main.roc",
+        ])
+        run([
+            "node", "--experimental-wasm-jspi",
+            ROOT / "scripts" / "browser" / f"wasm_{fixture}.test.mjs", wasm,
+        ])
 
 
 def run_roc_checks(
@@ -395,7 +412,7 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
             except subprocess.CalledProcessError as exc:
                 ledger.record("wasm", example.slug, False, f"roc build exited with {exc.returncode}")
                 continue
-            mount_cmd = ["node", "scripts/browser/mount_wasm_example.mjs", output, example.slug]
+            mount_cmd = ["node", "--experimental-wasm-jspi", "scripts/browser/mount_wasm_example.mjs", output, example.slug]
             if example.expect_mount_error is not None:
                 mount_cmd.extend(["--expect-error", example.expect_mount_error])
             if example.slug == "location-source":
@@ -416,6 +433,10 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
                 mount_cmd.append("--exercise-svg")
             try:
                 run(mount_cmd)
+                if example.slug == "flight-search":
+                    # Node 23 can stall at shutdown waiting for Maglev GC;
+                    # this contract checks Wasm semantics, not JS optimization.
+                    run(["node", "--no-maglev", "--experimental-wasm-jspi", "scripts/browser/wasm_flight_search.test.mjs", output])
             except subprocess.CalledProcessError as exc:
                 ledger.record("wasm", example.slug, False, f"mount exited with {exc.returncode}")
                 continue
@@ -988,7 +1009,7 @@ def main() -> int:
     if "fuzz" in suites:
         run_fuzz_suite()
     if "browser" in suites:
-        run_browser_suite()
+        run_browser_suite(roc_bin)
     if "roc-check" in suites:
         run_local_roc_checks(roc_bin, examples)
     if "roc-test" in suites:

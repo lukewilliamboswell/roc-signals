@@ -1,5 +1,6 @@
 (test "Field notes — capturing while offline"
   (setup
+    (manual-effects)
     ; Field Notes: offline capture, outbox drain, rollback, and restore.
     ;
     ; Storage format is "id|slot|queued|rev|body" per note, notes joined by ";".
@@ -23,7 +24,7 @@
     (expect-text (test-id "status-s1") "Draft")
     (expect-text (test-id "capacity") "3 of 4")
     (expect-text (test-id "outbox-count") "1")
-    (expect-pending-task "note-sync" 0)
+    (expect-pending-effects 0)
     ; Whitespace-only drafts cannot be saved.
     (fill (label "Note body") "   ")
     (expect-disabled (role button :name "Save note") true)

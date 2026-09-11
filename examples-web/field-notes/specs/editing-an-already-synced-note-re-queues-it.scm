@@ -1,5 +1,6 @@
 (test "Field notes — editing an already synced note re queues it"
   (setup
+    (manual-effects)
     ; Field Notes: offline capture, outbox drain, rollback, and restore.
     ;
     ; Storage format is "id|slot|queued|rev|body" per note, notes joined by ";".
@@ -24,11 +25,15 @@
     (click (role button :name "Promote note s2"))
     (click (role button :name "Promote note n0"))
     (set-online online)
-    (resolve-task "note-sync" "n0#r7")
-    (reject-task "note-sync" "s2#r0")
-    (resolve-task "note-sync" "s1#r0")
+    (stub-http "sync n0#r7" :url "/api/notes/sync" :status 200 :body "n0#r7")
+    (run-effect 1)
+    (stub-http "failed sync s2#r0" :url "/api/notes/sync" :status 503 :body "temporarily unavailable")
+    (run-effect 2)
+    (stub-http "sync s1#r0" :url "/api/notes/sync" :status 200 :body "s1#r0")
+    (run-effect 3)
     (click (role button :name "Retry note s2"))
-    (resolve-task "note-sync" "s2#s2:1")
+    (stub-http "sync s2#s2:1" :url "/api/notes/sync" :status 200 :body "s2#s2:1")
+    (run-effect 4)
 
     ; editing an already synced note re queues it
     ; Documented behaviour: an edit bumps the note's attempt, which invalidates the
@@ -41,7 +46,7 @@
     (expect-metric-delta rows_reused 4)
     (expect-text (test-id "status-n0") "Syncing")
     (expect-text (test-id "outbox-count") "1")
-    (expect-pending-task "note-sync" 1)
+    (expect-pending-effects 1)
     ; Editing one row does not disturb its siblings.
     (expect-value (label "Body s1") "Pump pressure log")
     (expect-text (test-id "status-s1") "Synced")
@@ -49,10 +54,11 @@
     (expect-text (test-id "status-s2") "Synced")
     (expect-value (label "Body n1") "Fence line check")
     (expect-text (test-id "status-n1") "Draft")
-    (resolve-task "note-sync" "n0#n0:1")
+    (stub-http "sync n0#n0:1" :url "/api/notes/sync" :status 200 :body "n0#n0:1")
+    (run-effect 5)
     (expect-text (test-id "status-n0") "Synced")
     (expect-value (label "Body n0") "Generator hours 128")
     (expect-visible (text "Outbox is empty"))
-    (expect-pending-task "note-sync" 0)
+    (expect-pending-effects 0)
   )
 )

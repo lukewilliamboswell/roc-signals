@@ -2,13 +2,14 @@ platform ""
 	requires {
 		main : () -> Elem
 	}
-	exposes [Elem, Signal, Html, Svg, Ui, Http, Browser, Rows]
+	exposes [Elem, Event, Action, Signal, Html, Svg, Ui, Http, Browser, Rows]
 	packages {
 		roc: "nightly-2026-09-04-c125b82",
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
 	}
-	provides { "roc_ui_init": ui_init }
+	provides { "roc_ui_init": ui_init, "roc_prepare_effect": prepare_effect!, "roc_run_effect": run_effect! }
 	hosted {
+		"roc_http_send": Http.send!,
 		"roc_each_bool_sink_push": EachSink.push_bool!,
 		"roc_rows_delta_clear_sink_push": EachSink.push_delta_clear!,
 		"roc_rows_delta_description_sink_push": EachSink.push_delta_description!,
@@ -32,7 +33,7 @@ platform ""
 		wasm32: {
 			inputs: ["host.wasm", app],
 			output: Shared,
-			exports: ["roc_alloc", "roc_dealloc", "roc_ui_debug_live_allocation_bytes", "roc_ui_debug_live_allocation_count", "roc_ui_debug_live_allocation_phase", "roc_ui_debug_live_allocation_size", "roc_ui_command_buffer_len", "roc_ui_command_buffer_ptr", "roc_ui_command_record_words", "roc_ui_dynamic_buffer_len", "roc_ui_dynamic_buffer_ptr", "roc_ui_event", "roc_ui_last_error_len", "roc_ui_last_error_ptr", "roc_ui_live_host_values", "roc_ui_mount", "roc_ui_prepare_mount", "roc_ui_protocol_features", "roc_ui_protocol_version", "roc_ui_resolve", "roc_ui_set_entropy_seed", "roc_ui_set_location", "roc_ui_set_online", "roc_ui_set_storage_payload", "roc_ui_set_visibility", "roc_ui_storage_declaration_area", "roc_ui_storage_declaration_count", "roc_ui_storage_declaration_key_len", "roc_ui_storage_declaration_key_ptr", "roc_ui_string_buffer_len", "roc_ui_string_buffer_ptr", "roc_ui_timer", "roc_ui_unmount", "roc_ui_update_location", "roc_ui_update_online", "roc_ui_update_visibility"],
+			exports: ["__stack_pointer", "roc_ui_effect_stack_top", "roc_ui_effect_stack_main", "roc_ui_effect_next", "roc_ui_effect_run", "roc_ui_effect_complete", "roc_alloc", "roc_dealloc", "roc_ui_debug_live_allocation_bytes", "roc_ui_debug_live_allocation_count", "roc_ui_debug_live_allocation_phase", "roc_ui_debug_live_allocation_size", "roc_ui_command_buffer_len", "roc_ui_command_buffer_ptr", "roc_ui_command_record_words", "roc_ui_dynamic_buffer_len", "roc_ui_dynamic_buffer_ptr", "roc_ui_event", "roc_ui_last_error_len", "roc_ui_last_error_ptr", "roc_ui_live_host_values", "roc_ui_mount", "roc_ui_prepare_mount", "roc_ui_protocol_features", "roc_ui_protocol_version", "roc_ui_resolve", "roc_ui_set_entropy_seed", "roc_ui_set_location", "roc_ui_set_online", "roc_ui_set_storage_payload", "roc_ui_set_visibility", "roc_ui_storage_declaration_area", "roc_ui_storage_declaration_count", "roc_ui_storage_declaration_key_len", "roc_ui_storage_declaration_key_ptr", "roc_ui_string_buffer_len", "roc_ui_string_buffer_ptr", "roc_ui_timer", "roc_ui_unmount", "roc_ui_update_location", "roc_ui_update_online", "roc_ui_update_visibility"],
 		},
 		x64mac: { inputs: ["libhost.a", app] },
 		x64musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a"] },
@@ -42,7 +43,10 @@ platform ""
 
 import Elem exposing [Elem]
 import EachSink
-import HostValue
+import HostValue exposing [HostValue]
+import Node
+import Event
+import Action
 import Signal
 import Html
 import Svg
@@ -54,4 +58,20 @@ import Rows
 ui_init : () -> Box(Elem)
 ui_init = || {
 	Box.box(main())
+}
+
+## Decodes a committed action's reads on the engine thread and consumes its
+## effect closure, producing an independently owned thunk for the executor.
+prepare_effect! : Box((HostValue, HostValue.CapabilityHandle => Box((() => Node.Cmd)))), HostValue, HostValue.CapabilityHandle => Box((() => Node.Cmd))
+prepare_effect! = |effect_box, snapshot, capability| {
+	effect! = Box.unbox(effect_box)
+	effect!(snapshot, capability)
+}
+
+## Consumes a prepared effect thunk and returns its next action to the host.
+## Only the executor calls this, after the producing state batch commits.
+run_effect! : Box((() => Node.Cmd)) => Node.Cmd
+run_effect! = |thunk_box| {
+	thunk! = Box.unbox(thunk_box)
+	thunk!()
 }

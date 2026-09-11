@@ -1,9 +1,11 @@
 (test "Support inbox — first snapshot arrives"
+  (setup (manual-effects))
   (steps
     ; first snapshot arrives
 
-    (resolve-task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|new|-")
-    (expect-pending-task "inbox" 0)
+    (stub-http "initial inbox" :url "/api/inbox" :status 200 :body "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|new|-")
+    (run-effect 1)
+    (expect-pending-effects 0)
     (expect-text (test-id "sync-status") "Up to date")
     (expect-text (test-id "summary-conversations") "3")
     (expect-text (test-id "summary-unread") "1")
