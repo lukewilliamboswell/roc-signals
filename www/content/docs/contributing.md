@@ -276,15 +276,23 @@ python3 scripts/build_macos_stubs.py \
 `dependencies.lock.json` selects `deps-macos-interfaces-20260910.1` by exact
 archive size and SHA-256. Ordinary GUI tests and `bundle_platforms.py` stage its
 exact TBDs, catalog, provenance statement, manifest, and dependency receipt;
-they never invoke the generator. Changing the catalog requires a new producer
-release and reviewed lock update. Changing a host requires only final-link
+they never invoke the generator. Admission validates the catalog bundled in the
+locked release; the checkout's catalog is the recipe for the next release.
+Changing the catalog requires a new producer release and reviewed lock update
+before consumers use the new interfaces. Changing a host requires only final-link
 validation against the selected interface release; it does not regenerate or
 relabel those linker inputs.
 
 The `macOS interface dependency releases` workflow generates the catalog-only
 `.tbd` archive twice, compares the exact bytes, and then performs final Roc
-application links and native GUI specs against the attested host selected by
-`gui-host.lock.json`. An explicit dispatch on `main` with a fresh
+application links and native GUI specs, including internal GUI fixtures,
+against the attested host selected by
+`gui-host.lock.json`. Validation uses a clean checkout of that host release's
+recorded source revision, so its platform modules and fixtures match the released
+ABI. For a local candidate, pass that checkout with `--host-source` to
+`scripts/build_macos_interfaces.py`; mismatched host sources are rejected before
+download or linking. Generation still uses the current checkout's catalog.
+An explicit dispatch on `main` with a fresh
 `deps-macos-interfaces-<version>` tag publishes the tested archive and its
 consumer lock with GitHub build provenance. Generation reads neither host nor
 SDK bytes; the host is an independently released validation input, not part of

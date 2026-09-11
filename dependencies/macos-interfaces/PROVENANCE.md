@@ -10,9 +10,15 @@ interface. Sources include Apple's publicly available developer documentation
 and identified open-source declarations for runtime ABI and GPUI framework
 imports. The records were assembled using automated documentation retrieval and
 source review. Generation uses the committed catalog entirely offline.
-The generator reads that catalog and hashes the compiled host archives; it does
-not read, copy, or modify Apple SDK headers, linker stubs, or framework binaries.
-The manifest records the exact inputs and generated-file hashes.
+The independent interface producer reads that catalog and this provenance
+statement. It does not read, copy, or modify Apple SDK headers, linker stubs,
+framework binaries, or compiled host archives. The manifest records the catalog,
+generator, provenance, and generated-file hashes.
+
+Released host archives are separate validation inputs: after generation, native
+application links and specs check the candidate interfaces against a selected
+host release and its matching source revision. Host archive identity is not part
+of the generated interface archive's identity.
 
 The generated interface package redistributes no proprietary Apple software,
 Apple SDK files, or SDK agreements.

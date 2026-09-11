@@ -42,10 +42,24 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-toolchain
+      - name: Select the released host's matching sources
+        id: host-source
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          lock = json.loads(Path("gui-host.lock.json").read_text())
+          print("sha=" + lock["artifacts"]["gui-host-arm64mac"]["source_sha"])
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ steps.host-source.outputs.sha }}
+          path: .test-out/macos-host-source
+          persist-credentials: false
       - name: Check generation, admission, and publication contracts
         run: python3 -m unittest scripts/test_macos_interface_dependencies.py scripts/test_macos_stubs.py
       - name: Generate and validate against the reviewed released host
-        run: python3 scripts/build_macos_interfaces.py --output "$RUNNER_TEMP/dependencies" --host-lock gui-host.lock.json --roc roc
+        run: python3 scripts/build_macos_interfaces.py --output "$RUNNER_TEMP/dependencies" --host-lock gui-host.lock.json --host-source .test-out/macos-host-source --roc roc
       - name: Check reproducibility without rebuilding the host
         run: |
           python3 scripts/build_macos_interfaces.py --output "$RUNNER_TEMP/rebuild"
