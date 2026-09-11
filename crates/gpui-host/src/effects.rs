@@ -538,9 +538,12 @@ mod tests {
 
     #[test]
     fn save_options_and_paths_are_validated() {
-        assert!(validate_save_options("/tmp", "../escape").is_err());
+        // An absolute directory is spelled differently on Windows, where a
+        // bare `/tmp` has no drive and is therefore relative.
+        let directory = if cfg!(windows) { r"C:\tmp" } else { "/tmp" };
+        assert!(validate_save_options(directory, "../escape").is_err());
         assert!(validate_save_options("relative", "note.txt").is_err());
-        assert!(validate_save_options("/tmp", "note.txt").is_ok());
+        assert!(validate_save_options(directory, "note.txt").is_ok());
         assert!(validate_path("/tmp/a\0b").is_err());
     }
 
