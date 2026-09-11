@@ -129,23 +129,27 @@ fn decode(command: &Command) -> Result<Action, String> {
         Some(Arg::Text(value)) => Ok(value.clone()),
         _ => Err(format!("{} needs a text argument {name}", command.kind)),
     };
-    let count = |name: &str| match command.arg(name) {
-        Some(Arg::Unsigned(value)) => Ok(*value as usize),
+    let unsigned = |name: &str| match command.arg(name) {
+        Some(Arg::Unsigned(value)) => Ok(*value),
         _ => Err(format!("{} needs a count argument {name}", command.kind)),
+    };
+    let count = |name: &str| {
+        usize::try_from(unsigned(name)?)
+            .map_err(|_| format!("{} argument {name} is too large", command.kind))
     };
     let flag = |name: &str| match command.arg(name) {
         Some(Arg::Boolean(value)) => Ok(*value),
         _ => Err(format!("{} needs true or false for {name}", command.kind)),
     };
     Ok(match command.kind.as_str() {
-        "wait" => Action::Wait(count("value")? as u64),
+        "wait" => Action::Wait(unsigned("value")?),
         "click" => Action::Click(locator()?),
         "focus" => Action::Focus(locator()?),
         "type_text" => Action::Type(locator()?, text("text")?),
         "key" => Action::Key(text("value")?),
         "shortcut" => Action::Key(chord_keystroke((
-            count("key")? as u32,
-            count("modifiers")? as u32,
+            u32::try_from(unsigned("key")?).map_err(|_| "shortcut key is too large")?,
+            u32::try_from(unsigned("modifiers")?).map_err(|_| "shortcut modifiers are too large")?,
         ))?),
         "expect_visible" => Action::ExpectVisible(locator()?),
         "expect_absent" => Action::ExpectAbsent(locator()?),
@@ -662,12 +666,12 @@ mod tests {
     }
 
     /// The window-step vocabulary and arguments the engine publishes, as
-    /// `test/spec-steps.json` records them from the Zig union by reflection.
+    /// `test/spec-steps.manifest` records them from the Zig union by reflection.
     /// Reading the file here ties the argument names this decoder asks for to
     /// the names the engine emits: a renamed tag or payload field fails here
     /// rather than at run time as a step with no meaning.
     fn published_steps() -> Vec<(String, Vec<(String, String)>)> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/spec-steps.json");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/spec-steps.manifest");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
         // One line per step: `kind name:type name:type ...`.

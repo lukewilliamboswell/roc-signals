@@ -606,11 +606,11 @@ pub fn parseSExprTestSpecFrom(allocator: std.mem.Allocator, content: []const u8,
     }
     if (!saw_steps) return ParseError.InvalidFormat;
     if (is_scenario) {
-        // A scenario runs the real file workers, so a fixture that resolves a
-        // task by name has nothing to resolve; and closing the window ends the
-        // run, so nothing may follow it.
+        // A scenario runs real file and HTTP effects, so scripted answers are
+        // test-only; closing the window ends the run, so nothing may follow it.
         for (commands.items, 0..) |cmd, index| {
             switch (cmd.step) {
+                .stub_file_result, .stub_http_result => return ParseError.InvalidFormat,
                 .close => if (index + 1 != commands.items.len) return ParseError.InvalidFormat,
                 else => {},
             }
@@ -1228,7 +1228,8 @@ test "a scenario and a test each refuse the other's steps" {
     try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (wait 5)))"));
     try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (close)))"));
     // A scenario runs the real workers, so a fixture has nothing to resolve.
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (resolve-file-choice \"open\" (canceled))))"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (stub-file-choice \"open\" (canceled))))"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (stub-http-reject \"load\" :kind network :detail \"offline\")))"));
     // Nothing can follow the close that ends the run.
     try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (close) (wait 1)))"));
     // Setup is pre-mount state for the display-free host only.
@@ -1335,7 +1336,7 @@ test "all checked-in specs decode to the committed golden" {
 /// `Step` union the way the scenario ABI publishes them. The Rust decoder's
 /// tests read this file, so a renamed tag or payload field is caught on both
 /// sides. Regenerated with the decode golden.
-const spec_steps_path = "test/spec-steps.json";
+const spec_steps_path = "test/spec-steps.manifest";
 
 fn writeStepManifest(writer: *std.Io.Writer) std.Io.Writer.Error!void {
     inline for (std.meta.fields(Step)) |field| {

@@ -59,7 +59,6 @@ keep the canonical golden unchanged unless an explicit semantic change is intend
 - Refactor the runner switch into `dispatch(comptime Ctx, host, roc_host, step) StepOutcome` with typed `unsupported` outcomes.
 - `src/bench/benchmark.zig` calls `spec_runner.dispatch` with a `BenchmarkCtx {capabilities.measured = true}`; delete its duplicated click/pointer/key logic and `BenchmarkDomElement`.
 - Proof: `zig build test`; `test.py bench` CSV byte-compared on a sample.
-- Status 2026-09-11: the contract module and capability groups landed (`src/spec/ctx.zig`, applied to `SpecRunnerCtx`). The benchmark step merge is deferred: the benchmark's measured dispatch threads a stats record through every step, so sharing the runner's dispatch needs the measurement hook redesigned first. It stays on this phase's list.
 
 ### Phase 5 — One result protocol, one driver, `:skip`
 - Parser: `:skip "reason" :issue "url"` (+ optional `:on (...)`) on `test` and `scenario`; `:issue` required; remove `:diagnostic`/`:on` from `Scenario` and `RawScenario`. Convert the one existing diagnostic (`examples-gui/counter/specs/minimum-window-layout.scm`) to `:skip` with a GUI-35 issue link.
