@@ -477,12 +477,24 @@ fn log_packet(chunk: file_io::LogChunk) -> String {
     ])
 }
 
+/// Accepts the absolute paths the file workers can act on. The Windows worker
+/// walks names relative to a drive's volume root and refuses UNC and device
+/// prefixes; refusing them here as well means a network-share pick fails at
+/// the chooser, with a typed reason, rather than at the first read.
 fn validate_path(path: &str) -> Result<(), FileError> {
     if path.len() > 4096 {
         return Err(FileError::InvalidPath("path exceeds 4096 bytes".into()));
     }
     if !Path::new(path).is_absolute() || path.contains('\0') {
         return Err(FileError::InvalidPath(path.into()));
+    }
+    if let Some(std::path::Component::Prefix(prefix)) = Path::new(path).components().next() {
+        use std::path::Prefix;
+        if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) {
+            return Err(FileError::InvalidPath(format!(
+                "{path}: only drive-rooted paths are supported on Windows"
+            )));
+        }
     }
     Ok(())
 }
@@ -548,28 +560,49 @@ mod tests {
     /// An absolute directory under the host operating system's path rules.
     const ABSOLUTE_DIRECTORY: &str = if cfg!(windows) { "C:\\tmp" } else { "/tmp" };
 
+    /// A path below the absolute directory, spelled the way this system spells it.
+    fn under(name: &str) -> String {
+        format!("{ABSOLUTE_DIRECTORY}{}{name}", std::path::MAIN_SEPARATOR)
+    }
+
+    #[test]
+    fn windows_paths_outside_a_drive_are_refused_at_validation() {
+        if cfg!(windows) {
+            assert!(validate_path(r"C:\Users\Lee").is_ok());
+            assert!(validate_path(r"\\?\C:\Users\Lee").is_ok());
+            for refused in [r"\\server\share\draft.txt", r"\\?\UNC\server\share", r"\\.\pipe\x"] {
+                let Err(FileError::InvalidPath(message)) = validate_path(refused) else {
+                    panic!("accepted {refused}");
+                };
+                assert!(message.contains("drive-rooted"), "{message}");
+            }
+        } else {
+            assert!(validate_path("/srv/share/draft.txt").is_ok());
+        }
+    }
+
     #[test]
     fn new_task_routes_and_cursor_frames_are_strict_and_unambiguous() {
         assert_eq!(
-            Request::decode(7, &packet(&["/tmp"])).unwrap(),
-            Request::ListDirectory("/tmp".into())
+            Request::decode(7, &packet(&[ABSOLUTE_DIRECTORY])).unwrap(),
+            Request::ListDirectory(ABSOLUTE_DIRECTORY.into())
         );
         assert_eq!(
-            Request::decode(8, &packet(&["/tmp/file"])).unwrap(),
-            Request::OpenPath("/tmp/file".into())
+            Request::decode(8, &packet(&[&under("file")])).unwrap(),
+            Request::OpenPath(under("file"))
         );
         assert_eq!(
-            Request::decode(9, &packet(&["/tmp/file"])).unwrap(),
-            Request::ReadPreview("/tmp/file".into())
+            Request::decode(9, &packet(&[&under("file")])).unwrap(),
+            Request::ReadPreview(under("file"))
         );
         assert_eq!(
             Request::decode(
                 10,
-                &packet(&["/tmp/log", "after", "1", "2", "18446744073709551615"])
+                &packet(&[&under("log"), "after", "1", "2", "18446744073709551615"])
             )
             .unwrap(),
             Request::ReadLog {
-                path: "/tmp/log".into(),
+                path: under("log"),
                 position: LogPosition::After(LogCursor {
                     device: 1,
                     inode: 2,
@@ -578,16 +611,16 @@ mod tests {
             }
         );
         for fields in [
-            vec!["/tmp/log", "start", "1", "0", "0"],
-            vec!["/tmp/log", "after", "01", "0", "0"],
-            vec!["/tmp/log", "after", "0", "0", "18446744073709551616"],
-            vec!["/tmp/log", "middle", "0", "0", "0"],
-            vec!["/tmp/log", "end", "0", "0"],
+            vec![&*under("log"), "start", "1", "0", "0"],
+            vec![&*under("log"), "after", "01", "0", "0"],
+            vec![&*under("log"), "after", "0", "0", "18446744073709551616"],
+            vec![&*under("log"), "middle", "0", "0", "0"],
+            vec![&*under("log"), "end", "0", "0"],
         ] {
             assert!(Request::decode(10, &packet(&fields)).is_err());
         }
         let chunk = file_io::LogChunk {
-            path: "/tmp/log".into(),
+            path: under("log"),
             text: "λ\n".into(),
             cursor: LogCursor {
                 device: 7,
@@ -599,7 +632,7 @@ mod tests {
         };
         assert_eq!(
             log_packet(chunk),
-            packet(&["/tmp/log", "λ\n", "7", "13", "3", "rotated", "partial-utf8"])
+            packet(&[&under("log"), "λ\n", "7", "13", "3", "rotated", "partial-utf8"])
         );
     }
 
@@ -685,7 +718,7 @@ mod tests {
 
     #[test]
     fn frames_preserve_utf8_newlines_colons_and_empty_text() {
-        let path = "/tmp/a:b\nλ.txt";
+        let path = &under("a:b\nλ.txt");
         let text = "first\nsecond:\0λ";
         assert_eq!(
             Request::decode(5, &packet(&[path, text])).unwrap(),
@@ -718,7 +751,7 @@ mod tests {
         }
         assert!(Request::decode(0, &packet(&[])).is_err());
         assert!(Request::decode(1, &packet(&["extra"])).is_err());
-        assert!(Request::decode(5, &packet(&["/tmp/path"])).is_err());
+        assert!(Request::decode(5, &packet(&[&under("path")])).is_err());
     }
 
     #[test]
@@ -729,7 +762,7 @@ mod tests {
             settle(choice(None), &cancel),
             (true, packet(&["canceled", ""]))
         );
-        assert!(validate_save_options("/tmp", "../escape").is_err());
+        assert!(validate_save_options(ABSOLUTE_DIRECTORY, "../escape").is_err());
         assert!(validate_save_options("relative", "note.txt").is_err());
         assert_eq!(
             Request::decode(3, &packet(&["home", "", "note.txt"])).unwrap(),
@@ -738,7 +771,7 @@ mod tests {
                 suggested_name: "note.txt".into()
             }
         );
-        assert!(Request::decode(3, &packet(&["home", "/tmp", "note.txt"])).is_err());
+        assert!(Request::decode(3, &packet(&["home", ABSOLUTE_DIRECTORY, "note.txt"])).is_err());
         assert_eq!(
             home_directory(|name| (name == "HOME").then(|| "/home/lee".to_string())).unwrap(),
             "/home/lee"
@@ -759,9 +792,9 @@ mod tests {
             assert_eq!(home_directory(legacy).unwrap(), r"C:\Users\Lee");
         }
         assert_eq!(
-            Request::decode(3, &packet(&["at", "/tmp", "note.txt"])).unwrap(),
+            Request::decode(3, &packet(&["at", ABSOLUTE_DIRECTORY, "note.txt"])).unwrap(),
             Request::ChooseSavePath {
-                directory: Directory::At("/tmp".into()),
+                directory: Directory::At(ABSOLUTE_DIRECTORY.into()),
                 suggested_name: "note.txt".into()
             }
         );

@@ -215,8 +215,9 @@ native accessibility output instead of treating semantic-spec labels as proof.
 
 Board `main.roc` is 1,130 lines and nests fourteen `Ui.state` constructions;
 document workflow, history, and view composition are hard to review together.
-Theme modules and manifest validation are duplicated. Keyed Rows still calls
-its invariant failures “spike” errors.
+Theme modules and manifest validation are duplicated. (Keyed Rows' invariant
+failures now say what was violated rather than calling themselves “spike”
+errors, 2026-09-11.)
 
 Acceptance: extract cohesive History/Document/Workflow/view helpers while
 keeping sources granular and ownership obvious. Do not collapse independent
@@ -500,8 +501,13 @@ matters for tailing a log a Win32 writer holds without `FILE_SHARE_READ`;
 listed entry paths inherit the separator spelling of the requested root; and
 an executable on a UNC share yields an unusable default assets root.
 
-Acceptance: decide UNC support explicitly and make both validators agree;
-distinguish symbolic links from other reparse points (cloud placeholders,
+Decided 2026-09-11: UNC and device paths are unsupported. The Windows worker
+walks names below a drive's volume root only, and `validate_path` now refuses
+the same prefixes when a path is chosen, so a network-share pick fails at the
+chooser with `InvalidPath` and its reason; the module docs and public reference
+say so. Unit-tested with Windows spellings, not yet run on Windows.
+
+Acceptance for the rest: distinguish symbolic links from other reparse points (cloud placeholders,
 junctions, mount points) with the reparse tag; give sharing violations their
 own error text and a Retry hint in Activity; normalize separators at the
 boundary. Cover each with a fixture that a Windows CI job actually runs.

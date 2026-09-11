@@ -190,8 +190,9 @@ file_start = |kind, task, fields| {
 
 ## Native file dialogs and bounded background filesystem work. Paths are absolute
 ## UTF-8 strings of at most 4096 bytes, spelled by the operating system the host
-## runs on: a Windows worker returns drive-rooted or UNC paths written with
-## backslashes. Derive any parent, name, root, or breadcrumb through
+## runs on: a Windows worker returns drive-rooted paths written with
+## backslashes, and refuses a UNC or device path with InvalidPath as soon as it
+## is chosen. Derive any parent, name, root, or breadcrumb through
 ## `Files.parse_path` and the `Files.Path` queries rather than by splitting a
 ## path string on one separator. Every completion uses the shared task
 ## signal and scope lifetime. At most 16 native operations, including canceled

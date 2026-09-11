@@ -114,7 +114,9 @@ Linux and macOS, `USERPROFILE` on Windows); only an environment that names no
 UTF-8 directory at all returns `Unavailable`. Scan entries
 have `{ path, kind, bytes }`; kinds are `File`, `Directory`, `SymbolicLink`, and
 `Other`. Paths are absolute UTF-8 in the operating system's own spelling, so a
-Windows worker returns drive-rooted or UNC paths written with backslashes. Byte
+Windows worker returns drive-rooted paths written with backslashes. UNC and
+device paths are refused with `InvalidPath` when they are chosen, not at the
+first read: the Windows worker walks names below a drive's volume root only. Byte
 counts describe regular files.
 
 `Files.parse_path(text)` recognizes one path by shape and returns a `Files.Path`
