@@ -13,4 +13,4 @@
     (click (role button :name "Cancel deletion"))
     (wait 500)
     (expect-count "task-" 8)
-    (expect-absent (text "\"Delete this task?\""))))
+    (expect-absent (text "Delete this task?"))))

@@ -7,8 +7,8 @@
     (expect-visible (text "Activity Monitor"))
     ; Retry and Cancel are phase-gated: they are not offered at all unless the
     ; phase they belong to is live, so their absence here is the assertion.
-    (expect-absent (text "\"Retry read\""))
-    (expect-absent (text "\"Cancel operation\""))
+    (expect-absent (text "Retry read"))
+    (expect-absent (text "Cancel operation"))
     (expect-count "event-" 0)
     (snapshot "initial")
     (click (role button :name "Step replay"))

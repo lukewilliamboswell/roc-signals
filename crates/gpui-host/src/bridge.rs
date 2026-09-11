@@ -434,7 +434,6 @@ pub(crate) struct RawCommand {
     text: Slice,
     test_id: Slice,
     expected_text: Slice,
-    task_name: Slice,
     expected_count: u64,
     has_count: u32,
     expected_bool: u32,

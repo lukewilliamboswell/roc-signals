@@ -13,4 +13,4 @@
     (expect-visible (text "Discard your changes?"))
     (key "escape")
     (wait 400)
-    (expect-absent (text "\"Discard your changes?\""))))
+    (expect-absent (text "Discard your changes?"))))
