@@ -26,6 +26,8 @@ pub const Capabilities = struct {
     manual_effects: bool = false,
     /// Per-step allocation checkpoints for the trace-allocations mode.
     allocation_trace: bool = false,
+    /// Benchmark observation around calls into this same runner context.
+    measured: bool = false,
 };
 
 /// The declarations every spec host provides.
@@ -47,6 +49,7 @@ const window_decls = [_][]const u8{ "requestWindowClose", "windowClosed" };
 const effect_fixture_decls = [_][]const u8{ "stubFileResult", "stubHttpResult" };
 const manual_effect_decls = [_][]const u8{ "pendingEffectCount", "runSpecEffect" };
 const allocation_trace_decls = [_][]const u8{"traceAllocationCheckpoint"};
+const measured_decls = [_][]const u8{ "beginMeasurement", "endMeasurement" };
 
 /// Refuses, at compile time, a host that does not satisfy the runner contract:
 /// a missing required declaration, a missing `capabilities` value, or a
@@ -63,6 +66,7 @@ pub fn assertRunnerCtx(comptime Ctx: type) void {
         if (caps.effect_fixtures) for (effect_fixture_decls) |name| requireFn(Ctx, name, "the effect_fixtures capability");
         if (caps.manual_effects) for (manual_effect_decls) |name| requireFn(Ctx, name, "the manual_effects capability");
         if (caps.allocation_trace) for (allocation_trace_decls) |name| requireFn(Ctx, name, "the allocation_trace capability");
+        if (caps.measured) for (measured_decls) |name| requireFn(Ctx, name, "the measured capability");
     }
 }
 

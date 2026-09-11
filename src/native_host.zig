@@ -913,6 +913,10 @@ const HostEnv = struct {
     /// observes the title can skip a native window update the engine already
     /// pruned. It is an observation counter, never an alternate title route.
     document_title_revision: u64 = 0,
+    /// Present only while the benchmark replays one command through the shared
+    /// spec runner. Keeping this on the host makes measurement explicit and
+    /// instance-local rather than a process-global execution mode.
+    benchmark_stats: ?*BenchmarkStats = null,
 
     fn init() HostEnv {
         return .{
@@ -1861,6 +1865,7 @@ const HostEnv = struct {
     }
 
     fn deinit(self: *HostEnv) void {
+        if (self.benchmark_stats != null) failHost("benchmark measurement outlived its runner call");
         const allocator = self.hostAllocator();
 
         self.clearActiveSignalRoutes();
@@ -3207,348 +3212,29 @@ fn makeSignalsRocHost(host: *HostEnv) abi.RocHost {
     };
 }
 
-fn pointerEventIdForCommand(elem: *const DomElement, cmd_type: SpecCommandType) ?u64 {
-    return switch (cmd_type) {
-        .pointer_down => sim_dom.fixedEventId(elem, .pointer_down),
-        .pointer_up => sim_dom.fixedEventId(elem, .pointer_up),
-        .pointer_enter => sim_dom.fixedEventId(elem, .pointer_enter),
-        .pointer_leave => sim_dom.fixedEventId(elem, .pointer_leave),
-        else => null,
-    };
-}
-
-const BenchmarkDomElement = DomElement;
-
-fn hostValueUnitForBenchmark(host: *HostEnv, roc_host: *abi.RocHost) HostValue {
+fn specHostValueUnit(host: *HostEnv, roc_host: *abi.RocHost) HostValue {
     return hostValueUnit(host, roc_host);
 }
 
-fn hostValueStrForBenchmark(host: *HostEnv, roc_host: *abi.RocHost, value: []const u8) HostValue {
+fn specHostValueStr(host: *HostEnv, roc_host: *abi.RocHost, value: []const u8) HostValue {
     return hostValueStr(host, roc_host, value);
 }
 
-fn hostValueBoolForBenchmark(host: *HostEnv, roc_host: *abi.RocHost, value: bool) HostValue {
+fn specHostValueBool(host: *HostEnv, roc_host: *abi.RocHost, value: bool) HostValue {
     return hostValueBool(host, roc_host, value);
 }
 
-fn setElementValueForBenchmark(host: *HostEnv, elem: *DomElement, value: []const u8) bool {
-    return setElementUserValueIfChanged(host, elem, value);
-}
-
-fn setElementCheckedForBenchmark(elem: *DomElement, checked: bool) bool {
-    return setElementCheckedIfChanged(elem, checked);
-}
-
-fn tickIntervalSourceForBenchmark(host: *HostEnv, roc_host: *abi.RocHost, period_ms: u64) CommandCounts {
+fn tickSpecIntervalSource(host: *HostEnv, roc_host: *abi.RocHost, period_ms: u64) CommandCounts {
     return tickIntervalSource(host, roc_host, period_ms);
 }
 
-fn finishHostMetricsForBenchmark(host: *HostEnv) void {
+fn finishSpecHostMetrics(host: *HostEnv) void {
     finishHostMetrics(host);
 }
 
-fn addRuntimeMetricsForBenchmark(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
+fn addSpecRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
     return addRuntimeMetrics(left, right);
 }
-
-const BenchmarkCtx = struct {
-    /// Emits fixture diagnostics separately from benchmark CSV output.
-    pub fn writeStderr(bytes: []const u8) void {
-        crash_handlers.writeStderr(bytes);
-    }
-
-    pub const Host = HostEnv;
-    pub const RocHost = abi.RocHost;
-    pub const DomElement = BenchmarkDomElement;
-
-    /// Terminates this test or host path because continuing could leave runtime meaning incoherent.
-    pub fn fail(message: []const u8) noreturn {
-        failHost(message);
-    }
-
-    /// Provides init host for native semantic observation without duplicating engine behavior.
-    pub fn initHost() Host {
-        return Host.init();
-    }
-
-    /// Provides deinit host for native semantic observation without duplicating engine behavior.
-    pub fn deinitHost(host: *Host) void {
-        host.deinit();
-    }
-
-    /// Sets verbose at the narrow host or engine boundary that owns the mutation.
-    pub fn setVerbose(host: *Host, verbose: bool) void {
-        host.test_state.verbose = verbose;
-    }
-
-    /// Constructs roc host with the host references required by the shared engine contract.
-    pub fn makeRocHost(host: *Host) RocHost {
-        return makeSignalsRocHost(host);
-    }
-
-    /// Provides attach roc host for native semantic observation without duplicating engine behavior.
-    pub fn attachRocHost(host: *Host, roc_host: *RocHost) void {
-        host.engine.roc_host = roc_host;
-    }
-
-    /// Provides enter current for native semantic observation without duplicating engine behavior.
-    pub fn enterCurrent(host: *Host, roc_host: *RocHost) void {
-        current_host = host;
-        current_roc_host = roc_host;
-    }
-
-    /// Provides leave current for native semantic observation without duplicating engine behavior.
-    pub fn leaveCurrent() void {
-        current_host = null;
-        current_roc_host = null;
-    }
-
-    /// Provides init roc ui for native semantic observation without duplicating engine behavior.
-    pub fn initRocUi() ElemBox {
-        return abi.roc_ui_init();
-    }
-
-    /// Provides accept init elem measured for native semantic observation without duplicating engine behavior.
-    pub fn acceptInitElemMeasured(host: *Host, roc_host: *RocHost, root_box: ElemBox, apply_ns: ?*u64, command_counts: ?*CommandCounts) void {
-        acceptInitElemWithStats(host, roc_host, root_box, apply_ns, command_counts);
-    }
-
-    /// Resolves element by locator from maintained indexes without scanning the full descriptor stream.
-    pub fn findElementByLocator(host: *Host, locator: Locator, line_num: usize) ?*BenchmarkDomElement {
-        return host.findElementByLocator(locator, line_num);
-    }
-
-    /// Returns by id from the host's semantic render model.
-    pub fn elementById(host: *Host, elem_id: u64) ?*BenchmarkDomElement {
-        if (elem_id >= host.dom_elements.items.len) return null;
-        const elem = &host.dom_elements.items[@intCast(elem_id)];
-        if (!elem.active) return null;
-        return elem;
-    }
-
-    /// Returns disabled from the host's semantic render model.
-    pub fn elementDisabled(elem: *const BenchmarkDomElement) bool {
-        return elem.disabled;
-    }
-
-    /// Provides fixed event id for native semantic observation without duplicating engine behavior.
-    pub fn fixedEventId(elem: *const BenchmarkDomElement, kind: render.EventKind) ?u64 {
-        return sim_dom.fixedEventId(elem, kind);
-    }
-
-    /// Provides click event id for native semantic observation without duplicating engine behavior.
-    pub fn clickEventId(elem: *const BenchmarkDomElement) ?u64 {
-        return sim_dom.fixedEventId(elem, .click);
-    }
-
-    /// Provides pointer event id for native semantic observation without duplicating engine behavior.
-    pub fn pointerEventId(elem: *const BenchmarkDomElement, cmd_type: SpecCommandType) ?u64 {
-        return pointerEventIdForCommand(elem, cmd_type);
-    }
-
-    /// Provides input event id for native semantic observation without duplicating engine behavior.
-    pub fn inputEventId(elem: *const BenchmarkDomElement) ?u64 {
-        return sim_dom.fixedEventId(elem, .input);
-    }
-
-    /// Provides check event id for native semantic observation without duplicating engine behavior.
-    pub fn checkEventId(elem: *const BenchmarkDomElement) ?u64 {
-        return sim_dom.fixedEventId(elem, .check);
-    }
-
-    /// Provides named event for native semantic observation without duplicating engine behavior.
-    pub fn namedEvent(elem: *const BenchmarkDomElement, name: []const u8) ?DomNamedEvent {
-        return nodeEventName(elem, name);
-    }
-
-    /// Returns text attr from the host's semantic render model.
-    pub fn elementTextAttr(elem: *const BenchmarkDomElement, name: []const u8) ?[]const u8 {
-        return sim_dom.textAttr(elem, name);
-    }
-
-    /// Dispatches roc event measured through validated routing and dependency-ordered propagation.
-    pub fn dispatchRocEventMeasured(host: *Host, roc_host: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue, stats: ?*BenchmarkStats) void {
-        dispatchRocEventWithStats(host, roc_host, ids.EventId.fromRaw(event_id), payload_descriptor, payload, stats);
-    }
-
-    /// Materializes unit as a capability-owned host value for boundary delivery.
-    pub fn hostValueUnit(host: *Host, roc_host: *RocHost) HostValue {
-        return hostValueUnitForBenchmark(host, roc_host);
-    }
-
-    /// Materializes str as a capability-owned host value for boundary delivery.
-    pub fn hostValueStr(host: *Host, roc_host: *RocHost, value: []const u8) HostValue {
-        return hostValueStrForBenchmark(host, roc_host, value);
-    }
-
-    /// Materializes bool as a capability-owned host value for boundary delivery.
-    pub fn hostValueBool(host: *Host, roc_host: *RocHost, value: bool) HostValue {
-        return hostValueBoolForBenchmark(host, roc_host, value);
-    }
-
-    /// Dispatches key down measured through validated routing and dependency-ordered propagation.
-    pub fn dispatchKeyDownMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, key: []const u8, shift_key: bool, stats: ?*BenchmarkStats) bool {
-        return dispatchKeyDownWithStats(host, roc_host, elem, key, shift_key, stats);
-    }
-
-    /// Dispatches submit measured through validated routing and dependency-ordered propagation.
-    pub fn dispatchSubmitMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, stats: ?*BenchmarkStats) void {
-        dispatchSubmitWithStats(host, roc_host, elem, stats);
-    }
-
-    /// Dispatches reset measured through validated routing and dependency-ordered propagation.
-    pub fn dispatchResetMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, stats: ?*BenchmarkStats) void {
-        dispatchResetWithStats(host, roc_host, elem, stats);
-    }
-
-    /// Updates value if changed only when the simulated or browser field actually differs.
-    pub fn setElementValueIfChanged(host: *Host, elem: *BenchmarkDomElement, value: []const u8) bool {
-        return setElementValueForBenchmark(host, elem, value);
-    }
-
-    /// Marks the controlled element focused so conflicting value writes can be deferred safely.
-    pub fn focusElement(_: *Host, elem: *BenchmarkDomElement) void {
-        sim_dom.focusElement(elem);
-    }
-
-    /// Ends controlled-element focus and applies any still-relevant deferred value.
-    pub fn blurElement(host: *Host, elem: *BenchmarkDomElement) void {
-        _ = sim_dom.blurElement(host.hostAllocator(), elem);
-    }
-
-    /// Marks the controlled input as composing so engine writes do not disrupt IME text.
-    pub fn beginComposition(_: *Host, elem: *BenchmarkDomElement) void {
-        sim_dom.beginComposition(elem);
-    }
-
-    /// Ends IME composition and reconciles the latest engine-selected value.
-    pub fn endComposition(host: *Host, elem: *BenchmarkDomElement) void {
-        _ = sim_dom.endComposition(host.hostAllocator(), elem);
-    }
-
-    /// Updates checked if changed only when the simulated or browser field actually differs.
-    pub fn setElementCheckedIfChanged(elem: *BenchmarkDomElement, checked: bool) bool {
-        return setElementCheckedForBenchmark(elem, checked);
-    }
-
-    /// Declares one answer for a hosted `Files` function; see `native_services`.
-    pub fn stubFileResult(host: *Host, stub: *const spec_file_fixtures.Stub) void {
-        host.stubFile(stub);
-    }
-
-    /// Declares one answer for the hosted `Http` function; see `native_services`.
-    pub fn stubHttpResult(host: *Host, stub: *const spec_http_fixtures.Stub) void {
-        host.stubHttp(stub);
-    }
-
-    /// Advances interval source through the shared propagation queue.
-    pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
-        return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
-    }
-
-    /// Seeds location before mount so the first graph evaluation observes host state.
-    pub fn setInitialLocation(host: *Host, location: boundary.LocationSnapshot) void {
-        host.setCurrentLocation(location);
-    }
-
-    /// Seeds visibility before mount so the first graph evaluation observes host state.
-    pub fn setInitialVisibility(host: *Host, visibility: boundary.VisibilitySnapshot) void {
-        host.setVisibility(visibility);
-    }
-
-    /// Seeds online before mount so the first graph evaluation observes host state.
-    pub fn setInitialOnline(host: *Host, online: boundary.OnlineSnapshot) void {
-        host.setOnline(online);
-    }
-
-    /// Seeds one storage fixture entry before mount without bypassing declared storage sources.
-    pub fn seedStorage(host: *Host, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
-        host.setStorageText(area, key, value);
-    }
-
-    /// Publishes a location change and refreshes active location sources in the same engine turn.
-    pub fn navigateLocation(host: *Host, roc_host: *RocHost, location: boundary.LocationSnapshot) CommandCounts {
-        host.pushCurrentLocation(location);
-        return dispatchCurrentLocationSources(host, roc_host);
-    }
-
-    /// Moves browser history back and re-enters the location source through propagation.
-    pub fn historyBack(host: *Host, roc_host: *RocHost) CommandCounts {
-        if (!host.backCurrentLocation()) failHost("history_back had no previous location");
-        return dispatchCurrentLocationSources(host, roc_host);
-    }
-
-    /// Moves browser history forward and re-enters the location source through propagation.
-    pub fn historyForward(host: *Host, roc_host: *RocHost) CommandCounts {
-        if (!host.forwardCurrentLocation()) failHost("history_forward had no next location");
-        return dispatchCurrentLocationSources(host, roc_host);
-    }
-
-    /// Sets visibility at the narrow host or engine boundary that owns the mutation.
-    pub fn setVisibility(host: *Host, roc_host: *RocHost, visibility: boundary.VisibilitySnapshot) CommandCounts {
-        host.setVisibility(visibility);
-        return dispatchCurrentVisibilitySources(host, roc_host);
-    }
-
-    /// Sets online at the narrow host or engine boundary that owns the mutation.
-    pub fn setOnline(host: *Host, roc_host: *RocHost, online: boundary.OnlineSnapshot) CommandCounts {
-        host.setOnline(online);
-        return dispatchCurrentOnlineSources(host, roc_host);
-    }
-
-    /// Returns active interval record count by period from the maintained active-runtime indexes.
-    pub fn activeIntervalRecordCountByPeriod(host: *const Host, period_ms: u64) u64 {
-        return host.engine.activeIntervalRecordCountByPeriod(period_ms);
-    }
-
-    /// Provides finish host metrics for native semantic observation without duplicating engine behavior.
-    pub fn finishHostMetrics(host: *Host) void {
-        finishHostMetricsForBenchmark(host);
-    }
-
-    /// Provides alloc count for native semantic observation without duplicating engine behavior.
-    pub fn allocCount(host: *const Host) usize {
-        return host.alloc_count;
-    }
-
-    /// Provides dealloc count for native semantic observation without duplicating engine behavior.
-    pub fn deallocCount(host: *const Host) usize {
-        return host.dealloc_count;
-    }
-
-    /// Provides host alloc count for native semantic observation without duplicating engine behavior.
-    pub fn hostAllocCount(host: *const Host) u64 {
-        return host.host_alloc_count;
-    }
-
-    /// Provides host dealloc count for native semantic observation without duplicating engine behavior.
-    pub fn hostDeallocCount(host: *const Host) u64 {
-        return host.host_dealloc_count;
-    }
-
-    /// Provides host alloc bytes for native semantic observation without duplicating engine behavior.
-    pub fn hostAllocBytes(host: *const Host) u64 {
-        return host.host_alloc_bytes;
-    }
-
-    /// Provides host dealloc bytes for native semantic observation without duplicating engine behavior.
-    pub fn hostDeallocBytes(host: *const Host) u64 {
-        return host.host_dealloc_bytes;
-    }
-
-    /// Returns last runtime metrics retained for observability or local structural traversal.
-    pub fn lastRuntimeMetrics(host: *const Host) RuntimeMetrics {
-        return host.engine.last_runtime_metrics;
-    }
-
-    /// Provides add runtime metrics for native semantic observation without duplicating engine behavior.
-    pub fn addRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
-        return addRuntimeMetricsForBenchmark(left, right);
-    }
-};
-
-const BenchmarkRunner = benchmark.Runner(BenchmarkCtx);
-const runAppBenchmarks = BenchmarkRunner.runAppBenchmarks;
 
 fn refreshSpecWindowClose(host: *HostEnv) void {
     const pending = host.spec_pending_close orelse return;
@@ -3582,6 +3268,7 @@ const SpecRunnerCtx = struct {
         .effect_fixtures = true,
         .manual_effects = true,
         .allocation_trace = true,
+        .measured = true,
     };
 
     /// Counts prepared occurrences still owned by the shared engine.
@@ -3609,6 +3296,67 @@ const SpecRunnerCtx = struct {
 
     pub const Host = HostEnv;
     pub const RocHost = abi.RocHost;
+
+    /// Creates the production native host used by both semantic specs and
+    /// benchmark replay.
+    pub fn initHost() Host {
+        return Host.init();
+    }
+
+    /// Releases the production host and all engine-owned resources.
+    pub fn deinitHost(host: *Host) void {
+        host.deinit();
+    }
+
+    /// Enables ordinary host diagnostics without changing execution meaning.
+    pub fn setVerbose(host: *Host, verbose: bool) void {
+        host.test_state.verbose = verbose;
+    }
+
+    /// Constructs the Roc callback table used by the production native host.
+    pub fn makeRocHost(host: *Host) RocHost {
+        return makeSignalsRocHost(host);
+    }
+
+    /// Attaches the callback table to the shared engine instance.
+    pub fn attachRocHost(host: *Host, roc_host: *RocHost) void {
+        host.engine.roc_host = roc_host;
+    }
+
+    /// Enters the existing native callback boundary for this host instance.
+    pub fn enterCurrent(host: *Host, roc_host: *RocHost) void {
+        current_host = host;
+        current_roc_host = roc_host;
+    }
+
+    /// Leaves the native callback boundary established for a benchmark run.
+    pub fn leaveCurrent() void {
+        current_host = null;
+        current_roc_host = null;
+    }
+
+    /// Calls the application's ordinary `roc_ui_init` entry point.
+    pub fn initRocUi() ElemBox {
+        return abi.roc_ui_init();
+    }
+
+    /// Applies the initial element through the production sink while exposing
+    /// only timing and command-count observation to the benchmark.
+    pub fn acceptInitElemMeasured(host: *Host, roc_host: *RocHost, root_box: ElemBox, apply_ns: ?*u64, command_counts: ?*CommandCounts) void {
+        acceptInitElemWithStats(host, roc_host, root_box, apply_ns, command_counts);
+    }
+
+    /// Attaches a caller-owned accumulator around one normal runner call.
+    pub fn beginMeasurement(host: *Host, stats: *BenchmarkStats) void {
+        if (host.benchmark_stats != null) failHost("benchmark measurement is already active");
+        host.benchmark_stats = stats;
+    }
+
+    /// Ends measurement without retaining the caller-owned accumulator.
+    pub fn endMeasurement(host: *Host) void {
+        if (host.benchmark_stats == null) failHost("benchmark measurement is not active");
+        host.benchmark_stats = null;
+    }
 
     /// Terminates this test or host path because continuing could leave runtime meaning incoherent.
     pub fn fail(message: []const u8) noreturn {
@@ -3684,23 +3432,23 @@ const SpecRunnerCtx = struct {
 
     /// Dispatches roc event through validated routing and dependency-ordered propagation.
     pub fn dispatchRocEvent(host: *Host, roc_host: *RocHost, event_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue) void {
-        dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, null);
+        dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, host.benchmark_stats);
         drainEffects(host, roc_host);
     }
 
     /// Materializes unit as a capability-owned host value for boundary delivery.
     pub fn hostValueUnit(host: *Host, roc_host: *RocHost) HostValue {
-        return hostValueUnitForBenchmark(host, roc_host);
+        return specHostValueUnit(host, roc_host);
     }
 
     /// Materializes str as a capability-owned host value for boundary delivery.
     pub fn hostValueStr(host: *Host, roc_host: *RocHost, value: []const u8) HostValue {
-        return hostValueStrForBenchmark(host, roc_host, value);
+        return specHostValueStr(host, roc_host, value);
     }
 
     /// Materializes bool as a capability-owned host value for boundary delivery.
     pub fn hostValueBool(host: *Host, roc_host: *RocHost, value: bool) HostValue {
-        return hostValueBoolForBenchmark(host, roc_host, value);
+        return specHostValueBool(host, roc_host, value);
     }
 
     /// Materializes u8 list as a capability-owned host value for boundary delivery.
@@ -3755,27 +3503,58 @@ const SpecRunnerCtx = struct {
 
     /// Advances interval source through the shared propagation queue.
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
-        const counts = tickIntervalSourceForBenchmark(host, roc_host, period_ms);
+        const start_ns = benchmark.nowNs();
+        const counts = tickSpecIntervalSource(host, roc_host, period_ms);
         drainEffects(host, roc_host);
+        recordMeasuredSource(host, start_ns, counts);
         return counts;
+    }
+
+    /// Seeds location before mount so initialization observes the declared SCM setup.
+    pub fn setInitialLocation(host: *Host, location: boundary.LocationSnapshot) void {
+        host.setCurrentLocation(location);
+    }
+
+    /// Seeds visibility before mount so initialization observes the declared SCM setup.
+    pub fn setInitialVisibility(host: *Host, visibility: boundary.VisibilitySnapshot) void {
+        host.setVisibility(visibility);
+    }
+
+    /// Seeds connectivity before mount so initialization observes the declared SCM setup.
+    pub fn setInitialOnline(host: *Host, online: boundary.OnlineSnapshot) void {
+        host.setOnline(online);
+    }
+
+    /// Seeds one storage value through the host-owned storage model before mount.
+    pub fn seedStorage(host: *Host, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
+        host.setStorageText(area, key, value);
     }
 
     /// Publishes a location change and refreshes active location sources in the same engine turn.
     pub fn navigateLocation(host: *Host, roc_host: *RocHost, location: boundary.LocationSnapshot) CommandCounts {
+        const start_ns = benchmark.nowNs();
         host.pushCurrentLocation(location);
-        return dispatchCurrentLocationSources(host, roc_host);
+        const counts = dispatchCurrentLocationSources(host, roc_host);
+        recordMeasuredSource(host, start_ns, counts);
+        return counts;
     }
 
     /// Moves browser history back and re-enters the location source through propagation.
     pub fn historyBack(host: *Host, roc_host: *RocHost) CommandCounts {
+        const start_ns = benchmark.nowNs();
         if (!host.backCurrentLocation()) failHost("history_back had no previous location");
-        return dispatchCurrentLocationSources(host, roc_host);
+        const counts = dispatchCurrentLocationSources(host, roc_host);
+        recordMeasuredSource(host, start_ns, counts);
+        return counts;
     }
 
     /// Moves browser history forward and re-enters the location source through propagation.
     pub fn historyForward(host: *Host, roc_host: *RocHost) CommandCounts {
+        const start_ns = benchmark.nowNs();
         if (!host.forwardCurrentLocation()) failHost("history_forward had no next location");
-        return dispatchCurrentLocationSources(host, roc_host);
+        const counts = dispatchCurrentLocationSources(host, roc_host);
+        recordMeasuredSource(host, start_ns, counts);
+        return counts;
     }
 
     /// Provides current location for native semantic observation without duplicating engine behavior.
@@ -3785,14 +3564,28 @@ const SpecRunnerCtx = struct {
 
     /// Sets visibility at the narrow host or engine boundary that owns the mutation.
     pub fn setVisibility(host: *Host, roc_host: *RocHost, visibility: boundary.VisibilitySnapshot) CommandCounts {
+        const start_ns = benchmark.nowNs();
         host.setVisibility(visibility);
-        return dispatchCurrentVisibilitySources(host, roc_host);
+        const counts = dispatchCurrentVisibilitySources(host, roc_host);
+        recordMeasuredSource(host, start_ns, counts);
+        return counts;
     }
 
     /// Sets online at the narrow host or engine boundary that owns the mutation.
     pub fn setOnline(host: *Host, roc_host: *RocHost, online: boundary.OnlineSnapshot) CommandCounts {
+        const start_ns = benchmark.nowNs();
         host.setOnline(online);
-        return dispatchCurrentOnlineSources(host, roc_host);
+        const counts = dispatchCurrentOnlineSources(host, roc_host);
+        recordMeasuredSource(host, start_ns, counts);
+        return counts;
+    }
+
+    fn recordMeasuredSource(host: *Host, start_ns: u64, counts: CommandCounts) void {
+        if (host.benchmark_stats) |stats| {
+            stats.dispatch_apply_ns += benchmark.nowNs() - start_ns;
+            stats.commands.addAll(counts);
+            stats.actions += 1;
+        }
     }
 
     /// Provides storage value for native semantic observation without duplicating engine behavior.
@@ -3813,7 +3606,7 @@ const SpecRunnerCtx = struct {
 
     /// Provides finish host metrics for native semantic observation without duplicating engine behavior.
     pub fn finishHostMetrics(host: *Host) void {
-        finishHostMetricsForBenchmark(host);
+        finishSpecHostMetrics(host);
     }
 
     /// Provides cleanup event count for native semantic observation without duplicating engine behavior.
@@ -3831,6 +3624,41 @@ const SpecRunnerCtx = struct {
         return host.engine.last_runtime_metrics;
     }
 
+    /// Returns Roc allocation calls observed by this host instance.
+    pub fn allocCount(host: *const Host) usize {
+        return host.alloc_count;
+    }
+
+    /// Returns Roc deallocation calls observed by this host instance.
+    pub fn deallocCount(host: *const Host) usize {
+        return host.dealloc_count;
+    }
+
+    /// Returns host-retained allocation calls for benchmark accounting.
+    pub fn hostAllocCount(host: *const Host) u64 {
+        return host.host_alloc_count;
+    }
+
+    /// Returns host-retained deallocation calls for benchmark accounting.
+    pub fn hostDeallocCount(host: *const Host) u64 {
+        return host.host_dealloc_count;
+    }
+
+    /// Returns bytes allocated into host-retained ownership.
+    pub fn hostAllocBytes(host: *const Host) u64 {
+        return host.host_alloc_bytes;
+    }
+
+    /// Returns bytes released from host-retained ownership.
+    pub fn hostDeallocBytes(host: *const Host) u64 {
+        return host.host_dealloc_bytes;
+    }
+
+    /// Adds runtime metric snapshots using the engine's canonical field set.
+    pub fn addRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
+        return addSpecRuntimeMetrics(left, right);
+    }
+
     /// Provides trace allocation checkpoint for native semantic observation without duplicating engine behavior.
     pub fn traceAllocationCheckpoint(host: *Host, line_num: usize, command_name: []const u8) void {
         host.traceAllocationCheckpoint(line_num, command_name);
@@ -3838,6 +3666,8 @@ const SpecRunnerCtx = struct {
 };
 
 const SpecRunner = spec_runner.Runner(SpecRunnerCtx);
+const BenchmarkRunner = benchmark.Runner(SpecRunnerCtx);
+const runAppBenchmarks = BenchmarkRunner.runAppBenchmarks;
 
 comptime {
     if (!host_fixtures) {

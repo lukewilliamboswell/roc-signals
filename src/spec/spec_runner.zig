@@ -17,6 +17,9 @@ const RuntimeMetrics = engine.RuntimeMetrics;
 const SpecCommand = spec_parser.SpecCommand;
 const SpecCommandType = spec_parser.SpecCommandType;
 
+/// Result of asking a semantic host to execute one typed SCM command.
+pub const StepOutcome = enum { handled, unsupported, failed };
+
 fn storageValueForCtx(comptime Ctx: type, host: *Ctx.Host, area: boundary.StorageArea, key: []const u8) ?[]const u8 {
     if (comptime ctx.has(Ctx, .environment)) {
         return Ctx.storageValue(host, area, key);
@@ -471,7 +474,24 @@ pub fn Runner(comptime Ctx: type) type {
         const Host = Ctx.Host;
         const RocHost = Ctx.RocHost;
 
-        /// Runs  using the host semantics and measurement boundaries defined by this module.
+        /// Dispatches one command through the same semantic path used by a
+        /// complete spec. A caller such as the benchmark runner can reject
+        /// unsupported vocabulary without inventing another implementation.
+        pub fn dispatch(host: *Host, roc_host: *RocHost, command: SpecCommand) StepOutcome {
+            if (spec_parser.stepCapability(command.kind()) == .window) return .unsupported;
+            const supported = switch (command.kind()) {
+                .set_visibility, .set_online => Ctx.capabilities.environment,
+                .request_window_close, .expect_window_closed => Ctx.capabilities.window,
+                .stub_file_result, .stub_http_result => Ctx.capabilities.effect_fixtures,
+                .run_effect, .expect_pending_effects => Ctx.capabilities.manual_effects,
+                else => true,
+            };
+            if (!supported) return .unsupported;
+            const commands = [_]SpecCommand{command};
+            return if (run(host, roc_host, &commands, false) == 0) .handled else .failed;
+        }
+
+        /// Runs commands using the host semantics and measurement boundaries defined by this module.
         pub fn run(host: *Host, roc_host: *RocHost, commands: []const SpecCommand, verbose: bool) c_int {
             var metrics_mark: ?RuntimeMetrics = null;
 
