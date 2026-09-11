@@ -661,6 +661,8 @@ def run_benchmarks(roc_bin: str, examples: tuple[Example, ...], *, source_root: 
                     str(case.native_iterations),
                     "--host-bench-samples",
                     str(case.native_samples),
+                    "--host-entropy-seed",
+                    str(spec_driver.NATIVE_SPEC_ENTROPY_SEED),
                     source_root / case.spec,
                 ]
             )

@@ -1317,19 +1317,21 @@ hosts; use `python3 scripts/test.py bench --native always` to force the focused
 bench gate. A built app binary also accepts benchmark flags directly:
 
 ```sh
-.test-out/bench-bin/signals-data-grid-bench --host-bench-app --host-bench-name signals-data-grid --host-bench-iterations 100 --host-bench-samples 3 examples-web/data-grid/specs/initial-mount.scm
+.test-out/bench-bin/signals-data-grid-bench --host-bench-app --host-bench-name signals-data-grid --host-bench-iterations 100 --host-bench-samples 3 --host-entropy-seed 0 examples-web/data-grid/specs/initial-mount.scm
 ```
 
-The host initializes a fresh app per iteration, applies SCM setup through the
-same pre-mount path as a semantic test, then replays commands classified as
-benchmark actions in `src/bench/benchmark.zig` (user actions,
-browser-environment changes, and interval ticks). Replay calls the production
-`SpecRunnerCtx` and its ordinary event/effect path; benchmark code only attaches
-timing and command-count observation around that execution. This keeps the
-benchmark exercising the behavior developers actually ship instead of a
-parallel simulation of it.
-Expectation and metric assertion commands remain the semantic correctness suite
-used by `python3 scripts/test.py native`.
+The driver supplies the same deterministic entropy seed as the native SCM
+suite. The host initializes a fresh app per iteration, applies SCM setup and settles
+mount-time effects through the same pre-step path as a semantic test, then
+replays each typed operational command through the production `SpecRunnerCtx`
+and its ordinary event/effect path. Before accepting measurements, the first
+replay also executes every expectation and metric assertion in sequence. Later
+warmup and sample iterations omit assertions because repeatable benchmark
+operations can deliberately evolve data beyond the scenario's one-replay
+expected values. Benchmark code attaches only timing and command-count
+observation around operational commands. This keeps the benchmark exercising
+and validating the behavior developers actually ship instead of a parallel
+simulation of it.
 
 The keyed fixture also has a production browser adapter under
 `benchmarks/js-framework-benchmark/roc-signals-keyed/`. Build and verify it with:

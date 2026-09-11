@@ -3300,8 +3300,10 @@ const SpecRunnerCtx = struct {
 
     /// Creates the production native host used by both semantic specs and
     /// benchmark replay.
-    pub fn initHost() Host {
-        return Host.init();
+    pub fn initHost(entropy_seed: u32) Host {
+        var host = Host.init();
+        host.entropy_seed = entropy_seed;
+        return host;
     }
 
     /// Releases the production host and all engine-owned resources.
@@ -3345,6 +3347,12 @@ const SpecRunnerCtx = struct {
     /// only timing and command-count observation to the benchmark.
     pub fn acceptInitElemMeasured(host: *Host, roc_host: *RocHost, root_box: ElemBox, apply_ns: ?*u64, command_counts: ?*CommandCounts) void {
         acceptInitElemWithStats(host, roc_host, root_box, apply_ns, command_counts);
+    }
+
+    /// Settles mount-time effects exactly as the ordinary native SCM entry
+    /// point does before exposing the first executable step or assertion.
+    pub fn settleAfterMount(host: *Host, roc_host: *RocHost) void {
+        drainEffects(host, roc_host);
     }
 
     /// Attaches a caller-owned accumulator around one normal runner call.
@@ -3940,7 +3948,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
             writeStderr("Error: --host-bench-app requires a ReleaseFast host; run `zig build build-test-hosts -Doptimize=ReleaseFast` before building the Roc app\n");
             return 1;
         }
-        return runAppBenchmarks(options.spec_file.?, options.bench_name, options.bench_warmup, options.bench_iterations, options.bench_samples, options.verbose) catch |err| {
+        return runAppBenchmarks(options.spec_file.?, options.bench_name, options.bench_warmup, options.bench_iterations, options.bench_samples, options.verbose, options.entropy_seed) catch |err| {
             writeStderr("HOST ERROR: ");
             writeStderr(@errorName(err));
             writeStderr("\n");

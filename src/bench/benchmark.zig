@@ -156,7 +156,7 @@ pub fn Runner(comptime Ctx: type) type {
         const SpecCommand = spec_parser.SpecCommand;
 
         /// Runs app benchmarks using the host semantics and measurement boundaries defined by this module.
-        pub fn runAppBenchmarks(spec_file: []const u8, case_name: []const u8, warmup_iterations: usize, iterations: usize, samples: usize, verbose: bool) error{}!c_int {
+        pub fn runAppBenchmarks(spec_file: []const u8, case_name: []const u8, warmup_iterations: usize, iterations: usize, samples: usize, verbose: bool, entropy_seed: u32) error{}!c_int {
             var bench_gpa = std.heap.DebugAllocator(.{ .safety = true }){};
             defer _ = bench_gpa.deinit();
             const allocator = bench_gpa.allocator();
@@ -171,14 +171,17 @@ pub fn Runner(comptime Ctx: type) type {
             defer spec.deinit(allocator);
 
             printHeader();
+            var validation_pending = true;
             for (0..samples) |sample| {
                 for (0..warmup_iterations) |_| {
                     var warmup_stats: Stats = .{};
-                    runBenchmarkIteration(spec.commands, verbose, &warmup_stats);
+                    runBenchmarkIteration(spec.commands, verbose, &warmup_stats, validation_pending, entropy_seed);
+                    validation_pending = false;
                 }
                 var stats: Stats = .{};
                 for (0..iterations) |_| {
-                    runBenchmarkIteration(spec.commands, verbose, &stats);
+                    runBenchmarkIteration(spec.commands, verbose, &stats, validation_pending, entropy_seed);
+                    validation_pending = false;
                 }
                 printRow(case_name, sample, warmup_iterations, iterations, stats);
             }
@@ -186,8 +189,8 @@ pub fn Runner(comptime Ctx: type) type {
             return 0;
         }
 
-        fn runBenchmarkIteration(commands: []const SpecCommand, verbose: bool, stats: *Stats) void {
-            var host = Ctx.initHost();
+        fn runBenchmarkIteration(commands: []const SpecCommand, verbose: bool, stats: *Stats, validate_assertions: bool, entropy_seed: u32) void {
+            var host = Ctx.initHost(entropy_seed);
             Ctx.setVerbose(&host, verbose);
 
             var roc_host = Ctx.makeRocHost(&host);
@@ -204,6 +207,8 @@ pub fn Runner(comptime Ctx: type) type {
             const init_result = Ctx.initRocUi();
             stats.init_roc_ns += nowNs() - init_start_ns;
             Ctx.acceptInitElemMeasured(&host, &roc_host, init_result, &stats.init_apply_ns, &stats.commands);
+            Ctx.settleAfterMount(&host, &roc_host);
+            var session: spec_runner.Runner(Ctx).Session = .{};
 
             var measurement_started = true;
             for (commands) |cmd| {
@@ -213,17 +218,21 @@ pub fn Runner(comptime Ctx: type) type {
                 }
             }
             for (commands) |cmd| {
-                if (cmd.kind() == .mark_metrics) {
-                    measurement_started = true;
-                } else if (shouldReplayOperation(cmd)) {
-                    if (measurement_started) {
-                        runActionCommandMeasured(&host, &roc_host, cmd, stats);
+                switch (spec_parser.stepRole(cmd.kind())) {
+                    .setup => {},
+                    .measurement_boundary => {
+                        runCommand(&session, &host, &roc_host, cmd);
+                        measurement_started = true;
+                    },
+                    .assertion => if (validate_assertions) runCommand(&session, &host, &roc_host, cmd),
+                    .operation => if (measurement_started) {
+                        runOperationMeasured(&session, &host, &roc_host, cmd, stats);
                     } else {
-                        // Setup actions before a mark establish the benchmark's
-                        // required table size without contaminating the timed operation.
+                        // Setup operations before a mark establish the benchmark's
+                        // required state without contaminating the timed operation.
                         var setup_stats: Stats = .{};
-                        runActionCommandMeasured(&host, &roc_host, cmd, &setup_stats);
-                    }
+                        runOperationMeasured(&session, &host, &roc_host, cmd, &setup_stats);
+                    },
                 }
             }
 
@@ -238,15 +247,19 @@ pub fn Runner(comptime Ctx: type) type {
             stats.retained_alloc_delta += retained_delta;
         }
 
-        fn runActionCommandMeasured(host: *Host, roc_host: *RocHost, cmd: SpecCommand, stats: *Stats) void {
+        fn runCommand(session: *spec_runner.Runner(Ctx).Session, host: *Host, roc_host: *RocHost, cmd: SpecCommand) void {
+            switch (session.dispatch(host, roc_host, cmd)) {
+                .handled => {},
+                .unsupported => Ctx.fail("benchmark selected a command unsupported by the semantic host"),
+                .failed => Ctx.fail("benchmark scenario was rejected by the shared spec runner"),
+            }
+        }
+
+        fn runOperationMeasured(session: *spec_runner.Runner(Ctx).Session, host: *Host, roc_host: *RocHost, cmd: SpecCommand, stats: *Stats) void {
             Ctx.beginMeasurement(host, stats);
             defer Ctx.endMeasurement(host);
             const actions_before = stats.actions;
-            switch (spec_runner.Runner(Ctx).dispatch(host, roc_host, cmd)) {
-                .handled => {},
-                .unsupported => Ctx.fail("benchmark selected a command unsupported by the semantic host"),
-                .failed => Ctx.fail("benchmark action was rejected by the shared spec runner"),
-            }
+            runCommand(session, host, roc_host, cmd);
             // An inactive conditional tick still counts as an attempted
             // benchmark action even though it deliberately dispatches nothing.
             if (cmd.kind() == .tick_interval_if_active and stats.actions == actions_before) {

@@ -512,27 +512,41 @@ pub fn Runner(comptime Ctx: type) type {
             return 0;
         }
 
-        /// Dispatches one command through the same semantic path used by a
-        /// complete spec. A caller such as the benchmark runner can reject
-        /// unsupported vocabulary without inventing another implementation.
+        /// Stateful execution boundary for a sequence of SCM commands.
+        /// Metric marks live here so callers cannot accidentally erase them by
+        /// dispatching a scenario one command at a time.
+        pub const Session = struct {
+            metrics_mark: ?RuntimeMetrics = null,
+
+            /// Dispatches one command while preserving sequence state.
+            pub fn dispatch(self: *Session, host: *Host, roc_host: *RocHost, command: SpecCommand) StepOutcome {
+                if (spec_parser.stepCapability(command.kind()) == .window) return .unsupported;
+                const supported = switch (command.kind()) {
+                    .set_visibility, .set_online => Ctx.capabilities.environment,
+                    .request_window_close, .expect_window_closed => Ctx.capabilities.window,
+                    .stub_file_result, .stub_http_result => Ctx.capabilities.effect_fixtures,
+                    .run_effect, .expect_pending_effects => Ctx.capabilities.manual_effects,
+                    else => true,
+                };
+                if (!supported) return .unsupported;
+                const commands = [_]SpecCommand{command};
+                return if (runWithSession(self, host, roc_host, &commands, false) == 0) .handled else .failed;
+            }
+        };
+
+        /// Dispatches one standalone command through the semantic runner.
         pub fn dispatch(host: *Host, roc_host: *RocHost, command: SpecCommand) StepOutcome {
-            if (spec_parser.stepCapability(command.kind()) == .window) return .unsupported;
-            const supported = switch (command.kind()) {
-                .set_visibility, .set_online => Ctx.capabilities.environment,
-                .request_window_close, .expect_window_closed => Ctx.capabilities.window,
-                .stub_file_result, .stub_http_result => Ctx.capabilities.effect_fixtures,
-                .run_effect, .expect_pending_effects => Ctx.capabilities.manual_effects,
-                else => true,
-            };
-            if (!supported) return .unsupported;
-            const commands = [_]SpecCommand{command};
-            return if (run(host, roc_host, &commands, false) == 0) .handled else .failed;
+            var session: Session = .{};
+            return session.dispatch(host, roc_host, command);
         }
 
         /// Runs commands using the host semantics and measurement boundaries defined by this module.
         pub fn run(host: *Host, roc_host: *RocHost, commands: []const SpecCommand, verbose: bool) c_int {
-            var metrics_mark: ?RuntimeMetrics = null;
+            var session: Session = .{};
+            return runWithSession(&session, host, roc_host, commands, verbose);
+        }
 
+        fn runWithSession(session: *Session, host: *Host, roc_host: *RocHost, commands: []const SpecCommand, verbose: bool) c_int {
             for (commands) |cmd| {
                 if (verbose) {
                     var buffer: [160]u8 = undefined;
@@ -555,7 +569,7 @@ pub fn Runner(comptime Ctx: type) type {
                         // transferred values in outer defers after their last
                         // internal metrics flush.
                         Ctx.finishHostMetrics(host);
-                        metrics_mark = Ctx.lastRuntimeMetrics(host);
+                        session.metrics_mark = Ctx.lastRuntimeMetrics(host);
                     },
 
                     .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result, .manual_effects => {},
@@ -1126,7 +1140,7 @@ pub fn Runner(comptime Ctx: type) type {
                     .expect_metric_delta => |args| {
                         const metric_name = args.metric;
                         const expected = args.delta;
-                        const marked = metrics_mark orelse {
+                        const marked = session.metrics_mark orelse {
                             writeMetricFailure(cmd.line_num, "mark_metrics must run before expect_metric_delta");
                             return 1;
                         };
@@ -1148,7 +1162,7 @@ pub fn Runner(comptime Ctx: type) type {
                     .expect_metric_delta_at_most => |args| {
                         const metric_name = args.metric;
                         const expected = args.delta;
-                        const marked = metrics_mark orelse {
+                        const marked = session.metrics_mark orelse {
                             writeMetricFailure(cmd.line_num, "mark_metrics must run before expect_metric_delta_at_most");
                             return 1;
                         };
