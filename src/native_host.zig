@@ -3269,6 +3269,7 @@ const SpecRunnerCtx = struct {
         .manual_effects = true,
         .allocation_trace = true,
         .measured = true,
+        .setup = true,
     };
 
     /// Counts prepared occurrences still owned by the shared engine.
@@ -3528,6 +3529,11 @@ const SpecRunnerCtx = struct {
     /// Seeds one storage value through the host-owned storage model before mount.
     pub fn seedStorage(host: *Host, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
         host.setStorageText(area, key, value);
+    }
+
+    /// Keeps prepared effects queued until explicit SCM `run-effect` steps.
+    pub fn enableManualEffects(host: *Host) void {
+        host.spec_manual_effects = true;
     }
 
     /// Publishes a location change and refreshes active location sources in the same engine turn.
@@ -3950,34 +3956,6 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
     };
 }
 
-fn locationSnapshotFromSpecText(text: []const u8) boundary.LocationSnapshot {
-    return spec_parser.locationSnapshotFromSpecText(text) catch failHost("set_initial_location path must start with /");
-}
-
-fn visibilitySnapshotFromSpecText(text: []const u8) boundary.VisibilitySnapshot {
-    return spec_parser.visibilitySnapshotFromSpecText(text) catch failHost("visibility must be visible or hidden");
-}
-
-fn onlineSnapshotFromSpecText(text: []const u8) boundary.OnlineSnapshot {
-    return spec_parser.onlineSnapshotFromSpecText(text) catch failHost("online state must be online or offline");
-}
-
-fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void {
-    for (commands) |cmd| {
-        switch (cmd.step) {
-            .set_initial_location => |text| host.setCurrentLocation(locationSnapshotFromSpecText(text)),
-            .set_initial_visibility => |text| host.setVisibility(visibilitySnapshotFromSpecText(text)),
-            .set_initial_online => |text| host.setOnline(onlineSnapshotFromSpecText(text)),
-            .seed_file_result => |stub| host.stubFile(&stub.stub),
-            .seed_http_result => |stub| host.stubHttp(&stub.stub),
-            .manual_effects => host.spec_manual_effects = true,
-            .seed_local_storage => |pair| host.setStorageText(.local, pair.key, pair.value),
-            .seed_session_storage => |pair| host.setStorageText(.session, pair.key, pair.value),
-            else => {},
-        }
-    }
-}
-
 fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, result_json: bool, fail_on_allocation: ?usize, entropy_seed: u32) error{}!c_int {
     const started_ns = benchmark.nowNs();
     var host_env = HostEnv.init();
@@ -4035,7 +4013,9 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
     defer current_roc_host = null;
     defer host_env.deinit();
 
-    applyPreMountSpecCommands(&host_env, host_env.test_state.commands);
+    if (SpecRunner.applySetup(&host_env, host_env.test_state.commands) != 0) {
+        failHost("spec setup was rejected by the shared runner");
+    }
     if (!result_json) {
         acceptInitElem(&host_env, &roc_host, abi.roc_ui_init());
         drainEffects(&host_env, &roc_host);

@@ -474,6 +474,44 @@ pub fn Runner(comptime Ctx: type) type {
         const Host = Ctx.Host;
         const RocHost = Ctx.RocHost;
 
+        /// Applies only declarative setup commands before `roc_ui_init`.
+        /// Action and assertion commands are ignored here because the parser
+        /// keeps the two phases distinct even though they share one slice
+        /// during the current migration.
+        pub fn applySetup(host: *Host, commands: []const SpecCommand) c_int {
+            if (comptime !Ctx.capabilities.setup) return 1;
+            for (commands) |command| switch (command.step) {
+                .set_initial_location => |text| {
+                    const value = locationSnapshotFromSpecText(command.line_num, text) orelse return 1;
+                    Ctx.setInitialLocation(host, value);
+                },
+                .set_initial_visibility => |text| {
+                    const value = visibilitySnapshotFromSpecText(command.line_num, text) orelse return 1;
+                    Ctx.setInitialVisibility(host, value);
+                },
+                .set_initial_online => |text| {
+                    const value = onlineSnapshotFromSpecText(command.line_num, text) orelse return 1;
+                    Ctx.setInitialOnline(host, value);
+                },
+                .seed_local_storage => |pair| Ctx.seedStorage(host, .local, pair.key, pair.value),
+                .seed_session_storage => |pair| Ctx.seedStorage(host, .session, pair.key, pair.value),
+                .seed_file_result => |fixture| {
+                    if (comptime !Ctx.capabilities.effect_fixtures) return 1;
+                    Ctx.stubFileResult(host, &fixture.stub);
+                },
+                .seed_http_result => |fixture| {
+                    if (comptime !Ctx.capabilities.effect_fixtures) return 1;
+                    Ctx.stubHttpResult(host, &fixture.stub);
+                },
+                .manual_effects => {
+                    if (comptime !Ctx.capabilities.manual_effects) return 1;
+                    Ctx.enableManualEffects(host);
+                },
+                else => {},
+            };
+            return 0;
+        }
+
         /// Dispatches one command through the same semantic path used by a
         /// complete spec. A caller such as the benchmark runner can reject
         /// unsupported vocabulary without inventing another implementation.

@@ -3,7 +3,6 @@
 const std = @import("std");
 
 const signals = @import("signals");
-const boundary = signals.boundary;
 const engine = signals.engine;
 const render = signals.render;
 const spec_parser = @import("../spec/spec_parser.zig");
@@ -33,30 +32,6 @@ pub fn commandIsAction(cmd: spec_parser.SpecCommand) bool {
     return switch (cmd.step) {
         .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .focus, .blur, .change, .select_option, .custom_event, .composition_start, .composition_end, .submit, .fill, .check, .uncheck, .tick_interval, .tick_interval_if_active, .navigate, .set_visibility, .set_online, .history_back, .history_forward => true,
         else => false,
-    };
-}
-
-fn locationSnapshotFromSpecText(comptime Ctx: type, line_num: usize, text: []const u8) boundary.LocationSnapshot {
-    return spec_parser.locationSnapshotFromSpecText(text) catch {
-        var buf: [128]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "benchmark location path at line {d} must start with /", .{line_num}) catch "benchmark location path must start with /";
-        Ctx.fail(msg);
-    };
-}
-
-fn visibilitySnapshotFromSpecText(comptime Ctx: type, line_num: usize, text: []const u8) boundary.VisibilitySnapshot {
-    return spec_parser.visibilitySnapshotFromSpecText(text) catch {
-        var buf: [128]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "benchmark visibility at line {d} must be visible or hidden", .{line_num}) catch "benchmark visibility must be visible or hidden";
-        Ctx.fail(msg);
-    };
-}
-
-fn onlineSnapshotFromSpecText(comptime Ctx: type, line_num: usize, text: []const u8) boundary.OnlineSnapshot {
-    return spec_parser.onlineSnapshotFromSpecText(text) catch {
-        var buf: [128]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "benchmark online state at line {d} must be online or offline", .{line_num}) catch "benchmark online state must be online or offline";
-        Ctx.fail(msg);
     };
 }
 
@@ -224,7 +199,9 @@ pub fn Runner(comptime Ctx: type) type {
             defer Ctx.leaveCurrent();
             defer Ctx.deinitHost(&host);
 
-            applyPreMountSpecCommands(&host, commands);
+            if (spec_runner.Runner(Ctx).applySetup(&host, commands) != 0) {
+                Ctx.fail("benchmark setup was rejected by the shared spec runner");
+            }
 
             const init_start_ns = nowNs();
             const init_result = Ctx.initRocUi();
@@ -277,19 +254,6 @@ pub fn Runner(comptime Ctx: type) type {
             // benchmark action even though it deliberately dispatches nothing.
             if (cmd.kind() == .tick_interval_if_active and stats.actions == actions_before) {
                 stats.actions += 1;
-            }
-        }
-
-        fn applyPreMountSpecCommands(host: *Host, commands: []const SpecCommand) void {
-            for (commands) |cmd| {
-                switch (cmd.step) {
-                    .set_initial_location => |text| Ctx.setInitialLocation(host, locationSnapshotFromSpecText(Ctx, cmd.line_num, text)),
-                    .set_initial_visibility => |text| Ctx.setInitialVisibility(host, visibilitySnapshotFromSpecText(Ctx, cmd.line_num, text)),
-                    .set_initial_online => |text| Ctx.setInitialOnline(host, onlineSnapshotFromSpecText(Ctx, cmd.line_num, text)),
-                    .seed_local_storage => |pair| Ctx.seedStorage(host, .local, pair.key, pair.value),
-                    .seed_session_storage => |pair| Ctx.seedStorage(host, .session, pair.key, pair.value),
-                    else => {},
-                }
             }
         }
     };
