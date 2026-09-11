@@ -677,7 +677,7 @@ roc build --target=wasm32 --opt=size --output=/tmp/app.wasm examples-web/my-app/
 python3 scripts/instrument_wasm.py /tmp/app.wasm
 
 # Inspect the startup command stream
-node scripts/browser/mount_wasm_example.mjs /tmp/app.wasm my-app --telemetry-summary
+node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/app.wasm my-app --telemetry-summary
 
 # Local site
 python3 scripts/serve.py --example my-app
