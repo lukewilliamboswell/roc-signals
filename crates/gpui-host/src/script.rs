@@ -663,6 +663,35 @@ mod tests {
         assert_eq!(decode(&command("close")).unwrap(), Action::Close);
     }
 
+    /// The engine's `window_step_tags`, spelled again here on purpose: the tag
+    /// names cross the ABI as strings, and the Zig test over that list and this
+    /// one are what keep a renamed tag from surfacing at run time as a step
+    /// with "no meaning against a real window".
+    const WINDOW_STEP_TAGS: [&str; 18] = [
+        "wait", "click", "focus", "type_text", "key", "shortcut",
+        "expect_visible", "expect_absent", "expect_text", "expect_value", "expect_disabled", "expect_selected",
+        "expect_focused", "expect_count", "expect_onscreen", "expect_history", "snapshot", "close",
+    ];
+
+    #[test]
+    fn every_window_step_tag_the_engine_publishes_is_decoded() {
+        for tag in WINDOW_STEP_TAGS {
+            let mut generic = command(tag);
+            generic.locator_kind = "test_id".into();
+            generic.test_id = "x".into();
+            generic.expected_text = "x".into();
+            generic.expected_count = Some(1);
+            generic.expected_bool = Some(true);
+            generic.interval_ms = Some(1);
+            generic.shortcut = Some(('s' as u32, 1));
+            let outcome = decode(&generic);
+            assert!(
+                !matches!(&outcome, Err(error) if error.contains("no meaning")),
+                "{tag} is published by the engine but not decoded here: {outcome:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_spec_shortcut_becomes_the_keystroke_a_person_would_press() {
         let mut shortcut = command("shortcut");

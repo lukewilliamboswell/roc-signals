@@ -166,9 +166,13 @@ def run(directory: Path, artifacts: Path, patterns=(), capture=True,
     repository already knows about into the same count as a real regression is
     how a suite stops meaning anything.
     """
+    import time
+
     selected = scenarios(apps if apps is not None else examples(), patterns)
     failures, unexpected, reproduced = [], [], []
+    started = time.monotonic()
     for scenario in selected:
+        scenario_started = time.monotonic()
         executable = directory / executable_name(scenario.app.name)
         if not executable.is_file():
             raise SystemExit(f"build the GUI examples first: {executable} is missing")
@@ -177,8 +181,9 @@ def run(directory: Path, artifacts: Path, patterns=(), capture=True,
         passed, failure, report = run_scenario(executable, scenario, destination, capture,
                                                environment)
         diagnostic = diagnostic_for(report)
+        elapsed = f" ({time.monotonic() - scenario_started:.1f}s)"
         if diagnostic is None:
-            print("    " + ("passed" if passed else f"FAILED: {failure}"), flush=True)
+            print("    " + ("passed" if passed else f"FAILED: {failure}") + elapsed, flush=True)
             if not passed:
                 failures.append(f"{scenario}: {failure}")
         elif passed:
@@ -187,7 +192,10 @@ def run(directory: Path, artifacts: Path, patterns=(), capture=True,
         else:
             print(f"    reproduced the known defect: {failure}", flush=True)
             reproduced.append(f"{scenario}: {diagnostic}")
-    print(f"\n{len(selected)} scenarios; artifacts in {artifacts}", flush=True)
+    # Wall time is the number every later change to waiting and settling is
+    # judged against, so it is printed with the verdicts rather than guessed at.
+    print(f"\n{len(selected)} scenarios in {time.monotonic() - started:.1f}s; "
+          f"artifacts in {artifacts}", flush=True)
     for entry in reproduced:
         print("  diagnostic still open: " + entry, flush=True)
     problems = [f"scenario: {entry}" for entry in failures]
