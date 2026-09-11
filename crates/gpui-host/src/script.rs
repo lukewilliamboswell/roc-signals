@@ -143,36 +143,68 @@ fn decode(command: &Command) -> Result<Action, String> {
         Some(Arg::Boolean(value)) => Ok(*value),
         _ => Err(format!("{} needs true or false for {name}", command.kind)),
     };
-    Ok(match command.kind.as_str() {
-        "wait" => Action::Wait(unsigned("value")?),
-        "click" => Action::Click(locator()?),
-        "focus" => Action::Focus(locator()?),
-        "type_text" => Action::Type(locator()?, text("text")?),
-        "key" => Action::Key(text("value")?),
-        "shortcut" => Action::Key(chord_keystroke((
+    let kind = match WindowCommandKind::from_name(&command.kind) {
+        Some(kind) => kind,
+        None if command.kind == "fill" => return Err("fill sets a value without the keyboard; a window scenario types with (type ...)".into()),
+        None if command.kind == "real_click" => return Err("real_click is the simulated pointer; a window scenario uses (click ...)".into()),
+        None => return Err(format!("{} has no meaning against a real window; it belongs in a (test ...)", command.kind)),
+    };
+    Ok(match kind {
+        WindowCommandKind::Wait => Action::Wait(unsigned("value")?),
+        WindowCommandKind::Click => Action::Click(locator()?),
+        WindowCommandKind::Focus => Action::Focus(locator()?),
+        WindowCommandKind::TypeText => Action::Type(locator()?, text("text")?),
+        WindowCommandKind::Key => Action::Key(text("value")?),
+        WindowCommandKind::Shortcut => Action::Key(chord_keystroke((
             u32::try_from(unsigned("key")?).map_err(|_| "shortcut key is too large")?,
             u32::try_from(unsigned("modifiers")?).map_err(|_| "shortcut modifiers are too large")?,
         ))?),
-        "expect_visible" => Action::ExpectVisible(locator()?),
-        "expect_absent" => Action::ExpectAbsent(locator()?),
-        "expect_text" => Action::ExpectText(locator()?, text("text")?),
-        "expect_value" => Action::ExpectValue(locator()?, text("text")?),
-        "expect_disabled" => Action::ExpectDisabled(locator()?, flag("expected")?),
-        "expect_selected" => Action::ExpectSelected(locator()?, flag("expected")?),
-        "expect_focused" => Action::ExpectFocused(locator()?),
-        "expect_count" => Action::ExpectCount(text("prefix")?, count("count")?),
-        "expect_onscreen" => Action::ExpectOnscreen(locator()?),
-        "expect_history" => Action::ExpectHistory(locator()?, count("count")?),
-        "snapshot" => Action::Snapshot(text("value")?),
-        "close" => Action::Close,
-        "fill" => return Err("fill sets a value without the keyboard; a window scenario types with (type ...)".into()),
-        "real_click" => return Err("real_click is the simulated pointer; a window scenario uses (click ...)".into()),
-        other => {
-            return Err(format!(
-                "{other} has no meaning against a real window; it belongs in a (test ...)"
-            ))
-        }
+        WindowCommandKind::ExpectVisible => Action::ExpectVisible(locator()?),
+        WindowCommandKind::ExpectAbsent => Action::ExpectAbsent(locator()?),
+        WindowCommandKind::ExpectText => Action::ExpectText(locator()?, text("text")?),
+        WindowCommandKind::ExpectValue => Action::ExpectValue(locator()?, text("text")?),
+        WindowCommandKind::ExpectDisabled => Action::ExpectDisabled(locator()?, flag("expected")?),
+        WindowCommandKind::ExpectSelected => Action::ExpectSelected(locator()?, flag("expected")?),
+        WindowCommandKind::ExpectFocused => Action::ExpectFocused(locator()?),
+        WindowCommandKind::ExpectCount => Action::ExpectCount(text("prefix")?, count("count")?),
+        WindowCommandKind::ExpectOnscreen => Action::ExpectOnscreen(locator()?),
+        WindowCommandKind::ExpectHistory => Action::ExpectHistory(locator()?, count("count")?),
+        WindowCommandKind::Snapshot => Action::Snapshot(text("value")?),
+        WindowCommandKind::Close => Action::Close,
     })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowCommandKind {
+    Wait, Click, Focus, TypeText, Key, Shortcut, ExpectVisible, ExpectAbsent,
+    ExpectText, ExpectValue, ExpectDisabled, ExpectSelected, ExpectFocused,
+    ExpectCount, ExpectOnscreen, ExpectHistory, Snapshot, Close,
+}
+
+impl WindowCommandKind {
+    const ALL: [Self; 18] = [
+        Self::Wait, Self::Click, Self::Focus, Self::TypeText, Self::Key, Self::Shortcut,
+        Self::ExpectVisible, Self::ExpectAbsent, Self::ExpectText, Self::ExpectValue,
+        Self::ExpectDisabled, Self::ExpectSelected, Self::ExpectFocused, Self::ExpectCount,
+        Self::ExpectOnscreen, Self::ExpectHistory, Self::Snapshot, Self::Close,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Wait => "wait", Self::Click => "click", Self::Focus => "focus",
+            Self::TypeText => "type_text", Self::Key => "key", Self::Shortcut => "shortcut",
+            Self::ExpectVisible => "expect_visible", Self::ExpectAbsent => "expect_absent",
+            Self::ExpectText => "expect_text", Self::ExpectValue => "expect_value",
+            Self::ExpectDisabled => "expect_disabled", Self::ExpectSelected => "expect_selected",
+            Self::ExpectFocused => "expect_focused", Self::ExpectCount => "expect_count",
+            Self::ExpectOnscreen => "expect_onscreen", Self::ExpectHistory => "expect_history",
+            Self::Snapshot => "snapshot", Self::Close => "close",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
 }
 
 /// Spells an engine key chord the way GPUI writes a binding, so a spec's
@@ -698,7 +730,11 @@ mod tests {
     #[test]
     fn every_published_window_step_decodes_with_the_arguments_the_engine_emits() {
         let steps = published_steps();
-        assert!(steps.len() >= 18, "{steps:?}");
+        assert_eq!(steps.len(), WindowCommandKind::ALL.len(), "{steps:?}");
+        for decoded in WindowCommandKind::ALL {
+            assert!(steps.iter().any(|step| step.kind == decoded.name()),
+                "{} is decoded by the window host but absent from the engine manifest", decoded.name());
+        }
         for PublishedStep { kind, capability, args } in steps {
             assert!(capability == "window" || capability == "both", "{kind}: {capability}");
             let mut generic = command(&kind);
