@@ -22,12 +22,23 @@ step.
 
 | Target | Seam | Reference model |
 |---|---|---|
-| `propagation` | dependency-ordered, glitch-free propagation and equality cutoffs | a slow evaluator that recomputes every node from the sources, with exact call and prune counts |
+| `propagation` | dependency-ordered, glitch-free propagation and equality cutoffs; the prepared path's refusal and retry under allocation failure | a slow evaluator that recomputes every node from the sources, with exact call and prune counts; a deep snapshot of caches, stamps, metrics, and graph that a refused preparation must leave untouched |
 | `keyed-scopes` | keyed-row identity, scope retirement, reuse barriers, disposal | a key list plus a predicted scope id for every intern |
-| `rows-transitions` | canonical stable-slot generations, lineage, abort, and retry | an ordered array of stable slots, exact keys, and values |
+| `rows-transitions` | canonical stable-slot generations, lineage, abort, and retry; `prepareStable`/`prepareInitial` refusal and retry under allocation failure | an ordered array of stable slots, exact keys, and values; a deep snapshot of the committed site, indexes, claims, and row pool that a refused preparation must leave untouched |
 | `structural` | collect/prepare/commit atomicity under allocation failure | committed topology derived from the shape and the current list |
 | `ownership` | retained-value and callable ownership across erased calls | a ledger of what each capability owns, checked every step |
 | `boundary` | boundary schema and event extraction plan parsing | the grammar itself, plus one-rule-broken trees |
+
+Three targets inject allocation failure through `FaultAllocator`: `structural`
+at the mount and edit transactions, `keyed-scopes` at the keyed-row
+reconciliation, and now `propagation` and `rows-transitions` at their prepared
+seams. All follow design.md's *exhaustive fault placement*: because the
+allocator is sticky (attempt `N` and every later attempt fail), an ascending
+sweep that ends the first time preparation succeeds has covered every position,
+and each probe is aborted so the transaction that publishes is the retry. The
+common oracle is that a refusal publishes nothing (deep snapshot compare), the
+retry lands exactly where an unfaulted run does, commit never reaches the
+allocator, and `OutOfMemory` is the only refusal reported.
 
 `descriptor_stream.zig` has no target of its own and does not need one: it is
 reached throughout by `structural`, which mounts and edits real element trees
