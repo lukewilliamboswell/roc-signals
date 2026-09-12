@@ -9306,16 +9306,15 @@ pub fn Engine(comptime Ctx: type) type {
 
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
-                var plan_owns_cleanup = false;
-                errdefer if (!plan_owns_cleanup) allocator.destroy(plan);
-                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host };
-                errdefer if (!plan_owns_cleanup) plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                // `deinit` releases every field from any partially prepared
+                // state, so one errdefer unwinds the whole preparation.
+                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .owns_replacement = false };
+                errdefer plan.deinit();
                 plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, selections.len, .sparse);
-                errdefer if (!plan_owns_cleanup) plan.replacement.deinit();
+                plan.owns_replacement = true;
                 plan.replacement.collection.cache_overlay = cache_overlay;
                 try plan.replacement.collection.stageExternalStates(roc_host, state_update);
                 plan.replacement_scope_ids = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
-                errdefer if (!plan_owns_cleanup) allocator.free(plan.replacement_scope_ids);
                 const replacement_ranges = allocator.alloc(PreparedReplacementOwner.CollectedWhenSelection, selections.len) catch return error.OutOfMemory;
                 defer allocator.free(replacement_ranges);
 
@@ -9328,9 +9327,9 @@ pub fn Engine(comptime Ctx: type) type {
                 if (try prepareSparseBranches(engine, ctx, roc_host, plan.replacement, selections, replacement_ranges, cache_overlay)) |sparse| {
                     sparse.owns_replacement = true;
                     sparse.replacement_scope_ids = plan.replacement_scope_ids;
-                    plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
-                    allocator.destroy(plan);
-                    plan_owns_cleanup = true;
+                    plan.owns_replacement = false;
+                    plan.replacement_scope_ids = &.{};
+                    plan.deinit();
                     return sparse;
                 }
 
@@ -9372,8 +9371,6 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.suppressed_render_parent_ids = parents.items;
                 try plan.prepareDownstream(allocator, retired_scope_ids, retired_scope_ids, render_insert_indexes, scan_scopes, false, cache_overlay);
                 plan.suppressed_render_parent_ids = &.{};
-                plan_owns_cleanup = true;
-                errdefer plan.deinit();
                 try layout_plan.resolve(engine, plan.targets.?.descriptor_target_scopes);
                 plan.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(plan.engine, allocator, plan.replacement, plan.targets.?.descriptor_target_scopes, layout_plan.removed_render_count, layout_plan.placements.items);
                 layout_plan_owned = false;
@@ -9392,9 +9389,8 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepareExternal(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, scan_scopes: ?[]const []const bool, suppressed_render_parent_ids: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
-                errdefer allocator.destroy(plan);
                 plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .replacement = replacement, .owns_replacement = false, .suppressed_render_parent_ids = suppressed_render_parent_ids };
-                errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                errdefer plan.deinit();
                 try plan.prepareDownstream(allocator, descriptor_root_scope_ids, retired_root_scope_ids, render_insert_indexes, scan_scopes, true, cache_overlay);
                 return plan;
             }
@@ -9403,9 +9399,8 @@ pub fn Engine(comptime Ctx: type) type {
                 if (engine.active_stream.render_nodes.items.len != 0 or engine.active_signal_graph.items.len != 0 or engine.render_cache.hasRoot()) return error.InvalidRenderTopology;
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
-                errdefer allocator.destroy(plan);
                 plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .replacement = replacement, .owns_replacement = false, .initial_root = true };
-                errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                errdefer plan.deinit();
                 try plan.prepareDownstream(allocator, &.{}, &.{}, &.{}, null, true, null);
                 return plan;
             }
@@ -9650,7 +9645,6 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepareSparseExternalScopes(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, retired_roots: []const ids.ScopeId, synced_row_roots: []const ids.ScopeId, suppressed_parents: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
-                errdefer allocator.destroy(plan);
                 plan.* = .{
                     .engine = engine,
                     .host_ctx = ctx,
@@ -9659,35 +9653,31 @@ pub fn Engine(comptime Ctx: type) type {
                     .owns_replacement = false,
                     .sparse_render_membership = true,
                 };
-                errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                // `deinit` releases every field from any partially prepared
+                // state, so one errdefer unwinds the whole preparation.
+                errdefer plan.deinit();
 
+                // The empty slices are allocated first so a refusal while
+                // building their owners has nothing to release by hand.
+                const empty_targets = allocator.alloc(bool, 0) catch return error.OutOfMemory;
                 const retirement = scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, allocator, engine.scopes.items, retired_roots) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.OverlappingSubtrees => return error.OverlappingRemoval,
                 };
-                const empty_targets = allocator.alloc(bool, 0) catch return error.OutOfMemory;
                 plan.targets = .{ .descriptor_target_scopes = empty_targets, .scope_retirement = retirement };
-                errdefer if (plan.targets) |*targets| targets.deinit(allocator);
                 const retirement_scope_ids = plan.targets.?.scope_retirement.?.scope_ids;
 
-                var exact_removal = structural_splice.prepareScopeOwnedRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, retirement_scope_ids) catch |err| switch (err) {
+                const empty_intervals = allocator.alloc(structural_splice.RenderRemovalInterval, 0) catch return error.OutOfMemory;
+                const exact_removal = structural_splice.prepareScopeOwnedRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, retirement_scope_ids) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                     error.InvalidDescriptor => return error.InvalidDescriptor,
                 };
-                var exact_removal_owned = true;
-                errdefer if (exact_removal_owned) exact_removal.deinit(allocator);
-                const empty_intervals = allocator.alloc(structural_splice.RenderRemovalInterval, 0) catch return error.OutOfMemory;
                 plan.removal = .{ .removal = exact_removal, .intervals_descending = empty_intervals };
-                exact_removal_owned = false;
-                errdefer if (plan.removal) |*removal| removal.deinit(allocator);
 
                 plan.identity_retirements = try PreparedIdentityRetirements.prepareExactRemoval(engine, allocator, retirement_scope_ids, &plan.removal.?.removal);
-                errdefer if (plan.identity_retirements) |*retirements| retirements.deinit(allocator);
                 plan.state_retirement = try PreparedStateRetirementIndexes.prepare(engine, allocator, plan.removal.?.removal.node_indexes.state_indexes.items);
-                errdefer if (plan.state_retirement) |*retirement_plan| retirement_plan.deinit(allocator);
                 try plan.state_retirement.?.reserveRetired(allocator, &plan.retired_state_cells);
-                errdefer plan.retired_state_cells.deinit(allocator);
 
                 var nested_row_scopes: shared_buffer.List(ids.ScopeId) = .empty;
                 defer nested_row_scopes.deinit(allocator);
@@ -9696,27 +9686,21 @@ pub fn Engine(comptime Ctx: type) type {
                 defer direct_roots.deinit(allocator);
                 plan.direct_root_classification_work = try direct_roots.classify(retirement_scope_ids, &nested_row_scopes);
                 plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, nested_row_scopes.items);
-                errdefer if (plan.row_retirement) |*retirement_plan| retirement_plan.deinit(allocator);
                 plan.retired_stable_generations.ensureTotalCapacity(allocator, plan.row_retirement.?.rows.len) catch return error.OutOfMemory;
-                errdefer plan.retired_stable_generations.deinit(allocator);
                 plan.effects_retirement = try PreparedEffectRetirements.prepare(engine, allocator, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
-                errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
                 plan.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
-                errdefer plan.retired_scope_steps.deinit(allocator);
 
                 const removed_event_count = plan.removal.?.removal.descriptor_indexes.event_indexes.items.len;
                 const retained_event_count = std.math.sub(usize, engine.active_events.items.len, removed_event_count) catch return error.ResourceLimit;
                 const final_event_count = std.math.add(usize, retained_event_count, plan.replacement.stream.events.items.len) catch return error.ResourceLimit;
                 engine.active_events.ensureTotalCapacity(allocator, final_event_count) catch return error.OutOfMemory;
                 plan.retired_active_events.ensureTotalCapacity(allocator, removed_event_count) catch return error.OutOfMemory;
-                errdefer plan.retired_active_events.deinit(allocator);
                 if (cache_overlay) |overlay| try engine.reserveCacheBearingDescriptorPublication(allocator, &plan.replacement.stream, overlay);
                 try engine.active_stream.reserveMovedStreamPublication(allocator, &plan.replacement.stream);
                 try prepareRetiredStreamCapacity(allocator, &plan.retired_stream, &plan.removal.?.removal);
                 const on_change_base = std.math.sub(usize, engine.active_stream.on_changes.items.len, plan.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, engine.active_stream.mounts.items.len, plan.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 plan.publication = structural_splice.preparePublicationDeltas(allocator, plan.replacement.stream.render_nodes.items, &.{}, on_change_base, plan.replacement.stream.on_changes.items.len, mount_base, plan.replacement.stream.mounts.items.len) catch return error.OutOfMemory;
-                errdefer if (plan.publication) |*publication| publication.deinit(allocator);
 
                 plan.suppressed_render_parent_ids = suppressed_parents;
                 try plan.prepareGraphRenderAndPublication(allocator);
@@ -9861,10 +9845,13 @@ pub fn Engine(comptime Ctx: type) type {
                 };
             }
 
+            /// Fills the retirement, reservation, and publication fields of a plan
+            /// the caller already guards with `errdefer plan.deinit()`; `deinit`
+            /// tolerates every partial state this leaves behind, so nothing here
+            /// unwinds by hand.
             fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, scan_scopes: ?[]const []const bool, external_row_sync: bool, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!void {
                 const nested_syncs = self.replacement.collection.nested_row_syncs.items;
                 self.targets = try PreparedStructuralTargets.prepare(self.engine, allocator, descriptor_root_scope_ids, retired_root_scope_ids, &self.replacement.collection);
-                errdefer if (self.targets) |*targets| targets.deinit(allocator);
                 const target_scopes = self.targets.?.descriptor_target_scopes;
                 const retirement_scope_ids = self.targets.?.scope_retirement.?.scope_ids;
                 self.removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &self.engine.active_stream, render_insert_indexes, target_scopes, scan_scopes) catch |err| switch (err) {
@@ -9873,9 +9860,7 @@ pub fn Engine(comptime Ctx: type) type {
                     error.InvalidDescriptor => return error.InvalidDescriptor,
                     error.OverlappingIntervals => return error.OverlappingRemoval,
                 };
-                errdefer if (self.removal) |*removal| removal.deinit(allocator);
                 self.identity_retirements = try PreparedIdentityRetirements.prepareExactRemoval(self.engine, allocator, retirement_scope_ids, &self.removal.?.removal);
-                errdefer if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
                 // A state site the replacement declares again under its
                 // committed node id keeps its cell: the descriptor is
                 // replaced, the value the site holds is not. Only the cells
@@ -9892,9 +9877,7 @@ pub fn Engine(comptime Ctx: type) type {
                     if (!redeclared) retired_state_indexes.appendAssumeCapacity(state_index);
                 }
                 self.state_retirement = try PreparedStateRetirementIndexes.prepare(self.engine, allocator, retired_state_indexes.items);
-                errdefer if (self.state_retirement) |*retirement| retirement.deinit(allocator);
                 try self.state_retirement.?.reserveRetired(allocator, &self.retired_state_cells);
-                errdefer self.retired_state_cells.deinit(allocator);
                 if (!external_row_sync) {
                     self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, retirement_scope_ids);
                 } else {
@@ -9919,26 +9902,20 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                     self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, nested.items);
                 }
-                errdefer if (self.row_retirement) |*retirement| retirement.deinit(allocator);
                 self.retired_stable_generations.ensureTotalCapacity(allocator, self.row_retirement.?.rows.len) catch return error.OutOfMemory;
-                errdefer self.retired_stable_generations.deinit(allocator);
                 self.effects_retirement = try PreparedEffectRetirements.prepare(self.engine, allocator, self.removal.?.removal.node_indexes.cleanup_indexes.items);
-                errdefer if (self.effects_retirement) |*effects| effects.deinit(allocator, null);
                 self.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
-                errdefer self.retired_scope_steps.deinit(allocator);
                 const removed_event_count = self.removal.?.removal.descriptor_indexes.event_indexes.items.len;
                 const retained_event_count = std.math.sub(usize, self.engine.active_events.items.len, removed_event_count) catch return error.ResourceLimit;
                 const final_event_count = std.math.add(usize, retained_event_count, self.replacement.stream.events.items.len) catch return error.ResourceLimit;
                 self.engine.active_events.ensureTotalCapacity(allocator, final_event_count) catch return error.OutOfMemory;
                 self.retired_active_events.ensureTotalCapacity(allocator, removed_event_count) catch return error.OutOfMemory;
-                errdefer self.retired_active_events.deinit(allocator);
                 if (cache_overlay) |overlay| try self.engine.reserveCacheBearingDescriptorPublication(allocator, &self.replacement.stream, overlay);
                 try self.engine.active_stream.reserveMovedStreamPublication(allocator, &self.replacement.stream);
                 try prepareRetiredStreamCapacity(allocator, &self.retired_stream, &self.removal.?.removal);
                 const on_change_base = std.math.sub(usize, self.engine.active_stream.on_changes.items.len, self.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, self.engine.active_stream.mounts.items.len, self.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 self.publication = structural_splice.preparePublicationDeltas(allocator, self.replacement.stream.render_nodes.items, &.{}, on_change_base, self.replacement.stream.on_changes.items.len, mount_base, self.replacement.stream.mounts.items.len) catch return error.OutOfMemory;
-                errdefer if (self.publication) |*publication| publication.deinit(allocator);
                 try self.prepareGraphRenderAndPublication(allocator);
             }
 
@@ -9951,7 +9928,6 @@ pub fn Engine(comptime Ctx: type) type {
                 try collectReplacementGraphRootsForStream(allocator, &self.replacement.stream, &replacement_roots);
                 if (self.engine.active_signal_graph.items.len != 0 or replacement_roots.items.len != 0) {
                     self.sink_edits = try self.prepareSinkEdits(allocator);
-                    errdefer if (self.sink_edits) |*edits| edits.deinit(allocator);
                     var retired_roots: shared_buffer.List(*HostSignalRecord) = .empty;
                     defer retired_roots.deinit(allocator);
                     try collectRetiredGraphRootsForRemoval(self.engine, allocator, &self.removal.?.removal, &retired_roots);
@@ -9959,14 +9935,11 @@ pub fn Engine(comptime Ctx: type) type {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidRelease => return error.InvalidSignalGraphRelease,
                     };
-                    errdefer if (self.graph_release) |*release| release.deinit(allocator);
                     self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, &self.graph_release.?, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
-                    errdefer if (self.graph_append) |*append| append.deinit(allocator);
                     self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_append.?);
-                    errdefer if (self.selector_registry) |*registry| registry.deinit(allocator);
                     try self.engine.reserveActiveIntervals(self.host_ctx, self.graph_append.?.appendedIntervalSourceCount());
                     try self.engine.reserveActiveRowSources(self.host_ctx, self.graph_append.?.appendedRowSourceCount());
                     try self.prepareGraphRoutes(allocator);
@@ -9986,21 +9959,6 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepareRender(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
                 if (!self.initial_root and !self.engine.render_cache.hasRoot()) return;
-                // The sparse plan is torn down field by field on failure, not
-                // through `deinit`, so every graph artifact prepared before the
-                // render stage is released here, including the staged selector
-                // memberships whose only other owner is the commit path.
-                errdefer {
-                    self.deinitGraphRoutes(allocator);
-                    if (self.graph_append) |*append| append.deinit(allocator);
-                    self.graph_append = null;
-                    if (self.graph_release) |*release| release.deinit(allocator);
-                    self.graph_release = null;
-                    if (self.selector_registry) |*registry| registry.deinit(allocator);
-                    self.selector_registry = null;
-                    if (self.sink_edits) |*edits| edits.deinit(allocator);
-                    self.sink_edits = null;
-                }
                 var facade = BranchReplacementPlan{
                     .engine = self.engine,
                     .host_ctx = self.host_ctx,
@@ -10012,16 +9970,13 @@ pub fn Engine(comptime Ctx: type) type {
                     .initial_root = self.initial_root,
                 };
                 self.render_splice = try facade.prepareRenderTopology(allocator);
-                errdefer if (self.render_splice) |*splice| splice.deinit();
                 self.render_splice.?.reserveSinkCommands(self.commitSinkCommandCount()) catch return error.ResourceLimit;
                 self.render_batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(self.host_ctx) else &self.render_batch;
-                errdefer if (self.render_batch_target == &self.render_batch) self.render_batch.deinit(allocator);
                 self.render_splice.?.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                 };
                 self.publication_phase.markPreflighted();
-                errdefer self.render_batch_target.?.abort();
                 if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
                     self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, &self.render_splice.?) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
@@ -10315,7 +10270,6 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareGraphRoutes(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
-                errdefer self.deinitGraphRoutes(allocator);
                 const graph_plan = &self.graph_append.?;
                 const graph_count = graph_plan.finalGraphCount();
                 var source: shared_buffer.List(active_graph.RouteAppend(u64)) = .empty;
@@ -16264,10 +16218,23 @@ pub fn Engine(comptime Ctx: type) type {
                 const generation = std.math.add(u64, engine.dirty_signal_generation, 1) catch return error.ResourceLimit;
                 const expected = try engine.preparedCacheOverlayBound();
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
-                errdefer allocator.destroy(plan);
-                var caches = signal_records.PreparedCacheUpdates.initWithStorage(allocator, expected, signal_records.PreparedCacheUpdates.takeRetained(&engine.scratch.cache_overlay)) catch return error.OutOfMemory;
-                var caches_owned = true;
-                errdefer if (caches_owned) engine.releasePreparedCacheOverlay(ctx, roc_host, &caches);
+                plan.* = .{
+                    .engine = engine,
+                    .host_ctx = ctx,
+                    .roc_host = roc_host,
+                    .generation = generation,
+                    .root_count = 0,
+                    .caches = signal_records.PreparedCacheUpdates.initWithStorage(allocator, expected, signal_records.PreparedCacheUpdates.takeRetained(&engine.scratch.cache_overlay)) catch {
+                        allocator.destroy(plan);
+                        return error.OutOfMemory;
+                    },
+                    .changed_record_ids = &.{},
+                    .batch_target = undefined,
+                };
+                // `deinit` releases every field from any partially prepared
+                // state, so one errdefer unwinds the whole preparation.
+                errdefer plan.deinit();
+                const caches = &plan.caches;
                 var root_record_ids: shared_buffer.List(u64) = .empty;
                 defer root_record_ids.deinit(allocator);
                 try root_record_ids.ensureTotalCapacityPrecise(allocator, owned.entries.items.len);
@@ -16286,8 +16253,7 @@ pub fn Engine(comptime Ctx: type) type {
                     root_record_ids.appendAssumeCapacity(engine.requireActiveSignalRecordId(entry.record));
                 }
                 if (root_record_ids.items.len == 0 and state_update == null) {
-                    engine.releasePreparedCacheOverlay(ctx, roc_host, &caches);
-                    allocator.destroy(plan);
+                    plan.deinit();
                     return null;
                 }
                 try engine.scratch.dirty_active_records.reserveForGraph(HostSignalRecord, allocator, engine.active_signal_graph.items);
@@ -16309,35 +16275,13 @@ pub fn Engine(comptime Ctx: type) type {
                         }
                     }
                 }
-                const changed = try engine.prepareChangedActiveSignalRecordIds(ctx, roc_host, &caches, dirty_ids, state_node_ids, generation);
-                errdefer allocator.free(changed);
-                var splice = try engine.prepareNonStructuralRenderSplice(ctx, roc_host, &caches, changed, state_node_ids, generation);
-                var splice_owned = true;
-                errdefer if (splice_owned) splice.deinit();
-                var structural_changes = try engine.collectPreparedDirtyStructuralSignals(ctx, roc_host, allocator, &caches, changed, state_node_ids, generation);
-                errdefer allocator.free(structural_changes);
-                plan.* = .{
-                    .engine = engine,
-                    .host_ctx = ctx,
-                    .roc_host = roc_host,
-                    .generation = generation,
-                    .root_count = if (state_update) |update| @intCast(update.entries.items.len) else @intCast(root_record_ids.items.len),
-                    .caches = caches,
-                    .state_update = null,
-                    .changed_record_ids = changed,
-                    .render_splice = splice,
-                    .structural_changes = structural_changes,
-                    .batch_target = undefined,
-                };
-                caches_owned = false;
-                splice_owned = false;
-                errdefer engine.releasePreparedCacheOverlay(ctx, roc_host, &plan.caches);
-                errdefer if (plan.render_splice) |*owned_splice| owned_splice.deinit();
-                try engine.prepareOnChangeCommands(ctx, roc_host, &plan.caches, changed, state_node_ids, generation, &plan.pending_on_change_commands);
-                errdefer {
-                    for (plan.pending_on_change_commands.items) |pending| pending.cmd.decref(roc_host);
-                    plan.pending_on_change_commands.deinit(allocator);
-                }
+                const changed = try engine.prepareChangedActiveSignalRecordIds(ctx, roc_host, caches, dirty_ids, state_node_ids, generation);
+                plan.changed_record_ids = changed;
+                plan.render_splice = try engine.prepareNonStructuralRenderSplice(ctx, roc_host, caches, changed, state_node_ids, generation);
+                var structural_changes = try engine.collectPreparedDirtyStructuralSignals(ctx, roc_host, allocator, caches, changed, state_node_ids, generation);
+                plan.structural_changes = structural_changes;
+                plan.root_count = if (state_update) |update| @intCast(update.entries.items.len) else @intCast(root_record_ids.items.len);
+                try engine.prepareOnChangeCommands(ctx, roc_host, caches, changed, state_node_ids, generation, &plan.pending_on_change_commands);
                 // Each reconciliation is the first point at which changed
                 // surviving row handles are known. Run a preparation-only
                 // reconciliation pass for every dirty each (including nested
@@ -16397,7 +16341,6 @@ pub fn Engine(comptime Ctx: type) type {
                         };
                         if (all_eaches_subsumed) {
                             plan.structural_downstream = try prepareWhenDownstream(engine, ctx, roc_host, structural_changes, state_update, &plan.caches);
-                            errdefer plan.structural_downstream.?.deinit();
                             try plan.structural_downstream.?.adoptScalarRenderSplice(&plan.render_splice.?);
                             plan.render_splice.?.deinit();
                             plan.render_splice = null;
@@ -16407,7 +16350,6 @@ pub fn Engine(comptime Ctx: type) type {
                             }
                             return plan;
                         }
-                        errdefer plan.composite_structural.?.deinit();
                         const downstream = plan.composite_structural.?.downstream;
                         try downstream.adoptScalarRenderSplice(&plan.render_splice.?);
                         plan.render_splice.?.deinit();
@@ -16420,7 +16362,6 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                     if (each_count > 1) {
                         plan.composite_rows = try PreparedCompositeRows.prepare(engine, ctx, roc_host, structural_changes, &plan.caches, external_state);
-                        errdefer plan.composite_rows.?.deinit();
                         const downstream = plan.composite_rows.?.downstream.?;
                         try downstream.adoptScalarRenderSplice(&plan.render_splice.?);
                         plan.render_splice.?.deinit();
@@ -16441,7 +16382,6 @@ pub fn Engine(comptime Ctx: type) type {
                             reusable_single_each_rows = null;
                             break :blk rows;
                         } else try PreparedActiveEachRows.prepareWithOverlay(engine, ctx, roc_host, site, each_desc, allocator, &plan.caches);
-                        errdefer plan.each_rows.?.deinit();
                         if (try plan.tryAdoptSparseSurvivingRows(site, plan.each_rows.?)) {
                             try plan.prepareDirectRenderPublication(allocator);
                             if (state_update) |update| {
@@ -16451,24 +16391,15 @@ pub fn Engine(comptime Ctx: type) type {
                             return plan;
                         }
                         plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, plan.each_rows.?, .{}, &.{}, &plan.caches, external_state);
-                        errdefer plan.each_replacement.?.deinit();
                         if (engine.positions != null) {
                             plan.structural_downstream = try PreparedStructuralDownstream.prepareSparseExternalEach(engine, ctx, roc_host, site, plan.each_rows.?, plan.each_replacement.?, &plan.caches);
                         } else {
                             plan.each_layout = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &plan.each_rows.?.rows, plan.each_replacement.?.replacement_rows, &plan.each_replacement.?.replacement.collection);
-                            errdefer plan.each_layout.?.deinit();
                             plan.structural_downstream = try PreparedStructuralDownstream.prepareExternalEach(engine, ctx, roc_host, &plan.each_rows.?.rows, &plan.each_rows.?.inputs, plan.each_replacement.?, &plan.each_layout.?, &plan.caches);
                         }
                     } else {
                         plan.structural_downstream = try prepareWhenDownstream(engine, ctx, roc_host, structural_changes, state_update, &plan.caches);
                     }
-                    // The each-row errdefers above end with their block; the
-                    // adoption below can still fail, and the plan is only
-                    // handed to `deinit` once it is returned.
-                    errdefer if (plan.each_rows) |rows| rows.deinit();
-                    errdefer if (plan.each_replacement) |replacement| replacement.deinit();
-                    errdefer if (plan.each_layout) |*layout| layout.deinit();
-                    errdefer plan.structural_downstream.?.deinit();
                     try plan.structural_downstream.?.adoptScalarRenderSplice(&plan.render_splice.?);
                     plan.render_splice.?.deinit();
                     plan.render_splice = null;
