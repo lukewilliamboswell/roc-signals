@@ -8540,6 +8540,19 @@ fn testListWhenRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]co
     writeTestErasedResult(abi.Elem, ret, testNodeWhenOnListPredicate(roc_host, capture.token.*, .length_at_least, capture.min_length, testNodeText(roc_host, on), testNodeText(roc_host, off)));
 }
 
+/// Like `testListWhenRowElemCallable`, but both branch texts exceed the
+/// small-string capacity so each branch owns heap memory; releasing a branch
+/// twice or never is then visible to the allocation trackers.
+fn testHeapListWhenRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const capture = testCapturePtrAs(TestListWhenRowCapture, capture_ptr);
+    const key = testEachRowKeyI64(roc_host, args);
+    var on_buffer: [64]u8 = undefined;
+    var off_buffer: [64]u8 = undefined;
+    const on = std.fmt.bufPrint(&on_buffer, "row-{d}-on-with-heap-allocated-branch-text", .{key}) catch unreachable;
+    const off = std.fmt.bufPrint(&off_buffer, "row-{d}-off-with-heap-allocated-branch-text", .{key}) catch unreachable;
+    writeTestErasedResult(abi.Elem, ret, testNodeWhenOnListPredicate(roc_host, capture.token.*, .length_at_least, capture.min_length, testNodeText(roc_host, on), testNodeText(roc_host, off)));
+}
+
 test "a branch mounted by a flip reads the list the flip published, not the retired one" {
     // The outer when flips when the list empties. Its new branch holds a
     // constant each whose row carries a when on the same list, so the row
@@ -8699,6 +8712,61 @@ test "reordered surviving rows each carry their own flipping when" {
     host.engine.validateActiveScopeSiteInsertIndexes();
 }
 
+test "removed rows whose whens flip in the same transaction release each branch exactly once" {
+    // Three rows of a shared each carry whens on the same list. Shrinking the
+    // list to its last item removes the first two rows while every when goes
+    // dirty, so the two branches built for the removed rows are subsumed by
+    // their rows and only the survivor's branch is placed. Each built branch
+    // is released exactly once, on success and at every allocation failure:
+    // compacting the kept selections over the built ones used to release the
+    // survivor's branch twice and the subsumed ones never.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.engine_allocator_override = null;
+                host.deinit();
+                std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("subsumed when branches leaked");
+            }
+
+            const list_token = newTestBinderToken(&roc_host);
+            const cap = testHostValueCapability(&roc_host);
+            const each = testNodeEachWithSignalCapabilityRowAndCapture(TestListWhenRowCapture, &roc_host, testNodeRefExpr(list_token), cap, &testHeapListWhenRowElemCallable, .{ .token = &list_token, .min_length = 3 });
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ each, testNodeText(&roc_host, "tail") });
+            const initial = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, list_token, testHostValueI64List(&roc_host, &initial), section, cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+            const section_id = host.engine.active_stream.elements.items[0].elem_id;
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "row-1-on-with-heap-allocated-branch-text"));
+            try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, section_id, "row-3-on-with-heap-allocated-branch-text"));
+
+            const list_state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const shrunk = [_]HostValue{testHostValueI64(3)};
+            const retry = [_]HostValue{testHostValueI64(3)};
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, list_state_id, testHostValueI64List(&roc_host, &shrunk), testHostValueI64List(&roc_host, &retry), cap, failure_number);
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "row-3-off-with-heap-allocated-branch-text"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "tail"));
+            try std.testing.expect(activeTextElementId(&host, "row-1-on-with-heap-allocated-branch-text") == null);
+            try std.testing.expect(activeTextElementId(&host, "row-1-off-with-heap-allocated-branch-text") == null);
+            try std.testing.expect(activeTextElementId(&host, "row-2-on-with-heap-allocated-branch-text") == null);
+            try std.testing.expect(activeTextElementId(&host, "row-2-off-with-heap-allocated-branch-text") == null);
+            try std.testing.expect(activeTextElementId(&host, "row-3-on-with-heap-allocated-branch-text") == null);
+            host.engine.validateActiveScopeSiteInsertIndexes();
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "a when site collected later inside an earlier branch still orders before the empty site after it" {
     // A branch mounted after the initial collection carries a `when` whose
     // node id is larger than the sibling site after the branch. Node ids say
@@ -8790,8 +8858,9 @@ test "a when branch and an each under one parent grow in one transaction and re-
             var roc_host = makeSignalsRocHost(&host);
             host.engine.roc_host = &roc_host;
             defer {
+                host.engine_allocator_override = null;
                 host.deinit();
-                _ = host.gpa.deinit();
+                std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("mixed when+each growth leaked");
             }
 
             const list_token = newTestBinderToken(&roc_host);
@@ -8854,6 +8923,7 @@ test "a when branch and an each under one parent grow in one transaction and re-
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 test "an each reading a root state list through a bare ref mounts in one staged transaction and survives a live edit" {
     // A bare `Ref` record carries no signal token. The initial mount's graph
@@ -9317,8 +9387,9 @@ test "one state transaction retires nested each with when atomically through pro
             var roc_host = makeSignalsRocHost(&host);
             host.engine.roc_host = &roc_host;
             defer {
+                host.engine_allocator_override = null;
                 host.deinit();
-                _ = host.gpa.deinit();
+                std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("mixed when+each retirement leaked");
             }
 
             const state_token = newTestBinderToken(&roc_host);
@@ -9393,6 +9464,7 @@ test "one state transaction retires nested each with when atomically through pro
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "a delayed when branch can first mount a nested each" {

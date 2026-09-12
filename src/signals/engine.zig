@@ -1683,32 +1683,65 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.scope_claims.abort();
                     plan.scope_claims.deinit();
                 };
+                var staging: Staging = .{};
+                errdefer staging.release(allocator);
+                try plan.prepareInto(engine, ctx, roc_host, site, each, allocator, overlay, &staging);
+                plan.allocator = allocator;
+                plan.engine = engine;
+                plan.inputs = staging.inputs.?;
+                plan.hooks = staging.hooks;
+                plan.rows = staging.rows.?;
+                plan.removed_handles = staging.removed_handles;
+                plan.direct_delta = staging.direct_delta;
+                plan.phase = .prepared;
+                plan.hooks.inputs = &plan.inputs;
+                plan.hooks.base.inputs = &plan.inputs;
+                return plan;
+            }
+
+            /// What preparation stages before the plan adopts it, released
+            /// from one place so `prepareInto` carries no defers of its own.
+            const Staging = struct {
+                inputs: ?PreparedEachInputs = null,
+                hooks: PreparedEachRowSyncHooks = undefined,
+                rows: ?each_runtime.PreparedRowSync = null,
+                removed_handles: []row_handles.RowHandleId = &.{},
+                direct_delta: bool = false,
+
+                fn release(self: *@This(), allocator: std.mem.Allocator) void {
+                    allocator.free(self.removed_handles);
+                    if (self.rows) |*rows| {
+                        rows.abort(&self.hooks);
+                        rows.deinit();
+                    }
+                    if (self.inputs) |*inputs| inputs.deinit();
+                }
+            };
+
+            fn prepareInto(plan: *@This(), engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: *const HostNodeEachDesc, allocator: std.mem.Allocator, overlay: ?*const signal_records.PreparedCacheUpdates, staging: *Staging) CollectionError!void {
                 const rows_key = each_runtime.SiteKey{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
                 const rows_site_id = engine.rows_site_ids.get(rows_key) orelse return error.InvalidDescriptor;
                 const rows_store = engine.rowsStore(allocator);
                 const parent_owner = (rows_store.getSiteConst(rows_site_id) catch return error.InvalidDescriptor).owner_token;
-                var inputs = try PreparedEachInputs.prepareWithOverlay(engine, ctx, roc_host, each, allocator, overlay, &.{}, parent_owner.raw());
-                errdefer inputs.deinit();
-                var hooks = PreparedEachRowSyncHooks.initWithScopeClaims(engine, ctx, roc_host, plan.scope_claims);
-                errdefer hooks.deinit();
-                hooks.inputs = &inputs;
-                hooks.base.inputs = &inputs;
+                staging.inputs = try PreparedEachInputs.prepareWithOverlay(engine, ctx, roc_host, each, allocator, overlay, &.{}, parent_owner.raw());
+                const inputs = &staging.inputs.?;
+                staging.hooks = PreparedEachRowSyncHooks.initWithScopeClaims(engine, ctx, roc_host, plan.scope_claims);
+                const hooks = &staging.hooks;
+                hooks.inputs = inputs;
+                hooks.base.inputs = inputs;
                 const site_index = engine.activeEachRowSiteIndex(site.scope_id, site.ordinal) orelse @panic("active each descriptor had no row site");
                 const direct_delta = inputs.delta != null and !inputs.snapshot.complete;
-                var rows = if (direct_delta)
-                    try prepareDirectRows(engine, ctx, allocator, site, site_index, rows_store, rows_site_id, parent_owner, &inputs, plan.scope_claims, &plan.direct_index)
+                staging.rows = if (direct_delta)
+                    try prepareDirectRows(engine, ctx, allocator, site, site_index, rows_store, rows_site_id, parent_owner, inputs, plan.scope_claims, &plan.direct_index)
                 else blk: {
                     const binding_edits = std.math.add(usize, inputs.generation.item_count, engine.each_row_sites.items[site_index].scope_ids.items.len) catch return error.ResourceLimit;
                     inputs.candidate_bindings.reserve(binding_edits) catch |err| return switch (err) {
                         error.OutOfMemory => error.OutOfMemory,
                         error.ResourceLimit => error.ResourceLimit,
                     };
-                    break :blk try each_runtime.PreparedRowSync.prepare(allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, site.scope_id, site.ordinal, inputs.keys, inputs.items, &hooks);
+                    break :blk try each_runtime.PreparedRowSync.prepare(allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, site.scope_id, site.ordinal, inputs.keys, inputs.items, hooks);
                 };
-                errdefer {
-                    rows.abort(&hooks);
-                    rows.deinit();
-                }
+                const rows = &staging.rows.?;
                 if (!direct_delta) {
                     for (rows.removed_scope_ids) |scope_id| {
                         const row_handle = scope_runtime.eachRowHandle(engine.scopes.items, scope_id);
@@ -1759,19 +1792,10 @@ pub fn Engine(comptime Ctx: type) type {
                 inputs.rows_generation_entry_reserved = true;
                 const site_slot_count = std.math.add(usize, site_index, 1) catch return error.ResourceLimit;
                 engine.each_generation_ids_by_site_index.ensureTotalCapacity(allocator, site_slot_count) catch return error.OutOfMemory;
-                const removed_handles = allocator.alloc(row_handles.RowHandleId, rows.removed_scope_ids.len) catch return error.OutOfMemory;
+                staging.removed_handles = allocator.alloc(row_handles.RowHandleId, rows.removed_scope_ids.len) catch return error.OutOfMemory;
+                const removed_handles = staging.removed_handles;
                 for (rows.removed_scope_ids, removed_handles) |scope_id, *handle| handle.* = scope_runtime.eachRowHandle(engine.scopes.items, scope_id);
-                plan.allocator = allocator;
-                plan.engine = engine;
-                plan.inputs = inputs;
-                plan.hooks = hooks;
-                plan.rows = rows;
-                plan.removed_handles = removed_handles;
-                plan.direct_delta = direct_delta;
-                plan.phase = .prepared;
-                plan.hooks.inputs = &plan.inputs;
-                plan.hooks.base.inputs = &plan.inputs;
-                return plan;
+                staging.direct_delta = direct_delta;
             }
 
             /// Publishes row ownership/order without allocation and returns the structural diff.
@@ -1925,7 +1949,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 try owner.prepareReplacement(sites, eaches, .{}, &.{});
                 {
-                    if (try PreparedCompositeStructural.prepareSparseDownstream(engine, ctx, roc_host, &.{}, &.{}, sites, owner, owner.replacement_owner.?, overlay)) |downstream| {
+                    if (try PreparedCompositeStructural.prepareSparseDownstream(engine, ctx, roc_host, allocator, &.{}, &.{}, sites, owner, owner.replacement_owner.?, overlay)) |downstream| {
                         owner.downstream = downstream;
                         return owner;
                     }
@@ -2156,6 +2180,27 @@ pub fn Engine(comptime Ctx: type) type {
         /// branches and `each` rows. It deliberately stops before topology or
         /// downstream publication so production routing can adopt the seam only
         /// after the remaining transaction has equivalent fault coverage.
+        /// Mixed `when` + `each` structural transaction.
+        ///
+        /// Prepare-phase arena pattern (issue #121): every scratch buffer and
+        /// every slice that survives into the prepared plan comes from
+        /// `arena`, whose child is the host allocator. Unwinding a refused
+        /// preparation therefore costs one `arena.deinit()` instead of a chain
+        /// of per-buffer frees replayed at each error exit. Two kinds of
+        /// resource deliberately stay outside the arena:
+        ///
+        /// - Roc values: the branch elems built here are borrowed by the
+        ///   replacement owner and released exactly once, on success and on
+        ///   refusal alike, from the creation-order list the outer
+        ///   `prepareWithSubsumedFlag` walks.
+        /// - Anything the engine keeps or swaps into persistent state
+        ///   (`committed_row_bindings`, the final render topology, and the
+        ///   child plans whose `deinit` releases Roc or engine-published
+        ///   state: rows, replacement owner, downstream). Those use `backing`
+        ///   and keep their own single-call `errdefer`.
+        ///
+        /// `deinit` order matters: the downstream frees the arena-backed
+        /// render layout plan it adopted, so it runs before the arena goes.
         const PreparedCompositeStructural = struct {
             const GlobalRange = struct {
                 change_index: usize,
@@ -2166,7 +2211,7 @@ pub fn Engine(comptime Ctx: type) type {
                 site_len: usize,
             };
 
-            allocator: std.mem.Allocator,
+            arena: std.heap.ArenaAllocator,
             engine: *Self,
             normalized_whens: PreparedDirtyWhenSet,
             rows: *PreparedCompositeRows,
@@ -2180,28 +2225,27 @@ pub fn Engine(comptime Ctx: type) type {
             overlay: *signal_records.PreparedCacheUpdates,
             phase: CommitPhase = .prepared,
 
-            fn prepareSparseDownstream(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, selections: []const AggregateBranchSelection, branch_ranges: []const GlobalRange, sites: []const HostNodeScopeSiteDesc, rows: *PreparedCompositeRows, replacement: *PreparedReplacementOwner, overlay: *signal_records.PreparedCacheUpdates) CollectionError!?*PreparedStructuralDownstream {
-                const allocator = Ctx.allocator(ctx);
+            fn prepareSparseDownstream(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, scratch: std.mem.Allocator, selections: []const AggregateBranchSelection, branch_ranges: []const GlobalRange, sites: []const HostNodeScopeSiteDesc, rows: *PreparedCompositeRows, replacement: *PreparedReplacementOwner, overlay: *signal_records.PreparedCacheUpdates) CollectionError!?*PreparedStructuralDownstream {
                 var parents: shared_buffer.List(u64) = .empty;
-                defer parents.deinit(allocator);
+                defer parents.deinit(scratch);
                 var parent_set: std.AutoHashMapUnmanaged(u64, void) = .{};
-                defer parent_set.deinit(allocator);
+                defer parent_set.deinit(scratch);
                 var retired_roots: shared_buffer.List(ids.ScopeId) = .empty;
-                defer retired_roots.deinit(allocator);
+                defer retired_roots.deinit(scratch);
                 var synced_rows: shared_buffer.List(ids.ScopeId) = .empty;
-                defer synced_rows.deinit(allocator);
+                defer synced_rows.deinit(scratch);
                 for (sites, rows.rows[0..rows.prepared_len], rows.replacements[0..rows.prepared_len]) |site, row_plan, row_replacement| {
                     if (row_plan.inputs.rows_transition == null) return null;
                     for (row_replacement.replacement_rows) |range| if (!range.created) return null;
-                    const parent = try parent_set.getOrPut(allocator, site.parent_elem_id.raw());
-                    if (!parent.found_existing) parents.append(allocator, site.parent_elem_id.raw()) catch return error.OutOfMemory;
-                    retired_roots.appendSlice(allocator, row_plan.rows.removed_scope_ids) catch return error.OutOfMemory;
-                    synced_rows.appendSlice(allocator, row_plan.rows.removed_scope_ids) catch return error.OutOfMemory;
+                    const parent = try parent_set.getOrPut(scratch, site.parent_elem_id.raw());
+                    if (!parent.found_existing) parents.append(scratch, site.parent_elem_id.raw()) catch return error.OutOfMemory;
+                    retired_roots.appendSlice(scratch, row_plan.rows.removed_scope_ids) catch return error.OutOfMemory;
+                    synced_rows.appendSlice(scratch, row_plan.rows.removed_scope_ids) catch return error.OutOfMemory;
                 }
                 for (selections) |selection| {
-                    const parent = try parent_set.getOrPut(allocator, selection.parent_elem_id.raw());
-                    if (!parent.found_existing) parents.append(allocator, selection.parent_elem_id.raw()) catch return error.OutOfMemory;
-                    retired_roots.append(allocator, selection.retired_scope_id) catch return error.OutOfMemory;
+                    const parent = try parent_set.getOrPut(scratch, selection.parent_elem_id.raw());
+                    if (!parent.found_existing) parents.append(scratch, selection.parent_elem_id.raw()) catch return error.OutOfMemory;
+                    retired_roots.append(scratch, selection.retired_scope_id) catch return error.OutOfMemory;
                 }
                 const downstream = try PreparedStructuralDownstream.prepareSparseExternalScopes(engine, ctx, roc_host, replacement, retired_roots.items, synced_rows.items, parents.items, overlay);
                 errdefer downstream.deinit();
@@ -2217,9 +2261,10 @@ pub fn Engine(comptime Ctx: type) type {
                 return false;
             }
 
-            fn normalizedScopeRoots(engine: *Self, allocator: std.mem.Allocator, roots: []const u64) CollectionError![]u64 {
-                const order = allocator.dupe(u64, roots) catch return error.OutOfMemory;
-                errdefer allocator.free(order);
+            /// Sorts `roots` shallowest-first and drops every scope covered by
+            /// an earlier root. The result is a prefix of one arena allocation.
+            fn normalizedScopeRoots(engine: *Self, scratch: std.mem.Allocator, roots: []const u64) CollectionError![]u64 {
+                const order = scratch.dupe(u64, roots) catch return error.OutOfMemory;
                 const Sort = struct {
                     engine: *Self,
                     fn lessThan(sort: @This(), left: u64, right: u64) bool {
@@ -2242,10 +2287,7 @@ pub fn Engine(comptime Ctx: type) type {
                         write += 1;
                     }
                 }
-                if (write == order.len) return order;
-                const normalized = allocator.dupe(u64, order[0..write]) catch return error.OutOfMemory;
-                allocator.free(order);
-                return normalized;
+                return order[0..write];
             }
 
             fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: []const PreparedExternalState) CollectionError!*@This() {
@@ -2253,9 +2295,47 @@ pub fn Engine(comptime Ctx: type) type {
                 return prepareWithSubsumedFlag(engine, ctx, roc_host, changes, overlay, limits, dirty_source_node_ids, state_update, &all_eaches_subsumed);
             }
 
+            /// Creates the plan and its arena on the host allocator, runs the
+            /// fallible body once, then performs the only two cleanups that
+            /// every outcome shares: releasing the borrowed branch elems and,
+            /// on refusal, dropping the arena. The plan hosts the arena, so
+            /// it lives on `backing`, never inside its own arena.
             fn prepareWithSubsumedFlag(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: []const PreparedExternalState, all_eaches_subsumed: *bool) CollectionError!*@This() {
                 all_eaches_subsumed.* = false;
-                const allocator = Ctx.allocator(ctx);
+                const backing = Ctx.allocator(ctx);
+                const plan = backing.create(@This()) catch return error.OutOfMemory;
+                plan.* = .{
+                    .arena = std.heap.ArenaAllocator.init(backing),
+                    .engine = engine,
+                    .normalized_whens = undefined,
+                    .rows = undefined,
+                    .replacement_owner = undefined,
+                    .branch_ranges = &.{},
+                    .row_ranges = &.{},
+                    .subsumed_each_indexes = &.{},
+                    .layouts = &.{},
+                    .downstream = undefined,
+                    .changes = changes,
+                    .overlay = overlay,
+                };
+                // Branch elems built during preparation, in creation order, on
+                // the arena; released here exactly once regardless of outcome.
+                var owned: shared_buffer.List(abi.Elem) = .empty;
+                const result = plan.prepareInto(ctx, roc_host, limits, dirty_source_node_ids, state_update, all_eaches_subsumed, &owned);
+                for (owned.items) |elem| elem.decref(roc_host);
+                result catch |err| {
+                    plan.releaseArena();
+                    return err;
+                };
+                return plan;
+            }
+
+            fn prepareInto(plan: *@This(), ctx: Ctx.Handle, roc_host: *abi.RocHost, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: []const PreparedExternalState, all_eaches_subsumed: *bool, owned: *shared_buffer.List(abi.Elem)) CollectionError!void {
+                const engine = plan.engine;
+                const changes = plan.changes;
+                const overlay = plan.overlay;
+                const scratch = plan.arena.allocator();
+                const backing = plan.arena.child_allocator;
                 var when_count: usize = 0;
                 var each_count: usize = 0;
                 for (changes) |change| switch (change.kind) {
@@ -2264,15 +2344,11 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 if (when_count == 0 or each_count == 0) return error.ResourceLimit;
 
-                var normalized = try PreparedDirtyWhenSet.prepareWhenSubset(engine, allocator, changes);
-                var normalized_owned = true;
-                errdefer if (normalized_owned) normalized.deinit(allocator);
+                var normalized = try PreparedDirtyWhenSet.prepareWhenSubset(engine, scratch, changes);
                 if (normalized.selected_indexes.len == 0) return error.ResourceLimit;
 
-                const selections_storage = allocator.alloc(AggregateBranchSelection, normalized.selected_indexes.len) catch return error.OutOfMemory;
-                defer allocator.free(selections_storage);
-                var built_selection_count: usize = 0;
-                defer for (selections_storage[0..built_selection_count]) |selection| selection.elem.decref(roc_host);
+                owned.ensureTotalCapacityPrecise(scratch, normalized.selected_indexes.len) catch return error.OutOfMemory;
+                const selections_storage = scratch.alloc(AggregateBranchSelection, normalized.selected_indexes.len) catch return error.OutOfMemory;
                 var selections = selections_storage;
                 for (normalized.selected_indexes, 0..) |change_index, selection_index| {
                     const change = changes[change_index];
@@ -2289,6 +2365,7 @@ pub fn Engine(comptime Ctx: type) type {
                         .present => |cell| cell,
                     } else change.pending_when_cache orelse return error.InvalidDescriptor;
                     const branch_elem = engine.buildWhenElem(ctx, roc_host, when_desc.ops, value_cell.value, value_cell.cap);
+                    owned.appendAssumeCapacity(branch_elem);
                     selections[selection_index] = .{
                         .node_id = change.node_id,
                         .parent_scope_id = site.scope_id,
@@ -2300,14 +2377,11 @@ pub fn Engine(comptime Ctx: type) type {
                         .branch = branch,
                         .elem = branch_elem,
                     };
-                    built_selection_count += 1;
                 }
 
                 var subsumed_each = shared_buffer.List(usize).empty;
-                errdefer subsumed_each.deinit(allocator);
-                subsumed_each.ensureTotalCapacity(allocator, each_count) catch return error.OutOfMemory;
-                const each_order = allocator.alloc(usize, each_count) catch return error.OutOfMemory;
-                defer allocator.free(each_order);
+                subsumed_each.ensureTotalCapacity(scratch, each_count) catch return error.OutOfMemory;
+                const each_order = scratch.alloc(usize, each_count) catch return error.OutOfMemory;
                 var order_write: usize = 0;
                 for (changes, 0..) |change, change_index| if (change.kind == .each) {
                     each_order[order_write] = change_index;
@@ -2342,14 +2416,10 @@ pub fn Engine(comptime Ctx: type) type {
                 const rows = try PreparedCompositeRows.create(engine, ctx, roc_host, each_count);
                 errdefer rows.deinit();
                 rows.cache_overlay = overlay;
-                const sites_storage = allocator.alloc(HostNodeScopeSiteDesc, each_count) catch return error.OutOfMemory;
-                defer allocator.free(sites_storage);
-                const eaches_storage = allocator.alloc(*const HostNodeEachDesc, each_count) catch return error.OutOfMemory;
-                defer allocator.free(eaches_storage);
-                const each_change_indexes_storage = allocator.alloc(usize, each_count) catch return error.OutOfMemory;
-                defer allocator.free(each_change_indexes_storage);
+                const sites_storage = scratch.alloc(HostNodeScopeSiteDesc, each_count) catch return error.OutOfMemory;
+                const eaches_storage = scratch.alloc(*const HostNodeEachDesc, each_count) catch return error.OutOfMemory;
+                const each_change_indexes_storage = scratch.alloc(usize, each_count) catch return error.OutOfMemory;
                 var removed_row_scopes = shared_buffer.List(u64).empty;
-                defer removed_row_scopes.deinit(allocator);
                 var each_write: usize = 0;
                 for (each_order) |change_index| {
                     const change = changes[change_index];
@@ -2373,10 +2443,10 @@ pub fn Engine(comptime Ctx: type) type {
                     eaches_storage[each_write] = each;
                     each_change_indexes_storage[each_write] = change_index;
                     try rows.prepareOne(site, each, overlay);
-                    for (rows.rows[each_write].rows.removed_scope_ids) |scope_id| removed_row_scopes.append(allocator, scope_id.raw()) catch return error.OutOfMemory;
+                    for (rows.rows[each_write].rows.removed_scope_ids) |scope_id| removed_row_scopes.append(scratch, scope_id.raw()) catch return error.OutOfMemory;
                     for (rows.replacements[each_write].row_elems) |row_elem| {
                         if (row_elem.created) continue;
-                        removed_row_scopes.append(allocator, row_elem.scope_id.raw()) catch return error.OutOfMemory;
+                        removed_row_scopes.append(scratch, row_elem.scope_id.raw()) catch return error.OutOfMemory;
                     }
                     each_write += 1;
                 }
@@ -2387,18 +2457,18 @@ pub fn Engine(comptime Ctx: type) type {
                 const sites = sites_storage[0..each_write];
                 const eaches = eaches_storage[0..each_write];
                 const each_change_indexes = each_change_indexes_storage[0..each_write];
-                const subsumed_each_indexes = subsumed_each.toOwnedSlice(allocator) catch return error.OutOfMemory;
-                errdefer allocator.free(subsumed_each_indexes);
+                const subsumed_each_indexes = subsumed_each.items;
 
                 // Row reconciliation can retire the owner of a dirty `when`
                 // selected before the each diffs were known. Such a branch is
                 // owned by the removed row and must not contribute a second,
-                // stale replacement placement to this transaction.
-                const selected_when_indexes = allocator.alloc(usize, normalized.selected_indexes.len) catch return error.OutOfMemory;
-                defer allocator.free(selected_when_indexes);
+                // stale replacement placement to this transaction. Kept
+                // selections compact in place; their elems are released from
+                // `owned`, never from this array, so dropping one here cannot
+                // skip or repeat a decref.
+                const selected_when_indexes = scratch.alloc(usize, normalized.selected_indexes.len) catch return error.OutOfMemory;
                 const combined_subsumed_capacity = std.math.add(usize, normalized.subsumed_indexes.len, normalized.selected_indexes.len) catch return error.ResourceLimit;
-                const subsumed_when_indexes = allocator.alloc(usize, combined_subsumed_capacity) catch return error.OutOfMemory;
-                defer allocator.free(subsumed_when_indexes);
+                const subsumed_when_indexes = scratch.alloc(usize, combined_subsumed_capacity) catch return error.OutOfMemory;
                 @memcpy(subsumed_when_indexes[0..normalized.subsumed_indexes.len], normalized.subsumed_indexes);
                 var selected_when_write: usize = 0;
                 var subsumed_when_write = normalized.subsumed_indexes.len;
@@ -2419,15 +2489,8 @@ pub fn Engine(comptime Ctx: type) type {
                         selected_when_write += 1;
                     }
                 }
-                const selected_when_owned = allocator.dupe(usize, selected_when_indexes[0..selected_when_write]) catch return error.OutOfMemory;
-                const subsumed_when_owned = allocator.dupe(usize, subsumed_when_indexes[0..subsumed_when_write]) catch {
-                    allocator.free(selected_when_owned);
-                    return error.OutOfMemory;
-                };
-                allocator.free(normalized.selected_indexes);
-                allocator.free(normalized.subsumed_indexes);
-                normalized.selected_indexes = selected_when_owned;
-                normalized.subsumed_indexes = subsumed_when_owned;
+                normalized.selected_indexes = selected_when_indexes[0..selected_when_write];
+                normalized.subsumed_indexes = subsumed_when_indexes[0..subsumed_when_write];
                 selections = selections_storage[0..selected_when_write];
 
                 var total: StaticRootCounts = .{};
@@ -2443,10 +2506,8 @@ pub fn Engine(comptime Ctx: type) type {
                 replacement_owner.collection.cache_overlay = overlay;
                 try replacement_owner.collection.stageExternalStates(roc_host, state_update);
                 for (rows.rows[0..rows.prepared_len]) |prepared_rows| try replacement_owner.collection.indexCandidateGeneration(&prepared_rows.inputs);
-                const branch_ranges = allocator.alloc(GlobalRange, normalized.selected_indexes.len) catch return error.OutOfMemory;
-                errdefer allocator.free(branch_ranges);
-                const row_ranges = allocator.alloc(GlobalRange, row_root_count) catch return error.OutOfMemory;
-                errdefer allocator.free(row_ranges);
+                const branch_ranges = scratch.alloc(GlobalRange, normalized.selected_indexes.len) catch return error.OutOfMemory;
+                const row_ranges = scratch.alloc(GlobalRange, row_root_count) catch return error.OutOfMemory;
 
                 for (rows.replacements[0..rows.prepared_len]) |replacement| {
                     try replacement.attachScopeIds(replacement_owner);
@@ -2481,87 +2542,62 @@ pub fn Engine(comptime Ctx: type) type {
                 var binding_edits = std.math.add(usize, replacement_owner.collection.prepared_row_bindings.count(), replacement_owner.collection.candidate_binding_edit_count) catch return error.ResourceLimit;
                 for (rows.rows[0..rows.prepared_len]) |prepared_rows| binding_edits = std.math.add(usize, binding_edits, prepared_rows.inputs.candidate_bindings.candidate.count()) catch return error.ResourceLimit;
                 const binding_bound = std.math.add(usize, engine.committed_row_bindings.entries.count(), binding_edits) catch return error.ResourceLimit;
-                engine.committed_row_bindings.entries.ensureTotalCapacity(allocator, std.math.cast(u32, binding_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                // Persistent engine table: grows on the host allocator, never the arena.
+                engine.committed_row_bindings.entries.ensureTotalCapacity(backing, std.math.cast(u32, binding_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 replacement_owner.materialize();
                 for (rows.replacements[0..rows.prepared_len], sites) |replacement, site| try replacement.finalizeRenderSpans(site);
                 for (rows.replacements[0..rows.prepared_len]) |replacement| replacement.releaseEvaluatedRows();
 
-                if (try prepareSparseDownstream(engine, ctx, roc_host, selections, branch_ranges, sites, rows, replacement_owner, overlay)) |downstream| {
-                    errdefer downstream.deinit();
-                    const layouts = allocator.alloc(PreparedEachRowRenderLayout, 0) catch return error.OutOfMemory;
-                    errdefer allocator.free(layouts);
-                    const plan = allocator.create(@This()) catch return error.OutOfMemory;
-                    plan.* = .{
-                        .allocator = allocator,
-                        .engine = engine,
-                        .normalized_whens = normalized,
-                        .rows = rows,
-                        .replacement_owner = replacement_owner,
-                        .branch_ranges = branch_ranges,
-                        .row_ranges = row_ranges,
-                        .subsumed_each_indexes = subsumed_each_indexes,
-                        .layouts = layouts,
-                        .downstream = downstream,
-                        .changes = changes,
-                        .overlay = overlay,
-                    };
-                    normalized_owned = false;
-                    return plan;
+                if (try prepareSparseDownstream(engine, ctx, roc_host, scratch, selections, branch_ranges, sites, rows, replacement_owner, overlay)) |downstream| {
+                    plan.normalized_whens = normalized;
+                    plan.rows = rows;
+                    plan.replacement_owner = replacement_owner;
+                    plan.branch_ranges = branch_ranges;
+                    plan.row_ranges = row_ranges;
+                    plan.subsumed_each_indexes = subsumed_each_indexes;
+                    plan.layouts = &.{};
+                    plan.downstream = downstream;
+                    return;
                 }
 
-                const layouts = allocator.alloc(PreparedEachRowRenderLayout, rows.prepared_len) catch return error.OutOfMemory;
-                var layouts_prepared: usize = 0;
-                errdefer {
-                    for (layouts[0..layouts_prepared]) |*layout| layout.deinit();
-                    allocator.free(layouts);
-                }
+                const layouts = scratch.alloc(PreparedEachRowRenderLayout, rows.prepared_len) catch return error.OutOfMemory;
                 for (layouts, sites, rows.rows[0..rows.prepared_len], rows.replacements[0..rows.prepared_len]) |*layout, site, prepared_rows, replacement| {
-                    layout.* = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &prepared_rows.rows, replacement.replacement_rows, &replacement_owner.collection);
-                    layouts_prepared += 1;
+                    layout.* = try PreparedEachRowRenderLayout.prepare(engine, scratch, site, &prepared_rows.rows, replacement.replacement_rows, &replacement_owner.collection);
                 }
 
-                var descriptor_roots_list = shared_buffer.List(u64).empty;
-                defer descriptor_roots_list.deinit(allocator);
-                var retired_roots_list = shared_buffer.List(u64).empty;
-                defer retired_roots_list.deinit(allocator);
-                for (selections) |selection| {
-                    descriptor_roots_list.append(allocator, selection.retired_scope_id.raw()) catch return error.OutOfMemory;
-                    retired_roots_list.append(allocator, selection.retired_scope_id.raw()) catch return error.OutOfMemory;
-                }
+                // Both lists are reserved to their bounds up front: the arena
+                // only grows its tail allocation in place, so interleaved
+                // growth would copy and strand the other list's buffer.
+                var retired_bound: usize = selections.len;
+                var descriptor_extra: usize = 0;
                 for (rows.rows[0..rows.prepared_len], rows.replacements[0..rows.prepared_len]) |prepared_rows, replacement| {
-                    for (prepared_rows.rows.removed_scope_ids) |scope_id| descriptor_roots_list.append(allocator, scope_id.raw()) catch return error.OutOfMemory;
-                    for (prepared_rows.rows.removed_scope_ids) |scope_id| retired_roots_list.append(allocator, scope_id.raw()) catch return error.OutOfMemory;
-                    for (replacement.replacement_rows) |range| if (!range.created) {
-                        descriptor_roots_list.append(allocator, range.scope_id.raw()) catch return error.OutOfMemory;
-                    };
+                    retired_bound = std.math.add(usize, retired_bound, prepared_rows.rows.removed_scope_ids.len) catch return error.ResourceLimit;
+                    descriptor_extra = std.math.add(usize, descriptor_extra, replacement.replacement_rows.len) catch return error.ResourceLimit;
                 }
-                const descriptor_roots = try normalizedScopeRoots(engine, allocator, descriptor_roots_list.items);
-                defer allocator.free(descriptor_roots);
-                const retired_roots = try normalizedScopeRoots(engine, allocator, retired_roots_list.items);
-                defer allocator.free(retired_roots);
-                var targets = try PreparedStructuralTargets.prepare(engine, allocator, descriptor_roots, retired_roots, &replacement_owner.collection);
-                var targets_owned = true;
-                errdefer if (targets_owned) targets.deinit(allocator);
-                var layout_plan = PreparedRenderLayoutPlan.init(allocator);
-                var layout_plan_owned = true;
-                errdefer if (layout_plan_owned) layout_plan.deinit();
+                var retired_roots_list = shared_buffer.List(u64).empty;
+                retired_roots_list.ensureTotalCapacityPrecise(scratch, retired_bound) catch return error.OutOfMemory;
+                for (selections) |selection| retired_roots_list.appendAssumeCapacity(selection.retired_scope_id.raw());
+                for (rows.rows[0..rows.prepared_len]) |prepared_rows| for (prepared_rows.rows.removed_scope_ids) |scope_id| retired_roots_list.appendAssumeCapacity(scope_id.raw());
+                var descriptor_roots_list = shared_buffer.List(u64).empty;
+                descriptor_roots_list.ensureTotalCapacityPrecise(scratch, std.math.add(usize, retired_bound, descriptor_extra) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                descriptor_roots_list.appendSliceAssumeCapacity(retired_roots_list.items);
+                for (rows.replacements[0..rows.prepared_len]) |replacement| for (replacement.replacement_rows) |range| if (!range.created) descriptor_roots_list.appendAssumeCapacity(range.scope_id.raw());
+                const descriptor_roots = try normalizedScopeRoots(engine, scratch, descriptor_roots_list.items);
+                const retired_roots = try normalizedScopeRoots(engine, scratch, retired_roots_list.items);
+                const targets = try PreparedStructuralTargets.prepare(engine, scratch, descriptor_roots, retired_roots, &replacement_owner.collection);
+                var layout_plan = PreparedRenderLayoutPlan.init(scratch);
                 for (selections, branch_ranges) |selection, range| {
                     _ = try layout_plan.describeBranch(engine, selection, .{ .scope_id = range.scope_id, .start = range.start, .len = range.len, .site_start = range.site_start, .site_len = range.site_len });
                 }
                 for (layouts) |*layout| try layout_plan.describeEachSite(layout);
                 try layout_plan.describeNestedSites(replacement_owner.collection.nested_row_syncs.items);
                 try layout_plan.resolve(engine, targets.descriptor_target_scopes);
-                var final_render_topology = try PreparedFinalRenderTopology.preparePlaced(engine, allocator, replacement_owner, targets.descriptor_target_scopes, layout_plan.removed_render_count, layout_plan.placements.items);
-                var final_topology_owned = true;
-                errdefer if (final_topology_owned) final_render_topology.deinit();
-
                 var removal_starts = shared_buffer.List(usize).empty;
-                defer removal_starts.deinit(allocator);
                 var inside_target = false;
                 for (engine.active_stream.render_nodes.items, 0..) |node, index| {
                     const scope_id = renderNodeScopeId(&engine.active_stream, node);
                     const targeted = targets.descriptor_target_scopes[@intCast(scope_id)];
-                    if (targeted and !inside_target) removal_starts.append(allocator, index) catch return error.OutOfMemory;
+                    if (targeted and !inside_target) removal_starts.append(scratch, index) catch return error.OutOfMemory;
                     inside_target = targeted;
                 }
                 // Every edited site's parent takes its final child order from
@@ -2570,39 +2606,28 @@ pub fn Engine(comptime Ctx: type) type {
                 // parents of the live nested sites join them, since surviving
                 // rows and collected ones interleave under those.
                 var parents: shared_buffer.List(u64) = .empty;
-                defer parents.deinit(allocator);
-                for (selections) |selection| try PreparedStructuralDownstream.appendUniqueParentElemId(allocator, &parents, selection.parent_elem_id.raw());
-                for (sites) |site| try PreparedStructuralDownstream.appendUniqueParentElemId(allocator, &parents, site.parent_elem_id.raw());
-                try replacement_owner.collection.appendNestedSiteRenderParents(allocator, &parents);
+                for (selections) |selection| try PreparedStructuralDownstream.appendUniqueParentElemId(scratch, &parents, selection.parent_elem_id.raw());
+                for (sites) |site| try PreparedStructuralDownstream.appendUniqueParentElemId(scratch, &parents, site.parent_elem_id.raw());
+                try replacement_owner.collection.appendNestedSiteRenderParents(scratch, &parents);
                 const downstream = try PreparedStructuralDownstream.prepareExternal(engine, ctx, roc_host, replacement_owner, descriptor_roots, retired_roots, removal_starts.items, null, parents.items, overlay);
                 errdefer downstream.deinit();
-                downstream.final_render_topology = final_render_topology;
-                final_topology_owned = false;
-                layout_plan_owned = false;
+                // The topology's buffers are swapped into the live stream at
+                // commit and the displaced ones freed through its allocator,
+                // so it uses the host allocator; the downstream owns it from
+                // the moment it exists.
+                downstream.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(engine, backing, replacement_owner, targets.descriptor_target_scopes, layout_plan.removed_render_count, layout_plan.placements.items);
                 try downstream.adoptRenderLayoutPlan(layout_plan);
                 try downstream.prepareFinalRenderTopology(parents.items);
                 downstream.suppressed_render_parent_ids = &.{};
-                targets.deinit(allocator);
-                targets_owned = false;
 
-                const plan = allocator.create(@This()) catch return error.OutOfMemory;
-                errdefer allocator.destroy(plan);
-                plan.* = .{
-                    .allocator = allocator,
-                    .engine = engine,
-                    .normalized_whens = normalized,
-                    .rows = rows,
-                    .replacement_owner = replacement_owner,
-                    .branch_ranges = branch_ranges,
-                    .row_ranges = row_ranges,
-                    .subsumed_each_indexes = subsumed_each_indexes,
-                    .layouts = layouts,
-                    .downstream = downstream,
-                    .changes = changes,
-                    .overlay = overlay,
-                };
-                normalized_owned = false;
-                return plan;
+                plan.normalized_whens = normalized;
+                plan.rows = rows;
+                plan.replacement_owner = replacement_owner;
+                plan.branch_ranges = branch_ranges;
+                plan.row_ranges = row_ranges;
+                plan.subsumed_each_indexes = subsumed_each_indexes;
+                plan.layouts = layouts;
+                plan.downstream = downstream;
             }
 
             fn commitEarly(self: *@This()) void {
@@ -2634,18 +2659,20 @@ pub fn Engine(comptime Ctx: type) type {
                 return counts;
             }
 
+            /// Frees the plan and everything its arena holds. The arena is
+            /// copied out first because the plan itself lives on the child
+            /// allocator and is destroyed before the arena's nodes.
+            fn releaseArena(self: *@This()) void {
+                const arena = self.arena;
+                arena.child_allocator.destroy(self);
+                arena.deinit();
+            }
+
             fn deinit(self: *@This()) void {
                 self.downstream.deinit();
-                for (self.layouts) |*layout| layout.deinit();
-                self.allocator.free(self.layouts);
                 self.replacement_owner.deinit();
                 self.rows.deinit();
-                self.normalized_whens.deinit(self.allocator);
-                self.allocator.free(self.branch_ranges);
-                self.allocator.free(self.row_ranges);
-                self.allocator.free(self.subsumed_each_indexes);
-                const allocator = self.allocator;
-                allocator.destroy(self);
+                self.releaseArena();
             }
         };
 
@@ -5523,17 +5550,50 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn collectInitialEach(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, binder_stack: *shared_buffer.List(HostBinderBinding), payload: abi_view.EachElem, dirty_source_node_ids: []const u64) CollectionError!void {
+                var staging: InitialEachStaging = .{};
+                var adopted = false;
+                defer staging.release(Ctx.allocator(self.host_ctx), self.host_ctx, roc_host, &self.engine.pending_roc_metrics, adopted);
+                try self.collectInitialEachInto(roc_host, scope_id, parent_elem_id, ordinal, binder_stack, payload, dirty_source_node_ids, &staging);
+                adopted = true;
+            }
+
+            /// Everything an initial each stages before the collection adopts
+            /// it, released from one place so the body below carries no defers.
+            /// Scratch and the evaluated rows are dropped on every path (the
+            /// evaluation hands its inputs over before adoption); the site
+            /// descriptor, each descriptor, and row table only when they were
+            /// not adopted.
+            const InitialEachStaging = struct {
+                site: ?HostNodeDescriptorStream.PreparedScopeSite = null,
+                prepared_each: ?HostNodeDescriptorStream.PreparedEach = null,
+                evaluated: ?*PreparedInitialEach = null,
+                prepared_site: ?HostEachRowSite = null,
+                row_render_ranges: []RowRenderSpanRange = &.{},
+                stable_edits: []rows_transition.StableEdit = &.{},
+
+                fn release(self: *@This(), allocator: std.mem.Allocator, ctx: Ctx.Handle, roc_host: *abi.RocHost, metrics: anytype, adopted: bool) void {
+                    allocator.free(self.stable_edits);
+                    allocator.free(self.row_render_ranges);
+                    if (self.evaluated) |evaluated| evaluated.deinit();
+                    if (adopted) return;
+                    if (self.prepared_site) |*prepared_site| prepared_site.deinit(allocator);
+                    if (self.prepared_each) |*prepared_each| prepared_each.abort(allocator, ctx, roc_host, metrics);
+                    if (self.site) |*site| site.abort(allocator);
+                }
+            };
+
+            fn collectInitialEachInto(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, binder_stack: *shared_buffer.List(HostBinderBinding), payload: abi_view.EachElem, dirty_source_node_ids: []const u64, staging: *InitialEachStaging) CollectionError!void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 const site_ordinal = ordinal.*;
                 const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
                 try self.reserveScopeDescriptors(scope_id, 0, 1);
-                var site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .each, binder_stack.items) catch return error.OutOfMemory;
+                staging.site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .each, binder_stack.items) catch return error.OutOfMemory;
+                const site = &staging.site.?;
                 site.desc.render_insert_index = self.prepared_render_order.items.len;
-                errdefer site.abort(allocator);
                 try self.appendConstructionPosition(scope_id, parent_elem_id, .marker(node_id, .each));
                 const items = try self.bindSignalRoot(roc_host, payload.rows.*, binder_stack.items);
-                var prepared_each = self.stream.prepareEach(node_id, items, payload.ops, &self.engine.pending_roc_metrics);
-                errdefer prepared_each.abort(allocator, self.host_ctx, roc_host, &self.engine.pending_roc_metrics);
+                staging.prepared_each = self.stream.prepareEach(node_id, items, payload.ops, &self.engine.pending_roc_metrics);
+                const prepared_each = &staging.prepared_each.?;
                 self.signal_records.transferDescriptorRoot(items.record);
                 const journaled = self.signal_bindings.pop() orelse @panic("staged each binding journal underflow");
                 if (journaled.record != items.record or journaled.source_node_ids.ptr != items.source_node_ids.ptr) @panic("staged each binding journal transfer mismatch");
@@ -5551,14 +5611,14 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.liveEachSiteIndex(scope_id, site_ordinal)) |site_index| {
                     try self.collectNestedRowSync(roc_host, scope_id, parent_elem_id, site_ordinal, site_index, &prepared_each.desc, binder_stack, dirty_source_node_ids);
                     try self.appendConstructionPosition(scope_id, parent_elem_id, .marker(node_id, .each_end));
-                    self.prepared_state_sites.appendAssumeCapacity(site);
-                    self.prepared_eaches.appendAssumeCapacity(prepared_each);
+                    self.prepared_state_sites.appendAssumeCapacity(site.*);
+                    self.prepared_eaches.appendAssumeCapacity(prepared_each.*);
                     ordinal.* = ids.SiteOrdinal.fromRaw(ordinal.*.raw() + 1);
                     return;
                 }
 
-                const evaluated = try PreparedInitialEach.prepare(self.engine, self.host_ctx, roc_host, &prepared_each.desc, scope_id, site_ordinal, allocator, self.prepared_state_cells.items);
-                defer evaluated.deinit();
+                staging.evaluated = try PreparedInitialEach.prepare(self.engine, self.host_ctx, roc_host, &prepared_each.desc, scope_id, site_ordinal, allocator, self.prepared_state_cells.items);
+                const evaluated = staging.evaluated.?;
                 try evaluated.reserveForCollection(self);
                 // Initial-row bindings are staged while the row scopes are
                 // collected below, so reserve their full generation bound
@@ -5580,8 +5640,8 @@ pub fn Engine(comptime Ctx: type) type {
                 // The site's own row tables are sized to exactly its rows and
                 // filled below during preparation; publication moves the whole
                 // site into `engine.each_row_sites`, whose slot the plan holds.
-                var prepared_site = HostEachRowSite{ .key = .{ .parent_scope_id = scope_id, .site_ordinal = site_ordinal } };
-                errdefer prepared_site.deinit(allocator);
+                staging.prepared_site = HostEachRowSite{ .key = .{ .parent_scope_id = scope_id, .site_ordinal = site_ordinal } };
+                const prepared_site = &staging.prepared_site.?;
                 prepared_site.scope_ids.ensureTotalCapacity(allocator, evaluated.rows.len) catch return error.OutOfMemory;
                 prepared_site.hash_links.ensureTotalCapacity(allocator, evaluated.rows.len) catch return error.OutOfMemory;
                 prepared_site.hash_heads.ensureTotalCapacity(allocator, std.math.cast(u32, evaluated.rows.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
@@ -5600,8 +5660,8 @@ pub fn Engine(comptime Ctx: type) type {
                     self.engine.active_each_candidate_generation = previous_generation;
                     self.engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
-                const row_render_ranges = allocator.alloc(RowRenderSpanRange, evaluated.rows.len) catch return error.OutOfMemory;
-                defer allocator.free(row_render_ranges);
+                staging.row_render_ranges = allocator.alloc(RowRenderSpanRange, evaluated.rows.len) catch return error.OutOfMemory;
+                const row_render_ranges = staging.row_render_ranges;
                 for (evaluated.rows, 0..) |row, row_index| {
                     const row_scope_id = try self.reserveEachRowScopeGeneration(scope_id, site_ordinal, row.key_hash, row.row_handle);
                     prepared_site.scope_ids.appendAssumeCapacity(row_scope_id);
@@ -5639,8 +5699,8 @@ pub fn Engine(comptime Ctx: type) type {
                 evaluated.inputs.rows_site_key = rows_key;
                 evaluated.inputs.rows_site_published = existing_rows_site_id != null;
                 const edit_offset: usize = if (existing_rows_site_id != null) 1 else 0;
-                const stable_edits = allocator.alloc(rows_transition.StableEdit, evaluated.rows.len + edit_offset) catch return error.OutOfMemory;
-                defer allocator.free(stable_edits);
+                staging.stable_edits = allocator.alloc(rows_transition.StableEdit, evaluated.rows.len + edit_offset) catch return error.OutOfMemory;
+                const stable_edits = staging.stable_edits;
                 if (edit_offset != 0) stable_edits[0] = .clear;
                 for (evaluated.rows, prepared_site.scope_ids.items, 0..) |row, row_scope_id, row_index| {
                     const slot = evaluated.inputs.slot(row_index) orelse return error.InvalidDescriptor;
@@ -5682,9 +5742,9 @@ pub fn Engine(comptime Ctx: type) type {
                 const input_index = self.prepared_initial_each_inputs.items.len;
                 self.prepared_initial_each_inputs.append(allocator, evaluated.inputs) catch return error.OutOfMemory;
                 evaluated.owns_inputs = false;
-                self.prepared_state_sites.appendAssumeCapacity(site);
-                self.prepared_eaches.appendAssumeCapacity(prepared_each);
-                self.prepared_each_sites.appendAssumeCapacity(prepared_site);
+                self.prepared_state_sites.appendAssumeCapacity(site.*);
+                self.prepared_eaches.appendAssumeCapacity(prepared_each.*);
+                self.prepared_each_sites.appendAssumeCapacity(prepared_site.*);
                 for (row_render_ranges) |range| self.row_render_span_intents.appendAssumeCapacity(.{ .owner = .{ .initial = input_index }, .range = range });
                 ordinal.* = ids.SiteOrdinal.fromRaw(ordinal.*.raw() + 1);
             }
@@ -5864,7 +5924,52 @@ pub fn Engine(comptime Ctx: type) type {
                 };
             }
 
+            /// Everything a nested row sync stages before the collection adopts
+            /// it, released from one place so the body below carries no defers.
+            /// Scratch is dropped on every path; the staged owners (inputs,
+            /// row sync, recollection flags, layout pieces) only when the sync
+            /// was not adopted into `nested_row_syncs`.
+            const NestedRowSyncStaging = struct {
+                inputs: ?PreparedEachInputs = null,
+                hooks: StagedEachRowSyncHooks = undefined,
+                rows: ?each_runtime.PreparedRowSync = null,
+                recollected: []bool = &.{},
+                pieces: []PreparedRenderLayoutPlan.Piece = &.{},
+                row_render_ranges: shared_buffer.List(RowRenderSpanRange) = .empty,
+                collected_item_slots: std.AutoHashMapUnmanaged(u64, u64) = .empty,
+                row_elems: []?abi.Elem = &.{},
+                sparse_row_elems: std.AutoHashMapUnmanaged(u64, abi.Elem) = .empty,
+                segments: shared_buffer.List(HostEachRowRenderSegment) = .empty,
+
+                fn release(self: *@This(), allocator: std.mem.Allocator, roc_host: *abi.RocHost, adopted: bool) void {
+                    self.segments.deinit(allocator);
+                    var values = self.sparse_row_elems.valueIterator();
+                    while (values.next()) |elem| elem.decref(roc_host);
+                    self.sparse_row_elems.deinit(allocator);
+                    for (self.row_elems) |maybe_elem| if (maybe_elem) |elem| elem.decref(roc_host);
+                    allocator.free(self.row_elems);
+                    self.collected_item_slots.deinit(allocator);
+                    self.row_render_ranges.deinit(allocator);
+                    if (adopted) return;
+                    allocator.free(self.pieces);
+                    allocator.free(self.recollected);
+                    if (self.rows) |*rows| {
+                        rows.abort(&self.hooks);
+                        rows.deinit();
+                    }
+                    if (self.inputs) |*inputs| inputs.deinit();
+                }
+            };
+
             fn collectNestedRowSync(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, site_ordinal: ids.SiteOrdinal, site_index: usize, each: *const HostNodeEachDesc, binder_stack: *shared_buffer.List(HostBinderBinding), dirty_source_node_ids: []const u64) CollectionError!void {
+                var staging: NestedRowSyncStaging = .{};
+                var adopted = false;
+                defer staging.release(Ctx.allocator(self.host_ctx), roc_host, adopted);
+                try self.collectNestedRowSyncInto(roc_host, scope_id, parent_elem_id, site_ordinal, site_index, each, binder_stack, dirty_source_node_ids, &staging);
+                adopted = true;
+            }
+
+            fn collectNestedRowSyncInto(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, site_ordinal: ids.SiteOrdinal, site_index: usize, each: *const HostNodeEachDesc, binder_stack: *shared_buffer.List(HostBinderBinding), dirty_source_node_ids: []const u64, staging: *NestedRowSyncStaging) CollectionError!void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 const engine_ptr = self.engine;
                 self.signal_roc_host = roc_host;
@@ -5876,8 +5981,8 @@ pub fn Engine(comptime Ctx: type) type {
                 const rows_site_id = engine_ptr.rows_site_ids.get(rows_key) orelse return error.InvalidDescriptor;
                 const rows_store = engine_ptr.rowsStore(allocator);
                 const parent_owner = (rows_store.getSiteConst(rows_site_id) catch return error.InvalidDescriptor).owner_token;
-                var inputs = try PreparedEachInputs.prepareWithOverlay(engine_ptr, self.host_ctx, roc_host, each, allocator, null, self.prepared_state_cells.items, parent_owner.raw());
-                errdefer inputs.deinit();
+                staging.inputs = try PreparedEachInputs.prepareWithOverlay(engine_ptr, self.host_ctx, roc_host, each, allocator, null, self.prepared_state_cells.items, parent_owner.raw());
+                const inputs = &staging.inputs.?;
                 inputs.rows_site_id = rows_site_id;
                 inputs.rows_site_key = rows_key;
                 inputs.rows_site_published = true;
@@ -5888,25 +5993,23 @@ pub fn Engine(comptime Ctx: type) type {
                 // committed survivor this collection may attach.
                 const scope_bound = if (inputs.delta) |delta| delta.ops.items.len else inputs.keys.len;
                 try self.reserveCounts(.{ .external_scopes = scope_bound, .each_rows = scope_bound });
-                var hooks = StagedEachRowSyncHooks.init(self, roc_host, &inputs);
+                staging.hooks = StagedEachRowSyncHooks.init(self, roc_host, inputs);
+                const hooks = &staging.hooks;
                 engine_ptr.recordEachSync(inputs.generation.item_count, engine_ptr.each_row_sites.items[site_index].scope_ids.items.len);
-                var rows = if (direct_delta)
-                    try self.prepareNestedDirectRows(scope_id, site_ordinal, site_index, rows_site_id, parent_owner, &inputs)
+                staging.rows = if (direct_delta)
+                    try self.prepareNestedDirectRows(scope_id, site_ordinal, site_index, rows_site_id, parent_owner, inputs)
                 else blk: {
                     const binding_edits = std.math.add(usize, inputs.generation.item_count, engine_ptr.each_row_sites.items[site_index].scope_ids.items.len) catch return error.ResourceLimit;
                     inputs.candidate_bindings.reserve(binding_edits) catch |err| return switch (err) {
                         error.OutOfMemory => error.OutOfMemory,
                         error.ResourceLimit => error.ResourceLimit,
                     };
-                    break :blk each_runtime.PreparedRowSync.prepare(allocator, &engine_ptr.each_row_sites, &engine_ptr.each_row_memberships_by_scope_id, site_index, scope_id, site_ordinal, inputs.keys, inputs.items, &hooks) catch |err| switch (err) {
+                    break :blk each_runtime.PreparedRowSync.prepare(allocator, &engine_ptr.each_row_sites, &engine_ptr.each_row_memberships_by_scope_id, site_index, scope_id, site_ordinal, inputs.keys, inputs.items, hooks) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.ResourceLimit => return error.ResourceLimit,
                     };
                 };
-                errdefer {
-                    rows.abort(&hooks);
-                    rows.deinit();
-                }
+                const rows = &staging.rows.?;
                 if (!direct_delta) {
                     const next_owner = rows_site_store.OwnerToken.fromRaw(inputs.generation.rows_generation) catch return error.InvalidDescriptor;
                     const stable_edit_count = std.math.add(usize, rows.next_scope_ids.len, 1) catch return error.ResourceLimit;
@@ -5949,26 +6052,18 @@ pub fn Engine(comptime Ctx: type) type {
                 engine_ptr.each_generations.ensureUnusedCapacity(allocator, std.math.cast(u32, self.candidate_generation_count) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 const site_slot_count = std.math.add(usize, site_index, 1) catch return error.ResourceLimit;
                 engine_ptr.each_generation_ids_by_site_index.ensureTotalCapacity(allocator, site_slot_count) catch return error.OutOfMemory;
-                try self.indexCandidateGeneration(&inputs);
+                try self.indexCandidateGeneration(inputs);
 
                 const row_count = rows.next_scope_ids.len;
-                const recollected = allocator.alloc(bool, row_count) catch return error.OutOfMemory;
-                errdefer allocator.free(recollected);
-                var row_render_ranges: shared_buffer.List(RowRenderSpanRange) = .empty;
-                defer row_render_ranges.deinit(allocator);
-                var collected_item_slots: std.AutoHashMapUnmanaged(u64, u64) = .empty;
-                defer collected_item_slots.deinit(allocator);
+                staging.recollected = allocator.alloc(bool, row_count) catch return error.OutOfMemory;
+                const recollected = staging.recollected;
+                const row_render_ranges = &staging.row_render_ranges;
+                const collected_item_slots = &staging.collected_item_slots;
                 const row_elems = allocator.alloc(?abi.Elem, row_count) catch return error.OutOfMemory;
-                defer allocator.free(row_elems);
                 @memset(row_elems, null);
-                defer for (row_elems) |maybe_elem| if (maybe_elem) |elem| elem.decref(roc_host);
+                staging.row_elems = row_elems;
                 var total: StaticRootCounts = .{};
-                var sparse_row_elems: std.AutoHashMapUnmanaged(u64, abi.Elem) = .empty;
-                defer {
-                    var values = sparse_row_elems.valueIterator();
-                    while (values.next()) |elem| elem.decref(roc_host);
-                    sparse_row_elems.deinit(allocator);
-                }
+                const sparse_row_elems = &staging.sparse_row_elems;
                 if (direct_delta) {
                     const candidate_rows = PreparedActiveEachRows.CandidateRows{ .transition = &inputs.rows_transition.? };
                     const sparse_bound = std.math.add(usize, candidate_rows.createdLen(), candidate_rows.changedUpperBound()) catch return error.ResourceLimit;
@@ -5997,7 +6092,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const previous_generation = engine_ptr.active_each_candidate_generation;
                 const previous_rows_site_id = engine_ptr.active_each_candidate_rows_site_id;
                 engine_ptr.active_each_candidate_bindings = &inputs.candidate_bindings;
-                engine_ptr.active_each_candidate_inputs = &inputs;
+                engine_ptr.active_each_candidate_inputs = inputs;
                 engine_ptr.active_each_candidate_generation = inputs.generation;
                 engine_ptr.active_each_candidate_rows_site_id = inputs.rows_site_id;
                 defer {
@@ -6040,13 +6135,12 @@ pub fn Engine(comptime Ctx: type) type {
                 if (sparse_row_elems.count() != 0) return error.InvalidDescriptor;
                 try self.reserveCounts(.{ .roots = total });
 
-                var segments: shared_buffer.List(HostEachRowRenderSegment) = .empty;
-                defer segments.deinit(allocator);
-                const old_end = try engine_ptr.appendEachSiteRenderSegments(allocator, .{ .parent_scope_id = scope_id, .site_ordinal = site_ordinal }, old_site.render_insert_index, &segments);
+                const segments = &staging.segments;
+                const old_end = try engine_ptr.appendEachSiteRenderSegments(allocator, .{ .parent_scope_id = scope_id, .site_ordinal = site_ordinal }, old_site.render_insert_index, segments);
                 const old_start = if (segments.items.len != 0) segments.items[0].start else old_site.render_insert_index;
 
-                const pieces = allocator.alloc(PreparedRenderLayoutPlan.Piece, row_count) catch return error.OutOfMemory;
-                errdefer allocator.free(pieces);
+                staging.pieces = allocator.alloc(PreparedRenderLayoutPlan.Piece, row_count) catch return error.OutOfMemory;
+                const pieces = staging.pieces;
                 const local_render_start = self.prepared_render_order.items.len;
                 const local_site_start = self.prepared_state_sites.items.len;
                 // A surviving row that renders nothing has no span of its
@@ -6112,8 +6206,8 @@ pub fn Engine(comptime Ctx: type) type {
                     .local_site_index = local_site_index,
                     .old_start = old_start,
                     .old_end = old_end,
-                    .inputs = inputs,
-                    .rows = rows,
+                    .inputs = inputs.*,
+                    .rows = rows.*,
                     .direct_delta = direct_delta,
                     .recollected = recollected,
                     .pieces = pieces,
@@ -9288,16 +9382,15 @@ pub fn Engine(comptime Ctx: type) type {
 
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
-                var plan_owns_cleanup = false;
-                errdefer if (!plan_owns_cleanup) allocator.destroy(plan);
-                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host };
-                errdefer if (!plan_owns_cleanup) plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                // `deinit` releases every field from any partially prepared
+                // state, so one errdefer unwinds the whole preparation.
+                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .owns_replacement = false };
+                errdefer plan.deinit();
                 plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, selections.len, .sparse);
-                errdefer if (!plan_owns_cleanup) plan.replacement.deinit();
+                plan.owns_replacement = true;
                 plan.replacement.collection.cache_overlay = cache_overlay;
                 try plan.replacement.collection.stageExternalStates(roc_host, state_update);
                 plan.replacement_scope_ids = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
-                errdefer if (!plan_owns_cleanup) allocator.free(plan.replacement_scope_ids);
                 const replacement_ranges = allocator.alloc(PreparedReplacementOwner.CollectedWhenSelection, selections.len) catch return error.OutOfMemory;
                 defer allocator.free(replacement_ranges);
 
@@ -9310,9 +9403,9 @@ pub fn Engine(comptime Ctx: type) type {
                 if (try prepareSparseBranches(engine, ctx, roc_host, plan.replacement, selections, replacement_ranges, cache_overlay)) |sparse| {
                     sparse.owns_replacement = true;
                     sparse.replacement_scope_ids = plan.replacement_scope_ids;
-                    plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
-                    allocator.destroy(plan);
-                    plan_owns_cleanup = true;
+                    plan.owns_replacement = false;
+                    plan.replacement_scope_ids = &.{};
+                    plan.deinit();
                     return sparse;
                 }
 
@@ -9354,8 +9447,6 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.suppressed_render_parent_ids = parents.items;
                 try plan.prepareDownstream(allocator, retired_scope_ids, retired_scope_ids, render_insert_indexes, scan_scopes, false, cache_overlay);
                 plan.suppressed_render_parent_ids = &.{};
-                plan_owns_cleanup = true;
-                errdefer plan.deinit();
                 try layout_plan.resolve(engine, plan.targets.?.descriptor_target_scopes);
                 plan.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(plan.engine, allocator, plan.replacement, plan.targets.?.descriptor_target_scopes, layout_plan.removed_render_count, layout_plan.placements.items);
                 layout_plan_owned = false;
@@ -9374,9 +9465,8 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepareExternal(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, scan_scopes: ?[]const []const bool, suppressed_render_parent_ids: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
-                errdefer allocator.destroy(plan);
                 plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .replacement = replacement, .owns_replacement = false, .suppressed_render_parent_ids = suppressed_render_parent_ids };
-                errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                errdefer plan.deinit();
                 try plan.prepareDownstream(allocator, descriptor_root_scope_ids, retired_root_scope_ids, render_insert_indexes, scan_scopes, true, cache_overlay);
                 return plan;
             }
@@ -9385,9 +9475,8 @@ pub fn Engine(comptime Ctx: type) type {
                 if (engine.active_stream.render_nodes.items.len != 0 or engine.active_signal_graph.items.len != 0 or engine.render_cache.hasRoot()) return error.InvalidRenderTopology;
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
-                errdefer allocator.destroy(plan);
                 plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .replacement = replacement, .owns_replacement = false, .initial_root = true };
-                errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                errdefer plan.deinit();
                 try plan.prepareDownstream(allocator, &.{}, &.{}, &.{}, null, true, null);
                 return plan;
             }
@@ -9632,7 +9721,6 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepareSparseExternalScopes(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, retired_roots: []const ids.ScopeId, synced_row_roots: []const ids.ScopeId, suppressed_parents: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
-                errdefer allocator.destroy(plan);
                 plan.* = .{
                     .engine = engine,
                     .host_ctx = ctx,
@@ -9641,69 +9729,68 @@ pub fn Engine(comptime Ctx: type) type {
                     .owns_replacement = false,
                     .sparse_render_membership = true,
                 };
-                errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                // `deinit` releases every field from any partially prepared
+                // state, so one errdefer unwinds the whole preparation.
+                errdefer plan.deinit();
 
+                var nested_row_scopes: shared_buffer.List(ids.ScopeId) = .empty;
+                defer nested_row_scopes.deinit(allocator);
+                var direct_roots = try DirectRowRootMembership.init(allocator, synced_row_roots);
+                defer direct_roots.deinit(allocator);
+                try plan.prepareSparseExternalScopesInto(retired_roots, suppressed_parents, cache_overlay, &nested_row_scopes, &direct_roots);
+                return plan;
+            }
+
+            /// The fallible body of `prepareSparseExternalScopes`, kept free of
+            /// defers: the wrapper owns the plan's unwind and the two pieces
+            /// of classification scratch.
+            fn prepareSparseExternalScopesInto(plan: *@This(), retired_roots: []const ids.ScopeId, suppressed_parents: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates, nested_row_scopes: *shared_buffer.List(ids.ScopeId), direct_roots: *const DirectRowRootMembership) CollectionError!void {
+                const engine = plan.engine;
+                const allocator = Ctx.allocator(plan.host_ctx);
+                // The empty slices are allocated first so a refusal while
+                // building their owners has nothing to release by hand.
+                const empty_targets = allocator.alloc(bool, 0) catch return error.OutOfMemory;
                 const retirement = scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, allocator, engine.scopes.items, retired_roots) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.OverlappingSubtrees => return error.OverlappingRemoval,
                 };
-                const empty_targets = allocator.alloc(bool, 0) catch return error.OutOfMemory;
                 plan.targets = .{ .descriptor_target_scopes = empty_targets, .scope_retirement = retirement };
-                errdefer if (plan.targets) |*targets| targets.deinit(allocator);
                 const retirement_scope_ids = plan.targets.?.scope_retirement.?.scope_ids;
 
-                var exact_removal = structural_splice.prepareScopeOwnedRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, retirement_scope_ids) catch |err| switch (err) {
+                const empty_intervals = allocator.alloc(structural_splice.RenderRemovalInterval, 0) catch return error.OutOfMemory;
+                const exact_removal = structural_splice.prepareScopeOwnedRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, retirement_scope_ids) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                     error.InvalidDescriptor => return error.InvalidDescriptor,
                 };
-                var exact_removal_owned = true;
-                errdefer if (exact_removal_owned) exact_removal.deinit(allocator);
-                const empty_intervals = allocator.alloc(structural_splice.RenderRemovalInterval, 0) catch return error.OutOfMemory;
                 plan.removal = .{ .removal = exact_removal, .intervals_descending = empty_intervals };
-                exact_removal_owned = false;
-                errdefer if (plan.removal) |*removal| removal.deinit(allocator);
 
                 plan.identity_retirements = try PreparedIdentityRetirements.prepareExactRemoval(engine, allocator, retirement_scope_ids, &plan.removal.?.removal);
-                errdefer if (plan.identity_retirements) |*retirements| retirements.deinit(allocator);
                 plan.state_retirement = try PreparedStateRetirementIndexes.prepare(engine, allocator, plan.removal.?.removal.node_indexes.state_indexes.items);
-                errdefer if (plan.state_retirement) |*retirement_plan| retirement_plan.deinit(allocator);
                 try plan.state_retirement.?.reserveRetired(allocator, &plan.retired_state_cells);
-                errdefer plan.retired_state_cells.deinit(allocator);
 
-                var nested_row_scopes: shared_buffer.List(ids.ScopeId) = .empty;
-                defer nested_row_scopes.deinit(allocator);
                 nested_row_scopes.ensureTotalCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
-                var direct_roots = try DirectRowRootMembership.init(allocator, synced_row_roots);
-                defer direct_roots.deinit(allocator);
-                plan.direct_root_classification_work = try direct_roots.classify(retirement_scope_ids, &nested_row_scopes);
+                plan.direct_root_classification_work = try direct_roots.classify(retirement_scope_ids, nested_row_scopes);
                 plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, nested_row_scopes.items);
-                errdefer if (plan.row_retirement) |*retirement_plan| retirement_plan.deinit(allocator);
                 plan.retired_stable_generations.ensureTotalCapacity(allocator, plan.row_retirement.?.rows.len) catch return error.OutOfMemory;
-                errdefer plan.retired_stable_generations.deinit(allocator);
                 plan.effects_retirement = try PreparedEffectRetirements.prepare(engine, allocator, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
-                errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
                 plan.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
-                errdefer plan.retired_scope_steps.deinit(allocator);
 
                 const removed_event_count = plan.removal.?.removal.descriptor_indexes.event_indexes.items.len;
                 const retained_event_count = std.math.sub(usize, engine.active_events.items.len, removed_event_count) catch return error.ResourceLimit;
                 const final_event_count = std.math.add(usize, retained_event_count, plan.replacement.stream.events.items.len) catch return error.ResourceLimit;
                 engine.active_events.ensureTotalCapacity(allocator, final_event_count) catch return error.OutOfMemory;
                 plan.retired_active_events.ensureTotalCapacity(allocator, removed_event_count) catch return error.OutOfMemory;
-                errdefer plan.retired_active_events.deinit(allocator);
                 if (cache_overlay) |overlay| try engine.reserveCacheBearingDescriptorPublication(allocator, &plan.replacement.stream, overlay);
                 try engine.active_stream.reserveMovedStreamPublication(allocator, &plan.replacement.stream);
                 try prepareRetiredStreamCapacity(allocator, &plan.retired_stream, &plan.removal.?.removal);
                 const on_change_base = std.math.sub(usize, engine.active_stream.on_changes.items.len, plan.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, engine.active_stream.mounts.items.len, plan.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 plan.publication = structural_splice.preparePublicationDeltas(allocator, plan.replacement.stream.render_nodes.items, &.{}, on_change_base, plan.replacement.stream.on_changes.items.len, mount_base, plan.replacement.stream.mounts.items.len) catch return error.OutOfMemory;
-                errdefer if (plan.publication) |*publication| publication.deinit(allocator);
 
                 plan.suppressed_render_parent_ids = suppressed_parents;
                 try plan.prepareGraphRenderAndPublication(allocator);
                 plan.suppressed_render_parent_ids = &.{};
-                return plan;
             }
 
             fn adoptSparseSnapshotRows(self: *@This(), site: HostNodeScopeSiteDesc, rows: *PreparedActiveEachRows) CollectionError!void {
@@ -9843,10 +9930,13 @@ pub fn Engine(comptime Ctx: type) type {
                 };
             }
 
+            /// Fills the retirement, reservation, and publication fields of a plan
+            /// the caller already guards with `errdefer plan.deinit()`; `deinit`
+            /// tolerates every partial state this leaves behind, so nothing here
+            /// unwinds by hand.
             fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, scan_scopes: ?[]const []const bool, external_row_sync: bool, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!void {
                 const nested_syncs = self.replacement.collection.nested_row_syncs.items;
                 self.targets = try PreparedStructuralTargets.prepare(self.engine, allocator, descriptor_root_scope_ids, retired_root_scope_ids, &self.replacement.collection);
-                errdefer if (self.targets) |*targets| targets.deinit(allocator);
                 const target_scopes = self.targets.?.descriptor_target_scopes;
                 const retirement_scope_ids = self.targets.?.scope_retirement.?.scope_ids;
                 self.removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &self.engine.active_stream, render_insert_indexes, target_scopes, scan_scopes) catch |err| switch (err) {
@@ -9855,9 +9945,7 @@ pub fn Engine(comptime Ctx: type) type {
                     error.InvalidDescriptor => return error.InvalidDescriptor,
                     error.OverlappingIntervals => return error.OverlappingRemoval,
                 };
-                errdefer if (self.removal) |*removal| removal.deinit(allocator);
                 self.identity_retirements = try PreparedIdentityRetirements.prepareExactRemoval(self.engine, allocator, retirement_scope_ids, &self.removal.?.removal);
-                errdefer if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
                 // A state site the replacement declares again under its
                 // committed node id keeps its cell: the descriptor is
                 // replaced, the value the site holds is not. Only the cells
@@ -9874,9 +9962,7 @@ pub fn Engine(comptime Ctx: type) type {
                     if (!redeclared) retired_state_indexes.appendAssumeCapacity(state_index);
                 }
                 self.state_retirement = try PreparedStateRetirementIndexes.prepare(self.engine, allocator, retired_state_indexes.items);
-                errdefer if (self.state_retirement) |*retirement| retirement.deinit(allocator);
                 try self.state_retirement.?.reserveRetired(allocator, &self.retired_state_cells);
-                errdefer self.retired_state_cells.deinit(allocator);
                 if (!external_row_sync) {
                     self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, retirement_scope_ids);
                 } else {
@@ -9901,26 +9987,20 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                     self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, nested.items);
                 }
-                errdefer if (self.row_retirement) |*retirement| retirement.deinit(allocator);
                 self.retired_stable_generations.ensureTotalCapacity(allocator, self.row_retirement.?.rows.len) catch return error.OutOfMemory;
-                errdefer self.retired_stable_generations.deinit(allocator);
                 self.effects_retirement = try PreparedEffectRetirements.prepare(self.engine, allocator, self.removal.?.removal.node_indexes.cleanup_indexes.items);
-                errdefer if (self.effects_retirement) |*effects| effects.deinit(allocator, null);
                 self.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
-                errdefer self.retired_scope_steps.deinit(allocator);
                 const removed_event_count = self.removal.?.removal.descriptor_indexes.event_indexes.items.len;
                 const retained_event_count = std.math.sub(usize, self.engine.active_events.items.len, removed_event_count) catch return error.ResourceLimit;
                 const final_event_count = std.math.add(usize, retained_event_count, self.replacement.stream.events.items.len) catch return error.ResourceLimit;
                 self.engine.active_events.ensureTotalCapacity(allocator, final_event_count) catch return error.OutOfMemory;
                 self.retired_active_events.ensureTotalCapacity(allocator, removed_event_count) catch return error.OutOfMemory;
-                errdefer self.retired_active_events.deinit(allocator);
                 if (cache_overlay) |overlay| try self.engine.reserveCacheBearingDescriptorPublication(allocator, &self.replacement.stream, overlay);
                 try self.engine.active_stream.reserveMovedStreamPublication(allocator, &self.replacement.stream);
                 try prepareRetiredStreamCapacity(allocator, &self.retired_stream, &self.removal.?.removal);
                 const on_change_base = std.math.sub(usize, self.engine.active_stream.on_changes.items.len, self.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, self.engine.active_stream.mounts.items.len, self.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 self.publication = structural_splice.preparePublicationDeltas(allocator, self.replacement.stream.render_nodes.items, &.{}, on_change_base, self.replacement.stream.on_changes.items.len, mount_base, self.replacement.stream.mounts.items.len) catch return error.OutOfMemory;
-                errdefer if (self.publication) |*publication| publication.deinit(allocator);
                 try self.prepareGraphRenderAndPublication(allocator);
             }
 
@@ -9933,7 +10013,6 @@ pub fn Engine(comptime Ctx: type) type {
                 try collectReplacementGraphRootsForStream(allocator, &self.replacement.stream, &replacement_roots);
                 if (self.engine.active_signal_graph.items.len != 0 or replacement_roots.items.len != 0) {
                     self.sink_edits = try self.prepareSinkEdits(allocator);
-                    errdefer if (self.sink_edits) |*edits| edits.deinit(allocator);
                     var retired_roots: shared_buffer.List(*HostSignalRecord) = .empty;
                     defer retired_roots.deinit(allocator);
                     try collectRetiredGraphRootsForRemoval(self.engine, allocator, &self.removal.?.removal, &retired_roots);
@@ -9941,14 +10020,11 @@ pub fn Engine(comptime Ctx: type) type {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidRelease => return error.InvalidSignalGraphRelease,
                     };
-                    errdefer if (self.graph_release) |*release| release.deinit(allocator);
                     self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, &self.graph_release.?, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
-                    errdefer if (self.graph_append) |*append| append.deinit(allocator);
                     self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_append.?);
-                    errdefer if (self.selector_registry) |*registry| registry.deinit(allocator);
                     try self.engine.reserveActiveIntervals(self.host_ctx, self.graph_append.?.appendedIntervalSourceCount());
                     try self.engine.reserveActiveRowSources(self.host_ctx, self.graph_append.?.appendedRowSourceCount());
                     try self.prepareGraphRoutes(allocator);
@@ -9968,21 +10044,6 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepareRender(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
                 if (!self.initial_root and !self.engine.render_cache.hasRoot()) return;
-                // The sparse plan is torn down field by field on failure, not
-                // through `deinit`, so every graph artifact prepared before the
-                // render stage is released here, including the staged selector
-                // memberships whose only other owner is the commit path.
-                errdefer {
-                    self.deinitGraphRoutes(allocator);
-                    if (self.graph_append) |*append| append.deinit(allocator);
-                    self.graph_append = null;
-                    if (self.graph_release) |*release| release.deinit(allocator);
-                    self.graph_release = null;
-                    if (self.selector_registry) |*registry| registry.deinit(allocator);
-                    self.selector_registry = null;
-                    if (self.sink_edits) |*edits| edits.deinit(allocator);
-                    self.sink_edits = null;
-                }
                 var facade = BranchReplacementPlan{
                     .engine = self.engine,
                     .host_ctx = self.host_ctx,
@@ -9994,16 +10055,13 @@ pub fn Engine(comptime Ctx: type) type {
                     .initial_root = self.initial_root,
                 };
                 self.render_splice = try facade.prepareRenderTopology(allocator);
-                errdefer if (self.render_splice) |*splice| splice.deinit();
                 self.render_splice.?.reserveSinkCommands(self.commitSinkCommandCount()) catch return error.ResourceLimit;
                 self.render_batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(self.host_ctx) else &self.render_batch;
-                errdefer if (self.render_batch_target == &self.render_batch) self.render_batch.deinit(allocator);
                 self.render_splice.?.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                 };
                 self.publication_phase.markPreflighted();
-                errdefer self.render_batch_target.?.abort();
                 if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
                     self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, &self.render_splice.?) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
@@ -10255,14 +10313,16 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareSinkEdits(self: *@This(), allocator: std.mem.Allocator) CollectionError!active_graph.PreparedSinkRouteEdits {
+                // Scratch that never escapes this call comes from one arena, so
+                // a refusal releases it in one step instead of replaying every
+                // list's teardown at each error exit.
+                var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+                defer scratch_arena.deinit();
+                const scratch = scratch_arena.allocator();
                 var text: shared_buffer.List(active_graph.TextSinkEdit) = .empty;
-                defer text.deinit(allocator);
                 var bools: shared_buffer.List(active_graph.BoolSinkEdit) = .empty;
-                defer bools.deinit(allocator);
                 var structural: shared_buffer.List(active_graph.StructuralSinkEdit) = .empty;
-                defer structural.deinit(allocator);
                 var changes: shared_buffer.List(active_graph.ChangeSinkEdit) = .empty;
-                defer changes.deinit(allocator);
                 const removal = &self.removal.?.removal;
                 const indexes = &removal.descriptor_indexes;
                 var text_removals = std.math.add(usize, indexes.signal_text_node_indexes.items.len, indexes.signal_text_attr_indexes.items.len) catch return error.ResourceLimit;
@@ -10270,19 +10330,19 @@ pub fn Engine(comptime Ctx: type) type {
                 text_removals = std.math.add(usize, text_removals, indexes.signal_optional_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
                 const bool_removals = std.math.add(usize, indexes.signal_bool_attr_indexes.items.len, indexes.signal_custom_bool_attr_indexes.items.len) catch return error.ResourceLimit;
                 const structural_removals = std.math.add(usize, removal.node_indexes.when_indexes.items.len, removal.node_indexes.each_indexes.items.len) catch return error.ResourceLimit;
-                text.ensureTotalCapacity(allocator, std.math.mul(usize, 2, text_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
-                bools.ensureTotalCapacity(allocator, std.math.mul(usize, 2, bool_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
-                structural.ensureTotalCapacity(allocator, std.math.mul(usize, 2, structural_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
-                changes.ensureTotalCapacity(allocator, std.math.mul(usize, 2, removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
-                try BranchReplacementPlan.appendTextSinkEdits(allocator, self.engine, &text, self.engine.active_stream.signal_text_nodes.items, indexes.signal_text_node_indexes.items, .text_node);
-                try BranchReplacementPlan.appendTextSinkEdits(allocator, self.engine, &text, self.engine.active_stream.signal_text_attrs.items, indexes.signal_text_attr_indexes.items, .text_attr);
-                try BranchReplacementPlan.appendTextSinkEdits(allocator, self.engine, &text, self.engine.active_stream.signal_custom_text_attrs.items, indexes.signal_custom_text_attr_indexes.items, .custom_text_attr);
-                try BranchReplacementPlan.appendTextSinkEdits(allocator, self.engine, &text, self.engine.active_stream.signal_optional_custom_text_attrs.items, indexes.signal_optional_custom_text_attr_indexes.items, .custom_text_optional_attr);
-                try BranchReplacementPlan.appendBoolSinkEdits(allocator, self.engine, &bools, self.engine.active_stream.signal_bool_attrs.items, indexes.signal_bool_attr_indexes.items, .bool_attr);
-                try BranchReplacementPlan.appendBoolSinkEdits(allocator, self.engine, &bools, self.engine.active_stream.signal_custom_bool_attrs.items, indexes.signal_custom_bool_attr_indexes.items, .custom_bool_attr);
-                try BranchReplacementPlan.appendChangeSinkEdits(allocator, self.engine, &changes, self.engine.active_stream.on_changes.items, removal.node_indexes.on_change_indexes.items);
-                try BranchReplacementPlan.appendStructuralSinkEdits(allocator, self.engine, &structural, self.engine.active_stream.whens.items, removal.node_indexes.when_indexes.items, .when);
-                try BranchReplacementPlan.appendStructuralSinkEdits(allocator, self.engine, &structural, self.engine.active_stream.eaches.items, removal.node_indexes.each_indexes.items, .each);
+                text.ensureTotalCapacity(scratch, std.math.mul(usize, 2, text_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                bools.ensureTotalCapacity(scratch, std.math.mul(usize, 2, bool_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                structural.ensureTotalCapacity(scratch, std.math.mul(usize, 2, structural_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                changes.ensureTotalCapacity(scratch, std.math.mul(usize, 2, removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                try BranchReplacementPlan.appendTextSinkEdits(scratch, self.engine, &text, self.engine.active_stream.signal_text_nodes.items, indexes.signal_text_node_indexes.items, .text_node);
+                try BranchReplacementPlan.appendTextSinkEdits(scratch, self.engine, &text, self.engine.active_stream.signal_text_attrs.items, indexes.signal_text_attr_indexes.items, .text_attr);
+                try BranchReplacementPlan.appendTextSinkEdits(scratch, self.engine, &text, self.engine.active_stream.signal_custom_text_attrs.items, indexes.signal_custom_text_attr_indexes.items, .custom_text_attr);
+                try BranchReplacementPlan.appendTextSinkEdits(scratch, self.engine, &text, self.engine.active_stream.signal_optional_custom_text_attrs.items, indexes.signal_optional_custom_text_attr_indexes.items, .custom_text_optional_attr);
+                try BranchReplacementPlan.appendBoolSinkEdits(scratch, self.engine, &bools, self.engine.active_stream.signal_bool_attrs.items, indexes.signal_bool_attr_indexes.items, .bool_attr);
+                try BranchReplacementPlan.appendBoolSinkEdits(scratch, self.engine, &bools, self.engine.active_stream.signal_custom_bool_attrs.items, indexes.signal_custom_bool_attr_indexes.items, .custom_bool_attr);
+                try BranchReplacementPlan.appendChangeSinkEdits(scratch, self.engine, &changes, self.engine.active_stream.on_changes.items, removal.node_indexes.on_change_indexes.items);
+                try BranchReplacementPlan.appendStructuralSinkEdits(scratch, self.engine, &structural, self.engine.active_stream.whens.items, removal.node_indexes.when_indexes.items, .when);
+                try BranchReplacementPlan.appendStructuralSinkEdits(scratch, self.engine, &structural, self.engine.active_stream.eaches.items, removal.node_indexes.each_indexes.items, .each);
                 return active_graph.prepareSinkRouteEdits(
                     allocator,
                     &self.engine.active_text_signal_routes,
@@ -10297,43 +10357,43 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareGraphRoutes(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
-                errdefer self.deinitGraphRoutes(allocator);
                 const graph_plan = &self.graph_append.?;
                 const graph_count = graph_plan.finalGraphCount();
+                // Scratch that never escapes this call comes from one arena, so
+                // a refusal releases it in one step instead of replaying every
+                // list's teardown at each error exit.
+                var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+                defer scratch_arena.deinit();
+                const scratch = scratch_arena.allocator();
                 var source: shared_buffer.List(active_graph.RouteAppend(u64)) = .empty;
-                defer source.deinit(allocator);
                 var text: shared_buffer.List(active_graph.RouteAppend(active_graph.TextSink)) = .empty;
-                defer text.deinit(allocator);
                 var bools: shared_buffer.List(active_graph.RouteAppend(active_graph.BoolSink)) = .empty;
-                defer bools.deinit(allocator);
                 var changes: shared_buffer.List(active_graph.RouteAppend(active_graph.ChangeSink)) = .empty;
-                defer changes.deinit(allocator);
                 var structural: shared_buffer.List(active_graph.RouteAppend(active_graph.StructuralSink)) = .empty;
-                defer structural.deinit(allocator);
                 for (graph_plan.records, graph_plan.record_ids) |record, record_id| switch (record.payload) {
-                    .ref => |source_node_id| source.append(allocator, .{ .route_index = source_node_id, .value = record_id }) catch return error.OutOfMemory,
+                    .ref => |source_node_id| source.append(scratch, .{ .route_index = source_node_id, .value = record_id }) catch return error.OutOfMemory,
                     else => {},
                 };
                 const removal = &self.removal.?.removal;
                 const indexes = &removal.descriptor_indexes;
                 const text_node_base = std.math.sub(usize, self.engine.active_stream.signal_text_nodes.items.len, indexes.signal_text_node_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.signal_text_nodes.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .text_node, .index = text_node_base + offset });
+                for (self.replacement.stream.signal_text_nodes.items, 0..) |desc, offset| try self.appendTextRoute(scratch, &text, desc.signal.record, .{ .kind = .text_node, .index = text_node_base + offset });
                 const text_attr_base = std.math.sub(usize, self.engine.active_stream.signal_text_attrs.items.len, indexes.signal_text_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.signal_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .text_attr, .index = text_attr_base + offset });
+                for (self.replacement.stream.signal_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(scratch, &text, desc.signal.record, .{ .kind = .text_attr, .index = text_attr_base + offset });
                 const custom_text_base = std.math.sub(usize, self.engine.active_stream.signal_custom_text_attrs.items.len, indexes.signal_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.signal_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .custom_text_attr, .index = custom_text_base + offset });
+                for (self.replacement.stream.signal_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(scratch, &text, desc.signal.record, .{ .kind = .custom_text_attr, .index = custom_text_base + offset });
                 const optional_text_base = std.math.sub(usize, self.engine.active_stream.signal_optional_custom_text_attrs.items.len, indexes.signal_optional_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.signal_optional_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .custom_text_optional_attr, .index = optional_text_base + offset });
+                for (self.replacement.stream.signal_optional_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(scratch, &text, desc.signal.record, .{ .kind = .custom_text_optional_attr, .index = optional_text_base + offset });
                 const bool_attr_base = std.math.sub(usize, self.engine.active_stream.signal_bool_attrs.items.len, indexes.signal_bool_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.signal_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, desc.signal.record, .{ .kind = .bool_attr, .index = bool_attr_base + offset });
+                for (self.replacement.stream.signal_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(scratch, &bools, desc.signal.record, .{ .kind = .bool_attr, .index = bool_attr_base + offset });
                 const custom_bool_base = std.math.sub(usize, self.engine.active_stream.signal_custom_bool_attrs.items.len, indexes.signal_custom_bool_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.signal_custom_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, desc.signal.record, .{ .kind = .custom_bool_attr, .index = custom_bool_base + offset });
+                for (self.replacement.stream.signal_custom_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(scratch, &bools, desc.signal.record, .{ .kind = .custom_bool_attr, .index = custom_bool_base + offset });
                 const change_base = std.math.sub(usize, self.engine.active_stream.on_changes.items.len, removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.on_changes.items, 0..) |desc, offset| try self.appendChangeRoute(allocator, &changes, desc.signal.record, .{ .index = change_base + offset });
+                for (self.replacement.stream.on_changes.items, 0..) |desc, offset| try self.appendChangeRoute(scratch, &changes, desc.signal.record, .{ .index = change_base + offset });
                 const when_base = std.math.sub(usize, self.engine.active_stream.whens.items.len, removal.node_indexes.when_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.whens.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, desc.condition.record, .{ .kind = .when, .index = when_base + offset });
+                for (self.replacement.stream.whens.items, 0..) |desc, offset| try self.appendStructuralRoute(scratch, &structural, desc.condition.record, .{ .kind = .when, .index = when_base + offset });
                 const each_base = std.math.sub(usize, self.engine.active_stream.eaches.items.len, removal.node_indexes.each_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.eaches.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, desc.items.record, .{ .kind = .each, .index = each_base + offset });
+                for (self.replacement.stream.eaches.items, 0..) |desc, offset| try self.appendStructuralRoute(scratch, &structural, desc.items.record, .{ .kind = .each, .index = each_base + offset });
                 var source_count = self.engine.active_source_signal_routes.items.len;
                 for (source.items) |entry| source_count = @max(source_count, std.math.add(usize, @intCast(entry.route_index), 1) catch return error.ResourceLimit);
                 self.graph_source_route_count = source_count;
@@ -10679,30 +10739,43 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             };
 
+            /// Owns every deferred release of the render topology preparation
+            /// so the body below carries none: Zig replays each live defer at
+            /// every fallible step, and the body has over a hundred of them.
+            /// Scratch that never escapes the call comes from one arena; the
+            /// splice under construction and the custom text evaluated for the
+            /// element being described are released here on refusal.
             fn prepareRenderTopology(self: *@This(), allocator: std.mem.Allocator) CollectionError!render_cache_mod.PreparedRenderSplice(Ctx) {
+                var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+                defer scratch_arena.deinit();
+                var splice: ?render_cache_mod.PreparedRenderSplice(Ctx) = null;
+                errdefer if (splice) |*staged| staged.deinit();
+                var owned_custom_text = shared_buffer.List(abi.RocStr).empty;
+                defer for (owned_custom_text.items) |*text| text.decref(self.roc_host);
+                try self.prepareRenderTopologyInto(allocator, scratch_arena.allocator(), &splice, &owned_custom_text);
+                return splice.?;
+            }
+
+            fn prepareRenderTopologyInto(self: *@This(), allocator: std.mem.Allocator, scratch: std.mem.Allocator, splice_slot: *?render_cache_mod.PreparedRenderSplice(Ctx), owned_custom_text: *shared_buffer.List(abi.RocStr)) CollectionError!void {
                 var retired: std.AutoHashMapUnmanaged(u64, void) = .empty;
-                defer retired.deinit(allocator);
                 const retired_count = std.math.cast(u32, self.removal.?.scan.removed_elem_ids.len) orelse return error.ResourceLimit;
-                retired.ensureUnusedCapacity(allocator, retired_count) catch return error.OutOfMemory;
+                retired.ensureUnusedCapacity(scratch, retired_count) catch return error.OutOfMemory;
                 for (self.removal.?.scan.removed_elem_ids) |elem_id| retired.putAssumeCapacity(elem_id, {});
                 var replacements: std.AutoHashMapUnmanaged(u64, render.NodeShape) = .empty;
-                defer replacements.deinit(allocator);
-                replacements.ensureUnusedCapacity(allocator, std.math.cast(u32, self.replacement_stream.render_nodes.items.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                replacements.ensureUnusedCapacity(scratch, std.math.cast(u32, self.replacement_stream.render_nodes.items.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 for (self.replacement_stream.render_nodes.items) |node| {
                     const result = replacements.getOrPutAssumeCapacity(node.elem_id.raw());
                     if (result.found_existing) return error.ResourceLimit;
                     result.value_ptr.* = descriptor_stream.renderNodeShape(HostNodeDescriptorStream, &self.replacement_stream, node);
                 }
                 var survival = HostSurvival{ .cache = &self.engine.render_cache, .retired = &retired, .replacements = &replacements };
-                defer survival.memo.deinit(allocator);
-                survival.memo.ensureUnusedCapacity(allocator, retired_count) catch return error.OutOfMemory;
+                survival.memo.ensureUnusedCapacity(scratch, retired_count) catch return error.OutOfMemory;
                 var host_removal_count: usize = 0;
                 for (self.removal.?.scan.removed_elem_ids) |elem_id| host_removal_count += @intFromBool(survival.removalPublication(elem_id) == .subtree_root);
 
                 var touched: std.AutoHashMapUnmanaged(u64, void) = .empty;
-                defer touched.deinit(allocator);
                 const touched_bound = std.math.add(usize, self.removal.?.scan.touched_parent_ids.len, self.replacement_stream.render_nodes.items.len) catch return error.ResourceLimit;
-                touched.ensureUnusedCapacity(allocator, std.math.cast(u32, touched_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                touched.ensureUnusedCapacity(scratch, std.math.cast(u32, touched_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 for (self.removal.?.scan.touched_parent_ids) |parent_id| {
                     if (self.isSuppressedRenderParent(parent_id)) continue;
                     if (!retired.contains(parent_id) or replacements.contains(parent_id)) touched.putAssumeCapacity(parent_id, {});
@@ -10714,12 +10787,10 @@ pub fn Engine(comptime Ctx: type) type {
                     if (!self.isSuppressedRenderParent(parent_id.raw())) touched.putAssumeCapacity(parent_id.raw(), {});
                 }
 
-                var event_reindex = try @import("descriptor_reindex.zig").Plan.prepare(allocator, self.engine.active_stream.events.items.len, self.removal.?.descriptor_indexes.event_indexes.items);
-                defer event_reindex.deinit();
+                var event_reindex = try @import("descriptor_reindex.zig").Plan.prepare(scratch, self.engine.active_stream.events.items.len, self.removal.?.descriptor_indexes.event_indexes.items);
                 var moved_fixed_event_count: usize = 0;
                 var moved_named_elem_ids = std.AutoHashMapUnmanaged(u64, void).empty;
-                defer moved_named_elem_ids.deinit(allocator);
-                moved_named_elem_ids.ensureTotalCapacity(allocator, std.math.cast(u32, event_reindex.moves.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                moved_named_elem_ids.ensureTotalCapacity(scratch, std.math.cast(u32, event_reindex.moves.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 for (event_reindex.moves) |move| {
                     const desc = self.engine.active_stream.events.items[move.original];
                     if (desc.fixedKind() != null) {
@@ -10815,7 +10886,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const event_base = std.math.sub(usize, self.engine.active_stream.events.items.len, self.removal.?.descriptor_indexes.event_indexes.items.len) catch return error.ResourceLimit;
                 var child_links = std.math.add(usize, old_child_count, final_child_count) catch return error.ResourceLimit;
                 child_links = std.math.add(usize, child_links, self.removal.?.scan.removed_elem_ids.len) catch return error.ResourceLimit;
-                var splice = render_cache_mod.PreparedRenderSplice(Ctx).init(allocator, &self.engine.render_cache, .{
+                splice_slot.* = render_cache_mod.PreparedRenderSplice(Ctx).init(allocator, &self.engine.render_cache, .{
                     .node_capacity = std.math.add(usize, std.math.cast(usize, max_elem_id) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit,
                     .new_tags = std.math.add(usize, self.replacement_stream.render_nodes.items.len, @intFromBool(self.initial_root)) catch return error.ResourceLimit,
                     .removals = self.removal.?.scan.removed_elem_ids.len,
@@ -10835,7 +10906,7 @@ pub fn Engine(comptime Ctx: type) type {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                 };
-                errdefer splice.deinit();
+                const splice = &splice_slot.*.?;
                 if (self.initial_root) {
                     splice.reset_dom = true;
                     splice.addHostRoot(&self.engine.render_cache) catch |err| return renderSpliceError(err);
@@ -10872,19 +10943,21 @@ pub fn Engine(comptime Ctx: type) type {
                     splice.addTextField(&self.engine.render_cache, desc.elem_id, desc.field, text.asSlice()) catch |err| return renderSpliceError(err);
                 }
                 for (self.replacement_stream.signal_bool_attrs.items) |*desc| splice.addBoolField(&self.engine.render_cache, desc.elem_id, desc.field, self.evalPreparedSignalBool(&desc.signal, desc.read, &desc.cached_value)) catch |err| return renderSpliceError(err);
+                // One set of per-element lists is reused across the loop; the
+                // evaluated custom text is released before each reuse and by
+                // the caller for whichever element was last.
+                var attrs: shared_buffer.List(render_cache_mod.CustomTextAttr) = .empty;
+                var named: shared_buffer.List(render_cache_mod.NamedEvent) = .empty;
                 for (self.replacement_stream.render_nodes.items) |node| {
                     if (node.kind != .element) continue;
-                    var attrs: shared_buffer.List(render_cache_mod.CustomTextAttr) = .empty;
-                    defer attrs.deinit(allocator);
+                    attrs.clearRetainingCapacity();
+                    for (owned_custom_text.items) |*text| text.decref(self.roc_host);
+                    owned_custom_text.clearRetainingCapacity();
+                    named.clearRetainingCapacity();
                     const custom_indexes = self.replacement_stream.customAttrIndices(node.elem_id);
                     const custom_count = custom_indexes.len;
-                    attrs.ensureTotalCapacity(allocator, custom_count) catch return error.OutOfMemory;
-                    var owned_custom_text = shared_buffer.List(abi.RocStr).empty;
-                    defer {
-                        for (owned_custom_text.items) |*text| text.decref(self.roc_host);
-                        owned_custom_text.deinit(allocator);
-                    }
-                    owned_custom_text.ensureTotalCapacity(allocator, custom_count) catch return error.OutOfMemory;
+                    attrs.ensureTotalCapacity(scratch, custom_count) catch return error.OutOfMemory;
+                    owned_custom_text.ensureTotalCapacity(scratch, custom_count) catch return error.OutOfMemory;
                     for (custom_indexes) |custom_index| switch (custom_index.kind) {
                         .static_text => {
                             const desc = self.replacement_stream.static_custom_text_attrs.items[custom_index.index];
@@ -10920,9 +10993,7 @@ pub fn Engine(comptime Ctx: type) type {
                         },
                     };
                     splice.addCustomAttrs(&self.engine.render_cache, node.elem_id, attrs.items) catch |err| return renderSpliceError(err);
-                    var named: shared_buffer.List(render_cache_mod.NamedEvent) = .empty;
-                    defer named.deinit(allocator);
-                    named.ensureTotalCapacity(allocator, self.replacement_stream.namedEventIndices(node.elem_id).len) catch return error.OutOfMemory;
+                    named.ensureTotalCapacity(scratch, self.replacement_stream.namedEventIndices(node.elem_id).len) catch return error.OutOfMemory;
                     for (self.replacement_stream.namedEventIndices(node.elem_id)) |event_index| {
                         const desc = self.replacement_stream.events.items[event_index];
                         const binding = desc.named() orelse return error.InvalidDescriptor;
@@ -10956,13 +11027,12 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 var moved_named_iterator = moved_named_elem_ids.keyIterator();
                 while (moved_named_iterator.next()) |elem_id| {
-                    var named: shared_buffer.List(render_cache_mod.NamedEvent) = .empty;
-                    defer named.deinit(allocator);
+                    named.clearRetainingCapacity();
                     for (self.engine.active_stream.namedEventIndices(ids.ElemId.fromRaw(elem_id.*))) |original_index| {
                         const desc = self.engine.active_stream.events.items[original_index];
                         const final_index = event_reindex.finalIndex(original_index) orelse continue;
                         const binding = desc.named() orelse continue;
-                        named.append(allocator, .{ .name = binding.name, .binding = .{
+                        named.append(scratch, .{ .name = binding.name, .binding = .{
                             .event_id = ids.EventId.fromRaw(std.math.add(u64, std.math.cast(u64, final_index) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit),
                             .policy = binding.policy,
                             .delivery = .{ .requested = binding.delivery_request },
@@ -10985,7 +11055,6 @@ pub fn Engine(comptime Ctx: type) type {
                     const evaluated = self.evalPreparedSignalBinding(&desc.signal);
                     desc.cached_value.replace(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics, evaluated.value, evaluated.cap);
                 }
-                return splice;
             }
 
             fn evalPreparedSignalText(self: *@This(), signal: *HostSignalBinding, read: HostTextRead, cache_slot: *HostSignalCacheSlot) abi.RocStr {
@@ -16246,12 +16315,45 @@ pub fn Engine(comptime Ctx: type) type {
                 const generation = std.math.add(u64, engine.dirty_signal_generation, 1) catch return error.ResourceLimit;
                 const expected = try engine.preparedCacheOverlayBound();
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
-                errdefer allocator.destroy(plan);
-                var caches = signal_records.PreparedCacheUpdates.initWithStorage(allocator, expected, signal_records.PreparedCacheUpdates.takeRetained(&engine.scratch.cache_overlay)) catch return error.OutOfMemory;
-                var caches_owned = true;
-                errdefer if (caches_owned) engine.releasePreparedCacheOverlay(ctx, roc_host, &caches);
+                plan.* = .{
+                    .engine = engine,
+                    .host_ctx = ctx,
+                    .roc_host = roc_host,
+                    .generation = generation,
+                    .root_count = 0,
+                    .caches = signal_records.PreparedCacheUpdates.initWithStorage(allocator, expected, signal_records.PreparedCacheUpdates.takeRetained(&engine.scratch.cache_overlay)) catch {
+                        allocator.destroy(plan);
+                        return error.OutOfMemory;
+                    },
+                    .changed_record_ids = &.{},
+                    .batch_target = undefined,
+                };
+                // `deinit` releases every field from any partially prepared
+                // state, so one errdefer unwinds the whole preparation.
+                errdefer plan.deinit();
                 var root_record_ids: shared_buffer.List(u64) = .empty;
                 defer root_record_ids.deinit(allocator);
+                var reusable_single_each_rows: ?*PreparedActiveEachRows = null;
+                defer if (reusable_single_each_rows) |rows| rows.deinit();
+                if (!try plan.prepareRootsInto(owned, state_update, &root_record_ids, &reusable_single_each_rows)) {
+                    plan.deinit();
+                    return null;
+                }
+                return plan;
+            }
+
+            /// The fallible body of `prepareRoots`, kept free of defers so each
+            /// of its many refusal sites is a plain return: the wrapper owns
+            /// the plan's unwind and the two pieces of scratch that outlive a
+            /// loop iteration. Returns false when nothing changed and the plan
+            /// should be dropped without a transaction.
+            fn prepareRootsInto(plan: *@This(), owned: *signal_records.OwnedSourceUpdates, state_update: ?*PreparedStateWrites, root_record_ids: *shared_buffer.List(u64), reusable_single_each_rows: *?*PreparedActiveEachRows) CollectionError!bool {
+                const engine = plan.engine;
+                const ctx = plan.host_ctx;
+                const roc_host = plan.roc_host;
+                const generation = plan.generation;
+                const allocator = Ctx.allocator(ctx);
+                const caches = &plan.caches;
                 try root_record_ids.ensureTotalCapacityPrecise(allocator, owned.entries.items.len);
                 for (owned.entries.items, 0..) |*entry, index| {
                     const cell = &entry.cell.?;
@@ -16268,9 +16370,7 @@ pub fn Engine(comptime Ctx: type) type {
                     root_record_ids.appendAssumeCapacity(engine.requireActiveSignalRecordId(entry.record));
                 }
                 if (root_record_ids.items.len == 0 and state_update == null) {
-                    engine.releasePreparedCacheOverlay(ctx, roc_host, &caches);
-                    allocator.destroy(plan);
-                    return null;
+                    return false;
                 }
                 try engine.scratch.dirty_active_records.reserveForGraph(HostSignalRecord, allocator, engine.active_signal_graph.items);
                 const state_node_ids: []const u64 = if (state_update) |update| update.node_ids.items else &.{};
@@ -16291,35 +16391,13 @@ pub fn Engine(comptime Ctx: type) type {
                         }
                     }
                 }
-                const changed = try engine.prepareChangedActiveSignalRecordIds(ctx, roc_host, &caches, dirty_ids, state_node_ids, generation);
-                errdefer allocator.free(changed);
-                var splice = try engine.prepareNonStructuralRenderSplice(ctx, roc_host, &caches, changed, state_node_ids, generation);
-                var splice_owned = true;
-                errdefer if (splice_owned) splice.deinit();
-                var structural_changes = try engine.collectPreparedDirtyStructuralSignals(ctx, roc_host, allocator, &caches, changed, state_node_ids, generation);
-                errdefer allocator.free(structural_changes);
-                plan.* = .{
-                    .engine = engine,
-                    .host_ctx = ctx,
-                    .roc_host = roc_host,
-                    .generation = generation,
-                    .root_count = if (state_update) |update| @intCast(update.entries.items.len) else @intCast(root_record_ids.items.len),
-                    .caches = caches,
-                    .state_update = null,
-                    .changed_record_ids = changed,
-                    .render_splice = splice,
-                    .structural_changes = structural_changes,
-                    .batch_target = undefined,
-                };
-                caches_owned = false;
-                splice_owned = false;
-                errdefer engine.releasePreparedCacheOverlay(ctx, roc_host, &plan.caches);
-                errdefer if (plan.render_splice) |*owned_splice| owned_splice.deinit();
-                try engine.prepareOnChangeCommands(ctx, roc_host, &plan.caches, changed, state_node_ids, generation, &plan.pending_on_change_commands);
-                errdefer {
-                    for (plan.pending_on_change_commands.items) |pending| pending.cmd.decref(roc_host);
-                    plan.pending_on_change_commands.deinit(allocator);
-                }
+                const changed = try engine.prepareChangedActiveSignalRecordIds(ctx, roc_host, caches, dirty_ids, state_node_ids, generation);
+                plan.changed_record_ids = changed;
+                plan.render_splice = try engine.prepareNonStructuralRenderSplice(ctx, roc_host, caches, changed, state_node_ids, generation);
+                var structural_changes = try engine.collectPreparedDirtyStructuralSignals(ctx, roc_host, allocator, caches, changed, state_node_ids, generation);
+                plan.structural_changes = structural_changes;
+                plan.root_count = if (state_update) |update| @intCast(update.entries.items.len) else @intCast(root_record_ids.items.len);
+                try engine.prepareOnChangeCommands(ctx, roc_host, caches, changed, state_node_ids, generation, &plan.pending_on_change_commands);
                 // Each reconciliation is the first point at which changed
                 // surviving row handles are known. Run a preparation-only
                 // reconciliation pass for every dirty each (including nested
@@ -16331,8 +16409,6 @@ pub fn Engine(comptime Ctx: type) type {
                 // plan. Discarding it and preparing the same site again would
                 // repeat every key hash, key comparison, and item comparison
                 // despite the candidate generation being unchanged.
-                var reusable_single_each_rows: ?*PreparedActiveEachRows = null;
-                defer if (reusable_single_each_rows) |rows| rows.deinit();
                 var structural_index: usize = 0;
                 while (structural_index < structural_changes.len) : (structural_index += 1) {
                     const change = structural_changes[structural_index];
@@ -16345,7 +16421,7 @@ pub fn Engine(comptime Ctx: type) type {
                         errdefer provisional_rows.deinit();
                         const discovered = try plan.appendChangedRowPropagation(provisional_rows);
                         if (discovered.len == 0 and structural_changes.len == 1 and structural_index == 0) {
-                            reusable_single_each_rows = provisional_rows;
+                            reusable_single_each_rows.* = provisional_rows;
                         } else {
                             provisional_rows.deinit();
                         }
@@ -16379,7 +16455,6 @@ pub fn Engine(comptime Ctx: type) type {
                         };
                         if (all_eaches_subsumed) {
                             plan.structural_downstream = try prepareWhenDownstream(engine, ctx, roc_host, structural_changes, state_update, &plan.caches);
-                            errdefer plan.structural_downstream.?.deinit();
                             try plan.structural_downstream.?.adoptScalarRenderSplice(&plan.render_splice.?);
                             plan.render_splice.?.deinit();
                             plan.render_splice = null;
@@ -16387,9 +16462,8 @@ pub fn Engine(comptime Ctx: type) type {
                                 plan.caches.clearProvisionalValues();
                                 plan.state_update = update.*;
                             }
-                            return plan;
+                            return true;
                         }
-                        errdefer plan.composite_structural.?.deinit();
                         const downstream = plan.composite_structural.?.downstream;
                         try downstream.adoptScalarRenderSplice(&plan.render_splice.?);
                         plan.render_splice.?.deinit();
@@ -16398,11 +16472,10 @@ pub fn Engine(comptime Ctx: type) type {
                             plan.caches.clearProvisionalValues();
                             plan.state_update = update.*;
                         }
-                        return plan;
+                        return true;
                     }
                     if (each_count > 1) {
                         plan.composite_rows = try PreparedCompositeRows.prepare(engine, ctx, roc_host, structural_changes, &plan.caches, external_state);
-                        errdefer plan.composite_rows.?.deinit();
                         const downstream = plan.composite_rows.?.downstream.?;
                         try downstream.adoptScalarRenderSplice(&plan.render_splice.?);
                         plan.render_splice.?.deinit();
@@ -16411,7 +16484,7 @@ pub fn Engine(comptime Ctx: type) type {
                             plan.caches.clearProvisionalValues();
                             plan.state_update = update.*;
                         }
-                        return plan;
+                        return true;
                     }
                     if (each_count == 1) {
                         const change = structural_changes[0];
@@ -16419,38 +16492,28 @@ pub fn Engine(comptime Ctx: type) type {
                         const each_index = engine.activeEachIndexByNodeId(change.node_id.raw()) orelse return error.InvalidDescriptor;
                         const each_desc = &engine.active_stream.eaches.items[each_index];
                         if (each_desc.items.record != change.record) return error.InvalidDescriptor;
-                        plan.each_rows = if (reusable_single_each_rows) |rows| blk: {
-                            reusable_single_each_rows = null;
+                        plan.each_rows = if (reusable_single_each_rows.*) |rows| blk: {
+                            reusable_single_each_rows.* = null;
                             break :blk rows;
                         } else try PreparedActiveEachRows.prepareWithOverlay(engine, ctx, roc_host, site, each_desc, allocator, &plan.caches);
-                        errdefer plan.each_rows.?.deinit();
                         if (try plan.tryAdoptSparseSurvivingRows(site, plan.each_rows.?)) {
                             try plan.prepareDirectRenderPublication(allocator);
                             if (state_update) |update| {
                                 plan.caches.clearProvisionalValues();
                                 plan.state_update = update.*;
                             }
-                            return plan;
+                            return true;
                         }
                         plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, plan.each_rows.?, .{}, &.{}, &plan.caches, external_state);
-                        errdefer plan.each_replacement.?.deinit();
                         if (engine.positions != null) {
                             plan.structural_downstream = try PreparedStructuralDownstream.prepareSparseExternalEach(engine, ctx, roc_host, site, plan.each_rows.?, plan.each_replacement.?, &plan.caches);
                         } else {
                             plan.each_layout = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &plan.each_rows.?.rows, plan.each_replacement.?.replacement_rows, &plan.each_replacement.?.replacement.collection);
-                            errdefer plan.each_layout.?.deinit();
                             plan.structural_downstream = try PreparedStructuralDownstream.prepareExternalEach(engine, ctx, roc_host, &plan.each_rows.?.rows, &plan.each_rows.?.inputs, plan.each_replacement.?, &plan.each_layout.?, &plan.caches);
                         }
                     } else {
                         plan.structural_downstream = try prepareWhenDownstream(engine, ctx, roc_host, structural_changes, state_update, &plan.caches);
                     }
-                    // The each-row errdefers above end with their block; the
-                    // adoption below can still fail, and the plan is only
-                    // handed to `deinit` once it is returned.
-                    errdefer if (plan.each_rows) |rows| rows.deinit();
-                    errdefer if (plan.each_replacement) |replacement| replacement.deinit();
-                    errdefer if (plan.each_layout) |*layout| layout.deinit();
-                    errdefer plan.structural_downstream.?.deinit();
                     try plan.structural_downstream.?.adoptScalarRenderSplice(&plan.render_splice.?);
                     plan.render_splice.?.deinit();
                     plan.render_splice = null;
@@ -16458,14 +16521,14 @@ pub fn Engine(comptime Ctx: type) type {
                         plan.caches.clearProvisionalValues();
                         plan.state_update = update.*;
                     }
-                    return plan;
+                    return true;
                 }
                 try plan.prepareDirectRenderPublication(allocator);
                 if (state_update) |update| {
                     plan.caches.clearProvisionalValues();
                     plan.state_update = update.*;
                 }
-                return plan;
+                return true;
             }
 
             fn commit(self: *@This()) render.Counts {
