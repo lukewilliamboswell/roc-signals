@@ -68,12 +68,14 @@ DISTILL_MAX_BYTES = 1_000_000
 # regressed. `CAMPAIGN_MIN_SECONDS` keeps the smallest share from rounding to a
 # run that ends before AFL++ finishes calibrating its seeds.
 CAMPAIGN_WEIGHTS = {
-    "structural": 65,
-    "propagation": 7,
-    "keyed-scopes": 7,
-    "rows-transitions": 7,
-    "ownership": 7,
-    "boundary": 7,
+    "structural": 45,
+    "sparse-rows": 15,
+    "selectors": 15,
+    "propagation": 5,
+    "keyed-scopes": 5,
+    "rows-transitions": 5,
+    "ownership": 5,
+    "boundary": 5,
 }
 CAMPAIGN_MIN_SECONDS = 120
 
