@@ -923,6 +923,184 @@ const updateStaticTextAttrIndexImpl = updateStaticTextAttrIndex;
 const updateTextNodeIndexImpl = updateTextNodeIndex;
 const updateWhenIndexImpl = updateWhenIndex;
 
+/// Keying policy for a stream's per-element and per-scope index tables.
+///
+/// The active stream is dense: element and scope identities are small integers
+/// that index arrays directly, so runtime lookups stay O(1) without hashing.
+/// A replacement stream collected for one transaction holds only the
+/// descriptors that transaction adds, yet its identities come from the same
+/// global id space, so a dense table there is sized by the highest live id
+/// rather than by the replacement: O(total tree) bytes and zeroing per event.
+/// Replacement streams therefore key these tables sparsely by identity, sized
+/// by their own descriptor counts, and moving them into the active stream
+/// iterates only the entries they hold.
+pub const IndexMode = enum { dense, sparse };
+
+/// Identity-keyed table whose representation follows `IndexMode`. Both
+/// representations share one reservation contract: after `reserve`, the
+/// `AssumeCapacity` operations allocate nothing.
+pub fn IndexTable(comptime Value: type, comptime default: Value) type {
+    return union(IndexMode) {
+        dense: shared_buffer.List(Value),
+        sparse: std.AutoHashMapUnmanaged(usize, Value),
+
+        const Self = @This();
+        pub const empty_dense: Self = .{ .dense = .empty };
+        pub const empty_sparse: Self = .{ .sparse = .empty };
+
+        pub const Entry = struct { index: usize, value: *Value };
+
+        /// Visits every stored entry; dense tables report every slot below
+        /// their length, sparse tables only the identities inserted.
+        pub const Iterator = union(IndexMode) {
+            dense: struct { items: []Value, next_index: usize },
+            sparse: std.AutoHashMapUnmanaged(usize, Value).Iterator,
+
+            /// Returns the next entry or null once every entry was visited.
+            pub fn next(self: *Iterator) ?Entry {
+                switch (self.*) {
+                    .dense => |*state| {
+                        if (state.next_index >= state.items.len) return null;
+                        const index = state.next_index;
+                        state.next_index += 1;
+                        return .{ .index = index, .value = &state.items[index] };
+                    },
+                    .sparse => |*inner| {
+                        const entry = inner.next() orelse return null;
+                        return .{ .index = entry.key_ptr.*, .value = entry.value_ptr };
+                    },
+                }
+            }
+        };
+
+        /// Frees the table; values that own storage must be released first.
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            switch (self.*) {
+                .dense => |*list| list.deinit(allocator),
+                .sparse => |*map| map.deinit(allocator),
+            }
+        }
+
+        /// Returns the keying policy of this table.
+        pub fn mode(self: *const Self) IndexMode {
+            return std.meta.activeTag(self.*);
+        }
+
+        /// Returns a copy of the entry at `index` when one exists.
+        pub fn get(self: *const Self, index: usize) ?Value {
+            return switch (self.*) {
+                .dense => |*list| if (index < list.items.len) list.items[index] else null,
+                .sparse => |*map| map.get(index),
+            };
+        }
+
+        /// Returns the entry at `index` when one exists.
+        pub fn getPtr(self: *Self, index: usize) ?*Value {
+            return switch (self.*) {
+                .dense => |*list| if (index < list.items.len) &list.items[index] else null,
+                .sparse => |*map| map.getPtr(index),
+            };
+        }
+
+        /// Reports whether `index` has an entry.
+        pub fn contains(self: *const Self, index: usize) bool {
+            return switch (self.*) {
+                .dense => |*list| index < list.items.len,
+                .sparse => |*map| map.contains(index),
+            };
+        }
+
+        /// Returns the entry at `index`, which a prior publication must have
+        /// created; indexing an identity the stream never recorded is a
+        /// programmer error.
+        pub fn existing(self: *Self, index: usize) *Value {
+            return self.getPtr(index) orelse @panic("descriptor stream indexed an identity it never recorded");
+        }
+
+        /// Reserves so that up to `additional` new identities, none above
+        /// `highest_index`, can be created with `slotAssumeCapacity`. Dense
+        /// tables size by the highest identity, sparse tables by the count.
+        pub fn reserve(self: *Self, allocator: std.mem.Allocator, highest_index: usize, additional: usize) ReserveError!void {
+            switch (self.*) {
+                .dense => |*list| {
+                    const required = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
+                    if (required > list.items.len) try list.ensureTotalCapacity(allocator, required);
+                },
+                .sparse => |*map| try map.ensureUnusedCapacity(allocator, std.math.cast(u32, additional) orelse return error.ResourceLimit),
+            }
+        }
+
+        /// Returns the entry at `index`, creating a default one from capacity
+        /// that `reserve` already provided when it does not exist yet.
+        pub fn slotAssumeCapacity(self: *Self, index: usize) *Value {
+            switch (self.*) {
+                .dense => |*list| {
+                    while (list.items.len <= index) list.appendAssumeCapacity(default);
+                    return &list.items[index];
+                },
+                .sparse => |*map| {
+                    const entry = map.getOrPutAssumeCapacity(index);
+                    if (!entry.found_existing) entry.value_ptr.* = default;
+                    return entry.value_ptr;
+                },
+            }
+        }
+
+        /// Returns the entry at `index`, allocating a default one when missing.
+        pub fn ensureSlot(self: *Self, allocator: std.mem.Allocator, index: usize) std.mem.Allocator.Error!*Value {
+            switch (self.*) {
+                .dense => |*list| {
+                    while (list.items.len <= index) try list.append(allocator, default);
+                    return &list.items[index];
+                },
+                .sparse => |*map| {
+                    const entry = try map.getOrPut(allocator, index);
+                    if (!entry.found_existing) entry.value_ptr.* = default;
+                    return entry.value_ptr;
+                },
+            }
+        }
+
+        /// Reports, for debug assertions, whether identities up to
+        /// `highest_index` can be created without allocation. Sparse tables
+        /// track their own availability and always answer true.
+        pub fn capacityCovers(self: *const Self, highest_index: usize) bool {
+            return switch (self.*) {
+                .dense => |*list| list.capacity >= highest_index +| 1,
+                .sparse => true,
+            };
+        }
+
+        /// Number of stored entries: dense length or sparse count.
+        pub fn len(self: *const Self) usize {
+            return switch (self.*) {
+                .dense => |*list| list.items.len,
+                .sparse => |*map| map.count(),
+            };
+        }
+
+        /// Storage slots currently reserved, for retained-memory accounting.
+        pub fn capacity(self: *const Self) usize {
+            return switch (self.*) {
+                .dense => |*list| list.capacity,
+                .sparse => |*map| map.capacity(),
+            };
+        }
+
+        /// Starts visiting entries; the table must not change while iterating.
+        pub fn iterator(self: *Self) Iterator {
+            return switch (self.*) {
+                .dense => |*list| .{ .dense = .{ .items = list.items, .next_index = 0 } },
+                .sparse => |*map| .{ .sparse = map.iterator() },
+            };
+        }
+    };
+}
+
+pub const ElemIndexTable = IndexTable(ElemDescriptorIndex, .{});
+pub const NamedEventIndexTable = IndexTable(shared_buffer.List(usize), .empty);
+pub const ScopeOwnershipTable = IndexTable(ScopeDescriptorOwnership, .{});
+
 pub const Stream = struct {
     pub const RenderNode = StreamRenderNode;
     pub const ElementDesc = StreamElementDesc;
@@ -957,7 +1135,7 @@ pub const Stream = struct {
     custom_attr_keys: CustomAttrKeySet = .empty,
     custom_attr_indices_by_elem_id: shared_buffer.List(shared_buffer.List(CustomAttrDescriptorIndex)) = .empty,
     lifecycle_indices_by_scope_id: shared_buffer.List(shared_buffer.List(LifecycleDescriptorIndex)) = .empty,
-    scope_descriptor_ownership: shared_buffer.List(ScopeDescriptorOwnership) = .empty,
+    scope_descriptor_ownership: ScopeOwnershipTable = .empty_dense,
     state_binders: StateBinderIndex = .{},
     // Sparse publication preserves identity and sibling indexes while the
     // dense render array becomes an unordered descriptor pool. Positional
@@ -965,10 +1143,33 @@ pub const Stream = struct {
     render_nodes_ordered: bool = true,
     custom_attr_index_active: bool = false,
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .{},
-    named_event_indices_by_elem_id: shared_buffer.List(shared_buffer.List(usize)) = .empty,
-    descriptor_indexes_by_elem_id: shared_buffer.List(ElemDescriptorIndex) = .empty,
+    named_event_indices_by_elem_id: NamedEventIndexTable = .empty_dense,
+    descriptor_indexes_by_elem_id: ElemIndexTable = .empty_dense,
     descriptor_indexes_by_node_id: shared_buffer.List(NodeDescriptorIndex) = .empty,
     next_elem_id: u64 = 1,
+
+    /// An empty stream whose identity tables are keyed sparsely, for a
+    /// replacement collected within one transaction. See `IndexMode`.
+    pub const sparse_replacement: Stream = .{
+        .scope_descriptor_ownership = .empty_sparse,
+        .named_event_indices_by_elem_id = .empty_sparse,
+        .descriptor_indexes_by_elem_id = .empty_sparse,
+    };
+
+    /// Returns an empty stream keyed per `mode`: dense for a stream that
+    /// becomes or is the active stream, sparse for a per-transaction
+    /// replacement whose contents are later moved into the active stream.
+    pub fn initEmpty(mode: IndexMode) Stream {
+        return switch (mode) {
+            .dense => .{},
+            .sparse => sparse_replacement,
+        };
+    }
+
+    /// Returns the keying policy of this stream's identity tables.
+    pub fn indexMode(self: *const Stream) IndexMode {
+        return self.descriptor_indexes_by_elem_id.mode();
+    }
 
     /// Reserves every outer destination touched when moving a materialized
     /// replacement stream into this stream. Logical lengths remain unchanged.
@@ -1009,11 +1210,13 @@ pub const Stream = struct {
         for (replacement.lifecycle_indices_by_scope_id.items, 0..) |indexes, scope_id| {
             if (indexes.items.len != 0) try self.reserveLifecycleScope(allocator, ScopeId.fromIndex(scope_id), indexes.items.len);
         }
-        for (replacement.scope_descriptor_ownership.items, 0..) |ownership, scope_id| {
+        var ownership_entries = @constCast(replacement).scope_descriptor_ownership.iterator();
+        while (ownership_entries.next()) |entry| {
+            const ownership = entry.value;
             if (ownership.elem_ids.items.len == 0 and ownership.node_ids.items.len == 0) continue;
             try self.reserveScopeDescriptorOwnership(
                 allocator,
-                ScopeId.fromIndex(scope_id),
+                ScopeId.fromIndex(entry.index),
                 ownership.elem_ids.items.len,
                 ownership.node_ids.items.len,
             );
@@ -1022,9 +1225,8 @@ pub const Stream = struct {
 
         var highest_elem_id: usize = 0;
         for (replacement.render_nodes.items) |node| highest_elem_id = @max(highest_elem_id, node.elem_id.index());
-        const elem_index_len = std.math.add(usize, highest_elem_id, 1) catch return error.ResourceLimit;
-        try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, elem_index_len);
-        try self.named_event_indices_by_elem_id.ensureTotalCapacity(allocator, elem_index_len);
+        try self.descriptor_indexes_by_elem_id.reserve(allocator, highest_elem_id, replacement.render_nodes.items.len);
+        try self.named_event_indices_by_elem_id.reserve(allocator, highest_elem_id, replacement.render_nodes.items.len);
 
         var highest_node_id: usize = 0;
         for (replacement.scope_sites.items) |site| highest_node_id = @max(highest_node_id, site.node_id.index());
@@ -1032,9 +1234,11 @@ pub const Stream = struct {
         try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, node_index_len);
         if (replacement.states.items.len != 0) try self.state_binders.reserve(allocator, replacement.states.items.len);
 
-        for (replacement.named_event_indices_by_elem_id.items, 0..) |replacement_indexes, elem_id| {
-            if (replacement_indexes.items.len == 0 or elem_id >= self.named_event_indices_by_elem_id.items.len) continue;
-            try self.named_event_indices_by_elem_id.items[elem_id].ensureUnusedCapacity(allocator, replacement_indexes.items.len);
+        var named_entries = @constCast(replacement).named_event_indices_by_elem_id.iterator();
+        while (named_entries.next()) |entry| {
+            if (entry.value.items.len == 0) continue;
+            const destination = self.named_event_indices_by_elem_id.getPtr(entry.index) orelse continue;
+            try destination.ensureUnusedCapacity(allocator, entry.value.items.len);
         }
     }
 
@@ -1265,49 +1469,46 @@ pub const Stream = struct {
         for (replacement.elements.items) |desc| {
             const index = self.elements.items.len;
             self.elements.appendAssumeCapacity(desc);
-            while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id.index()) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
-            setFreshIndex(&self.descriptor_indexes_by_elem_id.items[desc.elem_id.index()].element, index);
+            setFreshIndex(&self.descriptor_indexes_by_elem_id.slotAssumeCapacity(desc.elem_id.index()).element, index);
         }
         replacement.elements.items.len = 0;
         for (replacement.text_nodes.items) |desc| {
             const index = self.text_nodes.items.len;
             self.text_nodes.appendAssumeCapacity(desc);
-            while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id.index()) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
-            setFreshIndex(&self.descriptor_indexes_by_elem_id.items[desc.elem_id.index()].text_node, index);
+            setFreshIndex(&self.descriptor_indexes_by_elem_id.slotAssumeCapacity(desc.elem_id.index()).text_node, index);
         }
         replacement.text_nodes.items.len = 0;
         for (replacement.static_text_attrs.items) |desc| {
             const index = self.static_text_attrs.items.len;
             self.static_text_attrs.appendAssumeCapacity(desc);
-            setFreshIndex(self.descriptor_indexes_by_elem_id.items[desc.elem_id.index()].static_text_attrs.slot(desc.field), index);
+            setFreshIndex(self.descriptor_indexes_by_elem_id.existing(desc.elem_id.index()).static_text_attrs.slot(desc.field), index);
         }
         replacement.static_text_attrs.items.len = 0;
         for (replacement.static_bool_attrs.items) |desc| {
             const index = self.static_bool_attrs.items.len;
             self.static_bool_attrs.appendAssumeCapacity(desc);
-            setFreshIndex(self.descriptor_indexes_by_elem_id.items[desc.elem_id.index()].static_bool_attrs.slot(desc.field), index);
+            setFreshIndex(self.descriptor_indexes_by_elem_id.existing(desc.elem_id.index()).static_bool_attrs.slot(desc.field), index);
         }
         replacement.static_bool_attrs.items.len = 0;
         for (replacement.signal_text_nodes.items) |desc| {
             const index = self.signal_text_nodes.items.len;
             self.signal_text_nodes.appendAssumeCapacity(desc);
             self.rememberSignalRecordTreeAssumeCapacity(desc.signal.record);
-            while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id.index()) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
-            setFreshIndex(&self.descriptor_indexes_by_elem_id.items[desc.elem_id.index()].signal_text_node, index);
+            setFreshIndex(&self.descriptor_indexes_by_elem_id.slotAssumeCapacity(desc.elem_id.index()).signal_text_node, index);
         }
         replacement.signal_text_nodes.items.len = 0;
         for (replacement.signal_text_attrs.items) |desc| {
             const index = self.signal_text_attrs.items.len;
             self.signal_text_attrs.appendAssumeCapacity(desc);
             self.rememberSignalRecordTreeAssumeCapacity(desc.signal.record);
-            setFreshIndex(self.descriptor_indexes_by_elem_id.items[desc.elem_id.index()].signal_text_attrs.slot(desc.field), index);
+            setFreshIndex(self.descriptor_indexes_by_elem_id.existing(desc.elem_id.index()).signal_text_attrs.slot(desc.field), index);
         }
         replacement.signal_text_attrs.items.len = 0;
         for (replacement.signal_bool_attrs.items) |desc| {
             const index = self.signal_bool_attrs.items.len;
             self.signal_bool_attrs.appendAssumeCapacity(desc);
             self.rememberSignalRecordTreeAssumeCapacity(desc.signal.record);
-            setFreshIndex(self.descriptor_indexes_by_elem_id.items[desc.elem_id.index()].signal_bool_attrs.slot(desc.field), index);
+            setFreshIndex(self.descriptor_indexes_by_elem_id.existing(desc.elem_id.index()).signal_bool_attrs.slot(desc.field), index);
         }
         replacement.signal_bool_attrs.items.len = 0;
         const event_base = self.events.items.len;
@@ -1315,14 +1516,14 @@ pub const Stream = struct {
             const index = event_base + offset;
             self.events.appendAssumeCapacity(desc);
             if (desc.handler.signalRoot()) |root| self.rememberSignalRecordTreeAssumeCapacity(root);
-            while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id.index()) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
-            if (desc.fixedKind()) |kind| setFreshIndex(self.descriptor_indexes_by_elem_id.items[desc.elem_id.index()].events.slot(kind), index);
+            if (desc.fixedKind()) |kind| setFreshIndex(self.descriptor_indexes_by_elem_id.slotAssumeCapacity(desc.elem_id.index()).events.slot(kind), index);
         }
         replacement.events.items.len = 0;
-        for (replacement.named_event_indices_by_elem_id.items, 0..) |*replacement_indexes, elem_id| {
+        var moved_named = replacement.named_event_indices_by_elem_id.iterator();
+        while (moved_named.next()) |entry| {
+            const replacement_indexes = entry.value;
             if (replacement_indexes.items.len == 0) continue;
-            while (self.named_event_indices_by_elem_id.items.len <= elem_id) self.named_event_indices_by_elem_id.appendAssumeCapacity(.empty);
-            const destination = &self.named_event_indices_by_elem_id.items[elem_id];
+            const destination = self.named_event_indices_by_elem_id.slotAssumeCapacity(entry.index);
             for (replacement_indexes.items) |*index| index.* += event_base;
             if (destination.capacity == 0 and destination.items.len == 0) {
                 destination.* = replacement_indexes.*;
@@ -1360,9 +1561,11 @@ pub const Stream = struct {
             setFreshIndex(&self.descriptor_indexes_by_node_id.items[desc.node_id.index()].each, index);
         }
         replacement.eaches.items.len = 0;
-        for (replacement.scope_descriptor_ownership.items, 0..) |*source, scope_index| {
+        var moved_ownership = replacement.scope_descriptor_ownership.iterator();
+        while (moved_ownership.next()) |entry| {
+            const source = entry.value;
             if (source.elem_ids.items.len == 0 and source.node_ids.items.len == 0) continue;
-            const destination = &self.scope_descriptor_ownership.items[scope_index];
+            const destination = self.scope_descriptor_ownership.existing(entry.index);
             destination.elem_ids.appendSliceAssumeCapacity(source.elem_ids.items);
             destination.node_ids.appendSliceAssumeCapacity(source.node_ids.items);
             source.elem_ids.clearRetainingCapacity();
@@ -1436,9 +1639,8 @@ pub const Stream = struct {
         self.render_nodes.items[old_render_index] = replacement.render_nodes.items[0];
         replacement.render_nodes.items[0] = displaced_render;
 
-        clearIndex(&self.descriptor_indexes_by_elem_id.items[@intCast(removed_elem_id)].text_node, text_index);
-        while (self.descriptor_indexes_by_elem_id.items.len <= new_elem_id) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
-        setFreshIndex(&self.descriptor_indexes_by_elem_id.items[@intCast(new_elem_id)].text_node, text_index);
+        clearIndex(&self.descriptor_indexes_by_elem_id.existing(@intCast(removed_elem_id)).text_node, text_index);
+        setFreshIndex(&self.descriptor_indexes_by_elem_id.slotAssumeCapacity(@intCast(new_elem_id)).text_node, text_index);
         const removed_metadata = self.render_metadata_by_elem_id.fetchRemove(removed_elem_id) orelse @panic("single-text splice target lacked render metadata");
         var replacement_metadata = removed_metadata.value;
         replacement_metadata.render_node = old_render_index;
@@ -1945,8 +2147,7 @@ pub const Stream = struct {
         self.custom_attr_indices_by_elem_id.deinit(allocator);
         for (self.lifecycle_indices_by_scope_id.items) |*indexes| indexes.deinit(allocator);
         self.lifecycle_indices_by_scope_id.deinit(allocator);
-        for (self.scope_descriptor_ownership.items) |*ownership| ownership.deinit(allocator);
-        self.scope_descriptor_ownership.deinit(allocator);
+        deinitScopeOwnershipTable(&self.scope_descriptor_ownership, allocator);
         self.render_metadata_by_elem_id.deinit(allocator);
         self.descriptor_indexes_by_elem_id.deinit(allocator);
         self.descriptor_indexes_by_node_id.deinit(allocator);
@@ -2138,10 +2339,7 @@ pub const Stream = struct {
         try self.elements.ensureUnusedCapacity(allocator, additional);
         try self.text_nodes.ensureUnusedCapacity(allocator, additional);
         const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
-        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
-        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) {
-            try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
-        }
+        try self.descriptor_indexes_by_elem_id.reserve(allocator, highest_index, additional);
         const metadata_entries = std.math.mul(usize, additional, 2) catch return error.ResourceLimit;
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
     }
@@ -2154,8 +2352,7 @@ pub const Stream = struct {
         try self.elements.ensureUnusedCapacity(allocator, elements);
         try self.text_nodes.ensureUnusedCapacity(allocator, texts);
         const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
-        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
-        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+        try self.descriptor_indexes_by_elem_id.reserve(allocator, highest_index, total_render_nodes);
         const metadata_entries = std.math.mul(usize, total_render_nodes, 2) catch return error.ResourceLimit;
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
     }
@@ -2393,20 +2590,18 @@ pub const Stream = struct {
     pub fn reservePreparedEvents(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) ReserveError!void {
         try self.events.ensureUnusedCapacity(allocator, additional);
         const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
-        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
-        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
-        if (descriptor_len > self.named_event_indices_by_elem_id.items.len) try self.named_event_indices_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+        try self.descriptor_indexes_by_elem_id.reserve(allocator, highest_index, additional);
+        try self.named_event_indices_by_elem_id.reserve(allocator, highest_index, additional);
     }
 
     /// Maintains named event index slot exists within the indexed descriptor stream used by both hosts.
     pub fn namedEventIndexSlotExists(self: *const Stream, elem_id: u64) bool {
-        return elem_id < self.named_event_indices_by_elem_id.items.len;
+        return self.named_event_indices_by_elem_id.contains(std.math.cast(usize, elem_id) orelse return false);
     }
 
     /// Maintains reserve existing named event indexes within the indexed descriptor stream used by both hosts.
     pub fn reserveExistingNamedEventIndexes(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, additional: usize) ReserveError!void {
-        if (!self.namedEventIndexSlotExists(elem_id)) return;
-        const slot = &self.named_event_indices_by_elem_id.items[@intCast(elem_id)];
+        const slot = self.named_event_indices_by_elem_id.getPtr(std.math.cast(usize, elem_id) orelse return) orelse return;
         const total = std.math.add(usize, slot.items.len, additional) catch return error.ResourceLimit;
         try slot.ensureTotalCapacity(allocator, total);
     }
@@ -2414,17 +2609,15 @@ pub const Stream = struct {
     /// Appends prepared event using capacity that must already satisfy the caller's transaction contract.
     pub fn appendPreparedEvent(self: *Stream, prepared: PreparedEventDescriptor) void {
         const desc = prepared.desc;
-        while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id.index()) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
         const index = self.events.items.len;
         self.events.appendAssumeCapacity(desc);
-        if (desc.fixedKind()) |kind| setFreshIndex(self.descriptor_indexes_by_elem_id.items[desc.elem_id.index()].events.slot(kind), index);
+        if (desc.fixedKind()) |kind| setFreshIndex(self.descriptor_indexes_by_elem_id.slotAssumeCapacity(desc.elem_id.index()).events.slot(kind), index);
     }
 
     /// Publishes prepared named event indexes during the allocation-free commit phase.
     pub fn publishPreparedNamedEventIndexes(self: *Stream, groups: []PreparedNamedEventIndexGroup, event_base: usize) void {
         for (groups) |*group| {
-            while (self.named_event_indices_by_elem_id.items.len <= group.elem_id.index()) self.named_event_indices_by_elem_id.appendAssumeCapacity(.empty);
-            const slot = &self.named_event_indices_by_elem_id.items[group.elem_id.index()];
+            const slot = self.named_event_indices_by_elem_id.slotAssumeCapacity(group.elem_id.index());
             for (group.event_ordinals.items) |*ordinal| ordinal.* += event_base;
             if (group.existed) {
                 slot.appendSliceAssumeCapacity(group.event_ordinals.items);
@@ -2442,8 +2635,7 @@ pub const Stream = struct {
         try self.render_nodes.ensureUnusedCapacity(allocator, additional);
         try self.signal_text_nodes.ensureUnusedCapacity(allocator, additional);
         const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
-        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
-        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+        try self.descriptor_indexes_by_elem_id.reserve(allocator, highest_index, additional);
         const metadata_entries = std.math.mul(usize, additional, 2) catch return error.ResourceLimit;
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
     }
@@ -2455,10 +2647,9 @@ pub const Stream = struct {
         try self.signal_custom_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.signal_optional_custom_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.signal_custom_bool_attrs.ensureUnusedCapacity(allocator, additional);
-        const descriptor_len = std.math.add(usize, @as(usize, @intCast(highest_elem_id)), 1) catch return error.ResourceLimit;
-        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) {
-            try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
-        }
+        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
+        const distinct_elems = std.math.mul(usize, additional, 5) catch return error.ResourceLimit;
+        try self.descriptor_indexes_by_elem_id.reserve(allocator, highest_index, distinct_elems);
     }
 
     /// Preflights only the signal-attribute lanes the staged collection will
@@ -2471,8 +2662,11 @@ pub const Stream = struct {
         try self.signal_optional_custom_text_attrs.ensureUnusedCapacity(allocator, optional_custom_text);
         try self.signal_custom_bool_attrs.ensureUnusedCapacity(allocator, custom_bool);
         const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
-        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
-        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+        var distinct_elems = std.math.add(usize, text, boolean) catch return error.ResourceLimit;
+        distinct_elems = std.math.add(usize, distinct_elems, custom_text) catch return error.ResourceLimit;
+        distinct_elems = std.math.add(usize, distinct_elems, optional_custom_text) catch return error.ResourceLimit;
+        distinct_elems = std.math.add(usize, distinct_elems, custom_bool) catch return error.ResourceLimit;
+        try self.descriptor_indexes_by_elem_id.reserve(allocator, highest_index, distinct_elems);
     }
 
     /// Publishes a prepared fixed signal attribute using capacity reserved by
@@ -2481,10 +2675,7 @@ pub const Stream = struct {
         const elem_id = switch (prepared) {
             inline else => |desc| desc.elem_id,
         };
-        while (self.descriptor_indexes_by_elem_id.items.len <= elem_id.index()) {
-            self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
-        }
-        const descriptor = &self.descriptor_indexes_by_elem_id.items[elem_id.index()];
+        const descriptor = self.descriptor_indexes_by_elem_id.slotAssumeCapacity(elem_id.index());
         switch (prepared) {
             .text_node => |desc| {
                 const render_index = self.render_nodes.items.len;
@@ -2624,12 +2815,12 @@ pub const Stream = struct {
             .text => |value| {
                 const index = self.static_text_attrs.items.len;
                 self.static_text_attrs.appendAssumeCapacity(.{ .elem_id = value.elem_id, .field = value.field, .value = value.value });
-                setFreshIndex(self.descriptor_indexes_by_elem_id.items[value.elem_id.index()].static_text_attrs.slot(value.field), index);
+                setFreshIndex(self.descriptor_indexes_by_elem_id.existing(value.elem_id.index()).static_text_attrs.slot(value.field), index);
             },
             .boolean => |value| {
                 const index = self.static_bool_attrs.items.len;
                 self.static_bool_attrs.appendAssumeCapacity(.{ .elem_id = value.elem_id, .field = value.field, .value = value.value });
-                setFreshIndex(self.descriptor_indexes_by_elem_id.items[value.elem_id.index()].static_bool_attrs.slot(value.field), index);
+                setFreshIndex(self.descriptor_indexes_by_elem_id.existing(value.elem_id.index()).static_bool_attrs.slot(value.field), index);
             },
             .custom_text => |value| {
                 const index = self.static_custom_text_attrs.items.len;
@@ -2654,10 +2845,7 @@ pub const Stream = struct {
             .text => try self.text_nodes.ensureUnusedCapacity(allocator, 1),
             .signal_text => unreachable,
         }
-        const descriptor_len = std.math.add(usize, elem_id.index(), 1) catch return error.ResourceLimit;
-        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) {
-            try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
-        }
+        try self.descriptor_indexes_by_elem_id.reserve(allocator, elem_id.index(), 1);
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, 2);
         return switch (kind) {
             .element => .{ .element = .{ .elem_id = elem_id, .parent_elem_id = parent_elem_id, .scope_id = scope_id, .text = copy } },
@@ -2689,15 +2877,12 @@ pub const Stream = struct {
         const prepared = switch (prepared_node) {
             inline else => |value| value,
         };
-        while (self.descriptor_indexes_by_elem_id.items.len <= prepared.elem_id.index()) {
-            self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
-        }
         const render_index = self.render_nodes.items.len;
         self.render_nodes.appendAssumeCapacity(.{ .elem_id = prepared.elem_id, .kind = switch (prepared_node) {
             .element => .element,
             .text => .text,
         } });
-        const descriptor = &self.descriptor_indexes_by_elem_id.items[prepared.elem_id.index()];
+        const descriptor = self.descriptor_indexes_by_elem_id.slotAssumeCapacity(prepared.elem_id.index());
         switch (prepared_node) {
             .element => {
                 const index = self.elements.items.len;
@@ -3083,43 +3268,39 @@ pub const Stream = struct {
     /// storage and may remain after an aborted transaction.
     pub fn reserveScopeDescriptorOwnership(self: *Stream, allocator: std.mem.Allocator, scope_id: ScopeId, additional_elems: usize, additional_nodes: usize) ReserveError!void {
         if (additional_elems == 0 and additional_nodes == 0) return;
-        const required = std.math.add(usize, scope_id.index(), 1) catch return error.ResourceLimit;
-        try self.scope_descriptor_ownership.ensureTotalCapacity(allocator, required);
-        while (self.scope_descriptor_ownership.items.len < required) self.scope_descriptor_ownership.appendAssumeCapacity(.{});
-        const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        const ownership = try self.scope_descriptor_ownership.ensureSlot(allocator, scope_id.index());
         try ownership.elem_ids.ensureUnusedCapacity(allocator, additional_elems);
         try ownership.node_ids.ensureUnusedCapacity(allocator, additional_nodes);
     }
 
     /// Publishes one element identity into its already-reserved scope index.
     pub fn recordScopeElemAssumeCapacity(self: *Stream, scope_id: ScopeId, elem_id: ElemId) void {
-        const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        const ownership = self.scope_descriptor_ownership.existing(scope_id.index());
         ownership.elem_ids.appendAssumeCapacity(elem_id);
     }
 
     /// Publishes one construction-node identity into its already-reserved scope index.
     pub fn recordScopeNodeAssumeCapacity(self: *Stream, scope_id: ScopeId, node_id: NodeId) void {
-        const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        const ownership = self.scope_descriptor_ownership.existing(scope_id.index());
         ownership.node_ids.appendAssumeCapacity(node_id);
     }
 
     /// Returns exact element identities owned directly by one scope.
     pub fn scopeOwnedElemIds(self: *const Stream, scope_id: ScopeId) []const ElemId {
-        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return &.{};
-        return self.scope_descriptor_ownership.items[scope_id.index()].elem_ids.items;
+        const ownership = @constCast(&self.scope_descriptor_ownership).getPtr(scope_id.index()) orelse return &.{};
+        return ownership.elem_ids.items;
     }
 
     /// Returns exact construction-node identities owned directly by one scope.
     pub fn scopeOwnedNodeIds(self: *const Stream, scope_id: ScopeId) []const NodeId {
-        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return &.{};
-        return self.scope_descriptor_ownership.items[scope_id.index()].node_ids.items;
+        const ownership = @constCast(&self.scope_descriptor_ownership).getPtr(scope_id.index()) orelse return &.{};
+        return ownership.node_ids.items;
     }
 
     /// Clears one retiring or re-collected scope after its descriptor-removal
     /// journal has captured these stable ids. Capacity is retained for reuse.
     pub fn clearScopeDescriptorOwnership(self: *Stream, scope_id: ScopeId) void {
-        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return;
-        const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        const ownership = self.scope_descriptor_ownership.getPtr(scope_id.index()) orelse return;
         ownership.elem_ids.clearRetainingCapacity();
         ownership.node_ids.clearRetainingCapacity();
     }
@@ -3130,8 +3311,7 @@ pub const Stream = struct {
     /// make retained memory grow across otherwise identical mount/dispose
     /// cycles. Descriptor and lifecycle removal must precede this call.
     pub fn releaseRetiredScopeIndexes(self: *Stream, allocator: std.mem.Allocator, scope_id: ScopeId) void {
-        if (scope_id.index() < self.scope_descriptor_ownership.items.len) {
-            const ownership = &self.scope_descriptor_ownership.items[scope_id.index()];
+        if (self.scope_descriptor_ownership.getPtr(scope_id.index())) |ownership| {
             if (ownership.elem_ids.items.len != 0 or ownership.node_ids.items.len != 0) @panic("retired scope still owned active descriptors");
             ownership.deinit(allocator);
         }
@@ -3144,8 +3324,8 @@ pub const Stream = struct {
     }
 
     fn forgetScopeElem(self: *Stream, scope_id: ScopeId, elem_id: ElemId) void {
-        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return;
-        const owned_ids = &self.scope_descriptor_ownership.items[scope_id.index()].elem_ids;
+        const ownership = self.scope_descriptor_ownership.getPtr(scope_id.index()) orelse return;
+        const owned_ids = &ownership.elem_ids;
         for (owned_ids.items, 0..) |candidate, index| if (candidate == elem_id) {
             _ = owned_ids.swapRemove(index);
             return;
@@ -3153,8 +3333,8 @@ pub const Stream = struct {
     }
 
     fn forgetScopeNode(self: *Stream, scope_id: ScopeId, node_id: NodeId) void {
-        if (scope_id.index() >= self.scope_descriptor_ownership.items.len) return;
-        const owned_ids = &self.scope_descriptor_ownership.items[scope_id.index()].node_ids;
+        const ownership = self.scope_descriptor_ownership.getPtr(scope_id.index()) orelse return;
+        const owned_ids = &ownership.node_ids;
         for (owned_ids.items, 0..) |candidate, index| if (candidate == node_id) {
             _ = owned_ids.swapRemove(index);
             return;
@@ -3719,17 +3899,12 @@ pub fn clearIndex(slot: *DescriptorIndex, expected: usize) void {
 
 /// Ensures elem descriptor index capacity or state before publication can begin.
 pub fn ensureElemDescriptorIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: ElemId) *ElemDescriptorIndex {
-    const index = elem_id.index();
-    while (stream.descriptor_indexes_by_elem_id.items.len <= index) {
-        stream.descriptor_indexes_by_elem_id.append(allocator, .{}) catch @panic("out of memory");
-    }
-    return &stream.descriptor_indexes_by_elem_id.items[index];
+    return stream.descriptor_indexes_by_elem_id.ensureSlot(allocator, elem_id.index()) catch @panic("out of memory");
 }
 
 /// Maintains elem descriptor index within the indexed descriptor stream used by both hosts.
 pub fn elemDescriptorIndex(comptime StreamType: type, stream: *const StreamType, elem_id: ElemId) ?ElemDescriptorIndex {
-    if (elem_id.index() >= stream.descriptor_indexes_by_elem_id.items.len) return null;
-    return stream.descriptor_indexes_by_elem_id.items[elem_id.index()];
+    return stream.descriptor_indexes_by_elem_id.get(elem_id.index());
 }
 
 /// Ensures node descriptor index capacity or state before publication can begin.
@@ -3754,12 +3929,12 @@ pub fn recordElementIndex(comptime StreamType: type, stream: *StreamType, alloca
 
 /// Updates the dense element descriptor index after a local structural splice.
 pub fn updateElementIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, index: usize) void {
-    updateIndex(&stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].element, index);
+    updateIndex(&stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).element, index);
 }
 
 /// Clears element index while retaining bounded storage where the type promises reuse.
 pub fn clearElementIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, expected: usize) void {
-    clearIndex(&stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].element, expected);
+    clearIndex(&stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).element, expected);
 }
 
 /// Records the dense text node descriptor index used for O(1) runtime lookup.
@@ -3769,12 +3944,12 @@ pub fn recordTextNodeIndex(comptime StreamType: type, stream: *StreamType, alloc
 
 /// Updates the dense text node descriptor index after a local structural splice.
 pub fn updateTextNodeIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, index: usize) void {
-    updateIndex(&stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].text_node, index);
+    updateIndex(&stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).text_node, index);
 }
 
 /// Clears text node index while retaining bounded storage where the type promises reuse.
 pub fn clearTextNodeIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, expected: usize) void {
-    clearIndex(&stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].text_node, expected);
+    clearIndex(&stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).text_node, expected);
 }
 
 /// Records the dense signal text node descriptor index used for O(1) runtime lookup.
@@ -3784,12 +3959,12 @@ pub fn recordSignalTextNodeIndex(comptime StreamType: type, stream: *StreamType,
 
 /// Updates the dense signal text node descriptor index after a local structural splice.
 pub fn updateSignalTextNodeIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, index: usize) void {
-    updateIndex(&stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].signal_text_node, index);
+    updateIndex(&stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).signal_text_node, index);
 }
 
 /// Clears signal text node index while retaining bounded storage where the type promises reuse.
 pub fn clearSignalTextNodeIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, expected: usize) void {
-    clearIndex(&stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].signal_text_node, expected);
+    clearIndex(&stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).signal_text_node, expected);
 }
 
 /// Records the dense static text attr descriptor index used for O(1) runtime lookup.
@@ -3799,12 +3974,12 @@ pub fn recordStaticTextAttrIndex(comptime StreamType: type, stream: *StreamType,
 
 /// Updates the dense static text attr descriptor index after a local structural splice.
 pub fn updateStaticTextAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: TextField, index: usize) void {
-    updateIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].static_text_attrs.slot(field), index);
+    updateIndex(stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).static_text_attrs.slot(field), index);
 }
 
 /// Clears static text attr index while retaining bounded storage where the type promises reuse.
 pub fn clearStaticTextAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: TextField, expected: usize) void {
-    clearIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].static_text_attrs.slot(field), expected);
+    clearIndex(stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).static_text_attrs.slot(field), expected);
 }
 
 /// Records the dense signal text attr descriptor index used for O(1) runtime lookup.
@@ -3814,12 +3989,12 @@ pub fn recordSignalTextAttrIndex(comptime StreamType: type, stream: *StreamType,
 
 /// Updates the dense signal text attr descriptor index after a local structural splice.
 pub fn updateSignalTextAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: TextField, index: usize) void {
-    updateIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].signal_text_attrs.slot(field), index);
+    updateIndex(stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).signal_text_attrs.slot(field), index);
 }
 
 /// Clears signal text attr index while retaining bounded storage where the type promises reuse.
 pub fn clearSignalTextAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: TextField, expected: usize) void {
-    clearIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].signal_text_attrs.slot(field), expected);
+    clearIndex(stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).signal_text_attrs.slot(field), expected);
 }
 
 /// Records the dense static bool attr descriptor index used for O(1) runtime lookup.
@@ -3829,12 +4004,12 @@ pub fn recordStaticBoolAttrIndex(comptime StreamType: type, stream: *StreamType,
 
 /// Updates the dense static bool attr descriptor index after a local structural splice.
 pub fn updateStaticBoolAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: BoolField, index: usize) void {
-    updateIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].static_bool_attrs.slot(field), index);
+    updateIndex(stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).static_bool_attrs.slot(field), index);
 }
 
 /// Clears static bool attr index while retaining bounded storage where the type promises reuse.
 pub fn clearStaticBoolAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: BoolField, expected: usize) void {
-    clearIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].static_bool_attrs.slot(field), expected);
+    clearIndex(stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).static_bool_attrs.slot(field), expected);
 }
 
 /// Records the dense signal bool attr descriptor index used for O(1) runtime lookup.
@@ -3844,12 +4019,12 @@ pub fn recordSignalBoolAttrIndex(comptime StreamType: type, stream: *StreamType,
 
 /// Updates the dense signal bool attr descriptor index after a local structural splice.
 pub fn updateSignalBoolAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: BoolField, index: usize) void {
-    updateIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].signal_bool_attrs.slot(field), index);
+    updateIndex(stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).signal_bool_attrs.slot(field), index);
 }
 
 /// Clears signal bool attr index while retaining bounded storage where the type promises reuse.
 pub fn clearSignalBoolAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: BoolField, expected: usize) void {
-    clearIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].signal_bool_attrs.slot(field), expected);
+    clearIndex(stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).signal_bool_attrs.slot(field), expected);
 }
 
 /// Records the dense event descriptor index used for O(1) runtime lookup.
@@ -3859,27 +4034,23 @@ pub fn recordEventIndex(comptime StreamType: type, stream: *StreamType, allocato
 
 /// Updates the dense event descriptor index after a local structural splice.
 pub fn updateEventIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, kind: EventKind, index: usize) void {
-    updateIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].events.slot(kind), index);
+    updateIndex(stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).events.slot(kind), index);
 }
 
 /// Clears event index while retaining bounded storage where the type promises reuse.
 pub fn clearEventIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, kind: EventKind, expected: usize) void {
-    clearIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].events.slot(kind), expected);
+    clearIndex(stream.descriptor_indexes_by_elem_id.existing(@intCast(elem_id)).events.slot(kind), expected);
 }
 
 /// Ensures named event index list capacity or state before publication can begin.
 pub fn ensureNamedEventIndexList(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: ElemId) *shared_buffer.List(usize) {
-    const index = elem_id.index();
-    while (stream.named_event_indices_by_elem_id.items.len <= index) {
-        stream.named_event_indices_by_elem_id.append(allocator, .empty) catch @panic("out of memory");
-    }
-    return &stream.named_event_indices_by_elem_id.items[index];
+    return stream.named_event_indices_by_elem_id.ensureSlot(allocator, elem_id.index()) catch @panic("out of memory");
 }
 
 /// Maintains named event indices within the indexed descriptor stream used by both hosts.
 pub fn namedEventIndices(comptime StreamType: type, stream: *const StreamType, elem_id: ElemId) []const usize {
-    if (elem_id.index() >= stream.named_event_indices_by_elem_id.items.len) return &.{};
-    return stream.named_event_indices_by_elem_id.items[elem_id.index()].items;
+    const indices = @constCast(&stream.named_event_indices_by_elem_id).getPtr(elem_id.index()) orelse return &.{};
+    return indices.items;
 }
 
 /// Records the dense named event descriptor index used for O(1) runtime lookup.
@@ -3889,8 +4060,7 @@ pub fn recordNamedEventIndex(comptime StreamType: type, stream: *StreamType, all
 
 /// Updates the dense named event descriptor index after a local structural splice.
 pub fn updateNamedEventIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, old_index: usize, new_index: usize) void {
-    if (elem_id >= stream.named_event_indices_by_elem_id.items.len) @panic("descriptor stream updated a missing named event index");
-    const indices = &stream.named_event_indices_by_elem_id.items[@intCast(elem_id)];
+    const indices = stream.named_event_indices_by_elem_id.getPtr(std.math.cast(usize, elem_id) orelse @panic("descriptor stream updated a missing named event index")) orelse @panic("descriptor stream updated a missing named event index");
     for (indices.items) |*index| {
         if (index.* == old_index) {
             index.* = new_index;
@@ -3902,8 +4072,7 @@ pub fn updateNamedEventIndex(comptime StreamType: type, stream: *StreamType, ele
 
 /// Clears named event index while retaining bounded storage where the type promises reuse.
 pub fn clearNamedEventIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, expected: usize) void {
-    if (elem_id >= stream.named_event_indices_by_elem_id.items.len) @panic("descriptor stream cleared a missing named event index");
-    const indices = &stream.named_event_indices_by_elem_id.items[@intCast(elem_id)];
+    const indices = stream.named_event_indices_by_elem_id.getPtr(std.math.cast(usize, elem_id) orelse @panic("descriptor stream cleared a missing named event index")) orelse @panic("descriptor stream cleared a missing named event index");
     for (indices.items, 0..) |index, offset| {
         if (index == expected) {
             _ = indices.swapRemove(offset);
@@ -3915,10 +4084,16 @@ pub fn clearNamedEventIndex(comptime StreamType: type, stream: *StreamType, elem
 
 /// Maintains deinit named event index lists within the indexed descriptor stream used by both hosts.
 pub fn deinitNamedEventIndexLists(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator) void {
-    for (stream.named_event_indices_by_elem_id.items) |*indices| {
-        indices.deinit(allocator);
-    }
+    var entries = stream.named_event_indices_by_elem_id.iterator();
+    while (entries.next()) |entry| entry.value.deinit(allocator);
     stream.named_event_indices_by_elem_id.deinit(allocator);
+}
+
+/// Releases every per-scope ownership list and then the table itself.
+pub fn deinitScopeOwnershipTable(table: *ScopeOwnershipTable, allocator: std.mem.Allocator) void {
+    var entries = table.iterator();
+    while (entries.next()) |entry| entry.value.deinit(allocator);
+    table.deinit(allocator);
 }
 
 /// Records the dense scope site descriptor index used for O(1) runtime lookup.
@@ -4841,7 +5016,7 @@ const TestStream = struct {
     signal_custom_bool_attrs: shared_buffer.List(TestCustomTextAttrDesc) = .empty,
     static_bool_attrs: shared_buffer.List(TestStaticBoolAttrDesc) = .empty,
     signal_bool_attrs: shared_buffer.List(TestStaticBoolAttrDesc) = .empty,
-    descriptor_indexes_by_elem_id: shared_buffer.List(ElemDescriptorIndex) = .empty,
+    descriptor_indexes_by_elem_id: ElemIndexTable = .empty_dense,
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .empty,
 
     fn deinit(self: *TestStream, allocator: std.mem.Allocator) void {
@@ -4864,8 +5039,7 @@ const TestStream = struct {
     }
 
     fn elemDescriptorIndex(self: *const TestStream, elem_id: ElemId) ?ElemDescriptorIndex {
-        if (elem_id.index() >= self.descriptor_indexes_by_elem_id.items.len) return null;
-        return self.descriptor_indexes_by_elem_id.items[elem_id.index()];
+        return self.descriptor_indexes_by_elem_id.get(elem_id.index());
     }
 
     fn firstRenderChild(self: *const TestStream, parent_elem_id: ElemId) ?ElemId {
@@ -4880,11 +5054,7 @@ const TestStream = struct {
 };
 
 fn ensureTestElemDescriptorIndex(stream: *TestStream, allocator: std.mem.Allocator, elem_id: u64) *ElemDescriptorIndex {
-    const index: usize = @intCast(elem_id);
-    while (stream.descriptor_indexes_by_elem_id.items.len <= index) {
-        stream.descriptor_indexes_by_elem_id.append(allocator, .{}) catch @panic("out of memory");
-    }
-    return &stream.descriptor_indexes_by_elem_id.items[index];
+    return stream.descriptor_indexes_by_elem_id.ensureSlot(allocator, @intCast(elem_id)) catch @panic("out of memory");
 }
 
 const TestMetrics = struct {
@@ -5037,15 +5207,13 @@ fn deinitStaticPreparedTestStream(stream: *Stream, allocator: std.mem.Allocator)
     stream.signal_custom_bool_attrs.deinit(allocator);
     stream.descriptor_indexes_by_elem_id.deinit(allocator);
     stream.render_metadata_by_elem_id.deinit(allocator);
-    for (stream.scope_descriptor_ownership.items) |*ownership| ownership.deinit(allocator);
-    stream.scope_descriptor_ownership.deinit(allocator);
+    deinitScopeOwnershipTable(&stream.scope_descriptor_ownership, allocator);
 }
 
 test "retired scope indexes release historic capacity before identity reuse" {
     var stream: Stream = .{};
     defer {
-        for (stream.scope_descriptor_ownership.items) |*ownership| ownership.deinit(std.testing.allocator);
-        stream.scope_descriptor_ownership.deinit(std.testing.allocator);
+        deinitScopeOwnershipTable(&stream.scope_descriptor_ownership, std.testing.allocator);
         for (stream.lifecycle_indices_by_scope_id.items) |*indexes| indexes.deinit(std.testing.allocator);
         stream.lifecycle_indices_by_scope_id.deinit(std.testing.allocator);
     }
@@ -5053,19 +5221,19 @@ test "retired scope indexes release historic capacity before identity reuse" {
     const scope_id = ScopeId.fromRaw(4);
     try stream.reserveScopeDescriptorOwnership(std.testing.allocator, scope_id, 3, 2);
     try stream.reserveLifecycleScope(std.testing.allocator, scope_id, 2);
-    try std.testing.expect(stream.scope_descriptor_ownership.items[scope_id.index()].elem_ids.capacity >= 3);
-    try std.testing.expect(stream.scope_descriptor_ownership.items[scope_id.index()].node_ids.capacity >= 2);
+    try std.testing.expect(stream.scope_descriptor_ownership.existing(scope_id.index()).elem_ids.capacity >= 3);
+    try std.testing.expect(stream.scope_descriptor_ownership.existing(scope_id.index()).node_ids.capacity >= 2);
     try std.testing.expect(stream.lifecycle_indices_by_scope_id.items[scope_id.index()].capacity >= 2);
 
     stream.releaseRetiredScopeIndexes(std.testing.allocator, scope_id);
-    try std.testing.expectEqual(@as(usize, 0), stream.scope_descriptor_ownership.items[scope_id.index()].elem_ids.capacity);
-    try std.testing.expectEqual(@as(usize, 0), stream.scope_descriptor_ownership.items[scope_id.index()].node_ids.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.scope_descriptor_ownership.existing(scope_id.index()).elem_ids.capacity);
+    try std.testing.expectEqual(@as(usize, 0), stream.scope_descriptor_ownership.existing(scope_id.index()).node_ids.capacity);
     try std.testing.expectEqual(@as(usize, 0), stream.lifecycle_indices_by_scope_id.items[scope_id.index()].capacity);
 
     // A later occupant of the same dense scope identity can reserve a new
     // shape without inheriting the retired subtree's storage.
     try stream.reserveScopeDescriptorOwnership(std.testing.allocator, scope_id, 1, 0);
-    try std.testing.expect(stream.scope_descriptor_ownership.items[scope_id.index()].elem_ids.capacity >= 1);
+    try std.testing.expect(stream.scope_descriptor_ownership.existing(scope_id.index()).elem_ids.capacity >= 1);
 }
 
 test "prepared static append sweeps allocation failures without logical mutation and retries" {
@@ -5089,7 +5257,7 @@ test "prepared static append sweeps allocation failures without logical mutation
         try std.testing.expectEqual(@as(u64, 1), stream.next_elem_id);
         try std.testing.expectEqual(@as(usize, 0), stream.render_nodes.items.len);
         try std.testing.expectEqual(@as(usize, 0), stream.elements.items.len);
-        try std.testing.expectEqual(@as(usize, 0), stream.descriptor_indexes_by_elem_id.items.len);
+        try std.testing.expectEqual(@as(usize, 0), stream.descriptor_indexes_by_elem_id.len());
         try std.testing.expectEqual(@as(usize, 0), stream.render_metadata_by_elem_id.count());
 
         fault.configure(null);
@@ -5151,10 +5319,10 @@ test "prepared signal attr reservation leaves logical stream empty" {
     try stream.reservePreparedSignalAttrs(std.testing.allocator, 3, 7);
     try std.testing.expect(stream.signal_text_attrs.capacity >= 3);
     try std.testing.expect(stream.signal_bool_attrs.capacity >= 3);
-    try std.testing.expect(stream.descriptor_indexes_by_elem_id.capacity >= 8);
+    try std.testing.expect(stream.descriptor_indexes_by_elem_id.capacity() >= 8);
     try std.testing.expectEqual(@as(usize, 0), stream.signal_text_attrs.items.len);
     try std.testing.expectEqual(@as(usize, 0), stream.signal_bool_attrs.items.len);
-    try std.testing.expectEqual(@as(usize, 0), stream.descriptor_indexes_by_elem_id.items.len);
+    try std.testing.expectEqual(@as(usize, 0), stream.descriptor_indexes_by_elem_id.len());
     try std.testing.expect(stream.elemDescriptorIndex(ElemId.fromRaw(7)) == null);
 }
 
@@ -5390,9 +5558,8 @@ test "prepared named event indexes publish allocation free for existing and new 
     var metrics = TestMetrics{};
     defer stream.deinit(allocator, &ctx, &roc_host, &metrics);
 
-    try stream.named_event_indices_by_elem_id.append(allocator, .empty);
-    try stream.named_event_indices_by_elem_id.append(allocator, .empty);
-    try stream.named_event_indices_by_elem_id.items[1].append(allocator, 17);
+    _ = try stream.named_event_indices_by_elem_id.ensureSlot(allocator, 0);
+    try (try stream.named_event_indices_by_elem_id.ensureSlot(allocator, 1)).append(allocator, 17);
     try stream.reservePreparedEvents(allocator, 2, 3);
     try stream.reserveExistingNamedEventIndexes(allocator, 1, 1);
 
@@ -6586,7 +6753,7 @@ test "retirement journal stays bounded across one thousand create, remove, and r
         try std.testing.expectEqual(@as(usize, 2), sample.reserved_slots);
         try std.testing.expectEqual(@as(usize, 2), sample.retired_count);
         try std.testing.expectEqual(sample.requested_bytes + sample.retired_payload_bytes, sample.freed_bytes);
-        const retained_slots = fixture.active.elements.capacity + fixture.active.render_nodes.capacity + fixture.active.descriptor_indexes_by_elem_id.capacity;
+        const retained_slots = fixture.active.elements.capacity + fixture.active.render_nodes.capacity + fixture.active.descriptor_indexes_by_elem_id.capacity();
         if (cycle == warmup) {
             live_after_warmup = fixture.fault.bytes.live;
             peak_after_warmup = sample.peak_transaction_bytes;
@@ -6601,4 +6768,62 @@ test "retirement journal stays bounded across one thousand create, remove, and r
     }
     try std.testing.expectEqual(@as(usize, 64), fixture.active.elements.items.len);
     try std.testing.expectEqual(@sizeOf(StreamRenderNode) + @sizeOf(StreamElementDesc), peak_after_warmup);
+}
+
+test "sparse replacement stream reserves identity tables by descriptor count and moves into the dense active stream" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        /// Opens a checked capability frame for an app-compiled erased call.
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Closes the current capability frame after an app-compiled erased call.
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+
+    var replacement = Stream.initEmpty(.sparse);
+    defer replacement.deinit(allocator, &ctx, &roc_host, &metrics);
+    var active = Stream.initEmpty(.dense);
+    defer active.deinit(allocator, &ctx, &roc_host, &metrics);
+    try std.testing.expectEqual(IndexMode.sparse, replacement.indexMode());
+    try std.testing.expectEqual(IndexMode.dense, active.indexMode());
+
+    // One element whose identities sit far above every other id: the sparse
+    // replacement reserves by its own descriptor count, not by the identity.
+    const high_elem = ElemId.fromRaw(100_000);
+    const scope_id = ScopeId.fromRaw(70_000);
+    try replacement.reservePreparedStaticNodeLanes(allocator, 1, 0, 1, high_elem.raw());
+    try replacement.reservePreparedEvents(allocator, 0, high_elem.raw());
+    try replacement.reserveScopeDescriptorOwnership(allocator, scope_id, 1, 0);
+    try std.testing.expect(replacement.descriptor_indexes_by_elem_id.capacity() < 64);
+    try std.testing.expect(replacement.named_event_indices_by_elem_id.capacity() < 64);
+    try std.testing.expect(replacement.scope_descriptor_ownership.capacity() < 64);
+
+    const prepared = try replacement.prepareElement(allocator, high_elem, ElemId.fromRaw(0), scope_id, "section");
+    fault.configure(1);
+    replacement.appendPreparedStaticNode(prepared);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    fault.configure(null);
+    try std.testing.expectEqual(@as(?usize, 0), replacement.elemDescriptorIndex(high_elem).?.element.get());
+    try std.testing.expect(replacement.elemDescriptorIndex(ElemId.fromRaw(99_999)) == null);
+    try std.testing.expectEqualSlices(ElemId, &.{high_elem}, replacement.scopeOwnedElemIds(scope_id));
+    try std.testing.expectEqual(@as(usize, 1), replacement.descriptor_indexes_by_elem_id.len());
+    try std.testing.expectEqual(@as(usize, 1), replacement.scope_descriptor_ownership.len());
+
+    // Moving into the dense active stream indexes the element by identity
+    // there without allocating, visiting only the replacement's own entries.
+    try active.reserveMovedStreamPublication(allocator, &replacement);
+    var retired: RetiredDescriptors = .{};
+    fault.configure(1);
+    active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{});
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    fault.configure(null);
+    try std.testing.expectEqual(@as(usize, 1), active.elements.items.len);
+    try std.testing.expectEqual(@as(?usize, 0), active.elemDescriptorIndex(high_elem).?.element.get());
+    try std.testing.expectEqualSlices(ElemId, &.{high_elem}, active.scopeOwnedElemIds(scope_id));
+    try std.testing.expectEqual(@as(usize, 0), replacement.scopeOwnedElemIds(scope_id).len);
 }

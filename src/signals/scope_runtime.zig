@@ -649,21 +649,23 @@ pub fn prepareSubtreeRetirement(comptime Row: type, allocator: std.mem.Allocator
 /// Prepares disjoint scope subtrees as one stable post-order retirement journal.
 pub fn prepareSubtreesRetirement(comptime Row: type, allocator: std.mem.Allocator, scopes: []const scope_tree.Scope(Row), root_scope_ids: []const semantic_ids.ScopeId) (std.mem.Allocator.Error || error{OverlappingSubtrees})!PreparedSubtreeRetirement {
     var work: SubtreeTraversalWork = .{};
-    const is_root = try allocator.alloc(bool, scopes.len);
-    defer allocator.free(is_root);
-    @memset(is_root, false);
+    // Root membership is keyed by the retiring roots, not by every scope, so
+    // retiring a few subtrees of a large tree reserves by the request size.
+    var is_root: std.AutoHashMapUnmanaged(usize, void) = .empty;
+    defer is_root.deinit(allocator);
+    try is_root.ensureTotalCapacity(allocator, std.math.cast(u32, root_scope_ids.len) orelse return error.OutOfMemory);
     for (root_scope_ids) |root_scope_id| {
         work.validation_roots_checked += 1;
         if (root_scope_id.index() >= scopes.len or scopes[root_scope_id.index()].scope_id != root_scope_id or !scopes[root_scope_id.index()].lifecycle.isActive()) return error.OverlappingSubtrees;
-        if (is_root[root_scope_id.index()]) return error.OverlappingSubtrees;
-        is_root[root_scope_id.index()] = true;
+        if (is_root.contains(root_scope_id.index())) return error.OverlappingSubtrees;
+        is_root.putAssumeCapacityNoClobber(root_scope_id.index(), {});
     }
     for (root_scope_ids) |root_scope_id| {
         var ancestor = scopes[root_scope_id.index()].parent_scope_id;
         while (ancestor) |ancestor_scope_id| {
             work.validation_parent_links_followed += 1;
             if (ancestor_scope_id.index() >= scopes.len or scopes[ancestor_scope_id.index()].scope_id != ancestor_scope_id) return error.OverlappingSubtrees;
-            if (is_root[ancestor_scope_id.index()]) return error.OverlappingSubtrees;
+            if (is_root.contains(ancestor_scope_id.index())) return error.OverlappingSubtrees;
             ancestor = scopes[ancestor_scope_id.index()].parent_scope_id;
         }
     }

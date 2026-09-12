@@ -160,16 +160,75 @@ pub const PreparedCacheUpdates = struct {
     selector_members_dirtied: u64 = 0,
     phase: Phase = .preparing,
 
+    /// Empty overlay containers whose capacity outlives one transaction.
+    ///
+    /// An overlay is reserved for the whole active graph, so allocating it
+    /// afresh for every source transaction costs O(total graph) bytes and
+    /// zeroing per event. Transaction scratch memory may retain capacity, so a
+    /// finished overlay hands its containers back here and the next overlay
+    /// starts from them. Retained storage never carries logical contents: every
+    /// staged value is released and every container is logically empty.
+    pub const Storage = struct {
+        updates: shared_buffer.List(PreparedCacheUpdate) = .empty,
+        indexes: std.AutoHashMapUnmanaged(*CacheSlot, usize) = .empty,
+        results: shared_buffer.List(Result) = .empty,
+        result_indexes: std.AutoHashMapUnmanaged(EvaluationKey, usize) = .empty,
+        provisional_values: std.AutoHashMapUnmanaged(EvaluationKey, *const HostValueCell) = .empty,
+
+        /// Frees the retained containers; they hold no values.
+        pub fn deinit(self: *Storage, allocator: std.mem.Allocator) void {
+            self.updates.deinit(allocator);
+            self.indexes.deinit(allocator);
+            self.results.deinit(allocator);
+            self.result_indexes.deinit(allocator);
+            self.provisional_values.deinit(allocator);
+            self.* = .{};
+        }
+
+        /// Bytes of container capacity currently retained, used to keep the
+        /// larger of two candidates when a nested transaction returns its
+        /// overlay while another is already parked.
+        pub fn retainedCapacity(self: *const Storage) usize {
+            return self.updates.capacity +| self.results.capacity +| self.indexes.capacity() +| self.result_indexes.capacity() +| self.provisional_values.capacity();
+        }
+    };
+
     /// Reserves the exact upper bound before any callback result is adopted.
     pub fn init(allocator: std.mem.Allocator, expected: usize) std.mem.Allocator.Error!PreparedCacheUpdates {
-        var self = PreparedCacheUpdates{ .allocator = allocator };
+        return initWithStorage(allocator, expected, .{});
+    }
+
+    /// Reserves `expected` entries starting from retained containers. When the
+    /// retained capacity already covers `expected`, no allocator call is made,
+    /// which is what keeps a steady-state transaction free of graph-sized
+    /// reservations. Ownership of `storage` transfers to the overlay whether or
+    /// not reservation succeeds; on failure it is freed.
+    pub fn initWithStorage(allocator: std.mem.Allocator, expected: usize, storage: Storage) std.mem.Allocator.Error!PreparedCacheUpdates {
+        var self = PreparedCacheUpdates{
+            .allocator = allocator,
+            .updates = storage.updates,
+            .indexes = storage.indexes,
+            .results = storage.results,
+            .result_indexes = storage.result_indexes,
+            .provisional_values = storage.provisional_values,
+        };
         errdefer self.deinitStorage();
+        if (self.updates.items.len != 0 or self.results.items.len != 0 or self.indexes.count() != 0 or self.result_indexes.count() != 0 or self.provisional_values.count() != 0) @panic("retained cache overlay storage carried logical contents");
         try self.updates.ensureTotalCapacity(allocator, expected);
         try self.indexes.ensureTotalCapacity(allocator, std.math.cast(u32, expected) orelse return error.OutOfMemory);
         try self.results.ensureTotalCapacity(allocator, expected);
         try self.result_indexes.ensureTotalCapacity(allocator, std.math.cast(u32, expected) orelse return error.OutOfMemory);
         try self.provisional_values.ensureTotalCapacity(allocator, std.math.cast(u32, expected) orelse return error.OutOfMemory);
         return self;
+    }
+
+    /// Takes retained storage out of `slot`, leaving the slot empty, so a new
+    /// overlay can start from it. Returns empty containers when nothing is
+    /// parked, for example while a nested transaction still owns the storage.
+    pub fn takeRetained(slot: *?Storage) Storage {
+        const storage = slot.* orelse return .{};
+        slot.* = null;
+        return storage;
     }
 
     /// Adopts one unique incoming value using already-reserved storage.
@@ -301,6 +360,39 @@ pub const PreparedCacheUpdates = struct {
         for (self.updates.items) |*update| update.deinit(ctx, roc_host, metrics);
         self.deinitStorage();
         self.* = undefined;
+    }
+
+    /// Releases provisional or displaced values like `deinit`, then parks the
+    /// emptied containers in `slot` for the next transaction instead of
+    /// freeing them. Only entries this transaction touched are reset: the
+    /// lists drop their length and the hash maps clear their occupancy
+    /// metadata, so no value or index storage is rewritten. When `slot`
+    /// already holds storage, the smaller of the two is freed so at most one
+    /// graph-sized overlay stays parked.
+    pub fn deinitRetaining(self: *PreparedCacheUpdates, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, slot: *?Storage) void {
+        for (self.updates.items) |*update| update.deinit(ctx, roc_host, metrics);
+        self.updates.clearRetainingCapacity();
+        self.results.clearRetainingCapacity();
+        self.indexes.clearRetainingCapacity();
+        self.result_indexes.clearRetainingCapacity();
+        self.provisional_values.clearRetainingCapacity();
+        var storage = Storage{
+            .updates = self.updates,
+            .indexes = self.indexes,
+            .results = self.results,
+            .result_indexes = self.result_indexes,
+            .provisional_values = self.provisional_values,
+        };
+        const allocator = self.allocator;
+        self.* = undefined;
+        if (slot.*) |*parked| {
+            if (parked.retainedCapacity() >= storage.retainedCapacity()) {
+                storage.deinit(allocator);
+                return;
+            }
+            parked.deinit(allocator);
+        }
+        slot.* = storage;
     }
 
     fn deinitStorage(self: *PreparedCacheUpdates) void {
@@ -1149,4 +1241,52 @@ test "owned source updates reject duplicates before ownership mutation" {
     updates.deinit(&ctx, &roc_host, &metrics);
     try std.testing.expectEqual(@as(usize, 2), owned_source_test_drop_count);
     try std.testing.expectEqual(metrics.closure_retains, metrics.closure_releases);
+}
+
+test "prepared cache overlay storage is retained across transactions and reused without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        /// Opens a checked capability frame for an app-compiled erased call.
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const HostValueCapability) void {}
+        /// Closes the current capability frame after an app-compiled erased call.
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    const TestMetrics = struct {
+        /// Accepts metric bumps from released capabilities; none are expected here.
+        pub fn bump(_: *@This(), comptime _: anytype, _: u64) void {}
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics: TestMetrics = .{};
+    var slot: ?PreparedCacheUpdates.Storage = null;
+    defer if (slot) |*storage| storage.deinit(allocator);
+
+    var first = try PreparedCacheUpdates.initWithStorage(allocator, 64, PreparedCacheUpdates.takeRetained(&slot));
+    try std.testing.expect(fault.attempts > 0);
+    first.deinitRetaining(&ctx, &roc_host, &metrics, &slot);
+    try std.testing.expect(slot != null);
+
+    // The next overlay of the same bound starts from the parked containers
+    // and makes no allocator call at all.
+    fault.configure(1);
+    var second = try PreparedCacheUpdates.initWithStorage(allocator, 64, PreparedCacheUpdates.takeRetained(&slot));
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    fault.configure(null);
+    try std.testing.expect(slot == null);
+    try std.testing.expect(second.updates.capacity >= 64);
+    try std.testing.expectEqual(@as(usize, 0), second.results.items.len);
+    second.deinitRetaining(&ctx, &roc_host, &metrics, &slot);
+
+    // A larger bound grows the parked containers, and a smaller overlay that
+    // returns afterwards is freed rather than displacing the larger one.
+    var third = try PreparedCacheUpdates.initWithStorage(allocator, 4096, PreparedCacheUpdates.takeRetained(&slot));
+    try std.testing.expect(third.updates.capacity >= 4096);
+    third.deinitRetaining(&ctx, &roc_host, &metrics, &slot);
+    var small = try PreparedCacheUpdates.init(allocator, 8);
+    small.deinitRetaining(&ctx, &roc_host, &metrics, &slot);
+    try std.testing.expect(slot.?.updates.capacity >= 4096);
+    try std.testing.expectEqual(@as(usize, 0), slot.?.indexes.count());
 }

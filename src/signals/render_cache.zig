@@ -952,7 +952,10 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         named_event_wire_edits: shared_buffer.List(PreparedNamedEventsReplacement.WireEdit) = .empty,
         provisional_nodes: std.DynamicBitSetUnmanaged = .{},
         reused_nodes: std.AutoHashMapUnmanaged(u64, ReusedNodeFields) = .empty,
-        parent_intent_indexes: []usize = &.{},
+        /// Intent index by child elem id for the children this splice
+        /// re-parents. Keyed sparsely so a splice touching a few children of a
+        /// large tree reserves by its own child links, not by every cached node.
+        parent_intent_indexes: std.AutoHashMapUnmanaged(usize, usize) = .empty,
         parent_intents: shared_buffer.List(ParentIntent) = .empty,
         cache: *const Cache(Ctx),
         sink_command_count: usize = 0,
@@ -960,7 +963,6 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         phase: JournalPhase = .prepared,
 
         const ParentIntent = struct { child_id: ids.ElemId, next: ?ids.ElemId, retired: ?ids.ElemId };
-        const no_parent_intent = std.math.maxInt(usize);
 
         /// Reserves every plan-local journal and persistent tag slot before collection.
         pub fn init(allocator: std.mem.Allocator, cache: *Cache(Ctx), prepared_counts: PreparedRenderCounts) (std.mem.Allocator.Error || error{ResourceLimit})!Self {
@@ -987,10 +989,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             if (prepared_counts.creations != 0) self.provisional_nodes = try .initEmpty(allocator, node_index_capacity);
             const reuse_count = std.math.cast(u32, prepared_counts.reuses) orelse return error.ResourceLimit;
             try self.reused_nodes.ensureUnusedCapacity(allocator, reuse_count);
-            if (prepared_counts.child_links != 0) {
-                self.parent_intent_indexes = try allocator.alloc(usize, node_index_capacity);
-                @memset(self.parent_intent_indexes, no_parent_intent);
-            }
+            try self.parent_intent_indexes.ensureTotalCapacity(allocator, std.math.cast(u32, prepared_counts.child_links) orelse return error.ResourceLimit);
             try self.parent_intents.ensureTotalCapacity(allocator, prepared_counts.child_links);
             return self;
         }
@@ -1023,11 +1022,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// and cannot grow at that point.
         pub fn reserveAdditionalChildren(self: *Self, parents: usize, child_links: usize) (std.mem.Allocator.Error || error{ResourceLimit})!void {
             try self.children.ensureUnusedCapacity(self.allocator, parents);
-            if (child_links != 0 and self.parent_intent_indexes.len == 0) {
-                const node_index_capacity = @max(self.cache.nodes.capacity, self.cache.nodes.items.len);
-                self.parent_intent_indexes = try self.allocator.alloc(usize, node_index_capacity);
-                @memset(self.parent_intent_indexes, no_parent_intent);
-            }
+            try self.parent_intent_indexes.ensureUnusedCapacity(self.allocator, std.math.cast(u32, child_links) orelse return error.ResourceLimit);
             try self.parent_intents.ensureUnusedCapacity(self.allocator, child_links);
             try self.child_wire_edits.ensureUnusedCapacity(self.allocator, child_links);
         }
@@ -1203,10 +1198,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             const semantic_child_id = ids.ElemId.fromRaw(child_id);
             const semantic_next = ids.optionalElemFromRaw(next);
             const child_index = std.math.cast(usize, child_id) orelse return error.ResourceLimit;
-            if (child_index >= self.parent_intent_indexes.len) return error.ResourceLimit;
-            const existing_intent_index = self.parent_intent_indexes[child_index];
-            if (existing_intent_index != no_parent_intent) {
-                const intent_index = existing_intent_index;
+            if (self.parent_intent_indexes.get(child_index)) |intent_index| {
                 const intent = &self.parent_intents.items[intent_index];
                 if (semantic_next != null and intent.next != null) {
                     if (intent.next.? == semantic_next.?) return error.DuplicateChild;
@@ -1218,7 +1210,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             const retired = if (child_index < cache.nodes.items.len and cache.nodes.items[child_index].isActive()) cache.nodes.items[child_index].parent_id else null;
             const intent_index = self.parent_intents.items.len;
             self.parent_intents.appendAssumeCapacity(.{ .child_id = semantic_child_id, .next = semantic_next, .retired = retired });
-            self.parent_intent_indexes[child_index] = intent_index;
+            self.parent_intent_indexes.putAssumeCapacity(child_index, intent_index);
         }
 
         /// Adds one complete parent-child replacement and final parent intents.
@@ -1774,7 +1766,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             self.creations.deinit(self.allocator);
             self.removals.deinit(self.allocator);
             self.parent_intents.deinit(self.allocator);
-            self.allocator.free(self.parent_intent_indexes);
+            self.parent_intent_indexes.deinit(self.allocator);
             self.provisional_nodes.deinit(self.allocator);
             self.reused_nodes.deinit(self.allocator);
             self.tags.deinit(self.allocator);
