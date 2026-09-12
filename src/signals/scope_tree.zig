@@ -329,6 +329,33 @@ pub fn publishScopeAssumeCapacity(comptime Row: type, scopes: *shared_buffer.Lis
     attachToParent(Row, scopes.items, prepared.scope_id);
 }
 
+/// Reverts one publication that nothing committed has observed, leaving the
+/// table exactly as `publishScopeAssumeCapacity` found it. `previous` is the
+/// slot's content from before publication: null means the scope took a fresh
+/// slot, which must still be the last slot and is popped; otherwise it is the
+/// retired scope that was recycled, which is written back and relinked into
+/// the reusable ring between the neighbours it had. Undo therefore has to run
+/// newest publication first and before any later retirement, and the function
+/// panics when the ring no longer has those neighbours adjacent. Unlike
+/// retirement this leaves no trace: the slot keeps its old retirement
+/// generation, so a retried transaction re-derives the same ids.
+pub fn unpublishScopeAssumeValid(comptime Row: type, scopes: *shared_buffer.List(Scope(Row)), scope_id: ScopeId, previous: ?Scope(Row)) void {
+    const index = scope_id.index();
+    const scope = &scopes.items[index];
+    if (scope.scope_id != scope_id or !scope.lifecycle.isActive()) @panic("unpublished scope no longer matched live state");
+    if (scope.first_child_scope_id != null or scope.last_child_scope_id != null) @panic("scope unpublished before its active children");
+    detachFromParent(Row, scopes.items, scope_id);
+    const restored = previous orelse {
+        if (index + 1 != scopes.items.len) @panic("fresh scope unpublished out of order");
+        scopes.shrinkRetainingCapacity(index);
+        return;
+    };
+    if (restored.scope_id != scope_id or restored.lifecycle.isActive()) @panic("unpublished slot restored to an active scope");
+    if (restored.first_child_scope_id != null or restored.last_child_scope_id != null or restored.previous_sibling_scope_id != null or restored.next_sibling_scope_id != null) @panic("restored retired scope carried topology");
+    scopes.items[index] = restored;
+    relinkReusable(Row, scopes.items, scope_id);
+}
+
 /// Retires one childless scope and unlinks it from its active parent. Subtree
 /// retirement calls this in post-order, making the operation allocation-free.
 pub fn retireScopeAssumeValid(comptime Row: type, scopes: []Scope(Row), scope_id: ScopeId, retirement_generation: Generation) void {
@@ -363,8 +390,11 @@ pub fn isLinkedReusable(comptime Row: type, scopes: []const Scope(Row), scope_id
 
 /// Appends a freshly retired slot at the ring tail. Retirement is the only
 /// way a slot enters the ring and publication (`publishScopeAssumeCapacity`)
-/// the only way it leaves, so ring membership tracks the retired lifecycle
-/// exactly and the ring is ordered by retirement generation. The root slot is
+/// the only way it leaves (`unpublishScopeAssumeValid` merely puts a slot back
+/// where publication took it from), so ring membership tracks the retired
+/// lifecycle exactly and the ring is ordered by retirement generation. The
+/// engine retires only at its current, monotonic generation, which is what
+/// lets a claim stop at the first barrier-blocked slot. The root slot is
 /// the sentinel and is never linked as a member: a retired root cannot be
 /// re-interned, so the table is finished once that happens.
 fn linkReusable(comptime Row: type, scopes: []Scope(Row), scope_id: ScopeId) void {
@@ -399,6 +429,29 @@ fn unlinkReusable(comptime Row: type, scopes: []Scope(Row), scope_id: ScopeId) v
     }
     scope.previous_reusable_scope_id = null;
     scope.next_reusable_scope_id = null;
+}
+
+/// Puts a slot back into the ring between the neighbours its own links name,
+/// undoing `unlinkReusable`. The neighbours must still be adjacent, which holds
+/// while publications are undone newest first with no retirement in between.
+/// A slot whose links are null was never linked and is left alone.
+fn relinkReusable(comptime Row: type, scopes: []Scope(Row), scope_id: ScopeId) void {
+    const scope = &scopes[scope_id.index()];
+    const next_id = scope.next_reusable_scope_id orelse {
+        if (scope.previous_reusable_scope_id != null) @panic("reusable slot ring link was half initialized");
+        return;
+    };
+    const previous_id = scope.previous_reusable_scope_id orelse @panic("reusable slot ring link was half initialized");
+    const root = semantic_ids.root_scope;
+    const sentinel = &scopes[root.index()];
+    const previous_next: ?ScopeId = if (previous_id == root) sentinel.next_reusable_scope_id else scopes[previous_id.index()].next_reusable_scope_id;
+    const next_previous: ?ScopeId = if (next_id == root) sentinel.previous_reusable_scope_id else scopes[next_id.index()].previous_reusable_scope_id;
+    const ring_was_empty = previous_id == root and next_id == root;
+    const expected_previous_next: ?ScopeId = if (ring_was_empty) null else next_id;
+    const expected_next_previous: ?ScopeId = if (ring_was_empty) null else previous_id;
+    if (previous_next != expected_previous_next or next_previous != expected_next_previous) @panic("reusable ring changed under an unpublished slot");
+    if (previous_id == root) sentinel.next_reusable_scope_id = scope_id else scopes[previous_id.index()].next_reusable_scope_id = scope_id;
+    if (next_id == root) sentinel.previous_reusable_scope_id = scope_id else scopes[next_id.index()].previous_reusable_scope_id = scope_id;
 }
 
 fn attachToParent(comptime Row: type, scopes: []Scope(Row), scope_id: ScopeId) void {
@@ -775,4 +828,44 @@ test "direct intern allocation failure leaves the reusable ring coherent" {
     // Reuse needs no allocation at all, so a failing allocator cannot stop it.
     try std.testing.expectEqual(a, (try internOne(.component, failing.allocator(), &scopes, root, 2, Generation.fromRaw(2))).scope_id);
     try std.testing.expectEqual(@as(usize, 0), ringLen(scopes.items));
+}
+
+test "unpublishing restores recycled ring slots and pops fresh ones in LIFO order" {
+    var scopes: shared_buffer.List(Scope(TestRow)) = .empty;
+    defer scopes.deinit(std.testing.allocator);
+    const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
+    const a = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(1), semantic_ids.initial_generation)).scope_id;
+    const b = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(2), semantic_ids.initial_generation)).scope_id;
+    const c = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(3), semantic_ids.initial_generation)).scope_id;
+    retireScopeAssumeValid(TestRow, scopes.items, b, semantic_ids.initial_generation);
+    retireScopeAssumeValid(TestRow, scopes.items, c, semantic_ids.initial_generation);
+
+    // Claim both ring slots in the next generation, snapshotting each slot as
+    // publication found it, then append once the ring is empty.
+    const barrier = Generation.fromRaw(1);
+    const before_b = scopes.items[b.index()];
+    const first = try internOne(.each_row, std.testing.allocator, &scopes, root, 10, barrier);
+    try std.testing.expectEqual(b, first.scope_id);
+    const before_c = scopes.items[c.index()];
+    const second = try internOne(.each_row, std.testing.allocator, &scopes, root, 11, barrier);
+    try std.testing.expectEqual(c, second.scope_id);
+    const third = try internOne(.each_row, std.testing.allocator, &scopes, root, 12, barrier);
+    try std.testing.expectEqual(ScopeId.fromIndex(4), third.scope_id);
+
+    // Undo newest first: the fresh slot pops, the recycled slots return to their positions.
+    unpublishScopeAssumeValid(TestRow, &scopes, third.scope_id, null);
+    try std.testing.expectEqual(@as(usize, 4), scopes.items.len);
+    unpublishScopeAssumeValid(TestRow, &scopes, c, before_c);
+    unpublishScopeAssumeValid(TestRow, &scopes, b, before_b);
+    try std.testing.expectEqual(@as(?ScopeId, b), firstReusableScope(TestRow, scopes.items));
+    try std.testing.expectEqual(@as(?ScopeId, c), nextReusableScope(TestRow, scopes.items, b));
+    try std.testing.expectEqual(@as(?ScopeId, null), nextReusableScope(TestRow, scopes.items, c));
+    try std.testing.expectEqual(@as(usize, 2), ringLen(scopes.items));
+    try std.testing.expectEqual(@as(?ScopeId, a), scopes.items[root.index()].first_child_scope_id);
+    try std.testing.expectEqual(@as(?ScopeId, a), scopes.items[root.index()].last_child_scope_id);
+    try std.testing.expectEqual(Lifecycle{ .retired = semantic_ids.initial_generation }, scopes.items[b.index()].lifecycle);
+
+    // The restored slots are claimable again exactly as before the aborted claims.
+    try std.testing.expectEqual(b, (try internOne(.component, std.testing.allocator, &scopes, root, 5, barrier)).scope_id);
+    try std.testing.expectEqual(c, (try internOne(.component, std.testing.allocator, &scopes, root, 6, barrier)).scope_id);
 }
