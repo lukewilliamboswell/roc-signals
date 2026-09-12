@@ -10228,14 +10228,16 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareSinkEdits(self: *@This(), allocator: std.mem.Allocator) CollectionError!active_graph.PreparedSinkRouteEdits {
+                // Scratch that never escapes this call comes from one arena, so
+                // a refusal releases it in one step instead of replaying every
+                // list's teardown at each error exit.
+                var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+                defer scratch_arena.deinit();
+                const scratch = scratch_arena.allocator();
                 var text: shared_buffer.List(active_graph.TextSinkEdit) = .empty;
-                defer text.deinit(allocator);
                 var bools: shared_buffer.List(active_graph.BoolSinkEdit) = .empty;
-                defer bools.deinit(allocator);
                 var structural: shared_buffer.List(active_graph.StructuralSinkEdit) = .empty;
-                defer structural.deinit(allocator);
                 var changes: shared_buffer.List(active_graph.ChangeSinkEdit) = .empty;
-                defer changes.deinit(allocator);
                 const removal = &self.removal.?.removal;
                 const indexes = &removal.descriptor_indexes;
                 var text_removals = std.math.add(usize, indexes.signal_text_node_indexes.items.len, indexes.signal_text_attr_indexes.items.len) catch return error.ResourceLimit;
@@ -10243,19 +10245,19 @@ pub fn Engine(comptime Ctx: type) type {
                 text_removals = std.math.add(usize, text_removals, indexes.signal_optional_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
                 const bool_removals = std.math.add(usize, indexes.signal_bool_attr_indexes.items.len, indexes.signal_custom_bool_attr_indexes.items.len) catch return error.ResourceLimit;
                 const structural_removals = std.math.add(usize, removal.node_indexes.when_indexes.items.len, removal.node_indexes.each_indexes.items.len) catch return error.ResourceLimit;
-                text.ensureTotalCapacity(allocator, std.math.mul(usize, 2, text_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
-                bools.ensureTotalCapacity(allocator, std.math.mul(usize, 2, bool_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
-                structural.ensureTotalCapacity(allocator, std.math.mul(usize, 2, structural_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
-                changes.ensureTotalCapacity(allocator, std.math.mul(usize, 2, removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
-                try BranchReplacementPlan.appendTextSinkEdits(allocator, self.engine, &text, self.engine.active_stream.signal_text_nodes.items, indexes.signal_text_node_indexes.items, .text_node);
-                try BranchReplacementPlan.appendTextSinkEdits(allocator, self.engine, &text, self.engine.active_stream.signal_text_attrs.items, indexes.signal_text_attr_indexes.items, .text_attr);
-                try BranchReplacementPlan.appendTextSinkEdits(allocator, self.engine, &text, self.engine.active_stream.signal_custom_text_attrs.items, indexes.signal_custom_text_attr_indexes.items, .custom_text_attr);
-                try BranchReplacementPlan.appendTextSinkEdits(allocator, self.engine, &text, self.engine.active_stream.signal_optional_custom_text_attrs.items, indexes.signal_optional_custom_text_attr_indexes.items, .custom_text_optional_attr);
-                try BranchReplacementPlan.appendBoolSinkEdits(allocator, self.engine, &bools, self.engine.active_stream.signal_bool_attrs.items, indexes.signal_bool_attr_indexes.items, .bool_attr);
-                try BranchReplacementPlan.appendBoolSinkEdits(allocator, self.engine, &bools, self.engine.active_stream.signal_custom_bool_attrs.items, indexes.signal_custom_bool_attr_indexes.items, .custom_bool_attr);
-                try BranchReplacementPlan.appendChangeSinkEdits(allocator, self.engine, &changes, self.engine.active_stream.on_changes.items, removal.node_indexes.on_change_indexes.items);
-                try BranchReplacementPlan.appendStructuralSinkEdits(allocator, self.engine, &structural, self.engine.active_stream.whens.items, removal.node_indexes.when_indexes.items, .when);
-                try BranchReplacementPlan.appendStructuralSinkEdits(allocator, self.engine, &structural, self.engine.active_stream.eaches.items, removal.node_indexes.each_indexes.items, .each);
+                text.ensureTotalCapacity(scratch, std.math.mul(usize, 2, text_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                bools.ensureTotalCapacity(scratch, std.math.mul(usize, 2, bool_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                structural.ensureTotalCapacity(scratch, std.math.mul(usize, 2, structural_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                changes.ensureTotalCapacity(scratch, std.math.mul(usize, 2, removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                try BranchReplacementPlan.appendTextSinkEdits(scratch, self.engine, &text, self.engine.active_stream.signal_text_nodes.items, indexes.signal_text_node_indexes.items, .text_node);
+                try BranchReplacementPlan.appendTextSinkEdits(scratch, self.engine, &text, self.engine.active_stream.signal_text_attrs.items, indexes.signal_text_attr_indexes.items, .text_attr);
+                try BranchReplacementPlan.appendTextSinkEdits(scratch, self.engine, &text, self.engine.active_stream.signal_custom_text_attrs.items, indexes.signal_custom_text_attr_indexes.items, .custom_text_attr);
+                try BranchReplacementPlan.appendTextSinkEdits(scratch, self.engine, &text, self.engine.active_stream.signal_optional_custom_text_attrs.items, indexes.signal_optional_custom_text_attr_indexes.items, .custom_text_optional_attr);
+                try BranchReplacementPlan.appendBoolSinkEdits(scratch, self.engine, &bools, self.engine.active_stream.signal_bool_attrs.items, indexes.signal_bool_attr_indexes.items, .bool_attr);
+                try BranchReplacementPlan.appendBoolSinkEdits(scratch, self.engine, &bools, self.engine.active_stream.signal_custom_bool_attrs.items, indexes.signal_custom_bool_attr_indexes.items, .custom_bool_attr);
+                try BranchReplacementPlan.appendChangeSinkEdits(scratch, self.engine, &changes, self.engine.active_stream.on_changes.items, removal.node_indexes.on_change_indexes.items);
+                try BranchReplacementPlan.appendStructuralSinkEdits(scratch, self.engine, &structural, self.engine.active_stream.whens.items, removal.node_indexes.when_indexes.items, .when);
+                try BranchReplacementPlan.appendStructuralSinkEdits(scratch, self.engine, &structural, self.engine.active_stream.eaches.items, removal.node_indexes.each_indexes.items, .each);
                 return active_graph.prepareSinkRouteEdits(
                     allocator,
                     &self.engine.active_text_signal_routes,
@@ -10272,40 +10274,41 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepareGraphRoutes(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
                 const graph_plan = &self.graph_append.?;
                 const graph_count = graph_plan.finalGraphCount();
+                // Scratch that never escapes this call comes from one arena, so
+                // a refusal releases it in one step instead of replaying every
+                // list's teardown at each error exit.
+                var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+                defer scratch_arena.deinit();
+                const scratch = scratch_arena.allocator();
                 var source: shared_buffer.List(active_graph.RouteAppend(u64)) = .empty;
-                defer source.deinit(allocator);
                 var text: shared_buffer.List(active_graph.RouteAppend(active_graph.TextSink)) = .empty;
-                defer text.deinit(allocator);
                 var bools: shared_buffer.List(active_graph.RouteAppend(active_graph.BoolSink)) = .empty;
-                defer bools.deinit(allocator);
                 var changes: shared_buffer.List(active_graph.RouteAppend(active_graph.ChangeSink)) = .empty;
-                defer changes.deinit(allocator);
                 var structural: shared_buffer.List(active_graph.RouteAppend(active_graph.StructuralSink)) = .empty;
-                defer structural.deinit(allocator);
                 for (graph_plan.records, graph_plan.record_ids) |record, record_id| switch (record.payload) {
-                    .ref => |source_node_id| source.append(allocator, .{ .route_index = source_node_id, .value = record_id }) catch return error.OutOfMemory,
+                    .ref => |source_node_id| source.append(scratch, .{ .route_index = source_node_id, .value = record_id }) catch return error.OutOfMemory,
                     else => {},
                 };
                 const removal = &self.removal.?.removal;
                 const indexes = &removal.descriptor_indexes;
                 const text_node_base = std.math.sub(usize, self.engine.active_stream.signal_text_nodes.items.len, indexes.signal_text_node_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.signal_text_nodes.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .text_node, .index = text_node_base + offset });
+                for (self.replacement.stream.signal_text_nodes.items, 0..) |desc, offset| try self.appendTextRoute(scratch, &text, desc.signal.record, .{ .kind = .text_node, .index = text_node_base + offset });
                 const text_attr_base = std.math.sub(usize, self.engine.active_stream.signal_text_attrs.items.len, indexes.signal_text_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.signal_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .text_attr, .index = text_attr_base + offset });
+                for (self.replacement.stream.signal_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(scratch, &text, desc.signal.record, .{ .kind = .text_attr, .index = text_attr_base + offset });
                 const custom_text_base = std.math.sub(usize, self.engine.active_stream.signal_custom_text_attrs.items.len, indexes.signal_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.signal_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .custom_text_attr, .index = custom_text_base + offset });
+                for (self.replacement.stream.signal_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(scratch, &text, desc.signal.record, .{ .kind = .custom_text_attr, .index = custom_text_base + offset });
                 const optional_text_base = std.math.sub(usize, self.engine.active_stream.signal_optional_custom_text_attrs.items.len, indexes.signal_optional_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.signal_optional_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .custom_text_optional_attr, .index = optional_text_base + offset });
+                for (self.replacement.stream.signal_optional_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(scratch, &text, desc.signal.record, .{ .kind = .custom_text_optional_attr, .index = optional_text_base + offset });
                 const bool_attr_base = std.math.sub(usize, self.engine.active_stream.signal_bool_attrs.items.len, indexes.signal_bool_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.signal_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, desc.signal.record, .{ .kind = .bool_attr, .index = bool_attr_base + offset });
+                for (self.replacement.stream.signal_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(scratch, &bools, desc.signal.record, .{ .kind = .bool_attr, .index = bool_attr_base + offset });
                 const custom_bool_base = std.math.sub(usize, self.engine.active_stream.signal_custom_bool_attrs.items.len, indexes.signal_custom_bool_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.signal_custom_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, desc.signal.record, .{ .kind = .custom_bool_attr, .index = custom_bool_base + offset });
+                for (self.replacement.stream.signal_custom_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(scratch, &bools, desc.signal.record, .{ .kind = .custom_bool_attr, .index = custom_bool_base + offset });
                 const change_base = std.math.sub(usize, self.engine.active_stream.on_changes.items.len, removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.on_changes.items, 0..) |desc, offset| try self.appendChangeRoute(allocator, &changes, desc.signal.record, .{ .index = change_base + offset });
+                for (self.replacement.stream.on_changes.items, 0..) |desc, offset| try self.appendChangeRoute(scratch, &changes, desc.signal.record, .{ .index = change_base + offset });
                 const when_base = std.math.sub(usize, self.engine.active_stream.whens.items.len, removal.node_indexes.when_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.whens.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, desc.condition.record, .{ .kind = .when, .index = when_base + offset });
+                for (self.replacement.stream.whens.items, 0..) |desc, offset| try self.appendStructuralRoute(scratch, &structural, desc.condition.record, .{ .kind = .when, .index = when_base + offset });
                 const each_base = std.math.sub(usize, self.engine.active_stream.eaches.items.len, removal.node_indexes.each_indexes.items.len) catch return error.ResourceLimit;
-                for (self.replacement.stream.eaches.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, desc.items.record, .{ .kind = .each, .index = each_base + offset });
+                for (self.replacement.stream.eaches.items, 0..) |desc, offset| try self.appendStructuralRoute(scratch, &structural, desc.items.record, .{ .kind = .each, .index = each_base + offset });
                 var source_count = self.engine.active_source_signal_routes.items.len;
                 for (source.items) |entry| source_count = @max(source_count, std.math.add(usize, @intCast(entry.route_index), 1) catch return error.ResourceLimit);
                 self.graph_source_route_count = source_count;
@@ -10652,29 +10655,31 @@ pub fn Engine(comptime Ctx: type) type {
             };
 
             fn prepareRenderTopology(self: *@This(), allocator: std.mem.Allocator) CollectionError!render_cache_mod.PreparedRenderSplice(Ctx) {
+                // Scratch that never escapes this call comes from one arena, so
+                // a refusal releases it in one step instead of replaying every
+                // list's teardown at each error exit.
+                var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+                defer scratch_arena.deinit();
+                const scratch = scratch_arena.allocator();
                 var retired: std.AutoHashMapUnmanaged(u64, void) = .empty;
-                defer retired.deinit(allocator);
                 const retired_count = std.math.cast(u32, self.removal.?.scan.removed_elem_ids.len) orelse return error.ResourceLimit;
-                retired.ensureUnusedCapacity(allocator, retired_count) catch return error.OutOfMemory;
+                retired.ensureUnusedCapacity(scratch, retired_count) catch return error.OutOfMemory;
                 for (self.removal.?.scan.removed_elem_ids) |elem_id| retired.putAssumeCapacity(elem_id, {});
                 var replacements: std.AutoHashMapUnmanaged(u64, render.NodeShape) = .empty;
-                defer replacements.deinit(allocator);
-                replacements.ensureUnusedCapacity(allocator, std.math.cast(u32, self.replacement_stream.render_nodes.items.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                replacements.ensureUnusedCapacity(scratch, std.math.cast(u32, self.replacement_stream.render_nodes.items.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 for (self.replacement_stream.render_nodes.items) |node| {
                     const result = replacements.getOrPutAssumeCapacity(node.elem_id.raw());
                     if (result.found_existing) return error.ResourceLimit;
                     result.value_ptr.* = descriptor_stream.renderNodeShape(HostNodeDescriptorStream, &self.replacement_stream, node);
                 }
                 var survival = HostSurvival{ .cache = &self.engine.render_cache, .retired = &retired, .replacements = &replacements };
-                defer survival.memo.deinit(allocator);
-                survival.memo.ensureUnusedCapacity(allocator, retired_count) catch return error.OutOfMemory;
+                survival.memo.ensureUnusedCapacity(scratch, retired_count) catch return error.OutOfMemory;
                 var host_removal_count: usize = 0;
                 for (self.removal.?.scan.removed_elem_ids) |elem_id| host_removal_count += @intFromBool(survival.removalPublication(elem_id) == .subtree_root);
 
                 var touched: std.AutoHashMapUnmanaged(u64, void) = .empty;
-                defer touched.deinit(allocator);
                 const touched_bound = std.math.add(usize, self.removal.?.scan.touched_parent_ids.len, self.replacement_stream.render_nodes.items.len) catch return error.ResourceLimit;
-                touched.ensureUnusedCapacity(allocator, std.math.cast(u32, touched_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                touched.ensureUnusedCapacity(scratch, std.math.cast(u32, touched_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 for (self.removal.?.scan.touched_parent_ids) |parent_id| {
                     if (self.isSuppressedRenderParent(parent_id)) continue;
                     if (!retired.contains(parent_id) or replacements.contains(parent_id)) touched.putAssumeCapacity(parent_id, {});
@@ -10686,12 +10691,10 @@ pub fn Engine(comptime Ctx: type) type {
                     if (!self.isSuppressedRenderParent(parent_id.raw())) touched.putAssumeCapacity(parent_id.raw(), {});
                 }
 
-                var event_reindex = try @import("descriptor_reindex.zig").Plan.prepare(allocator, self.engine.active_stream.events.items.len, self.removal.?.descriptor_indexes.event_indexes.items);
-                defer event_reindex.deinit();
+                var event_reindex = try @import("descriptor_reindex.zig").Plan.prepare(scratch, self.engine.active_stream.events.items.len, self.removal.?.descriptor_indexes.event_indexes.items);
                 var moved_fixed_event_count: usize = 0;
                 var moved_named_elem_ids = std.AutoHashMapUnmanaged(u64, void).empty;
-                defer moved_named_elem_ids.deinit(allocator);
-                moved_named_elem_ids.ensureTotalCapacity(allocator, std.math.cast(u32, event_reindex.moves.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                moved_named_elem_ids.ensureTotalCapacity(scratch, std.math.cast(u32, event_reindex.moves.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 for (event_reindex.moves) |move| {
                     const desc = self.engine.active_stream.events.items[move.original];
                     if (desc.fixedKind() != null) {
@@ -10844,19 +10847,23 @@ pub fn Engine(comptime Ctx: type) type {
                     splice.addTextField(&self.engine.render_cache, desc.elem_id, desc.field, text.asSlice()) catch |err| return renderSpliceError(err);
                 }
                 for (self.replacement_stream.signal_bool_attrs.items) |*desc| splice.addBoolField(&self.engine.render_cache, desc.elem_id, desc.field, self.evalPreparedSignalBool(&desc.signal, desc.read, &desc.cached_value)) catch |err| return renderSpliceError(err);
+                // One set of per-element lists is reused across the loop; the
+                // evaluated custom text is released before each reuse and by
+                // the defer for whichever element was last.
+                var attrs: shared_buffer.List(render_cache_mod.CustomTextAttr) = .empty;
+                var owned_custom_text = shared_buffer.List(abi.RocStr).empty;
+                defer for (owned_custom_text.items) |*text| text.decref(self.roc_host);
+                var named: shared_buffer.List(render_cache_mod.NamedEvent) = .empty;
                 for (self.replacement_stream.render_nodes.items) |node| {
                     if (node.kind != .element) continue;
-                    var attrs: shared_buffer.List(render_cache_mod.CustomTextAttr) = .empty;
-                    defer attrs.deinit(allocator);
+                    attrs.clearRetainingCapacity();
+                    for (owned_custom_text.items) |*text| text.decref(self.roc_host);
+                    owned_custom_text.clearRetainingCapacity();
+                    named.clearRetainingCapacity();
                     const custom_indexes = self.replacement_stream.customAttrIndices(node.elem_id);
                     const custom_count = custom_indexes.len;
-                    attrs.ensureTotalCapacity(allocator, custom_count) catch return error.OutOfMemory;
-                    var owned_custom_text = shared_buffer.List(abi.RocStr).empty;
-                    defer {
-                        for (owned_custom_text.items) |*text| text.decref(self.roc_host);
-                        owned_custom_text.deinit(allocator);
-                    }
-                    owned_custom_text.ensureTotalCapacity(allocator, custom_count) catch return error.OutOfMemory;
+                    attrs.ensureTotalCapacity(scratch, custom_count) catch return error.OutOfMemory;
+                    owned_custom_text.ensureTotalCapacity(scratch, custom_count) catch return error.OutOfMemory;
                     for (custom_indexes) |custom_index| switch (custom_index.kind) {
                         .static_text => {
                             const desc = self.replacement_stream.static_custom_text_attrs.items[custom_index.index];
@@ -10892,9 +10899,7 @@ pub fn Engine(comptime Ctx: type) type {
                         },
                     };
                     splice.addCustomAttrs(&self.engine.render_cache, node.elem_id, attrs.items) catch |err| return renderSpliceError(err);
-                    var named: shared_buffer.List(render_cache_mod.NamedEvent) = .empty;
-                    defer named.deinit(allocator);
-                    named.ensureTotalCapacity(allocator, self.replacement_stream.namedEventIndices(node.elem_id).len) catch return error.OutOfMemory;
+                    named.ensureTotalCapacity(scratch, self.replacement_stream.namedEventIndices(node.elem_id).len) catch return error.OutOfMemory;
                     for (self.replacement_stream.namedEventIndices(node.elem_id)) |event_index| {
                         const desc = self.replacement_stream.events.items[event_index];
                         const binding = desc.named() orelse return error.InvalidDescriptor;
@@ -10928,13 +10933,12 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 var moved_named_iterator = moved_named_elem_ids.keyIterator();
                 while (moved_named_iterator.next()) |elem_id| {
-                    var named: shared_buffer.List(render_cache_mod.NamedEvent) = .empty;
-                    defer named.deinit(allocator);
+                    named.clearRetainingCapacity();
                     for (self.engine.active_stream.namedEventIndices(ids.ElemId.fromRaw(elem_id.*))) |original_index| {
                         const desc = self.engine.active_stream.events.items[original_index];
                         const final_index = event_reindex.finalIndex(original_index) orelse continue;
                         const binding = desc.named() orelse continue;
-                        named.append(allocator, .{ .name = binding.name, .binding = .{
+                        named.append(scratch, .{ .name = binding.name, .binding = .{
                             .event_id = ids.EventId.fromRaw(std.math.add(u64, std.math.cast(u64, final_index) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit),
                             .policy = binding.policy,
                             .delivery = .{ .requested = binding.delivery_request },

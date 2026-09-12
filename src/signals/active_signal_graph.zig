@@ -2244,17 +2244,21 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
 
 fn prepareReleaseClosureWithWork(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record, retained_roots: []const *Record, work: ?*PreparationWork) (std.mem.Allocator.Error || error{InvalidRelease})!PreparedReleaseClosure(Record) {
     if (work) |counter| counter.* = .{};
+    // Simulation scratch that never reaches the returned closure comes from
+    // one arena, so a refusal releases it in one step instead of replaying
+    // every table's teardown at each error exit.
+    var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+    defer scratch_arena.deinit();
+    const scratch = scratch_arena.allocator();
     var retained: TouchedCounts = .{};
-    defer retained.deinit(allocator);
-    try countExistingRetainsWithWork(Record, allocator, nodes, retained_roots, &retained, work);
+    try countExistingRetainsWithWork(Record, scratch, nodes, retained_roots, &retained, work);
 
     // Remaining use count per touched record, netted against the retains.
     var counts: TouchedCounts = .{};
-    defer counts.deinit(allocator);
     var records: shared_buffer.List(*Record) = .empty;
     errdefer records.deinit(allocator);
     const Simulator = struct {
-        fn decrement(record: *Record, sim_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), remaining: *TouchedCounts, retains: *const TouchedCounts, output: *shared_buffer.List(*Record), counter: ?*PreparationWork) (std.mem.Allocator.Error || error{InvalidRelease})!void {
+        fn decrement(record: *Record, sim_allocator: std.mem.Allocator, out_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), remaining: *TouchedCounts, retains: *const TouchedCounts, output: *shared_buffer.List(*Record), counter: ?*PreparationWork) (std.mem.Allocator.Error || error{InvalidRelease})!void {
             const record_id = record.active_graph_id orelse return error.InvalidRelease;
             const index: usize = @intCast(record_id);
             if (index >= graph_nodes.len or graph_nodes[index].record != record) return error.InvalidRelease;
@@ -2268,25 +2272,25 @@ fn prepareReleaseClosureWithWork(comptime Record: type, allocator: std.mem.Alloc
             if (entry.value_ptr.* == 0) return error.InvalidRelease;
             entry.value_ptr.* -= 1;
             if (entry.value_ptr.* != 0) return;
-            try output.append(sim_allocator, record);
+            try output.append(out_allocator, record);
             switch (record.payload) {
-                .map => |payload| try decrement(payload.input, sim_allocator, graph_nodes, remaining, retains, output, counter),
-                .select, .keyed_select => |payload| try decrement(payload.input, sim_allocator, graph_nodes, remaining, retains, output, counter),
+                .map => |payload| try decrement(payload.input, sim_allocator, out_allocator, graph_nodes, remaining, retains, output, counter),
+                .select, .keyed_select => |payload| try decrement(payload.input, sim_allocator, out_allocator, graph_nodes, remaining, retains, output, counter),
                 .map2 => |payload| {
-                    try decrement(payload.left, sim_allocator, graph_nodes, remaining, retains, output, counter);
-                    if (payload.right != payload.left) try decrement(payload.right, sim_allocator, graph_nodes, remaining, retains, output, counter);
+                    try decrement(payload.left, sim_allocator, out_allocator, graph_nodes, remaining, retains, output, counter);
+                    if (payload.right != payload.left) try decrement(payload.right, sim_allocator, out_allocator, graph_nodes, remaining, retains, output, counter);
                 },
                 .combine => |payload| {
                     for (payload.children, 0..) |child, child_index| {
                         if (recordSliceContains(Record, payload.children[0..child_index], child)) continue;
-                        try decrement(child, sim_allocator, graph_nodes, remaining, retains, output, counter);
+                        try decrement(child, sim_allocator, out_allocator, graph_nodes, remaining, retains, output, counter);
                     }
                 },
                 .ref, .const_value, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
             }
         }
     };
-    for (roots) |root| try Simulator.decrement(root, allocator, nodes, &counts, &retained, &records, work);
+    for (roots) |root| try Simulator.decrement(root, scratch, allocator, nodes, &counts, &retained, &records, work);
 
     var decrement_count: usize = 0;
     for (counts.order.items) |record_id| {
@@ -2308,12 +2312,10 @@ fn prepareReleaseClosureWithWork(comptime Record: type, allocator: std.mem.Alloc
     // layout are recorded: `position_of` maps a displaced original id to its
     // current slot and `slot_at` maps a slot to the original id now in it.
     var position_of: std.AutoHashMapUnmanaged(u64, usize) = .empty;
-    defer position_of.deinit(allocator);
     var slot_at: std.AutoHashMapUnmanaged(usize, u64) = .empty;
-    defer slot_at.deinit(allocator);
     const step_capacity = std.math.cast(u32, records.items.len) orelse return error.InvalidRelease;
-    try position_of.ensureTotalCapacity(allocator, step_capacity);
-    try slot_at.ensureTotalCapacity(allocator, step_capacity);
+    try position_of.ensureTotalCapacity(scratch, step_capacity);
+    try slot_at.ensureTotalCapacity(scratch, step_capacity);
     const steps = try allocator.alloc(PreparedReleaseStep, records.items.len);
     errdefer allocator.free(steps);
     var live_len = nodes.len;
@@ -2355,7 +2357,6 @@ fn prepareReleaseClosureWithWork(comptime Record: type, allocator: std.mem.Alloc
     // fan-out. A retired input's list is freed wholesale, so edges into it
     // are validated but not dropped.
     var drop_counts: TouchedCounts = .{};
-    defer drop_counts.deinit(allocator);
     var edge_drops: shared_buffer.List(PreparedEdgeDrop) = .empty;
     errdefer edge_drops.deinit(allocator);
     for (records.items) |record| {
@@ -2364,7 +2365,7 @@ fn prepareReleaseClosureWithWork(comptime Record: type, allocator: std.mem.Alloc
         while (inputs.next()) |input| {
             const input_id = try validatedEdge(Record, nodes, input.record, dependent_id, input.position, work);
             if (remap.finalId(input_id) == null) continue;
-            if (!try drop_counts.add(allocator, input_id, 1)) return error.InvalidRelease;
+            if (!try drop_counts.add(scratch, input_id, 1)) return error.InvalidRelease;
             try edge_drops.append(allocator, .{ .input_id = input_id, .dependent_id = dependent_id, .position = input.position });
         }
     }
@@ -2374,8 +2375,7 @@ fn prepareReleaseClosureWithWork(comptime Record: type, allocator: std.mem.Alloc
     // that later becomes the last live slot); its edges renumber once, to
     // its final id.
     var renumbered: std.AutoHashMapUnmanaged(u64, void) = .empty;
-    defer renumbered.deinit(allocator);
-    try renumbered.ensureTotalCapacity(allocator, step_capacity);
+    try renumbered.ensureTotalCapacity(scratch, step_capacity);
     for (steps) |step| {
         const moved_id = step.moved_record_id orelse continue;
         const final_id = remap.finalId(moved_id) orelse continue;
