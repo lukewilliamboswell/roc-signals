@@ -442,7 +442,13 @@ export class SignalsRuntime {
     this.crypto = options.crypto ?? globalThis.crypto;
     this.networkEventTarget = options.networkEventTarget ?? this.eventTarget;
     this.behaviors = normalizeBehaviors(options.behaviors);
+    // Behaviour instances keyed by owning element id. `releaseSubtree` looks
+    // each removed node up here directly, so cleanup cost follows the removed
+    // nodes that carry a behaviour rather than every live instance.
     this.behaviorInstances = new Map();
+    // Count of behaviour instances examined by `releaseSubtree`. Contract
+    // tests assert it equals the removed instances, never instances × roots.
+    this.subtreeBehaviorInspections = 0;
     this.pendingBehaviorAttaches = new Set();
     this.pendingBehaviorUpdates = new Map();
     this.telemetryLog = normalizeTelemetry(options.telemetry);
@@ -1358,9 +1364,10 @@ export class SignalsRuntime {
 
       case Op.removeNode: {
         const node = this.node(record.a);
-        this.cleanupBehaviorSubtree(node);
-        node.parentNode?.removeChild(node);
+        // Behaviours are cleaned up during the walk while the subtree is
+        // still attached, so their cleanups observe the element in place.
         this.releaseSubtree(node);
+        node.parentNode?.removeChild(node);
         return;
       }
 
@@ -1907,12 +1914,14 @@ export class SignalsRuntime {
     });
   }
 
-  cleanupBehaviorSubtree(node) {
-    for (const [elemId, instance] of [...this.behaviorInstances.entries()]) {
-      if (node === instance.el || nodeContains(node, instance.el)) {
-        this.cleanupBehavior(elemId);
-      }
+  // Releases the behaviour owned by one removed element, if any. Elements
+  // without a behaviour cost a single map lookup and are not counted.
+  releaseElementBehavior(elemId) {
+    if (!this.behaviorInstances.has(elemId)) {
+      return;
     }
+    this.subtreeBehaviorInspections += 1;
+    this.cleanupBehavior(elemId);
   }
 
   cleanupBehaviors() {
@@ -2268,8 +2277,9 @@ export class SignalsRuntime {
 
   // Releases every per-node registration under one removed root: the engine
   // publishes a single `remove_node` for a retired subtree, so the ids,
-  // listeners, controlled inputs, and pending behaviour work of every
-  // descendant are released here, exactly once, with the root's.
+  // behaviours, listeners, controlled inputs, and pending behaviour work of
+  // every descendant are released here, exactly once, with the root's. Runs
+  // before the root leaves the DOM so behaviour cleanups see it attached.
   releaseSubtree(root) {
     const released = new Set();
     const stack = [root];
@@ -2280,6 +2290,7 @@ export class SignalsRuntime {
         released.add(elemId);
         this.nodeIds.delete(node);
         this.nodes.delete(elemId);
+        this.releaseElementBehavior(elemId);
         this.clearControlledInput(elemId);
         this.releaseElementEventCleanups(elemId);
         this.pendingBehaviorAttaches.delete(elemId);
@@ -2565,23 +2576,6 @@ function normalizeBehaviors(behaviors) {
 
 function isElementLike(node) {
   return !!node && typeof node.getAttribute === "function" && typeof node.setAttribute === "function";
-}
-
-function nodeContains(root, child) {
-  if (!root || !child) {
-    return false;
-  }
-  if (typeof root.contains === "function") {
-    return root.contains(child);
-  }
-  let current = child.parentNode ?? null;
-  while (current) {
-    if (current === root) {
-      return true;
-    }
-    current = current.parentNode ?? null;
-  }
-  return false;
 }
 
 function consoleTelemetry(entry) {

@@ -3061,6 +3061,207 @@ test("listener index tracks rebinding, clear_event, native listeners, and unmoun
   assert.deepEqual(host.dispatches, []);
 });
 
+// Builds N surviving behaviour-bearing divs under the root plus K removable
+// subtree roots, each a section carrying a behaviour with a nested
+// behaviour-bearing div.
+function buildBehaviorCleanupWorkload(host, runtime, survivors, removedRoots) {
+  const commands = [];
+  let nextId = 1;
+  const survivorIds = [];
+  const marker = (elemId) => ({
+    dynamic: { op: DynamicOp.setAttrText, elemId, name: "data-signals-behavior", value: "probe" },
+  });
+  for (let index = 0; index < survivors; index += 1) {
+    const id = nextId++;
+    survivorIds.push(id);
+    commands.push(
+      { op: Op.createElement, a: id, s: "div" },
+      marker(id),
+      { op: Op.appendChild, a: 0, b: id },
+    );
+  }
+  const roots = [];
+  for (let index = 0; index < removedRoots; index += 1) {
+    const sectionId = nextId++;
+    const divId = nextId++;
+    const innerId = nextId++;
+    roots.push({ sectionId, divId, innerId });
+    commands.push(
+      { op: Op.createElement, a: sectionId, s: "section" },
+      marker(sectionId),
+      { op: Op.createElement, a: divId, s: "div" },
+      { op: Op.createElement, a: innerId, s: "div" },
+      marker(innerId),
+      { op: Op.appendChild, a: divId, b: innerId },
+      { op: Op.appendChild, a: sectionId, b: divId },
+      { op: Op.appendChild, a: 0, b: sectionId },
+    );
+  }
+  applyCommandsInBatches(host, runtime, commands, "build");
+  return { survivorIds, roots };
+}
+
+for (const [survivors, removedRoots] of [
+  [1000, 50],
+  [10000, 50],
+]) {
+  test(`remove_node behaviour cleanup inspects only removed instances (${survivors} surviving, ${removedRoots} removed roots)`, () => {
+    const attached = new Map();
+    const cleanups = [];
+    const behaviors = {
+      probe: {
+        attach(el) {
+          attached.set(el, { connectedTo: null });
+          return () => {
+            // Cleanup must observe the element still attached to the root.
+            let current = el;
+            while (current.parentNode) current = current.parentNode;
+            attached.get(el).connectedTo = current;
+            cleanups.push(el);
+          };
+        },
+      },
+    };
+    const { host, root, runtime } = mountWith([{ op: Op.resetDom }], { behaviors });
+    const { survivorIds, roots } = buildBehaviorCleanupWorkload(host, runtime, survivors, removedRoots);
+    const behaviorsPerRoot = 2;
+    const removedBehaviors = removedRoots * behaviorsPerRoot;
+    assert.equal(runtime.behaviorInstances.size, survivors + removedBehaviors);
+    assert.equal(attached.size, survivors + removedBehaviors);
+    assert.equal(runtime.nodes.size, 1 + survivors + removedRoots * 3);
+
+    const removedElements = roots.flatMap(({ sectionId, innerId }) => [
+      runtime.nodes.get(sectionId),
+      runtime.nodes.get(innerId),
+    ]);
+    const survivorElements = survivorIds.map((id) => runtime.nodes.get(id));
+
+    runtime.subtreeBehaviorInspections = 0;
+    applyCommandsInBatches(
+      host,
+      runtime,
+      roots.map(({ sectionId }) => ({ op: Op.removeNode, a: sectionId })),
+      "remove-roots",
+    );
+
+    // Work must follow the removed behaviours (K * behaviours per root), never
+    // the N surviving instances; a broad scan would inspect N * K entries.
+    assert.equal(runtime.subtreeBehaviorInspections, removedBehaviors);
+    assert.ok(runtime.subtreeBehaviorInspections < survivors);
+    assert.equal(runtime.behaviorInstances.size, survivors);
+    assert.equal(runtime.nodes.size, 1 + survivors);
+    assert.equal(root.childNodes.length, survivors);
+
+    // Every removed behaviour was cleaned up exactly once, while still in the
+    // document, with each section's cleanup before its descendant's.
+    assert.equal(cleanups.length, removedBehaviors);
+    assert.deepEqual(cleanups, removedElements);
+    for (const el of removedElements) {
+      assert.equal(attached.get(el).connectedTo, root);
+    }
+    for (const el of survivorElements) {
+      assert.equal(runtime.behaviorInstances.get(runtime.nodeIds.get(el))?.el, el);
+    }
+
+    // Removing every survivor still inspects exactly one instance each.
+    runtime.subtreeBehaviorInspections = 0;
+    applyCommandsInBatches(
+      host,
+      runtime,
+      survivorIds.map((id) => ({ op: Op.removeNode, a: id })),
+      "remove-survivors",
+    );
+    assert.equal(runtime.subtreeBehaviorInspections, survivors);
+    assert.equal(runtime.behaviorInstances.size, 0);
+    assert.equal(cleanups.length, survivors + removedBehaviors);
+    assert.deepEqual([...runtime.nodes.keys()], [0]);
+  });
+}
+
+test("behaviour index tracks rebinding, marker removal, pending work, and unmount", () => {
+  const calls = [];
+  const behaviors = {
+    alpha: {
+      attach(el) {
+        calls.push(["attach", "alpha", el]);
+        return () => calls.push(["cleanup", "alpha", el]);
+      },
+      update(el, attrName) {
+        calls.push(["update", "alpha", el, attrName]);
+      },
+    },
+    beta: {
+      attach(el) {
+        calls.push(["attach", "beta", el]);
+        return () => calls.push(["cleanup", "beta", el]);
+      },
+    },
+  };
+  const setAttr = (elemId, name, value) => ({
+    dynamic: { op: DynamicOp.setAttrText, elemId, name, value },
+  });
+  const { host, root, runtime } = mountWith(
+    [
+      { op: Op.resetDom },
+      { op: Op.createElement, a: 1, s: "section" },
+      setAttr(1, "data-signals-behavior", "alpha"),
+      { op: Op.createElement, a: 2, s: "div" },
+      setAttr(2, "data-signals-behavior", "beta"),
+      { op: Op.appendChild, a: 1, b: 2 },
+      { op: Op.createElement, a: 3, s: "div" },
+      { op: Op.appendChild, a: 0, b: 1 },
+      { op: Op.appendChild, a: 0, b: 3 },
+    ],
+    { behaviors },
+  );
+  const section = runtime.nodes.get(1);
+  const inner = runtime.nodes.get(2);
+  const spare = runtime.nodes.get(3);
+  assert.deepEqual(calls, [["attach", "alpha", section], ["attach", "beta", inner]]);
+  assert.deepEqual([...runtime.behaviorInstances.keys()], [1, 2]);
+
+  // Rebinding to a different behaviour replaces the instance under the same id.
+  host.writeCommands([setAttr(1, "data-signals-behavior", "beta")]);
+  runtime.applyPendingCommands("rebind");
+  assert.deepEqual(calls.slice(2), [["cleanup", "alpha", section], ["attach", "beta", section]]);
+  assert.equal(runtime.behaviorInstances.get(1).name, "beta");
+  assert.equal(runtime.behaviorInstances.size, 2);
+
+  // Removing the marker drops the instance so a later remove_node has none to inspect.
+  host.writeCommands([{ dynamic: { op: DynamicOp.removeAttr, elemId: 2, name: "data-signals-behavior" } }]);
+  runtime.applyPendingCommands("remove-marker");
+  assert.deepEqual(calls.at(-1), ["cleanup", "beta", inner]);
+  assert.equal(runtime.behaviorInstances.has(2), false);
+
+  // A pending attach for a node removed in the same batch is discarded, not flushed.
+  host.writeCommands([
+    setAttr(3, "data-signals-behavior", "alpha"),
+    setAttr(1, "data-signals-behavior", "alpha"),
+    { op: Op.removeNode, a: 3 },
+  ]);
+  runtime.subtreeBehaviorInspections = 0;
+  runtime.applyPendingCommands("pending-then-remove");
+  assert.equal(runtime.subtreeBehaviorInspections, 0);
+  assert.equal(runtime.pendingBehaviorAttaches.size, 0);
+  assert.equal(calls.filter(([, , el]) => el === spare).length, 0);
+  assert.deepEqual(calls.slice(-2), [["cleanup", "beta", section], ["attach", "alpha", section]]);
+
+  // A pending update for a node removed in the same batch is discarded too.
+  host.writeCommands([setAttr(1, "data-live", "x"), { op: Op.removeNode, a: 1 }]);
+  runtime.subtreeBehaviorInspections = 0;
+  runtime.applyPendingCommands("update-then-remove");
+  assert.equal(runtime.subtreeBehaviorInspections, 1);
+  assert.deepEqual(calls.at(-1), ["cleanup", "alpha", section]);
+  assert.equal(calls.filter(([kind]) => kind === "update").length, 0);
+  assert.equal(runtime.pendingBehaviorUpdates.size, 0);
+  assert.equal(runtime.behaviorInstances.size, 0);
+  assert.equal(root.childNodes.length, 0);
+
+  runtime.unmount();
+  assert.equal(runtime.behaviorInstances.size, 0);
+  assert.equal(calls.filter(([kind]) => kind === "cleanup").length, 4);
+});
+
 test("telemetry records command batches DOM events and event payload dispatches", () => {
   const telemetry = [];
   const { host, root } = mountWith(
