@@ -1901,6 +1901,302 @@ test "Keyboard events"
   15: key_down locator=label label="Key capture" expected="Escape" bool=false
   16: expect_text locator=test_id test_id="last-key" expected="Key: Escape"
   17: expect_text locator=test_id test_id="key-count" expected="Keys seen: 3"
+== examples-web/_fixtures/keyed-selector-churn/specs/append_one_10k.scm
+test "append one row at 10k registers only the new memberships"
+  3: click locator=role_name role="button" name="Create 10,000 rows"
+  4: expect_visible locator=test_id test_id="row-10000"
+  5: click locator=role_name role="button" name="Select row 3"
+  6: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
+  7: mark_metrics locator=none
+  8: click locator=role_name role="button" name="Append one row"
+  9: expect_visible locator=test_id test_id="row-10001"
+  13: expect_metric_delta_at_most locator=none expected="selector_registry_visits" delta=8
+  14: expect_metric_delta locator=none expected="selector_registrations" delta=2
+  15: expect_metric_delta locator=none expected="selector_key_bytes_copied" delta=10
+  16: expect_metric_delta locator=none expected="selector_memberships_released" delta=0
+  17: expect_metric_delta locator=none expected="selector_members_dirtied" delta=0
+  18: expect_metric_delta locator=none expected="rows_created" delta=1
+  19: expect_metric_delta locator=none expected="rows_removed" delta=0
+  20: expect_metric_delta locator=none expected="active_graph_records_rebuilt" delta=0
+  21: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
+  22: expect_attr locator=test_id test_id="row-10001" attr="class" expected=""
+  24: mark_metrics locator=none
+  25: click locator=role_name role="button" name="Select row 10001"
+  26: expect_attr locator=test_id test_id="row-3" attr="class" expected=""
+  27: expect_attr locator=test_id test_id="pinned-3" attr="class" expected=""
+  28: expect_attr locator=test_id test_id="row-10001" attr="class" expected="danger"
+  29: expect_metric_delta locator=none expected="selector_members_dirtied" delta=3
+  30: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=5
+  31: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
+  32: expect_metric_delta locator=none expected="rows_created" delta=0
+== examples-web/_fixtures/keyed-selector-churn/specs/append_one_1k.scm
+test "append one row at 1k registers only the new memberships"
+  3: click locator=role_name role="button" name="Create 1,000 rows"
+  4: expect_visible locator=test_id test_id="row-1000"
+  5: click locator=role_name role="button" name="Select row 3"
+  6: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
+  7: mark_metrics locator=none
+  8: click locator=role_name role="button" name="Append one row"
+  9: expect_visible locator=test_id test_id="row-1001"
+  13: expect_metric_delta_at_most locator=none expected="selector_registry_visits" delta=8
+  14: expect_metric_delta locator=none expected="selector_registrations" delta=2
+  15: expect_metric_delta locator=none expected="selector_key_bytes_copied" delta=8
+  16: expect_metric_delta locator=none expected="selector_memberships_released" delta=0
+  17: expect_metric_delta locator=none expected="selector_members_dirtied" delta=0
+  18: expect_metric_delta locator=none expected="rows_created" delta=1
+  19: expect_metric_delta locator=none expected="rows_removed" delta=0
+  20: expect_metric_delta locator=none expected="active_graph_records_rebuilt" delta=0
+  21: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
+  22: expect_attr locator=test_id test_id="row-1001" attr="class" expected=""
+  24: mark_metrics locator=none
+  25: click locator=role_name role="button" name="Select row 1001"
+  26: expect_attr locator=test_id test_id="row-3" attr="class" expected=""
+  27: expect_attr locator=test_id test_id="pinned-3" attr="class" expected=""
+  28: expect_attr locator=test_id test_id="row-1001" attr="class" expected="danger"
+  29: expect_metric_delta locator=none expected="selector_members_dirtied" delta=3
+  30: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=5
+  31: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
+  32: expect_metric_delta locator=none expected="rows_created" delta=0
+== examples-web/_fixtures/keyed-selector-churn/specs/dispose_remount_footprint.scm
+test "repeated dispose and remount of selected rows returns to the same footprint"
+  3: click locator=role_name role="button" name="Create 1,000 rows"
+  4: click locator=role_name role="button" name="Select row 2"
+  5: expect_attr locator=test_id test_id="row-2" attr="class" expected="danger"
+  6: click locator=role_name role="button" name="Toggle table"
+  7: click locator=role_name role="button" name="Toggle table"
+  8: click locator=role_name role="button" name="Toggle table"
+  9: click locator=role_name role="button" name="Toggle table"
+  10: expect_attr locator=test_id test_id="row-2" attr="class" expected="danger"
+  15: mark_metrics locator=none
+  16: click locator=role_name role="button" name="Toggle table"
+  17: click locator=role_name role="button" name="Toggle table"
+  18: expect_attr locator=test_id test_id="row-2" attr="class" expected="danger"
+  19: expect_attr locator=test_id test_id="pinned-2" attr="class" expected="danger"
+  20: expect_metric_delta locator=none expected="selector_memberships_released" delta=2000
+  21: expect_metric_delta locator=none expected="selector_registrations" delta=2000
+  22: expect_metric_delta locator=none expected="retained_alloc_delta" delta=0
+  23: expect_metric_delta locator=none expected="host_retained_alloc_delta" delta=0
+  24: expect_metric_delta locator=none expected="host_retained_bytes_delta" delta=0
+== examples-web/_fixtures/keyed-selector-churn/specs/key_movement.scm
+test "moving a row keeps its selector membership without touching the index"
+  3: click locator=role_name role="button" name="Create 1,000 rows"
+  4: mark_metrics locator=none
+  5: click locator=role_name role="button" name="Move second row"
+  6: expect_visible locator=test_id test_id="row-2"
+  8: expect_metric_delta locator=none expected="rows_render_roots_moved" delta=1
+  9: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
+  10: expect_metric_delta locator=none expected="selector_registrations" delta=0
+  11: expect_metric_delta locator=none expected="selector_memberships_released" delta=0
+  12: expect_metric_delta locator=none expected="rows_created" delta=0
+  13: expect_metric_delta locator=none expected="rows_removed" delta=0
+  14: mark_metrics locator=none
+  15: click locator=role_name role="button" name="Select row 2"
+  16: expect_attr locator=test_id test_id="row-2" attr="class" expected="danger"
+  17: expect_attr locator=test_id test_id="pinned-2" attr="class" expected="danger"
+  18: expect_metric_delta locator=none expected="selector_members_dirtied" delta=2
+  19: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=5
+  20: mark_metrics locator=none
+  21: click locator=role_name role="button" name="Remove row 2"
+  22: expect_absent locator=test_id test_id="row-2"
+  23: expect_metric_delta locator=none expected="selector_memberships_released" delta=2
+  24: expect_metric_delta locator=none expected="selector_registry_visits" delta=2
+  25: expect_attr locator=test_id test_id="pinned-2" attr="class" expected="danger"
+== examples-web/_fixtures/keyed-selector-churn/specs/multiple_selectors.scm
+test "two keyed selectors per row stay independent across structural churn"
+  3: click locator=role_name role="button" name="Create 1,000 rows"
+  4: mark_metrics locator=none
+  5: click locator=role_name role="button" name="Hover row 5"
+  6: expect_attr locator=test_id test_id="row-5" attr="data-hover" expected="hover"
+  7: expect_attr locator=test_id test_id="row-6" attr="data-hover" expected=""
+  9: expect_metric_delta locator=none expected="selector_members_dirtied" delta=1
+  10: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=5
+  11: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
+  12: mark_metrics locator=none
+  13: click locator=role_name role="button" name="Select row 2"
+  14: expect_attr locator=test_id test_id="row-2" attr="class" expected="danger"
+  15: expect_attr locator=test_id test_id="pinned-2" attr="class" expected="danger"
+  16: expect_attr locator=test_id test_id="row-5" attr="data-hover" expected="hover"
+  17: expect_attr locator=test_id test_id="row-5" attr="class" expected=""
+  18: expect_metric_delta locator=none expected="selector_members_dirtied" delta=2
+  19: mark_metrics locator=none
+  20: click locator=role_name role="button" name="Remove row 5"
+  21: expect_absent locator=test_id test_id="row-5"
+  23: expect_metric_delta locator=none expected="selector_memberships_released" delta=2
+  24: expect_metric_delta locator=none expected="selector_registry_visits" delta=2
+  25: expect_metric_delta locator=none expected="selector_registrations" delta=0
+  26: expect_attr locator=test_id test_id="row-2" attr="class" expected="danger"
+  27: expect_attr locator=test_id test_id="row-6" attr="data-hover" expected=""
+== examples-web/_fixtures/keyed-selector-churn/specs/nested_disposal.scm
+test "disposing the table retires every nested membership and remounting restores them"
+  3: click locator=role_name role="button" name="Create 1,000 rows"
+  4: click locator=role_name role="button" name="Select row 2"
+  5: expect_attr locator=test_id test_id="row-2" attr="class" expected="danger"
+  6: mark_metrics locator=none
+  7: click locator=role_name role="button" name="Toggle table"
+  8: expect_visible locator=test_id test_id="table-hidden"
+  9: expect_absent locator=test_id test_id="row-2"
+  12: expect_metric_delta locator=none expected="scopes_disposed" delta=1001
+  13: expect_metric_delta locator=none expected="selector_memberships_released" delta=2000
+  14: expect_metric_delta locator=none expected="selector_registrations" delta=0
+  15: expect_metric_delta_at_most locator=none expected="selector_registry_visits" delta=2008
+  16: expect_attr locator=test_id test_id="pinned-2" attr="class" expected="danger"
+  18: mark_metrics locator=none
+  19: click locator=role_name role="button" name="Choose key 3"
+  20: expect_attr locator=test_id test_id="pinned-2" attr="class" expected=""
+  21: expect_attr locator=test_id test_id="pinned-3" attr="class" expected="danger"
+  22: expect_metric_delta locator=none expected="selector_members_dirtied" delta=2
+  23: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
+  26: mark_metrics locator=none
+  27: click locator=role_name role="button" name="Toggle table"
+  28: expect_visible locator=test_id test_id="row-1000"
+  29: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
+  30: expect_attr locator=test_id test_id="row-2" attr="class" expected=""
+  31: expect_metric_delta locator=none expected="scopes_created" delta=1001
+  32: expect_metric_delta locator=none expected="selector_registrations" delta=2000
+  33: expect_metric_delta locator=none expected="selector_key_bytes_copied" delta=5786
+  34: expect_metric_delta locator=none expected="selector_memberships_released" delta=0
+  37: mark_metrics locator=none
+  38: click locator=role_name role="button" name="Select row 2"
+  39: expect_attr locator=test_id test_id="row-2" attr="class" expected="danger"
+  40: expect_attr locator=test_id test_id="pinned-2" attr="class" expected="danger"
+  41: expect_attr locator=test_id test_id="row-3" attr="class" expected=""
+  42: expect_attr locator=test_id test_id="pinned-3" attr="class" expected=""
+  43: expect_metric_delta locator=none expected="selector_members_dirtied" delta=4
+  44: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
+== examples-web/_fixtures/keyed-selector-churn/specs/remove_one_10k.scm
+test "remove one row at 10k patches selector memberships locally"
+  3: click locator=role_name role="button" name="Create 10,000 rows"
+  4: expect_visible locator=test_id test_id="row-10000"
+  5: click locator=role_name role="button" name="Select row 3"
+  6: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
+  7: expect_attr locator=test_id test_id="pinned-3" attr="class" expected="danger"
+  8: mark_metrics locator=none
+  9: click locator=role_name role="button" name="Remove row 2"
+  10: expect_absent locator=test_id test_id="row-2"
+  14: expect_metric_delta locator=none expected="selector_registry_visits" delta=2
+  15: expect_metric_delta locator=none expected="selector_registrations" delta=0
+  16: expect_metric_delta locator=none expected="selector_key_bytes_copied" delta=0
+  17: expect_metric_delta locator=none expected="selector_memberships_released" delta=2
+  18: expect_metric_delta locator=none expected="selector_members_dirtied" delta=0
+  19: expect_metric_delta locator=none expected="rows_removed" delta=1
+  20: expect_metric_delta locator=none expected="rows_created" delta=0
+  21: expect_metric_delta locator=none expected="active_graph_records_rebuilt" delta=0
+  23: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
+  24: expect_attr locator=test_id test_id="row-4" attr="class" expected=""
+  25: expect_attr locator=test_id test_id="pinned-2" attr="class" expected=""
+  28: mark_metrics locator=none
+  29: click locator=role_name role="button" name="Select row 4"
+  30: expect_attr locator=test_id test_id="row-3" attr="class" expected=""
+  31: expect_attr locator=test_id test_id="pinned-3" attr="class" expected=""
+  32: expect_attr locator=test_id test_id="row-4" attr="class" expected="danger"
+  33: expect_metric_delta locator=none expected="selector_members_dirtied" delta=3
+  34: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=5
+  35: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
+  36: expect_metric_delta locator=none expected="rows_reused" delta=0
+  37: expect_metric_delta locator=none expected="rows_created" delta=0
+== examples-web/_fixtures/keyed-selector-churn/specs/remove_one_1k.scm
+test "remove one row at 1k patches selector memberships locally"
+  3: click locator=role_name role="button" name="Create 1,000 rows"
+  4: expect_visible locator=test_id test_id="row-1000"
+  5: click locator=role_name role="button" name="Select row 3"
+  6: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
+  7: expect_attr locator=test_id test_id="pinned-3" attr="class" expected="danger"
+  8: mark_metrics locator=none
+  9: click locator=role_name role="button" name="Remove row 2"
+  10: expect_absent locator=test_id test_id="row-2"
+  14: expect_metric_delta locator=none expected="selector_registry_visits" delta=2
+  15: expect_metric_delta locator=none expected="selector_registrations" delta=0
+  16: expect_metric_delta locator=none expected="selector_key_bytes_copied" delta=0
+  17: expect_metric_delta locator=none expected="selector_memberships_released" delta=2
+  18: expect_metric_delta locator=none expected="selector_members_dirtied" delta=0
+  19: expect_metric_delta locator=none expected="rows_removed" delta=1
+  20: expect_metric_delta locator=none expected="rows_created" delta=0
+  21: expect_metric_delta locator=none expected="active_graph_records_rebuilt" delta=0
+  23: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
+  24: expect_attr locator=test_id test_id="row-4" attr="class" expected=""
+  25: expect_attr locator=test_id test_id="pinned-2" attr="class" expected=""
+  28: mark_metrics locator=none
+  29: click locator=role_name role="button" name="Select row 4"
+  30: expect_attr locator=test_id test_id="row-3" attr="class" expected=""
+  31: expect_attr locator=test_id test_id="pinned-3" attr="class" expected=""
+  32: expect_attr locator=test_id test_id="row-4" attr="class" expected="danger"
+  33: expect_metric_delta locator=none expected="selector_members_dirtied" delta=3
+  34: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=5
+  35: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
+  36: expect_metric_delta locator=none expected="rows_reused" delta=0
+  37: expect_metric_delta locator=none expected="rows_created" delta=0
+== examples-web/_fixtures/keyed-selector-churn/specs/repeated_churn.scm
+test "repeated remove and append churn keeps the selector index footprint flat"
+  3: click locator=role_name role="button" name="Create 1,000 rows"
+  4: click locator=role_name role="button" name="Append one row"
+  5: click locator=role_name role="button" name="Remove row 1001"
+  6: click locator=role_name role="button" name="Append one row"
+  7: click locator=role_name role="button" name="Remove row 1002"
+  8: click locator=role_name role="button" name="Append one row"
+  9: expect_visible locator=test_id test_id="row-1003"
+  12: mark_metrics locator=none
+  13: click locator=role_name role="button" name="Remove row 1003"
+  14: click locator=role_name role="button" name="Append one row"
+  15: expect_absent locator=test_id test_id="row-1003"
+  16: expect_visible locator=test_id test_id="row-1004"
+  17: expect_metric_delta locator=none expected="selector_memberships_released" delta=2
+  18: expect_metric_delta locator=none expected="selector_registrations" delta=2
+  19: expect_metric_delta_at_most locator=none expected="selector_registry_visits" delta=8
+  20: expect_metric_delta locator=none expected="retained_alloc_delta" delta=0
+  21: expect_metric_delta locator=none expected="host_retained_alloc_delta" delta=0
+  22: expect_metric_delta locator=none expected="host_retained_bytes_delta" delta=0
+  23: mark_metrics locator=none
+  24: click locator=role_name role="button" name="Select row 1004"
+  25: expect_attr locator=test_id test_id="row-1004" attr="class" expected="danger"
+  26: expect_metric_delta locator=none expected="selector_members_dirtied" delta=1
+== examples-web/_fixtures/keyed-selector-churn/specs/selected_row_retirement.scm
+test "retiring the selected row leaves its duplicate membership selected"
+  3: click locator=role_name role="button" name="Create 1,000 rows"
+  4: click locator=role_name role="button" name="Select row 2"
+  5: expect_attr locator=test_id test_id="row-2" attr="class" expected="danger"
+  6: expect_attr locator=test_id test_id="pinned-2" attr="class" expected="danger"
+  7: mark_metrics locator=none
+  8: click locator=role_name role="button" name="Remove row 2"
+  9: expect_absent locator=test_id test_id="row-2"
+  12: expect_metric_delta locator=none expected="selector_registry_visits" delta=2
+  13: expect_metric_delta locator=none expected="selector_memberships_released" delta=2
+  14: expect_metric_delta locator=none expected="selector_registrations" delta=0
+  15: expect_metric_delta locator=none expected="selector_members_dirtied" delta=0
+  16: expect_attr locator=test_id test_id="pinned-2" attr="class" expected="danger"
+  19: mark_metrics locator=none
+  20: click locator=role_name role="button" name="Select row 3"
+  21: expect_attr locator=test_id test_id="pinned-2" attr="class" expected=""
+  22: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
+  23: expect_attr locator=test_id test_id="pinned-3" attr="class" expected="danger"
+  24: expect_metric_delta locator=none expected="selector_members_dirtied" delta=3
+  25: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=5
+  26: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
+== examples-web/_fixtures/keyed-selector-churn/specs/small_churn.scm
+test "small keyed selector churn survives every recoverable allocation failure"
+  6: click locator=role_name role="button" name="Create 8 rows"
+  7: click locator=role_name role="button" name="Select row 2"
+  8: expect_attr locator=test_id test_id="row-2" attr="class" expected="danger"
+  9: mark_metrics locator=none
+  10: click locator=role_name role="button" name="Remove row 2"
+  11: expect_absent locator=test_id test_id="row-2"
+  12: expect_metric_delta locator=none expected="selector_memberships_released" delta=2
+  13: expect_metric_delta locator=none expected="selector_registrations" delta=0
+  14: expect_attr locator=test_id test_id="pinned-2" attr="class" expected="danger"
+  15: mark_metrics locator=none
+  16: click locator=role_name role="button" name="Append one row"
+  17: expect_visible locator=test_id test_id="row-9"
+  18: expect_metric_delta locator=none expected="selector_registrations" delta=2
+  19: expect_metric_delta locator=none expected="selector_key_bytes_copied" delta=2
+  20: click locator=role_name role="button" name="Select row 9"
+  21: expect_attr locator=test_id test_id="row-9" attr="class" expected="danger"
+  22: expect_attr locator=test_id test_id="pinned-2" attr="class" expected=""
+  23: click locator=role_name role="button" name="Hover row 5"
+  24: expect_attr locator=test_id test_id="row-5" attr="data-hover" expected="hover"
+  25: click locator=role_name role="button" name="Toggle table"
+  26: expect_visible locator=test_id test_id="table-hidden"
+  27: click locator=role_name role="button" name="Toggle table"
+  28: expect_attr locator=test_id test_id="row-9" attr="class" expected="danger"
+  29: expect_attr locator=test_id test_id="row-5" attr="data-hover" expected="hover"
 == examples-web/_fixtures/large-each-08/specs/main.scm
 test "Large each 08"
   6: expect_visible locator=role_name role="heading" name="Large each 8"

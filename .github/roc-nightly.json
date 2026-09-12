@@ -29,6 +29,7 @@
     "examples-web/_fixtures/js-framework-benchmark/main.roc",
     "examples-web/_fixtures/keyboard-events/main.roc",
     "examples-web/_fixtures/keyed-row-edits/main.roc",
+    "examples-web/_fixtures/keyed-selector-churn/main.roc",
     "examples-web/_fixtures/large-each-08/main.roc",
     "examples-web/_fixtures/large-each-64/main.roc",
     "examples-web/_fixtures/location-canonical-branch/main.roc",

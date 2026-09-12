@@ -884,7 +884,11 @@ pub fn Engine(comptime Ctx: type) type {
             /// Performs release record inside the shared engine while preserving transaction and changed-set invariants.
             pub fn releaseRecord(self: *@This(), record: *HostSignalRecord) void {
                 switch (record.payload) {
-                    .select, .keyed_select => |payload| self.engine.selectors.unregister(Ctx.allocator(self.ctx), payload.input, payload.key, record),
+                    .select, .keyed_select => |payload| {
+                        self.engine.selectors.unregister(Ctx.allocator(self.ctx), payload.input, payload.key, record);
+                        self.engine.pending_roc_metrics.bump(.selector_registry_visits, 1);
+                        self.engine.pending_roc_metrics.bump(.selector_memberships_released, 1);
+                    },
                     .row_source => |payload| {
                         const removed = self.engine.active_row_sources.fetchRemove(payload.row_handle) orelse @panic("retired row source was absent from its handle index");
                         if (removed.value != record) @panic("retired row source index pointed at a different record");
@@ -2868,33 +2872,42 @@ pub fn Engine(comptime Ctx: type) type {
             return &self.scratch.binder_stack;
         }
 
+        const PreparedSelectorAppend = selector_runtime.Registry(HostSignalRecord).PreparedAppend;
+
+        /// Stages the selector memberships a prepared graph change appends.
+        ///
+        /// Work here is proportional to the appended records: surviving
+        /// memberships stay in the live registry untouched, and retired ones
+        /// leave through `ActiveSignalGraphLifecycle.releaseRecord` when the
+        /// release closure runs at commit. Staged keys and buckets are owned by
+        /// the returned value until `commitPreparedSelectors` moves them into the
+        /// live registry; dropping it before then is the complete rollback. The
+        /// live registry's tables are only grown, never edited, before commit.
         fn prepareSelectorsForGraphChange(
             self: *Self,
             allocator: std.mem.Allocator,
-            release: *const active_graph.PreparedReleaseClosure(HostSignalRecord),
             append: *const active_graph.PreparedGraphAppend(HostSignalRecord),
-        ) CollectionError!selector_runtime.Registry(HostSignalRecord) {
-            var prepared: selector_runtime.Registry(HostSignalRecord) = .{};
+        ) CollectionError!PreparedSelectorAppend {
+            var prepared: PreparedSelectorAppend = .{};
             errdefer prepared.deinit(allocator);
-            for (self.active_signal_graph.items, release.final_record_ids) |node, final_id| {
-                if (final_id == null) continue;
-                switch (node.record.payload) {
-                    .select, .keyed_select => |payload| prepared.register(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
-                    else => {},
-                }
-            }
             for (append.new_nodes) |node| switch (node.record.payload) {
-                .select, .keyed_select => |payload| prepared.register(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
+                .select, .keyed_select => |payload| prepared.stage(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
                 else => {},
             };
+            prepared.reserveLive(allocator, &self.selectors) catch return error.OutOfMemory;
             return prepared;
         }
 
-        fn commitPreparedSelectors(self: *Self, allocator: std.mem.Allocator, prepared: *selector_runtime.Registry(HostSignalRecord)) void {
-            var retired = self.selectors;
-            self.selectors = prepared.*;
-            prepared.* = .{};
-            retired.deinit(allocator);
+        /// Publishes staged selector memberships after the release closure has
+        /// unregistered the retired ones. Allocation-free by construction. The
+        /// selector work counters are reported here, once per committed
+        /// transaction, so a preparation that was refused and retried does not
+        /// inflate them.
+        fn commitPreparedSelectors(self: *Self, allocator: std.mem.Allocator, prepared: *PreparedSelectorAppend, append: *const active_graph.PreparedGraphAppend(HostSignalRecord)) void {
+            self.pending_roc_metrics.bump(.selector_registry_visits, append.new_nodes.len);
+            self.pending_roc_metrics.bump(.selector_registrations, prepared.staged_memberships);
+            self.pending_roc_metrics.bump(.selector_key_bytes_copied, prepared.staged_key_bytes);
+            prepared.commitInto(allocator, &self.selectors);
         }
 
         fn debugPhase(ctx: Ctx.Handle, phase: DebugPhase) void {
@@ -8934,7 +8947,7 @@ pub fn Engine(comptime Ctx: type) type {
             render_layout_plan: ?PreparedRenderLayoutPlan = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
-            selector_registry: ?selector_runtime.Registry(HostSignalRecord) = null,
+            selector_registry: ?PreparedSelectorAppend = null,
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
             source_route_appends: ?active_graph.PreparedRouteAppends(u64) = null,
             text_route_appends: ?active_graph.PreparedRouteAppends(active_graph.TextSink) = null,
@@ -9797,7 +9810,7 @@ pub fn Engine(comptime Ctx: type) type {
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
                     errdefer if (self.graph_append) |*append| append.deinit(allocator);
-                    self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_release.?, &self.graph_append.?);
+                    self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_append.?);
                     errdefer if (self.selector_registry) |*registry| registry.deinit(allocator);
                     try self.engine.reserveActiveIntervals(self.host_ctx, self.graph_append.?.appendedIntervalSourceCount());
                     try self.engine.reserveActiveRowSources(self.host_ctx, self.graph_append.?.appendedRowSourceCount());
@@ -9895,7 +9908,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
                 release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
                 append.registerAppendedEffects(&lifecycle);
-                self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?);
+                self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?, append);
             }
 
             fn commitRenderAssumeCapacity(self: *@This()) void {
@@ -10321,7 +10334,7 @@ pub fn Engine(comptime Ctx: type) type {
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
-            selector_registry: ?selector_runtime.Registry(HostSignalRecord) = null,
+            selector_registry: ?PreparedSelectorAppend = null,
             source_route_appends: ?active_graph.PreparedRouteAppends(u64) = null,
             text_route_appends: ?active_graph.PreparedRouteAppends(active_graph.TextSink) = null,
             bool_route_appends: ?active_graph.PreparedRouteAppends(active_graph.BoolSink) = null,
@@ -10457,7 +10470,7 @@ pub fn Engine(comptime Ctx: type) type {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
-                    self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_release.?, &self.graph_append.?);
+                    self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_append.?);
                     try self.engine.reserveActiveIntervals(self.host_ctx, self.graph_append.?.appendedIntervalSourceCount());
                     try self.engine.reserveActiveRowSources(self.host_ctx, self.graph_append.?.appendedRowSourceCount());
                     try self.prepareGraphRoutes(allocator);
@@ -11046,7 +11059,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
                 release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
                 append.registerAppendedEffects(&lifecycle);
-                self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?);
+                self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?, append);
             }
 
             fn commitRenderCacheAssumeCapacity(self: *@This()) void {

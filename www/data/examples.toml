@@ -570,6 +570,17 @@ wasm = false
 native = true
 bench = false
 
+[[examples]]
+slug = "keyed-selector-churn"
+title = "Keyed Selector Churn"
+description = "Internal keyed-row selector fixture proving structural changes patch selector memberships locally at 1k and 10k rows."
+source = "examples-web/_fixtures/keyed-selector-churn/main.roc"
+specs = "examples-web/_fixtures/keyed-selector-churn/specs"
+public = false
+wasm = false
+native = true
+bench = false
+
 
 [[examples]]
 slug = "metric-semantics"

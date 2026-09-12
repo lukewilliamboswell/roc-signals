@@ -1881,6 +1881,13 @@ spec can assert a hard bound:
   changes this event. A spec asserting `expect_metric_delta
   selector_members_dirtied 2` alongside `derived_calls_into_roc 0` on a
   selection change in a large list is the canary for Product Goal 3.
+- **`selector_registry_visits` / `selector_registrations` /
+  `selector_key_bytes_copied` / `selector_memberships_released`** — the work
+  the selector index did while a structural change was prepared and published:
+  graph records it examined, memberships it added, key bytes it copied into
+  index ownership, and memberships it removed. Removing or appending one row
+  in a list of N selected rows must move these by the selectors of that one
+  row; a rebuild of the index over the survivors makes them track N.
 
 Telemetry placement is deliberate:
 

@@ -54,6 +54,19 @@ pub const RuntimeMetrics = struct {
     rows_removed: u64,
     rows_render_roots_moved: u64,
     rows_reused: u64,
+    /// Selector memberships appended to the keyed index this event. A
+    /// structural change registers only the selector records it creates.
+    selector_registrations: u64,
+    /// Key bytes copied into index ownership by those registrations.
+    selector_key_bytes_copied: u64,
+    /// Selector memberships removed from the keyed index this event, one per
+    /// retired selector record.
+    selector_memberships_released: u64,
+    /// Graph records the keyed index examined while a structural change was
+    /// prepared or published: appended records plus retired selector records.
+    /// Bounded by the changed set; a full re-enumeration of the surviving
+    /// graph makes it track N.
+    selector_registry_visits: u64,
     selector_members_dirtied: u64,
     scopes_created: u64,
     scopes_disposed: u64,

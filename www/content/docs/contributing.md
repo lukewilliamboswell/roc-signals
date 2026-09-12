@@ -1307,7 +1307,9 @@ Common metric names include `dirty_source_roots`, `rows_reused`,
 `stream_nodes_scanned`, `stream_nodes_scanned_events`,
 `render_indexes_refreshed`, `active_intervals_synced`,
 `active_graph_records_rebuilt`, `signal_record_table_rebuilt`,
-`retained_alloc_delta`,
+`selector_members_dirtied`, `selector_registrations`,
+`selector_memberships_released`, `selector_key_bytes_copied`,
+`selector_registry_visits`, `retained_alloc_delta`,
 `host_retained_alloc_delta`, and `host_retained_bytes_delta`. The authoritative
 list lives in `src/spec/spec_runner.zig`.
 
