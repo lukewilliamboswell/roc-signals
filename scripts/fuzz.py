@@ -133,9 +133,9 @@ class Target:
 
 
 TARGETS = (
-    Target("propagation", "dependency-ordered, glitch-free propagation and equality cutoffs"),
+    Target("propagation", "dependency-ordered, glitch-free propagation, equality cutoffs, and prepared-path allocation failure"),
     Target("keyed-scopes", "keyed-row identity, scope retirement, reuse barriers, disposal"),
-    Target("rows-transitions", "canonical stable-slot Rows transitions, lineage, abort, and retry"),
+    Target("rows-transitions", "canonical stable-slot Rows transitions, lineage, abort, retry, and allocation failure"),
     Target("structural", "collect/prepare/commit atomicity under allocation failure"),
     Target("selectors", "selector memberships, keyed selects, and selected-value whens under structural change"),
     Target("sparse-rows", "direct Rows deltas against the snapshot path: order, identity, memberships, work bounds"),
