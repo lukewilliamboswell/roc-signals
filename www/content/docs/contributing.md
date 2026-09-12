@@ -209,11 +209,15 @@ large workload needs more than the ordinary per-spec timeout.
 Ordinary SCM execution and the `native` suite do not enable fault sweeping:
 fast semantic feedback is the default for application authors. The sweep is an
 explicit `fault` suite, while this repository's full `all` suite and CI include
-it for a deliberately small set of platform-owned fixtures. Application
-projects can opt selected cases into an explicit fault run when their graph or
-lifecycle shape warrants the additional coverage. Fault injection does not add
-syntax or behavior to the `.scm` case itself, and it is deliberately not part
-of `zig build test`.
+it for a deliberately small set of platform-owned fixtures. Any other example
+can opt individual cases in by listing their ids (paths relative to the specs
+directory, or globs over them) under `fault_specs` in
+`www/data/examples.toml`; `keyed-selector-churn` opts in `small_churn.scm`, a small
+copy of its structural cases sized so every coordinate replays quickly.
+Application projects can use the same field when their graph or lifecycle
+shape warrants the additional coverage. Fault injection does not add syntax or
+behavior to the `.scm` case itself, and it is deliberately not part of
+`zig build test`.
 
 To replay a reported coordinate directly, copy the command printed after
 `replay:`. The worker interface is:

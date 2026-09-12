@@ -2836,7 +2836,11 @@ pub fn Engine(comptime Ctx: type) type {
             };
             var delta: each_collection.DeltaStorage = .{};
             var has_delta = false;
-            errdefer if (has_delta) delta.deinit(allocator);
+            // `DeltaStorage.prepare` grows the operation buffer before the key
+            // arena, so a refusal inside it can leave storage behind while
+            // `has_delta` is still false. Releasing unconditionally is a no-op
+            // for untouched storage and returns that partial reservation.
+            errdefer delta.deinit(allocator);
             if (use_direct_delta) {
                 const delta_shape = description.delta;
                 var delta_sink = delta.prepare(allocator, delta_shape.op_count, delta_shape.delta_key_count, delta_shape.delta_key_bytes) catch |err| return switch (err) {
@@ -2884,6 +2888,7 @@ pub fn Engine(comptime Ctx: type) type {
                 .delta = if (has_delta) delta else null,
             };
             snapshot = .{};
+            delta = .{};
             has_delta = false;
             return result;
         }
@@ -9928,12 +9933,18 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepareRender(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
                 if (!self.initial_root and !self.engine.render_cache.hasRoot()) return;
+                // The sparse plan is torn down field by field on failure, not
+                // through `deinit`, so every graph artifact prepared before the
+                // render stage is released here, including the staged selector
+                // memberships whose only other owner is the commit path.
                 errdefer {
                     self.deinitGraphRoutes(allocator);
                     if (self.graph_append) |*append| append.deinit(allocator);
                     self.graph_append = null;
                     if (self.graph_release) |*release| release.deinit(allocator);
                     self.graph_release = null;
+                    if (self.selector_registry) |*registry| registry.deinit(allocator);
+                    self.selector_registry = null;
                     if (self.sink_edits) |*edits| edits.deinit(allocator);
                     self.sink_edits = null;
                 }

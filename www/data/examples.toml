@@ -580,6 +580,7 @@ public = false
 wasm = false
 native = true
 bench = false
+fault_specs = ["small_churn.scm"]
 
 
 [[examples]]

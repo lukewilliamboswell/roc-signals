@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import functools
 import hashlib
 import http.server
@@ -52,6 +53,7 @@ class Example:
     native: bool
     bench: bool
     expect_mount_error: str | None
+    fault_specs: tuple[str, ...] = ()
 
     @property
     def exe_name(self) -> str:
@@ -121,6 +123,7 @@ def load_examples() -> tuple[Example, ...]:
                 native=bool(raw.get("native", True)),
                 bench=bool(raw.get("bench", False)),
                 expect_mount_error=str(raw["expect_mount_error"]) if "expect_mount_error" in raw else None,
+                fault_specs=tuple(str(pattern) for pattern in raw.get("fault_specs", ())),
             )
         )
     if not examples:
@@ -584,7 +587,7 @@ def run_native_specs(
     for example in examples:
         if not example.native:
             continue
-        if fault_campaign and example.slug not in FAULT_CAMPAIGN_EXAMPLES:
+        if fault_campaign and example.slug not in FAULT_CAMPAIGN_EXAMPLES and not example.fault_specs:
             continue
         if reason := should_skip_native_example(target, example):
             print(f"\nSkipping native spec for {example.slug} on {target}: {reason}.")
@@ -593,7 +596,15 @@ def run_native_specs(
             raise SystemExit(f"{example.slug} is native but has no specs directory")
         source = source_root / example.source
         specs = source_root / example.specs
-        selected = select_native_specs(specs, patterns=spec_filters, shard=shard)
+        patterns = spec_filters
+        if fault_campaign and example.slug not in FAULT_CAMPAIGN_EXAMPLES:
+            # An opted-in fixture sweeps only the cases it named; the user's
+            # filters narrow that set further rather than widening it.
+            opted_in = select_native_specs(specs, patterns=example.fault_specs)
+            patterns = tuple(case.id for case in opted_in if not spec_filters or any(fnmatch.fnmatchcase(case.id, pattern) for pattern in spec_filters))
+            if not patterns:
+                continue
+        selected = select_native_specs(specs, patterns=patterns, shard=shard)
         if not selected:
             continue
         matched_specs += len(selected)
@@ -616,7 +627,7 @@ def run_native_specs(
                 exe,
                 specs,
                 jobs=jobs,
-                patterns=spec_filters,
+                patterns=patterns,
                 shard=shard,
                 fail_fast=fail_fast,
                 timeout_seconds=spec_timeout,
