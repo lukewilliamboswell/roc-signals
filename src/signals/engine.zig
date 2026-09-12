@@ -8962,6 +8962,9 @@ pub fn Engine(comptime Ctx: type) type {
             retired_active_events: shared_buffer.List(ActiveEventDesc) = .empty,
             initial_root: bool = false,
             sparse_render_membership: bool = false,
+            /// Direct-root classification cost of the last sparse scope
+            /// preparation; tests assert it stays linear in retiring scopes.
+            direct_root_classification_work: DirectRootClassificationWork = .{},
 
             // Inspect only descriptors owned by the retiring branch. The
             // descriptor pool is not document order after a sparse row edit.
@@ -9411,6 +9414,75 @@ pub fn Engine(comptime Ctx: type) type {
                 return plan;
             }
 
+            /// Work performed while splitting retiring scopes into direct
+            /// synchronized row roots and nested scopes. `membership_probes`
+            /// is one per retiring scope, so a restored nested scan over the
+            /// roots would report the triangular product instead.
+            pub const DirectRootClassificationWork = struct {
+                roots_indexed: usize = 0,
+                scopes_classified: usize = 0,
+                membership_probes: usize = 0,
+                direct_matches: usize = 0,
+            };
+
+            /// Preflighted membership of the synchronized direct row roots.
+            ///
+            /// A Rows transition already retires its direct rows through the
+            /// rows-site plan; only nested descendants (child rows, components,
+            /// branches) need the scope-owned row retirement. Deciding which
+            /// side each retiring scope falls on must cost one probe per scope
+            /// rather than a scan over every root, otherwise clearing K rows
+            /// pays K(K+1)/2 comparisons. `init` performs the only allocation;
+            /// `classify` is allocation free so the caller can preflight the
+            /// nested buffer and commit without a fallible step in between.
+            pub const DirectRowRootMembership = struct {
+                roots: []const ids.ScopeId,
+                set: std.AutoHashMapUnmanaged(u64, void) = .{},
+
+                /// Indexes `roots`. Duplicate roots are a caller contract
+                /// error because each root is retired exactly once. On
+                /// `OutOfMemory` nothing is retained and the call can be
+                /// retried.
+                pub fn init(allocator: std.mem.Allocator, roots: []const ids.ScopeId) CollectionError!@This() {
+                    var membership: @This() = .{ .roots = roots };
+                    errdefer membership.deinit(allocator);
+                    membership.set.ensureTotalCapacity(allocator, std.math.cast(u32, roots.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                    for (roots) |root| {
+                        const entry = membership.set.getOrPutAssumeCapacity(root.raw());
+                        if (entry.found_existing) return error.InvalidDescriptor;
+                    }
+                    return membership;
+                }
+
+                /// Releases the index. Safe after a failed `init`.
+                pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                    self.set.deinit(allocator);
+                }
+
+                /// Appends every retiring scope that is not a direct root to
+                /// `nested`, which must already hold capacity for all of
+                /// `retirement_scope_ids`; this never allocates. Every direct
+                /// root must be among the retiring scopes, otherwise the
+                /// caller passed roots outside the retired subtrees and the
+                /// call refuses with `InvalidDescriptor`; `nested` is caller
+                /// scratch and holds no meaning after a refusal.
+                pub fn classify(self: *const @This(), retirement_scope_ids: []const ids.ScopeId, nested: *shared_buffer.List(ids.ScopeId)) CollectionError!DirectRootClassificationWork {
+                    std.debug.assert(nested.capacity - nested.items.len >= retirement_scope_ids.len);
+                    var work: DirectRootClassificationWork = .{ .roots_indexed = self.roots.len };
+                    for (retirement_scope_ids) |scope_id| {
+                        work.scopes_classified += 1;
+                        work.membership_probes += 1;
+                        if (self.set.contains(scope_id.raw())) {
+                            work.direct_matches += 1;
+                        } else {
+                            nested.appendAssumeCapacity(scope_id);
+                        }
+                    }
+                    if (work.direct_matches != self.roots.len) return error.InvalidDescriptor;
+                    return work;
+                }
+            };
+
             // Exact scope ownership is shared by one Rows edit and mixed
             // structural edits. Render-pool positions never identify ownership.
             fn prepareSparseExternalScopes(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, retired_roots: []const ids.ScopeId, synced_row_roots: []const ids.ScopeId, suppressed_parents: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
@@ -9458,12 +9530,9 @@ pub fn Engine(comptime Ctx: type) type {
                 var nested_row_scopes: shared_buffer.List(ids.ScopeId) = .empty;
                 defer nested_row_scopes.deinit(allocator);
                 nested_row_scopes.ensureTotalCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
-                for (retirement_scope_ids) |scope_id| {
-                    const is_direct = for (synced_row_roots) |root| {
-                        if (root == scope_id) break true;
-                    } else false;
-                    if (!is_direct) nested_row_scopes.appendAssumeCapacity(scope_id);
-                }
+                var direct_roots = try DirectRowRootMembership.init(allocator, synced_row_roots);
+                defer direct_roots.deinit(allocator);
+                plan.direct_root_classification_work = try direct_roots.classify(retirement_scope_ids, &nested_row_scopes);
                 plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, nested_row_scopes.items);
                 errdefer if (plan.row_retirement) |*retirement_plan| retirement_plan.deinit(allocator);
                 plan.retired_stable_generations.ensureTotalCapacity(allocator, plan.row_retirement.?.rows.len) catch return error.OutOfMemory;
@@ -19186,6 +19255,160 @@ test "structural targets mark ten thousand flat row roots with exact linear subt
     try std.testing.expectEqual(@as(usize, 0), targets.work.subtree_child_links_followed);
     try std.testing.expectEqual(@as(usize, 10_000), targets.scope_retirement.?.work.validation_roots_checked);
     try std.testing.expectEqual(@as(usize, 10_000), targets.scope_retirement.?.work.validation_parent_links_followed);
+}
+
+fn countDirectRootNestedScan(retirement_scope_ids: []const ids.ScopeId, synced_row_roots: []const ids.ScopeId, nested: *shared_buffer.List(ids.ScopeId)) usize {
+    // Reference for the retired quadratic classification: one equality per
+    // (retiring scope, root) pair until the first hit.
+    var comparisons: usize = 0;
+    for (retirement_scope_ids) |scope_id| {
+        const is_direct = for (synced_row_roots) |root| {
+            comparisons += 1;
+            if (root == scope_id) break true;
+        } else false;
+        if (!is_direct) nested.appendAssumeCapacity(scope_id);
+    }
+    return comparisons;
+}
+
+test "sparse scope retirement classifies flat direct row roots with one probe per scope" {
+    const Membership = Engine(VerifyCtx).PreparedStructuralDownstream.DirectRowRootMembership;
+    const measure = struct {
+        fn run(row_count: usize) !void {
+            var engine = Engine(VerifyCtx).init();
+            defer engine.scopes.deinit(std.testing.allocator);
+            const root = try engine.internRootScope(std.testing.allocator);
+            var roots: shared_buffer.List(ids.ScopeId) = .empty;
+            defer roots.deinit(std.testing.allocator);
+            try roots.ensureTotalCapacity(std.testing.allocator, row_count);
+            for (0..row_count) |index| {
+                const row = try scope_runtime.appendFreshEachRow(
+                    std.testing.allocator,
+                    &engine.scopes,
+                    root.scope_id,
+                    ids.SiteOrdinal.fromRaw(@intCast(index + 1)),
+                    index,
+                    row_handles.RowHandleId.fromRaw(@intCast(0x0000_0001_0000_0001 + index)),
+                );
+                roots.appendAssumeCapacity(row.scope_id);
+            }
+            var retirement = try scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, std.testing.allocator, engine.scopes.items, roots.items);
+            defer retirement.deinit(std.testing.allocator);
+            try std.testing.expectEqual(row_count, retirement.scope_ids.len);
+
+            var nested: shared_buffer.List(ids.ScopeId) = .empty;
+            defer nested.deinit(std.testing.allocator);
+            try nested.ensureTotalCapacity(std.testing.allocator, retirement.scope_ids.len);
+            var membership = try Membership.init(std.testing.allocator, roots.items);
+            defer membership.deinit(std.testing.allocator);
+            const work = try membership.classify(retirement.scope_ids, &nested);
+            // Direct rows belong to the rows-site plan; none may be retired a
+            // second time through the scope-owned row retirement.
+            try std.testing.expectEqual(@as(usize, 0), nested.items.len);
+            try std.testing.expectEqual(row_count, work.roots_indexed);
+            try std.testing.expectEqual(row_count, work.scopes_classified);
+            try std.testing.expectEqual(row_count, work.direct_matches);
+            // Linear: exactly one membership probe per retiring scope. A
+            // restored nested scan over the roots reports the triangular
+            // count below instead and fails here.
+            try std.testing.expectEqual(row_count, work.membership_probes);
+
+            var reference_nested: shared_buffer.List(ids.ScopeId) = .empty;
+            defer reference_nested.deinit(std.testing.allocator);
+            try reference_nested.ensureTotalCapacity(std.testing.allocator, retirement.scope_ids.len);
+            const triangular = row_count * (row_count + 1) / 2;
+            try std.testing.expectEqual(triangular, countDirectRootNestedScan(retirement.scope_ids, roots.items, &reference_nested));
+            try std.testing.expectEqualSlices(ids.ScopeId, reference_nested.items, nested.items);
+        }
+    }.run;
+    // clear1k: 500_500 baseline comparisons; clear10k: 50_005_000.
+    try measure(1_000);
+    try measure(10_000);
+}
+
+test "sparse scope retirement keeps nested rows and independent scopes while direct roots stay linear" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Membership = Engine(VerifyCtx).PreparedStructuralDownstream.DirectRowRootMembership;
+    const row_count = 1_000;
+    var engine = Engine(VerifyCtx).init();
+    defer engine.scopes.deinit(std.testing.allocator);
+    const root = try engine.internRootScope(std.testing.allocator);
+    var direct_rows: shared_buffer.List(ids.ScopeId) = .empty;
+    defer direct_rows.deinit(std.testing.allocator);
+    var expected_nested: shared_buffer.List(ids.ScopeId) = .empty;
+    defer expected_nested.deinit(std.testing.allocator);
+    // Each direct row owns a component that owns a nested row, and one
+    // surviving sibling row is never part of the retirement.
+    for (0..row_count) |index| {
+        const row = try scope_runtime.appendFreshEachRow(std.testing.allocator, &engine.scopes, root.scope_id, ids.SiteOrdinal.fromRaw(1), index, row_handles.RowHandleId.fromRaw(@intCast(0x0000_0001_0000_0001 + index)));
+        const component = try engine.internComponentScope(std.testing.allocator, row.scope_id, ids.SiteOrdinal.fromRaw(3));
+        const nested_row = try scope_runtime.appendFreshEachRow(std.testing.allocator, &engine.scopes, component.scope_id, ids.SiteOrdinal.fromRaw(4), index, row_handles.RowHandleId.fromRaw(@intCast(0x0000_0002_0000_0001 + index)));
+        try direct_rows.append(std.testing.allocator, row.scope_id);
+        try expected_nested.append(std.testing.allocator, nested_row.scope_id);
+        try expected_nested.append(std.testing.allocator, component.scope_id);
+    }
+    const survivor = try scope_runtime.appendFreshEachRow(std.testing.allocator, &engine.scopes, root.scope_id, ids.SiteOrdinal.fromRaw(1), row_count, row_handles.RowHandleId.fromRaw(0x0000_0003_0000_0001));
+    // An independently retiring `when` branch is not a synchronized row root,
+    // so it and its child are nested scopes for the scope-owned retirement.
+    const branch = try engine.internWhenBranchScope(std.testing.allocator, root.scope_id, ids.SiteOrdinal.fromRaw(2), .true_branch);
+    const branch_row = try scope_runtime.appendFreshEachRow(std.testing.allocator, &engine.scopes, branch.scope_id, ids.SiteOrdinal.fromRaw(5), 7, row_handles.RowHandleId.fromRaw(0x0000_0004_0000_0001));
+    try expected_nested.append(std.testing.allocator, branch_row.scope_id);
+    try expected_nested.append(std.testing.allocator, branch.scope_id);
+
+    var retired_roots: shared_buffer.List(ids.ScopeId) = .empty;
+    defer retired_roots.deinit(std.testing.allocator);
+    try retired_roots.appendSlice(std.testing.allocator, direct_rows.items);
+    try retired_roots.append(std.testing.allocator, branch.scope_id);
+    var retirement = try scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, std.testing.allocator, engine.scopes.items, retired_roots.items);
+    defer retirement.deinit(std.testing.allocator);
+    const retiring_count = 3 * row_count + 2;
+    try std.testing.expectEqual(@as(usize, retiring_count), retirement.scope_ids.len);
+    for (retirement.scope_ids) |scope_id| try std.testing.expect(scope_id != survivor.scope_id);
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var nested: shared_buffer.List(ids.ScopeId) = .empty;
+    defer nested.deinit(fault.allocator());
+    try nested.ensureTotalCapacity(fault.allocator(), retirement.scope_ids.len);
+    fault.configure(null);
+    var membership = try Membership.init(fault.allocator(), direct_rows.items);
+    const init_attempts = fault.attempts;
+    try std.testing.expect(init_attempts != 0);
+    // Classification is allocation free once the index exists.
+    fault.configure(1);
+    const work = try membership.classify(retirement.scope_ids, &nested);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    fault.configure(null);
+    membership.deinit(fault.allocator());
+    try std.testing.expectEqual(@as(usize, retiring_count), work.scopes_classified);
+    try std.testing.expectEqual(@as(usize, retiring_count), work.membership_probes);
+    try std.testing.expectEqual(@as(usize, row_count), work.direct_matches);
+    try std.testing.expectEqualSlices(ids.ScopeId, expected_nested.items, nested.items);
+    for (nested.items) |scope_id| for (direct_rows.items) |direct| try std.testing.expect(scope_id != direct);
+
+    var reference_nested: shared_buffer.List(ids.ScopeId) = .empty;
+    defer reference_nested.deinit(std.testing.allocator);
+    try reference_nested.ensureTotalCapacity(std.testing.allocator, retirement.scope_ids.len);
+    const reference_comparisons = countDirectRootNestedScan(retirement.scope_ids, direct_rows.items, &reference_nested);
+    try std.testing.expectEqualSlices(ids.ScopeId, reference_nested.items, nested.items);
+    // Nested descendants each scan every root without a hit.
+    try std.testing.expect(reference_comparisons >= (2 * row_count + 2) * row_count);
+
+    // Every index allocation refusal is recoverable and leaves no index behind.
+    for (1..init_attempts + 1) |fail_at| {
+        fault.configure(fail_at);
+        try std.testing.expectError(error.OutOfMemory, Membership.init(fault.allocator(), direct_rows.items));
+        fault.configure(null);
+        var retry = try Membership.init(fault.allocator(), direct_rows.items);
+        retry.deinit(fault.allocator());
+    }
+
+    // Contract errors: a duplicated direct root, and a direct root that is
+    // not among the retiring scopes.
+    try std.testing.expectError(error.InvalidDescriptor, Membership.init(std.testing.allocator, &.{ direct_rows.items[0], direct_rows.items[0] }));
+    var foreign = try Membership.init(std.testing.allocator, &.{survivor.scope_id});
+    defer foreign.deinit(std.testing.allocator);
+    nested.clearRetainingCapacity();
+    try std.testing.expectError(error.InvalidDescriptor, foreign.classify(retirement.scope_ids, &nested));
 }
 
 test "structural targets ignore already retired scope slots" {
