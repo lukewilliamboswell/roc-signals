@@ -114,6 +114,48 @@
 //!    allocator, which also backs the `RocEnv` the erased callables allocate
 //!    from, so an unbalanced retain on a value capability is a run failure.
 //!
+//! # Allocation failure
+//!
+//! design.md, "Memory management and allocation failure", states the
+//! verification principle as *exhaustive fault placement*, and the prepared
+//! path is the one fallible seam this target drives: reserving the overlay,
+//! reserving the dirty queue, and `prepareChangedActiveSignalRecordIds` may each
+//! refuse, and `commitPreparedDirtySignalCaches` afterwards cannot. The prepared
+//! engine therefore runs on a `FaultAllocator`, and before every batch's real
+//! transaction it probes the same batch with the allocator failing from attempt
+//! `N` onwards. Which positions are probed is decoded from the input: either an
+//! ascending sweep of every `N` until the preparation succeeds, or one sampled
+//! `N`. `FaultAllocator` is *sticky* - attempt `N` and every later attempt fail
+//! - so a preparation that succeeds with `N` armed made fewer than `N` attempts
+//! and the sweep is complete without an attempt-counting pass. Every probe,
+//! refused or not, is abandoned; the transaction that publishes is the retry.
+//!
+//! The oracles that axis adds:
+//!
+//!  - **A refusal publishes nothing.** Every cache slot, every dirty stamp, the
+//!    dirty generation, every metrics counter, and the active graph - ranks,
+//!    dependents, and input slots - are snapshotted before each probe and
+//!    compared afterwards. Capability retains are the one legal movement, and
+//!    they must balance their releases exactly. The comparison is a copy rather
+//!    than a summary because a single leaked staged slot or a single restamped
+//!    record is what a refusal mid-closure would leave behind.
+//!  - **Values balance.** Every value a probe was handed, cloned, or computed
+//!    must reach the drop callable exactly once, counted through a ledger the
+//!    callables keep. Values here are plain integers, so a value the refusal
+//!    forgot to release is invisible to the leak check and to the metrics;
+//!    only the ledger sees it.
+//!  - **The retry lands exactly where the reference did.** The unfaulted
+//!    transaction that follows is judged by every oracle above, and the last
+//!    probe that succeeded must have scheduled and changed exactly the ids the
+//!    retry does, in the same order.
+//!  - **Commit is allocation-free.** The allocator is armed to fail its very
+//!    next attempt before `commitPreparedDirtySignalCaches` runs, so a commit
+//!    that reaches the allocator at all is a run failure rather than a latent
+//!    fatal boundary.
+//!  - **Refusals are honest.** `OutOfMemory` is the only acceptable answer to an
+//!    injected allocation failure; `ResourceLimit` or `InvalidDescriptor` would
+//!    mean a refusal path misreported what happened.
+//!
 //! # Seams
 //!
 //! The graph is built directly out of `signal_records.Record` values and
@@ -160,10 +202,11 @@
 //! reach. `PreparedSourceTransaction` also prepares a render splice, structural
 //! changes, and `onChange` commands from the same overlay and commits them
 //! alongside it; those stages need a mounted element tree, so their share of the
-//! abort-leaves-no-trace property stays covered by `engine.zig`'s own tests.
-//! Preparation failure is likewise absent: this target abandons a transaction by
-//! choice rather than because an allocation or a preflight refused, so the
-//! error paths out of `prepareChangedActiveSignalRecordIds` are not exercised.
+//! abort-leaves-no-trace property stays covered by `engine.zig`'s own tests, and
+//! `PreparedSourceTransaction` itself is private to the engine, so the fault
+//! sweep stops at the seams it is built from: overlay reservation, dirty-queue
+//! reservation, prepared evaluation, and cache commit. A refusal inside the
+//! render splice or the structural preflight is not generated here.
 //!
 //! State `ref` records are also absent: resolving one needs a live host state
 //! table, and the propagation properties above do not depend on where a source
@@ -189,6 +232,8 @@ const HostValueCell = signals.retained_values.HostValueCell;
 const HostValueList = signals.retained_values.HostValueList;
 const Record = signal_records.Record;
 const Engine = signals.engine.Engine(FuzzCtx);
+const FaultAllocator = signals.fault_allocator.FaultAllocator;
+const RuntimeMetrics = signals.engine.RuntimeMetrics;
 
 /// Nodes one generated graph may hold. Small graphs are the interesting ones:
 /// every extra node dilutes the chance that a diamond's two arms land on the
@@ -202,6 +247,14 @@ const max_combine_children = 3;
 /// Values live in `1..value_modulus` so that transforms collide often and
 /// equality cutoffs fire without the generator having to aim for them.
 const value_modulus: u64 = 8;
+/// Highest single fault position an input can sample. Preparing a
+/// `max_nodes` graph makes a few dozen attempts at most, so positions past
+/// this mostly succeed and the coverage feedback steers away from them.
+const max_sampled_fault_attempt = 24;
+/// Ceiling on an ascending sweep. A batch still refused with this many
+/// attempts armed is making more allocations than a bounded transaction over
+/// twenty records has any reason to, which is itself a finding.
+const max_fault_sweep_attempts = 96;
 
 // ---------------------------------------------------------------------------
 // The generated program
@@ -258,12 +311,25 @@ const Batch = struct {
     values: []const u64,
 };
 
+/// Which allocation-attempt positions the prepared engine probes before each
+/// batch's real transaction.
+///
+/// Decoded after the batches so an input that predates this axis still decodes
+/// to the same program, with a plan of zero bytes: a single probe at attempt 1.
+const FaultPlan = struct {
+    /// Whether every attempt position is swept or one sampled position is tried.
+    sweep: bool,
+    /// The sampled position, used only when `sweep` is false.
+    attempt: usize,
+};
+
 const Program = struct {
     nodes: []const Node,
     source_count: usize,
     /// Value every source starts at, indexed by source node id.
     initial: []const u64,
     batches: []const Batch,
+    fault: FaultPlan,
 };
 
 /// The transform's identity, handed to its erased callable through the
@@ -466,6 +532,22 @@ const FuzzSink = struct {
     pub fn debugAssertNode(_: FuzzSink, _: signals.ids.ElemId, _: bool, _: ?[]const u8, _: ?signals.ids.ElemId, _: []const signals.ids.ElemId, _: ?signals.ids.EventId, _: ?signals.ids.EventId, _: ?signals.ids.EventId, _: ?signals.ids.EventId, _: ?signals.ids.EventId, _: ?signals.ids.EventId, _: ?signals.ids.EventId) void {}
 };
 
+/// Counts every value handed to the engine and every value the engine drops
+/// through the capability, so an abandoned transaction can be held to having
+/// released exactly what it was given.
+///
+/// Values are plain integers, so a clone is free and a drop does nothing; the
+/// only evidence that an ownership edge was honoured is that the drop callable
+/// ran. Per-run rather than per-harness because the callables are C functions
+/// with no host pointer of their own; every harness reads it as a delta, and
+/// the harnesses run strictly in turn.
+const ValueLedger = struct {
+    created: u64 = 0,
+    dropped: u64 = 0,
+};
+
+var value_ledger = ValueLedger{};
+
 /// Per-run host state the engine reaches through `FuzzCtx`.
 const FuzzHost = struct {
     allocator: std.mem.Allocator,
@@ -473,6 +555,7 @@ const FuzzHost = struct {
 
     /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(_: *FuzzHost, value: HostValue) HostValue {
+        value_ledger.created += 1;
         return value;
     }
 
@@ -514,6 +597,7 @@ const FuzzCtx = struct {
 
     /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(_: Handle, value: HostValue) HostValue {
+        value_ledger.created += 1;
         return value;
     }
 
@@ -552,9 +636,12 @@ fn cloneCallable(_: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8, _: ?[*]u8,
     const input: *align(1) const erased_calls.ErasedHostValueUnaryArgs = @ptrCast(args orelse unreachable);
     const out: *align(1) HostValue = @ptrCast(result orelse unreachable);
     out.* = HostValue.fromRaw(input.arg0);
+    value_ledger.created += 1;
 }
 
-fn dropCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
+fn dropCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    value_ledger.dropped += 1;
+}
 
 fn eqCallable(_: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     const input: *align(1) const erased_calls.ErasedHostValueBinaryArgs = @ptrCast(args orelse unreachable);
@@ -566,6 +653,7 @@ fn unaryTransformCallable(_: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8, c
     const input: *align(1) const erased_calls.ErasedHostValueUnaryArgs = @ptrCast(args orelse unreachable);
     const out: *align(1) HostValue = @ptrCast(result orelse unreachable);
     out.* = encode(applyUnary(@enumFromInt(capture.op), capture.operand, decode(HostValue.fromRaw(input.arg0))));
+    value_ledger.created += 1;
 }
 
 fn binaryTransformCallable(_: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
@@ -575,6 +663,7 @@ fn binaryTransformCallable(_: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8, 
     const left = decode(HostValue.fromRaw(input.arg0));
     const right = decode(HostValue.fromRaw(input.arg1));
     out.* = encode(applyBinary(@enumFromInt(capture.op), capture.operand, left, right));
+    value_ledger.created += 1;
 }
 
 /// Reads the child list a `combine` node is handed, releasing the reference the
@@ -588,6 +677,7 @@ fn combineTransformCallable(roc_host: *abi.RocHost, result: ?[*]u8, args: ?[*]co
     for (items, 0..) |item, index| inputs[index] = decode(item);
     const out: *align(1) HostValue = @ptrCast(result orelse unreachable);
     out.* = encode(applyCombine(@enumFromInt(capture.op), capture.operand, inputs[0..items.len]));
+    value_ledger.created += 1;
     list.decref(roc_host);
 }
 
@@ -620,6 +710,16 @@ const Stamp = struct {
     changed: bool,
 };
 
+/// The active graph's shape at the moment a fault probe began.
+const GraphSnapshot = struct {
+    len: usize,
+    records: [max_nodes]*Record,
+    ranks: [max_nodes]u64,
+    input_slots: [max_nodes]signals.signal_graph.InputSlots,
+    dependents: [max_nodes][max_nodes]u64,
+    dependent_len: [max_nodes]usize,
+};
+
 /// What one batch did to one engine, kept so two engines can be compared.
 const Outcome = struct {
     dirty: [max_nodes]u64 = @splat(0),
@@ -642,6 +742,16 @@ const Harness = struct {
     order: Order,
     path: Path,
     gpa: std.heap.DebugAllocator(.{}),
+    /// Wraps `gpa` for everything the engine allocates through `FuzzCtx`. It
+    /// is armed only by the prepared path's probes; the erased callables keep
+    /// allocating from `gpa` directly, since an allocation failure inside Roc
+    /// is not a recoverable refusal.
+    fault: FaultAllocator,
+    probes: usize,
+    refusals: usize,
+    /// What the last probe that was not refused scheduled and changed, so the
+    /// retry can be held to the same result.
+    successful_probe: ?Outcome,
     env: abi.RocEnv,
     roc_host: abi.RocHost,
     host: FuzzHost,
@@ -662,8 +772,12 @@ const Harness = struct {
         self.path = path;
         self.gpa = .{};
         self.generation = 0;
-        const gpa = self.gpa.allocator();
-        self.env = .{ .allocator = gpa, .roc_io = abi.RocIo.default() };
+        self.probes = 0;
+        self.refusals = 0;
+        self.successful_probe = null;
+        self.fault = FaultAllocator.init(self.gpa.allocator());
+        const gpa = self.fault.allocator();
+        self.env = .{ .allocator = self.gpa.allocator(), .roc_io = abi.RocIo.default() };
         self.roc_host = abi.makeRocHost(&self.env);
         self.host = .{ .allocator = gpa };
         self.engine = Engine.init();
@@ -734,7 +848,7 @@ const Harness = struct {
     /// Releases every cache, graph buffer, and erased callable, then reports a
     /// leak as a run failure.
     fn deinit(self: *Harness) void {
-        const gpa = self.gpa.allocator();
+        const gpa = self.host.allocator;
         for (self.records) |*record| {
             record.cachedSlot().?.deinit(&self.host, &self.roc_host, &self.engine.pending_roc_metrics);
         }
@@ -766,7 +880,7 @@ const Harness = struct {
     /// it already holds is pruned at the source and never becomes a root, and a
     /// batch with no surviving root does not propagate at all.
     fn applyDirect(self: *Harness, update: Batch) Outcome {
-        const gpa = self.gpa.allocator();
+        const gpa = self.host.allocator;
         const derived_before = self.engine.pending_roc_metrics.derived_calls_into_roc;
         const prunes_before = self.engine.pending_roc_metrics.propagation_prunes;
         const generation = self.generation + 1;
@@ -834,6 +948,9 @@ const Harness = struct {
                 if (count_prunes) self.engine.recordSignalPrune();
                 continue;
             }
+            // The staged value is one the harness made and the overlay now
+            // owns; it reaches the drop callable when the overlay releases it.
+            value_ledger.created += 1;
             overlay.stageAssumeCapacity(slot, value, self.cap, &self.engine.pending_roc_metrics);
             overlay.rememberResultAssumeCapacity(signal_records.EvaluationKey.fromRecord(record), generation, true);
             roots[root_len] = source;
@@ -845,7 +962,7 @@ const Harness = struct {
     /// Collects the forward closure of `roots` into engine scratch. The slice
     /// borrows that scratch and the next collection overwrites it.
     fn collectDirty(self: *Harness, roots: []const u64) []const u64 {
-        const gpa = self.gpa.allocator();
+        const gpa = self.host.allocator;
         self.engine.scratch.dirty_active_records.reserveForGraph(Record, gpa, self.engine.active_signal_graph.items) catch {
             fail("reserving the dirty queue for a {d}-node graph failed", .{self.engine.active_signal_graph.items.len});
         };
@@ -873,7 +990,7 @@ const Harness = struct {
     /// batch is then prepared again and committed, the oracles that follow also
     /// prove the rehearsal left no work half-done behind it.
     fn applyPrepared(self: *Harness, update: Batch) Outcome {
-        const gpa = self.gpa.allocator();
+        const gpa = self.host.allocator;
         const derived_before = self.engine.pending_roc_metrics.derived_calls_into_roc;
         const prunes_before = self.engine.pending_roc_metrics.propagation_prunes;
         const generation = self.generation + 1;
@@ -900,6 +1017,9 @@ const Harness = struct {
         rehearsal.deinit(&self.host, &self.roc_host, &self.engine.pending_roc_metrics);
         self.expectNoTrace(&before, &stamps, generation_before);
 
+        self.successful_probe = null;
+        self.sweepFaults(update, generation);
+
         var outcome = Outcome{};
         var overlay = signal_records.PreparedCacheUpdates.init(gpa, reservation) catch fail("reserving an overlay for {d} slots failed", .{reservation});
         defer overlay.deinit(&self.host, &self.roc_host, &self.engine.pending_roc_metrics);
@@ -920,15 +1040,190 @@ const Harness = struct {
 
             var provisional: [max_nodes]u64 = @splat(0);
             self.expectProvisionalReads(&overlay, &before, outcome, &provisional);
+            // Commit is the irreversible boundary, so it may not reach the
+            // allocator at all: arm the very next attempt and require that
+            // none was made.
+            self.fault.configure(1);
             self.engine.commitPreparedDirtySignalCaches(&overlay);
+            const commit_attempts = self.fault.attempts;
+            self.fault.configure(null);
+            if (commit_attempts != 0) fail("committing the cache overlay made {d} allocation attempt(s)", .{commit_attempts});
             self.expectPublishedOnce(&provisional, generation_before);
             self.generation = generation;
             self.engine.dirty_signal_generation = generation;
         }
+        self.expectRetryMatchesProbe(outcome);
 
         outcome.derived_calls = self.engine.pending_roc_metrics.derived_calls_into_roc - derived_before;
         outcome.prunes = self.engine.pending_roc_metrics.propagation_prunes - prunes_before;
         return outcome;
+    }
+
+    // --- allocation-failure probing ---------------------------------------
+
+    /// Probes fault positions in one batch's preparation without publishing
+    /// any of them.
+    ///
+    /// `FaultAllocator` is sticky - attempt `N` and every later attempt fail -
+    /// so a preparation that succeeds with `N` armed made fewer than `N`
+    /// attempts and every position has been covered. An ascending sweep
+    /// therefore needs no separate attempt-counting run and stops on its own.
+    fn sweepFaults(self: *Harness, update: Batch, generation: u64) void {
+        const plan = self.program.fault;
+        if (!plan.sweep) {
+            _ = self.probeFault(update, generation, plan.attempt);
+            return;
+        }
+        var attempt: usize = 1;
+        while (attempt <= max_fault_sweep_attempts) : (attempt += 1) {
+            if (!self.probeFault(update, generation, attempt)) return;
+        }
+        fail("preparing a {d}-node batch was still refused with attempt {d} armed", .{ self.program.nodes.len, max_fault_sweep_attempts });
+    }
+
+    /// Prepares `update` with the allocator failing from `attempt` onwards,
+    /// abandons whatever it produced, and asserts nothing was published.
+    ///
+    /// Returns whether the preparation refused.
+    fn probeFault(self: *Harness, update: Batch, generation: u64, attempt: usize) bool {
+        self.probes += 1;
+        var before: [max_nodes]signal_records.CacheSlot = undefined;
+        var stamps: [max_nodes]Stamp = undefined;
+        self.snapshotCaches(&before, &stamps);
+        const generation_before = self.engine.dirty_signal_generation;
+        const metrics_before = self.engine.pending_roc_metrics;
+        const ledger_before = value_ledger;
+        var graph_before: GraphSnapshot = undefined;
+        self.snapshotGraph(&graph_before);
+
+        var probe = Outcome{};
+        self.fault.configure(attempt);
+        const result = self.prepareProbe(update, generation, &probe);
+        self.fault.configure(null);
+
+        var refused = false;
+        if (result) |_| {
+            self.successful_probe = probe;
+        } else |err| {
+            // `OutOfMemory` is the only honest answer to an injected allocation
+            // failure. `ResourceLimit` would mean a bound rejected a graph the
+            // generator built well inside every limit, and `InvalidDescriptor`
+            // that a refusal path misreported what happened.
+            if (err != error.OutOfMemory) fail("preparation faulted at attempt {d} refused as {t}, not an allocation failure", .{ attempt, err });
+            refused = true;
+            self.refusals += 1;
+        }
+
+        self.expectNoTrace(&before, &stamps, generation_before);
+        self.expectMetricsUntouched(&metrics_before, attempt);
+        self.expectGraphUntouched(&graph_before, attempt);
+        // Every value the probe was handed or computed was abandoned with
+        // it, so each must have reached the drop callable exactly once.
+        const created = value_ledger.created - ledger_before.created;
+        const dropped = value_ledger.dropped - ledger_before.dropped;
+        if (created != dropped) fail("a probe at attempt {d} created {d} values and dropped {d}", .{ attempt, created, dropped });
+        return refused;
+    }
+
+    /// The prepared path up to - but not including - commit, with every
+    /// fallible seam mapped to the refusal it reports. Mirrors
+    /// `PreparedSourceTransaction.prepareRoots`: reserve the overlay, stage the
+    /// roots, reserve the dirty queue, collect the closure, and evaluate it
+    /// into the overlay. The overlay is dropped on return, success or not.
+    fn prepareProbe(self: *Harness, update: Batch, generation: u64, probe: *Outcome) error{OutOfMemory}!void {
+        const gpa = self.host.allocator;
+        var overlay = signal_records.PreparedCacheUpdates.init(gpa, self.program.nodes.len) catch return error.OutOfMemory;
+        defer overlay.deinit(&self.host, &self.roc_host, &self.engine.pending_roc_metrics);
+        var roots: [max_sources]u64 = undefined;
+        const root_len = self.stageRoots(&overlay, update, generation, &roots, false);
+        if (root_len == 0) return;
+        self.engine.scratch.dirty_active_records.reserveForGraph(Record, gpa, self.engine.active_signal_graph.items) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ResourceLimit => fail("reserving the dirty queue for a {d}-node graph hit a resource limit", .{self.engine.active_signal_graph.items.len}),
+        };
+        const dirty = self.engine.scratch.dirty_active_records.collectForRoots(Record, gpa, self.engine.active_signal_graph.items, roots[0..root_len]);
+        probe.dirty_len = dirty.len;
+        @memcpy(probe.dirty[0..dirty.len], dirty);
+        const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &overlay, probe.dirty[0..probe.dirty_len], &.{}, generation) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => fail("preparing the probe refused as {t}", .{err}),
+        };
+        defer gpa.free(changed);
+        probe.changed_len = changed.len;
+        @memcpy(probe.changed[0..changed.len], changed);
+    }
+
+    /// Asserts the transaction that finally published scheduled and changed
+    /// exactly what the last unrefused probe did, in the same order.
+    ///
+    /// The probe was abandoned, so this is the retry-lands-identically
+    /// property: a refusal that left a stale memo or a half-staged slot behind
+    /// would make the retry compute from a different starting point.
+    fn expectRetryMatchesProbe(self: *Harness, outcome: Outcome) void {
+        const probe = self.successful_probe orelse return;
+        if (probe.dirty_len != outcome.dirty_len or probe.changed_len != outcome.changed_len) {
+            fail("the retry scheduled {d} and changed {d} records; the abandoned probe scheduled {d} and changed {d}", .{ outcome.dirty_len, outcome.changed_len, probe.dirty_len, probe.changed_len });
+        }
+        for (probe.dirty[0..probe.dirty_len], outcome.dirty[0..outcome.dirty_len], 0..) |expected, actual, position| {
+            if (expected != actual) fail("scheduled record {d} is {d} on the retry and {d} on the abandoned probe", .{ position, actual, expected });
+        }
+        for (probe.changed[0..probe.changed_len], outcome.changed[0..outcome.changed_len], 0..) |expected, actual, position| {
+            if (expected != actual) fail("changed record {d} is {d} on the retry and {d} on the abandoned probe", .{ position, actual, expected });
+        }
+    }
+
+    /// Asserts a probe moved no metrics counter other than a balanced number
+    /// of capability retains and releases.
+    ///
+    /// Derived calls and prunes reach the metrics only through the overlay's
+    /// commit, so a probe that bumped either published work it then threw
+    /// away. Retains and releases do move - every staged value retains its
+    /// capability and the abort releases it - and must cancel exactly.
+    fn expectMetricsUntouched(self: *Harness, before: *const RuntimeMetrics, attempt: usize) void {
+        const after = self.engine.pending_roc_metrics;
+        inline for (std.meta.fields(RuntimeMetrics)) |field| {
+            const balanced = comptime std.mem.eql(u8, field.name, "closure_retains") or std.mem.eql(u8, field.name, "closure_releases");
+            if (!balanced and @field(after, field.name) != @field(before.*, field.name)) {
+                fail("a probe at attempt {d} moved {s} from {d} to {d}", .{ attempt, field.name, @field(before.*, field.name), @field(after, field.name) });
+            }
+        }
+        const retains = after.closure_retains - before.closure_retains;
+        const releases = after.closure_releases - before.closure_releases;
+        if (retains != releases) fail("a probe at attempt {d} left {d} retains against {d} releases", .{ attempt, retains, releases });
+    }
+
+    /// Copies the active graph's shape so a probe can be held to leaving it
+    /// alone: the record behind every id, its rank, its dependents, and its
+    /// input-slot table.
+    fn snapshotGraph(self: *Harness, out: *GraphSnapshot) void {
+        const nodes = self.engine.active_signal_graph.items;
+        out.len = nodes.len;
+        for (nodes, 0..) |*node, index| {
+            out.records[index] = node.record;
+            out.ranks[index] = node.rank;
+            out.input_slots[index] = node.input_slots;
+            const dependents = node.dependents.slice();
+            out.dependent_len[index] = dependents.len;
+            @memcpy(out.dependents[index][0..dependents.len], dependents);
+        }
+    }
+
+    /// Asserts the active graph is exactly as `before` recorded it.
+    fn expectGraphUntouched(self: *Harness, before: *const GraphSnapshot, attempt: usize) void {
+        const nodes = self.engine.active_signal_graph.items;
+        if (nodes.len != before.len) fail("a probe at attempt {d} changed the graph from {d} to {d} nodes", .{ attempt, before.len, nodes.len });
+        for (nodes, 0..) |*node, index| {
+            if (node.record != before.records[index] or node.rank != before.ranks[index]) {
+                fail("a probe at attempt {d} rebound graph node {d}", .{ attempt, index });
+            }
+            if (!std.meta.eql(node.input_slots, before.input_slots[index])) {
+                fail("a probe at attempt {d} changed the input slots of graph node {d}", .{ attempt, index });
+            }
+            const dependents = node.dependents.slice();
+            if (!std.mem.eql(u64, dependents, before.dependents[index][0..before.dependent_len[index]])) {
+                fail("a probe at attempt {d} changed the dependents of graph node {d}", .{ attempt, index });
+            }
+        }
     }
 
     /// Asserts an abandoned transaction left the engine as it found it.
@@ -1202,7 +1497,13 @@ fn generate(reader: *FuzzReader, arena: std.mem.Allocator) !Program {
     const batch_count = reader.intRangeAtMost(usize, 1, max_batches);
     const batches = try arena.alloc(Batch, batch_count);
     for (batches) |*entry| entry.* = try generateBatch(reader, arena, source_count);
-    return .{ .nodes = nodes, .source_count = source_count, .initial = initial, .batches = batches };
+
+    // Decoded last, so inputs that predate the fault axis keep their program.
+    const fault = FaultPlan{
+        .sweep = reader.boolean(),
+        .attempt = 1 + reader.intRangeLessThan(usize, 0, max_sampled_fault_attempt),
+    };
+    return .{ .nodes = nodes, .source_count = source_count, .initial = initial, .batches = batches, .fault = fault };
 }
 
 /// Draws one batch of simultaneously dirty sources.
@@ -1255,6 +1556,11 @@ fn printProgram(program: Program) void {
         const after = evaluate(program, sources);
         const expected = expectationsFor(program, entry, before, after);
         std.debug.print(" -> calls={d} prunes={d}\n", .{ expected.derived_calls, expected.prunes });
+    }
+    if (program.fault.sweep) {
+        std.debug.print("  faults: sweep every attempt\n", .{});
+    } else {
+        std.debug.print("  faults: attempt {d}\n", .{program.fault.attempt});
     }
 }
 
@@ -1337,6 +1643,7 @@ pub fn zig_fuzz_test_inner(buf: [*]u8, len: isize, debug: bool) void {
             forward.engine.pending_roc_metrics.derived_calls_into_roc,
             forward.engine.pending_roc_metrics.propagation_prunes,
         });
+        std.debug.print("fault probes: {d}, refused: {d}\n", .{ prepared.probes, prepared.refusals });
     }
 }
 
