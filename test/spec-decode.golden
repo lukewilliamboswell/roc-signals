@@ -2617,6 +2617,213 @@ test "Recursive Ui.switch builds only the selected case"
   9: expect_text locator=role_name role="region" name="Recursive switch" expected="Recursive switchlevel 4level 3level 2level 1leafGrowReset"
   10: click locator=role_name role="button" name="Reset"
   11: expect_text locator=role_name role="region" name="Recursive switch" expected="Recursive switchlevel 1leafGrowReset"
+== examples-web/_fixtures/rows-direct-delta-locality/specs/append_one_10k.scm
+test "append one row to 10,000 rows"
+  10: click locator=test_id test_id="create-10k"
+  11: expect_visible locator=test_id test_id="row-10000"
+  12: mark_metrics locator=none
+  13: click locator=test_id test_id="append-one"
+  14: expect_visible locator=test_id test_id="row-10001"
+  15: expect_text locator=test_id test_id="count" expected="Rows: 10001"
+  16: expect_metric_delta locator=none expected="rows_created" delta=1
+  17: expect_metric_delta locator=none expected="rows_removed" delta=0
+  18: expect_metric_delta locator=none expected="rows_reused" delta=10000
+  19: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=1
+  20: expect_metric_delta locator=none expected="rows_index_keys_hashed" delta=0
+  21: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=1
+  22: expect_metric_delta_at_most locator=none expected="rows_order_links_touched" delta=2
+  23: expect_metric_delta locator=none expected="each_key_hashes" delta=0
+  24: expect_metric_delta_at_most locator=none expected="host_allocs_this_event" delta=768
+== examples-web/_fixtures/rows-direct-delta-locality/specs/append_one_1k.scm
+test "append one row to 1,000 rows"
+  10: click locator=test_id test_id="create-1k"
+  11: expect_visible locator=test_id test_id="row-1000"
+  12: mark_metrics locator=none
+  13: click locator=test_id test_id="append-one"
+  14: expect_visible locator=test_id test_id="row-1001"
+  15: expect_text locator=test_id test_id="count" expected="Rows: 1001"
+  16: expect_metric_delta locator=none expected="rows_created" delta=1
+  17: expect_metric_delta locator=none expected="rows_removed" delta=0
+  18: expect_metric_delta locator=none expected="rows_reused" delta=1000
+  19: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=1
+  20: expect_metric_delta locator=none expected="rows_index_keys_hashed" delta=0
+  21: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=1
+  22: expect_metric_delta_at_most locator=none expected="rows_order_links_touched" delta=2
+  23: expect_metric_delta locator=none expected="each_key_hashes" delta=0
+  24: expect_metric_delta_at_most locator=none expected="host_allocs_this_event" delta=768
+== examples-web/_fixtures/rows-direct-delta-locality/specs/mixed_batch_1k.scm
+test "mixed batch touches only its edited rows"
+  10: click locator=test_id test_id="create-1k"
+  11: expect_visible locator=test_id test_id="row-1000"
+  12: mark_metrics locator=none
+  13: click locator=test_id test_id="mixed-batch"
+  14: expect_visible locator=test_id test_id="row-1001"
+  15: expect_absent locator=test_id test_id="row-2"
+  16: expect_text locator=test_id test_id="row-3" expected="Row 3 !"
+  17: expect_text locator=test_id test_id="count" expected="Rows: 1000"
+  18: expect_metric_delta locator=none expected="rows_created" delta=1
+  19: expect_metric_delta locator=none expected="rows_removed" delta=1
+  20: expect_metric_delta locator=none expected="rows_reused" delta=999
+  21: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=2
+  22: expect_metric_delta locator=none expected="rows_index_keys_hashed" delta=0
+  23: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=3
+  24: expect_metric_delta locator=none expected="each_key_hashes" delta=0
+  25: expect_metric_delta_at_most locator=none expected="host_allocs_this_event" delta=1536
+== examples-web/_fixtures/rows-direct-delta-locality/specs/move_one_10k.scm
+test "move one row within 10,000 rows"
+  10: click locator=test_id test_id="create-10k"
+  11: expect_visible locator=test_id test_id="row-10000"
+  12: mark_metrics locator=none
+  13: click locator=test_id test_id="move-first-to-end"
+  14: expect_visible locator=test_id test_id="row-1"
+  15: expect_text locator=test_id test_id="count" expected="Rows: 10000"
+  16: expect_metric_delta locator=none expected="rows_created" delta=0
+  17: expect_metric_delta locator=none expected="rows_removed" delta=0
+  18: expect_metric_delta locator=none expected="rows_reused" delta=10000
+  19: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=0
+  20: expect_metric_delta locator=none expected="rows_index_keys_hashed" delta=0
+  21: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=0
+  22: expect_metric_delta locator=none expected="rows_render_roots_moved" delta=1
+  23: expect_metric_delta locator=none expected="each_key_hashes" delta=0
+  24: expect_metric_delta_at_most locator=none expected="host_allocs_this_event" delta=768
+== examples-web/_fixtures/rows-direct-delta-locality/specs/move_one_1k.scm
+test "move one row within 1,000 rows"
+  10: click locator=test_id test_id="create-1k"
+  11: expect_visible locator=test_id test_id="row-1000"
+  12: mark_metrics locator=none
+  13: click locator=test_id test_id="move-first-to-end"
+  14: expect_visible locator=test_id test_id="row-1"
+  15: expect_text locator=test_id test_id="count" expected="Rows: 1000"
+  16: expect_metric_delta locator=none expected="rows_created" delta=0
+  17: expect_metric_delta locator=none expected="rows_removed" delta=0
+  18: expect_metric_delta locator=none expected="rows_reused" delta=1000
+  19: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=0
+  20: expect_metric_delta locator=none expected="rows_index_keys_hashed" delta=0
+  21: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=0
+  22: expect_metric_delta locator=none expected="rows_render_roots_moved" delta=1
+  23: expect_metric_delta locator=none expected="each_key_hashes" delta=0
+  24: expect_metric_delta_at_most locator=none expected="host_allocs_this_event" delta=768
+== examples-web/_fixtures/rows-direct-delta-locality/specs/remove_one_10k.scm
+test "remove one row from 10,000 rows"
+  10: click locator=test_id test_id="create-10k"
+  11: expect_visible locator=test_id test_id="row-10000"
+  12: mark_metrics locator=none
+  13: click locator=test_id test_id="remove-middle"
+  14: expect_absent locator=test_id test_id="row-5001"
+  15: expect_text locator=test_id test_id="count" expected="Rows: 9999"
+  16: expect_metric_delta locator=none expected="rows_created" delta=0
+  17: expect_metric_delta locator=none expected="rows_removed" delta=1
+  18: expect_metric_delta locator=none expected="rows_reused" delta=9999
+  19: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=0
+  20: expect_metric_delta locator=none expected="rows_index_keys_hashed" delta=0
+  21: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=2
+  22: expect_metric_delta locator=none expected="each_key_hashes" delta=0
+  23: expect_metric_delta_at_most locator=none expected="host_allocs_this_event" delta=768
+== examples-web/_fixtures/rows-direct-delta-locality/specs/remove_one_1k.scm
+test "remove one row from 1,000 rows"
+  10: click locator=test_id test_id="create-1k"
+  11: expect_visible locator=test_id test_id="row-1000"
+  12: mark_metrics locator=none
+  13: click locator=test_id test_id="remove-middle"
+  14: expect_absent locator=test_id test_id="row-501"
+  15: expect_text locator=test_id test_id="count" expected="Rows: 999"
+  16: expect_metric_delta locator=none expected="rows_created" delta=0
+  17: expect_metric_delta locator=none expected="rows_removed" delta=1
+  18: expect_metric_delta locator=none expected="rows_reused" delta=999
+  19: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=0
+  20: expect_metric_delta locator=none expected="rows_index_keys_hashed" delta=0
+  21: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=2
+  22: expect_metric_delta locator=none expected="each_key_hashes" delta=0
+  23: expect_metric_delta_at_most locator=none expected="host_allocs_this_event" delta=768
+== examples-web/_fixtures/rows-direct-delta-locality/specs/remove_reinsert_churn_1k.scm
+test "remove then reinsert the same key across events stays bounded"
+  10: click locator=test_id test_id="create-1k"
+  11: expect_visible locator=test_id test_id="row-1000"
+  12: click locator=test_id test_id="remove-middle"
+  13: expect_absent locator=test_id test_id="row-501"
+  14: mark_metrics locator=none
+  15: click locator=test_id test_id="reinsert-removed"
+  16: expect_visible locator=test_id test_id="row-501"
+  17: expect_text locator=test_id test_id="count" expected="Rows: 1000"
+  18: expect_metric_delta locator=none expected="rows_created" delta=1
+  19: expect_metric_delta locator=none expected="rows_removed" delta=0
+  20: expect_metric_delta locator=none expected="rows_reused" delta=999
+  21: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=1
+  22: expect_metric_delta locator=none expected="rows_index_keys_hashed" delta=0
+  23: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=1
+  24: expect_metric_delta locator=none expected="each_key_hashes" delta=0
+  25: expect_metric_delta_at_most locator=none expected="host_allocs_this_event" delta=768
+  27: mark_metrics locator=none
+  28: click locator=test_id test_id="remove-middle"
+  29: expect_absent locator=test_id test_id="row-502"
+  30: click locator=test_id test_id="reinsert-removed"
+  31: expect_visible locator=test_id test_id="row-502"
+  32: click locator=test_id test_id="remove-middle"
+  33: click locator=test_id test_id="reinsert-removed"
+  34: expect_text locator=test_id test_id="count" expected="Rows: 1000"
+  35: expect_metric_delta locator=none expected="rows_created" delta=2
+  36: expect_metric_delta locator=none expected="rows_removed" delta=2
+  37: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=2
+  38: expect_metric_delta locator=none expected="rows_index_keys_hashed" delta=0
+  39: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=6
+  40: expect_metric_delta locator=none expected="each_key_hashes" delta=0
+== examples-web/_fixtures/rows-direct-delta-locality/specs/rollback_then_direct_1k.scm
+test "rollback reconciles as a snapshot and the next delta is local again"
+  10: click locator=test_id test_id="create-1k"
+  11: expect_visible locator=test_id test_id="row-1000"
+  12: click locator=test_id test_id="append-one"
+  13: expect_visible locator=test_id test_id="row-1001"
+  15: mark_metrics locator=none
+  16: click locator=test_id test_id="roll-back"
+  17: expect_absent locator=test_id test_id="row-1001"
+  18: expect_text locator=test_id test_id="count" expected="Rows: 1000"
+  19: expect_metric_delta locator=none expected="rows_created" delta=0
+  20: expect_metric_delta locator=none expected="rows_removed" delta=1
+  21: expect_metric_delta locator=none expected="rows_reused" delta=1000
+  22: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=0
+  23: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=0
+  24: expect_metric_delta locator=none expected="each_key_hashes" delta=1000
+  26: mark_metrics locator=none
+  27: click locator=test_id test_id="remove-middle"
+  28: expect_absent locator=test_id test_id="row-501"
+  29: expect_text locator=test_id test_id="count" expected="Rows: 999"
+  30: expect_metric_delta locator=none expected="rows_created" delta=0
+  31: expect_metric_delta locator=none expected="rows_removed" delta=1
+  32: expect_metric_delta locator=none expected="rows_reused" delta=999
+  33: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=0
+  34: expect_metric_delta locator=none expected="rows_index_keys_hashed" delta=0
+  35: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=2
+  36: expect_metric_delta locator=none expected="each_key_hashes" delta=0
+  37: expect_metric_delta_at_most locator=none expected="host_allocs_this_event" delta=768
+== examples-web/_fixtures/rows-direct-delta-locality/specs/stale_sibling_then_direct_1k.scm
+test "stale sibling reconciles as a snapshot and the next delta is local again"
+  10: click locator=test_id test_id="create-1k"
+  11: expect_visible locator=test_id test_id="row-1000"
+  12: click locator=test_id test_id="append-one"
+  13: expect_visible locator=test_id test_id="row-1001"
+  16: mark_metrics locator=none
+  17: click locator=test_id test_id="stale-sibling-append"
+  18: expect_visible locator=test_id test_id="row-1002"
+  19: expect_absent locator=test_id test_id="row-1001"
+  20: expect_text locator=test_id test_id="count" expected="Rows: 1001"
+  21: expect_metric_delta locator=none expected="rows_created" delta=1
+  22: expect_metric_delta locator=none expected="rows_removed" delta=1
+  23: expect_metric_delta locator=none expected="rows_reused" delta=1000
+  24: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=0
+  25: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=0
+  26: expect_metric_delta locator=none expected="each_key_hashes" delta=1001
+  28: mark_metrics locator=none
+  29: click locator=test_id test_id="append-one"
+  30: expect_visible locator=test_id test_id="row-1003"
+  31: expect_text locator=test_id test_id="count" expected="Rows: 1002"
+  32: expect_metric_delta locator=none expected="rows_created" delta=1
+  33: expect_metric_delta locator=none expected="rows_removed" delta=0
+  34: expect_metric_delta locator=none expected="rows_reused" delta=1001
+  35: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=1
+  36: expect_metric_delta locator=none expected="rows_index_keys_hashed" delta=0
+  37: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=1
+  38: expect_metric_delta locator=none expected="each_key_hashes" delta=0
+  39: expect_metric_delta_at_most locator=none expected="host_allocs_this_event" delta=768
 == examples-web/_fixtures/select-control/specs/main.scm
 test "Select control"
   5: expect_visible locator=role_name role="heading" name="Select Control"

@@ -449,6 +449,9 @@ pub fn runtimeMetricValue(metrics: RuntimeMetrics, name: []const u8) ?i64 {
     if (std.mem.eql(u8, name, "selector_memberships_released")) return u64MetricAsI64(metrics.selector_memberships_released);
     if (std.mem.eql(u8, name, "selector_registry_visits")) return u64MetricAsI64(metrics.selector_registry_visits);
     if (std.mem.eql(u8, name, "rows_created")) return u64MetricAsI64(metrics.rows_created);
+    if (std.mem.eql(u8, name, "rows_candidate_rows_visited")) return u64MetricAsI64(metrics.rows_candidate_rows_visited);
+    if (std.mem.eql(u8, name, "rows_index_keys_hashed")) return u64MetricAsI64(metrics.rows_index_keys_hashed);
+    if (std.mem.eql(u8, name, "rows_membership_entries_rewritten")) return u64MetricAsI64(metrics.rows_membership_entries_rewritten);
     if (std.mem.eql(u8, name, "rows_order_links_touched")) return u64MetricAsI64(metrics.rows_order_links_touched);
     if (std.mem.eql(u8, name, "rows_removed")) return u64MetricAsI64(metrics.rows_removed);
     if (std.mem.eql(u8, name, "rows_render_roots_moved")) return u64MetricAsI64(metrics.rows_render_roots_moved);

@@ -50,6 +50,15 @@ pub const RuntimeMetrics = struct {
     retained_alloc_delta: i64,
     reset_dom: u64,
     rows_created: u64,
+    /// Candidate rows a direct-parent `Rows` delta visited while preparing or
+    /// publishing its site index. Bounded by the edit batch, not the site.
+    rows_candidate_rows_visited: u64,
+    /// Committed row keys hashed again to maintain a site's key index. A
+    /// direct-parent delta reuses the hashes the generation already carries.
+    rows_index_keys_hashed: u64,
+    /// Site-index membership entries cleared or written by a direct-parent
+    /// delta. Each inserted or removed row costs a bounded number of entries.
+    rows_membership_entries_rewritten: u64,
     rows_order_links_touched: u64,
     rows_removed: u64,
     rows_render_roots_moved: u64,

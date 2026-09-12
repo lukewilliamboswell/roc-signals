@@ -1458,7 +1458,24 @@ pub fn Engine(comptime Ctx: type) type {
             removed_handles: []row_handles.RowHandleId = &.{},
             retired_generation: ?*each_generation.Generation = null,
             direct_delta: bool = false,
+            direct_index: DirectRowIndex = .{},
             phase: CommitPhase = .prepared,
+
+            /// Edit-bounded site-index bookkeeping for a matching-parent
+            /// sparse delta. Survivors, moves, and item updates never enter
+            /// the site's key index or membership table: only rows the
+            /// transition created or removed do, and those are already
+            /// enumerated by the transition's own journals. Counts are
+            /// derived arithmetically from the transition, never by walking
+            /// the candidate.
+            const DirectRowIndex = struct {
+                /// Scopes the transition created, in creation-journal order.
+                created_scope_ids: []ids.ScopeId = &.{},
+                /// Final row count of the site after publication.
+                candidate_len: usize = 0,
+                /// Surviving rows whose item changed in this delta.
+                updated_count: usize = 0,
+            };
 
             fn adaptCandidate(candidate: rows_transition.CandidateRow) CollectionError!CandidateRow {
                 const row_id = candidate.row_id orelse return error.InvalidDescriptor;
@@ -1493,6 +1510,7 @@ pub fn Engine(comptime Ctx: type) type {
                 parent_owner: rows_site_store.OwnerToken,
                 inputs: *PreparedEachInputs,
                 scope_claims: *scope_runtime.PreparedScopeClaims,
+                direct_index: *DirectRowIndex,
             ) CollectionError!each_runtime.PreparedRowSync {
                 const delta = if (inputs.delta) |*value| value else return error.InvalidDescriptor;
                 if (!delta.complete) return error.InvalidDescriptor;
@@ -1572,61 +1590,68 @@ pub fn Engine(comptime Ctx: type) type {
                 const transition = &inputs.rows_transition.?;
                 if (transition.candidateLen() != inputs.generation.item_count) return error.InvalidDescriptor;
 
-                const binding_edits = std.math.add(usize, transition.candidateLen(), transition.removedRows().len) catch return error.ResourceLimit;
+                // Work here is bounded by the edit batch: created and removed
+                // rows come from the transition's journals and changed
+                // survivors from its touched set. The untouched remainder of
+                // the site is never visited, so nothing below scales with
+                // `candidateLen()`.
+                const created_rows = transition.createdRows();
+                const removed_rows = transition.removedRows();
+                const binding_edits = std.math.add(usize, delta.ops.items.len, removed_rows.len) catch return error.ResourceLimit;
                 inputs.candidate_bindings.reserve(binding_edits) catch |err| return switch (err) {
                     error.OutOfMemory => error.OutOfMemory,
                     error.ResourceLimit => error.ResourceLimit,
                 };
 
-                const next_scope_ids = allocator.alloc(ids.ScopeId, transition.candidateLen()) catch return error.OutOfMemory;
-                errdefer allocator.free(next_scope_ids);
-                const key_hashes = allocator.alloc(u64, transition.candidateLen()) catch return error.OutOfMemory;
-                errdefer allocator.free(key_hashes);
-                const item_changed = allocator.alloc(bool, transition.candidateLen()) catch return error.OutOfMemory;
-                errdefer allocator.free(item_changed);
-                const scope_created = allocator.alloc(bool, transition.candidateLen()) catch return error.OutOfMemory;
-                errdefer allocator.free(scope_created);
-                const removed_scope_ids = allocator.alloc(ids.ScopeId, transition.removedRows().len) catch return error.OutOfMemory;
+                const created_scope_ids = allocator.alloc(ids.ScopeId, created_rows.len) catch return error.OutOfMemory;
+                errdefer allocator.free(created_scope_ids);
+                const removed_scope_ids = allocator.alloc(ids.ScopeId, removed_rows.len) catch return error.OutOfMemory;
                 errdefer allocator.free(removed_scope_ids);
 
                 var highest_scope_id = ids.root_scope;
-                var created_count: usize = 0;
-                var candidate = transition.iterateCandidate();
-                var index: usize = 0;
-                while (candidate.next()) |row| : (index += 1) {
-                    if (index >= next_scope_ids.len or row.metadata.row_handle == 0 or row.metadata.item_slot == 0) return error.InvalidDescriptor;
-                    const scope_id = ids.ScopeId.fromRaw(row.metadata.scope_id);
-                    next_scope_ids[index] = scope_id;
-                    key_hashes[index] = std.hash.Wyhash.hash(0, row.key);
-                    item_changed[index] = row.item_changed;
-                    scope_created[index] = row.created;
-                    if (row.created) created_count += 1;
-                    if (scope_id.raw() > highest_scope_id.raw()) highest_scope_id = scope_id;
+                for (created_rows, created_scope_ids) |row, *scope_id| {
+                    if (row.metadata.row_handle == 0 or row.metadata.item_slot == 0) return error.InvalidDescriptor;
+                    scope_id.* = ids.ScopeId.fromRaw(row.metadata.scope_id);
+                    if (scope_id.raw() > highest_scope_id.raw()) highest_scope_id = scope_id.*;
                 }
-                if (index != next_scope_ids.len) return error.InvalidDescriptor;
+                var updated_count: usize = 0;
+                var changed = transition.iterateChangedCandidates();
+                while (changed.next()) |row| {
+                    if (row.metadata.row_handle == 0 or row.metadata.item_slot == 0) return error.InvalidDescriptor;
+                    updated_count += 1;
+                }
+                engine.pending_roc_metrics.bump(.rows_candidate_rows_visited, @intCast(created_rows.len + updated_count));
 
-                for (transition.removedRows(), removed_scope_ids) |row_id, *scope_id| {
+                for (removed_rows, removed_scope_ids) |row_id, *scope_id| {
                     const row = rows_store.getRowConst(rows_site_id, row_id) catch return error.InvalidDescriptor;
                     if (row.metadata.row_handle == 0) return error.InvalidDescriptor;
                     scope_id.* = ids.ScopeId.fromRaw(row.metadata.scope_id);
                     inputs.candidate_bindings.removeAssumeCapacity(row_handles.RowHandleId.fromRaw(row.metadata.row_handle)) catch return error.InvalidDescriptor;
                 }
 
+                // The site index grows by at most the created rows; removals
+                // swap-remove in place. Membership must cover the highest
+                // created scope, which is the only fresh slot it can name.
                 const legacy_site = &engine.each_row_sites.items[site_index];
-                legacy_site.scope_ids.ensureTotalCapacity(allocator, next_scope_ids.len) catch return error.OutOfMemory;
-                legacy_site.hash_links.ensureTotalCapacity(allocator, next_scope_ids.len) catch return error.OutOfMemory;
-                legacy_site.hash_heads.ensureTotalCapacity(allocator, std.math.cast(u32, next_scope_ids.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                legacy_site.scope_ids.ensureUnusedCapacity(allocator, created_rows.len) catch return error.OutOfMemory;
+                legacy_site.hash_links.ensureUnusedCapacity(allocator, created_rows.len) catch return error.OutOfMemory;
+                legacy_site.hash_heads.ensureUnusedCapacity(allocator, std.math.cast(u32, created_rows.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 engine.each_row_memberships_by_scope_id.ensureTotalCapacity(allocator, std.math.add(usize, highest_scope_id.index(), 1) catch return error.ResourceLimit) catch return error.OutOfMemory;
 
+                direct_index.* = .{
+                    .created_scope_ids = created_scope_ids,
+                    .candidate_len = transition.candidateLen(),
+                    .updated_count = updated_count,
+                };
                 return .{
                     .allocator = allocator,
                     .site_index = site_index,
-                    .next_scope_ids = next_scope_ids,
-                    .key_hashes = key_hashes,
-                    .row_items_changed = item_changed,
-                    .scope_created = scope_created,
+                    .next_scope_ids = &.{},
+                    .key_hashes = &.{},
+                    .row_items_changed = &.{},
+                    .scope_created = &.{},
                     .removed_scope_ids = removed_scope_ids,
-                    .created_count = created_count,
+                    .created_count = created_rows.len,
                     .highest_scope_id = highest_scope_id,
                 };
             }
@@ -1650,6 +1675,8 @@ pub fn Engine(comptime Ctx: type) type {
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
                 plan.* = undefined;
+                plan.direct_index = .{};
+                errdefer allocator.free(plan.direct_index.created_scope_ids);
                 plan.owned_scope_claims = if (shared_scope_claims == null) scope_runtime.PreparedScopeClaims.init(allocator, engine.scopes.items, ids.Generation.fromRaw(engine.identity_reuse_barrier)) else null;
                 plan.scope_claims = shared_scope_claims orelse &plan.owned_scope_claims.?;
                 errdefer if (plan.owned_scope_claims != null) {
@@ -1669,7 +1696,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const site_index = engine.activeEachRowSiteIndex(site.scope_id, site.ordinal) orelse @panic("active each descriptor had no row site");
                 const direct_delta = inputs.delta != null and !inputs.snapshot.complete;
                 var rows = if (direct_delta)
-                    try prepareDirectRows(engine, ctx, allocator, site, site_index, rows_store, rows_site_id, parent_owner, &inputs, plan.scope_claims)
+                    try prepareDirectRows(engine, ctx, allocator, site, site_index, rows_store, rows_site_id, parent_owner, &inputs, plan.scope_claims, &plan.direct_index)
                 else blk: {
                     const binding_edits = std.math.add(usize, inputs.generation.item_count, engine.each_row_sites.items[site_index].scope_ids.items.len) catch return error.ResourceLimit;
                     inputs.candidate_bindings.reserve(binding_edits) catch |err| return switch (err) {
@@ -1778,42 +1805,49 @@ pub fn Engine(comptime Ctx: type) type {
                 return result;
             }
 
+            /// Publishes a matching-parent sparse delta into the site's key
+            /// index and membership table by touching only the rows the
+            /// transition removed or created. Removed rows swap-remove out
+            /// of the dense site table (one moved survivor per removal), and
+            /// created rows append under the key hash their scope already
+            /// carries, so no surviving key is rehashed and no untouched
+            /// membership entry is rewritten. Committed row order lives in
+            /// the Rows store, not in this table. Capacity was preflighted
+            /// by `prepareDirectRows`; nothing here allocates.
             fn commitDirectRows(self: *@This()) HostKeyedRowDiffResult {
-                const site = &self.engine.each_row_sites.items[self.rows.site_index];
-                while (self.engine.each_row_memberships_by_scope_id.items.len <= self.rows.highest_scope_id.index()) self.engine.each_row_memberships_by_scope_id.appendAssumeCapacity(null);
-                for (site.scope_ids.items) |scope_id| self.engine.each_row_memberships_by_scope_id.items[scope_id.index()] = null;
-                site.scope_ids.clearRetainingCapacity();
-                site.scope_ids.appendSliceAssumeCapacity(self.rows.next_scope_ids);
-                site.hash_links.items.len = self.rows.next_scope_ids.len;
-                @memset(site.hash_links.items, each_runtime.missing_row_index);
-                site.hash_heads.clearRetainingCapacity();
-                for (self.rows.next_scope_ids, self.rows.key_hashes, 0..) |scope_id, key_hash, row_index| {
-                    const entry = site.hash_heads.getOrPutAssumeCapacity(key_hash);
-                    if (entry.found_existing) site.hash_links.items[row_index] = entry.value_ptr.*;
-                    entry.value_ptr.* = row_index;
-                    self.engine.each_row_memberships_by_scope_id.items[scope_id.index()] = .{ .site_index = self.rows.site_index, .row_index = row_index };
+                const engine = self.engine;
+                const site_index = self.rows.site_index;
+                var row_keys = EachRowScopeKeyLookup{ .engine = engine };
+                var entries_rewritten: u64 = 0;
+                for (self.rows.removed_scope_ids) |scope_id| {
+                    // Swap-removal rewrites the last row's membership unless
+                    // the removed row already was the last one.
+                    const membership = engine.each_row_memberships_by_scope_id.items[scope_id.index()] orelse @panic("removed each row lacked site membership");
+                    const moved_survivor: u64 = if (membership.row_index + 1 != engine.each_row_sites.items[site_index].scope_ids.items.len) 1 else 0;
+                    each_runtime.removeRowFromSiteIndex(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, scope_id, scope_runtime.eachRowKeyHash(engine.scopes.items, scope_id), &row_keys);
+                    entries_rewritten += 1 + moved_survivor;
                 }
+                for (self.direct_index.created_scope_ids) |scope_id| {
+                    each_runtime.appendRowToSiteIndex(self.allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, scope_id, scope_runtime.eachRowKeyHash(engine.scopes.items, scope_id));
+                    entries_rewritten += 1;
+                }
+                engine.pending_roc_metrics.bump(.rows_membership_entries_rewritten, entries_rewritten);
 
-                var unchanged_count: u64 = 0;
-                var updated_count: u64 = 0;
-                for (self.rows.scope_created, self.rows.row_items_changed) |created, changed| {
-                    if (created) continue;
-                    if (changed) updated_count += 1 else unchanged_count += 1;
-                }
+                const created_count = self.direct_index.created_scope_ids.len;
+                const candidate_len = self.direct_index.candidate_len;
+                const updated_count = self.direct_index.updated_count;
+                if (candidate_len < created_count + updated_count) @panic("direct Rows delta counted more edited rows than the site holds");
                 const result = HostKeyedRowDiffResult{
-                    .scope_ids = self.rows.next_scope_ids,
-                    .row_items_changed = self.rows.row_items_changed,
-                    .scope_created = self.rows.scope_created,
+                    .scope_ids = &.{},
+                    .row_items_changed = &.{},
+                    .scope_created = &.{},
                     .removed_scope_ids = self.rows.removed_scope_ids,
-                    .rows_reused = self.rows.next_scope_ids.len - self.rows.created_count,
-                    .rows_created = @intCast(self.rows.created_count),
+                    .rows_reused = candidate_len - created_count,
+                    .rows_created = @intCast(created_count),
                     .rows_removed = @intCast(self.rows.removed_scope_ids.len),
-                    .row_items_unchanged = unchanged_count,
-                    .row_items_updated = updated_count,
+                    .row_items_unchanged = @intCast(candidate_len - created_count - updated_count),
+                    .row_items_updated = @intCast(updated_count),
                 };
-                self.rows.next_scope_ids = &.{};
-                self.rows.row_items_changed = &.{};
-                self.rows.scope_created = &.{};
                 self.rows.removed_scope_ids = &.{};
                 return result;
             }
@@ -1830,6 +1864,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                 }
                 self.allocator.free(self.removed_handles);
+                self.allocator.free(self.direct_index.created_scope_ids);
                 if (self.owned_scope_claims != null) {
                     self.scope_claims.abort();
                     self.scope_claims.deinit();
@@ -7649,7 +7684,8 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepareEvaluated(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: HostNodeEachDesc, prepared_rows: *PreparedActiveEachRows) CollectionError!*@This() {
                 const rows = &prepared_rows.rows;
                 const inputs = &prepared_rows.inputs;
-                if (inputs.generation.item_count != rows.next_scope_ids.len) return error.ResourceLimit;
+                const row_count = if (prepared_rows.direct_delta) prepared_rows.candidateRows().len() else rows.next_scope_ids.len;
+                if (inputs.generation.item_count != row_count) return error.ResourceLimit;
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
@@ -13943,9 +13979,20 @@ pub fn Engine(comptime Ctx: type) type {
             const site_index = self.activeEachRowSiteIndex(parent_scope_id, site_ordinal) orelse {
                 return allocator.alloc(ids.ScopeId, 0) catch return scope_tree.Error.OutOfMemory;
             };
-            const source = self.each_row_sites.items[site_index].scope_ids.items;
-            const result = allocator.alloc(ids.ScopeId, source.len) catch return scope_tree.Error.OutOfMemory;
-            @memcpy(result, source);
+            const row_count = self.each_row_sites.items[site_index].scope_ids.items.len;
+            const result = allocator.alloc(ids.ScopeId, row_count) catch return scope_tree.Error.OutOfMemory;
+            errdefer allocator.free(result);
+            // The dense site table is a membership index; committed row order
+            // is owned by the Rows store, so report rows in that order.
+            const rows_site_id = self.rows_site_ids.get(.{ .parent_scope_id = parent_scope_id, .site_ordinal = site_ordinal }) orelse return scope_tree.Error.UnknownScope;
+            const store = if (self.rows_store) |*store| store else return scope_tree.Error.UnknownScope;
+            var rows = store.iterate(rows_site_id) catch return scope_tree.Error.UnknownScope;
+            var index: usize = 0;
+            while (rows.next()) |entry| : (index += 1) {
+                if (index >= result.len) return scope_tree.Error.UnknownScope;
+                result[index] = ids.ScopeId.fromRaw(entry.row.metadata.scope_id);
+            }
+            if (index != result.len) return scope_tree.Error.UnknownScope;
             return result;
         }
 
@@ -14025,16 +14072,18 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         /// Orders two rows of one each site by their committed row order.
+        /// The Rows store's order index answers each rank in logarithmic
+        /// expected time; the dense site index is a key/membership table
+        /// whose slot order is not row order after a sparse delta.
         fn compareEachRowScopes(self: *Self, parent_scope_id: u64, site_ordinal: ids.SiteOrdinal, row_a: u64, row_b: u64) CollectionError!SiteOrder {
-            const site_index = self.each_row_site_indexes.get(.{ .parent_scope_id = ids.ScopeId.fromRaw(parent_scope_id), .site_ordinal = site_ordinal }) orelse return error.InvalidScope;
-            var rank_a: ?usize = null;
-            var rank_b: ?usize = null;
-            for (self.each_row_sites.items[site_index].scope_ids.items, 0..) |scope_id, rank| {
-                if (scope_id.raw() == row_a) rank_a = rank;
-                if (scope_id.raw() == row_b) rank_b = rank;
-            }
-            const a = rank_a orelse return error.InvalidScope;
-            const b = rank_b orelse return error.InvalidScope;
+            const rows_site_id = self.rows_site_ids.get(.{ .parent_scope_id = ids.ScopeId.fromRaw(parent_scope_id), .site_ordinal = site_ordinal }) orelse return error.InvalidScope;
+            const store = if (self.rows_store) |*store| store else return error.InvalidScope;
+            const location_a = store.findScope(row_a) orelse return error.InvalidScope;
+            const location_b = store.findScope(row_b) orelse return error.InvalidScope;
+            if (location_a.site_id != rows_site_id or location_b.site_id != rows_site_id) return error.InvalidScope;
+            const render_order = (store.getSiteConst(rows_site_id) catch return error.InvalidScope).render_order;
+            const a = render_order.rank(location_a.row_id) catch return error.InvalidScope;
+            const b = render_order.rank(location_b.row_id) catch return error.InvalidScope;
             return if (a < b) .before else .after;
         }
 
