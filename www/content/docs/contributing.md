@@ -738,6 +738,7 @@ that has to be remembered or retyped:
 python3 scripts/fuzz.py list
 python3 scripts/fuzz.py run propagation --time 10m
 python3 scripts/fuzz.py run all --time 5m -j 4
+python3 scripts/fuzz.py campaign --time 2h -j 2
 python3 scripts/fuzz.py distill structural
 python3 scripts/fuzz.py status
 ```
@@ -753,6 +754,12 @@ previous session's queue rather than importing new seeds, and `clean` discards b
 Watch `stability`, which should sit near 100%. A lower number means the target is
 not deterministic for a fixed input, which breaks the reference-model comparison
 and must be fixed before any crash it reports can be trusted.
+
+`campaign` is `run` with one total budget split by weight rather than the same
+time per target: the subsystem targets saturate their queues in minutes, so
+each gets a two-minute floor, and the rest goes to `structural`, the one target
+that drives the whole engine. The weights are the `CAMPAIGN_WEIGHTS` table in
+`scripts/fuzz.py`; the nightly `fuzz.yml` workflow runs a campaign.
 
 `distill <target>` carries a campaign forward. It runs `afl-cmin` over the live
 queues, refuses anything that fails replay, and writes a capped, content-hash

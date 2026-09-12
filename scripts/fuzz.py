@@ -58,6 +58,24 @@ DISTILLED_PREFIX = "distilled-"
 DISTILL_MAX_INPUTS = 400
 DISTILL_MAX_BYTES = 1_000_000
 
+# Wall-clock share of a `campaign` each target gets, as relative weights over one
+# total budget. Equal time per target - what `run all --time` gives - is the wrong
+# split: in a 28-minute campaign the subsystem targets completed tens of queue
+# cycles in minutes and then found nothing, while `structural`, the only target
+# that drives the whole engine and the one where every real bug so far has come
+# from, completed none. So the full-engine target gets most of the budget and
+# each saturated target gets enough to re-cover its queue and confirm nothing
+# regressed. `CAMPAIGN_MIN_SECONDS` keeps the smallest share from rounding to a
+# run that ends before AFL++ finishes calibrating its seeds.
+CAMPAIGN_WEIGHTS = {
+    "structural": 65,
+    "propagation": 7,
+    "keyed-scopes": 7,
+    "rows-transitions": 7,
+    "ownership": 7,
+    "boundary": 7,
+}
+CAMPAIGN_MIN_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -121,7 +139,7 @@ TARGETS = (
 )
 
 TARGETS_BY_NAME = {target.name: target for target in TARGETS}
-
+assert set(CAMPAIGN_WEIGHTS) == set(TARGETS_BY_NAME), "every target needs a campaign weight"
 
 
 def read_known_failures() -> set[str]:
@@ -366,6 +384,48 @@ def report_target(target: Target, elapsed: float | None = None) -> None:
     for path in crashes:
         print(f"    {path.relative_to(ROOT)}")
     print(f"  replay with: python3 scripts/fuzz.py repro {target.name} <file>")
+
+
+def campaign_budget(targets: list[Target], total_seconds: int) -> list[tuple[Target, int]]:
+    """Splits one wall-clock budget across targets by `CAMPAIGN_WEIGHTS`.
+
+    Every target gets at least `CAMPAIGN_MIN_SECONDS`, and the remainder is
+    shared in proportion to weight, so a short campaign still gives each
+    subsystem target a real run and a long one gives almost all of the extra
+    time to the full-engine target. Targets run shortest first, so the report
+    on the saturated ones is available while the long run is still going.
+    """
+    floor = CAMPAIGN_MIN_SECONDS * len(targets)
+    if total_seconds < floor:
+        die(f"a campaign over {len(targets)} target(s) needs at least {floor // 60}m; got {total_seconds}s")
+    spare = total_seconds - floor
+    weight_total = sum(CAMPAIGN_WEIGHTS[target.name] for target in targets)
+    budget = [
+        (target, CAMPAIGN_MIN_SECONDS + spare * CAMPAIGN_WEIGHTS[target.name] // weight_total)
+        for target in targets
+    ]
+    return sorted(budget, key=lambda entry: (entry[1], entry[0].name))
+
+
+def command_campaign(args: argparse.Namespace) -> int:
+    """Fuzzes the targets under one weighted wall-clock budget."""
+    targets = resolve_targets(args.targets)
+    if not have_afl():
+        die("afl-fuzz and afl-cc are required; install AFL++ (apt install afl++, brew install afl++)")
+    ensure_built(targets, need_afl=True, skip_build=args.no_build)
+    budget = campaign_budget(targets, parse_duration(args.time))
+
+    print("campaign budget:")
+    for target, seconds in budget:
+        print(f"  {target.name:<17} {seconds // 60:>4}m {seconds % 60:02d}s  (weight {CAMPAIGN_WEIGHTS[target.name]})")
+
+    for target, seconds in budget:
+        print(f"\n=== {target.name}: {target.summary} ===", flush=True)
+        started = time.monotonic()
+        run_one(target, seconds, args.jobs, args.resume)
+        report_target(target, time.monotonic() - started)
+
+    return 1 if any(crash_files(target) for target in targets) else 0
 
 
 def content_name(data: bytes) -> str:
@@ -754,6 +814,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python3 scripts/fuzz.py list\n"
             "  python3 scripts/fuzz.py run propagation --time 10m\n"
             "  python3 scripts/fuzz.py run all --time 5m -j 4\n"
+            "  python3 scripts/fuzz.py campaign --time 2h -j 2\n"
             "  python3 scripts/fuzz.py distill structural\n"
             "  python3 scripts/fuzz.py status\n"
             "  python3 scripts/fuzz.py check\n"
@@ -779,6 +840,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--resume", action="store_true", help="continue the previous session instead of starting fresh")
     add_no_build(run_parser)
     run_parser.set_defaults(func=command_run)
+
+    campaign_parser = subparsers.add_parser("campaign", help="fuzz targets under one weighted wall-clock budget")
+    campaign_parser.add_argument("targets", nargs="*", help="target names, or 'all' (the default)")
+    campaign_parser.add_argument("--time", required=True, help="total budget across the targets, e.g. 1h")
+    campaign_parser.add_argument("-j", "--jobs", type=int, default=1, help="parallel AFL++ instances per target")
+    campaign_parser.add_argument("--resume", action="store_true", help="continue the previous session instead of starting fresh")
+    add_no_build(campaign_parser)
+    campaign_parser.set_defaults(func=command_campaign)
 
     distill_parser = subparsers.add_parser("distill", help="minimize the live queue into the committed corpus")
     distill_parser.add_argument("target")

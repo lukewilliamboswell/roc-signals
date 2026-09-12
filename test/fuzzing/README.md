@@ -96,6 +96,18 @@ the edge cover is larger than the cap, survivors are kept in order of how many
 still-uncovered edges each adds, and `distill` reports how many edges the cut
 gives up.
 
+### Budgeting a campaign
+
+`fuzz.py run all --time T` gives every target the same T, which is the wrong
+split. In a 28-minute campaign `propagation` completed 88 queue cycles,
+`rows-transitions` 37 and `keyed-scopes` 5, and then found nothing new, while
+`structural` - the only target that drives the whole engine, and where every
+real bug so far has come from - completed none. `fuzz.py campaign --time T`
+divides one total budget by the weights in `CAMPAIGN_WEIGHTS` instead: every
+target gets a floor of two minutes so it re-covers its queue and confirms
+nothing regressed, and the rest goes overwhelmingly to `structural`. The
+weights live in that one table so changing the split is a one-line review.
+
 ## Notes
 
 - `afl-cmin` does not work on macOS; use `afl-cmin.bash`.
