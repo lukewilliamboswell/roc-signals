@@ -430,6 +430,29 @@ fatal-boundary containment, and task, timer, and resource providers. Preserve
 stable allocation diagnostics and cross-platform reporting, keep the platform
 CI fixture set deliberate, and do not add fault syntax to `.scm` scenarios.
 
+## `Then` clones its declared reads at a fatal boundary inside a recoverable prepare
+
+**Priority: P1** — A recoverable host transaction that panics instead of
+refusing.
+
+`Engine.tryThenCommand` (`src/signals/engine.zig`) reserves pending-effect
+capacity with `try`, then calls `HostSignalBinding.cloneRetained`
+(`src/signals/signal_records.zig`), whose `allocator.dupe` of the source node
+ids ends in `catch @panic("out of memory")`. The clone runs before any
+persistent state has changed, so design.md's allocation-failure contract says
+the failure is recoverable: the caller has an error channel and the previous
+committed generation is intact. Instead the process traps. This is the `PANIC
+out of memory` class the native fault campaign reports for the coordinated-
+writes and event-actions specs, and it is what the `transactions` fuzz target's
+known failure `then-reads-clone-fatal-oom` reproduces: an action whose command
+is a `Then`, dispatched with the engine allocator failing at the clone.
+
+The fix belongs in the engine: give `cloneRetained` an error channel (or
+preflight the clone) so the `Then` refuses with `OutOfMemory` and releases the
+record it retained. Delete the corpus line from
+`test/fuzzing/corpus/known-failures.txt` when the input passes; the corpus
+entry stays as the regression test.
+
 ## Keep the focused Zig test path fast
 
 **Priority: P2** — Reduce iteration cost if test runtime becomes a measured
@@ -591,3 +614,32 @@ protocol change.
 `Protocol.version` is `11` in `www/static/signals.mjs`; the design describes
 the negotiation rule without the number. Keep the number only in code and
 contributing docs.
+
+## Staged collection re-evaluates live derived signals for new readers
+
+Found by the `selectors` fuzz target; reproduced by
+`test/fuzzing/corpus/selectors/refused-edit-keeps-shared-map-value`
+(`python3 scripts/fuzz.py repro selectors <file> --verbose`, with the
+carve-out in `expectRefusedEditLedger` removed).
+
+When a structural change creates a descriptor that binds an already-live
+derived record - the shape every `Row.select(selected.keyed(...))` row has -
+`evalHostSignalRecordStaged`'s `map` arm calls the record's transform again
+and writes the result into the committed record's cache through
+`replaceSignalExprCacheAndClone`, even though the record is present and not
+dirty. Consequences:
+
+- one `derived_calls_into_roc` per such edit that the changed set does not
+  justify (appending one row to the keyed-selector-churn fixture re-runs the
+  `selected` map);
+- committed runtime state is mutated during preparation, before the
+  transaction has committed;
+- at some refusal positions (observed in `collectEachRow`,
+  `prepareRetiredStreamCapacity` and `finishSparsePublication`) the produced
+  value is still live after the rollback, so a refused edit leaks one host
+  value and its capability callables.
+
+The fix is for the staged evaluator to return the cached clone for a present,
+non-dirty record, as the effect-source arms already do, and then to delete
+the carve-out in `test/fuzzing/fuzz-selectors.zig` so the strict
+`liveCountSince` check applies to every refused edit again.

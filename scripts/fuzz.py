@@ -11,6 +11,7 @@ Run `python3 scripts/fuzz.py --help` for the available commands.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -43,6 +44,41 @@ AFL_ENV = {
     "AFL_SKIP_CPUFREQ": "1",
     "AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES": "1",
 }
+
+# Files `distill` writes into the committed corpus, named by content hash so a
+# re-distillation of the same queue rewrites the same files and a review diff
+# shows only what actually changed. Hand-named inputs (`add`) are never touched.
+DISTILLED_PREFIX = "distilled-"
+# The per-target cap on what `distill` will commit. The corpus is replayed on
+# every pull request and read by people, so it has to stay small: 400 inputs is
+# a few seconds of replay per target, and 1 MB keeps the repository's largest
+# directory of opaque bytes readable in a diff. When the edge cover is larger
+# than the cap, inputs are kept in order of how many uncovered edges each adds,
+# so what is dropped is what contributed least.
+DISTILL_MAX_INPUTS = 400
+DISTILL_MAX_BYTES = 1_000_000
+
+# Wall-clock share of a `campaign` each target gets, as relative weights over one
+# total budget. Equal time per target - what `run all --time` gives - is the wrong
+# split: in a 28-minute campaign the subsystem targets completed tens of queue
+# cycles in minutes and then found nothing, while `structural`, the only target
+# that drives the whole engine and the one where every real bug so far has come
+# from, completed none. So the full-engine target gets most of the budget and
+# each saturated target gets enough to re-cover its queue and confirm nothing
+# regressed. `CAMPAIGN_MIN_SECONDS` keeps the smallest share from rounding to a
+# run that ends before AFL++ finishes calibrating its seeds.
+CAMPAIGN_WEIGHTS = {
+    "structural": 35,
+    "sparse-rows": 15,
+    "selectors": 15,
+    "transactions": 15,
+    "propagation": 5,
+    "keyed-scopes": 5,
+    "rows-transitions": 5,
+    "ownership": 5,
+    "boundary": 5,
+}
+CAMPAIGN_MIN_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -86,17 +122,30 @@ class Target:
             return []
         return sorted(path for path in self.regression_dir.iterdir() if path.is_file() and path.name != "README.md")
 
+    def distilled_inputs(self) -> list[Path]:
+        return [path for path in self.regression_inputs() if path.name.startswith(DISTILLED_PREFIX)]
+
+    def queue_inputs(self) -> list[Path]:
+        """Lists the live queue of every fuzzer instance, the raw material `distill` refines."""
+        if not self.out_dir.exists():
+            return []
+        return sorted(path for path in self.out_dir.glob("*/queue/*") if path.is_file() and not path.name.startswith("."))
+
 
 TARGETS = (
-    Target("propagation", "dependency-ordered, glitch-free propagation and equality cutoffs"),
+    Target("propagation", "dependency-ordered, glitch-free propagation, equality cutoffs, and prepared-path allocation failure"),
     Target("keyed-scopes", "keyed-row identity, scope retirement, reuse barriers, disposal"),
-    Target("rows-transitions", "canonical stable-slot Rows transitions, lineage, abort, and retry"),
+    Target("rows-transitions", "canonical stable-slot Rows transitions, lineage, abort, retry, and allocation failure"),
     Target("structural", "collect/prepare/commit atomicity under allocation failure"),
+    Target("selectors", "selector memberships, keyed selects, and selected-value whens under structural change"),
+    Target("sparse-rows", "direct Rows deltas against the snapshot path: order, identity, memberships, work bounds"),
+    Target("transactions", "event, effect-result, timer, and coordinated-write transactions under allocation failure"),
     Target("ownership", "retained-value and callable ownership across erased calls"),
     Target("boundary", "boundary schema and event extraction plan parsing"),
 )
 
 TARGETS_BY_NAME = {target.name: target for target in TARGETS}
+assert set(CAMPAIGN_WEIGHTS) == set(TARGETS_BY_NAME), "every target needs a campaign weight"
 
 
 def read_known_failures() -> set[str]:
@@ -181,8 +230,17 @@ def seed_corpus(target: Target) -> None:
     cheapest way to reach deep engine states quickly on the next run.
     """
     target.corpus_dir.mkdir(parents=True, exist_ok=True)
+    known = read_known_failures()
     for regression in target.regression_inputs():
-        shutil.copyfile(regression, target.corpus_dir / f"regression-{regression.name}")
+        # AFL++ dry-runs every seed and aborts on one that crashes, so an input
+        # kept only to reproduce an unfixed bug cannot seed a campaign. The
+        # corpus directory persists between runs, so a copy seeded before the
+        # input was listed has to go too.
+        seed = target.corpus_dir / f"regression-{regression.name}"
+        if f"{target.name}/{regression.name}" in known:
+            seed.unlink(missing_ok=True)
+            continue
+        shutil.copyfile(regression, seed)
     if any(target.corpus_dir.iterdir()):
         return
     (target.corpus_dir / "seed").write_bytes(target.seed)
@@ -198,6 +256,27 @@ def read_stats(target: Target, instance: str = "default") -> dict[str, str]:
         key, _, value = line.partition(":")
         stats[key.strip()] = value.strip()
     return stats
+
+
+def afl_env(target: Target) -> dict[str, str]:
+    """The AFL++ environment for tools that run a target outside `afl-fuzz`.
+
+    The targets carry far more edges than AFL++'s default 64 KiB map. `afl-fuzz`
+    learns the real size from the forkserver handshake, but `afl-showmap`
+    (behind `afl-cmin`) and `afl-tmin` refuse to guess, and without the size
+    they abort or record a truncated map - which showed up as `afl-cmin`
+    treating every input as a crash. `afl-fuzz` prints the size it learned at
+    startup, and every `run` keeps that log, so it is read back from there.
+    """
+    env = {**os.environ, **AFL_ENV}
+    log_path = target.work_dir / "afl-0.log"
+    if log_path.exists():
+        match = re.search(r"Target map size: (\d+)", log_path.read_text(errors="replace"))
+        if match is not None:
+            env["AFL_MAP_SIZE"] = match.group(1)
+    if "AFL_MAP_SIZE" not in env:
+        die(f"could not learn the map size of {target.name}; run it once with `fuzz.py run` first, or set AFL_MAP_SIZE")
+    return env
 
 
 def crash_files(target: Target) -> list[Path]:
@@ -320,6 +399,238 @@ def report_target(target: Target, elapsed: float | None = None) -> None:
     for path in crashes:
         print(f"    {path.relative_to(ROOT)}")
     print(f"  replay with: python3 scripts/fuzz.py repro {target.name} <file>")
+
+
+def campaign_budget(targets: list[Target], total_seconds: int) -> list[tuple[Target, int]]:
+    """Splits one wall-clock budget across targets by `CAMPAIGN_WEIGHTS`.
+
+    Every target gets at least `CAMPAIGN_MIN_SECONDS`, and the remainder is
+    shared in proportion to weight, so a short campaign still gives each
+    subsystem target a real run and a long one gives almost all of the extra
+    time to the full-engine target. Targets run shortest first, so the report
+    on the saturated ones is available while the long run is still going.
+    """
+    floor = CAMPAIGN_MIN_SECONDS * len(targets)
+    if total_seconds < floor:
+        die(f"a campaign over {len(targets)} target(s) needs at least {floor // 60}m; got {total_seconds}s")
+    spare = total_seconds - floor
+    weight_total = sum(CAMPAIGN_WEIGHTS[target.name] for target in targets)
+    budget = [
+        (target, CAMPAIGN_MIN_SECONDS + spare * CAMPAIGN_WEIGHTS[target.name] // weight_total)
+        for target in targets
+    ]
+    return sorted(budget, key=lambda entry: (entry[1], entry[0].name))
+
+
+def command_campaign(args: argparse.Namespace) -> int:
+    """Fuzzes the targets under one weighted wall-clock budget."""
+    targets = resolve_targets(args.targets)
+    if not have_afl():
+        die("afl-fuzz and afl-cc are required; install AFL++ (apt install afl++, brew install afl++)")
+    ensure_built(targets, need_afl=True, skip_build=args.no_build)
+    budget = campaign_budget(targets, parse_duration(args.time))
+
+    print("campaign budget:")
+    for target, seconds in budget:
+        print(f"  {target.name:<17} {seconds // 60:>4}m {seconds % 60:02d}s  (weight {CAMPAIGN_WEIGHTS[target.name]})")
+
+    for target, seconds in budget:
+        print(f"\n=== {target.name}: {target.summary} ===", flush=True)
+        started = time.monotonic()
+        run_one(target, seconds, args.jobs, args.resume)
+        report_target(target, time.monotonic() - started)
+
+    return 1 if any(crash_files(target) for target in targets) else 0
+
+
+def content_name(data: bytes) -> str:
+    return DISTILLED_PREFIX + hashlib.sha256(data).hexdigest()[:12]
+
+
+def trace_inputs(target: Target, candidates: Path, traces: Path, jobs: int) -> None:
+    """Records the coverage tuples of every candidate with `afl-showmap`.
+
+    `afl-cmin` is not used, although this is its first half: it asks the binary
+    for its map size through `AFL_DUMP_MAP_SIZE`, which the pc-guard runtime
+    answers with the 64 KiB default, and it pins that answer over any
+    `AFL_MAP_SIZE` in the environment, so on these targets every trace is
+    truncated and every input is reported as crashing. `afl-showmap -i` with the
+    real size is what `afl-cmin` runs underneath, minus that override, and
+    sharding the candidates across `jobs` invocations is its `-T`.
+    """
+    shards = [candidates / f"shard-{index}" for index in range(jobs)]
+    for shard in shards:
+        shard.mkdir()
+    for index, path in enumerate(sorted(p for p in candidates.iterdir() if p.is_file())):
+        path.rename(shards[index % jobs] / path.name)
+
+    env = afl_env(target)
+    processes = []
+    for index, shard in enumerate(shards):
+        command = ["afl-showmap", "-q", "-e", "-i", str(shard), "-o", str(traces), "--", str(target.fuzz_exe)]
+        if index == 0:
+            print(f"$ {' '.join(command)}  (x{jobs})")
+        log = open(target.work_dir / f"showmap-{index}.log", "w")
+        # afl-showmap drops temporary files in its working directory.
+        processes.append((subprocess.Popen(command, cwd=target.work_dir, env=env, stdout=log, stderr=subprocess.STDOUT), log))
+    failed = False
+    for process, log in processes:
+        failed |= process.wait() != 0
+        log.close()
+    if failed:
+        die(f"afl-showmap failed; see {target.work_dir.relative_to(ROOT)}/showmap-*.log")
+
+
+def cover_edges(candidates: Path, traces: Path, max_inputs: int, max_bytes: int) -> list[Path]:
+    """Keeps the inputs that reach every edge, then ranks them by what they add.
+
+    The first pass is `afl-cmin`'s set cover: edges are visited from rarest to
+    commonest and each is claimed by its smallest candidate, ties broken by
+    name, so the result depends only on the candidates and never on directory
+    order. Survivors are then taken greedily by how many still-uncovered edges
+    each adds until `max_inputs` or `max_bytes` is reached, so when the cover
+    is larger than the cap what is dropped is what contributed least.
+    """
+    inputs = sorted((path for path in candidates.rglob("*") if path.is_file()), key=lambda p: (p.stat().st_size, p.name))
+    edges_of: list[set[str]] = []
+    by_edge: dict[str, list[int]] = {}
+    for index, path in enumerate(inputs):
+        trace = traces / path.name
+        if not trace.exists():
+            # afl-showmap skips an empty file rather than running it, so the
+            # empty input reaches nothing here; `check` still replays it.
+            if path.stat().st_size != 0:
+                die(f"no trace for {path.name}: it crashed or timed out under afl-showmap")
+            edges_of.append(set())
+            continue
+        edges = set(trace.read_text().split())
+        edges_of.append(edges)
+        for edge in edges:
+            by_edge.setdefault(edge, []).append(index)
+    cover: set[int] = set()
+    for edge in sorted(by_edge, key=lambda e: (len(by_edge[e]), e)):
+        if not any(index in cover for index in by_edge[edge]):
+            cover.add(min(by_edge[edge]))
+    print(f"{len(by_edge)} edges across {len(inputs)} candidate(s); {len(cover)} input(s) cover them")
+
+    kept: list[int] = []
+    covered: set[str] = set()
+    remaining = set(cover)
+    budget = max_bytes
+    while remaining and len(kept) < max_inputs:
+        best = max(remaining, key=lambda i: (len(edges_of[i] - covered), -inputs[i].stat().st_size, inputs[i].name))
+        remaining.remove(best)
+        size = inputs[best].stat().st_size
+        if size > budget:
+            continue
+        kept.append(best)
+        covered |= edges_of[best]
+        budget -= size
+    if remaining:
+        lost = len(set().union(*(edges_of[i] for i in remaining)) - covered)
+        print(f"cap reached: {len(remaining)} survivor(s) dropped, giving up {lost} edge(s) of {len(by_edge)}")
+    return [inputs[index] for index in kept]
+
+
+def afl_tmin(target: Target, source: Path, destination: Path, seconds: int) -> bool:
+    """Shrinks one input in place of `destination`, giving up after `seconds`."""
+    command = ["afl-tmin", "-i", str(source), "-o", str(destination), "--", str(target.fuzz_exe)]
+    try:
+        result = subprocess.run(command, cwd=ROOT, env=afl_env(target), capture_output=True, timeout=seconds)
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0 and destination.is_file()
+
+
+def command_distill(args: argparse.Namespace) -> int:
+    """Refines the live AFL++ queues into a small committed corpus.
+
+    A campaign restarts from the committed corpus, so what is not carried
+    forward is searched for again next time. The queue is traced with
+    `afl-showmap` and reduced to the smallest set of inputs that still reaches
+    every coverage tuple it reached, which is what `afl-cmin` does; the
+    survivors are replayed through the repro executable, since an input that
+    fails would turn `check` red and belongs in `add` beside its fix instead;
+    then they are written under content-hash names, replacing the previous
+    distillate, within `DISTILL_MAX_INPUTS` and `DISTILL_MAX_BYTES`.
+    """
+    target = resolve_targets([args.target])[0]
+    ensure_built([target], need_afl=True, skip_build=args.no_build)
+
+    # The previous distillate competes on equal terms with the new queue, so
+    # an old input survives only while nothing reaches its edges more cheaply.
+    # Hand-named inputs are candidates too, so a queue entry that only repeats
+    # one of them is not kept twice, but they are never renamed or removed.
+    named = [path for path in target.regression_inputs() if not path.name.startswith(DISTILLED_PREFIX)]
+    candidates = target.queue_inputs() + target.distilled_inputs() + named
+    if not target.queue_inputs():
+        die(f"no live queue for {target.name}; run a campaign first")
+
+    staging = target.work_dir / "distill"
+    if staging.exists():
+        shutil.rmtree(staging)
+    candidate_dir = staging / "candidates"
+    trace_dir = staging / "traces"
+    candidate_dir.mkdir(parents=True)
+    seen: set[bytes] = set()
+    for path in candidates:
+        data = path.read_bytes()
+        if data in seen:
+            continue
+        seen.add(data)
+        (candidate_dir / content_name(data)).write_bytes(data)
+    print(f"{len(seen)} distinct candidate(s) from {len(target.queue_inputs())} queue input(s)")
+
+    trace_inputs(target, candidate_dir, trace_dir, args.jobs)
+    named_contents = {path.read_bytes() for path in named}
+    # Hand-named inputs are always committed, so they are counted against the
+    # byte budget but not against the input cap, which bounds the distillate.
+    named_bytes = sum(path.stat().st_size for path in named)
+    survivors = [
+        path
+        for path in cover_edges(candidate_dir, trace_dir, DISTILL_MAX_INPUTS + len(named), DISTILL_MAX_BYTES - named_bytes)
+        if path.read_bytes() not in named_contents
+    ][:DISTILL_MAX_INPUTS]
+    if not survivors:
+        die("nothing survived beyond the hand-named inputs, so nothing is written")
+
+    if args.tmin:
+        # Largest first: the same edge set is usually reachable from a shorter
+        # input, and the bytes saved are worth the most on the biggest files.
+        for path in sorted(survivors, key=lambda p: (-p.stat().st_size, p.name))[: args.tmin]:
+            shrunk = staging / f"tmin-{path.name}"
+            if afl_tmin(target, path, shrunk, args.tmin_timeout):
+                print(f"  afl-tmin {path.name}: {path.stat().st_size} -> {shrunk.stat().st_size} bytes")
+                shrunk.replace(path)
+            else:
+                print(f"  afl-tmin {path.name}: gave up after {args.tmin_timeout}s, keeping the original")
+
+    kept: list[tuple[str, bytes]] = []
+    rejected = 0
+    for path in survivors:
+        data = path.read_bytes()
+        passed, output = replay(target, path)
+        if not passed:
+            rejected += 1
+            print(f"  refusing {path.name}: it fails replay (a crash belongs in `add` beside its fix)")
+            continue
+        kept.append((content_name(data), data))
+
+    target.regression_dir.mkdir(parents=True, exist_ok=True)
+    previous = {path.name for path in target.distilled_inputs()}
+    current = {name for name, _ in kept}
+    for name in sorted(previous - current):
+        (target.regression_dir / name).unlink()
+    for name, data in kept:
+        (target.regression_dir / name).write_bytes(data)
+
+    total = sum(len(data) for _, data in kept)
+    print(
+        f"\n{target.regression_dir.relative_to(ROOT)}: {len(kept)} distilled input(s), {total} bytes "
+        f"({len(current - previous)} new, {len(previous - current)} removed, {rejected} refused)"
+    )
+    print("review with: git status test/fuzzing/corpus; verify with: python3 scripts/fuzz.py check " + target.name)
+    return 0
 
 
 def command_repro(args: argparse.Namespace) -> int:
@@ -464,7 +775,7 @@ def command_minimize(args: argparse.Namespace) -> int:
         str(target.fuzz_exe),
     ]
     print(f"$ {' '.join(command)}")
-    result = subprocess.run(command, cwd=ROOT, env={**os.environ, **AFL_ENV})
+    result = subprocess.run(command, cwd=ROOT, env=afl_env(target))
     if result.returncode == 0:
         print(f"\nminimized input written to {output}")
         print(f"replay with: python3 scripts/fuzz.py repro {target.name} {output} --verbose")
@@ -518,6 +829,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  python3 scripts/fuzz.py list\n"
             "  python3 scripts/fuzz.py run propagation --time 10m\n"
             "  python3 scripts/fuzz.py run all --time 5m -j 4\n"
+            "  python3 scripts/fuzz.py campaign --time 2h -j 2\n"
+            "  python3 scripts/fuzz.py distill structural\n"
             "  python3 scripts/fuzz.py status\n"
             "  python3 scripts/fuzz.py check\n"
             "  python3 scripts/fuzz.py repro propagation <crash-file> --verbose\n"
@@ -542,6 +855,22 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--resume", action="store_true", help="continue the previous session instead of starting fresh")
     add_no_build(run_parser)
     run_parser.set_defaults(func=command_run)
+
+    campaign_parser = subparsers.add_parser("campaign", help="fuzz targets under one weighted wall-clock budget")
+    campaign_parser.add_argument("targets", nargs="*", help="target names, or 'all' (the default)")
+    campaign_parser.add_argument("--time", required=True, help="total budget across the targets, e.g. 1h")
+    campaign_parser.add_argument("-j", "--jobs", type=int, default=1, help="parallel AFL++ instances per target")
+    campaign_parser.add_argument("--resume", action="store_true", help="continue the previous session instead of starting fresh")
+    add_no_build(campaign_parser)
+    campaign_parser.set_defaults(func=command_campaign)
+
+    distill_parser = subparsers.add_parser("distill", help="minimize the live queue into the committed corpus")
+    distill_parser.add_argument("target")
+    distill_parser.add_argument("-j", "--jobs", type=int, default=1, help="parallel afl-showmap tracers")
+    distill_parser.add_argument("--tmin", type=int, default=0, metavar="N", help="also afl-tmin the N largest survivors")
+    distill_parser.add_argument("--tmin-timeout", type=int, default=120, metavar="SECONDS", help="give up on one afl-tmin after this long")
+    add_no_build(distill_parser)
+    distill_parser.set_defaults(func=command_distill)
 
     status_parser = subparsers.add_parser("status", help="report stats and crashes from previous runs")
     status_parser.add_argument("targets", nargs="*", help="target names, or 'all' (the default)")

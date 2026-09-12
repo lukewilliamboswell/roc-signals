@@ -8,6 +8,12 @@
 #
 # Entries are one per line, `<target>/<input>`.
 #
-# Empty since 2026-08-31, when the refusal leak the two structural inputs
-# reproduced was fixed. They stay in the corpus as regression inputs; only their
-# expected-failure lines are gone.
+# The two structural inputs listed until 2026-08-31 reproduced a refusal leak
+# that is now fixed; they stay in the corpus as regression inputs.
+#
+# A `Then` command clones its declared reads with `catch @panic("out of
+# memory")` inside `tryThenCommand`, so the engine allocator failing at that
+# attempt traps the process instead of refusing the transaction. See
+# wip/issues.md, "`Then` clones its declared reads at a fatal boundary inside a
+# recoverable prepare". Delete this line once the input passes.
+transactions/then-reads-clone-fatal-oom
