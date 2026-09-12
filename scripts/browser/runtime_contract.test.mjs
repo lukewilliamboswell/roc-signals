@@ -2890,6 +2890,177 @@ test("clear_event and remove_node release DOM listeners", () => {
   assert.deepEqual(host.dispatches, []);
 });
 
+// The mock host command buffer holds a bounded number of records per batch,
+// so large scripts are applied as several consecutive command batches.
+function applyCommandsInBatches(host, runtime, commands, phase, batchSize = 400) {
+  for (let start = 0; start < commands.length; start += batchSize) {
+    host.writeCommands(commands.slice(start, start + batchSize));
+    runtime.applyPendingCommands(`${phase}:${start}`);
+  }
+}
+
+// Builds N surviving bound buttons under the root plus K removable subtree
+// roots, each a section with its own click binding and a nested bound button.
+// Returns the ids needed to remove the K roots and check the survivors.
+function buildListenerCleanupWorkload(host, runtime, survivors, removedRoots) {
+  const commands = [];
+  let nextId = 1;
+  let nextEventId = 1000;
+  const survivorIds = [];
+  for (let index = 0; index < survivors; index += 1) {
+    const id = nextId++;
+    const eventId = nextEventId++;
+    survivorIds.push({ id, eventId });
+    commands.push(
+      { op: Op.createElement, a: id, s: "button" },
+      { op: Op.bindClick, a: id, b: eventId },
+      { op: Op.appendChild, a: 0, b: id },
+    );
+  }
+  const roots = [];
+  for (let index = 0; index < removedRoots; index += 1) {
+    const sectionId = nextId++;
+    const divId = nextId++;
+    const buttonId = nextId++;
+    const sectionEventId = nextEventId++;
+    const buttonEventId = nextEventId++;
+    roots.push({ sectionId, divId, buttonId, sectionEventId, buttonEventId });
+    commands.push(
+      { op: Op.createElement, a: sectionId, s: "section" },
+      { op: Op.bindClick, a: sectionId, b: sectionEventId },
+      { op: Op.createElement, a: divId, s: "div" },
+      { op: Op.createElement, a: buttonId, s: "button" },
+      { op: Op.bindClick, a: buttonId, b: buttonEventId },
+      { op: Op.appendChild, a: divId, b: buttonId },
+      { op: Op.appendChild, a: sectionId, b: divId },
+      { op: Op.appendChild, a: 0, b: sectionId },
+    );
+  }
+  applyCommandsInBatches(host, runtime, commands, "build");
+  return { survivorIds, roots };
+}
+
+for (const [survivors, removedRoots] of [
+  [1000, 50],
+  [10000, 50],
+]) {
+  test(`remove_node listener cleanup inspects only removed bindings (${survivors} surviving, ${removedRoots} removed roots)`, () => {
+    const { host, root, runtime } = mountWith([{ op: Op.resetDom }]);
+    const { survivorIds, roots } = buildListenerCleanupWorkload(host, runtime, survivors, removedRoots);
+    const bindingsPerRoot = 2;
+    const removedBindings = removedRoots * bindingsPerRoot;
+    assert.equal(runtime.eventCleanups.size, survivors + removedBindings);
+    assert.equal(runtime.nodes.size, 1 + survivors + removedRoots * 3);
+
+    const removedButtons = roots.map(({ buttonId }) => runtime.nodes.get(buttonId));
+    const removedSections = roots.map(({ sectionId }) => runtime.nodes.get(sectionId));
+    const survivorButtons = survivorIds.map(({ id }) => runtime.nodes.get(id));
+
+    runtime.subtreeListenerInspections = 0;
+    applyCommandsInBatches(
+      host,
+      runtime,
+      roots.map(({ sectionId }) => ({ op: Op.removeNode, a: sectionId })),
+      "remove-roots",
+    );
+
+    // Work must follow the removed bindings (K * bindings per root), never the
+    // N surviving registrations; a broad scan would inspect N * K entries.
+    assert.equal(runtime.subtreeListenerInspections, removedBindings);
+    assert.ok(runtime.subtreeListenerInspections < survivors);
+    assert.equal(runtime.eventCleanups.size, survivors);
+    assert.equal(runtime.eventCleanupKeysByElem.size, survivors);
+    assert.equal(runtime.nodes.size, 1 + survivors);
+    assert.equal(root.childNodes.length, survivors);
+
+    for (const node of [...removedButtons, ...removedSections]) {
+      assert.equal(node.listeners.get("click")?.length ?? 0, 0);
+      fireEvent(node, "click");
+    }
+    assert.deepEqual(host.dispatches, []);
+
+    fireEvent(survivorButtons[0], "click");
+    fireEvent(survivorButtons.at(-1), "click");
+    assert.deepEqual(host.dispatches, [
+      { eventId: survivorIds[0].eventId, kind: PayloadKind.unit },
+      { eventId: survivorIds.at(-1).eventId, kind: PayloadKind.unit },
+    ]);
+
+    // Removing every survivor still inspects exactly one registration each.
+    runtime.subtreeListenerInspections = 0;
+    applyCommandsInBatches(
+      host,
+      runtime,
+      survivorIds.map(({ id }) => ({ op: Op.removeNode, a: id })),
+      "remove-survivors",
+    );
+    assert.equal(runtime.subtreeListenerInspections, survivors);
+    assert.equal(runtime.eventCleanups.size, 0);
+    assert.equal(runtime.eventCleanupKeysByElem.size, 0);
+    assert.deepEqual([...runtime.nodes.keys()], [0]);
+  });
+}
+
+test("listener index tracks rebinding, clear_event, native listeners, and unmount", () => {
+  const { host, root, runtime } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "button" },
+    { op: Op.setText, a: 1, s: "click" },
+    { op: Op.bindClick, a: 1, b: 11 },
+    { op: Op.createElement, a: 2, s: "input" },
+    { op: Op.bindInput, a: 2, b: 21 },
+    {
+      dynamic: {
+        op: DynamicOp.bindEvent,
+        elemId: 2,
+        eventName: "keydown",
+        eventId: 22,
+        options: ListenerOptions.capture,
+        eventExtractionPlan: keyShiftEventExtractionPlan,
+      },
+    },
+    { op: Op.appendChild, a: 0, b: 1 },
+    { op: Op.appendChild, a: 0, b: 2 },
+  ]);
+  const button = findByText(root, "button", "click");
+  const input = findNode(root, (node) => node.tagName === "INPUT");
+  assert.deepEqual([...runtime.eventCleanups.keys()].sort(), ["1:click", "2:input", "2:keydown"]);
+  assert.deepEqual([...runtime.eventCleanupKeysByElem.get(2)].sort(), ["2:input", "2:keydown"]);
+
+  // Rebinding the same element and event replaces the cleanup without
+  // duplicating the per-element entry or leaking the old DOM listener.
+  host.writeCommands([{ op: Op.bindClick, a: 1, b: 12 }]);
+  runtime.applyPendingCommands("rebind");
+  assert.equal(button.listeners.get("click").length, 1);
+  assert.equal(runtime.eventCleanupKeysByElem.get(1).size, 1);
+  fireEvent(button, "click");
+  assert.deepEqual(host.dispatches, [{ eventId: 12, kind: PayloadKind.unit }]);
+  host.dispatches.length = 0;
+
+  // clear_event drops one registration and leaves the element's others intact.
+  host.writeCommands([{ dynamic: { op: DynamicOp.clearEvent, elemId: 2, eventName: "keydown" } }]);
+  runtime.applyPendingCommands("clear-keydown");
+  assert.deepEqual([...runtime.eventCleanupKeysByElem.get(2)], ["2:input"]);
+  assert.equal(input.listeners.get("keydown")?.length ?? 0, 0);
+  host.writeCommands([{ dynamic: { op: DynamicOp.clearEvent, elemId: 2, eventName: "input" } }]);
+  runtime.applyPendingCommands("clear-input");
+  assert.equal(runtime.eventCleanupKeysByElem.has(2), false);
+  assert.equal(runtime.eventCleanups.has("2:input"), false);
+
+  // Removing the now-listenerless input costs no listener inspections.
+  runtime.subtreeListenerInspections = 0;
+  host.writeCommands([{ op: Op.removeNode, a: 2 }]);
+  runtime.applyPendingCommands("remove-input");
+  assert.equal(runtime.subtreeListenerInspections, 0);
+
+  runtime.unmount();
+  assert.equal(runtime.eventCleanups.size, 0);
+  assert.equal(runtime.eventCleanupKeysByElem.size, 0);
+  assert.equal(button.listeners.get("click")?.length ?? 0, 0);
+  fireEvent(button, "click");
+  assert.deepEqual(host.dispatches, []);
+});
+
 test("telemetry records command batches DOM events and event payload dispatches", () => {
   const telemetry = [];
   const { host, root } = mountWith(
