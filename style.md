@@ -52,7 +52,7 @@ Status := [Draft, Queued, Synced, Failed].{
 
 - Prefer receiver/static-dispatch style when it reads naturally, such as `items.map(...)`, `items.keep_if(...)`, `items.len()`, and `items.fold(...)`.
 - When receiver-dispatching polymorphic signal helpers, add a local `Signal.Signal(...)` annotation if the same source signal maps to different output types. If that annotation would be noisier than the call, keep the explicit `Signal.map(...)` form.
-- If a method-position call is rejected with a type mismatch whose two printed types look identical, that is a known compiler bug, not a modelling problem. Use the call form and leave a comment. See `UPSTREAM_COMPILER_BUGS.md`.
+- If a method-position call is rejected with a type mismatch whose two printed types look identical, treat it as a compiler defect rather than a modelling problem. Use the call form, link the upstream issue in a comment, and retain a focused reproducer until the pinned compiler contains the fix.
 - Avoid extra braces around a function body when the body is just one `match`, `if`, record update, or expression.
 - Keep short pure helpers compact, but expand nested `if`/`match` branches when the inline version hurts scanning.
 - Prefer builder chains over numbered intermediate values.

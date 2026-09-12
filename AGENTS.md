@@ -143,9 +143,11 @@
   ownership, failure behavior, or architectural role. Reject comments that
   merely restate the function name or signature without helping a reader
   understand why or how to use it.
-- Use `UPSTREAM_COMPILER_BUGS.md` for reproducible compiler limitations. Keep a
-  workaround narrow and identifiable; do not let an upstream defect become an
-  undocumented platform semantic or weaken the target architecture.
+- Track reproducible compiler limitations in upstream GitHub issues. Once
+  filed, link the issue beside any local workaround, keep the workaround narrow
+  and identifiable, and remove it once the pinned compiler contains the fix. Do not
+  let an upstream defect become an undocumented platform semantic or weaken the
+  target architecture.
 
 ## Keep this file enduring
 

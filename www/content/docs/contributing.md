@@ -73,8 +73,8 @@ mode; `std.debug.assert` is not a production contract check.
 
 The hosted source gate retains production-mode Wasm builds and size budgets,
 plus Debug/ReleaseSmall effect-stack checks. The current Roc Wasm backend
-requires `--opt=size` (see `UPSTREAM_COMPILER_BUGS.md`), and the Wasm integration
-suite builds a temporary ReleaseSmall web bundle to stay within the compiler's
+requires `--opt=size` for the maintained `two-row-types` fixture, and the Wasm
+integration suite builds a temporary ReleaseSmall web bundle to stay within the compiler's
 package-size limit. This is a documented exception to development-only PR builds;
 it does not publish a release candidate. Full fault, benchmark, and coverage
 campaigns remain explicit local suites. Dependency
@@ -810,9 +810,8 @@ target exceeds the compiler's default 100 MiB expanded transitive package budget
 local-file platform builds passing does not establish that a URL-bound bundle
 can be consumed. Release-candidate checks therefore pass the implemented
 `--max-transitive-mb=512` option explicitly. The older diagnostic's suggested
-`--max-transitive-bytes` spelling is incorrect. See `UPSTREAM_COMPILER_BUGS.md`
-for the reproduction and keep the override visible until host-size work makes it
-unnecessary.
+`--max-transitive-bytes` spelling is incorrect. Keep the override visible until
+host-size work makes it unnecessary.
 
 For the separate browser JavaScript artifact, run `python3 scripts/bundle_browser.py`.
 
@@ -887,13 +886,12 @@ python3 scripts/serve.py --no-server --app-opt size
 ```
 
 Routine Roc tests and native smoke builds use `--opt=dev` to keep feedback fast.
-The pinned compiler's dev backend currently emits invalid Wasm for unit-valued
-capability callbacks (see `UPSTREAM_COMPILER_BUGS.md`, case 10), so ordinary
-Wasm smoke builds use `--opt=size` as a narrow workaround. TODO: switch those
-builds to `--opt=dev` once the upstream bug is fixed. The optional `--app-opt
-dev` site build remains a compiler diagnostic, not a passing release gate or a
-deployable alternative. Keep artifact validation enabled. After checking dev
-output, rebuild with `--app-opt size`; both modes write `dist/`.
+The pinned compiler's dev backend still emits invalid Wasm for the maintained
+`two-row-types` fixture, so ordinary Wasm smoke builds use `--opt=size` as a
+narrow workaround. Track the reproducer upstream and switch those builds to
+`--opt=dev` once the pinned compiler contains the fix. Keep artifact validation
+enabled; compiler exit status alone does not establish that a Wasm artifact is
+valid. Production site builds use `--app-opt size`; both modes write `dist/`.
 
 ## Releases
 
@@ -1436,7 +1434,6 @@ shared sources, even when local generated copies are stale.
 
 The flat layout is intentional: nested `shared/` imports and hosted declarations
 currently fail with the pinned compiler, including when compiled from bundles.
-See `UPSTREAM_COMPILER_BUGS.md` for the observed limitations.
 
 The GUI targets are Apple Silicon macOS, Linux x86_64 with glibc and a
 Wayland/GPU session, and Windows x86_64. Host development needs Rust (tested
@@ -1579,8 +1576,9 @@ exercise simulated input and layout; they also do not replace a native desktop w
 
 After `scripts/bundle.sh --package gui --serve`, download `http://127.0.0.1:8000/Counter.roc`
 and run `roc build Counter.roc`. Alternatively, `roc run Counter.roc --opt=speed`
-compiles and opens the window directly. Plain `roc run` currently encounters the
-required-`main` shim collision documented in `UPSTREAM_COMPILER_BUGS.md`, case 12. The app author needs the pinned Roc compiler
+compiles and opens the window directly. Plain `roc run` currently encounters a
+compiler-generated required-`main` shim collision; use one of the explicit
+commands above. The app author needs the pinned Roc compiler
 and the target operating system (plus runtime GUI libraries on Linux).
 Rust and Zig are used when preparing the platform bundle. Windows application
 linking still needs Roc's implicit MSVC/SDK inputs. On macOS, the package embeds compiled Metal shaders

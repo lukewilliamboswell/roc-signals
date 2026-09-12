@@ -275,7 +275,12 @@ when comparing:
 
 `test/size/baseline.json` preserves the historical measurement;
 `test/size/effect-model-baseline.json` records the accepted production
-effect-model measurement. `test/size/budgets.toml` identifies the measurement
+effect-model measurement. `test/size/nightly-2026-09-11-baseline.json` records
+the accepted compiler-upgrade measurement from PR #119. The same-machine
+comparison against the September 4 compiler increased cumulative raw Wasm by
+0.60% and gzip by 1.05%; the largest individual gzip increase was 4.28% for
+`two-row-types`. The upgrade's compiler fixes justify this accepted size cost.
+`test/size/budgets.toml` identifies the measurement
 revision used for its explicit raw and gzip budgets, with 1% headroom.
 `python3 scripts/test.py size` fails when a
 fixture exceeds its budget. After an accepted change, regenerate the budgets

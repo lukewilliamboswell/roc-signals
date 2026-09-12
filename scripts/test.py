@@ -414,8 +414,8 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
                 continue
             output = wasm_dir / f"{example.slug}.wasm"
             try:
-                # TODO(upstream compiler bug 10): use --opt=dev once unit-state
-                # capability callbacks produce valid Wasm with that backend.
+                # TODO(upstream): link the compiler issue and use --opt=dev once
+                # the two-row-types fixture produces valid Wasm with that backend.
                 run(
                     [
                         roc_bin,

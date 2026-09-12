@@ -337,12 +337,12 @@ browser archive, including all imported modules, from the same release or
 checkout used to build the app.
 
 **A successfully compiled Wasm file fails browser validation**
-Use `--opt=size` with the pinned Roc compiler. Its dev backend can emit invalid
-Wasm for unit-valued state and event callbacks even when compilation succeeds.
-The site builder validates every artifact before copying it into a deployment.
-The maintained examples have no Linux Wasm skips. See
-`UPSTREAM_COMPILER_BUGS.md` in the repository for the reproducer and tested
-compiler version; do not assume every build failure has the same cause.
+The site builder validates every artifact before copying it into a deployment,
+because compiler exit status alone does not establish that a Wasm artifact is
+valid. Use `--opt=size` with the pinned compiler while its dev backend emits
+invalid Wasm for the maintained `two-row-types` fixture. The maintained examples
+have no Linux Wasm skips. Report a reproducible compiler failure upstream; do
+not assume every build failure has the same cause.
 
 ## Next
 

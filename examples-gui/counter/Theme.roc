@@ -40,8 +40,7 @@ Theme := [].{
 		is_eq : _
 
 		# The pinned compiler rejects every spelling of an explicit annotation
-		# on a hand-written `parser_for`, so this method is inferred. See
-		# UPSTREAM_COMPILER_BUGS.md entry 15.
+		# on a hand-written `parser_for`, so this method is inferred.
 		parser_for = |encoding|
 			|state|
 				match encoding.parse_str(state) {

@@ -51,8 +51,7 @@ def classify(paths):
         elif path.startswith("www/static/"):
             selected.update(WEB)
         elif (path.startswith(("www/", "docs/", "releases/"))
-              or path in {"README.md", "AGENTS.md", "design.md", "style.md", "THIRD_PARTY_LICENSES.md",
-                          "UPSTREAM_COMPILER_BUGS.md"}):
+              or path in {"README.md", "AGENTS.md", "design.md", "style.md", "THIRD_PARTY_LICENSES.md"}):
             selected.add("site")
         else:
             selected.update(AREAS)
