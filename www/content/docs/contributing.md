@@ -738,6 +738,7 @@ that has to be remembered or retyped:
 python3 scripts/fuzz.py list
 python3 scripts/fuzz.py run propagation --time 10m
 python3 scripts/fuzz.py run all --time 5m -j 4
+python3 scripts/fuzz.py distill structural
 python3 scripts/fuzz.py status
 ```
 
@@ -752,6 +753,11 @@ previous session's queue rather than importing new seeds, and `clean` discards b
 Watch `stability`, which should sit near 100%. A lower number means the target is
 not deterministic for a fixed input, which breaks the reference-model comparison
 and must be fixed before any crash it reports can be trusted.
+
+`distill <target>` carries a campaign forward. It runs `afl-cmin` over the live
+queues, refuses anything that fails replay, and writes a capped, content-hash
+named set into `test/fuzzing/corpus/<target>/` for the next campaign to start
+from and for `check` to replay. `test/fuzzing/README.md` explains the cap.
 
 ### Prerequisites
 

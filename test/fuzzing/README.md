@@ -73,6 +73,29 @@ Campaigns run in the scheduled `fuzz.yml` workflow rather than on pull requests,
 because they are unbounded and too variable to gate a change on. They upload
 their crashes and corpora, since both are otherwise lost with the runner.
 
+### Carrying a campaign forward
+
+Every campaign starts from the committed corpus, so whatever a campaign reached
+and did not commit is searched for again next time. `fuzz.py distill <target>`
+is how a queue becomes corpus: it traces the live `.fuzz-out/<target>` queues
+together with the previous distillate under `afl-showmap`, keeps the smallest
+set that still reaches every edge (the `afl-cmin` cover, done here because
+`afl-cmin` pins a 64 KiB map these targets outgrow), refuses any survivor that
+fails replay (a crash belongs in `add` beside its fix, not in a corpus that has
+to stay green), and writes the rest as `distilled-<hash>` files. Content-hash names
+make a re-distillation of the same queue a no-op diff; hand-named inputs are
+never renamed or removed. `--tmin N` additionally shrinks the N largest
+survivors with `afl-tmin`, bounded per input by `--tmin-timeout`.
+
+The committed distillate is capped at 400 inputs and 1 MB per target
+(`DISTILL_MAX_INPUTS`, `DISTILL_MAX_BYTES` in `fuzz.py`). The corpus is replayed
+on every pull request and read by reviewers, so it must stay cheap and
+diffable: 400 inputs is a few seconds of replay per target, and past 1 MB a
+directory of opaque bytes is no longer something a review can look at. When
+the edge cover is larger than the cap, survivors are kept in order of how many
+still-uncovered edges each adds, and `distill` reports how many edges the cut
+gives up.
+
 ## Notes
 
 - `afl-cmin` does not work on macOS; use `afl-cmin.bash`.
