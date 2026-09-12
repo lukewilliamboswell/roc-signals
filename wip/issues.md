@@ -430,6 +430,29 @@ fatal-boundary containment, and task, timer, and resource providers. Preserve
 stable allocation diagnostics and cross-platform reporting, keep the platform
 CI fixture set deliberate, and do not add fault syntax to `.scm` scenarios.
 
+## `Then` clones its declared reads at a fatal boundary inside a recoverable prepare
+
+**Priority: P1** — A recoverable host transaction that panics instead of
+refusing.
+
+`Engine.tryThenCommand` (`src/signals/engine.zig`) reserves pending-effect
+capacity with `try`, then calls `HostSignalBinding.cloneRetained`
+(`src/signals/signal_records.zig`), whose `allocator.dupe` of the source node
+ids ends in `catch @panic("out of memory")`. The clone runs before any
+persistent state has changed, so design.md's allocation-failure contract says
+the failure is recoverable: the caller has an error channel and the previous
+committed generation is intact. Instead the process traps. This is the `PANIC
+out of memory` class the native fault campaign reports for the coordinated-
+writes and event-actions specs, and it is what the `transactions` fuzz target's
+known failure `then-reads-clone-fatal-oom` reproduces: an action whose command
+is a `Then`, dispatched with the engine allocator failing at the clone.
+
+The fix belongs in the engine: give `cloneRetained` an error channel (or
+preflight the clone) so the `Then` refuses with `OutOfMemory` and releases the
+record it retained. Delete the corpus line from
+`test/fuzzing/corpus/known-failures.txt` when the input passes; the corpus
+entry stays as the regression test.
+
 ## Keep the focused Zig test path fast
 
 **Priority: P2** — Reduce iteration cost if test runtime becomes a measured
