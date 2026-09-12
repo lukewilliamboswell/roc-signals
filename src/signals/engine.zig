@@ -9805,7 +9805,7 @@ pub fn Engine(comptime Ctx: type) type {
                         error.InvalidRelease => return error.InvalidSignalGraphRelease,
                     };
                     errdefer if (self.graph_release) |*release| release.deinit(allocator);
-                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch |err| switch (err) {
+                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, &self.graph_release.?.remap, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
@@ -10194,23 +10194,23 @@ pub fn Engine(comptime Ctx: type) type {
                 var source_count = self.engine.active_source_signal_routes.items.len;
                 for (source.items) |entry| source_count = @max(source_count, std.math.add(usize, @intCast(entry.route_index), 1) catch return error.ResourceLimit);
                 self.graph_source_route_count = source_count;
-                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, self.graph_release.?.final_record_ids, source_count, source.items) catch |err| switch (err) {
+                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, &self.graph_release.?.remap, source_count, source.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.text_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, self.graph_release.?.original_record_ids, graph_count, text.items) catch |err| switch (err) {
+                self.text_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, &self.graph_release.?.remap, graph_count, text.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.bool_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, self.graph_release.?.original_record_ids, graph_count, bools.items) catch |err| switch (err) {
+                self.bool_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, &self.graph_release.?.remap, graph_count, bools.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.change_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, self.graph_release.?.original_record_ids, graph_count, changes.items) catch |err| switch (err) {
+                self.change_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, &self.graph_release.?.remap, graph_count, changes.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.structural_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, self.graph_release.?.original_record_ids, graph_count, structural.items) catch |err| switch (err) {
+                self.structural_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, &self.graph_release.?.remap, graph_count, structural.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
@@ -10220,19 +10220,19 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn appendTextRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.TextSink)), record: *HostSignalRecord, sink: active_graph.TextSink) CollectionError!void {
-                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = self.graph_append.?.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendBoolRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.BoolSink)), record: *HostSignalRecord, sink: active_graph.BoolSink) CollectionError!void {
-                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = self.graph_append.?.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendChangeRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.ChangeSink)), record: *HostSignalRecord, sink: active_graph.ChangeSink) CollectionError!void {
-                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = self.graph_append.?.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendStructuralRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.StructuralSink)), record: *HostSignalRecord, sink: active_graph.StructuralSink) CollectionError!void {
-                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = self.graph_append.?.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn deinitGraphRoutes(self: *@This(), allocator: std.mem.Allocator) void {
@@ -10466,7 +10466,7 @@ pub fn Engine(comptime Ctx: type) type {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidRelease => return error.InvalidSignalGraphRelease,
                     };
-                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch |err| switch (err) {
+                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, &self.graph_release.?.remap, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
@@ -10970,7 +10970,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var source_count = self.engine.active_source_signal_routes.items.len;
                 for (source.items) |entry| source_count = @max(source_count, std.math.add(usize, @intCast(entry.route_index), 1) catch return error.ResourceLimit);
                 self.graph_source_route_count = source_count;
-                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, self.graph_release.?.final_record_ids, source_count, source.items) catch |err| switch (err) {
+                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, &self.graph_release.?.remap, source_count, source.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
@@ -11002,19 +11002,19 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn appendTextRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.TextSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.TextSink) CollectionError!void {
-                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = graph_plan.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendBoolRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.BoolSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.BoolSink) CollectionError!void {
-                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = graph_plan.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendChangeRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.ChangeSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.ChangeSink) CollectionError!void {
-                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = graph_plan.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendStructuralRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.StructuralSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.StructuralSink) CollectionError!void {
-                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = graph_plan.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
 
@@ -19822,13 +19822,13 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 const old_state_id = engine.states.items[plan.state_cell_indexes[0]].state_id;
                 const replacement_state_id = plan.replacement_stream.states.items[0].node_id;
                 const replacement_signal_record = plan.replacement_stream.signal_bool_attrs.items[0].signal.record;
-                const planned_signal_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, replacement_signal_record) orelse return error.TestUnexpectedResult;
-                const planned_text_attr_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
-                const planned_text_node_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_text_nodes.items[0].signal.record) orelse return error.TestUnexpectedResult;
-                const planned_custom_text_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_custom_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
-                const planned_optional_text_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_optional_custom_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
-                const planned_custom_bool_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_custom_bool_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
-                const planned_change_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.on_changes.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_signal_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, replacement_signal_record) orelse return error.TestUnexpectedResult;
+                const planned_text_attr_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, plan.replacement_stream.signal_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_text_node_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, plan.replacement_stream.signal_text_nodes.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_custom_text_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, plan.replacement_stream.signal_custom_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_optional_text_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, plan.replacement_stream.signal_optional_custom_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_custom_bool_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, plan.replacement_stream.signal_custom_bool_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_change_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, plan.replacement_stream.on_changes.items[0].signal.record) orelse return error.TestUnexpectedResult;
                 const replacement_record_refs_before_graph = replacement_signal_record.ref_count;
                 fault.configure(1);
                 plan.commitAssumeCapacity();
@@ -20371,10 +20371,10 @@ test "aggregate branch collection sweeps allocation failures without publication
                 .map => |payload| payload.input,
                 else => return error.TestUnexpectedResult,
             };
-            const first_new_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, first_new).?;
-            const second_new_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, second_new).?;
-            const first_input_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, first_input).?;
-            const second_input_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, second_input).?;
+            const first_new_id = prepared.graph_append.?.plannedRecordId(&prepared.graph_release.?.remap, engine.active_signal_graph.items, first_new).?;
+            const second_new_id = prepared.graph_append.?.plannedRecordId(&prepared.graph_release.?.remap, engine.active_signal_graph.items, second_new).?;
+            const first_input_id = prepared.graph_append.?.plannedRecordId(&prepared.graph_release.?.remap, engine.active_signal_graph.items, first_input).?;
+            const second_input_id = prepared.graph_append.?.plannedRecordId(&prepared.graph_release.?.remap, engine.active_signal_graph.items, second_input).?;
             const first_new_scope = prepared.replacement_scope_ids[0];
             const second_new_scope = prepared.replacement_scope_ids[1];
             try std.testing.expect(first_new_id != second_new_id);
