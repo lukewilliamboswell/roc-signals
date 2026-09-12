@@ -9751,6 +9751,20 @@ pub fn Engine(comptime Ctx: type) type {
                 // state, so one errdefer unwinds the whole preparation.
                 errdefer plan.deinit();
 
+                var nested_row_scopes: shared_buffer.List(ids.ScopeId) = .empty;
+                defer nested_row_scopes.deinit(allocator);
+                var direct_roots = try DirectRowRootMembership.init(allocator, synced_row_roots);
+                defer direct_roots.deinit(allocator);
+                try plan.prepareSparseExternalScopesInto(retired_roots, suppressed_parents, cache_overlay, &nested_row_scopes, &direct_roots);
+                return plan;
+            }
+
+            /// The fallible body of `prepareSparseExternalScopes`, kept free of
+            /// defers: the wrapper owns the plan's unwind and the two pieces
+            /// of classification scratch.
+            fn prepareSparseExternalScopesInto(plan: *@This(), retired_roots: []const ids.ScopeId, suppressed_parents: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates, nested_row_scopes: *shared_buffer.List(ids.ScopeId), direct_roots: *const DirectRowRootMembership) CollectionError!void {
+                const engine = plan.engine;
+                const allocator = Ctx.allocator(plan.host_ctx);
                 // The empty slices are allocated first so a refusal while
                 // building their owners has nothing to release by hand.
                 const empty_targets = allocator.alloc(bool, 0) catch return error.OutOfMemory;
@@ -9773,12 +9787,8 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.state_retirement = try PreparedStateRetirementIndexes.prepare(engine, allocator, plan.removal.?.removal.node_indexes.state_indexes.items);
                 try plan.state_retirement.?.reserveRetired(allocator, &plan.retired_state_cells);
 
-                var nested_row_scopes: shared_buffer.List(ids.ScopeId) = .empty;
-                defer nested_row_scopes.deinit(allocator);
                 nested_row_scopes.ensureTotalCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
-                var direct_roots = try DirectRowRootMembership.init(allocator, synced_row_roots);
-                defer direct_roots.deinit(allocator);
-                plan.direct_root_classification_work = try direct_roots.classify(retirement_scope_ids, &nested_row_scopes);
+                plan.direct_root_classification_work = try direct_roots.classify(retirement_scope_ids, nested_row_scopes);
                 plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, nested_row_scopes.items);
                 plan.retired_stable_generations.ensureTotalCapacity(allocator, plan.row_retirement.?.rows.len) catch return error.OutOfMemory;
                 plan.effects_retirement = try PreparedEffectRetirements.prepare(engine, allocator, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
@@ -9799,7 +9809,6 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.suppressed_render_parent_ids = suppressed_parents;
                 try plan.prepareGraphRenderAndPublication(allocator);
                 plan.suppressed_render_parent_ids = &.{};
-                return plan;
             }
 
             fn adoptSparseSnapshotRows(self: *@This(), site: HostNodeScopeSiteDesc, rows: *PreparedActiveEachRows) CollectionError!void {
