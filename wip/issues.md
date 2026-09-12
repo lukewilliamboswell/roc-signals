@@ -591,3 +591,32 @@ protocol change.
 `Protocol.version` is `11` in `www/static/signals.mjs`; the design describes
 the negotiation rule without the number. Keep the number only in code and
 contributing docs.
+
+## Staged collection re-evaluates live derived signals for new readers
+
+Found by the `selectors` fuzz target; reproduced by
+`test/fuzzing/corpus/selectors/refused-edit-keeps-shared-map-value`
+(`python3 scripts/fuzz.py repro selectors <file> --verbose`, with the
+carve-out in `expectRefusedEditLedger` removed).
+
+When a structural change creates a descriptor that binds an already-live
+derived record - the shape every `Row.select(selected.keyed(...))` row has -
+`evalHostSignalRecordStaged`'s `map` arm calls the record's transform again
+and writes the result into the committed record's cache through
+`replaceSignalExprCacheAndClone`, even though the record is present and not
+dirty. Consequences:
+
+- one `derived_calls_into_roc` per such edit that the changed set does not
+  justify (appending one row to the keyed-selector-churn fixture re-runs the
+  `selected` map);
+- committed runtime state is mutated during preparation, before the
+  transaction has committed;
+- at some refusal positions (observed in `collectEachRow`,
+  `prepareRetiredStreamCapacity` and `finishSparsePublication`) the produced
+  value is still live after the rollback, so a refused edit leaks one host
+  value and its capability callables.
+
+The fix is for the staged evaluator to return the cached clone for a present,
+non-dirty record, as the effect-source arms already do, and then to delete
+the carve-out in `test/fuzzing/fuzz-selectors.zig` so the strict
+`liveCountSince` check applies to every refused edit again.

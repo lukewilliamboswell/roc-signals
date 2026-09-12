@@ -220,8 +220,9 @@
 //!
 //!  - **`when` conditions on anything but the root list.** Every generated when
 //!    reads the one shared cell, so a flip is always caused by the edit that
-//!    also re-diffs the shared sites. A when driven by a row's own state cell
-//!    would flip without any each re-diffing in the same transaction.
+//!    also re-diffs the shared sites. `selectors` covers whens driven by a
+//!    selection cell through `Signal.select`, which flip without any each
+//!    re-diffing; a when driven by a row's own state cell is still unwritten.
 //!  - **`ResourceLimit` rejection through `collection_budget` bounds.** The
 //!    generator stays inside every configured bound, so the limit-before-
 //!    allocation path is asserted never to fire rather than exercised. Reaching

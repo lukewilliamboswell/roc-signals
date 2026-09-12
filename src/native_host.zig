@@ -5268,6 +5268,14 @@ fn testEachAdapterCallable(roc_host: *abi.RocHost, callback: abi.RocErasedCallab
     );
 }
 
+/// Returns a fresh Str value holding the borrowed input's text. The engine
+/// drops the input after the call, so the result must be an independent value.
+fn testIdentityStrHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+    const text = testReadHostValueStr(roc_host, call_args.arg0);
+    writeTestErasedResult(HostValue, ret, testHostValueStr(roc_host, text.asSlice()));
+}
+
 fn testUnaryHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     const capture = testCapturePtrAs(TestErasedI64Capture, capture_ptr);
     const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
@@ -12623,6 +12631,110 @@ pub const fuzz_fixtures = struct {
     pub const eachRowKeyI64 = testEachRowKeyI64;
     pub const readI64 = testReadHostValueI64;
     pub const writeResult = writeTestErasedResult;
+
+    /// The stable row handle a row builder receives beside its key. Reading it
+    /// borrows nothing, so it may be taken before `eachRowKeyI64` releases the
+    /// key string in the same argument block.
+    pub fn eachRowHandle(args: ?[*]const u8) u64 {
+        return testErasedArgsAs(erased_calls.ErasedRocStrU64Args, args).arg1;
+    }
+
+    /// A `Signal.select` member over `input`, true while the string `input`
+    /// holds equals `key`. Each call mints a fresh identity callable, so two
+    /// members with the same key are two graph records and two memberships.
+    pub const selectExpr = testNodeSelectExpr;
+
+    /// A fused keyed-row selector for the row `row_handle` of the site whose
+    /// identity is `site`, as `Row.select` emits it. The engine keys the record
+    /// by `(site, row_handle)` and requires `key` to equal that row's key
+    /// exactly. `site` is borrowed: the descriptor takes the two references it
+    /// holds, so the caller keeps its own until every row built from it is gone.
+    pub fn keyedSelectExpr(roc_host: *abi.RocHost, site: abi.RocErasedCallable, row_handle: u64, input: abi.NodeSignalExpr, input_cap: HostValueCapability, key: []const u8) abi.NodeSignalExpr {
+        const true_init = testHostValueInitialThunk(roc_host, testHostValueBool(true));
+        const cap = testHostValueCapability(roc_host);
+        abi.increfErasedCallable(site, 2);
+        return .{
+            .payload = .{
+                .keyed_select = .{
+                    ._0 = row_handle,
+                    ._1 = site,
+                    ._2 = boxTestNodeSignalExpr(roc_host, input),
+                    ._3 = RocStr.fromSlice(key, roc_host),
+                    ._4 = testTextReadHandle(roc_host, input_cap),
+                    ._5 = site,
+                    ._6 = true_init,
+                    ._7 = cap,
+                },
+            },
+            .tag = .KeyedSelect,
+        };
+    }
+
+    /// An initializer thunk yielding `false`, the shape a keyed selector site
+    /// identity takes. The caller owns the returned reference.
+    pub fn keyedSelectSite(roc_host: *abi.RocHost) abi.RocErasedCallable {
+        return testHostValueInitialThunk(roc_host, testHostValueBool(false));
+    }
+    pub const decrefCallable = abi.decrefErasedCallable;
+
+    /// A `when` whose condition is any bool signal expression.
+    pub const whenWithSignal = testNodeWhenWithSignal;
+    /// A bool attribute bound to a signal, published through the bool sink routes.
+    pub const signalBoolAttr = testNodeSignalBoolAttr;
+    pub const BoolField = RenderBoolField;
+    /// A text node showing a string signal, published through the text sink routes.
+    pub const textSignalWithCapability = testNodeTextSignalWithCapability;
+    pub const refExpr = testNodeRefExpr;
+    pub const strValue = testHostValueStr;
+    /// A bool signal asking `predicate` of the `List I64` signal `input`.
+    pub const listPredicateExpr = testNodeListPredicateExpr;
+
+    /// The capability a non-`Ref` signal expression carries.
+    pub const signalCapability = testNodeSignalExprCapabilityOrPanic;
+
+    /// A transform that returns a Str input's text as a fresh Str, for a
+    /// `map` whose only purpose is to be one shared record. The caller owns
+    /// the reference.
+    pub fn identityStrTransform(roc_host: *abi.RocHost) abi.RocErasedCallable {
+        return writeTestErasedCallable(TestErasedI64Capture, roc_host, &testIdentityStrHostValueCallable, &testErasedCallableOnDrop, .{ .amount = 0 });
+    }
+
+    /// A `map` of `input` through `transform`, whose record identity is the
+    /// transform's address: every expression built from the same transform
+    /// aliases one graph record, as `Signal.map` values cloned in Roc do.
+    /// `transform` is borrowed; the descriptor takes the two references it
+    /// holds.
+    pub fn mapExprSharing(roc_host: *abi.RocHost, transform: abi.RocErasedCallable, input: abi.NodeSignalExpr) abi.NodeSignalExpr {
+        const cap = testHostValueCapability(roc_host);
+        abi.increfErasedCallable(transform, 2);
+        return .{
+            .payload = .{
+                .map = .{
+                    ._0 = transform,
+                    ._1 = boxTestNodeSignalExpr(roc_host, input),
+                    ._2 = transform,
+                    ._3 = cap,
+                },
+            },
+            .tag = .Map,
+        };
+    }
+
+    pub const StateWrite = engine.StateWrite;
+
+    /// Publishes several state writes as one transaction, the entry an action
+    /// with more than one reducer takes.
+    pub fn dispatchStateWrites(host: *HostEnv, roc_host: *abi.RocHost, writes: []const engine.StateWrite) HostEngine.CollectionError!CommandCounts {
+        return host.engine.tryDispatchStateWrites(host, roc_host, writes);
+    }
+
+    /// The runtime metrics accumulated so far: everything already finished
+    /// into the last-event totals plus whatever the current or most recent
+    /// transaction left pending. A fuzz oracle differences two readings to get
+    /// one transaction's work, whichever of the two places it was recorded in.
+    pub fn runtimeMetrics(host: *const HostEnv) RuntimeMetrics {
+        return addRuntimeMetrics(host.engine.last_runtime_metrics, host.engine.pending_roc_metrics);
+    }
 };
 
 // Worktree-only GPUI experiment. The ABI publishes committed, touched native
