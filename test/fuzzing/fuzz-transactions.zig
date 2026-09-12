@@ -133,6 +133,25 @@ const signals = @import("signals");
 const native_host = @import("native_host");
 const FuzzReader = @import("FuzzReader.zig");
 
+/// The AFL++ executable is built with this file as its root. A panic there
+/// must end at once: symbolizing a stack trace takes seconds, and so does a
+/// core dump piped to a crash reporter, either of which AFL++ classifies as
+/// a hang rather than the crash it is. The repro executable has its own root
+/// and keeps the full trace for debugging.
+pub const panic = std.debug.FullPanic(aflPanic);
+
+fn aflPanic(message: []const u8, _: ?usize) noreturn {
+    @branchHint(.cold);
+    const stderr = &std.debug.lockStderr(&.{}).file_writer.interface;
+    stderr.writeAll("panic: ") catch {};
+    stderr.writeAll(message) catch {};
+    stderr.writeAll("\n") catch {};
+    if (@import("builtin").os.tag == .linux) {
+        _ = std.os.linux.prctl(@intFromEnum(std.os.linux.PR.SET_DUMPABLE), 0, 0, 0, 0);
+    }
+    @trap();
+}
+
 const fixtures = native_host.fuzz_fixtures;
 const abi = signals.abi;
 const HostValue = signals.host_values.HostValue;
@@ -939,7 +958,10 @@ const Transaction = union(enum) {
     /// through the source seam with the same next value.
     tick: struct { period: u64 },
     source: struct { period: u64, value: i64 },
-    complete_effect: struct { running: *fixtures.RunningEffect, cmd: fixtures.Cmd },
+    /// An effect result. The engine has already handed over the running
+    /// record, so the model no longer counts the effect as running either;
+    /// its writes apply once the command commits.
+    complete_effect: struct { record: EffectRecord, running: *fixtures.RunningEffect, cmd: fixtures.Cmd },
 };
 
 fn attempt(mount: *Mount, txn: Transaction, faulted: bool) fixtures.NativeEngine.CollectionError!void {
@@ -1033,8 +1055,7 @@ fn runStep(state: *Run, step: Step, failure: ?usize) usize {
         },
         .complete_effect => |choice| blk: {
             if (model.running.len == 0) return 0;
-            const index = choice % model.running.len;
-            const record = model.running.items[index];
+            const record = model.running.remove(choice % model.running.len);
             const slot = for (state.started[0..state.started_len], 0..) |started, slot| {
                 if (started.id == record.id) break slot;
             } else fail("running effect {d} was never started", .{record.id});
@@ -1044,7 +1065,7 @@ fn runStep(state: *Run, step: Step, failure: ?usize) usize {
             running.* = fixtures.finishRunningEffect(&mount.host, record.id);
             var changes: [max_writes]abi.NodeStateChange = undefined;
             const cmd = fixtures.updateChangesCmd(&mount.roc_host, buildChanges(mount, record.spec.writes, null, 0, &changes));
-            break :blk .{ .complete_effect = .{ .running = running, .cmd = cmd } };
+            break :blk .{ .complete_effect = .{ .record = record, .running = running, .cmd = cmd } };
         },
         .remount => {
             phase = "unmount";
@@ -1116,9 +1137,7 @@ fn runStep(state: *Run, step: Step, failure: ?usize) usize {
             model.branch_timer = source.value;
         },
         .complete_effect => |complete| {
-            const choice = step.complete_effect;
-            const record = model.running.remove(choice % model.running.len);
-            model.applyEffectResult(record);
+            model.applyEffectResult(complete.record);
             fixtures.releaseFinishedEffect(host, complete.running);
             std.heap.c_allocator.destroy(complete.running);
             fixtures.releaseCmd(&mount.roc_host, complete.cmd);

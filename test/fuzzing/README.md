@@ -49,6 +49,7 @@ code under test, the corpus replayed, the defect reverted:
 | `ownership` | 8 / 8 |
 | `keyed-scopes` | 14 / 14 |
 | `boundary` | 6 / 6 |
+| `transactions` | 4 / 4 |
 
 The boundary row is why this section exists. Three of those six originally
 **survived**: deleting the duplicate-field-name, empty-record, or field-name

@@ -182,8 +182,17 @@ def seed_corpus(target: Target) -> None:
     cheapest way to reach deep engine states quickly on the next run.
     """
     target.corpus_dir.mkdir(parents=True, exist_ok=True)
+    known = read_known_failures()
     for regression in target.regression_inputs():
-        shutil.copyfile(regression, target.corpus_dir / f"regression-{regression.name}")
+        # AFL++ dry-runs every seed and aborts on one that crashes, so an input
+        # kept only to reproduce an unfixed bug cannot seed a campaign. The
+        # corpus directory persists between runs, so a copy seeded before the
+        # input was listed has to go too.
+        seed = target.corpus_dir / f"regression-{regression.name}"
+        if f"{target.name}/{regression.name}" in known:
+            seed.unlink(missing_ok=True)
+            continue
+        shutil.copyfile(regression, seed)
     if any(target.corpus_dir.iterdir()):
         return
     (target.corpus_dir / "seed").write_bytes(target.seed)
