@@ -489,16 +489,16 @@ readbacks and 56 hand-written `is_eq` bodies. Recount while doing
 [equality derive adoption](#derive-is_eq-instead-of-hand-writing-it). Add a repository check that counts these so the number is visible
 in CI and the zero target in Success Criteria Tier 2 is enforced, not hoped.
 
-## Compiler bugs not filed upstream
+## Compiler bugs to file upstream
 
 **Priority: P2** — Resolve upstream limitations when they obstruct a
 representative workflow.
 
-`UPSTREAM_COMPILER_BUGS.md` #5, #6, #7 and #8 have reproductions but no issue.
-#6 and #8 have the cheapest write-ups: #6 ships `repro/var-bool-inference/`, and
-#8 is a one-paragraph description of `List.sort_with`'s first-element pivot.
+Several compiler bugs have reproductions but no upstream issue. The variable
+Boolean inference case ships `repro/var-bool-inference/`; the `List.sort_with`
+first-element pivot case needs only a short write-up.
 
-#5 and #7 share the "two identical printed types" signature and may share a root
+Two method-constraint failures share the "two identical printed types" signature and may share a root
 cause in method-constraint solving; worth mentioning that in whichever is filed
 first.
 
@@ -539,8 +539,8 @@ arguments would be the positional blindness `style.md` now warns about, and
 record-held functions need `(rec.f)(x)` to call.
 
 Prototyped against `recipe-scaler`'s pan control: type-checked, 29 tests passed.
-Reverted only because it was wrongly believed to be blocked by what is now the
-withdrawn `UPSTREAM_COMPILER_BUGS.md` #9. **It is not blocked.** 14 `Html.select*`
+Reverted only because it was wrongly believed to be blocked by a subsequently
+withdrawn compiler-bug report. **It is not blocked.** 14 `Html.select*`
 and 5 `Html.radio*` call sites would benefit.
 
 The patch was left in a session scratch directory and is likely gone; the design

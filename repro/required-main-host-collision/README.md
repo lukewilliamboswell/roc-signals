@@ -1,6 +1,6 @@
 # Required main collides with the C host
 
-Pinned Roc: `nightly-2026-09-04-c125b82`. Linux x64/glibc. The C host
+Reproduced with Roc `nightly-2026-09-04-c125b82` on Linux x64/glibc. The C host
 returns immediately; none of its allocation callbacks execute in this case.
 
 After preparing the GUI link inputs, run from the repository root:

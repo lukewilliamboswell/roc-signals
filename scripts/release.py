@@ -240,8 +240,8 @@ def check_web(roc: str, root: Path, output: Path) -> None:
         roc_run(roc, "test", source, "--opt=dev")
         wasm = output / "wasm" / (example.slug + ".wasm")
         wasm.parent.mkdir(parents=True, exist_ok=True)
-        # TODO(upstream compiler bug 10): switch this routine smoke build to
-        # --opt=dev once unit-state capability callbacks produce valid Wasm.
+        # TODO(upstream): link the compiler issue and switch to --opt=dev once
+        # the two-row-types fixture produces valid Wasm with that backend.
         roc_run(roc, "build", source, "--target=wasm32", "--opt=size", "--no-cache", f"--output={wasm}")
         instrument_wasm(wasm)
         driver.run(["node", "--no-maglev", "--experimental-wasm-jspi", ROOT / "scripts/browser/mount_wasm_example.mjs", wasm,

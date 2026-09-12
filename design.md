@@ -393,8 +393,8 @@ document is meant to preserve. Every part of this design must respect them.
    analysis passes, dependency-graph extraction, or compiler behavior introduced
    specifically for Signals. Everything is ordinary Roc plus a Zig host.
    Upstream fixes to Roc's existing language and ownership contracts are distinct
-   from new platform semantics; compiler requirements and reproducible defects
-   belong in contributor documentation and `UPSTREAM_COMPILER_BUGS.md`.
+   from new platform semantics; compiler requirements belong in contributor
+   documentation and reproducible defects belong in upstream GitHub issues.
 2. **No guessing or recovery that changes meaning.** The host never guesses
    what changed, scans to rediscover identity, or reconstructs missing
    information. It consumes explicit Roc declarations. An explicit alternative

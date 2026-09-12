@@ -25,7 +25,7 @@ Download and extract the starter archive for your operating system:
 | Apple Silicon macOS | [signals-gui-starters.zip](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.2/signals-gui-starters.zip) | [gui-0.1.0-rc.2](https://github.com/lukewilliamboswell/roc-signals/releases/tag/gui-0.1.0-rc.2) |
 | Windows x86_64 | [signals-gui-starters.zip](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.3/signals-gui-starters.zip) | [gui-0.1.0-rc.3](https://github.com/lukewilliamboswell/roc-signals/releases/tag/gui-0.1.0-rc.3) |
 
-Install Roc `nightly-2026-09-04-c125b82`, the compiler named in each app's header.
+Install the Roc compiler named in each app's `roc` header.
 From the extracted directory, build Counter for your target:
 
 ```sh

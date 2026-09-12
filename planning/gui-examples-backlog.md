@@ -262,8 +262,8 @@ Acceptance: synchronize examples, public references, platform modules, specs,
 and contributor commands when fixing each item. Clearly distinguish supported
 behavior from tested OS coverage and known limitations.
 Keep this backlog in planning as requested; move stable contracts to their
-authoritative docs and reproducible compiler limitations to
-`UPSTREAM_COMPILER_BUGS.md`, not into AGENTS.md.
+authoritative docs and reproducible compiler limitations to upstream GitHub
+issues, not into AGENTS.md.
 
 ### GUI-23 — Remaining theme ownership gaps
 
