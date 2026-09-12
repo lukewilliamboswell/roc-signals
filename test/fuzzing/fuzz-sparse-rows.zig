@@ -61,7 +61,8 @@
 //! # Oracles
 //!
 //!  - **Published topology and document order match the model** in both
-//!    worlds: site, row, state, and when counts, every modelled label present,
+//!    worlds: site, row, state, when, and selector membership counts, every
+//!    modelled label present,
 //!    every hidden label absent, the render tree read in document order with
 //!    consistent sibling links, no parent holding a child twice, and every
 //!    scope site's insertion index current.
@@ -316,6 +317,8 @@ const Expected = struct {
     shared_live: usize = 0,
     /// Empty-branch eaches the current branch selection shows.
     empty_live: usize = 0,
+    /// Selector memberships: one per live row of a `when_selected` site.
+    selector_members: usize = 0,
 
     fn of(program: Program, state: State) Expected {
         var expected = Expected{};
@@ -349,7 +352,11 @@ const Expected = struct {
             switch (spec.row_kind) {
                 .text => {},
                 .stateful => self.states += 1,
-                .when_list, .when_selected => self.whens += 1,
+                .when_list => self.whens += 1,
+                .when_selected => {
+                    self.whens += 1;
+                    self.selector_members += 1;
+                },
                 .nested_each => {
                     self.sites += 1;
                     self.rows += innerRowCount(spec.inner.?, row.key);
@@ -1346,6 +1353,7 @@ fn expectPublished(host: *const Host, program: Program, state: State) void {
     for (engine.each_row_sites.items) |site| rows += site.scope_ids.items.len;
     if (rows != expected.rows) fail("engine owns {d} each rows, model expects {d}", .{ rows, expected.rows });
     if (engine.states.items.len != expected.states) fail("engine owns {d} states, model expects {d}", .{ engine.states.items.len, expected.states });
+    if (engine.selectors.memberCount() != expected.selector_members) fail("selector registry holds {d} memberships, model expects {d}", .{ engine.selectors.memberCount(), expected.selector_members });
     expectLabels(host, program, state);
     expectDocumentOrder(host, program, state);
     host.engine.validateActiveScopeSiteInsertIndexes();
