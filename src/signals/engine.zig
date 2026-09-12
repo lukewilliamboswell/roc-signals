@@ -10654,13 +10654,24 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             };
 
+            /// Owns every deferred release of the render topology preparation
+            /// so the body below carries none: Zig replays each live defer at
+            /// every fallible step, and the body has over a hundred of them.
+            /// Scratch that never escapes the call comes from one arena; the
+            /// splice under construction and the custom text evaluated for the
+            /// element being described are released here on refusal.
             fn prepareRenderTopology(self: *@This(), allocator: std.mem.Allocator) CollectionError!render_cache_mod.PreparedRenderSplice(Ctx) {
-                // Scratch that never escapes this call comes from one arena, so
-                // a refusal releases it in one step instead of replaying every
-                // list's teardown at each error exit.
                 var scratch_arena = std.heap.ArenaAllocator.init(allocator);
                 defer scratch_arena.deinit();
-                const scratch = scratch_arena.allocator();
+                var splice: ?render_cache_mod.PreparedRenderSplice(Ctx) = null;
+                errdefer if (splice) |*staged| staged.deinit();
+                var owned_custom_text = shared_buffer.List(abi.RocStr).empty;
+                defer for (owned_custom_text.items) |*text| text.decref(self.roc_host);
+                try self.prepareRenderTopologyInto(allocator, scratch_arena.allocator(), &splice, &owned_custom_text);
+                return splice.?;
+            }
+
+            fn prepareRenderTopologyInto(self: *@This(), allocator: std.mem.Allocator, scratch: std.mem.Allocator, splice_slot: *?render_cache_mod.PreparedRenderSplice(Ctx), owned_custom_text: *shared_buffer.List(abi.RocStr)) CollectionError!void {
                 var retired: std.AutoHashMapUnmanaged(u64, void) = .empty;
                 const retired_count = std.math.cast(u32, self.removal.?.scan.removed_elem_ids.len) orelse return error.ResourceLimit;
                 retired.ensureUnusedCapacity(scratch, retired_count) catch return error.OutOfMemory;
@@ -10790,7 +10801,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const event_base = std.math.sub(usize, self.engine.active_stream.events.items.len, self.removal.?.descriptor_indexes.event_indexes.items.len) catch return error.ResourceLimit;
                 var child_links = std.math.add(usize, old_child_count, final_child_count) catch return error.ResourceLimit;
                 child_links = std.math.add(usize, child_links, self.removal.?.scan.removed_elem_ids.len) catch return error.ResourceLimit;
-                var splice = render_cache_mod.PreparedRenderSplice(Ctx).init(allocator, &self.engine.render_cache, .{
+                splice_slot.* = render_cache_mod.PreparedRenderSplice(Ctx).init(allocator, &self.engine.render_cache, .{
                     .node_capacity = std.math.add(usize, std.math.cast(usize, max_elem_id) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit,
                     .new_tags = std.math.add(usize, self.replacement_stream.render_nodes.items.len, @intFromBool(self.initial_root)) catch return error.ResourceLimit,
                     .removals = self.removal.?.scan.removed_elem_ids.len,
@@ -10810,7 +10821,7 @@ pub fn Engine(comptime Ctx: type) type {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                 };
-                errdefer splice.deinit();
+                const splice = &splice_slot.*.?;
                 if (self.initial_root) {
                     splice.reset_dom = true;
                     splice.addHostRoot(&self.engine.render_cache) catch |err| return renderSpliceError(err);
@@ -10849,10 +10860,8 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.replacement_stream.signal_bool_attrs.items) |*desc| splice.addBoolField(&self.engine.render_cache, desc.elem_id, desc.field, self.evalPreparedSignalBool(&desc.signal, desc.read, &desc.cached_value)) catch |err| return renderSpliceError(err);
                 // One set of per-element lists is reused across the loop; the
                 // evaluated custom text is released before each reuse and by
-                // the defer for whichever element was last.
+                // the caller for whichever element was last.
                 var attrs: shared_buffer.List(render_cache_mod.CustomTextAttr) = .empty;
-                var owned_custom_text = shared_buffer.List(abi.RocStr).empty;
-                defer for (owned_custom_text.items) |*text| text.decref(self.roc_host);
                 var named: shared_buffer.List(render_cache_mod.NamedEvent) = .empty;
                 for (self.replacement_stream.render_nodes.items) |node| {
                     if (node.kind != .element) continue;
@@ -10961,7 +10970,6 @@ pub fn Engine(comptime Ctx: type) type {
                     const evaluated = self.evalPreparedSignalBinding(&desc.signal);
                     desc.cached_value.replace(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics, evaluated.value, evaluated.cap);
                 }
-                return splice;
             }
 
             fn evalPreparedSignalText(self: *@This(), signal: *HostSignalBinding, read: HostTextRead, cache_slot: *HostSignalCacheSlot) abi.RocStr {
@@ -16238,9 +16246,29 @@ pub fn Engine(comptime Ctx: type) type {
                 // `deinit` releases every field from any partially prepared
                 // state, so one errdefer unwinds the whole preparation.
                 errdefer plan.deinit();
-                const caches = &plan.caches;
                 var root_record_ids: shared_buffer.List(u64) = .empty;
                 defer root_record_ids.deinit(allocator);
+                var reusable_single_each_rows: ?*PreparedActiveEachRows = null;
+                defer if (reusable_single_each_rows) |rows| rows.deinit();
+                if (!try plan.prepareRootsInto(owned, state_update, &root_record_ids, &reusable_single_each_rows)) {
+                    plan.deinit();
+                    return null;
+                }
+                return plan;
+            }
+
+            /// The fallible body of `prepareRoots`, kept free of defers so each
+            /// of its many refusal sites is a plain return: the wrapper owns
+            /// the plan's unwind and the two pieces of scratch that outlive a
+            /// loop iteration. Returns false when nothing changed and the plan
+            /// should be dropped without a transaction.
+            fn prepareRootsInto(plan: *@This(), owned: *signal_records.OwnedSourceUpdates, state_update: ?*PreparedStateWrites, root_record_ids: *shared_buffer.List(u64), reusable_single_each_rows: *?*PreparedActiveEachRows) CollectionError!bool {
+                const engine = plan.engine;
+                const ctx = plan.host_ctx;
+                const roc_host = plan.roc_host;
+                const generation = plan.generation;
+                const allocator = Ctx.allocator(ctx);
+                const caches = &plan.caches;
                 try root_record_ids.ensureTotalCapacityPrecise(allocator, owned.entries.items.len);
                 for (owned.entries.items, 0..) |*entry, index| {
                     const cell = &entry.cell.?;
@@ -16257,8 +16285,7 @@ pub fn Engine(comptime Ctx: type) type {
                     root_record_ids.appendAssumeCapacity(engine.requireActiveSignalRecordId(entry.record));
                 }
                 if (root_record_ids.items.len == 0 and state_update == null) {
-                    plan.deinit();
-                    return null;
+                    return false;
                 }
                 try engine.scratch.dirty_active_records.reserveForGraph(HostSignalRecord, allocator, engine.active_signal_graph.items);
                 const state_node_ids: []const u64 = if (state_update) |update| update.node_ids.items else &.{};
@@ -16297,8 +16324,6 @@ pub fn Engine(comptime Ctx: type) type {
                 // plan. Discarding it and preparing the same site again would
                 // repeat every key hash, key comparison, and item comparison
                 // despite the candidate generation being unchanged.
-                var reusable_single_each_rows: ?*PreparedActiveEachRows = null;
-                defer if (reusable_single_each_rows) |rows| rows.deinit();
                 var structural_index: usize = 0;
                 while (structural_index < structural_changes.len) : (structural_index += 1) {
                     const change = structural_changes[structural_index];
@@ -16311,7 +16336,7 @@ pub fn Engine(comptime Ctx: type) type {
                         errdefer provisional_rows.deinit();
                         const discovered = try plan.appendChangedRowPropagation(provisional_rows);
                         if (discovered.len == 0 and structural_changes.len == 1 and structural_index == 0) {
-                            reusable_single_each_rows = provisional_rows;
+                            reusable_single_each_rows.* = provisional_rows;
                         } else {
                             provisional_rows.deinit();
                         }
@@ -16352,7 +16377,7 @@ pub fn Engine(comptime Ctx: type) type {
                                 plan.caches.clearProvisionalValues();
                                 plan.state_update = update.*;
                             }
-                            return plan;
+                            return true;
                         }
                         const downstream = plan.composite_structural.?.downstream;
                         try downstream.adoptScalarRenderSplice(&plan.render_splice.?);
@@ -16362,7 +16387,7 @@ pub fn Engine(comptime Ctx: type) type {
                             plan.caches.clearProvisionalValues();
                             plan.state_update = update.*;
                         }
-                        return plan;
+                        return true;
                     }
                     if (each_count > 1) {
                         plan.composite_rows = try PreparedCompositeRows.prepare(engine, ctx, roc_host, structural_changes, &plan.caches, external_state);
@@ -16374,7 +16399,7 @@ pub fn Engine(comptime Ctx: type) type {
                             plan.caches.clearProvisionalValues();
                             plan.state_update = update.*;
                         }
-                        return plan;
+                        return true;
                     }
                     if (each_count == 1) {
                         const change = structural_changes[0];
@@ -16382,8 +16407,8 @@ pub fn Engine(comptime Ctx: type) type {
                         const each_index = engine.activeEachIndexByNodeId(change.node_id.raw()) orelse return error.InvalidDescriptor;
                         const each_desc = &engine.active_stream.eaches.items[each_index];
                         if (each_desc.items.record != change.record) return error.InvalidDescriptor;
-                        plan.each_rows = if (reusable_single_each_rows) |rows| blk: {
-                            reusable_single_each_rows = null;
+                        plan.each_rows = if (reusable_single_each_rows.*) |rows| blk: {
+                            reusable_single_each_rows.* = null;
                             break :blk rows;
                         } else try PreparedActiveEachRows.prepareWithOverlay(engine, ctx, roc_host, site, each_desc, allocator, &plan.caches);
                         if (try plan.tryAdoptSparseSurvivingRows(site, plan.each_rows.?)) {
@@ -16392,7 +16417,7 @@ pub fn Engine(comptime Ctx: type) type {
                                 plan.caches.clearProvisionalValues();
                                 plan.state_update = update.*;
                             }
-                            return plan;
+                            return true;
                         }
                         plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, plan.each_rows.?, .{}, &.{}, &plan.caches, external_state);
                         if (engine.positions != null) {
@@ -16411,14 +16436,14 @@ pub fn Engine(comptime Ctx: type) type {
                         plan.caches.clearProvisionalValues();
                         plan.state_update = update.*;
                     }
-                    return plan;
+                    return true;
                 }
                 try plan.prepareDirectRenderPublication(allocator);
                 if (state_update) |update| {
                     plan.caches.clearProvisionalValues();
                     plan.state_update = update.*;
                 }
-                return plan;
+                return true;
             }
 
             fn commit(self: *@This()) render.Counts {
