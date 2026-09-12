@@ -48,6 +48,7 @@ code under test, the corpus replayed, the defect reverted:
 | `ownership` | 8 / 8 |
 | `keyed-scopes` | 14 / 14 |
 | `boundary` | 6 / 6 |
+| `structural` | 2 / 2 reached, on the sampled sweep and the distilled corpus |
 
 The boundary row is why this section exists. Three of those six originally
 **survived**: deleting the duplicate-field-name, empty-record, or field-name
@@ -61,6 +62,22 @@ a green run.
 When adding or changing an oracle, mutate the code it is meant to watch and
 confirm the target notices. A mutation that no input reaches is a coverage gap
 worth closing, not a mutation worth discarding.
+
+The structural row was measured after the fault sweep went from exhaustive to
+sampled (see the target's header), replaying the 405 committed inputs. Two
+mutants in `engine.zig` were caught: dropping the collection release on the
+each-generation refusal path (5 inputs, "refusal leaked Roc allocations") and
+appending created rows at their parent's end instead of at their anchor (161
+inputs, "render tree text order diverges from the model"). The same session
+recorded what the corpus does *not* reach, which is the coverage gap the row
+above does not show: reversing the stable-slot edit order handed to the Rows
+store is reached by 227 inputs and survives, because slot order is
+`rows-transitions`' model rather than this target's; and the render layout
+plan (`layoutRegion`, `layoutSurvivor`, `apply`), the direct-delta row commit,
+and the pure-permutation path are reached by none of the 405 inputs, so
+mutants there survive unreached. Every `insertRootsBefore` call the corpus
+makes carries at most one root, so row order in the committed corpus is
+decided by anchors alone.
 
 ## The corpus is the product
 
