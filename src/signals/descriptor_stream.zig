@@ -1038,96 +1038,11 @@ pub const Stream = struct {
         }
     }
 
-    /// Reserves ownership storage for descriptors displaced by a prepared
-    /// structural replacement. Publication may then move, rather than free,
-    /// every removed payload while faults are armed.
-    pub fn reserveRetiredStaticPublication(
-        self: *Stream,
-        allocator: std.mem.Allocator,
-        element_count: usize,
-        text_count: usize,
-        static_text_count: usize,
-        static_bool_count: usize,
-        signal_text_node_count: usize,
-        signal_text_count: usize,
-        signal_bool_count: usize,
-        signal_record_count: usize,
-        event_count: usize,
-        removed_elem_ids: []const u64,
-        source: *const Stream,
-        scope_site_indexes: []const usize,
-        state_count: usize,
-        when_count: usize,
-        each_count: usize,
-    ) ReserveError!void {
-        try self.render_nodes.ensureUnusedCapacity(allocator, removed_elem_ids.len);
-        try self.elements.ensureUnusedCapacity(allocator, element_count);
-        try self.text_nodes.ensureUnusedCapacity(allocator, text_count);
-        try self.static_text_attrs.ensureUnusedCapacity(allocator, static_text_count);
-        try self.static_bool_attrs.ensureUnusedCapacity(allocator, static_bool_count);
-        try self.signal_text_nodes.ensureUnusedCapacity(allocator, signal_text_node_count);
-        try self.signal_text_attrs.ensureUnusedCapacity(allocator, signal_text_count);
-        try self.signal_bool_attrs.ensureUnusedCapacity(allocator, signal_bool_count);
-        try self.reservePreparedSignalRecordPublication(allocator, signal_record_count);
-        try self.events.ensureUnusedCapacity(allocator, event_count);
-        var highest_elem_id: usize = 0;
-        for (removed_elem_ids) |elem_id| highest_elem_id = @max(highest_elem_id, std.math.cast(usize, elem_id) orelse return error.ResourceLimit);
-        const index_len = if (removed_elem_ids.len == 0) 0 else std.math.add(usize, highest_elem_id, 1) catch return error.ResourceLimit;
-        try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, index_len);
-        try self.named_event_indices_by_elem_id.ensureTotalCapacity(allocator, index_len);
-        while (self.descriptor_indexes_by_elem_id.items.len < index_len) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
-        while (self.named_event_indices_by_elem_id.items.len < index_len) self.named_event_indices_by_elem_id.appendAssumeCapacity(.empty);
-        for (removed_elem_ids) |elem_id| {
-            try self.named_event_indices_by_elem_id.items[@intCast(elem_id)].ensureUnusedCapacity(allocator, source.namedEventIndices(ElemId.fromRaw(elem_id)).len);
-        }
-        try self.scope_sites.ensureUnusedCapacity(allocator, scope_site_indexes.len);
-        try self.states.ensureUnusedCapacity(allocator, state_count);
-        try self.whens.ensureUnusedCapacity(allocator, when_count);
-        try self.eaches.ensureUnusedCapacity(allocator, each_count);
-        var highest_node_id: usize = 0;
-        for (scope_site_indexes) |index| highest_node_id = @max(highest_node_id, source.scope_sites.items[index].node_id.index());
-        const node_index_len = if (scope_site_indexes.len == 0) 0 else std.math.add(usize, highest_node_id, 1) catch return error.ResourceLimit;
-        try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, node_index_len);
-        while (self.descriptor_indexes_by_node_id.items.len < node_index_len) self.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
-    }
-
-    /// Reserves ownership and index storage for custom descriptors retired by a
-    /// structural transaction. Exact indexes come from the maintained per-element index.
-    pub fn reserveRetiredCustomPublication(
-        self: *Stream,
-        allocator: std.mem.Allocator,
-        source: *const Stream,
-        removed_elem_ids: []const u64,
-        static_text_count: usize,
-        signal_text_count: usize,
-        optional_text_count: usize,
-        static_bool_count: usize,
-        signal_bool_count: usize,
-    ) ReserveError!void {
-        try self.static_custom_text_attrs.ensureUnusedCapacity(allocator, static_text_count);
-        try self.signal_custom_text_attrs.ensureUnusedCapacity(allocator, signal_text_count);
-        try self.signal_optional_custom_text_attrs.ensureUnusedCapacity(allocator, optional_text_count);
-        try self.static_custom_bool_attrs.ensureUnusedCapacity(allocator, static_bool_count);
-        try self.signal_custom_bool_attrs.ensureUnusedCapacity(allocator, signal_bool_count);
-        const signal_count = std.math.add(usize, signal_text_count, optional_text_count) catch return error.ResourceLimit;
-        const all_signal_count = std.math.add(usize, signal_count, signal_bool_count) catch return error.ResourceLimit;
-        try self.reservePreparedSignalRecordPublication(allocator, all_signal_count);
-        const total_text = std.math.add(usize, static_text_count, signal_text_count) catch return error.ResourceLimit;
-        const total_optional = std.math.add(usize, total_text, optional_text_count) catch return error.ResourceLimit;
-        const total_bool = std.math.add(usize, total_optional, static_bool_count) catch return error.ResourceLimit;
-        const total = std.math.add(usize, total_bool, signal_bool_count) catch return error.ResourceLimit;
-        try self.custom_attr_keys.ensureUnusedCapacity(allocator, std.math.cast(u32, total) orelse return error.ResourceLimit);
-        for (removed_elem_ids) |elem_id| {
-            try self.reservePreparedCustomAttrElem(allocator, elem_id, source.customAttrIndices(ElemId.fromRaw(elem_id)).len);
-        }
-        self.custom_attr_index_active = true;
-    }
-
     /// Moves custom descriptor families and repairs both ownership indexes without allocation.
     pub fn commitCustomDescriptorReplacementAssumeCapacity(
         self: *Stream,
         replacement: *Stream,
-        retired: *Stream,
+        retired: *RetiredDescriptors,
         static_text_indexes: []const usize,
         signal_text_indexes: []const usize,
         optional_text_indexes: []const usize,
@@ -1178,25 +1093,13 @@ pub const Stream = struct {
         replacement.signal_custom_bool_attrs.items.len = 0;
     }
 
-    /// Reserves ownership for lifecycle descriptors retired by a structural transaction.
-    pub fn reserveRetiredLifecyclePublication(self: *Stream, allocator: std.mem.Allocator, source: *const Stream, target_scope_ids: []const ScopeId, on_change_count: usize, mount_count: usize, cleanup_count: usize) ReserveError!void {
-        try self.on_changes.ensureUnusedCapacity(allocator, on_change_count);
-        try self.mounts.ensureUnusedCapacity(allocator, mount_count);
-        try self.cleanups.ensureUnusedCapacity(allocator, cleanup_count);
-        try self.reservePreparedSignalRecordPublication(allocator, on_change_count);
-        for (target_scope_ids) |scope_id| try self.reserveLifecycleScope(allocator, scope_id, source.lifecycleIndices(scope_id).len);
-    }
-
     /// Retires and publishes lifecycle descriptor ownership without allocation.
-    pub fn commitLifecycleReplacementAssumeCapacity(self: *Stream, replacement: *Stream, retired: *Stream, on_change_indexes: []const usize, mount_indexes: []const usize, cleanup_indexes: []const usize) void {
+    pub fn commitLifecycleReplacementAssumeCapacity(self: *Stream, replacement: *Stream, retired: *RetiredDescriptors, on_change_indexes: []const usize, mount_indexes: []const usize, cleanup_indexes: []const usize) void {
         for (on_change_indexes) |index| {
             const removed = self.on_changes.swapRemove(index);
             self.removeLifecycleIndex(removed.scope_id.raw(), .{ .kind = .on_change, .index = index });
             self.forgetSignalRecordTree(removed.signal.record);
-            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
-            const retired_index = retired.on_changes.items.len;
             retired.on_changes.appendAssumeCapacity(removed);
-            retired.recordLifecycleAssumeCapacity(removed.scope_id, .{ .kind = .on_change, .index = retired_index });
             if (index < self.on_changes.items.len) {
                 const moved = self.on_changes.items[index];
                 self.updateLifecycleIndex(moved.scope_id.raw(), .on_change, self.on_changes.items.len, index);
@@ -1205,17 +1108,13 @@ pub const Stream = struct {
         for (mount_indexes) |index| {
             const removed = self.mounts.swapRemove(index);
             self.removeLifecycleIndex(removed.scope_id.raw(), .{ .kind = .mount, .index = index });
-            const retired_index = retired.mounts.items.len;
             retired.mounts.appendAssumeCapacity(removed);
-            retired.recordLifecycleAssumeCapacity(removed.scope_id, .{ .kind = .mount, .index = retired_index });
             if (index < self.mounts.items.len) self.updateLifecycleIndex(self.mounts.items[index].scope_id.raw(), .mount, self.mounts.items.len, index);
         }
         for (cleanup_indexes) |index| {
             const removed = self.cleanups.swapRemove(index);
             self.removeLifecycleIndex(removed.scope_id.raw(), .{ .kind = .cleanup, .index = index });
-            const retired_index = retired.cleanups.items.len;
             retired.cleanups.appendAssumeCapacity(removed);
-            retired.recordLifecycleAssumeCapacity(removed.scope_id, .{ .kind = .cleanup, .index = retired_index });
             if (index < self.cleanups.items.len) self.updateLifecycleIndex(self.cleanups.items[index].scope_id.raw(), .cleanup, self.cleanups.items.len, index);
         }
         for (replacement.on_changes.items) |desc| {
@@ -1246,7 +1145,7 @@ pub const Stream = struct {
     pub fn commitStaticDescriptorReplacementAssumeCapacity(
         self: *Stream,
         replacement: *Stream,
-        retired: *Stream,
+        retired: *RetiredDescriptors,
         element_indexes: []const usize,
         text_indexes: []const usize,
         static_text_indexes: []const usize,
@@ -1297,7 +1196,6 @@ pub const Stream = struct {
             self.forgetScopeElem(removed.scope_id, removed.elem_id);
             self.clearSignalTextNodeIndex(removed.elem_id.raw(), index);
             self.forgetSignalRecordTree(removed.signal.record);
-            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
             retired.signal_text_nodes.appendAssumeCapacity(removed);
             if (index < self.signal_text_nodes.items.len) self.updateSignalTextNodeIndex(self.signal_text_nodes.items[index].elem_id.raw(), index);
         }
@@ -1305,7 +1203,6 @@ pub const Stream = struct {
             const removed = self.signal_text_attrs.swapRemove(index);
             self.clearSignalTextAttrIndex(removed.elem_id.raw(), removed.field, index);
             self.forgetSignalRecordTree(removed.signal.record);
-            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
             retired.signal_text_attrs.appendAssumeCapacity(removed);
             if (index < self.signal_text_attrs.items.len) {
                 const moved = self.signal_text_attrs.items[index];
@@ -1316,7 +1213,6 @@ pub const Stream = struct {
             const removed = self.signal_bool_attrs.swapRemove(index);
             self.clearSignalBoolAttrIndex(removed.elem_id.raw(), removed.field, index);
             self.forgetSignalRecordTree(removed.signal.record);
-            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
             retired.signal_bool_attrs.appendAssumeCapacity(removed);
             if (index < self.signal_bool_attrs.items.len) {
                 const moved = self.signal_bool_attrs.items[index];
@@ -1327,19 +1223,9 @@ pub const Stream = struct {
             const removed = self.events.swapRemove(index);
             if (removed.handler.signalRoot()) |root| {
                 self.forgetSignalRecordTree(root);
-                retired.rememberSignalRecordTreeAssumeCapacity(root);
             }
-            if (removed.fixedKind()) |kind| {
-                self.clearEventIndex(removed.elem_id.raw(), kind, index);
-                const retired_index = retired.events.items.len;
-                retired.events.appendAssumeCapacity(removed);
-                setFreshIndex(retired.descriptor_indexes_by_elem_id.items[removed.elem_id.index()].events.slot(kind), retired_index);
-            } else {
-                self.clearNamedEventIndex(removed.elem_id.raw(), index);
-                const retired_index = retired.events.items.len;
-                retired.events.appendAssumeCapacity(removed);
-                retired.named_event_indices_by_elem_id.items[removed.elem_id.index()].appendAssumeCapacity(retired_index);
-            }
+            if (removed.fixedKind()) |kind| self.clearEventIndex(removed.elem_id.raw(), kind, index) else self.clearNamedEventIndex(removed.elem_id.raw(), index);
+            retired.events.appendAssumeCapacity(removed);
             if (index < self.events.items.len) {
                 const moved = self.events.items[index];
                 if (moved.fixedKind()) |kind| self.updateEventIndex(moved.elem_id.raw(), kind, index) else self.updateNamedEventIndex(moved.elem_id.raw(), self.events.items.len, index);
@@ -1348,38 +1234,28 @@ pub const Stream = struct {
         for (state_indexes) |index| {
             const removed = self.states.swapRemove(index);
             self.clearStateIndex(removed.node_id.raw(), index);
-            const retired_index = retired.states.items.len;
             retired.states.appendAssumeCapacity(removed);
-            setFreshIndex(&retired.descriptor_indexes_by_node_id.items[removed.node_id.index()].state, retired_index);
             if (index < self.states.items.len) self.updateStateIndex(self.states.items[index].node_id.raw(), index);
         }
         for (when_indexes) |index| {
             const removed = self.whens.swapRemove(index);
             self.clearWhenIndex(removed.node_id.raw(), index);
             self.forgetSignalRecordTree(removed.condition.record);
-            const retired_index = retired.whens.items.len;
-            retired.rememberSignalRecordTreeAssumeCapacity(removed.condition.record);
             retired.whens.appendAssumeCapacity(removed);
-            setFreshIndex(&retired.descriptor_indexes_by_node_id.items[removed.node_id.index()].when, retired_index);
             if (index < self.whens.items.len) self.updateWhenIndex(self.whens.items[index].node_id.raw(), index);
         }
         for (each_indexes) |index| {
             const removed = self.eaches.swapRemove(index);
             self.clearEachIndex(removed.node_id.raw(), index);
             self.forgetSignalRecordTree(removed.items.record);
-            const retired_index = retired.eaches.items.len;
-            retired.rememberSignalRecordTreeAssumeCapacity(removed.items.record);
             retired.eaches.appendAssumeCapacity(removed);
-            setFreshIndex(&retired.descriptor_indexes_by_node_id.items[removed.node_id.index()].each, retired_index);
             if (index < self.eaches.items.len) self.updateEachIndex(self.eaches.items[index].node_id.raw(), index);
         }
         for (scope_site_indexes) |index| {
             const removed = self.scope_sites.swapRemove(index);
             self.forgetScopeNode(removed.scope_id, removed.node_id);
             self.clearScopeSiteIndex(removed.node_id.raw(), removed.kind, index);
-            const retired_index = retired.scope_sites.items.len;
             retired.scope_sites.appendAssumeCapacity(removed);
-            setFreshIndex(retired.descriptor_indexes_by_node_id.items[removed.node_id.index()].scope_sites.slot(removed.kind), retired_index);
             if (index < self.scope_sites.items.len) {
                 const moved = self.scope_sites.items[index];
                 self.updateScopeSiteIndex(moved.node_id.raw(), moved.kind, index);
@@ -1502,7 +1378,7 @@ pub const Stream = struct {
     /// and are intentionally left for the prepared sparse order journal. New
     /// top-level roots therefore enter detached, while links wholly inside a
     /// replacement subtree transfer with that subtree.
-    pub fn commitSparseRenderNodesAssumeCapacity(self: *Stream, replacement: *Stream, retired: *Stream, removed_elem_ids: []const u64) void {
+    pub fn commitSparseRenderNodesAssumeCapacity(self: *Stream, replacement: *Stream, retired: *RetiredDescriptors, removed_elem_ids: []const u64) void {
         if (replacement.render_nodes.items.len != 0 or removed_elem_ids.len != 0) self.render_nodes_ordered = false;
         commitSparseRenderNodes(Stream, self, replacement, retired, removed_elem_ids);
     }
@@ -2057,108 +1933,9 @@ pub const Stream = struct {
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
-        self.render_nodes.deinit(allocator);
-
-        for (self.elements.items) |desc| {
-            allocator.free(desc.tag);
-        }
-        self.elements.deinit(allocator);
-
-        for (self.text_nodes.items) |desc| {
-            allocator.free(desc.value);
-        }
-        self.text_nodes.deinit(allocator);
-
-        for (self.signal_text_nodes.items) |*desc| {
-            desc.deinit(allocator, ctx, roc_host, metrics);
-        }
-        self.signal_text_nodes.deinit(allocator);
-
-        for (self.static_text_attrs.items) |desc| {
-            allocator.free(desc.value);
-        }
-        self.static_text_attrs.deinit(allocator);
-
-        for (self.signal_text_attrs.items) |*desc| {
-            desc.deinit(allocator, ctx, roc_host, metrics);
-        }
-        self.signal_text_attrs.deinit(allocator);
-
-        for (self.static_custom_text_attrs.items) |desc| {
-            allocator.free(desc.name);
-            allocator.free(desc.value);
-        }
-        self.static_custom_text_attrs.deinit(allocator);
-
-        for (self.signal_custom_text_attrs.items) |*desc| {
-            desc.deinit(allocator, ctx, roc_host, metrics);
-        }
-        self.signal_custom_text_attrs.deinit(allocator);
-
-        for (self.signal_optional_custom_text_attrs.items) |*desc| {
-            desc.deinit(allocator, ctx, roc_host, metrics);
-        }
-        self.signal_optional_custom_text_attrs.deinit(allocator);
-
-        for (self.static_custom_bool_attrs.items) |desc| {
-            allocator.free(desc.name);
-        }
-        self.static_custom_bool_attrs.deinit(allocator);
-
-        for (self.signal_custom_bool_attrs.items) |*desc| {
-            desc.deinit(allocator, ctx, roc_host, metrics);
-        }
-        self.signal_custom_bool_attrs.deinit(allocator);
-
-        self.static_bool_attrs.deinit(allocator);
-
-        for (self.signal_bool_attrs.items) |*desc| {
-            desc.deinit(allocator, ctx, roc_host, metrics);
-        }
-        self.signal_bool_attrs.deinit(allocator);
-
-        for (self.on_changes.items) |*desc| {
-            desc.deinit(allocator, ctx, roc_host, metrics);
-        }
-        self.on_changes.deinit(allocator);
-
-        for (self.mounts.items) |desc| {
-            desc.deinit(roc_host, metrics);
-        }
-        self.mounts.deinit(allocator);
-
-        for (self.cleanups.items) |desc| {
-            allocator.free(desc.name);
-        }
-        self.cleanups.deinit(allocator);
-
-        for (self.events.items) |desc| {
-            desc.deinit(allocator, ctx, roc_host, metrics);
-        }
-        self.events.deinit(allocator);
+        deinitDescriptorLists(Stream, self, allocator, ctx, roc_host, metrics);
         deinitNamedEventIndexLists(Stream, self, allocator);
-
-        for (self.scope_sites.items) |desc| {
-            allocator.free(desc.binder_bindings);
-        }
-        self.scope_sites.deinit(allocator);
-
-        for (self.states.items) |desc| {
-            desc.deinit(roc_host, metrics);
-        }
-        self.states.deinit(allocator);
         self.state_binders.deinit(allocator);
-
-        for (self.whens.items) |*desc| {
-            desc.deinit(allocator, ctx, roc_host, metrics);
-        }
-        self.whens.deinit(allocator);
-
-        for (self.eaches.items) |*desc| {
-            desc.deinit(allocator, ctx, roc_host, metrics);
-        }
-        self.eaches.deinit(allocator);
-
         self.signal_records_by_token.deinit(allocator);
         self.signal_record_descriptor_uses_by_token.deinit(allocator);
         self.keyed_select_records_by_identity.deinit(allocator);
@@ -3049,13 +2826,11 @@ pub const Stream = struct {
         return self.custom_attr_indices_by_elem_id.items[elem_id.index()].items;
     }
 
-    fn retireStaticCustomTextAssumeCapacity(self: *Stream, retired: *Stream, indexes: []const usize) void {
+    fn retireStaticCustomTextAssumeCapacity(self: *Stream, retired: *RetiredDescriptors, indexes: []const usize) void {
         for (indexes) |index| {
             const removed = self.static_custom_text_attrs.swapRemove(index);
             self.removeCustomAttrIndex(removed.elem_id.raw(), removed.name, .{ .kind = .static_text, .index = index });
-            const retired_index = retired.static_custom_text_attrs.items.len;
             retired.static_custom_text_attrs.appendAssumeCapacity(removed);
-            retired.recordPreparedCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .static_text, .index = retired_index });
             if (index < self.static_custom_text_attrs.items.len) {
                 const moved = self.static_custom_text_attrs.items[index];
                 self.updateCustomAttrIndex(moved.elem_id.raw(), moved.name, .static_text, self.static_custom_text_attrs.items.len, index);
@@ -3063,15 +2838,12 @@ pub const Stream = struct {
         }
     }
 
-    fn retireSignalCustomTextAssumeCapacity(self: *Stream, retired: *Stream, indexes: []const usize) void {
+    fn retireSignalCustomTextAssumeCapacity(self: *Stream, retired: *RetiredDescriptors, indexes: []const usize) void {
         for (indexes) |index| {
             const removed = self.signal_custom_text_attrs.swapRemove(index);
             self.removeCustomAttrIndex(removed.elem_id.raw(), removed.name, .{ .kind = .signal_text, .index = index });
             self.forgetSignalRecordTree(removed.signal.record);
-            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
-            const retired_index = retired.signal_custom_text_attrs.items.len;
             retired.signal_custom_text_attrs.appendAssumeCapacity(removed);
-            retired.recordPreparedCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .signal_text, .index = retired_index });
             if (index < self.signal_custom_text_attrs.items.len) {
                 const moved = self.signal_custom_text_attrs.items[index];
                 self.updateCustomAttrIndex(moved.elem_id.raw(), moved.name, .signal_text, self.signal_custom_text_attrs.items.len, index);
@@ -3079,15 +2851,12 @@ pub const Stream = struct {
         }
     }
 
-    fn retireSignalOptionalCustomTextAssumeCapacity(self: *Stream, retired: *Stream, indexes: []const usize) void {
+    fn retireSignalOptionalCustomTextAssumeCapacity(self: *Stream, retired: *RetiredDescriptors, indexes: []const usize) void {
         for (indexes) |index| {
             const removed = self.signal_optional_custom_text_attrs.swapRemove(index);
             self.removeCustomAttrIndex(removed.elem_id.raw(), removed.name, .{ .kind = .signal_text_optional, .index = index });
             self.forgetSignalRecordTree(removed.signal.record);
-            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
-            const retired_index = retired.signal_optional_custom_text_attrs.items.len;
             retired.signal_optional_custom_text_attrs.appendAssumeCapacity(removed);
-            retired.recordPreparedCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .signal_text_optional, .index = retired_index });
             if (index < self.signal_optional_custom_text_attrs.items.len) {
                 const moved = self.signal_optional_custom_text_attrs.items[index];
                 self.updateCustomAttrIndex(moved.elem_id.raw(), moved.name, .signal_text_optional, self.signal_optional_custom_text_attrs.items.len, index);
@@ -3095,13 +2864,11 @@ pub const Stream = struct {
         }
     }
 
-    fn retireStaticCustomBoolAssumeCapacity(self: *Stream, retired: *Stream, indexes: []const usize) void {
+    fn retireStaticCustomBoolAssumeCapacity(self: *Stream, retired: *RetiredDescriptors, indexes: []const usize) void {
         for (indexes) |index| {
             const removed = self.static_custom_bool_attrs.swapRemove(index);
             self.removeCustomAttrIndex(removed.elem_id.raw(), removed.name, .{ .kind = .static_bool, .index = index });
-            const retired_index = retired.static_custom_bool_attrs.items.len;
             retired.static_custom_bool_attrs.appendAssumeCapacity(removed);
-            retired.recordPreparedCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .static_bool, .index = retired_index });
             if (index < self.static_custom_bool_attrs.items.len) {
                 const moved = self.static_custom_bool_attrs.items[index];
                 self.updateCustomAttrIndex(moved.elem_id.raw(), moved.name, .static_bool, self.static_custom_bool_attrs.items.len, index);
@@ -3109,15 +2876,12 @@ pub const Stream = struct {
         }
     }
 
-    fn retireSignalCustomBoolAssumeCapacity(self: *Stream, retired: *Stream, indexes: []const usize) void {
+    fn retireSignalCustomBoolAssumeCapacity(self: *Stream, retired: *RetiredDescriptors, indexes: []const usize) void {
         for (indexes) |index| {
             const removed = self.signal_custom_bool_attrs.swapRemove(index);
             self.removeCustomAttrIndex(removed.elem_id.raw(), removed.name, .{ .kind = .signal_bool, .index = index });
             self.forgetSignalRecordTree(removed.signal.record);
-            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
-            const retired_index = retired.signal_custom_bool_attrs.items.len;
             retired.signal_custom_bool_attrs.appendAssumeCapacity(removed);
-            retired.recordPreparedCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .signal_bool, .index = retired_index });
             if (index < self.signal_custom_bool_attrs.items.len) {
                 const moved = self.signal_custom_bool_attrs.items[index];
                 self.updateCustomAttrIndex(moved.elem_id.raw(), moved.name, .signal_bool, self.signal_custom_bool_attrs.items.len, index);
@@ -3616,6 +3380,215 @@ pub const Stream = struct {
     }
 };
 
+/// Compact retirement journal for one structural transaction.
+///
+/// Publication moves every displaced descriptor out of the committed stream
+/// instead of freeing it while faults are armed, and the journal is the
+/// destination that owns those payloads until the transaction is torn down.
+/// Nothing reads a retired descriptor back by identity, so the journal keeps
+/// only the descriptor lists themselves: no per-id dense index, no
+/// per-token record maps, and no per-scope ownership lists. Its storage is
+/// therefore proportional to the retired descriptor count alone, never to
+/// the live stream size or the highest retired id, while every committed
+/// index stays on `Stream` with O(1) access.
+pub const RetiredDescriptors = struct {
+    render_nodes: shared_buffer.List(StreamRenderNode) = .empty,
+    elements: shared_buffer.List(StreamElementDesc) = .empty,
+    text_nodes: shared_buffer.List(StreamTextNodeDesc) = .empty,
+    signal_text_nodes: shared_buffer.List(StreamSignalTextNodeDesc) = .empty,
+    static_text_attrs: shared_buffer.List(StaticTextAttrDesc) = .empty,
+    signal_text_attrs: shared_buffer.List(SignalTextAttrDesc) = .empty,
+    static_custom_text_attrs: shared_buffer.List(StaticCustomTextAttrDesc) = .empty,
+    signal_custom_text_attrs: shared_buffer.List(SignalCustomTextAttrDesc) = .empty,
+    signal_optional_custom_text_attrs: shared_buffer.List(SignalOptionalCustomTextAttrDesc) = .empty,
+    static_custom_bool_attrs: shared_buffer.List(StaticCustomBoolAttrDesc) = .empty,
+    signal_custom_bool_attrs: shared_buffer.List(SignalCustomBoolAttrDesc) = .empty,
+    static_bool_attrs: shared_buffer.List(StaticBoolAttrDesc) = .empty,
+    signal_bool_attrs: shared_buffer.List(SignalBoolAttrDesc) = .empty,
+    on_changes: shared_buffer.List(OnChangeDesc) = .empty,
+    mounts: shared_buffer.List(MountDesc) = .empty,
+    cleanups: shared_buffer.List(CleanupDesc) = .empty,
+    events: shared_buffer.List(EventDesc) = .empty,
+    scope_sites: shared_buffer.List(ScopeSiteDesc) = .empty,
+    states: shared_buffer.List(StateDesc) = .empty,
+    whens: shared_buffer.List(WhenDesc) = .empty,
+    eaches: shared_buffer.List(EachDesc) = .empty,
+
+    /// Exact number of descriptors a transaction will retire per family.
+    /// Every field defaults to zero so a caller names only the families a
+    /// removal touches.
+    pub const Counts = struct {
+        render_nodes: usize = 0,
+        elements: usize = 0,
+        text_nodes: usize = 0,
+        signal_text_nodes: usize = 0,
+        static_text_attrs: usize = 0,
+        signal_text_attrs: usize = 0,
+        static_custom_text_attrs: usize = 0,
+        signal_custom_text_attrs: usize = 0,
+        signal_optional_custom_text_attrs: usize = 0,
+        static_custom_bool_attrs: usize = 0,
+        signal_custom_bool_attrs: usize = 0,
+        static_bool_attrs: usize = 0,
+        signal_bool_attrs: usize = 0,
+        on_changes: usize = 0,
+        mounts: usize = 0,
+        cleanups: usize = 0,
+        events: usize = 0,
+        scope_sites: usize = 0,
+        states: usize = 0,
+        whens: usize = 0,
+        eaches: usize = 0,
+
+        /// Total retired descriptors across every family.
+        pub fn total(self: Counts) usize {
+            var sum: usize = 0;
+            inline for (@typeInfo(Counts).@"struct".fields) |field| sum += @field(self, field.name);
+            return sum;
+        }
+    };
+
+    /// Preflights exactly `counts` slots per family before the allocation-free
+    /// publication boundary. This is the only allocation the journal ever
+    /// performs; a refusal leaves both the journal and the committed stream
+    /// untouched, so the transaction can be abandoned or retried safely.
+    pub fn reserve(self: *RetiredDescriptors, allocator: std.mem.Allocator, counts: Counts) ReserveError!void {
+        inline for (@typeInfo(Counts).@"struct".fields) |field| {
+            const list = &@field(self, field.name);
+            const total = std.math.add(usize, list.items.len, @field(counts, field.name)) catch return error.ResourceLimit;
+            try list.ensureTotalCapacityPrecise(allocator, total);
+        }
+    }
+
+    /// Total slots currently reserved across every family. Tests use this to
+    /// pin the journal's footprint to the retired count.
+    pub fn reservedSlots(self: *const RetiredDescriptors) usize {
+        var sum: usize = 0;
+        inline for (@typeInfo(Counts).@"struct".fields) |field| sum += @field(self, field.name).capacity;
+        return sum;
+    }
+
+    /// Total descriptors the journal currently owns across every family.
+    pub fn retiredCount(self: *const RetiredDescriptors) usize {
+        var sum: usize = 0;
+        inline for (@typeInfo(Counts).@"struct".fields) |field| sum += @field(self, field.name).items.len;
+        return sum;
+    }
+
+    /// Drops every retired descriptor exactly as the committed stream would
+    /// have and releases the journal's storage. Retired payloads are owned
+    /// once, here, so a transaction that never committed drops nothing.
+    pub fn deinit(self: *RetiredDescriptors, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        deinitDescriptorLists(RetiredDescriptors, self, allocator, ctx, roc_host, metrics);
+        self.* = .{};
+    }
+};
+
+/// Drops every descriptor payload owned by `self` and releases the list
+/// storage. Shared by the committed stream and the retirement journal so a
+/// retired descriptor is torn down exactly as it would have been in place.
+fn deinitDescriptorLists(comptime T: type, self: *T, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+    self.render_nodes.deinit(allocator);
+
+    for (self.elements.items) |desc| {
+        allocator.free(desc.tag);
+    }
+    self.elements.deinit(allocator);
+
+    for (self.text_nodes.items) |desc| {
+        allocator.free(desc.value);
+    }
+    self.text_nodes.deinit(allocator);
+
+    for (self.signal_text_nodes.items) |*desc| {
+        desc.deinit(allocator, ctx, roc_host, metrics);
+    }
+    self.signal_text_nodes.deinit(allocator);
+
+    for (self.static_text_attrs.items) |desc| {
+        allocator.free(desc.value);
+    }
+    self.static_text_attrs.deinit(allocator);
+
+    for (self.signal_text_attrs.items) |*desc| {
+        desc.deinit(allocator, ctx, roc_host, metrics);
+    }
+    self.signal_text_attrs.deinit(allocator);
+
+    for (self.static_custom_text_attrs.items) |desc| {
+        allocator.free(desc.name);
+        allocator.free(desc.value);
+    }
+    self.static_custom_text_attrs.deinit(allocator);
+
+    for (self.signal_custom_text_attrs.items) |*desc| {
+        desc.deinit(allocator, ctx, roc_host, metrics);
+    }
+    self.signal_custom_text_attrs.deinit(allocator);
+
+    for (self.signal_optional_custom_text_attrs.items) |*desc| {
+        desc.deinit(allocator, ctx, roc_host, metrics);
+    }
+    self.signal_optional_custom_text_attrs.deinit(allocator);
+
+    for (self.static_custom_bool_attrs.items) |desc| {
+        allocator.free(desc.name);
+    }
+    self.static_custom_bool_attrs.deinit(allocator);
+
+    for (self.signal_custom_bool_attrs.items) |*desc| {
+        desc.deinit(allocator, ctx, roc_host, metrics);
+    }
+    self.signal_custom_bool_attrs.deinit(allocator);
+
+    self.static_bool_attrs.deinit(allocator);
+
+    for (self.signal_bool_attrs.items) |*desc| {
+        desc.deinit(allocator, ctx, roc_host, metrics);
+    }
+    self.signal_bool_attrs.deinit(allocator);
+
+    for (self.on_changes.items) |*desc| {
+        desc.deinit(allocator, ctx, roc_host, metrics);
+    }
+    self.on_changes.deinit(allocator);
+
+    for (self.mounts.items) |desc| {
+        desc.deinit(roc_host, metrics);
+    }
+    self.mounts.deinit(allocator);
+
+    for (self.cleanups.items) |desc| {
+        allocator.free(desc.name);
+    }
+    self.cleanups.deinit(allocator);
+
+    for (self.events.items) |desc| {
+        desc.deinit(allocator, ctx, roc_host, metrics);
+    }
+    self.events.deinit(allocator);
+
+    for (self.scope_sites.items) |desc| {
+        allocator.free(desc.binder_bindings);
+    }
+    self.scope_sites.deinit(allocator);
+
+    for (self.states.items) |desc| {
+        desc.deinit(roc_host, metrics);
+    }
+    self.states.deinit(allocator);
+
+    for (self.whens.items) |*desc| {
+        desc.deinit(allocator, ctx, roc_host, metrics);
+    }
+    self.whens.deinit(allocator);
+
+    for (self.eaches.items) |*desc| {
+        desc.deinit(allocator, ctx, roc_host, metrics);
+    }
+    self.eaches.deinit(allocator);
+}
+
 pub const DescriptorIndex = enum(u32) {
     none = std.math.maxInt(u32),
     _,
@@ -4055,7 +4028,7 @@ pub fn clearRenderNodeIndex(comptime StreamType: type, stream: *StreamType, elem
     removeRenderMetadataIfEmpty(StreamType, stream, elem_id);
 }
 
-fn commitSparseRenderNodes(comptime StreamType: type, stream: *StreamType, replacement: *StreamType, retired: *StreamType, removed_elem_ids: []const u64) void {
+fn commitSparseRenderNodes(comptime StreamType: type, stream: *StreamType, replacement: *StreamType, retired: anytype, removed_elem_ids: []const u64) void {
     for (removed_elem_ids) |raw_elem_id| {
         const elem_id = ElemId.fromRaw(raw_elem_id);
         const index = renderNodeIndex(StreamType, stream, elem_id) orelse @panic("sparse render retirement target was not indexed");
@@ -5531,7 +5504,7 @@ test "prepared state site replacement transfers ownership without allocation" {
     var metrics = TestMetrics{};
     var active: Stream = .{};
     var replacement: Stream = .{};
-    var retired: Stream = .{};
+    var retired: RetiredDescriptors = .{};
     defer active.deinit(allocator, &ctx, &roc_host, &metrics);
     defer replacement.deinit(allocator, &ctx, &roc_host, &metrics);
     defer retired.deinit(allocator, &ctx, &roc_host, &metrics);
@@ -5547,7 +5520,7 @@ test "prepared state site replacement transfers ownership without allocation" {
     try replacement.reserveScopeDescriptorOwnership(allocator, ScopeId.fromRaw(2), 0, 1);
     replacement.appendPreparedStateSite(try replacement.prepareScopeSite(allocator, NodeId.fromRaw(5), ScopeId.fromRaw(2), SiteOrdinal.fromRaw(0), ElemId.fromRaw(2), .state, &.{.{ .token = token, .node_id = NodeId.fromRaw(5) }}), replacement.prepareState(NodeId.fromRaw(5), .fromAbi(initial), std.mem.zeroes(HostValueCapability), &metrics));
     try active.reserveMovedStreamPublication(allocator, &replacement);
-    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 0, &.{}, &active, &.{0}, 1, 0, 0);
+    try retired.reserve(allocator, .{ .scope_sites = 1, .states = 1 });
 
     fault.configure(1);
     active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{0}, &.{0}, &.{}, &.{});
@@ -5580,7 +5553,7 @@ test "when descriptor replacement transfers ownership without allocation" {
     var metrics = TestMetrics{};
     var active: Stream = .{};
     var replacement: Stream = .{};
-    var retired: Stream = .{};
+    var retired: RetiredDescriptors = .{};
     defer active.deinit(allocator, &ctx, &roc_host, &metrics);
     defer replacement.deinit(allocator, &ctx, &roc_host, &metrics);
     defer retired.deinit(allocator, &ctx, &roc_host, &metrics);
@@ -5601,7 +5574,7 @@ test "when descriptor replacement transfers ownership without allocation" {
     try replacement.scope_sites.append(allocator, .{ .node_id = NodeId.fromRaw(5), .scope_id = ScopeId.fromRaw(2), .ordinal = SiteOrdinal.fromRaw(0), .parent_elem_id = ids.root_elem, .render_insert_index = 0, .kind = .when, .binder_bindings = try allocator.alloc(BinderBinding, 0) });
     setFreshIndex(replacement.descriptor_indexes_by_node_id.items[5].scope_sites.slot(.when), 0);
     try active.reserveMovedStreamPublication(allocator, &replacement);
-    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 1, 0, &.{}, &active, &.{0}, 0, 1, 0);
+    try retired.reserve(allocator, .{ .scope_sites = 1, .whens = 1 });
 
     fault.configure(1);
     active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{0}, &.{}, &.{0}, &.{});
@@ -5609,7 +5582,7 @@ test "when descriptor replacement transfers ownership without allocation" {
     try std.testing.expectEqual(NodeId.fromRaw(5), active.whens.items[0].node_id);
     try std.testing.expectEqual(@as(?usize, 0), active.nodeDescriptorIndex(NodeId.fromRaw(5)).?.when.get());
     try std.testing.expectEqual(NodeId.fromRaw(4), retired.whens.items[0].node_id);
-    try std.testing.expectEqual(@as(?usize, 0), retired.nodeDescriptorIndex(NodeId.fromRaw(4)).?.when.get());
+    try std.testing.expectEqual(@as(usize, 2), retired.retiredCount());
 }
 
 test "each descriptor replacement transfers ownership without allocation" {
@@ -5628,7 +5601,7 @@ test "each descriptor replacement transfers ownership without allocation" {
     var metrics = TestMetrics{};
     var active: Stream = .{};
     var replacement: Stream = .{};
-    var retired: Stream = .{};
+    var retired: RetiredDescriptors = .{};
     defer active.deinit(allocator, &ctx, &roc_host, &metrics);
     defer replacement.deinit(allocator, &ctx, &roc_host, &metrics);
     defer retired.deinit(allocator, &ctx, &roc_host, &metrics);
@@ -5655,7 +5628,7 @@ test "each descriptor replacement transfers ownership without allocation" {
     try replacement.scope_sites.append(allocator, .{ .node_id = NodeId.fromRaw(5), .scope_id = ScopeId.fromRaw(2), .ordinal = SiteOrdinal.fromRaw(0), .parent_elem_id = ids.root_elem, .render_insert_index = 0, .kind = .each, .binder_bindings = try allocator.alloc(BinderBinding, 0) });
     setFreshIndex(replacement.descriptor_indexes_by_node_id.items[5].scope_sites.slot(.each), 0);
     try active.reserveMovedStreamPublication(allocator, &replacement);
-    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 1, 0, &.{}, &active, &.{0}, 0, 0, 1);
+    try retired.reserve(allocator, .{ .scope_sites = 1, .eaches = 1 });
 
     fault.configure(1);
     active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{0}, &.{}, &.{}, &.{0});
@@ -5663,7 +5636,7 @@ test "each descriptor replacement transfers ownership without allocation" {
     try std.testing.expectEqual(NodeId.fromRaw(5), active.eaches.items[0].node_id);
     try std.testing.expectEqual(@as(?usize, 0), active.nodeDescriptorIndex(NodeId.fromRaw(5)).?.each.get());
     try std.testing.expectEqual(NodeId.fromRaw(4), retired.eaches.items[0].node_id);
-    try std.testing.expectEqual(@as(?usize, 0), retired.nodeDescriptorIndex(NodeId.fromRaw(4)).?.each.get());
+    try std.testing.expectEqual(@as(usize, 2), retired.retiredCount());
 }
 
 test "prepared when publication is allocation free" {
@@ -5713,7 +5686,7 @@ test "prepared fixed and named event replacement is allocation free" {
     var metrics = TestMetrics{};
     var active: Stream = .{};
     var replacement: Stream = .{};
-    var retired: Stream = .{};
+    var retired: RetiredDescriptors = .{};
     defer active.deinit(allocator, &ctx, &roc_host, &metrics);
     defer replacement.deinit(allocator, &ctx, &roc_host, &metrics);
     defer retired.deinit(allocator, &ctx, &roc_host, &metrics);
@@ -5731,7 +5704,7 @@ test "prepared fixed and named event replacement is allocation free" {
     replacement.appendNamedEvent(allocator, &ctx, &roc_host, &metrics, ElemId.fromRaw(2), "new", .{}, .auto, null, payload, new_handler);
 
     try active.reserveMovedStreamPublication(allocator, &replacement);
-    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 2, &.{1}, &active, &.{}, 0, 0, 0);
+    try retired.reserve(allocator, .{ .events = 2 });
     fault.configure(1);
     active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{ 1, 0 }, &.{}, &.{}, &.{}, &.{});
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
@@ -5740,7 +5713,8 @@ test "prepared fixed and named event replacement is allocation free" {
     try std.testing.expectEqualSlices(usize, &.{1}, active.namedEventIndices(ElemId.fromRaw(2)));
     try std.testing.expectEqual(@as(?usize, 0), active.elemDescriptorIndex(ElemId.fromRaw(2)).?.events.get(.click));
     try std.testing.expectEqualStrings("old", retired.events.items[0].named().?.name);
-    try std.testing.expectEqualSlices(usize, &.{0}, retired.namedEventIndices(ElemId.fromRaw(1)));
+    try std.testing.expectEqual(@as(usize, 2), retired.events.items.len);
+    try std.testing.expectEqual(@as(usize, 2), retired.reservedSlots());
 }
 
 test "field descriptor indexes round-trip by enum field" {
@@ -5911,7 +5885,7 @@ test "custom descriptor retirement and replacement repairs both indexes without 
     var metrics = TestMetrics{};
     var active: Stream = .{};
     var replacement: Stream = .{};
-    var retired: Stream = .{};
+    var retired: RetiredDescriptors = .{};
     defer active.deinit(allocator, &ctx, &roc_host, &metrics);
     defer replacement.deinit(allocator, &ctx, &roc_host, &metrics);
     defer retired.deinit(allocator, &ctx, &roc_host, &metrics);
@@ -5922,7 +5896,7 @@ test "custom descriptor retirement and replacement repairs both indexes without 
     replacement.appendStaticCustomTextAttr(allocator, ElemId.fromRaw(3), "data-new", "new");
     replacement.appendStaticCustomBoolAttr(allocator, ElemId.fromRaw(3), "open", true);
     try active.reserveMovedStreamPublication(allocator, &replacement);
-    try retired.reserveRetiredCustomPublication(allocator, &active, &.{1}, 1, 0, 0, 1, 0);
+    try retired.reserve(allocator, .{ .static_custom_text_attrs = 1, .static_custom_bool_attrs = 1 });
 
     fault.configure(1);
     active.commitCustomDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{0}, &.{}, &.{}, &.{0}, &.{});
@@ -6361,4 +6335,270 @@ test "sparse render membership retires and appends only exact ids" {
     defer allocator.free(children);
     try std.testing.expectEqualSlices(ElemId, &.{ ElemId.fromRaw(1), ElemId.fromRaw(4), ElemId.fromRaw(3) }, children);
     try std.testing.expect(!active.render_metadata_by_elem_id.contains(2));
+}
+
+const RetirementJournalFixture = struct {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        /// Opens a no-op capability frame for descriptor teardown.
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Closes the no-op capability frame.
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+
+    /// One measured retirement of a single element out of a live stream.
+    const Sample = struct {
+        reserved_slots: usize,
+        retired_count: usize,
+        requested_bytes: usize,
+        peak_transaction_bytes: usize,
+        freed_bytes: usize,
+        /// Bytes owned by the retired payloads themselves (here the element
+        /// tag), which teardown frees in addition to the journal storage.
+        retired_payload_bytes: usize,
+    };
+
+    fault: FaultAllocator,
+    ctx: TestCtx = .{},
+    env: abi.RocEnv,
+    roc_host: abi.RocHost,
+    metrics: TestMetrics = .{},
+    active: Stream = .{},
+    replacement: Stream = .{},
+    record: SignalRecord,
+
+    fn init(self: *RetirementJournalFixture) void {
+        self.fault = FaultAllocator.init(std.testing.allocator);
+        self.env = abi.RocEnv{ .allocator = self.fault.allocator(), .roc_io = abi.RocIo.default() };
+        self.roc_host = abi.makeRocHost(&self.env);
+        self.ctx = .{};
+        self.metrics = .{};
+        self.active = .{};
+        self.replacement = .{};
+        self.record = SignalRecord{ .ref_count = 1, .payload = .{ .const_value = .{
+            .init = .fromAbi(@as(HostSignalToken, @ptrFromInt(0x7000))),
+            .cap = retained.HostValueCapability{ .clone = null, .drop = null, .eq = null },
+        } } };
+    }
+
+    fn deinit(self: *RetirementJournalFixture) void {
+        const allocator = self.fault.allocator();
+        self.active.deinit(allocator, &self.ctx, &self.roc_host, &self.metrics);
+        self.replacement.deinit(allocator, &self.ctx, &self.roc_host, &self.metrics);
+    }
+
+    /// Appends `count` live elements with ids `1..count`, each in its own
+    /// scope, and binds `count` distinct signal tokens so the live token map
+    /// is as large as the live element set.
+    fn populate(self: *RetirementJournalFixture, count: usize) !void {
+        const allocator = self.fault.allocator();
+        try self.active.reservePreparedSignalRecordPublication(allocator, count);
+        for (1..count + 1) |raw| {
+            _ = self.active.appendElement(allocator, ElemId.fromRaw(raw), ElemId.fromRaw(0), ScopeId.fromRaw(@intCast(raw)), "div");
+            self.active.rememberSignalRecordAssumeCapacity(@ptrFromInt(0x1_0000 + raw * 16), &self.record);
+        }
+    }
+
+    /// Retires element `raw` through the journal exactly as the engine
+    /// does: reserve, then an allocation-free commit, then journal teardown.
+    /// Byte metrics cover reserve through teardown.
+    fn retireOne(self: *RetirementJournalFixture, raw: u64) !Sample {
+        const allocator = self.fault.allocator();
+        const element_index = self.active.elemDescriptorIndex(ElemId.fromRaw(raw)).?.element.get().?;
+        const removed_elem_ids = [_]u64{raw};
+        var journal: RetiredDescriptors = .{};
+        defer journal.deinit(allocator, &self.ctx, &self.roc_host, &self.metrics);
+
+        self.fault.resetByteMetrics();
+        const live_before = self.fault.bytes.live;
+        try journal.reserve(allocator, .{ .render_nodes = 1, .elements = 1 });
+        const reserved_slots = journal.reservedSlots();
+
+        self.fault.configure(1);
+        self.active.removeRenderChild(ElemId.fromRaw(0), ElemId.fromRaw(raw));
+        self.active.commitSparseRenderNodesAssumeCapacity(&self.replacement, &journal, &removed_elem_ids);
+        self.active.finishSparseRenderNodeRetirement(&removed_elem_ids);
+        self.active.commitStaticDescriptorReplacementAssumeCapacity(&self.replacement, &journal, &.{element_index}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{});
+        try std.testing.expectEqual(@as(usize, 0), self.fault.attempts);
+        self.fault.configure(null);
+        try std.testing.expectEqual(ElemId.fromRaw(raw), journal.elements.items[0].elem_id);
+        try std.testing.expect(self.active.elemDescriptorIndex(ElemId.fromRaw(raw)) == null or self.active.elemDescriptorIndex(ElemId.fromRaw(raw)).?.element.get() == null);
+
+        const retired_count = journal.retiredCount();
+        const retired_payload_bytes = journal.elements.items[0].tag.len;
+        journal.deinit(allocator, &self.ctx, &self.roc_host, &self.metrics);
+        return .{
+            .reserved_slots = reserved_slots,
+            .retired_count = retired_count,
+            .requested_bytes = self.fault.bytes.requested,
+            .peak_transaction_bytes = self.fault.bytes.peak - live_before,
+            .freed_bytes = self.fault.bytes.freed,
+            .retired_payload_bytes = retired_payload_bytes,
+        };
+    }
+};
+
+test "retirement journal footprint follows the retired element, not live size or highest id" {
+    // Baseline behaviour (issue #113): the retired stream reserved a dense
+    // per-id index through the highest retired id and a token map sized to
+    // every live signal token, so retiring id N out of N live rows cost
+    // O(N) even though one descriptor moved. The journal must reserve the
+    // same two slots and the same bytes for id 1 and id N at both 1k and 10k.
+    var reference: ?RetirementJournalFixture.Sample = null;
+    for ([_]usize{ 1_000, 10_000 }) |live_count| {
+        for ([_]u64{ 1, @intCast(live_count) }) |target| {
+            var fixture: RetirementJournalFixture = undefined;
+            fixture.init();
+            defer fixture.deinit();
+            try fixture.populate(live_count);
+            try std.testing.expectEqual(live_count, fixture.active.signal_records_by_token.count());
+
+            const sample = try fixture.retireOne(target);
+            try std.testing.expectEqual(@as(usize, 2), sample.reserved_slots);
+            try std.testing.expectEqual(@as(usize, 2), sample.retired_count);
+            try std.testing.expectEqual(live_count - 1, fixture.active.elements.items.len);
+            try std.testing.expectEqual(live_count - 1, fixture.active.render_nodes.items.len);
+            // Teardown returned every byte the transaction requested plus the
+            // retired payload it now owned: no residue, no double drop.
+            try std.testing.expectEqual(sample.requested_bytes + sample.retired_payload_bytes, sample.freed_bytes);
+            if (reference) |expected| {
+                try std.testing.expectEqual(expected.reserved_slots, sample.reserved_slots);
+                try std.testing.expectEqual(expected.requested_bytes, sample.requested_bytes);
+                try std.testing.expectEqual(expected.peak_transaction_bytes, sample.peak_transaction_bytes);
+                try std.testing.expectEqual(expected.freed_bytes, sample.freed_bytes);
+            } else reference = sample;
+        }
+    }
+    // Two descriptor slots: one render node and one element.
+    try std.testing.expectEqual(@sizeOf(StreamRenderNode) + @sizeOf(StreamElementDesc), reference.?.requested_bytes);
+}
+
+test "retirement journal reservation for a fixed tiny subtree ignores a large unrelated live subtree" {
+    // A three-descriptor subtree (element, text, static attribute) is retired
+    // while an unrelated subtree of 1 or 10_000 elements stays live. The
+    // journal reserves exactly three slots and the same bytes in both cases.
+    var reference_requested: ?usize = null;
+    for ([_]usize{ 1, 10_000 }) |unrelated_count| {
+        var fixture: RetirementJournalFixture = undefined;
+        fixture.init();
+        defer fixture.deinit();
+        const allocator = fixture.fault.allocator();
+        try fixture.populate(unrelated_count);
+        const tiny_root: u64 = @intCast(unrelated_count + 1);
+        const tiny_text: u64 = tiny_root + 1;
+        const tiny_scope = ScopeId.fromRaw(@intCast(tiny_root));
+        _ = fixture.active.appendElement(allocator, ElemId.fromRaw(tiny_root), ElemId.fromRaw(0), tiny_scope, "span");
+        fixture.active.appendTextNode(allocator, ElemId.fromRaw(tiny_text), ElemId.fromRaw(tiny_root), tiny_scope, "tiny");
+        fixture.active.appendStaticTextAttr(allocator, ElemId.fromRaw(tiny_root), .label, "tiny");
+
+        const element_index = fixture.active.elemDescriptorIndex(ElemId.fromRaw(tiny_root)).?.element.get().?;
+        const text_index = fixture.active.elemDescriptorIndex(ElemId.fromRaw(tiny_text)).?.text_node.get().?;
+        const attr_index = fixture.active.elemDescriptorIndex(ElemId.fromRaw(tiny_root)).?.static_text_attrs.get(.label).?;
+        var journal: RetiredDescriptors = .{};
+        defer journal.deinit(allocator, &fixture.ctx, &fixture.roc_host, &fixture.metrics);
+
+        fixture.fault.resetByteMetrics();
+        try journal.reserve(allocator, .{ .render_nodes = 2, .elements = 1, .text_nodes = 1, .static_text_attrs = 1 });
+        const requested = fixture.fault.bytes.requested;
+        try std.testing.expectEqual(@as(usize, 5), journal.reservedSlots());
+        if (reference_requested) |expected| try std.testing.expectEqual(expected, requested) else reference_requested = requested;
+
+        fixture.fault.configure(1);
+        fixture.active.removeRenderChild(ElemId.fromRaw(tiny_root), ElemId.fromRaw(tiny_text));
+        fixture.active.removeRenderChild(ElemId.fromRaw(0), ElemId.fromRaw(tiny_root));
+        const removed = [_]u64{ tiny_text, tiny_root };
+        fixture.active.commitSparseRenderNodesAssumeCapacity(&fixture.replacement, &journal, &removed);
+        fixture.active.finishSparseRenderNodeRetirement(&removed);
+        fixture.active.commitStaticDescriptorReplacementAssumeCapacity(&fixture.replacement, &journal, &.{element_index}, &.{text_index}, &.{attr_index}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{});
+        try std.testing.expectEqual(@as(usize, 0), fixture.fault.attempts);
+        fixture.fault.configure(null);
+        try std.testing.expectEqual(@as(usize, 5), journal.retiredCount());
+        try std.testing.expectEqual(unrelated_count, fixture.active.elements.items.len);
+        try std.testing.expectEqualStrings("tiny", journal.text_nodes.items[0].value);
+        try std.testing.expectEqualStrings("tiny", journal.static_text_attrs.items[0].value);
+    }
+}
+
+test "retirement journal reservation refuses at every allocation without touching the committed stream" {
+    var fixture: RetirementJournalFixture = undefined;
+    fixture.init();
+    defer fixture.deinit();
+    const allocator = fixture.fault.allocator();
+    try fixture.populate(8);
+    const counts = RetiredDescriptors.Counts{ .render_nodes = 1, .elements = 1, .text_nodes = 2, .events = 3, .scope_sites = 1, .states = 1, .on_changes = 1 };
+
+    // Count the allocation points of a successful reservation.
+    var probe: RetiredDescriptors = .{};
+    fixture.fault.configure(null);
+    fixture.fault.attempts = 0;
+    try probe.reserve(allocator, counts);
+    const attempt_count = fixture.fault.attempts;
+    try std.testing.expectEqual(@as(usize, 7), attempt_count);
+    try std.testing.expectEqual(counts.total(), probe.reservedSlots());
+    probe.deinit(allocator, &fixture.ctx, &fixture.roc_host, &fixture.metrics);
+
+    const live_before = fixture.fault.bytes.live;
+    for (1..attempt_count + 1) |failure_number| {
+        var journal: RetiredDescriptors = .{};
+        fixture.fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, journal.reserve(allocator, counts));
+        try std.testing.expectEqual(@as(usize, 1), fixture.fault.induced_failures);
+        // The refusal is recoverable: nothing was retired, the committed
+        // stream is untouched, and teardown releases the partial reservation.
+        try std.testing.expectEqual(@as(usize, 0), journal.retiredCount());
+        try std.testing.expectEqual(@as(usize, 8), fixture.active.elements.items.len);
+        try std.testing.expectEqual(@as(usize, 8), fixture.active.render_nodes.items.len);
+        fixture.fault.configure(null);
+        journal.deinit(allocator, &fixture.ctx, &fixture.roc_host, &fixture.metrics);
+        try std.testing.expectEqual(live_before, fixture.fault.bytes.live);
+
+        // The same journal value retries successfully afterwards.
+        try journal.reserve(allocator, counts);
+        try std.testing.expectEqual(counts.total(), journal.reservedSlots());
+        journal.deinit(allocator, &fixture.ctx, &fixture.roc_host, &fixture.metrics);
+        try std.testing.expectEqual(live_before, fixture.fault.bytes.live);
+    }
+
+    // With reservation complete the element retires through the armed
+    // allocator, so no partial publication can be interrupted by OOM.
+    const sample = try fixture.retireOne(5);
+    try std.testing.expectEqual(@as(usize, 2), sample.retired_count);
+    try std.testing.expectEqual(@as(usize, 7), fixture.active.elements.items.len);
+}
+
+test "retirement journal stays bounded across one thousand create, remove, and reinsert cycles" {
+    var fixture: RetirementJournalFixture = undefined;
+    fixture.init();
+    defer fixture.deinit();
+    const allocator = fixture.fault.allocator();
+    try fixture.populate(64);
+    const churn_id: u64 = 65;
+    const churn_scope = ScopeId.fromRaw(65);
+
+    const warmup = 8;
+    const cycles = 1_000;
+    var live_after_warmup: usize = 0;
+    var peak_after_warmup: usize = 0;
+    var slots_after_warmup: usize = 0;
+    for (0..warmup + cycles) |cycle| {
+        _ = fixture.active.appendElement(allocator, ElemId.fromRaw(churn_id), ElemId.fromRaw(0), churn_scope, "li");
+        const sample = try fixture.retireOne(churn_id);
+        try std.testing.expectEqual(@as(usize, 2), sample.reserved_slots);
+        try std.testing.expectEqual(@as(usize, 2), sample.retired_count);
+        try std.testing.expectEqual(sample.requested_bytes + sample.retired_payload_bytes, sample.freed_bytes);
+        const retained_slots = fixture.active.elements.capacity + fixture.active.render_nodes.capacity + fixture.active.descriptor_indexes_by_elem_id.capacity;
+        if (cycle == warmup) {
+            live_after_warmup = fixture.fault.bytes.live;
+            peak_after_warmup = sample.peak_transaction_bytes;
+            slots_after_warmup = retained_slots;
+        } else if (cycle > warmup) {
+            // Live bytes, retained capacity, and the per-transaction peak
+            // are all flat after warmup: no ownership residue accumulates.
+            try std.testing.expectEqual(live_after_warmup, fixture.fault.bytes.live);
+            try std.testing.expectEqual(peak_after_warmup, sample.peak_transaction_bytes);
+            try std.testing.expectEqual(slots_after_warmup, retained_slots);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 64), fixture.active.elements.items.len);
+    try std.testing.expectEqual(@sizeOf(StreamRenderNode) + @sizeOf(StreamElementDesc), peak_after_warmup);
 }

@@ -552,6 +552,7 @@ const EngineScratch = engine_scratch.Scratch;
 // host drives ingestion and consumes the stream to render.
 
 pub const HostNodeDescriptorStream = descriptor_stream.Stream;
+pub const HostRetiredDescriptors = descriptor_stream.RetiredDescriptors;
 
 // Host-agnostic readers over a descriptor stream. These operate purely on the
 // stream's descriptor tables and panic on internal invariant violations, so they
@@ -8005,44 +8006,37 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
-        fn prepareRetiredStreamCapacity(engine: *Self, allocator: std.mem.Allocator, retired: *HostNodeDescriptorStream, removal: *const structural_splice.PreparedRemoval, retired_scope_ids: anytype) CollectionError!void {
+        /// Reserves the retirement journal for exactly the descriptors a
+        /// prepared removal displaces. The journal owns retired payloads
+        /// from the allocation-free commit until the plan is torn down, so
+        /// this preflight is sized by the removal alone: it never consults
+        /// the live stream's token count or the highest retired id.
+        fn prepareRetiredStreamCapacity(allocator: std.mem.Allocator, retired: *HostRetiredDescriptors, removal: *const structural_splice.PreparedRemoval) CollectionError!void {
             const indexes = &removal.descriptor_indexes;
-            try retired.reserveRetiredStaticPublication(
-                allocator,
-                indexes.element_indexes.items.len,
-                indexes.text_node_indexes.items.len,
-                indexes.static_text_attr_indexes.items.len,
-                indexes.static_bool_attr_indexes.items.len,
-                indexes.signal_text_node_indexes.items.len,
-                indexes.signal_text_attr_indexes.items.len,
-                indexes.signal_bool_attr_indexes.items.len,
-                engine.active_stream.signal_records_by_token.count(),
-                indexes.event_indexes.items.len,
-                removal.scan.removed_elem_ids,
-                &engine.active_stream,
-                removal.node_indexes.scope_site_indexes.items,
-                removal.node_indexes.state_indexes.items.len,
-                removal.node_indexes.when_indexes.items.len,
-                removal.node_indexes.each_indexes.items.len,
-            );
-            try retired.reserveRetiredCustomPublication(
-                allocator,
-                &engine.active_stream,
-                removal.scan.removed_elem_ids,
-                indexes.static_custom_text_attr_indexes.items.len,
-                indexes.signal_custom_text_attr_indexes.items.len,
-                indexes.signal_optional_custom_text_attr_indexes.items.len,
-                indexes.static_custom_bool_attr_indexes.items.len,
-                indexes.signal_custom_bool_attr_indexes.items.len,
-            );
-            retired.reserveRetiredLifecyclePublication(
-                allocator,
-                &engine.active_stream,
-                retired_scope_ids,
-                removal.node_indexes.on_change_indexes.items.len,
-                removal.node_indexes.mount_indexes.items.len,
-                removal.node_indexes.cleanup_indexes.items.len,
-            ) catch return error.OutOfMemory;
+            const nodes = &removal.node_indexes;
+            try retired.reserve(allocator, .{
+                .render_nodes = removal.scan.removed_elem_ids.len,
+                .elements = indexes.element_indexes.items.len,
+                .text_nodes = indexes.text_node_indexes.items.len,
+                .static_text_attrs = indexes.static_text_attr_indexes.items.len,
+                .static_bool_attrs = indexes.static_bool_attr_indexes.items.len,
+                .signal_text_nodes = indexes.signal_text_node_indexes.items.len,
+                .signal_text_attrs = indexes.signal_text_attr_indexes.items.len,
+                .signal_bool_attrs = indexes.signal_bool_attr_indexes.items.len,
+                .events = indexes.event_indexes.items.len,
+                .static_custom_text_attrs = indexes.static_custom_text_attr_indexes.items.len,
+                .signal_custom_text_attrs = indexes.signal_custom_text_attr_indexes.items.len,
+                .signal_optional_custom_text_attrs = indexes.signal_optional_custom_text_attr_indexes.items.len,
+                .static_custom_bool_attrs = indexes.static_custom_bool_attr_indexes.items.len,
+                .signal_custom_bool_attrs = indexes.signal_custom_bool_attr_indexes.items.len,
+                .scope_sites = nodes.scope_site_indexes.items.len,
+                .states = nodes.state_indexes.items.len,
+                .whens = nodes.when_indexes.items.len,
+                .eaches = nodes.each_indexes.items.len,
+                .on_changes = nodes.on_change_indexes.items.len,
+                .mounts = nodes.mount_indexes.items.len,
+                .cleanups = nodes.cleanup_indexes.items.len,
+            });
         }
 
         fn collectRetiredGraphRootsForRemoval(engine: *Self, allocator: std.mem.Allocator, removal: *const structural_splice.PreparedRemoval, roots: *shared_buffer.List(*HostSignalRecord)) CollectionError!void {
@@ -8934,7 +8928,7 @@ pub fn Engine(comptime Ctx: type) type {
             row_retirement: ?each_runtime.PreparedRowRemovals = null,
             retired_stable_generations: shared_buffer.List(*each_generation.Generation) = .empty,
             effects_retirement: ?PreparedEffectRetirements = null,
-            retired_stream: HostNodeDescriptorStream = .{},
+            retired_stream: HostRetiredDescriptors = .{},
             publication: ?structural_splice.PreparedPublicationDeltas = null,
             final_render_topology: ?PreparedFinalRenderTopology = null,
             render_layout_plan: ?PreparedRenderLayoutPlan = null,
@@ -9550,7 +9544,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer plan.retired_active_events.deinit(allocator);
                 if (cache_overlay) |overlay| try engine.reserveCacheBearingDescriptorPublication(allocator, &plan.replacement.stream, overlay);
                 try engine.active_stream.reserveMovedStreamPublication(allocator, &plan.replacement.stream);
-                try prepareRetiredStreamCapacity(engine, allocator, &plan.retired_stream, &plan.removal.?.removal, retirement_scope_ids);
+                try prepareRetiredStreamCapacity(allocator, &plan.retired_stream, &plan.removal.?.removal);
                 const on_change_base = std.math.sub(usize, engine.active_stream.on_changes.items.len, plan.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, engine.active_stream.mounts.items.len, plan.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 plan.publication = structural_splice.preparePublicationDeltas(allocator, plan.replacement.stream.render_nodes.items, &.{}, on_change_base, plan.replacement.stream.on_changes.items.len, mount_base, plan.replacement.stream.mounts.items.len) catch return error.OutOfMemory;
@@ -9772,7 +9766,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer self.retired_active_events.deinit(allocator);
                 if (cache_overlay) |overlay| try self.engine.reserveCacheBearingDescriptorPublication(allocator, &self.replacement.stream, overlay);
                 try self.engine.active_stream.reserveMovedStreamPublication(allocator, &self.replacement.stream);
-                try prepareRetiredStreamCapacity(self.engine, allocator, &self.retired_stream, &self.removal.?.removal, retirement_scope_ids);
+                try prepareRetiredStreamCapacity(allocator, &self.retired_stream, &self.removal.?.removal);
                 const on_change_base = std.math.sub(usize, self.engine.active_stream.on_changes.items.len, self.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, self.engine.active_stream.mounts.items.len, self.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 self.publication = structural_splice.preparePublicationDeltas(allocator, self.replacement.stream.render_nodes.items, &.{}, on_change_base, self.replacement.stream.on_changes.items.len, mount_base, self.replacement.stream.mounts.items.len) catch return error.OutOfMemory;
@@ -10309,7 +10303,7 @@ pub fn Engine(comptime Ctx: type) type {
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
             replacement_stream: HostNodeDescriptorStream = .{},
-            retired_stream: HostNodeDescriptorStream = .{},
+            retired_stream: HostRetiredDescriptors = .{},
             collection: StagedCollectionCtx = undefined,
             replacement_scope_id: u64 = 0,
             retired_scope_id: u64 = 0,
@@ -10418,7 +10412,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.free(plan.state_cell_indexes);
                 try state_retirement.reserveRetired(allocator, &plan.retired_state_cells);
                 errdefer plan.retired_state_cells.deinit(allocator);
-                try prepareRetiredStreamCapacity(engine_ptr, allocator, &plan.retired_stream, &plan.removal.?, plan.scope_retirement.?.scope_ids);
+                try prepareRetiredStreamCapacity(allocator, &plan.retired_stream, &plan.removal.?);
                 const on_change_base = std.math.sub(usize, engine_ptr.active_stream.on_changes.items.len, plan.removal.?.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, engine_ptr.active_stream.mounts.items.len, plan.removal.?.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 plan.publication = structural_splice.preparePublicationDeltas(
@@ -20613,4 +20607,82 @@ test "native shortcuts distinguish modifiers and reject conflicting event policy
     try std.testing.expectError(error.InvalidDescriptor, collection.appendAttr(&roc_host, scope, elem, invalid, bindings));
     try std.testing.expectEqual(@as(usize, 2), collection.prepared_events.items.len);
     try std.testing.expectEqual(@as(usize, 0), stream.events.items.len);
+}
+
+test "retirement journal reservation is sized by the prepared removal, never by live tokens or the highest retired id" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    // Baseline (issue #113): `prepareRetiredStreamCapacity` handed the whole
+    // live token count to the retired stream and the retired stream
+    // initialized dense per-id metadata through the highest retired id, so
+    // retiring row N of N cost O(N) bytes. The journal reserves two slots
+    // (one render node, one element) and the same bytes for id 1 and id N
+    // at 1k and at 10k live rows and tokens.
+    var reference_requested: ?usize = null;
+    for ([_]usize{ 1_000, 10_000 }) |live_count| {
+        for ([_]u64{ 1, @intCast(live_count) }) |target| {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            const allocator = fault.allocator();
+            var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+            var roc_host = abi.makeRocHost(&env);
+            var ctx = VerifyCtxHost{ .allocator = allocator };
+            var engine = Engine(VerifyCtx).init();
+            defer engine.scopes.deinit(allocator);
+            defer engine.active_stream.deinit(allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+            var record = HostSignalRecord{ .ref_count = 1, .payload = .{ .const_value = .{
+                .init = .fromAbi(@as(HostSignalToken, @ptrFromInt(0x7000))),
+                .cap = HostValueCapability{ .clone = null, .drop = null, .eq = null },
+            } } };
+            try engine.active_stream.reservePreparedSignalRecordPublication(allocator, live_count);
+            for (1..live_count + 1) |raw| {
+                _ = engine.active_stream.appendElement(allocator, ids.ElemId.fromRaw(raw), ids.ElemId.fromRaw(0), ids.ScopeId.fromRaw(@intCast(raw)), "div");
+                engine.active_stream.rememberSignalRecordAssumeCapacity(@ptrFromInt(0x1_0000 + raw * 16), &record);
+            }
+            try std.testing.expectEqual(live_count, engine.active_stream.signal_records_by_token.count());
+
+            var removal = try structural_splice.prepareScopeOwnedRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, &.{ids.ScopeId.fromRaw(@intCast(target))});
+            defer removal.deinit(allocator);
+            try std.testing.expectEqualSlices(u64, &.{target}, removal.scan.removed_elem_ids);
+            try std.testing.expectEqual(@as(usize, 1), removal.descriptor_indexes.element_indexes.items.len);
+
+            var journal: HostRetiredDescriptors = .{};
+            defer journal.deinit(allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+            fault.configure(null);
+            fault.resetByteMetrics();
+            try Engine(VerifyCtx).prepareRetiredStreamCapacity(allocator, &journal, &removal);
+            try std.testing.expectEqual(@as(usize, 2), journal.reservedSlots());
+            try std.testing.expectEqual(@as(usize, 2), fault.attempts);
+            const requested = fault.bytes.requested;
+            try std.testing.expectEqual(@sizeOf(HostRenderNode) + @sizeOf(HostNodeDescriptorStream.ElementDesc), requested);
+            if (reference_requested) |expected| try std.testing.expectEqual(expected, requested) else reference_requested = requested;
+
+            // Publication is allocation free against the reserved journal.
+            fault.configure(1);
+            engine.active_stream.removeRenderChild(ids.ElemId.fromRaw(0), ids.ElemId.fromRaw(target));
+            var replacement: HostNodeDescriptorStream = .{};
+            defer replacement.deinit(allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+            engine.active_stream.commitSparseRenderNodesAssumeCapacity(&replacement, &journal, removal.scan.removed_elem_ids);
+            engine.active_stream.finishSparseRenderNodeRetirement(removal.scan.removed_elem_ids);
+            engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
+                &replacement,
+                &journal,
+                removal.descriptor_indexes.element_indexes.items,
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+            );
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            fault.configure(null);
+            try std.testing.expectEqual(@as(usize, 2), journal.retiredCount());
+            try std.testing.expectEqual(live_count - 1, engine.active_stream.elements.items.len);
+            try std.testing.expectEqual(ids.ElemId.fromRaw(target), journal.elements.items[0].elem_id);
+        }
+    }
 }
