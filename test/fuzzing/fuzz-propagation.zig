@@ -117,7 +117,7 @@
 //! # Seams
 //!
 //! The graph is built directly out of `signal_records.Record` values and
-//! registered with `active_signal_graph.appendNode` / `appendDependentId`, then
+//! registered with `active_signal_graph.appendNode` / `appendInputEdges`, then
 //! driven through the engine's own scheduler and evaluator:
 //! `DirtyRecordQueue.collectForRoots` -> `propagateDirtyActiveSignalRecordIds`
 //! -> `evalDirtyHostSignalRecord`. Sources are dirtied the way
@@ -726,10 +726,8 @@ const Harness = struct {
         for (program.nodes, 0..) |node, index| {
             _ = active_graph.appendNode(Record, gpa, &self.engine.active_signal_graph, &self.records[index], node.rank);
         }
-        for (program.nodes, 0..) |node, index| {
-            for (node.inputs) |input| {
-                active_graph.appendDependentId(Record, gpa, self.engine.active_signal_graph.items, input, @intCast(index));
-            }
+        for (program.nodes, 0..) |_, index| {
+            active_graph.appendInputEdges(Record, gpa, self.engine.active_signal_graph.items, @intCast(index));
         }
     }
 
@@ -740,7 +738,10 @@ const Harness = struct {
         for (self.records) |*record| {
             record.cachedSlot().?.deinit(&self.host, &self.roc_host, &self.engine.pending_roc_metrics);
         }
-        for (self.engine.active_signal_graph.items) |*node| node.dependents.deinit(gpa);
+        for (self.engine.active_signal_graph.items) |*node| {
+            node.dependents.deinit(gpa);
+            node.input_slots.deinit(gpa);
+        }
         self.engine.active_signal_graph.deinit(gpa);
         self.engine.scratch.deinit(gpa);
         self.engine.render_cache.deinit(&self.host);

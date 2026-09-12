@@ -9907,7 +9907,7 @@ pub fn Engine(comptime Ctx: type) type {
                         error.InvalidRelease => return error.InvalidSignalGraphRelease,
                     };
                     errdefer if (self.graph_release) |*release| release.deinit(allocator);
-                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, &self.graph_release.?.remap, replacement_roots.items) catch |err| switch (err) {
+                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, &self.graph_release.?, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
@@ -10014,7 +10014,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.change_route_appends.?.apply(&self.engine.active_change_signal_routes, graph_count);
                 self.structural_route_appends.?.apply(&self.engine.active_structural_signal_routes, graph_count);
                 var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
-                release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
+                release.releaseRetired(Ctx.allocator(self.host_ctx), self.engine.active_signal_graph.items, &lifecycle);
                 append.registerAppendedEffects(&lifecycle);
                 self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?, append);
             }
@@ -10574,7 +10574,7 @@ pub fn Engine(comptime Ctx: type) type {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidRelease => return error.InvalidSignalGraphRelease,
                     };
-                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, &self.graph_release.?.remap, replacement_roots.items) catch |err| switch (err) {
+                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, &self.graph_release.?, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
@@ -11165,7 +11165,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.change_route_appends.?.apply(&self.engine.active_change_signal_routes, graph_count);
                 self.structural_route_appends.?.apply(&self.engine.active_structural_signal_routes, graph_count);
                 var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
-                release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
+                release.releaseRetired(Ctx.allocator(self.host_ctx), self.engine.active_signal_graph.items, &lifecycle);
                 append.registerAppendedEffects(&lifecycle);
                 self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?, append);
             }
@@ -11518,11 +11518,6 @@ pub fn Engine(comptime Ctx: type) type {
             const record_id = active_graph.appendNode(HostSignalRecord, Ctx.allocator(ctx), &self.active_signal_graph, record, rank);
             self.pending_roc_metrics.bump(.active_graph_records_rebuilt, 1);
             return record_id;
-        }
-
-        /// Appends active signal dependent id using capacity that must already satisfy the caller's transaction contract.
-        pub fn appendActiveSignalDependentId(self: *Self, ctx: Ctx.Handle, input_record_id: u64, dependent_record_id: u64) void {
-            active_graph.appendDependentId(HostSignalRecord, Ctx.allocator(ctx), self.active_signal_graph.items, input_record_id, dependent_record_id);
         }
 
         /// Appends active source signal route using capacity that must already satisfy the caller's transaction contract.

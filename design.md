@@ -1590,7 +1590,10 @@ opaque Roc value, after which the host hashes and compares those bytes itself. A
 generic key constrained only by `is_eq` cannot provide a host hash index and
 would force the forbidden O(M) member scan.
 
-Adjacency, ranks, and the dirty set are dense integer-indexed structures. The
+Adjacency, ranks, and the dirty set are dense integer-indexed structures.
+Adjacency lists are unordered sets: each node records the slot its edge occupies
+in every input's list, so dropping or renumbering one edge is O(1) regardless
+of that input's fan-out, and propagation order comes from ranks alone. The
 callable address is used only to preserve signal aliasing while descriptors are
 ingested; active graph/node/runtime identities remain host-owned dense integers.
 The app provides text key material to `Ui.each` and `Signal.select`; graph
