@@ -44,7 +44,8 @@ code under test, the corpus replayed, the defect reverted:
 
 | Target | Mutants caught |
 |---|---|
-| `propagation` | 4 / 4 |
+| `propagation` | 4 / 4 propagation, 5 / 5 fault injection |
+| `rows-transitions` | 5 / 5 fault injection |
 | `ownership` | 8 / 8 |
 | `keyed-scopes` | 14 / 14 |
 | `boundary` | 6 / 6 |
@@ -57,6 +58,15 @@ could tell a parser that enforces those rules from one that does not. The fourth
 angle — build a tree that breaks exactly one rule, require exactly that rule's
 error — was added in response, and is the reason to mutate rather than to admire
 a green run.
+
+The fault-injection rows count defects reachable only through a refused
+preparation: a refusal that keeps its row claims or index reservations, an
+unwind that leaks the half-built transition or overlay, a refused `combine`
+that never drops the child values it already cloned, a preparation that stamps
+a record or publishes the owner token or a metrics counter before commit, and a
+commit that reaches the allocator. Two of them were caught only by fresh random
+inputs at first, which is why `combine-refusal-must-drop-children` and
+`fork-abort-claims-reserved-before-preflight` are now in the corpus.
 
 When adding or changing an oracle, mutate the code it is meant to watch and
 confirm the target notices. A mutation that no input reaches is a coverage gap
