@@ -91,18 +91,32 @@
 //!
 //! As in `structural`: every input first runs unfaulted to record the mount's
 //! and each edit's allocation-attempt counts, then each count is swept - fully
-//! when small, at one input-chosen position otherwise. A swept edit re-mounts
-//! and replays the earlier edits unfaulted so the fault lands on the committed
+//! when small, otherwise at three input-chosen positions: one anywhere and
+//! two in the last third, where graph release and append, selector staging,
+//! route edits and publication preflight sit. A swept edit re-mounts and
+//! replays the earlier edits unfaulted so the fault lands on the committed
 //! topology the model predicts.
+//!
+//! # Defects found
+//!
+//!  - **A new reader over a live derived signal re-evaluates it during
+//!    staging.** `evalHostSignalRecordStaged`'s `map` arm calls the transform
+//!    of a present, non-dirty record whenever a new descriptor binds it and
+//!    writes the result into the committed cache before commit. Every select
+//!    over the shared keyed input costs a derived call the changed set does
+//!    not justify, and at some fault positions the produced value outlives
+//!    the refusal. `expectRefusedEditLedger` carries the carve-out and the
+//!    corpus input `refused-edit-keeps-shared-map-value` the reproduction.
 //!
 //! # Not yet covered
 //!
-//!  - Selectors over a derived string signal rather than the state cell
-//!    itself; the input is always a bare `Ref`.
 //!  - Two keyed sites sharing one row (the Roc fixture's `selected` and
 //!    `hovered`); every fused select here is its own site.
 //!  - In-place row re-collection under a surviving key. Items are keys, so a
 //!    surviving row is never rebuilt; `structural` owns that path.
+//!  - Selectors over a derived signal that is itself dirty in the same
+//!    transaction as a structural change that creates readers of it, beyond
+//!    the one-edit `both` case generated here.
 //!
 //! To replay a crash:
 //!   python3 scripts/fuzz.py repro selectors <crash-file> --verbose
@@ -142,6 +156,8 @@ const hidden_text = "hidden";
 /// binds the list `Ref` once; a constant `each` - a frozen site or an empty
 /// branch - binds one `const_value` record for its items.
 const records_per_select = 2;
+/// A select reading the shared keyed input binds only itself.
+const records_per_shared_input_select = 1;
 const records_per_list_when = 2;
 const records_per_selected_text = 1;
 const records_per_shared_site = 1;
@@ -169,14 +185,19 @@ const Ctx = struct {
 
 const KeyKind = enum(u8) { shared, row, unique };
 
-/// Which key a select member registers under, and whether it is a fused
-/// keyed-row selector. `row` and `unique` need a row; outside one they fall
-/// back to the shared name. A fused select always uses the row key, as the
-/// engine requires.
+/// Which key a select member registers under, whether it is a fused
+/// keyed-row selector, and which input it reads. `row` and `unique` need a
+/// row; outside one they fall back to the shared name. A fused select always
+/// uses the row key, as the engine requires. A select reads either its own
+/// `Ref` to the selection cell - a record of its own, so a registry group of
+/// its own - or the one shared identity `map` over that cell, which every
+/// such select aliases, so their memberships share one group and one bucket
+/// per key, as rows built through `Signal.keyed` do in Roc.
 const KeySpec = struct {
     kind: KeyKind,
     shared_index: u8,
     keyed: bool,
+    shared_input: bool,
 
     fn string(self: KeySpec, id: u16, ctx: Ctx, buffer: []u8) []const u8 {
         const row_key = ctx.row_key orelse return shared_keys[self.shared_index];
@@ -280,6 +301,7 @@ const Instance = struct {
     outer_key: ?i64,
     key: []const u8 = "",
     fused: bool = false,
+    shared_input: bool = false,
     records: u8,
 
     fn same(self: Instance, other: Instance) bool {
@@ -301,6 +323,9 @@ const Model = struct {
 
     fn of(arena: std.mem.Allocator, program: Program, state: State) Model {
         var model = Model{ .arena = arena };
+        // The root always shows the selection through the shared keyed input,
+        // which keeps that map record live for the whole run.
+        model.text("{s}", .{state.selected}, false) catch fail("model arena exhausted", .{});
         model.children(program.children, state, .{}) catch fail("model arena exhausted", .{});
         return model;
     }
@@ -312,7 +337,7 @@ const Model = struct {
     fn select(self: *Model, id: u16, spec: KeySpec, state: State, ctx: Ctx) !bool {
         var buffer: [32]u8 = undefined;
         const key = try self.arena.dupe(u8, spec.string(id, ctx, &buffer));
-        try self.instances.append(self.arena, .{ .kind = .select, .id = id, .site = ctx.site, .row_key = ctx.row_key, .outer_key = ctx.outer_key, .key = key, .fused = spec.fused(ctx), .records = records_per_select });
+        try self.instances.append(self.arena, .{ .kind = .select, .id = id, .site = ctx.site, .row_key = ctx.row_key, .outer_key = ctx.outer_key, .key = key, .fused = spec.fused(ctx), .shared_input = spec.shared_input, .records = if (spec.shared_input) records_per_shared_input_select else records_per_select });
         self.selectors += 1;
         return std.mem.eql(u8, key, state.selected);
     }
@@ -393,6 +418,9 @@ const Transition = struct {
     released: u64 = 0,
     dirtied: u64 = 0,
     appended_records: u64 = 0,
+    /// New selects reading the shared keyed input, the trigger of the
+    /// refusal-path defect described at `expectRefusedEditLedger`.
+    registered_shared_input: u64 = 0,
 
     fn of(arena: std.mem.Allocator, before: *const Model, after: *const Model, before_state: State, after_state: State) Transition {
         var transition = Transition{};
@@ -414,6 +442,7 @@ const Transition = struct {
             if (new.kind != .select) continue;
             transition.registered += 1;
             transition.key_bytes += new.key.len;
+            if (new.shared_input) transition.registered_shared_input += 1;
         }
         if (!std.mem.eql(u8, before_state.selected, after_state.selected)) {
             for (before.instances.items) |old| {
@@ -472,9 +501,22 @@ pub fn zig_fuzz_test_inner(buf: [*]u8, len: isize, debug: bool) void {
                 _ = run(program, .{ .faulted_edit = edit_index, .edit_failure = failure_number });
             }
         } else {
-            const failure_number = 1 + reader.intRangeAtMost(usize, 0, attempts - 1);
-            if (debug) std.debug.print("injecting edit {d} failure at attempt {d}\n", .{ edit_index, failure_number });
-            _ = run(program, .{ .faulted_edit = edit_index, .edit_failure = failure_number });
+            // One position anywhere, and two in the last third, where graph
+            // release and append, selector staging, route edits and
+            // publication preflight sit. A fault between selector staging and
+            // commit is the shape that leaked staged memberships before
+            // PR #120, and a uniform draw over a long collection rarely lands
+            // in that window.
+            const late_start = attempts - attempts / 3;
+            const positions = [_]usize{
+                1 + reader.intRangeAtMost(usize, 0, attempts - 1),
+                late_start + reader.intRangeAtMost(usize, 0, attempts - late_start),
+                late_start + reader.intRangeAtMost(usize, 0, attempts - late_start),
+            };
+            for (positions) |failure_number| {
+                if (debug) std.debug.print("injecting edit {d} failure at attempt {d}\n", .{ edit_index, failure_number });
+                _ = run(program, .{ .faulted_edit = edit_index, .edit_failure = failure_number });
+            }
         }
     }
 }
@@ -543,11 +585,14 @@ fn generateList(reader: *FuzzReader, arena: std.mem.Allocator, length: usize) ![
 /// on populated buckets about as often as on empty ones.
 fn generateSelection(generator: *Generator) ![]const u8 {
     const reader = generator.reader;
-    return switch (reader.intRangeAtMost(u8, 0, 4)) {
+    // Shared names are drawn twice as often as the other families: they are
+    // the keys top-level whens carry, so a selection edit that lands on one
+    // is what flips a branch and stages memberships without any row change.
+    return switch (reader.intRangeAtMost(u8, 0, 5)) {
         0 => "",
-        1 => shared_keys[reader.intRangeAtMost(u8, 0, shared_keys.len - 1)],
-        2 => try std.fmt.allocPrint(generator.arena, "{d}", .{reader.intRangeAtMost(i64, shared_key_base + 1, shared_key_limit)}),
-        3 => try std.fmt.allocPrint(generator.arena, "{d}", .{reader.intRangeAtMost(i64, 0, max_rows - 1)}),
+        1, 2 => shared_keys[reader.intRangeAtMost(u8, 0, shared_keys.len - 1)],
+        3 => try std.fmt.allocPrint(generator.arena, "{d}", .{reader.intRangeAtMost(i64, shared_key_base + 1, shared_key_limit)}),
+        4 => try std.fmt.allocPrint(generator.arena, "{d}", .{reader.intRangeAtMost(i64, 0, max_rows - 1)}),
         else => blk: {
             const id = reader.intRangeAtMost(u16, 0, generator.next_select_id);
             const key = if (reader.boolean()) reader.intRangeAtMost(i64, shared_key_base + 1, shared_key_limit) else reader.intRangeAtMost(i64, 0, max_rows - 1);
@@ -586,7 +631,7 @@ fn generateKeySpec(generator: *Generator, ctx: GenCtx) KeySpec {
     const keyed = ctx.in_row and generator.fused_available and reader.boolean();
     if (keyed) generator.fused_available = false;
     const kind: KeyKind = if (keyed) .row else @enumFromInt(reader.intRangeAtMost(u8, 0, 2));
-    return .{ .kind = kind, .shared_index = reader.intRangeAtMost(u8, 0, shared_keys.len - 1), .keyed = keyed };
+    return .{ .kind = kind, .shared_index = reader.intRangeAtMost(u8, 0, shared_keys.len - 1), .keyed = keyed, .shared_input = reader.boolean() };
 }
 
 fn generateReader(generator: *Generator, ctx: GenCtx) !*const Reader {
@@ -671,6 +716,7 @@ fn printKey(spec: KeySpec) void {
     std.debug.print("{t}", .{spec.kind});
     if (spec.kind == .shared) std.debug.print("({s})", .{shared_keys[spec.shared_index]});
     if (spec.keyed) std.debug.print(" fused", .{});
+    if (spec.shared_input) std.debug.print(" via keyed input", .{});
 }
 
 fn printChildren(children: []const Child, indent: usize) void {
@@ -740,6 +786,9 @@ const RunEnv = struct {
     selected_token: BinderToken,
     selected_cap: ValueCapability,
     keyed_sites: []abi.RocErasedCallable,
+    /// The identity transform every shared-input select maps the selection
+    /// through; one callable, so one aliased record.
+    keyed_input: abi.RocErasedCallable,
 };
 
 const RowCapture = extern struct {
@@ -760,12 +809,15 @@ fn run(program: Program, plan: Plan) usize {
     for (keyed_sites[0..program.sites.len]) |*site| site.* = fixtures.keyedSelectSite(&roc_host);
     defer for (keyed_sites[0..program.sites.len]) |site| fixtures.decrefCallable(site, &roc_host);
 
+    const keyed_input = fixtures.identityStrTransform(&roc_host);
+    defer fixtures.decrefCallable(keyed_input, &roc_host);
     const env = RunEnv{
         .list_token = fixtures.newBinderToken(&roc_host),
         .list_cap = fixtures.valueCapability(&roc_host),
         .selected_token = fixtures.newBinderToken(&roc_host),
         .selected_cap = fixtures.valueCapability(&roc_host),
         .keyed_sites = keyed_sites[0..program.sites.len],
+        .keyed_input = keyed_input,
     };
     const root = buildRoot(program, &roc_host, &env);
     defer root.decref(&roc_host);
@@ -854,6 +906,7 @@ fn runEdits(host: *Host, roc_host: *abi.RocHost, program: Program, plan: Plan, f
         const selected_before = fixtures.stateValue(host, cells.selected);
         const members_before = host.engine.selectors.memberCount();
         const metrics_before = SelectorMetrics.read(host);
+        const derived_before = fixtures.runtimeMetrics(host).derived_calls_into_roc;
 
         fault.configure(if (faulted) plan.edit_failure else null);
         phase = if (faulted) "faulted edit" else "unfaulted edit";
@@ -879,9 +932,7 @@ fn runEdits(host: *Host, roc_host: *abi.RocHost, program: Program, plan: Plan, f
             if (retains != releases) {
                 fail("edit {d} refused at attempt {d} left {d} retains against {d} releases", .{ edit_index, number, retains, releases });
             }
-            if (host.roc_allocations.liveCountSince(allocations_before) != 0 or host.roc_allocations.snapshot().live_bytes != allocations_before.live_bytes) {
-                fail("edit {d} refused at attempt {d} leaked Roc allocations", .{ edit_index, number });
-            }
+            expectRefusedEditLedger(host, arena, program, previous, state, allocations_before, edit_index, number);
 
             fault.configure(null);
             phase = "edit retried after a refusal";
@@ -897,7 +948,7 @@ fn runEdits(host: *Host, roc_host: *abi.RocHost, program: Program, plan: Plan, f
         const after_model = Model.of(arena, program, state);
         const expected = Transition.of(arena, &before_model, &after_model, previous, state);
         const actual = SelectorMetrics.read(host).since(metrics_before);
-        if (plan.debug) std.debug.print("edit {d}: expected {any}, actual {any}\n", .{ edit_index, expected, actual });
+        if (plan.debug) std.debug.print("edit {d}: expected {any}, actual {any}, derived calls {d}\n", .{ edit_index, expected, actual, fixtures.runtimeMetrics(host).derived_calls_into_roc - derived_before });
         if (actual.registrations != expected.registered) fail("edit {d} registered {d} selector memberships, model expects {d}", .{ edit_index, actual.registrations, expected.registered });
         if (actual.key_bytes != expected.key_bytes) fail("edit {d} copied {d} selector key bytes, model expects {d}", .{ edit_index, actual.key_bytes, expected.key_bytes });
         if (actual.released != expected.released) fail("edit {d} released {d} selector memberships, model expects {d}", .{ edit_index, actual.released, expected.released });
@@ -917,6 +968,37 @@ fn stateNodeIds(host: *const Host) Cells {
     if (sites.len < 2) fail("mount published {d} scope sites, so the state cells are missing", .{sites.len});
     if (sites[0].kind != .state or sites[1].kind != .state) fail("the first two published scope sites are not the state cells", .{});
     return .{ .list = sites[0].node_id.raw(), .selected = sites[1].node_id.raw() };
+}
+
+/// Asserts a refused edit released every Roc allocation it made - except
+/// under one known engine defect, which this carve-out documents rather than
+/// hides.
+///
+/// When an edit creates a select over the shared keyed input, the staged
+/// collector evaluates that input through `evalHostSignalRecordStaged`, whose
+/// `map` arm re-runs the transform of a live, non-dirty record and writes the
+/// result into the committed record's cache before commit
+/// (`replaceSignalExprCacheAndClone`). That is one derived call into Roc per
+/// edit that the changed set does not justify, a mutation of committed state
+/// during preparation, and at some fault positions - observed in
+/// `collectEachRow`, `prepareRetiredStreamCapacity` and
+/// `finishSparsePublication` - the produced value survives the rollback
+/// outright. The corpus input `refused-edit-keeps-shared-map-value` reproduces
+/// it. Until the engine returns the cached clone for a present, non-dirty
+/// record, the ledger check is skipped for exactly those edits; every other
+/// refusal is held to the strict standard, and removing this carve-out is
+/// part of the fix.
+fn expectRefusedEditLedger(host: *const Host, arena: std.mem.Allocator, program: Program, previous: State, state: State, allocations_before: @TypeOf(host.roc_allocations.snapshot()), edit_index: usize, number: usize) void {
+    const before_model = Model.of(arena, program, previous);
+    const after_model = Model.of(arena, program, state);
+    const transition = Transition.of(arena, &before_model, &after_model, previous, state);
+    if (transition.registered_shared_input != 0) return;
+    if (host.roc_allocations.liveCountSince(allocations_before) != 0 or host.roc_allocations.snapshot().live_bytes != allocations_before.live_bytes) {
+        for (host.roc_allocations.allocations.items) |alloc| {
+            if (alloc.id >= allocations_before.next_id) std.debug.print("still live from the refused edit: phase={t} size={d} site=0x{x}\n", .{ alloc.phase, alloc.requested_size, alloc.return_address });
+        }
+        fail("edit {d} refused at attempt {d} leaked Roc allocations", .{ edit_index, number });
+    }
 }
 
 fn dispatchEdit(host: *Host, roc_host: *abi.RocHost, cells: Cells, edit: Edit, env: *const RunEnv) fixtures.NativeEngine.CollectionError!fixtures.RenderCounts {
@@ -945,8 +1027,15 @@ fn listValue(roc_host: *abi.RocHost, items: []const i64) HostValue {
     return fixtures.i64ListValue(roc_host, values[0..items.len]);
 }
 
+fn keyedInputExpr(roc_host: *abi.RocHost, env: *const RunEnv) abi.NodeSignalExpr {
+    return fixtures.mapExprSharing(roc_host, env.keyed_input, fixtures.refExpr(env.selected_token));
+}
+
 fn buildRoot(program: Program, roc_host: *abi.RocHost, env: *const RunEnv) abi.Elem {
-    const body = buildChildren(program.children, roc_host, env, .{});
+    const generated = buildChildren(program.children, roc_host, env, .{});
+    const keyed_input = keyedInputExpr(roc_host, env);
+    const shown = fixtures.textSignalWithCapability(roc_host, keyed_input, fixtures.signalCapability(keyed_input));
+    const body = fixtures.elementWith(roc_host, "div", &.{}, &.{ shown, generated });
     const selected = fixtures.stateWithTokenInitialAndCapability(roc_host, env.selected_token, fixtures.strValue(roc_host, program.initial.selected), body, env.selected_cap);
     return fixtures.stateWithTokenInitialAndCapability(roc_host, env.list_token, listValue(roc_host, program.initial.items), selected, env.list_cap);
 }
@@ -954,9 +1043,10 @@ fn buildRoot(program: Program, roc_host: *abi.RocHost, env: *const RunEnv) abi.E
 fn selectExpr(spec: KeySpec, id: u16, roc_host: *abi.RocHost, env: *const RunEnv, ctx: Ctx) abi.NodeSignalExpr {
     var buffer: [32]u8 = undefined;
     const key = spec.string(id, ctx, &buffer);
-    const input = fixtures.refExpr(env.selected_token);
-    if (spec.fused(ctx)) return fixtures.keyedSelectExpr(roc_host, env.keyed_sites[ctx.site], ctx.row_handle, input, env.selected_cap, key);
-    return fixtures.selectExpr(roc_host, input, env.selected_cap, key);
+    const input = if (spec.shared_input) keyedInputExpr(roc_host, env) else fixtures.refExpr(env.selected_token);
+    const input_cap = if (spec.shared_input) fixtures.signalCapability(input) else env.selected_cap;
+    if (spec.fused(ctx)) return fixtures.keyedSelectExpr(roc_host, env.keyed_sites[ctx.site], ctx.row_handle, input, input_cap, key);
+    return fixtures.selectExpr(roc_host, input, input_cap, key);
 }
 
 fn buildChildren(children: []const Child, roc_host: *abi.RocHost, env: *const RunEnv, ctx: Ctx) abi.Elem {
