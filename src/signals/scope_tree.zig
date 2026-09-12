@@ -1,6 +1,7 @@
 //! Scope forest primitives for component, branch, and keyed row lifetimes.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const shared_buffer = @import("shared_buffer.zig");
 const semantic_ids = @import("ids.zig");
 
@@ -110,6 +111,41 @@ pub const InternResult = struct {
     created: bool,
 };
 
+/// Exact slot work performed by the direct intern paths (`internComponent`,
+/// `internWhenBranch`, `appendEachRow`) while choosing a slot. Each intern
+/// reads the reusable ring head once, so the count is independent of how many
+/// unrelated live or retired scopes the table holds.
+pub const InternReuseWork = struct {
+    /// Reusable-ring slots examined, including a barrier-blocked head.
+    reusable_slots_visited: usize = 0,
+    /// Interns that appended a fresh slot to the table.
+    fresh_slots_claimed: usize = 0,
+};
+
+/// Test-only accumulator for `InternReuseWork`; regression tests reset it,
+/// intern one scope, and assert the exact slot count.
+pub var intern_reuse_work: if (builtin.is_test) InternReuseWork else void = if (builtin.is_test) .{} else {};
+
+fn countReusableVisit() void {
+    if (builtin.is_test) intern_reuse_work.reusable_slots_visited += 1;
+}
+
+fn countFreshClaim() void {
+    if (builtin.is_test) intern_reuse_work.fresh_slots_claimed += 1;
+}
+
+/// Returns the slot a direct intern may republish now, or null when the intern
+/// must append a fresh slot. Only the ring head is consulted: it is the oldest
+/// retirement, so a head still blocked by `reuse_barrier` means every other
+/// retired slot is blocked too. A slot retired by direct lifecycle assignment
+/// (test fixtures) is not in the ring and is never offered.
+pub fn claimableReusableScope(comptime Row: type, scopes: []const Scope(Row), reuse_barrier: Generation) ?ScopeId {
+    const head = firstReusableScope(Row, scopes) orelse return null;
+    countReusableVisit();
+    if (scopes[head.index()].lifecycle.blocksReuse(reuse_barrier)) return null;
+    return head;
+}
+
 /// Rejects malformed boundary data before it can enter committed engine state.
 pub fn validate(comptime Row: type, scopes: []const Scope(Row), scope_id: ScopeId) Error!void {
     if (scope_id.index() >= scopes.len) return Error.UnknownScope;
@@ -158,26 +194,7 @@ pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes:
         child_scope_id = scope.next_sibling_scope_id;
     }
 
-    for (scopes.items) |*scope| {
-        if (scope.lifecycle.isActive()) continue;
-        if (scope.lifecycle.blocksReuse(reuse_barrier)) continue;
-        const scope_id = scope.scope_id;
-        publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
-            .scope_id = scope_id,
-            .parent_scope_id = parent_scope_id,
-            .step = .{ .component = .{ .site_ordinal = site_ordinal } },
-        });
-        return .{ .scope_id = scope_id, .created = true };
-    }
-
-    const scope_id = ScopeId.fromIndex(scopes.items.len);
-    scopes.ensureUnusedCapacity(allocator, 1) catch return Error.OutOfMemory;
-    publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
-        .scope_id = scope_id,
-        .parent_scope_id = parent_scope_id,
-        .step = .{ .component = .{ .site_ordinal = site_ordinal } },
-    });
-    return .{ .scope_id = scope_id, .created = true };
+    return publishClaimedScope(Row, allocator, scopes, parent_scope_id, .{ .component = .{ .site_ordinal = site_ordinal } }, reuse_barrier);
 }
 
 /// Creates or reuses when branch scope identity beneath its explicit owner.
@@ -202,45 +219,31 @@ pub fn internWhenBranch(comptime Row: type, allocator: std.mem.Allocator, scopes
         child_scope_id = scope.next_sibling_scope_id;
     }
 
-    for (scopes.items) |*scope| {
-        if (scope.lifecycle.isActive()) continue;
-        if (scope.lifecycle.blocksReuse(reuse_barrier)) continue;
-        const scope_id = scope.scope_id;
-        publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
-            .scope_id = scope_id,
-            .parent_scope_id = parent_scope_id,
-            .step = .{ .when_branch = .{ .site_ordinal = site_ordinal, .branch = branch } },
-        });
-        return .{ .scope_id = scope_id, .created = true };
-    }
-
-    const scope_id = ScopeId.fromIndex(scopes.items.len);
-    scopes.ensureUnusedCapacity(allocator, 1) catch return Error.OutOfMemory;
-    publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
-        .scope_id = scope_id,
-        .parent_scope_id = parent_scope_id,
-        .step = .{ .when_branch = .{ .site_ordinal = site_ordinal, .branch = branch } },
-    });
-    return .{ .scope_id = scope_id, .created = true };
+    return publishClaimedScope(Row, allocator, scopes, parent_scope_id, .{ .when_branch = .{ .site_ordinal = site_ordinal, .branch = branch } }, reuse_barrier);
 }
 
 /// Appends each row using capacity that must already satisfy the caller's transaction contract.
 pub fn appendEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *shared_buffer.List(Scope(Row)), parent_scope_id: ScopeId, row: Row, reuse_barrier: Generation) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
 
-    for (scopes.items) |*scope| {
-        if (scope.lifecycle.isActive()) continue;
-        if (scope.lifecycle.blocksReuse(reuse_barrier)) continue;
-        const scope_id = scope.scope_id;
-        publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
-            .scope_id = scope_id,
-            .parent_scope_id = parent_scope_id,
-            .step = .{ .each_row = row },
-        });
-        return .{ .scope_id = scope_id, .created = true };
-    }
+    return publishClaimedScope(Row, allocator, scopes, parent_scope_id, .{ .each_row = row }, reuse_barrier);
+}
 
-    return appendFreshEachRow(Row, allocator, scopes, parent_scope_id, row);
+/// Publishes a new scope into the ring head when the barrier allows reuse,
+/// otherwise into a fresh slot. Shared by every direct intern path so slot
+/// selection stays O(1) and identical across component, branch, and row scopes.
+fn publishClaimedScope(comptime Row: type, allocator: std.mem.Allocator, scopes: *shared_buffer.List(Scope(Row)), parent_scope_id: ScopeId, step: Step(Row), reuse_barrier: Generation) Error!InternResult {
+    const scope_id = claimableReusableScope(Row, scopes.items, reuse_barrier) orelse fresh: {
+        scopes.ensureUnusedCapacity(allocator, 1) catch return Error.OutOfMemory;
+        countFreshClaim();
+        break :fresh ScopeId.fromIndex(scopes.items.len);
+    };
+    publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
+        .scope_id = scope_id,
+        .parent_scope_id = parent_scope_id,
+        .step = step,
+    });
+    return .{ .scope_id = scope_id, .created = true };
 }
 
 /// Appends fresh each row using capacity that must already satisfy the caller's transaction contract.
@@ -248,6 +251,7 @@ pub fn appendFreshEachRow(comptime Row: type, allocator: std.mem.Allocator, scop
     try validate(Row, scopes.items, parent_scope_id);
     const scope_id = ScopeId.fromIndex(scopes.items.len);
     scopes.ensureUnusedCapacity(allocator, 1) catch return Error.OutOfMemory;
+    countFreshClaim();
     publishScopeAssumeCapacity(Row, scopes, scopes.items.len, .{
         .scope_id = scope_id,
         .parent_scope_id = parent_scope_id,
@@ -526,7 +530,7 @@ test "scope tree reuses inactive each row slots" {
 
     const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
     const first = (try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = SiteOrdinal.fromRaw(8), .value = 10 }, semantic_ids.initial_generation)).scope_id;
-    scopes.items[first.index()].lifecycle = .{ .retired = Generation.fromRaw(1) };
+    retireScopeAssumeValid(TestRow, scopes.items, first, Generation.fromRaw(1));
 
     const reused = try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = SiteOrdinal.fromRaw(8), .value = 20 }, semantic_ids.initial_generation);
     try std.testing.expect(reused.created);
@@ -555,12 +559,12 @@ test "scope tree reuses inactive component and branch slots" {
     const component = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(1), semantic_ids.initial_generation)).scope_id;
     const branch = (try internWhenBranch(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(2), .true_branch, semantic_ids.initial_generation)).scope_id;
 
-    scopes.items[component.index()].lifecycle = .{ .retired = Generation.fromRaw(1) };
+    retireScopeAssumeValid(TestRow, scopes.items, component, Generation.fromRaw(1));
     const reused_component = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(3), semantic_ids.initial_generation);
     try std.testing.expect(reused_component.created);
     try std.testing.expectEqual(component, reused_component.scope_id);
 
-    scopes.items[branch.index()].lifecycle = .{ .retired = Generation.fromRaw(1) };
+    retireScopeAssumeValid(TestRow, scopes.items, branch, Generation.fromRaw(1));
     const reused_branch = try internWhenBranch(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(4), .false_branch, semantic_ids.initial_generation);
     try std.testing.expect(reused_branch.created);
     try std.testing.expectEqual(branch, reused_branch.scope_id);
@@ -574,12 +578,12 @@ test "scope ids retired in a dirty generation are not reused until the next one"
     const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
     const first = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(1), semantic_ids.initial_generation)).scope_id;
 
-    scopes.items[first.index()].lifecycle = .{ .retired = Generation.fromRaw(5) };
+    retireScopeAssumeValid(TestRow, scopes.items, first, Generation.fromRaw(5));
 
     const during_flush = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(2), Generation.fromRaw(5));
     try std.testing.expect(during_flush.scope_id != first);
 
-    scopes.items[during_flush.scope_id.index()].lifecycle = .{ .retired = Generation.fromRaw(5) };
+    retireScopeAssumeValid(TestRow, scopes.items, during_flush.scope_id, Generation.fromRaw(5));
     const next_flush = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(3), Generation.fromRaw(6));
     try std.testing.expectEqual(first, next_flush.scope_id);
 }
@@ -602,17 +606,17 @@ test "retirement links slots into the reusable ring and republication unlinks th
     try std.testing.expectEqual(@as(?ScopeId, a), nextReusableScope(TestRow, scopes.items, c));
     try std.testing.expectEqual(@as(?ScopeId, null), nextReusableScope(TestRow, scopes.items, a));
 
-    // A scan-selected reuse (lowest index first) unlinks from the tail of the ring.
+    // Direct interns claim the ring head (oldest retirement), not the lowest index.
     const reused = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(4), Generation.fromRaw(2));
-    try std.testing.expectEqual(a, reused.scope_id);
-    try std.testing.expect(!isLinkedReusable(TestRow, scopes.items, a));
-    try std.testing.expectEqual(@as(?ScopeId, b), firstReusableScope(TestRow, scopes.items));
-    try std.testing.expectEqual(@as(?ScopeId, c), nextReusableScope(TestRow, scopes.items, b));
-    try std.testing.expectEqual(@as(?ScopeId, null), nextReusableScope(TestRow, scopes.items, c));
+    try std.testing.expectEqual(b, reused.scope_id);
+    try std.testing.expect(!isLinkedReusable(TestRow, scopes.items, b));
+    try std.testing.expectEqual(@as(?ScopeId, c), firstReusableScope(TestRow, scopes.items));
+    try std.testing.expectEqual(@as(?ScopeId, a), nextReusableScope(TestRow, scopes.items, c));
+    try std.testing.expectEqual(@as(?ScopeId, null), nextReusableScope(TestRow, scopes.items, a));
 
     // Head removals keep the sentinel consistent, and a re-retired slot re-enters exactly once.
     _ = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(5), Generation.fromRaw(2));
-    try std.testing.expectEqual(@as(?ScopeId, c), firstReusableScope(TestRow, scopes.items));
+    try std.testing.expectEqual(@as(?ScopeId, a), firstReusableScope(TestRow, scopes.items));
     _ = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(6), Generation.fromRaw(2));
     try std.testing.expectEqual(@as(?ScopeId, null), firstReusableScope(TestRow, scopes.items));
     try std.testing.expectEqual(@as(?ScopeId, null), scopes.items[root.index()].previous_reusable_scope_id);
@@ -620,10 +624,155 @@ test "retirement links slots into the reusable ring and republication unlinks th
     try std.testing.expectEqual(@as(?ScopeId, a), firstReusableScope(TestRow, scopes.items));
     try std.testing.expectEqual(@as(?ScopeId, null), nextReusableScope(TestRow, scopes.items, a));
 
-    // A slot retired by direct lifecycle assignment is not linked and may still be republished.
+    // A slot retired by direct lifecycle assignment is not linked and is never
+    // offered; the linked slot is claimed instead and the unlinked one stays put.
     scopes.items[b.index()].lifecycle = .{ .retired = Generation.fromRaw(2) };
     try std.testing.expect(!isLinkedReusable(TestRow, scopes.items, b));
     const direct = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(7), Generation.fromRaw(3));
     try std.testing.expectEqual(a, direct.scope_id);
     try std.testing.expectEqual(@as(?ScopeId, null), firstReusableScope(TestRow, scopes.items));
+    const past_unlinked = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(8), Generation.fromRaw(3));
+    try std.testing.expectEqual(ScopeId.fromIndex(scopes.items.len - 1), past_unlinked.scope_id);
+    try std.testing.expect(!scopes.items[b.index()].lifecycle.isActive());
+}
+
+fn ringLen(scopes: []const Scope(TestRow)) usize {
+    var count: usize = 0;
+    var cursor = firstReusableScope(TestRow, scopes);
+    while (cursor) |scope_id| : (cursor = nextReusableScope(TestRow, scopes, scope_id)) count += 1;
+    return count;
+}
+
+const InternKind = enum { component, when_branch, each_row };
+
+fn internOne(kind: InternKind, allocator: std.mem.Allocator, scopes: *shared_buffer.List(Scope(TestRow)), parent: ScopeId, ordinal: u64, barrier: Generation) Error!InternResult {
+    return switch (kind) {
+        .component => internComponent(TestRow, allocator, scopes, parent, SiteOrdinal.fromRaw(ordinal), barrier),
+        .when_branch => internWhenBranch(TestRow, allocator, scopes, parent, SiteOrdinal.fromRaw(ordinal), .true_branch, barrier),
+        .each_row => appendEachRow(TestRow, allocator, scopes, parent, .{ .site_ordinal = SiteOrdinal.fromRaw(ordinal), .value = ordinal }, barrier),
+    };
+}
+
+test "one direct intern visits at most one slot regardless of unrelated live scopes" {
+    for ([_]InternKind{ .component, .when_branch, .each_row }) |kind| {
+        for ([_]usize{ 1_000, 10_000 }) |live_rows| {
+            var scopes: shared_buffer.List(Scope(TestRow)) = .empty;
+            defer scopes.deinit(std.testing.allocator);
+            const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
+            // Live rows sit under a separate parent so the intern's sibling
+            // walk (a different, per-parent cost) stays out of the count.
+            const holder = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(1), semantic_ids.initial_generation)).scope_id;
+            var retired_row: ?ScopeId = null;
+            for (0..live_rows) |i| {
+                const row = (try appendFreshEachRow(TestRow, std.testing.allocator, &scopes, holder, .{ .site_ordinal = SiteOrdinal.fromRaw(2), .value = i })).scope_id;
+                if (i == live_rows / 2) retired_row = row;
+            }
+            const table_len = scopes.items.len;
+
+            // No reusable slot anywhere: the intern asks the ring once and appends.
+            intern_reuse_work = .{};
+            const fresh = try internOne(kind, std.testing.allocator, &scopes, root, 3, Generation.fromRaw(1));
+            try std.testing.expectEqual(ScopeId.fromIndex(table_len), fresh.scope_id);
+            try std.testing.expectEqual(InternReuseWork{ .reusable_slots_visited = 0, .fresh_slots_claimed = 1 }, intern_reuse_work);
+
+            // One retired slot among the live rows: one visit, no fresh slot.
+            retireScopeAssumeValid(TestRow, scopes.items, retired_row.?, Generation.fromRaw(0));
+            intern_reuse_work = .{};
+            const reused = try internOne(kind, std.testing.allocator, &scopes, root, 4, Generation.fromRaw(1));
+            try std.testing.expectEqual(retired_row.?, reused.scope_id);
+            try std.testing.expectEqual(table_len + 1, scopes.items.len);
+            try std.testing.expectEqual(InternReuseWork{ .reusable_slots_visited = 1, .fresh_slots_claimed = 0 }, intern_reuse_work);
+            try std.testing.expectEqual(@as(usize, 0), ringLen(scopes.items));
+        }
+    }
+}
+
+test "one direct intern visits one slot with a large retired reusable table" {
+    for ([_]InternKind{ .component, .when_branch, .each_row }) |kind| {
+        var scopes: shared_buffer.List(Scope(TestRow)) = .empty;
+        defer scopes.deinit(std.testing.allocator);
+        const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
+        const retired_rows: usize = 10_000;
+        for (0..retired_rows) |i| _ = try appendFreshEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = SiteOrdinal.fromRaw(2), .value = i });
+        // Retire from the highest index down so the ring head is the highest
+        // slot; a lowest-index scan would visit the whole table to find it.
+        var index: usize = scopes.items.len;
+        while (index > 1) {
+            index -= 1;
+            retireScopeAssumeValid(TestRow, scopes.items, ScopeId.fromIndex(index), Generation.fromRaw(1));
+        }
+        try std.testing.expectEqual(retired_rows, ringLen(scopes.items));
+
+        // Every slot is barrier-blocked: the head says so in one visit and the intern appends.
+        intern_reuse_work = .{};
+        const blocked = try internOne(kind, std.testing.allocator, &scopes, root, 3, Generation.fromRaw(1));
+        try std.testing.expectEqual(ScopeId.fromIndex(retired_rows + 1), blocked.scope_id);
+        try std.testing.expectEqual(InternReuseWork{ .reusable_slots_visited = 1, .fresh_slots_claimed = 1 }, intern_reuse_work);
+        try std.testing.expectEqual(retired_rows, ringLen(scopes.items));
+
+        // The next generation reuses the head (highest index) in one visit.
+        intern_reuse_work = .{};
+        const reused = try internOne(kind, std.testing.allocator, &scopes, root, 4, Generation.fromRaw(2));
+        try std.testing.expectEqual(ScopeId.fromIndex(retired_rows), reused.scope_id);
+        try std.testing.expectEqual(InternReuseWork{ .reusable_slots_visited = 1, .fresh_slots_claimed = 0 }, intern_reuse_work);
+        try std.testing.expectEqual(retired_rows - 1, ringLen(scopes.items));
+    }
+}
+
+test "direct interns claim the ring in retirement order and reuse re-retired slots across generations" {
+    var scopes: shared_buffer.List(Scope(TestRow)) = .empty;
+    defer scopes.deinit(std.testing.allocator);
+    const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
+    const a = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(1), semantic_ids.initial_generation)).scope_id;
+    const b = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(2), semantic_ids.initial_generation)).scope_id;
+    const c = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(3), semantic_ids.initial_generation)).scope_id;
+    retireScopeAssumeValid(TestRow, scopes.items, c, Generation.fromRaw(0));
+    retireScopeAssumeValid(TestRow, scopes.items, a, Generation.fromRaw(0));
+    retireScopeAssumeValid(TestRow, scopes.items, b, Generation.fromRaw(1));
+
+    // Generation 1: c and a are claimable in retirement order; b blocks, so the next intern is fresh.
+    intern_reuse_work = .{};
+    try std.testing.expectEqual(c, (try internOne(.when_branch, std.testing.allocator, &scopes, root, 4, Generation.fromRaw(1))).scope_id);
+    try std.testing.expectEqual(a, (try internOne(.each_row, std.testing.allocator, &scopes, root, 5, Generation.fromRaw(1))).scope_id);
+    const fresh = try internOne(.component, std.testing.allocator, &scopes, root, 6, Generation.fromRaw(1));
+    try std.testing.expectEqual(ScopeId.fromRaw(4), fresh.scope_id);
+    try std.testing.expectEqual(InternReuseWork{ .reusable_slots_visited = 3, .fresh_slots_claimed = 1 }, intern_reuse_work);
+    try std.testing.expectEqual(@as(?ScopeId, b), firstReusableScope(TestRow, scopes.items));
+
+    // Generation 2 unblocks b; retiring c again queues it behind b.
+    retireScopeAssumeValid(TestRow, scopes.items, c, Generation.fromRaw(2));
+    try std.testing.expectEqual(b, (try internOne(.component, std.testing.allocator, &scopes, root, 7, Generation.fromRaw(2))).scope_id);
+    try std.testing.expectEqual(@as(?ScopeId, c), firstReusableScope(TestRow, scopes.items));
+    try std.testing.expectEqual(ScopeId.fromRaw(5), (try internOne(.component, std.testing.allocator, &scopes, root, 8, Generation.fromRaw(2))).scope_id);
+    try std.testing.expectEqual(c, (try internOne(.component, std.testing.allocator, &scopes, root, 9, Generation.fromRaw(3))).scope_id);
+    try std.testing.expectEqual(@as(usize, 0), ringLen(scopes.items));
+    try std.testing.expectEqual(@as(usize, 6), scopes.items.len);
+
+    // Interning beneath a retired or unknown parent is rejected before any slot is touched.
+    retireScopeAssumeValid(TestRow, scopes.items, ScopeId.fromRaw(5), Generation.fromRaw(3));
+    try std.testing.expectError(Error.InactiveScope, internOne(.component, std.testing.allocator, &scopes, ScopeId.fromRaw(5), 1, Generation.fromRaw(4)));
+    try std.testing.expectError(Error.UnknownScope, internOne(.each_row, std.testing.allocator, &scopes, ScopeId.fromRaw(99), 1, Generation.fromRaw(4)));
+    try std.testing.expectEqual(@as(usize, 1), ringLen(scopes.items));
+}
+
+test "direct intern allocation failure leaves the reusable ring coherent" {
+    // Exactly two slots of capacity: root and one component fill it, so the
+    // next fresh slot must grow the table.
+    var scopes = try shared_buffer.List(Scope(TestRow)).initCapacity(std.testing.allocator, 2);
+    defer scopes.deinit(std.testing.allocator);
+    const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
+    const a = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(1), semantic_ids.initial_generation)).scope_id;
+    retireScopeAssumeValid(TestRow, scopes.items, a, Generation.fromRaw(1));
+    try std.testing.expectEqual(@as(usize, 2), scopes.capacity);
+
+    // The head is barrier-blocked, so the intern needs a fresh slot and fails to grow.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(Error.OutOfMemory, internOne(.component, failing.allocator(), &scopes, root, 2, Generation.fromRaw(1)));
+    try std.testing.expectEqual(@as(usize, 1), ringLen(scopes.items));
+    try std.testing.expect(isLinkedReusable(TestRow, scopes.items, a));
+    try std.testing.expectEqual(@as(usize, 2), scopes.items.len);
+
+    // Reuse needs no allocation at all, so a failing allocator cannot stop it.
+    try std.testing.expectEqual(a, (try internOne(.component, failing.allocator(), &scopes, root, 2, Generation.fromRaw(2))).scope_id);
+    try std.testing.expectEqual(@as(usize, 0), ringLen(scopes.items));
 }

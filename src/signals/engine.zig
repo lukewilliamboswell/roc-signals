@@ -4559,6 +4559,15 @@ pub fn Engine(comptime Ctx: type) type {
                 elems: usize = 0,
                 nodes: usize = 0,
             };
+            /// One scope this collection will publish, in claim order. Scope
+            /// intents and each-row scopes are journaled in separate lists,
+            /// but a child is always claimed after its parent, so replaying
+            /// claims in order attaches every child beneath an already
+            /// published parent even when reused ids are not monotonic.
+            const ScopePublication = union(enum) {
+                intent: usize,
+                each_row: usize,
+            };
             engine: *Self,
             host_ctx: Ctx.Handle,
             stream: *HostNodeDescriptorStream,
@@ -4566,7 +4575,17 @@ pub fn Engine(comptime Ctx: type) type {
             scopes: collection_plan.ScopeOverlay = .{},
             node_identities: collection_plan.IdentityOverlay = .{},
             dom_identities: collection_plan.IdentityOverlay = .{},
-            reusable_scope_cursor: usize = 0,
+            /// Newest committed reusable-ring slot this collection has walked
+            /// past (claimed or skipped), or null before the first walk. The
+            /// next candidate is its ring successor; the ring itself is never
+            /// modified until commit publishes the claimed slots.
+            last_reused_scope_id: ?ids.ScopeId = null,
+            /// Set once the ring ran out or its next slot was barrier-blocked;
+            /// later claims take fresh slots without touching the ring.
+            scope_reuse_exhausted: bool = false,
+            scope_claim_work: if (builtin.is_test) scope_runtime.ScopeClaimWork else void = if (builtin.is_test) .{} else {},
+            /// Claim-order journal replayed by `commit`; see `ScopePublication`.
+            scope_publications: shared_buffer.List(ScopePublication) = .empty,
             fresh_scope_cursor: u64 = 0,
             reusable_node_cursor: usize = 0,
             fresh_node_cursor: u64 = 0,
@@ -4801,6 +4820,7 @@ pub fn Engine(comptime Ctx: type) type {
                     collection.prepared_eaches.ensureUnusedCapacity(allocator, self.each_sites) catch return error.OutOfMemory;
                     collection.prepared_each_sites.ensureUnusedCapacity(allocator, self.each_sites) catch return error.OutOfMemory;
                     collection.prepared_each_row_scopes.ensureUnusedCapacity(allocator, self.each_rows) catch return error.OutOfMemory;
+                    collection.scope_publications.ensureTotalCapacity(allocator, try total(self.scope_intents, self.each_rows)) catch return error.OutOfMemory;
                     collection.prepared_named_event_groups.ensureUnusedCapacity(allocator, self.named_events) catch return error.OutOfMemory;
                     collection.prepared_named_event_group_by_elem.ensureUnusedCapacity(allocator, named_events_u32) catch return error.OutOfMemory;
                     collection.signal_records.prepare(allocator, self.signal_records, self.signal_roots) catch return error.OutOfMemory;
@@ -4867,6 +4887,7 @@ pub fn Engine(comptime Ctx: type) type {
                     std.debug.assert(collection.prepared_eaches.capacity >= self.each_sites);
                     std.debug.assert(collection.prepared_each_sites.capacity >= self.each_sites);
                     std.debug.assert(collection.prepared_each_row_scopes.capacity >= self.each_rows);
+                    std.debug.assert(collection.scope_publications.capacity >= self.scope_intents +| self.each_rows);
                     std.debug.assert(collection.prepared_named_event_groups.capacity >= self.named_events);
                     std.debug.assert(collection.signal_bindings.capacity >= self.signal_roots);
                     std.debug.assert(collection.signal_records.token_intents.capacity >= self.signal_records);
@@ -5006,6 +5027,7 @@ pub fn Engine(comptime Ctx: type) type {
                         for (self.signal_bindings.items) |binding| allocator.free(binding.source_node_ids);
                     }
                     self.scopes.abort();
+                    self.scope_publications.clearRetainingCapacity();
                     self.node_identities.abort();
                     self.dom_identities.abort();
                 }
@@ -5022,6 +5044,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_states.deinit(allocator);
                 self.prepared_state_cells.deinit(allocator);
                 self.prepared_each_row_scopes.deinit(allocator);
+                self.scope_publications.deinit(allocator);
                 self.prepared_whens.deinit(allocator);
                 self.prepared_eaches.deinit(allocator);
                 for (self.prepared_each_sites.items) |*site| site.deinit(allocator);
@@ -5124,10 +5147,14 @@ pub fn Engine(comptime Ctx: type) type {
             fn rootScope(self: *@This()) CollectionError!scope_tree.InternResult {
                 const key: collection_plan.ScopeKey = .{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(0), .kind = .root };
                 const active_id: ?ids.ScopeId = if (self.engine.scopes.items.len != 0) ids.root_scope else null;
+                const intent_index = self.scopes.intents.items.len;
                 const scope_id = self.scopes.reserve(key, active_id, &.{ids.root_scope}) catch |err| switch (err) {
                     error.NoCapacity => return error.ResourceLimit,
                     error.NoAvailableScope => return error.InvalidScope,
                 };
+                // A fresh root is the first claim of an empty table; a live
+                // root resolves through the overlay without a new intent.
+                if (self.scopes.intents.items.len != intent_index) try self.noteScopeClaimed(scope_id, null, .{ .intent = intent_index });
                 return .{ .scope_id = scope_id, .created = active_id == null };
             }
 
@@ -5147,28 +5174,76 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
+            /// Peeks the next committed reusable-ring slot this collection may
+            /// claim, without consuming it. The walk starts at the ring head
+            /// (oldest retirement) and resumes after the last slot handed out,
+            /// so provisional claims never touch committed availability and
+            /// an aborted collection leaves the ring exactly as it found it.
+            /// Slots another party already reserved with this transaction
+            /// (`reserved_ids`) are stepped over; they sit at the ring head
+            /// because that party walked the same ring, so the skip is
+            /// bounded by that party's own claim count. A barrier-blocked
+            /// slot ends the walk for good: every later slot was retired in
+            /// the same or a later generation.
+            fn nextReusableScopeCandidate(self: *@This()) ?ids.ScopeId {
+                if (self.scope_reuse_exhausted) return null;
+                const scopes = self.engine.scopes.items;
+                const barrier = ids.Generation.fromRaw(self.engine.identity_reuse_barrier);
+                var candidate = if (self.last_reused_scope_id) |last| after_last: {
+                    if (scopes[last.index()].lifecycle.isActive() or !scope_tree.isLinkedReusable(HostEachRowScopeStep, scopes, last)) @panic("provisionally claimed scope slot changed under an open collection");
+                    break :after_last scope_tree.nextReusableScope(HostEachRowScopeStep, scopes, last);
+                } else scope_tree.firstReusableScope(HostEachRowScopeStep, scopes);
+                while (candidate) |scope_id| : (candidate = scope_tree.nextReusableScope(HostEachRowScopeStep, scopes, scope_id)) {
+                    if (builtin.is_test) self.scope_claim_work.reusable_slots_visited += 1;
+                    if (scopes[scope_id.index()].lifecycle.blocksReuse(barrier)) break;
+                    if (self.scopes.reserved_ids.contains(scope_id)) {
+                        self.last_reused_scope_id = scope_id;
+                        continue;
+                    }
+                    return scope_id;
+                }
+                self.scope_reuse_exhausted = true;
+                return null;
+            }
+
+            /// Returns the lowest fresh id above the committed table and this
+            /// collection's earlier fresh claims that no reservation holds.
+            fn nextFreshScopeId(self: *const @This()) CollectionError!u64 {
+                var fresh_id = @max(self.fresh_scope_cursor, @as(u64, @intCast(self.engine.scopes.items.len)));
+                while (self.scopes.reserved_ids.contains(ids.ScopeId.fromRaw(fresh_id))) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
+                return fresh_id;
+            }
+
+            /// Records that `scope_id` was claimed: advances the ring cursor
+            /// or the fresh cursor, and journals the publication in claim order.
+            fn noteScopeClaimed(self: *@This(), scope_id: ids.ScopeId, reused: ?ids.ScopeId, publication: ScopePublication) CollectionError!void {
+                if (reused != null and reused.? == scope_id) {
+                    self.last_reused_scope_id = scope_id;
+                } else {
+                    self.fresh_scope_cursor = std.math.add(u64, scope_id.raw(), 1) catch return error.ResourceLimit;
+                    if (builtin.is_test) self.scope_claim_work.fresh_slots_claimed += 1;
+                }
+                self.scope_publications.appendAssumeCapacity(publication);
+            }
+
             fn reserveScopeIdentity(self: *@This(), key: collection_plan.ScopeKey, active_id: ?u64) CollectionError!u64 {
                 if (self.scopes.lookup(key, if (active_id) |id| ids.ScopeId.fromRaw(id) else null)) |id| return id.raw();
                 var candidates: [2]ids.ScopeId = undefined;
                 var candidate_count: usize = 0;
-                while (self.reusable_scope_cursor < self.engine.scopes.items.len) : (self.reusable_scope_cursor += 1) {
-                    const scope = self.engine.scopes.items[self.reusable_scope_cursor];
-                    if (scope.lifecycle.blocksReuse(ids.Generation.fromRaw(self.engine.identity_reuse_barrier))) continue;
-                    if (self.scopes.reserved_ids.contains(scope.scope_id)) continue;
-                    candidates[candidate_count] = scope.scope_id;
+                const reused = self.nextReusableScopeCandidate();
+                if (reused) |scope_id| {
+                    candidates[candidate_count] = scope_id;
                     candidate_count += 1;
-                    self.reusable_scope_cursor += 1;
-                    break;
                 }
-                var fresh_id = @max(self.fresh_scope_cursor, @as(u64, @intCast(self.engine.scopes.items.len)));
-                while (self.scopes.reserved_ids.contains(ids.ScopeId.fromRaw(fresh_id))) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
+                const fresh_id = try self.nextFreshScopeId();
                 candidates[candidate_count] = ids.ScopeId.fromRaw(fresh_id);
                 candidate_count += 1;
+                const intent_index = self.scopes.intents.items.len;
                 const reserved = self.scopes.reserve(key, if (active_id) |id| ids.ScopeId.fromRaw(id) else null, candidates[0..candidate_count]) catch |err| switch (err) {
                     error.NoCapacity => return error.ResourceLimit,
                     error.NoAvailableScope => return error.InvalidScope,
                 };
-                if (reserved.raw() == fresh_id) self.fresh_scope_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
+                try self.noteScopeClaimed(reserved, reused, .{ .intent = intent_index });
                 return reserved.raw();
             }
 
@@ -5203,26 +5278,13 @@ pub fn Engine(comptime Ctx: type) type {
             fn reserveEachRowScopeGeneration(self: *@This(), parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, key_hash: u64, row_handle: row_handles.RowHandleId) CollectionError!ids.ScopeId {
                 try self.validateScope(parent_scope_id);
 
-                var scope_id: ?u64 = null;
-                while (self.reusable_scope_cursor < self.engine.scopes.items.len) : (self.reusable_scope_cursor += 1) {
-                    const scope = self.engine.scopes.items[self.reusable_scope_cursor];
-                    if (scope.lifecycle.blocksReuse(ids.Generation.fromRaw(self.engine.identity_reuse_barrier))) continue;
-                    if (self.scopes.reserved_ids.contains(scope.scope_id)) continue;
-                    scope_id = scope.scope_id.raw();
-                    self.reusable_scope_cursor += 1;
-                    break;
-                }
-                if (scope_id == null) {
-                    var fresh = @max(self.fresh_scope_cursor, @as(u64, @intCast(self.engine.scopes.items.len)));
-                    while (self.scopes.reserved_ids.contains(ids.ScopeId.fromRaw(fresh))) fresh = std.math.add(u64, fresh, 1) catch return error.ResourceLimit;
-                    scope_id = fresh;
-                    self.fresh_scope_cursor = std.math.add(u64, fresh, 1) catch return error.ResourceLimit;
-                }
-                const claimed = scope_id.?;
+                const reused = self.nextReusableScopeCandidate();
+                const claimed: u64 = if (reused) |scope_id| scope_id.raw() else try self.nextFreshScopeId();
                 self.scopes.reserveExternal(ids.ScopeId.fromRaw(claimed)) catch |err| switch (err) {
                     error.NoCapacity => return error.ResourceLimit,
                     error.DuplicateScope => return error.InvalidScope,
                 };
+                try self.noteScopeClaimed(ids.ScopeId.fromRaw(claimed), reused, .{ .each_row = self.prepared_each_row_scopes.items.len });
                 if (std.debug.runtime_safety) std.debug.assert(claimed < self.plan.scope_base + self.plan.scope_intents);
                 self.prepared_each_row_scopes.appendAssumeCapacity(.{
                     .scope_id = ids.ScopeId.fromRaw(claimed),
@@ -6557,29 +6619,28 @@ pub fn Engine(comptime Ctx: type) type {
                     final_scope_len = @max(final_scope_len, std.math.add(usize, scope_id.index(), 1) catch @panic("prepared scope id overflow"));
                 }
                 // Scope and each-row reservations share one dense id space but
-                // are journaled separately. Merge their already-monotonic ids
-                // so fresh slots remain a contiguous suffix while publication
-                // also attaches every scope to the durable child topology.
-                var scope_intent_index: usize = 0;
-                var each_row_scope_index: usize = 0;
-                while (scope_intent_index < self.scopes.intents.items.len or each_row_scope_index < self.prepared_each_row_scopes.items.len) {
-                    const uses_scope_intent = each_row_scope_index == self.prepared_each_row_scopes.items.len or (scope_intent_index < self.scopes.intents.items.len and self.scopes.intents.items[scope_intent_index].id.raw() < self.prepared_each_row_scopes.items[each_row_scope_index].scope_id.raw());
-                    const scope: HostScope = if (uses_scope_intent) scope: {
-                        const intent = self.scopes.intents.items[scope_intent_index];
-                        scope_intent_index += 1;
-                        break :scope switch (intent.key.kind) {
-                            .root => .{ .scope_id = intent.id, .parent_scope_id = null, .step = .root, .lifecycle = .active },
-                            .component => .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .component = .{ .site_ordinal = intent.key.ordinal } }, .lifecycle = .active },
-                            .when_branch => |branch| .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .when_branch = .{ .site_ordinal = intent.key.ordinal, .branch = branch } }, .lifecycle = .active },
-                        };
-                    } else scope: {
-                        const prepared_scope = self.prepared_each_row_scopes.items[each_row_scope_index];
-                        each_row_scope_index += 1;
-                        break :scope prepared_scope;
+                // are journaled separately. Replay them in claim order: fresh
+                // ids were handed out ascending, so the fresh suffix publishes
+                // contiguously, and every parent was claimed before its
+                // children, so reused slots (whose ids follow the ring, not
+                // the table) attach beneath an already published parent.
+                if (self.scope_publications.items.len != self.scopes.intents.items.len + self.prepared_each_row_scopes.items.len) @panic("scope publication journal does not cover every claim");
+                for (self.scope_publications.items) |publication| {
+                    const scope: HostScope = switch (publication) {
+                        .intent => |index| scope: {
+                            const intent = self.scopes.intents.items[index];
+                            break :scope switch (intent.key.kind) {
+                                .root => .{ .scope_id = intent.id, .parent_scope_id = null, .step = .root, .lifecycle = .active },
+                                .component => .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .component = .{ .site_ordinal = intent.key.ordinal } }, .lifecycle = .active },
+                                .when_branch => |branch| .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .when_branch = .{ .site_ordinal = intent.key.ordinal, .branch = branch } }, .lifecycle = .active },
+                            };
+                        },
+                        .each_row => |index| self.prepared_each_row_scopes.items[index],
                     };
                     scope_tree.publishScopeAssumeCapacity(HostEachRowScopeStep, &self.engine.scopes, original_scope_len, scope);
                     self.engine.recordScopeCreated();
                 }
+                self.scope_publications.clearRetainingCapacity();
                 if (self.engine.scopes.items.len != final_scope_len) @panic("prepared scope suffix did not publish contiguously");
                 // Rows an each mounted inside this collection are created rows
                 // just like the rows a keyed reconciliation creates; a spec
@@ -18103,8 +18164,8 @@ test "staged scope identity reuse does not consume the fresh suffix" {
     const first = try engine.internWhenBranchScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(1), .false_branch);
     const second = try engine.internWhenBranchScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(2), .false_branch);
     _ = try engine.internWhenBranchScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(3), .false_branch);
-    engine.scopes.items[first.scope_id.index()].lifecycle = .{ .retired = ids.Generation.fromRaw(0) };
-    engine.scopes.items[second.scope_id.index()].lifecycle = .{ .retired = ids.Generation.fromRaw(0) };
+    scope_tree.retireScopeAssumeValid(HostEachRowScopeStep, engine.scopes.items, first.scope_id, ids.Generation.fromRaw(0));
+    scope_tree.retireScopeAssumeValid(HostEachRowScopeStep, engine.scopes.items, second.scope_id, ids.Generation.fromRaw(0));
     engine.identity_reuse_barrier = 1;
 
     var stream: HostNodeDescriptorStream = .{};
@@ -18115,6 +18176,288 @@ test "staged scope identity reuse does not consume the fresh suffix" {
     try std.testing.expectEqual(@as(u64, 1), try collection.reserveScopeIdentity(.{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(4), .kind = .component }, null));
     try std.testing.expectEqual(@as(u64, 2), try collection.reserveScopeIdentity(.{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(5), .kind = .component }, null));
     try std.testing.expectEqual(@as(u64, 4), try collection.reserveScopeIdentity(.{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(6), .kind = .component }, null));
+}
+
+fn deinitStagedScopeEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost) void {
+    engine.states.deinit(ctx.allocator);
+    engine.state_indexes_by_node_id.deinit(ctx.allocator);
+    engine.node_identities.deinit(ctx.allocator);
+    engine.active_node_identity_ids.deinit(ctx.allocator);
+    deinitVerifyStaticEngine(engine, ctx);
+}
+
+fn engineReusableRingLen(engine: *const Engine(VerifyCtx)) usize {
+    var count: usize = 0;
+    var cursor = scope_tree.firstReusableScope(HostEachRowScopeStep, engine.scopes.items);
+    while (cursor) |scope_id| : (cursor = scope_tree.nextReusableScope(HostEachRowScopeStep, engine.scopes.items, scope_id)) count += 1;
+    return count;
+}
+
+fn appendLiveEngineRow(engine: *Engine(VerifyCtx), parent: ids.ScopeId, key: u64) !ids.ScopeId {
+    return (try scope_tree.appendFreshEachRow(HostEachRowScopeStep, std.testing.allocator, &engine.scopes, parent, .{
+        .site_ordinal = ids.SiteOrdinal.fromRaw(1),
+        .key_hash = key,
+        .row_handle = row_handles.RowHandleId.fromRaw(key),
+    })).scope_id;
+}
+
+fn retireEngineScope(engine: *Engine(VerifyCtx), scope_id: ids.ScopeId, generation: u64) void {
+    scope_tree.retireScopeAssumeValid(HostEachRowScopeStep, engine.scopes.items, scope_id, ids.Generation.fromRaw(generation));
+}
+
+const StagedScopeClaimKind = enum { component, when_branch, each_row };
+
+/// Opens a staged collection with budget for `claims` scopes of every kind.
+fn initStagedScopeCollection(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, stream: *HostNodeDescriptorStream, claims: usize, external_scopes: usize) !Engine(VerifyCtx).StagedCollectionCtx {
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(engine, ctx, stream, .{}, .{ .component_sites = claims, .when_sites = claims }, external_scopes);
+    errdefer collection.deinit();
+    try collection.reserveCounts(.{ .external_scopes = claims, .each_rows = claims });
+    return collection;
+}
+
+fn stagedClaimOne(collection: *Engine(VerifyCtx).StagedCollectionCtx, kind: StagedScopeClaimKind, parent: ids.ScopeId, ordinal: u64) !ids.ScopeId {
+    return switch (kind) {
+        .component => ids.ScopeId.fromRaw(try collection.reserveScopeIdentity(.{ .parent_id = parent, .ordinal = ids.SiteOrdinal.fromRaw(ordinal), .kind = .component }, null)),
+        .when_branch => (try collection.reserveWhenBranchScope(parent, ids.SiteOrdinal.fromRaw(ordinal), .true_branch)).scope_id,
+        .each_row => try collection.reserveEachRowScopeGeneration(parent, ids.SiteOrdinal.fromRaw(ordinal), ordinal, row_handles.RowHandleId.fromRaw(ordinal)),
+    };
+}
+
+test "one staged scope claim visits at most one slot regardless of unrelated live scopes" {
+    for ([_]StagedScopeClaimKind{ .component, .when_branch, .each_row }) |kind| {
+        for ([_]usize{ 1_000, 10_000 }) |live_rows| {
+            var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+            var engine = Engine(VerifyCtx).init();
+            defer deinitStagedScopeEngine(&engine, &ctx);
+            _ = try engine.internRootScope(std.testing.allocator);
+            var retired_row: ?ids.ScopeId = null;
+            for (0..live_rows) |i| {
+                const row = try appendLiveEngineRow(&engine, ids.root_scope, @intCast(i + 1));
+                if (i == live_rows / 2) retired_row = row;
+            }
+            const table_len = engine.scopes.items.len;
+            engine.identity_reuse_barrier = 1;
+            var stream: HostNodeDescriptorStream = .{};
+            defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+
+            // No reusable slot anywhere: the claim asks the ring once and takes a fresh id.
+            {
+                var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 1, 0);
+                defer collection.deinit();
+                const fresh = try stagedClaimOne(&collection, kind, ids.root_scope, 3);
+                try std.testing.expectEqual(ids.ScopeId.fromIndex(table_len), fresh);
+                try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 0, .fresh_slots_claimed = 1 }, collection.scope_claim_work);
+            }
+
+            // One retired slot among the live rows: one visit, and the slot
+            // stays committed-available until a commit publishes it.
+            retireEngineScope(&engine, retired_row.?, 0);
+            {
+                var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 1, 0);
+                defer collection.deinit();
+                const reused = try stagedClaimOne(&collection, kind, ids.root_scope, 4);
+                try std.testing.expectEqual(retired_row.?, reused);
+                try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 1, .fresh_slots_claimed = 0 }, collection.scope_claim_work);
+                try std.testing.expect(scope_tree.isLinkedReusable(HostEachRowScopeStep, engine.scopes.items, retired_row.?));
+            }
+            // The aborted claim consumed nothing.
+            try std.testing.expectEqual(@as(usize, 1), engineReusableRingLen(&engine));
+            try std.testing.expectEqual(table_len, engine.scopes.items.len);
+        }
+    }
+}
+
+test "one staged scope claim visits one slot with a large retired reusable table" {
+    for ([_]StagedScopeClaimKind{ .component, .when_branch, .each_row }) |kind| {
+        var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+        var engine = Engine(VerifyCtx).init();
+        defer deinitStagedScopeEngine(&engine, &ctx);
+        _ = try engine.internRootScope(std.testing.allocator);
+        const retired_rows: usize = 10_000;
+        for (0..retired_rows) |i| _ = try appendLiveEngineRow(&engine, ids.root_scope, @intCast(i + 1));
+        // Retire from the highest index down so the ring head is the highest
+        // slot; a lowest-index scan would visit the whole table to find it.
+        var index: usize = engine.scopes.items.len;
+        while (index > 1) {
+            index -= 1;
+            retireEngineScope(&engine, ids.ScopeId.fromIndex(index), 1);
+        }
+        try std.testing.expectEqual(retired_rows, engineReusableRingLen(&engine));
+        var stream: HostNodeDescriptorStream = .{};
+        defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+
+        // Every slot is barrier-blocked: the head says so in one visit.
+        engine.identity_reuse_barrier = 1;
+        {
+            var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 2, 0);
+            defer collection.deinit();
+            const blocked = try stagedClaimOne(&collection, kind, ids.root_scope, 3);
+            try std.testing.expectEqual(ids.ScopeId.fromIndex(retired_rows + 1), blocked);
+            const blocked_again = try stagedClaimOne(&collection, kind, ids.root_scope, 4);
+            try std.testing.expectEqual(ids.ScopeId.fromIndex(retired_rows + 2), blocked_again);
+            try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 1, .fresh_slots_claimed = 2 }, collection.scope_claim_work);
+        }
+
+        // The next generation claims the head (highest index) in one visit.
+        engine.identity_reuse_barrier = 2;
+        {
+            var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 1, 0);
+            defer collection.deinit();
+            const reused = try stagedClaimOne(&collection, kind, ids.root_scope, 5);
+            try std.testing.expectEqual(ids.ScopeId.fromIndex(retired_rows), reused);
+            try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 1, .fresh_slots_claimed = 0 }, collection.scope_claim_work);
+        }
+        try std.testing.expectEqual(retired_rows, engineReusableRingLen(&engine));
+    }
+}
+
+test "staged scope claims walk the ring in retirement order, skip external reservations, and re-derive after abort" {
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer deinitStagedScopeEngine(&engine, &ctx);
+    _ = try engine.internRootScope(std.testing.allocator);
+    const a = (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(1))).scope_id;
+    const b = (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(2))).scope_id;
+    const c = (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(3))).scope_id;
+    const d = (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(4))).scope_id;
+    retireEngineScope(&engine, c, 0);
+    retireEngineScope(&engine, a, 0);
+    retireEngineScope(&engine, d, 0);
+    retireEngineScope(&engine, b, 1);
+    engine.identity_reuse_barrier = 1;
+    var stream: HostNodeDescriptorStream = .{};
+    defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+
+    // Mixed claims share one cursor: c, a, d in retirement order, then b
+    // blocks and the rest are fresh. Nothing is consumed before commit.
+    {
+        var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 2, 0);
+        defer collection.deinit();
+        try std.testing.expectEqual(c, try stagedClaimOne(&collection, .component, ids.root_scope, 5));
+        try std.testing.expectEqual(a, try stagedClaimOne(&collection, .when_branch, c, 6));
+        try std.testing.expectEqual(d, try stagedClaimOne(&collection, .each_row, a, 7));
+        try std.testing.expectEqual(ids.ScopeId.fromRaw(5), try stagedClaimOne(&collection, .each_row, ids.root_scope, 8));
+        try std.testing.expectEqual(ids.ScopeId.fromRaw(6), try stagedClaimOne(&collection, .component, ids.root_scope, 9));
+        try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 4, .fresh_slots_claimed = 2 }, collection.scope_claim_work);
+        try std.testing.expectEqual(@as(usize, 4), engineReusableRingLen(&engine));
+        try std.testing.expectEqual(@as(usize, 5), engine.scopes.items.len);
+    }
+
+    // A retry after abort re-derives the same ids from the untouched ring.
+    {
+        var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 1, 0);
+        defer collection.deinit();
+        try std.testing.expectEqual(c, try stagedClaimOne(&collection, .each_row, ids.root_scope, 5));
+        try std.testing.expectEqual(a, try stagedClaimOne(&collection, .component, ids.root_scope, 6));
+    }
+
+    // Slots an enclosing transaction already reserved are stepped over, at a
+    // cost bounded by that reservation count, and the claim resumes behind them.
+    {
+        var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 1, 2);
+        defer collection.deinit();
+        try collection.attachExternalScopeIds(&.{ c.raw(), a.raw() });
+        try std.testing.expectEqual(d, try stagedClaimOne(&collection, .component, ids.root_scope, 5));
+        try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 3, .fresh_slots_claimed = 0 }, collection.scope_claim_work);
+        try std.testing.expectEqual(ids.ScopeId.fromRaw(5), try stagedClaimOne(&collection, .each_row, ids.root_scope, 6));
+        try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 4, .fresh_slots_claimed = 1 }, collection.scope_claim_work);
+    }
+
+    // A retired parent is rejected before any slot is claimed.
+    {
+        var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 1, 0);
+        defer collection.deinit();
+        try std.testing.expectError(error.InvalidScope, collection.reserveEachRowScopeGeneration(b, ids.SiteOrdinal.fromRaw(1), 1, row_handles.RowHandleId.fromRaw(1)));
+        try std.testing.expectError(error.InvalidScope, collection.validateScope(ids.ScopeId.fromRaw(99)));
+        try std.testing.expectEqual(scope_runtime.ScopeClaimWork{}, collection.scope_claim_work);
+    }
+    try std.testing.expectEqual(@as(usize, 4), engineReusableRingLen(&engine));
+    try std.testing.expectEqual(@as(usize, 5), engine.scopes.items.len);
+}
+
+test "staged commit publishes reused parents before reused children and faults leave the ring coherent" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    const root = verifyStaticRoot(&.{}, &.{verifyStaticText()});
+
+    const Runner = struct {
+        fn run(host: *abi.RocHost, elem: abi.Elem, fail_at: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var engine = Engine(VerifyCtx).init();
+            engine.roc_host = host;
+            defer deinitVerifyStateEngine(&engine, &ctx, host);
+            _ = try engine.internRootScope(std.testing.allocator);
+            const a = (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(1))).scope_id;
+            _ = try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(2));
+            const c = (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(3))).scope_id;
+            // c retires before a, so the ring hands out the higher id first:
+            // the parent claim gets 3 and its child claim gets 1. Publishing
+            // in id order would attach 1 beneath a still-retired 3.
+            retireEngineScope(&engine, c, 0);
+            retireEngineScope(&engine, a, 0);
+            engine.identity_reuse_barrier = 1;
+            fault.configure(fail_at);
+
+            const prepared = Engine(VerifyCtx).PreparedRootCollection.prepare(&engine, &ctx, host, elem, .{}, &.{}) catch |err| {
+                try std.testing.expect(fail_at != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                return fault.attempts;
+            };
+            const collection = &prepared.owner.collection;
+            const claimed: ?struct { outer: ids.ScopeId, inner: ids.ScopeId, row: ids.ScopeId } = claim: {
+                collection.reserveCounts(.{ .roots = .{ .when_sites = 2 }, .external_scopes = 1, .each_rows = 1 }) catch break :claim null;
+                const outer = collection.reserveWhenBranchScope(ids.root_scope, ids.SiteOrdinal.fromRaw(5), .true_branch) catch break :claim null;
+                const inner = collection.reserveWhenBranchScope(outer.scope_id, ids.SiteOrdinal.fromRaw(6), .true_branch) catch break :claim null;
+                const row = collection.reserveEachRowScopeGeneration(inner.scope_id, ids.SiteOrdinal.fromRaw(7), 11, row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001)) catch break :claim null;
+                break :claim .{ .outer = outer.scope_id, .inner = inner.scope_id, .row = row };
+            };
+            const attempts = fault.attempts;
+            if (claimed == null or fail_at != null) {
+                try std.testing.expect(fail_at != null);
+                prepared.deinit();
+                // Whatever the fault position, the committed ring and table are untouched.
+                try std.testing.expectEqual(@as(usize, 4), engine.scopes.items.len);
+                try std.testing.expectEqual(@as(usize, 2), engineReusableRingLen(&engine));
+                try std.testing.expectEqual(@as(?ids.ScopeId, c), scope_tree.firstReusableScope(HostEachRowScopeStep, engine.scopes.items));
+                try std.testing.expect(!engine.scopes.items[a.index()].lifecycle.isActive());
+                try std.testing.expect(!engine.scopes.items[c.index()].lifecycle.isActive());
+                return attempts;
+            }
+            try std.testing.expectEqual(c, claimed.?.outer);
+            try std.testing.expectEqual(a, claimed.?.inner);
+            try std.testing.expectEqual(ids.ScopeId.fromRaw(4), claimed.?.row);
+
+            fault.configure(1);
+            var stream = prepared.commit();
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expectEqual(@as(usize, 5), engine.scopes.items.len);
+            try std.testing.expectEqual(@as(usize, 0), engineReusableRingLen(&engine));
+            try std.testing.expectEqual(@as(?ids.ScopeId, ids.root_scope), engine.scopes.items[c.index()].parent_scope_id);
+            try std.testing.expectEqual(@as(?ids.ScopeId, c), engine.scopes.items[a.index()].parent_scope_id);
+            try std.testing.expectEqual(@as(?ids.ScopeId, a), engine.scopes.items[4].parent_scope_id);
+            try std.testing.expectEqual(@as(?ids.ScopeId, a), engine.scopes.items[c.index()].first_child_scope_id);
+            try std.testing.expectEqual(@as(?ids.ScopeId, ids.ScopeId.fromRaw(4)), engine.scopes.items[a.index()].first_child_scope_id);
+            try std.testing.expect(engine.scopes.items[a.index()].lifecycle.isActive());
+            try std.testing.expect(engine.scopes.items[c.index()].lifecycle.isActive());
+            stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
+
+            // Retiring the republished subtree queues it again for the next generation.
+            retireEngineScope(&engine, ids.ScopeId.fromRaw(4), 1);
+            retireEngineScope(&engine, a, 1);
+            retireEngineScope(&engine, c, 1);
+            try std.testing.expectEqual(@as(usize, 3), engineReusableRingLen(&engine));
+            try std.testing.expectEqual(ids.ScopeId.fromRaw(5), (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(8))).scope_id);
+            engine.identity_reuse_barrier = 2;
+            try std.testing.expectEqual(ids.ScopeId.fromRaw(4), (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(9))).scope_id);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(&roc_host, root, null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |fail_at| _ = try Runner.run(&roc_host, root, fail_at);
 }
 
 test "staged node identity reuse does not consume the fresh suffix" {
