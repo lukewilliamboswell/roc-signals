@@ -1969,6 +1969,15 @@ const HostEnv = struct {
             return sim_dom.matchesLocator(elem, locator);
         }
 
+        // Descendant text is only the fallback accessible name of a container
+        // with no own label, text, or value. Concatenating it copies the whole
+        // subtree through the counted host allocator, so it is built only once
+        // the element's role already matches; otherwise every container in the
+        // document would be flattened on each role lookup and that O(DOM)
+        // harness work would land in the next event's allocation metrics.
+        const role = sim_dom.implicitRole(elem) orelse return false;
+        if (!std.mem.eql(u8, role, locator.role_name.role)) return false;
+
         var descendant_text: std.ArrayListUnmanaged(u8) = .empty;
         defer descendant_text.deinit(self.hostAllocator());
         try self.appendDescendantText(elem, &descendant_text);
@@ -3383,7 +3392,10 @@ const SpecRunnerCtx = struct {
         return host.hostAllocator();
     }
 
-    /// Resolves element by locator from maintained indexes without scanning the full descriptor stream.
+    /// Resolves a semantic locator by scanning the simulated DOM's active
+    /// elements. The harness keeps no locator index, so this is O(DOM)
+    /// test-side work; it allocates only when a role locator must fall back
+    /// to a matching container's descendant text.
     pub fn findElementByLocator(host: *Host, locator: Locator, line_num: usize) ?*DomElement {
         return host.findElementByLocator(locator, line_num);
     }
@@ -4423,6 +4435,43 @@ test "native fault coordinates exclude Roc allocation and reallocation internals
     const retry = try host.hostAllocator().alloc(u8, 32);
     host.hostAllocator().free(retry);
     try std.testing.expectEqual(@as(usize, 2), host.allocation_sweep.attempts);
+}
+
+test "native role locator flattens descendant text only for role matches" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        std.testing.expectEqual(std.heap.Check.ok, host.gpa.deinit()) catch @panic("host leak");
+    }
+    const allocator = host.hostAllocator();
+
+    // A section with no own text carries its accessible name in two text
+    // children; a plain div container has the same shape but no role.
+    try host.dom_elements.append(allocator, sim_dom.Element.init(0, try allocator.dupe(u8, "section")));
+    try host.dom_elements.append(allocator, sim_dom.Element.init(1, try allocator.dupe(u8, "span")));
+    try host.dom_elements.append(allocator, sim_dom.Element.init(2, try allocator.dupe(u8, "span")));
+    try host.dom_elements.append(allocator, sim_dom.Element.init(3, try allocator.dupe(u8, "div")));
+    for (host.dom_elements.items) |*elem| elem.active = true;
+    try host.dom_elements.items[0].children.append(allocator, 1);
+    try host.dom_elements.items[0].children.append(allocator, 2);
+    try host.dom_elements.items[3].children.append(allocator, 1);
+    try host.dom_elements.items[3].children.append(allocator, 2);
+    sim_dom.setOwnedString(allocator, &host.dom_elements.items[1].text, "Row ");
+    sim_dom.setOwnedString(allocator, &host.dom_elements.items[2].text, "totals");
+
+    const locator: Locator = .{ .role_name = .{ .role = "region", .name = "Row totals" } };
+
+    // The role mismatch is decided before any descendant text is copied.
+    const allocs_before = host.host_alloc_count;
+    try std.testing.expect(!try host.matchesLocator(&host.dom_elements.items[3], locator));
+    try std.testing.expectEqual(allocs_before, host.host_alloc_count);
+
+    // A role match still resolves through the concatenated descendant text.
+    try std.testing.expect(try host.matchesLocator(&host.dom_elements.items[0], locator));
+    try std.testing.expect(host.host_alloc_count > allocs_before);
+    try std.testing.expectEqual(&host.dom_elements.items[0], host.findElementByLocator(locator, 1).?);
 }
 
 test "native fault resize and remap preserve memory and metrics until retry" {
