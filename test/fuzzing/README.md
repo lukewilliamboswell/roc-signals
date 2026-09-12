@@ -1,6 +1,6 @@
 # Fuzzing
 
-Six targets, driven by `scripts/fuzz.py`. Run `python3 scripts/fuzz.py list` for
+Seven targets, driven by `scripts/fuzz.py`. Run `python3 scripts/fuzz.py list` for
 the one-line summaries and `--help` for the commands.
 
 Every target is a **generator**, not a byte sink. It decodes an arbitrary byte
@@ -26,6 +26,7 @@ step.
 | `keyed-scopes` | keyed-row identity, scope retirement, reuse barriers, disposal | a key list plus a predicted scope id for every intern |
 | `rows-transitions` | canonical stable-slot generations, lineage, abort, and retry | an ordered array of stable slots, exact keys, and values |
 | `structural` | collect/prepare/commit atomicity under allocation failure | committed topology derived from the shape and the current list |
+| `selectors` | selector memberships, fused keyed selects, and `when` on selected values under structural change | the exact document, the live membership multiset, the selector work counters, and the graph's adjacency and routes, all from the shape and the current `(list, selection)` |
 | `ownership` | retained-value and callable ownership across erased calls | a ledger of what each capability owns, checked every step |
 | `boundary` | boundary schema and event extraction plan parsing | the grammar itself, plus one-rule-broken trees |
 
@@ -48,6 +49,7 @@ code under test, the corpus replayed, the defect reverted:
 | `ownership` | 8 / 8 |
 | `keyed-scopes` | 14 / 14 |
 | `boundary` | 6 / 6 |
+| `selectors` | 6 / 6 |
 
 The boundary row is why this section exists. Three of those six originally
 **survived**: deleting the duplicate-field-name, empty-record, or field-name
@@ -61,6 +63,27 @@ a green run.
 When adding or changing an oracle, mutate the code it is meant to watch and
 confirm the target notices. A mutation that no input reaches is a coverage gap
 worth closing, not a mutation worth discarding.
+
+The `selectors` row records the six defects it was built against: a retired
+membership kept in the registry, a whole-registry visit at commit, staged
+memberships not released when a list edit is refused, only the new key's
+members dirtied on a selection change, a member dropped while joining an
+existing bucket, and every membership staged twice. Two of those needed the
+generator to change before the target could see them: the shared-bucket
+mutant survived until readers could alias one input record (every select had
+read its own `Ref`, so no two memberships ever shared a group), and the
+refusal mutant survived until the fault sweep sampled the late third of a
+transaction, where selector staging sits. The same rollback line on the branch
+replacement path is not caught by this target or by the hand-written sweep
+that guards it, which suggests that line never has anything to release; that
+is an open observation, not a covered defect.
+
+`selectors` also found one engine defect, kept visible rather than modelled:
+a new reader over a live derived signal makes the staged collector re-run the
+signal's transform and overwrite its committed cache before commit, and at
+some refusal positions the produced value survives the rollback. The target's
+refused-edit ledger check skips exactly the edits that trigger it and says so
+in `expectRefusedEditLedger`; removing that carve-out is part of the fix.
 
 ## The corpus is the product
 
